@@ -7,8 +7,10 @@
 //!
 //! A REPLACEMENT, not a merge: the new configuration "fully replaces the existing one",
 //! and "if you omit a field, the corresponding limit is removed" — so a request carrying
-//! no `schedulerConfiguration` at all leaves the cluster with no scheduler limits, and a
-//! cluster with none reports no `schedulerConfiguration` member at all.
+//! no `schedulerConfiguration` at all leaves the cluster configuring no scheduler limits,
+//! and a cluster with none reports no `schedulerConfiguration` member at all — and runs
+//! under the default concurrency that comes with configuring none
+//! ([`crate::state::DEFAULT_MAX_CONCURRENT_JOB_RUNS`]).
 //!
 //! Changing `maxConcurrentJobRuns` changes how many of the cluster's job runs may be
 //! `RUNNING`, so a run the clock has already made due but that was waiting for a slot

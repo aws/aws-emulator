@@ -107,8 +107,8 @@ struct ReplacementCase {
 /// the other, drops one, drops both (with an empty structure and by omitting the member),
 /// or changes nothing. Limit VALUES come from the two published ranges
 /// (`smithy_query(query="shape", shape="SchedulerConfiguration")`: `maxInQueueJobRuns`
-/// targets `InQueueJobLimitInteger` @range 100..10000, `maxConcurrentJobRuns` targets
-/// `JobLimitInteger` @range 1..10000).
+/// targets `InQueueJobLimitInteger` @range 1..1000, `maxConcurrentJobRuns` targets
+/// `JobLimitInteger` @range 1..1000).
 #[tokio::test]
 async fn the_submitted_scheduler_configuration_replaces_the_stored_one() {
     let emr = Emr::new();
@@ -140,8 +140,8 @@ async fn the_submitted_scheduler_configuration_replaces_the_stored_one() {
         ReplacementCase {
             label: "both limits, then both at their published maxima",
             created_with: Some(json!({"maxInQueueJobRuns": 100, "maxConcurrentJobRuns": 1})),
-            submitted: Some(json!({"maxInQueueJobRuns": 10000, "maxConcurrentJobRuns": 10000})),
-            expected: Some(json!({"maxInQueueJobRuns": 10000, "maxConcurrentJobRuns": 10000})),
+            submitted: Some(json!({"maxInQueueJobRuns": 1000, "maxConcurrentJobRuns": 1000})),
+            expected: Some(json!({"maxInQueueJobRuns": 1000, "maxConcurrentJobRuns": 1000})),
         },
         ReplacementCase {
             label: "both limits, then an empty configuration removes both",
@@ -260,7 +260,7 @@ async fn a_replayed_client_token_leaves_the_cluster_as_the_first_update_left_it(
         ("the same token and the same configuration", Some(first.clone())),
         (
             "the same token and a different configuration",
-            Some(json!({"maxInQueueJobRuns": 10000})),
+            Some(json!({"maxInQueueJobRuns": 1000})),
         ),
         ("the same token and no configuration", None),
     ] {
@@ -280,7 +280,7 @@ async fn a_replayed_client_token_leaves_the_cluster_as_the_first_update_left_it(
     }
 
     // A fresh token is a new request, so it applies.
-    let second = json!({"maxInQueueJobRuns": 10000, "maxConcurrentJobRuns": 2});
+    let second = json!({"maxInQueueJobRuns": 1000, "maxConcurrentJobRuns": 2});
     let case = "a fresh token";
     let applied = updated(
         &update_cluster(&emr, &id, "tok-second", Some(second.clone())).await,
@@ -465,30 +465,30 @@ async fn an_update_naming_no_usable_cluster_is_refused() {
 /// through the update as it is through the create.
 ///
 /// Source: `smithy_query(query="shape", shape="SchedulerConfiguration")` —
-/// `maxInQueueJobRuns` targets `InQueueJobLimitInteger` (@range 100..10000) and
-/// `maxConcurrentJobRuns` targets `JobLimitInteger` (@range 1..10000).
+/// `maxInQueueJobRuns` targets `InQueueJobLimitInteger` (@range 1..1000) and
+/// `maxConcurrentJobRuns` targets `JobLimitInteger` (@range 1..1000).
 #[tokio::test]
 async fn an_update_honours_each_scheduler_limits_published_bounds() {
     let emr = Emr::new();
     let cases: [(&str, Value, bool); 8] = [
         (
             "the queue-depth minimum",
-            json!({"maxInQueueJobRuns": 100}),
+            json!({"maxInQueueJobRuns": 1}),
             true,
         ),
         (
             "the queue-depth maximum",
-            json!({"maxInQueueJobRuns": 10000}),
+            json!({"maxInQueueJobRuns": 1000}),
             true,
         ),
         (
             "one below the queue-depth minimum",
-            json!({"maxInQueueJobRuns": 99}),
+            json!({"maxInQueueJobRuns": 0}),
             false,
         ),
         (
             "one above the queue-depth maximum",
-            json!({"maxInQueueJobRuns": 10001}),
+            json!({"maxInQueueJobRuns": 1001}),
             false,
         ),
         (
@@ -498,7 +498,7 @@ async fn an_update_honours_each_scheduler_limits_published_bounds() {
         ),
         (
             "the concurrency maximum",
-            json!({"maxConcurrentJobRuns": 10000}),
+            json!({"maxConcurrentJobRuns": 1000}),
             true,
         ),
         (
@@ -508,7 +508,7 @@ async fn an_update_honours_each_scheduler_limits_published_bounds() {
         ),
         (
             "one above the concurrency maximum",
-            json!({"maxConcurrentJobRuns": 10001}),
+            json!({"maxConcurrentJobRuns": 1001}),
             false,
         ),
     ];

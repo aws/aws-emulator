@@ -382,7 +382,7 @@ async fn every_admitted_job_run_reaches_a_terminal_state_on_the_clock() {
 #[tokio::test]
 async fn a_run_waiting_for_a_slot_has_made_no_attempt_on_its_driver() {
     let emr = Emr::new();
-    // `JobLimitInteger`'s @range is 1..10000, so 1 is the published minimum.
+    // `JobLimitInteger`'s @range is 1..1000, so 1 is the published minimum.
     for limit in [1_i64, 2] {
         let label = format!("maxConcurrentJobRuns {limit}");
         let cluster = cluster_id(

@@ -5,7 +5,9 @@
 //! to, so `DescribeJobRun` and `ListJobRuns` read it back rather than recomputing it. The
 //! run starts `PENDING` and the clock owes it `RUNNING`
 //! ([`crate::state::TRANSITION_SPAN`]) — but only once the cluster has a free running
-//! slot, when it configures a `schedulerConfiguration.maxConcurrentJobRuns`. The
+//! slot in the concurrency it runs under: the
+//! `schedulerConfiguration.maxConcurrentJobRuns` it configures, or the default of
+//! [`crate::state::DEFAULT_MAX_CONCURRENT_JOB_RUNS`] when it configures none. The
 //! admission is what starts the run's driver, so from there the clock owes the run its
 //! outcome in turn ([`crate::state::JOB_OUTCOME_SPAN`]), and a run reaches a terminal
 //! state with a `finishedAt` without anybody cancelling it. A
@@ -496,7 +498,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             arn: arn.clone(),
             // A submitted job run is accepted PENDING and reaches RUNNING on the clock,
             // so a caller that reads straight back sees the transient state. The
-            // admission is gated by the cluster's `maxConcurrentJobRuns`, so a run with
+            // admission is gated by the concurrency the cluster runs under, so a run with
             // no free slot waits in PENDING past its due instant (`state::settle`), and
             // the admission is what makes the run's outcome due in turn.
             state: crate::state::JOB_PENDING.to_string(),

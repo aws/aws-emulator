@@ -63,7 +63,7 @@ fn depth(queued: &[String]) -> i64 {
 ///
 /// Limit values come from the published range
 /// (`smithy_query(query="shape", shape="SchedulerConfiguration")`: `maxInQueueJobRuns`
-/// targets `InQueueJobLimitInteger` @range 100..10000); the bounds themselves, and the
+/// targets `InQueueJobLimitInteger` @range 1..1000); the bounds themselves, and the
 /// values past them, are [`crate::virtual_cluster_scheduler_status`]'s rows.
 #[tokio::test]
 async fn the_enforced_queue_depth_is_the_clusters_current_limit() {
@@ -78,7 +78,7 @@ async fn the_enforced_queue_depth_is_the_clusters_current_limit() {
         },
         QueueDepthCase {
             label: "a limit lowered onto a queue that is already that deep",
-            created_with: json!({"maxInQueueJobRuns": 10000, "maxConcurrentJobRuns": 1}),
+            created_with: json!({"maxInQueueJobRuns": 1000, "maxConcurrentJobRuns": 1}),
             updated_to: Some(json!({"maxInQueueJobRuns": 100, "maxConcurrentJobRuns": 1})),
             queued_before_update: 100,
             limit: 100,

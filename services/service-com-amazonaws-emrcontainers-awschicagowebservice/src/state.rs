@@ -18,9 +18,10 @@
 //!   managed-endpoint session past its `expiresAt` leaves the store. Every handler,
 //!   reporting or mutating, calls it first, so a reader never has to know which other
 //!   call started the transition. It is also where a job run's start waits for a running
-//!   slot when its virtual cluster configures a `maxConcurrentJobRuns`, so the counts
+//!   slot in its virtual cluster's concurrency — the `maxConcurrentJobRuns` it configures,
+//!   or [`DEFAULT_MAX_CONCURRENT_JOB_RUNS`] when it configures none — so the counts
 //!   [`ComAmazonawsEmrcontainersAwschicagowebserviceState::cluster_scheduler_status`]
-//!   reports never exceed the capacity the cluster was created with. A run's walk does
+//!   reports never exceed the capacity the cluster runs under. A run's walk does
 //!   not stop at that start: the admission owes the run its OUTCOME in turn, so a client
 //!   that polls a run reaches a terminal state with a `finishedAt` without anybody
 //!   cancelling it ([`JobRunRecord`]).
@@ -109,6 +110,19 @@ pub const TRANSITION_SPAN: Duration = Duration::from_millis(400);
 /// reach a terminal state in seconds. EMR on EKS documents no duration for a job run —
 /// it is the submitted work's own — so this span is the emulator's own choice.
 pub const JOB_OUTCOME_SPAN: Duration = Duration::from_secs(5);
+
+/// How many job runs a virtual cluster that configures no `maxConcurrentJobRuns` may have
+/// `RUNNING` at once.
+///
+/// Not a span or a choice of this emulator's: `SchedulerConfiguration$maxConcurrentJobRuns`
+/// is documented as "if you omit this field, the service applies a default limit of 1,000
+/// concurrent job runs to the virtual cluster", and the shape itself as "if you omit this
+/// configuration, the service applies a default limit of 1,000 concurrent job runs and does
+/// not limit queue depth" (smithy_query: shape `SchedulerConfiguration`). A cluster that
+/// omits the member still REPORTS none — `VirtualCluster$schedulerConfiguration` "is not
+/// returned when no scheduler limits are configured" — so the default is what the scheduler
+/// enforces, not a value written into the record.
+pub const DEFAULT_MAX_CONCURRENT_JOB_RUNS: i32 = 1_000;
 
 /// `VirtualClusterState` members this slice uses. Each is a value of the generated
 /// `VIRTUAL_CLUSTER_STATE_VALUES` catalog in `ops::types::shared_types`.
@@ -269,12 +283,17 @@ pub fn job_run_state_details(state: &str) -> Option<&'static str> {
 /// The scheduler limits a submitted `SchedulerConfiguration` actually configures.
 ///
 /// `None` when it configures none — both an absent structure and one whose every member
-/// is omitted, which are the same statement: `SchedulerConfiguration` is documented as
-/// "when not set, no concurrency or queue limits are applied", each member as "if you
-/// omit this field, the service applies no … limit", and `VirtualCluster$schedulerConfiguration`
-/// as "the service does not return this field when no scheduler limits are configured".
-/// Normalising on the way IN is what lets every read answer that, whether the cluster was
-/// created with an empty configuration or had its last limit removed by an update.
+/// is omitted, which are the same statement, and the one
+/// `VirtualCluster$schedulerConfiguration` reports as "the service does not return this
+/// field when no scheduler limits are configured". Normalising on the way IN is what lets
+/// every read answer that, whether the cluster was created with an empty configuration or
+/// had its last limit removed by an update.
+///
+/// Configuring no limit is not the same as running without one: a cluster that configures
+/// no `maxConcurrentJobRuns` runs under the documented default
+/// ([`DEFAULT_MAX_CONCURRENT_JOB_RUNS`]), while one that configures no `maxInQueueJobRuns`
+/// has no queue-depth limit at all ("if you omit this field, the service applies no
+/// queue-depth limit").
 pub fn configured_scheduler_limits(
     configuration: Option<SchedulerConfiguration>,
 ) -> Option<SchedulerConfiguration> {
@@ -2354,8 +2373,8 @@ impl ComAmazonawsEmrcontainersAwschicagowebserviceState {
     ///
     /// A due start is the one transition that also needs scheduler capacity, so the job
     /// runs are walked oldest submission first and a start waits while the cluster's
-    /// `maxConcurrentJobRuns` is fully taken; every other transition answers to the clock
-    /// alone.
+    /// concurrency is fully taken ([`Self::cluster_has_free_running_slot`]); every other
+    /// transition answers to the clock alone.
     ///
     /// It walks only the records that actually owe a transition, so one call costs the
     /// number of transitions in flight, not the size of the store.
@@ -2385,10 +2404,10 @@ impl ComAmazonawsEmrcontainersAwschicagowebserviceState {
             .collect();
         queued.sort();
         for (_, _, id) in queued {
-            // A START the clock has made due still waits while the cluster's configured
-            // concurrency is fully taken: `maxConcurrentJobRuns` caps the runs that may
-            // be RUNNING at once, and "as running slots free up, queued job runs start
-            // automatically". The run keeps the transition it already owes, with its due
+            // A START the clock has made due still waits while the cluster's concurrency
+            // is fully taken: `maxConcurrentJobRuns` — or the default the cluster runs
+            // under when it configures none — caps the runs that may be RUNNING at once,
+            // and "as running slots free up, queued job runs start automatically". The run keeps the transition it already owes, with its due
             // instant in the past, so the first call after a slot frees starts it. Every
             // other transition (a cancellation, a teardown) answers to the clock alone.
             let Some(record) = self.job_runs.get(&id) else {
@@ -2510,22 +2529,21 @@ impl ComAmazonawsEmrcontainersAwschicagowebserviceState {
     /// Whether this cluster may take one more RUNNING job run right now.
     ///
     /// `schedulerConfiguration.maxConcurrentJobRuns` is "the maximum number of job runs
-    /// that can be in the `RUNNING` state at any time for the virtual cluster"; a cluster
-    /// that configures none is never gated ("if you omit this field, the service applies
-    /// no concurrency limit"), and nor is an id that names no cluster — a run whose
-    /// cluster is gone is not held back by a limit nobody set.
+    /// that can be in the `RUNNING` state at any time for the virtual cluster", and a
+    /// cluster that configures none runs under the documented default
+    /// ([`DEFAULT_MAX_CONCURRENT_JOB_RUNS`]) rather than unbounded. An id that names no
+    /// cluster is not gated at all — a run whose cluster is gone is not held back by a
+    /// scheduler that is gone with it.
     pub fn cluster_has_free_running_slot(&self, virtual_cluster_id: &str) -> bool {
-        let limit = self
-            .virtual_clusters
-            .get(virtual_cluster_id)
-            .and_then(|record| record.scheduler_configuration.as_ref())
-            .and_then(|configuration| configuration.max_concurrent_job_runs);
-        match limit {
-            Some(limit) => {
-                self.cluster_run_count(virtual_cluster_id, |state| state == JOB_RUNNING) < limit
-            }
-            None => true,
-        }
+        let Some(record) = self.virtual_clusters.get(virtual_cluster_id) else {
+            return true;
+        };
+        let limit = record
+            .scheduler_configuration
+            .as_ref()
+            .and_then(|configuration| configuration.max_concurrent_job_runs)
+            .unwrap_or(DEFAULT_MAX_CONCURRENT_JOB_RUNS);
+        self.cluster_run_count(virtual_cluster_id, |state| state == JOB_RUNNING) < limit
     }
 
     /// This cluster's `schedulerConfiguration.maxInQueueJobRuns`, but only when its queue

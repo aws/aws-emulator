@@ -245,7 +245,7 @@ fn virtual_cluster_base() -> Value {
         "clientToken": "vc-tok",
         "containerProvider": {"id": "eks-fixture", "type": "EKS"},
         "sessionEnabled": true,
-        // `maxConcurrentJobRuns` is `@range(1..10000)` (smithy_query: shape
+        // `maxConcurrentJobRuns` is `@range(1..1000)` (smithy_query: shape
         // `SchedulerConfiguration`).
         "schedulerConfiguration": {"maxConcurrentJobRuns": 2},
         "tags": {"team": "data", "env": "test"},

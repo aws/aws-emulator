@@ -206,7 +206,7 @@ async fn a_run_whose_cluster_stays_available_finishes_whatever_it_submitted() {
 #[tokio::test]
 async fn a_run_admitted_from_the_queue_finishes_like_one_admitted_at_once() {
     let emr = Emr::new();
-    // `JobLimitInteger`'s @range is 1..10000, so 1 is the published minimum.
+    // `JobLimitInteger`'s @range is 1..1000, so 1 is the published minimum.
     let cluster = cluster_id(
         &emr,
         "a cluster that admits one run at a time",

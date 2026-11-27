@@ -70,8 +70,8 @@ fn base_request(security_configuration_id: &str) -> Value {
         },
         "securityConfigurationId": security_configuration_id,
         "sessionEnabled": true,
-        // `maxConcurrentJobRuns` is `@range(1..10000)` and `maxInQueueJobRuns`
-        // `@range(100..10000)` (smithy_query: shape `SchedulerConfiguration`).
+        // `maxConcurrentJobRuns` is `@range(1..1000)` and `maxInQueueJobRuns`
+        // `@range(1..1000)` (smithy_query: shape `SchedulerConfiguration`).
         "schedulerConfiguration": {"maxConcurrentJobRuns": 4, "maxInQueueJobRuns": 500},
         "tags": {"team": "data", "env": "test"},
     })
@@ -185,7 +185,7 @@ const ROWS: [Row; 15] = [
     },
     Row {
         case: "the concurrency limit at the top of its range",
-        differ: |body, _, _| body["schedulerConfiguration"]["maxConcurrentJobRuns"] = json!(10000),
+        differ: |body, _, _| body["schedulerConfiguration"]["maxConcurrentJobRuns"] = json!(1000),
     },
     Row {
         case: "the concurrency limit at the bottom of its range",
@@ -193,7 +193,7 @@ const ROWS: [Row; 15] = [
     },
     Row {
         case: "the queue limit at the bottom of its range",
-        differ: |body, _, _| body["schedulerConfiguration"]["maxInQueueJobRuns"] = json!(100),
+        differ: |body, _, _| body["schedulerConfiguration"]["maxInQueueJobRuns"] = json!(1),
     },
     Row {
         case: "the schedulerConfiguration dropped",

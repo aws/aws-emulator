@@ -210,14 +210,14 @@ async fn scheduler_status_counts_the_clusters_stored_job_runs() {
         },
         StatusCase {
             label: "both limits, well above the runs submitted",
-            scheduler: Some(json!({"maxInQueueJobRuns": 10000, "maxConcurrentJobRuns": 10})),
+            scheduler: Some(json!({"maxInQueueJobRuns": 1000, "maxConcurrentJobRuns": 10})),
             runs: 5,
         },
         StatusCase {
             // `JobLimitInteger`'s published maximum, exercised with runs under it: the
             // size of the limit may not change that every run starts.
             label: "the published maximum concurrency, with fewer runs than slots",
-            scheduler: Some(json!({"maxConcurrentJobRuns": 10000})),
+            scheduler: Some(json!({"maxConcurrentJobRuns": 1000})),
             runs: 2,
         },
     ];
@@ -307,7 +307,7 @@ async fn scheduler_status_counts_the_clusters_stored_job_runs() {
 #[tokio::test]
 async fn the_concurrency_limit_caps_the_running_runs_and_queues_the_rest() {
     let emr = Emr::new();
-    // `JobLimitInteger`'s @range is 1..10000, so 1 is the published minimum.
+    // `JobLimitInteger`'s @range is 1..1000, so 1 is the published minimum.
     for limit in [1_i64, 2, 3] {
         let label = format!("maxConcurrentJobRuns {limit}");
         let submitted = limit + 2;
@@ -388,10 +388,10 @@ async fn the_concurrency_limit_caps_the_running_runs_and_queues_the_rest() {
 /// RULE 3: a full queue refuses the next submission with `ValidationException`, reports
 /// the depth it refused at, and takes work again as soon as the queue has room.
 ///
-/// `maxInQueueJobRuns`'s published minimum (`InQueueJobLimitInteger` @range 100..10000) is
-/// the depth driven to here; the cluster's single running slot is spent on a run that is
-/// already `RUNNING`, so the queue cannot drain while it fills and the depth the refusal
-/// happens at is exact.
+/// The depth driven to here is a value inside the published range
+/// (`InQueueJobLimitInteger` @range 1..1000), and the cluster's single running slot is
+/// spent on a run that is already `RUNNING`, so the queue cannot drain while it fills and
+/// the depth the refusal happens at is exact.
 #[tokio::test]
 async fn a_full_queue_refuses_the_next_job_run() {
     let emr = Emr::new();
@@ -463,30 +463,30 @@ async fn a_full_queue_refuses_the_next_job_run() {
 /// RULE 4: each limit is accepted at both published bounds and refused one past either.
 ///
 /// Source: `smithy_query(query="shape", shape="SchedulerConfiguration")` —
-/// `maxInQueueJobRuns` targets `InQueueJobLimitInteger` (@range 100..10000) and
-/// `maxConcurrentJobRuns` targets `JobLimitInteger` (@range 1..10000).
+/// `maxInQueueJobRuns` targets `InQueueJobLimitInteger` (@range 1..1000) and
+/// `maxConcurrentJobRuns` targets `JobLimitInteger` (@range 1..1000).
 #[tokio::test]
 async fn each_scheduler_limit_is_honoured_at_its_published_bounds() {
     let emr = Emr::new();
     let cases: [(&str, Value, bool); 8] = [
         (
             "the queue-depth minimum",
-            json!({"maxInQueueJobRuns": 100}),
+            json!({"maxInQueueJobRuns": 1}),
             true,
         ),
         (
             "the queue-depth maximum",
-            json!({"maxInQueueJobRuns": 10000}),
+            json!({"maxInQueueJobRuns": 1000}),
             true,
         ),
         (
             "one below the queue-depth minimum",
-            json!({"maxInQueueJobRuns": 99}),
+            json!({"maxInQueueJobRuns": 0}),
             false,
         ),
         (
             "one above the queue-depth maximum",
-            json!({"maxInQueueJobRuns": 10001}),
+            json!({"maxInQueueJobRuns": 1001}),
             false,
         ),
         (
@@ -496,7 +496,7 @@ async fn each_scheduler_limit_is_honoured_at_its_published_bounds() {
         ),
         (
             "the concurrency maximum",
-            json!({"maxConcurrentJobRuns": 10000}),
+            json!({"maxConcurrentJobRuns": 1000}),
             true,
         ),
         (
@@ -506,7 +506,7 @@ async fn each_scheduler_limit_is_honoured_at_its_published_bounds() {
         ),
         (
             "one above the concurrency maximum",
-            json!({"maxConcurrentJobRuns": 10001}),
+            json!({"maxConcurrentJobRuns": 1001}),
             false,
         ),
     ];
