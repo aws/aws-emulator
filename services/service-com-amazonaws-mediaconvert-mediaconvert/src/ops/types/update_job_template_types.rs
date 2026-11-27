@@ -17,6 +17,7 @@ pub struct UpdateJobTemplateInput {
     pub acceleration_settings: Option<AccelerationSettings>,
     pub category: Option<String>,
     pub description: Option<String>,
+    pub elemental_inference_settings: Option<ElementalInferenceSettings>,
     pub hop_destinations: Option<Vec<HopDestination>>,
     pub name: String,
     pub priority: Option<i32>,

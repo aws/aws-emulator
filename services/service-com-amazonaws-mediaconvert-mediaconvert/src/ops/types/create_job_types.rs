@@ -17,6 +17,7 @@ pub struct CreateJobInput {
     pub acceleration_settings: Option<AccelerationSettings>,
     pub billing_tags_source: Option<String>,
     pub client_request_token: Option<String>,
+    pub elemental_inference_settings: Option<ElementalInferenceSettings>,
     pub hop_destinations: Option<Vec<HopDestination>>,
     pub job_engine_version: Option<String>,
     pub job_template: Option<String>,

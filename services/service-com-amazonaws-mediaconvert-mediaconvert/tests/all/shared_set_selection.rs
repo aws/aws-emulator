@@ -131,6 +131,7 @@ fn seed_job_template(
                 settings: JobTemplateSettings::default(),
                 status_update_interval: DEFAULT_STATUS_UPDATE_INTERVAL.to_string(),
                 acceleration_settings: default_acceleration_settings(),
+                elemental_inference_settings: None,
                 hop_destinations: Vec::new(),
                 template_type: TYPE_CUSTOM.to_string(),
                 created_at,

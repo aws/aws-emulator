@@ -130,7 +130,10 @@ fn instant(case: &str, view: &Value, member: &str) -> String {
 /// chronology and the other way as strings. Parsed through the tree's own reading of this
 /// model's `date-time` form (`aws_smithy_types::DateTime`) rather than through a
 /// hand-rolled split.
-fn not_before(case: &str, later: &str, earlier: &str) -> bool {
+///
+/// `pub(crate)` because every suite that orders two instants this model reports takes this
+/// one reading of them, rather than keeping a second copy of it.
+pub(crate) fn not_before(case: &str, later: &str, earlier: &str) -> bool {
     let parse = |stamp: &str| {
         ::aws_smithy_types::DateTime::from_str(
             stamp,

@@ -15,7 +15,7 @@
 
 use serde_json::{json, Value};
 
-use super::job_lifecycle::{arn, Emulator, ROLE};
+use super::job_lifecycle::{arn, elemental_inference_forms, Emulator, ROLE};
 
 /// A `JobTemplateSettings` with one file output group, one input and a timecode config —
 /// the members a template normally owns when a caller submits only the input.
@@ -385,3 +385,83 @@ async fn a_job_naming_a_template_that_does_not_exist_is_not_found() {
         accepted.status, accepted.body
     );
 }
+
+/// The Elemental Inference settings are one of the job-shaping members a job template
+/// carries, so they follow the same inheritance rule as the rest: a job that states none
+/// of its own takes the template's, a job that states its own replaces the template's
+/// whole value for it, and a job that states none from a template that carries none
+/// carries none — the service invents no value for the member.
+///
+/// The table spans the pairings of what the template carries and what the job states,
+/// over the forms the member takes (`super::job_lifecycle::elemental_inference_forms`).
+#[tokio::test]
+async fn a_job_inherits_the_templates_elemental_inference_settings_unless_it_states_its_own() {
+    let emulator = Emulator::new();
+    let forms = elemental_inference_forms();
+
+    // Every (what the template carries, what the job states) pairing: the job's own
+    // statement wins wherever it made one, and the template's value stands wherever it
+    // did not.
+    for (template_index, (template_case, on_template)) in forms.iter().enumerate() {
+        for (job_index, (job_case, on_job)) in forms.iter().enumerate() {
+            let case = format!("template {template_case:?}, job {job_case:?}");
+            let name = format!("inference-{template_index}-{job_index}");
+            let mut template = json!({
+                "name": name,
+                "settings": template_settings(
+                    &format!("s3://example-bucket/out-{template_index}-{job_index}/"),
+                    "_tpl",
+                )
+            });
+            if !on_template.is_null() {
+                template["elementalInferenceSettings"] = on_template.clone();
+            }
+            let created_template = emulator.create_job_template(template).await;
+            assert_eq!(
+                created_template.status, 201,
+                "case {case}: the fixture template must be created, got {} with body {}",
+                created_template.status, created_template.body
+            );
+
+            let mut body = json!({
+                "role": ROLE,
+                "jobTemplate": name,
+                "settings": {
+                    "inputs": [{
+                        "fileInput": format!(
+                            "s3://example-bucket/in/{template_index}-{job_index}.mp4"
+                        )
+                    }]
+                }
+            });
+            if !on_job.is_null() {
+                body["elementalInferenceSettings"] = on_job.clone();
+            }
+            let job = emulator.create_job(body).await;
+            assert_eq!(
+                job.status, 201,
+                "case {case}: expected HTTP 201, got {} with body {}",
+                job.status, job.body
+            );
+
+            // What the job states, else what the template carries, else nothing at all.
+            let expected = if on_job.is_null() { on_template } else { on_job };
+            let id = job.string("/job/id");
+            let fetched = emulator.get_job(&id).await;
+            assert_eq!(
+                fetched.status, 200,
+                "case {case}: the job must read back, got {} with body {}",
+                fetched.status, fetched.body
+            );
+            for reply in [&job, &fetched] {
+                assert_eq!(
+                    reply.at("/job/elementalInferenceSettings"),
+                    expected,
+                    "case {case}: expected {expected}, got {}",
+                    reply.body
+                );
+            }
+        }
+    }
+}
+

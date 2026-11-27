@@ -59,6 +59,18 @@ pub struct AccelerationSettings {
     pub mode: String,
 }
 
+#[smithy_macros::smithy(shape = "com.amazonaws.mediaconvert#ElementalInferenceSettings")]
+#[derive(Debug, Clone, Default)]
+pub struct ElementalInferenceSettings {
+    pub feed_configuration_source: Option<ElementalInferenceFeedConfigurationSource>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.mediaconvert#ElementalInferenceFeedConfigurationSource")]
+#[derive(Debug, Clone, Default)]
+pub struct ElementalInferenceFeedConfigurationSource {
+    pub feed_arn: Option<String>,
+}
+
 #[smithy_macros::smithy(shape = "com.amazonaws.mediaconvert#HopDestination")]
 #[derive(Debug, Clone, Default)]
 pub struct HopDestination {
@@ -1029,6 +1041,8 @@ pub struct AudioCodecSettings {
     pub ac4_settings: Option<Ac4Settings>,
     pub aiff_settings: Option<AiffSettings>,
     pub codec: Option<String>,
+    pub dtsc_settings: Option<DtscSettings>,
+    pub dtsx_settings: Option<DtsxSettings>,
     pub eac3_atmos_settings: Option<Eac3AtmosSettings>,
     pub eac3_settings: Option<Eac3Settings>,
     pub flac_settings: Option<FlacSettings>,
@@ -1095,6 +1109,21 @@ pub struct Ac4Settings {
 pub struct AiffSettings {
     pub bit_depth: Option<i32>,
     pub channels: Option<i32>,
+    pub sample_rate: Option<i32>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.mediaconvert#DtscSettings")]
+#[derive(Debug, Clone, Default)]
+pub struct DtscSettings {
+    pub bitrate: Option<i32>,
+    pub sample_rate: Option<i32>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.mediaconvert#DtsxSettings")]
+#[derive(Debug, Clone, Default)]
+pub struct DtsxSettings {
+    pub bitrate: Option<i32>,
+    pub coding_mode: Option<String>,
     pub sample_rate: Option<i32>,
 }
 
@@ -1201,11 +1230,13 @@ pub struct WavSettings {
 #[smithy_macros::smithy(shape = "com.amazonaws.mediaconvert#CaptionDescription")]
 #[derive(Debug, Clone, Default)]
 pub struct CaptionDescription {
+    pub audio_source_names: Option<Vec<String>>,
     pub caption_selector_name: Option<String>,
     pub custom_language_code: Option<String>,
     pub destination_settings: Option<CaptionDestinationSettings>,
     pub language_code: Option<String>,
     pub language_description: Option<String>,
+    pub source: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.mediaconvert#CaptionDestinationSettings")]
@@ -1578,6 +1609,7 @@ pub struct VideoDescription {
     pub color_metadata: Option<String>,
     pub crop: Option<Rectangle>,
     pub drop_frame_timecode: Option<String>,
+    pub dynamic_multiview_settings: Option<DynamicMultiviewSettings>,
     pub fixed_afd: Option<i32>,
     pub height: Option<i32>,
     pub position: Option<Rectangle>,
@@ -1616,12 +1648,14 @@ pub struct Av1Settings {
     pub adaptive_quantization: Option<String>,
     pub bit_depth: Option<String>,
     pub bitrate: Option<i32>,
+    pub fast_decode: Option<String>,
     pub film_grain_synthesis: Option<String>,
     pub framerate_control: Option<String>,
     pub framerate_conversion_algorithm: Option<String>,
     pub framerate_denominator: Option<i32>,
     pub framerate_numerator: Option<i32>,
     pub gop_size: Option<f64>,
+    pub gop_size_units: Option<String>,
     pub max_bitrate: Option<i32>,
     pub number_b_frames_between_reference_frames: Option<i32>,
     pub per_frame_metrics: Option<Vec<String>>,
@@ -1632,6 +1666,7 @@ pub struct Av1Settings {
     pub sliding_window_ms: Option<i32>,
     pub sliding_window_peak_bitrate: Option<i32>,
     pub spatial_adaptive_quantization: Option<String>,
+    pub temporal_adaptive_quantization: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.mediaconvert#Av1QvbrSettings")]
@@ -2017,6 +2052,13 @@ pub struct XavcHdProfileSettings {
     pub telecine: Option<String>,
 }
 
+#[smithy_macros::smithy(shape = "com.amazonaws.mediaconvert#DynamicMultiviewSettings")]
+#[derive(Debug, Clone, Default)]
+pub struct DynamicMultiviewSettings {
+    pub enabled: Option<String>,
+    pub regions: Option<Vec<Rectangle>>,
+}
+
 #[smithy_macros::smithy(shape = "com.amazonaws.mediaconvert#VideoPreprocessor")]
 #[derive(Debug, Clone, Default)]
 pub struct VideoPreprocessor {
@@ -2185,6 +2227,7 @@ pub struct Job {
     pub created_at: Option<::aws_smithy_types::DateTime>,
     pub current_phase: Option<String>,
     pub elemental_inference_configuration: Option<ElementalInferenceConfiguration>,
+    pub elemental_inference_settings: Option<ElementalInferenceSettings>,
     pub error_code: Option<i32>,
     pub error_message: Option<String>,
     pub hop_destinations: Option<Vec<HopDestination>>,
@@ -2331,6 +2374,7 @@ pub struct JobTemplate {
     pub category: Option<String>,
     pub created_at: Option<::aws_smithy_types::DateTime>,
     pub description: Option<String>,
+    pub elemental_inference_settings: Option<ElementalInferenceSettings>,
     pub hop_destinations: Option<Vec<HopDestination>>,
     pub last_updated: Option<::aws_smithy_types::DateTime>,
     pub name: String,
@@ -2552,7 +2596,7 @@ pub const AUDIO_CHANNEL_TAG_VALUES: &[&str] = &["C", "CS", "HI", "L", "LC", "LFE
 
 
 /// The values `AudioCodec` accepts on the wire.
-pub const AUDIO_CODEC_VALUES: &[&str] = &["AAC", "AC3", "AC4", "AIFF", "EAC3", "EAC3_ATMOS", "FLAC", "MP2", "MP3", "OPUS", "PASSTHROUGH", "VORBIS", "WAV"];
+pub const AUDIO_CODEC_VALUES: &[&str] = &["AAC", "AC3", "AC4", "AIFF", "DTSC", "DTSX", "EAC3", "EAC3_ATMOS", "FLAC", "MP2", "MP3", "OPUS", "PASSTHROUGH", "VORBIS", "WAV"];
 
 
 /// The values `AudioDefaultSelection` accepts on the wire.
@@ -2596,11 +2640,15 @@ pub const AUDIO_TYPE_CONTROL_VALUES: &[&str] = &["FOLLOW_INPUT", "USE_CONFIGURED
 
 
 /// The values `Av1AdaptiveQuantization` accepts on the wire.
-pub const AV1_ADAPTIVE_QUANTIZATION_VALUES: &[&str] = &["HIGH", "HIGHER", "LOW", "MAX", "MEDIUM", "OFF"];
+pub const AV1_ADAPTIVE_QUANTIZATION_VALUES: &[&str] = &["AUTO", "HIGH", "HIGHER", "LOW", "MAX", "MEDIUM", "OFF"];
 
 
 /// The values `Av1BitDepth` accepts on the wire.
 pub const AV1_BIT_DEPTH_VALUES: &[&str] = &["BIT_10", "BIT_8"];
+
+
+/// The values `Av1FastDecode` accepts on the wire.
+pub const AV1_FAST_DECODE_VALUES: &[&str] = &["DISABLED", "ENABLED"];
 
 
 /// The values `Av1FilmGrainSynthesis` accepts on the wire.
@@ -2615,6 +2663,10 @@ pub const AV1_FRAMERATE_CONTROL_VALUES: &[&str] = &["INITIALIZE_FROM_SOURCE", "S
 pub const AV1_FRAMERATE_CONVERSION_ALGORITHM_VALUES: &[&str] = &["DUPLICATE_DROP", "FRAMEFORMER", "INTERPOLATE", "MAINTAIN_FRAME_COUNT"];
 
 
+/// The values `Av1GopSizeUnits` accepts on the wire.
+pub const AV1_GOP_SIZE_UNITS_VALUES: &[&str] = &["FRAMES", "SECONDS"];
+
+
 /// The values `Av1RateControlMode` accepts on the wire.
 pub const AV1_RATE_CONTROL_MODE_VALUES: &[&str] = &["CBR", "QVBR"];
 
@@ -2625,6 +2677,10 @@ pub const AV1_SCENE_CHANGE_DETECT_VALUES: &[&str] = &["DISABLED", "ENABLED", "TR
 
 /// The values `Av1SpatialAdaptiveQuantization` accepts on the wire.
 pub const AV1_SPATIAL_ADAPTIVE_QUANTIZATION_VALUES: &[&str] = &["DISABLED", "ENABLED"];
+
+
+/// The values `Av1TemporalAdaptiveQuantization` accepts on the wire.
+pub const AV1_TEMPORAL_ADAPTIVE_QUANTIZATION_VALUES: &[&str] = &["DISABLED", "ENABLED"];
 
 
 /// The values `AvcIntraClass` accepts on the wire.
@@ -2709,6 +2765,10 @@ pub const BURNIN_SUBTITLE_TELETEXT_SPACING_VALUES: &[&str] = &["AUTO", "FIXED_GR
 
 /// The values `CaptionDestinationType` accepts on the wire.
 pub const CAPTION_DESTINATION_TYPE_VALUES: &[&str] = &["BURN_IN", "DVB_SUB", "EMBEDDED", "EMBEDDED_PLUS_SCTE20", "IMSC", "SCC", "SCTE20_PLUS_EMBEDDED", "SMI", "SRT", "TELETEXT", "TTML", "WEBVTT"];
+
+
+/// The values `CaptionSource` accepts on the wire.
+pub const CAPTION_SOURCE_VALUES: &[&str] = &["INPUT_CAPTION_SELECTOR", "SMART_SUBTITLE"];
 
 
 /// The values `CaptionSourceByteRateLimit` accepts on the wire.
@@ -2991,6 +3051,10 @@ pub const DOLBY_VISION_PROFILE_VALUES: &[&str] = &["PROFILE_5", "PROFILE_8_1"];
 pub const DROP_FRAME_TIMECODE_VALUES: &[&str] = &["DISABLED", "ENABLED"];
 
 
+/// The values `DtsxCodingMode` accepts on the wire.
+pub const DTSX_CODING_MODE_VALUES: &[&str] = &["CODING_MODE_5_1", "CODING_MODE_5_1_4"];
+
+
 /// The values `DvbSubSubtitleFallbackFont` accepts on the wire.
 pub const DVB_SUB_SUBTITLE_FALLBACK_FONT_VALUES: &[&str] = &["BEST_MATCH", "MONOSPACED_SANSSERIF", "MONOSPACED_SERIF", "PROPORTIONAL_SANSSERIF", "PROPORTIONAL_SERIF"];
 
@@ -3037,6 +3101,10 @@ pub const DVBDDS_HANDLING_VALUES: &[&str] = &["NONE", "NO_DISPLAY_WINDOW", "SPEC
 
 /// The values `DynamicAudioSelectorType` accepts on the wire.
 pub const DYNAMIC_AUDIO_SELECTOR_TYPE_VALUES: &[&str] = &["ALL_TRACKS", "LANGUAGE_CODE"];
+
+
+/// The values `DynamicMultiviewSettingsEnabled` accepts on the wire.
+pub const DYNAMIC_MULTIVIEW_SETTINGS_ENABLED_VALUES: &[&str] = &["DISABLED", "ENABLED"];
 
 
 /// The values `Eac3AtmosBitstreamMode` accepts on the wire.
@@ -3136,7 +3204,7 @@ pub const EAC3_SURROUND_MODE_VALUES: &[&str] = &["DISABLED", "ENABLED", "NOT_IND
 
 
 /// The values `ElementalInferenceFeature` accepts on the wire.
-pub const ELEMENTAL_INFERENCE_FEATURE_VALUES: &[&str] = &["SMART_CROP"];
+pub const ELEMENTAL_INFERENCE_FEATURE_VALUES: &[&str] = &["SMART_CROP", "SMART_SUBTITLE"];
 
 
 /// The values `ElementalInferenceFeedManagementState` accepts on the wire.

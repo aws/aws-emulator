@@ -334,6 +334,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         if let Some(acceleration) = input.acceleration_settings {
             template.acceleration_settings = acceleration;
         }
+        if let Some(inference) = input.elemental_inference_settings {
+            template.elemental_inference_settings = Some(inference);
+        }
         if let Some(hops) = input.hop_destinations {
             template.hop_destinations = hops;
         }

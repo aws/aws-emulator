@@ -437,6 +437,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .acceleration_settings
             .or_else(|| inherited.map(|record| record.acceleration_settings.clone()))
             .unwrap_or_else(crate::state::default_acceleration_settings);
+        // The Elemental Inference settings are a job-shaping member a template carries
+        // too, so a job that states none inherits the template's. Unlike the members
+        // above the service applies no value of its own for it, so a job that states none
+        // and inherits none carries none.
+        let elemental_inference_settings = input
+            .elemental_inference_settings
+            .or_else(|| inherited.and_then(|record| record.elemental_inference_settings.clone()));
         let hop_destinations = input.hop_destinations.unwrap_or_else(|| {
             inherited
                 .map(|record| record.hop_destinations.clone())
@@ -547,6 +554,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 .billing_tags_source
                 .unwrap_or_else(|| crate::state::BILLING_TAGS_SOURCE_JOB.to_string()),
             acceleration_settings,
+            elemental_inference_settings,
             // Nothing has shared this job: a resource share is what records an attempt,
             // and a job with no attempt reports `NOT_SHARED` and no share details.
             share: None,

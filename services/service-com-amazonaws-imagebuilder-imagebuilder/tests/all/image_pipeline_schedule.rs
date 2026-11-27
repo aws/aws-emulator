@@ -49,6 +49,10 @@ use std::sync::Arc;
 use serde_json::{json, Map, Value};
 use smithy_server_runtime::MultiServiceRouter;
 
+// Two instants this model reports are ordered through the one reading of its string
+// `DateTime` members the sibling suite states, so neither suite keeps a second copy of it.
+use super::last_updated_projections::not_before;
+
 /// The Region every case signs for; the ARNs it creates carry it.
 const REGION: &str = "us-west-2";
 
@@ -849,8 +853,13 @@ async fn a_pipeline_reports_the_instant_of_its_last_write() {
             .unwrap_or_else(|| panic!("case {case:?}: expected a dateUpdated in {pipeline}"))
             .to_string();
         let created_at = date_created.unwrap_or_default().to_string();
+        // Compared as INSTANTS, not as text, through the one reading of this model's
+        // string `DateTime` members the sibling suite already states
+        // ([`super::last_updated_projections::not_before`]): the renderer drops a
+        // fraction's trailing zeros, so `…:50.88Z` and `…:50.88293Z` order one way as
+        // chronology and the other way as strings.
         assert!(
-            replaced_at >= created_at,
+            not_before(case, &replaced_at, &created_at),
             "case {case:?}: expected the update's instant {replaced_at:?} not to precede the \
              create's {created_at:?}"
         );

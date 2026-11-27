@@ -21,7 +21,8 @@ use service_com_amazonaws_mediaconvert_mediaconvert::ComAmazonawsMediaconvertMed
 // are the crate's ONE test harness, exported by `job_lifecycle`: this suite drives the
 // same wire path through it rather than keeping a second copy of it.
 use super::job_lifecycle::{
-    arn, arn_in, queue_arn, settings as job_settings, Emulator, ROLE,
+    arn, arn_in, elemental_inference_forms, feed_arn, malformed_feed_arns, queue_arn,
+    settings as job_settings, Emulator, ROLE,
 };
 
 /// A queue the fixture creates, so a case can point a template at a real queue.
@@ -1225,6 +1226,7 @@ async fn creating_past_the_store_capacity_is_a_quota_refusal() {
                     settings: JobTemplateSettings::default(),
                     status_update_interval: DEFAULT_STATUS_UPDATE_INTERVAL.to_string(),
                     acceleration_settings: default_acceleration_settings(),
+                    elemental_inference_settings: None,
                     hop_destinations: Vec::new(),
                     template_type: TYPE_CUSTOM.to_string(),
                     created_at: seeded_at,
@@ -1299,3 +1301,171 @@ async fn a_job_template_arn_names_the_region_of_the_request_that_reads_it() {
         );
     }
 }
+
+/// `JobTemplate$ElementalInferenceSettings` is a member the service applies no value of
+/// its own for, so it follows the write rules every other optional member of a template
+/// follows: `CreateJobTemplate` stores the settings the request states and
+/// `GetJobTemplate` answers exactly those, a create that states none leaves the member
+/// absent, an update that names it REPLACES the stored value, and an update that does not
+/// name it leaves the stored value as it was.
+///
+/// The table spans the forms the member takes ([`super::job_lifecycle::
+/// elemental_inference_forms`]), each row updated to the row after it so the replacement
+/// is between two different stated values rather than onto the same one.
+#[tokio::test]
+async fn a_templates_elemental_inference_settings_are_stored_read_back_and_replaced() {
+    let emulator = Emulator::new();
+    let forms = elemental_inference_forms();
+
+    for (index, (case, stated)) in forms.iter().enumerate() {
+        let name = format!("inference-{index}");
+        let mut request = json!({ "name": name, "settings": settings(1, 1) });
+        if !stated.is_null() {
+            request["elementalInferenceSettings"] = stated.clone();
+        }
+
+        let created = emulator.create_job_template(request).await;
+        assert_eq!(
+            created.status, 201,
+            "case {case:?}: expected HTTP 201, got {} with body {}",
+            created.status, created.body
+        );
+        assert_eq!(
+            created.at("/jobTemplate/elementalInferenceSettings"),
+            stated,
+            "case {case:?}: expected the stated settings {stated} back, got {}",
+            created.body
+        );
+
+        let fetched = emulator.get_job_template(&name).await;
+        assert_eq!(
+            fetched.status, 200,
+            "case {case:?}: expected the template to read back, got {} with body {}",
+            fetched.status, fetched.body
+        );
+        assert_eq!(
+            fetched.at("/jobTemplate/elementalInferenceSettings"),
+            stated,
+            "case {case:?}: GetJobTemplate must answer what CreateJobTemplate persisted, \
+             expected {stated}, got {}",
+            fetched.body
+        );
+
+        // An update that names another member leaves these settings exactly as stored...
+        let touched = emulator
+            .update_job_template(&name, json!({ "description": "untouched" }))
+            .await;
+        assert_eq!(
+            touched.status, 200,
+            "case {case:?}: expected HTTP 200 from the update, got {} with body {}",
+            touched.status, touched.body
+        );
+        assert_eq!(
+            touched.at("/jobTemplate/elementalInferenceSettings"),
+            stated,
+            "case {case:?}: an update that does not name the member must keep {stated}, \
+             got {}",
+            touched.body
+        );
+
+        // ... and an update that DOES name it replaces the stored value with the next
+        // row's, which every later read then answers.
+        let (replacement_case, replacement) = &forms[(index + 1) % forms.len()];
+        if replacement.is_null() {
+            continue;
+        }
+        let updated = emulator
+            .update_job_template(
+                &name,
+                json!({ "elementalInferenceSettings": replacement.clone() }),
+            )
+            .await;
+        assert_eq!(
+            updated.status, 200,
+            "case {case:?} -> {replacement_case:?}: expected HTTP 200, got {} with body {}",
+            updated.status, updated.body
+        );
+        let reread = emulator.get_job_template(&name).await;
+        for view in [updated.template(), reread.template()] {
+            assert_eq!(
+                view.pointer("/elementalInferenceSettings").unwrap_or(&Value::Null),
+                replacement,
+                "case {case:?} -> {replacement_case:?}: the update must replace the stored \
+                 settings with {replacement}, got {view}"
+            );
+        }
+    }
+}
+
+/// A feed ARN outside the pattern `ElementalInferenceFeedConfigurationSource$FeedArn`
+/// publishes is the modelled `BadRequestException` on both job-template write doors, and
+/// the refused call neither stores a template nor changes the stored one.
+#[tokio::test]
+async fn a_template_feed_arn_outside_its_published_pattern_is_a_bad_request() {
+    let emulator = Emulator::new();
+    let good = json!({
+        "feedConfigurationSource": { "feedArn": feed_arn("abcdefghij123456789") }
+    });
+    let standing = emulator
+        .create_job_template(json!({
+            "name": "standing",
+            "elementalInferenceSettings": good.clone(),
+            "settings": settings(1, 1),
+        }))
+        .await;
+    assert_eq!(
+        standing.status, 201,
+        "a feed ARN inside the published pattern must be accepted, got {} with body {}",
+        standing.status, standing.body
+    );
+
+    for (case, arn) in malformed_feed_arns() {
+        let settings_member = json!({ "feedConfigurationSource": { "feedArn": arn } });
+        let created = emulator
+            .create_job_template(json!({
+                "name": "refused",
+                "elementalInferenceSettings": settings_member.clone(),
+                "settings": settings(1, 1),
+            }))
+            .await;
+        assert_eq!(
+            created.status, 400,
+            "case {case:?}: expected HTTP 400 from the create, got {} with body {}",
+            created.status, created.body
+        );
+        assert_eq!(
+            created.error_type.as_deref(),
+            Some("BadRequestException"),
+            "case {case:?}: expected BadRequestException, got {:?} with body {}",
+            created.error_type,
+            created.body
+        );
+        let absent = emulator.get_job_template("refused").await;
+        assert_eq!(
+            absent.status, 404,
+            "case {case:?}: a refused create must store no template, got {} with body {}",
+            absent.status, absent.body
+        );
+
+        let updated = emulator
+            .update_job_template(
+                "standing",
+                json!({ "elementalInferenceSettings": settings_member }),
+            )
+            .await;
+        assert_eq!(
+            updated.status, 400,
+            "case {case:?}: expected HTTP 400 from the update, got {} with body {}",
+            updated.status, updated.body
+        );
+        let unchanged = emulator.get_job_template("standing").await;
+        assert_eq!(
+            unchanged.at("/jobTemplate/elementalInferenceSettings"),
+            &good,
+            "case {case:?}: a refused update must leave the stored settings as they were, \
+             got {}",
+            unchanged.body
+        );
+    }
+}
+

@@ -330,6 +330,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             acceleration_settings: input
                 .acceleration_settings
                 .unwrap_or_else(crate::state::default_acceleration_settings),
+            // "Optional. The source of your Elemental Inference Feed configuration": an
+            // optional member the service applies no value of its own for, so it is
+            // stored exactly as stated and stays absent when the request stated none.
+            elemental_inference_settings: input.elemental_inference_settings,
             hop_destinations,
             // A template a caller creates is custom; only built-in templates are SYSTEM.
             template_type: crate::state::TYPE_CUSTOM.to_string(),

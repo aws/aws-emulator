@@ -106,7 +106,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::ops::types::{
     AacSettings, AccelerationSettings, AudioCodecSettings, AudioDescription, AudioSelector,
-    CmafGroupSettings, ContainerSettings, DashIsoGroupSettings, FileGroupSettings, H264Settings,
+    CmafGroupSettings, ContainerSettings, DashIsoGroupSettings, ElementalInferenceSettings,
+    FileGroupSettings, H264Settings,
     H265Settings, HlsGroupSettings, HopDestination, Input, InputTemplate, Job, JobEngineVersion,
     JobMessages, JobSettings, JobTemplate, JobTemplateSettings, MsSmoothGroupSettings, Output,
     OutputDetail, OutputGroup, OutputGroupDetail, OutputGroupSettings, Policy, Preset,
@@ -2477,6 +2478,12 @@ pub struct JobTemplateRecord {
     /// Always a value: service-applied ([`default_acceleration_settings`]) when the
     /// request omits it.
     pub acceleration_settings: AccelerationSettings,
+    /// The Elemental Inference settings this template was written with, exactly as its
+    /// creator stated them, or `None` while no call has ever stated them — the member is
+    /// optional and the service applies no value of its own for it. A job created from
+    /// this template and stating none of its own inherits it, as it inherits every other
+    /// job-shaping member the template carries.
+    pub elemental_inference_settings: Option<ElementalInferenceSettings>,
     pub hop_destinations: Vec<HopDestination>,
     /// [`TYPE_SYSTEM`] for a built-in template, [`TYPE_CUSTOM`] for one a caller created.
     pub template_type: String,
@@ -2501,6 +2508,9 @@ impl JobTemplateRecord {
             settings: spec.settings(),
             status_update_interval: DEFAULT_STATUS_UPDATE_INTERVAL.to_string(),
             acceleration_settings: default_acceleration_settings(),
+            // As `Category`/`Description` above: an optional member no caller stated, and
+            // one the service applies no value of its own for.
+            elemental_inference_settings: None,
             hop_destinations: Vec::new(),
             template_type: TYPE_SYSTEM.to_string(),
             created_at: at,
@@ -2517,6 +2527,9 @@ impl JobTemplateRecord {
             category: self.category.clone(),
             created_at: Some(epoch_seconds(self.created_at)),
             description: self.description.clone(),
+            // "The Elemental Inference settings used in this job" for the jobs built from
+            // this template: the settings its last create or update stored.
+            elemental_inference_settings: self.elemental_inference_settings.clone(),
             hop_destinations: Some(hop_destinations_view(region, &self.hop_destinations)),
             last_updated: Some(epoch_seconds(self.last_updated)),
             name: self.name.clone(),
@@ -2823,6 +2836,11 @@ pub struct JobRecord {
     /// Always a value: service-applied ([`default_acceleration_settings`]) when the
     /// request omits it.
     pub acceleration_settings: AccelerationSettings,
+    /// The Elemental Inference settings this job was submitted with: the request's own,
+    /// else the named job template's, else `None` — the member is optional and the service
+    /// applies no value of its own for it. Persisted, so every reader of the job reports
+    /// the value its submission settled on.
+    pub elemental_inference_settings: Option<ElementalInferenceSettings>,
     /// This job's most recent share attempt, as `CreateResourceShare` recorded it, or
     /// `None` while nothing has ever asked for one — the single source of BOTH share
     /// members [`Self::view`] reports, so the status and the details can never disagree.
@@ -3153,6 +3171,10 @@ impl JobRecord {
             created_at: Some(epoch_seconds(self.created_at)),
             current_phase: None,
             elemental_inference_configuration: None,
+            // "The Elemental Inference settings used in this job": the settings the
+            // submission stored, which is the request's own or the ones the template it
+            // was created from carried.
+            elemental_inference_settings: self.elemental_inference_settings.clone(),
             error_code: self.error_code,
             error_message: self.error_message.clone(),
             hop_destinations: Some(hop_destinations_view(region, &self.hop_destinations)),

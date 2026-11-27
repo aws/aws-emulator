@@ -437,6 +437,72 @@ pub(crate) fn queue_arn(name: &str) -> String {
     queue_arn_in(REGION, name)
 }
 
+/// An Elemental Inference feed ARN of the one form
+/// `ElementalInferenceFeedConfigurationSource$FeedArn` accepts:
+/// `^arn:aws:elemental-inference:.*:feed/[a-z0-9]{19}$`, from
+/// `smithy_query(query="shape",shape="ElementalInferenceFeedConfigurationSource")`.
+///
+/// `id` is the feed's own identifier; the ARN around it is built by the emulator's own ARN
+/// helper, so the expectation is not a second hand-written format. `pub(crate)` because
+/// the job-template and job-from-template suites state the same member.
+pub(crate) fn feed_arn(id: &str) -> String {
+    engine::emulator_arn("elemental-inference", REGION, &format!("feed/{id}"))
+}
+
+/// The Elemental Inference settings forms a caller can state, from absent to fully
+/// stated — the class `CreateJob$ElementalInferenceSettings`,
+/// `CreateJobTemplate$ElementalInferenceSettings` and
+/// `UpdateJobTemplate$ElementalInferenceSettings` all range over.
+///
+/// `Value::Null` is the row that states the member at all; every other row is the value
+/// stated, which is also the value every reader of the resource must answer.
+pub(crate) fn elemental_inference_forms() -> Vec<(&'static str, Value)> {
+    vec![
+        ("stated by no member at all", Value::Null),
+        ("stated with no member inside it", json!({})),
+        (
+            "a feed configuration source naming no feed",
+            json!({ "feedConfigurationSource": {} }),
+        ),
+        (
+            "a feed configuration source naming a feed",
+            json!({
+                "feedConfigurationSource": { "feedArn": feed_arn("abcdefghij123456789") }
+            }),
+        ),
+        (
+            "a feed configuration source naming a different feed",
+            json!({
+                "feedConfigurationSource": { "feedArn": feed_arn("0123456789abcdefghi") }
+            }),
+        ),
+    ]
+}
+
+/// Feed ARNs outside the pattern `FeedArn` publishes, one broken part each: the
+/// identifier one character under and one over the nineteen the pattern fixes, an
+/// identifier outside its character set, another service's namespace, and an ARN with no
+/// `feed/` segment at all. `pub(crate)` for the same reason
+/// [`elemental_inference_forms`] is.
+pub(crate) fn malformed_feed_arns() -> Vec<(&'static str, String)> {
+    vec![
+        ("an identifier one character short", feed_arn("abcdefghij12345678")),
+        ("an identifier one character long", feed_arn("abcdefghij1234567890")),
+        (
+            "an identifier outside the pattern's character set",
+            feed_arn("ABCDEFGHIJ123456789"),
+        ),
+        (
+            "another service's namespace",
+            engine::emulator_arn("mediaconvert", REGION, "feed/abcdefghij123456789"),
+        ),
+        (
+            "no feed segment",
+            engine::emulator_arn("elemental-inference", REGION, "abcdefghij123456789"),
+        ),
+    ]
+}
+
 /// A `hopDestinations` list as a resource projection reports it: an entry that names a
 /// queue reports that queue's ARN, and an entry that names none reports no queue.
 ///
@@ -3026,3 +3092,117 @@ async fn a_finish_that_comes_due_before_its_run_waits_for_the_run() {
         );
     }
 }
+
+/// `Job$ElementalInferenceSettings` — "The Elemental Inference settings used in this job"
+/// — is a member the service applies no value of its own for: `CreateJob` persists the
+/// settings the request states, every reader of the job answers exactly those, and a
+/// request that states none leaves the member absent rather than filling one in.
+///
+/// The table spans the forms the member takes ([`elemental_inference_forms`]): absent, an
+/// empty structure, a source naming no feed, and a source naming each of two different
+/// feeds.
+#[tokio::test]
+async fn the_elemental_inference_settings_a_job_states_are_stored_and_read_back() {
+    let emulator = Emulator::new();
+    for (index, (case, stated)) in elemental_inference_forms().into_iter().enumerate() {
+        let mut request = json!({
+            "role": ROLE,
+            "settings": settings(&format!("s3://example-bucket/in/inference-{index}.mp4"), "_i")
+        });
+        if !stated.is_null() {
+            request["elementalInferenceSettings"] = stated.clone();
+        }
+
+        let created = emulator.create_job(request).await;
+        assert_eq!(
+            created.status, 201,
+            "case {case:?}: expected HTTP 201, got {} with body {}",
+            created.status, created.body
+        );
+        assert_eq!(
+            created.at("/job/elementalInferenceSettings"),
+            &stated,
+            "case {case:?}: expected the stated settings {stated} back, got {}",
+            created.body
+        );
+
+        let id = created.string("/job/id");
+        let fetched = emulator.get_job(&id).await;
+        assert_eq!(
+            fetched.status, 200,
+            "case {case:?}: expected GetJob HTTP 200, got {} with body {}",
+            fetched.status, fetched.body
+        );
+        assert_eq!(
+            fetched.at("/job/elementalInferenceSettings"),
+            &stated,
+            "case {case:?}: GetJob must answer what CreateJob persisted, expected {stated}, \
+             got {}",
+            fetched.body
+        );
+    }
+}
+
+/// A feed ARN outside the pattern `ElementalInferenceFeedConfigurationSource$FeedArn`
+/// publishes is the modelled `BadRequestException`, and the refused submission stores no
+/// job — while the same request carrying a feed ARN inside that pattern is accepted.
+#[tokio::test]
+async fn a_feed_arn_outside_its_published_pattern_is_a_bad_request() {
+    let emulator = Emulator::new();
+    let stored = || {
+        emulator
+            .engine
+            .state::<service_com_amazonaws_mediaconvert_mediaconvert::ComAmazonawsMediaconvertMediaconvertState>()
+            .lock()
+            .jobs
+            .len()
+    };
+
+    for (case, arn) in malformed_feed_arns() {
+        let before = stored();
+        let reply = emulator
+            .create_job(json!({
+                "role": ROLE,
+                "elementalInferenceSettings": { "feedConfigurationSource": { "feedArn": arn } },
+                "settings": settings("s3://example-bucket/in/malformed.mp4", "_m")
+            }))
+            .await;
+        assert_eq!(
+            reply.status, 400,
+            "case {case:?}: expected HTTP 400, got {} with body {}",
+            reply.status, reply.body
+        );
+        assert_eq!(
+            reply.error_type.as_deref(),
+            Some("BadRequestException"),
+            "case {case:?}: expected BadRequestException, got {:?} with body {}",
+            reply.error_type,
+            reply.body
+        );
+        assert_eq!(
+            stored(),
+            before,
+            "case {case:?}: a refused submission must store no job, got {} stored where \
+             {before} were",
+            stored()
+        );
+    }
+
+    // The published form — an identifier of exactly nineteen characters from the pattern's
+    // own set — is accepted, so the refusals above are the value and not the member.
+    let accepted = emulator
+        .create_job(json!({
+            "role": ROLE,
+            "elementalInferenceSettings": {
+                "feedConfigurationSource": { "feedArn": feed_arn("abcdefghij123456789") }
+            },
+            "settings": settings("s3://example-bucket/in/accepted.mp4", "_a")
+        }))
+        .await;
+    assert_eq!(
+        accepted.status, 201,
+        "a feed ARN inside the published pattern must be accepted, got {} with body {}",
+        accepted.status, accepted.body
+    );
+}
+
