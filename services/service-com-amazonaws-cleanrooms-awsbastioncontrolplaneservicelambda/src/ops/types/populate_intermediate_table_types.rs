@@ -26,6 +26,7 @@ pub struct PopulateIntermediateTableInput {
 #[derive(Debug, Clone)]
 pub enum IntermediateTableComputeConfiguration {
     queryComputeConfiguration(WorkerComputeConfiguration),
+    jobComputeConfiguration(ProtectedJobComputeConfiguration),
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.cleanrooms#PopulateIntermediateTableOutput")]

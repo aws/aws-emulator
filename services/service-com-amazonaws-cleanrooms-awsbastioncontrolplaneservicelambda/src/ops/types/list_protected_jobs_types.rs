@@ -37,6 +37,7 @@ pub struct ProtectedJobSummary {
     pub status: String,
     pub receiver_configurations: Vec<ProtectedJobReceiverConfiguration>,
     pub job_compute_payer_account_id: Option<String>,
+    pub intermediate_table_configuration: Option<IntermediateTableOutputConfiguration>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.cleanrooms#ProtectedJobReceiverConfiguration")]

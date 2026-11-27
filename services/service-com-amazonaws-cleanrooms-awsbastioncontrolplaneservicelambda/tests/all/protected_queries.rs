@@ -24,12 +24,15 @@
 use std::time::Duration;
 
 use serde_json::{json, Value};
+use service_com_amazonaws_cleanrooms_awsbastioncontrolplaneservicelambda::ops::types::RetryInfo;
 use service_com_amazonaws_cleanrooms_awsbastioncontrolplaneservicelambda::state as cleanrooms_state;
 
+use super::cleanrooms_analysis_templates::{artifacts_source, create_analysis_template};
 use super::cleanrooms_collaboration_lifecycle::{
     account_id, collaboration_owned_elsewhere, error_code, is_model_uuid, minimal_collaboration,
     Emulator, ALL_MEMBER_ABILITIES, REGION,
 };
+use super::cleanrooms_configured_table::{create_body, COLUMN_NAMES};
 
 /// A well-formed `MembershipIdentifier`/`ProtectedQueryIdentifier` (model shape `UUID`:
 /// 36 chars, `^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`) that no
@@ -187,7 +190,7 @@ fn assert_legal_state(case: &str, query: &Value) {
             // of its membership names, so the statement is one the engine refuses.
             assert_eq!(
                 query["error"]["code"].as_str(),
-                Some(cleanrooms_state::PROTECTED_QUERY_ERROR_CODE_INVALID_QUERY),
+                Some(cleanrooms_state::PROTECTED_QUERY_ERROR_CODE_MALFORMED_QUERY),
                 "case {case:?}: unexpected failure code, got {:?}",
                 query["error"]
             );
@@ -1023,7 +1026,7 @@ async fn a_started_query_is_submitted_until_the_clock_runs_it_and_then_reports_t
     );
     assert_eq!(
         settled_query["error"]["code"].as_str(),
-        Some(cleanrooms_state::PROTECTED_QUERY_ERROR_CODE_INVALID_QUERY),
+        Some(cleanrooms_state::PROTECTED_QUERY_ERROR_CODE_MALFORMED_QUERY),
         "unexpected failure code, got {settled_query}"
     );
     assert!(
@@ -1235,4 +1238,436 @@ async fn the_result_prefix_in_effect_partitions_by_collaboration_whichever_sourc
             "case {label:?}: the read reports the stored configuration, got {fetched}"
         );
     }
+}
+
+// ---------------------------------------------------------------------------------------
+// What a FAILED query reports about its failure: the category, and whether running the
+// same query again might succeed.
+// ---------------------------------------------------------------------------------------
+
+/// Every failure category the model documents for `ProtectedQueryError$code`, with what
+/// `RetryInfo$retryable` says of it: `Some(true)` where the category IS a temporary
+/// condition ("`true` means that the failure was transient"), `Some(false)` where running
+/// the same query again "is not expected to succeed", and `None` for the category that
+/// stands for a failure that "couldn't be classified", whose transience is therefore not
+/// known.
+///
+/// Source: the valid values documented on `ProtectedQueryError$code` and the semantics of
+/// `RetryInfo$retryable` — `smithy_query(query="shape",
+/// shape="ProtectedQueryError,RetryInfo")`.
+const DOCUMENTED_CATEGORIES: [(&str, Option<bool>); 8] = [
+    ("MALFORMED_QUERY", Some(false)),
+    ("RESOURCE_NOT_FOUND", Some(false)),
+    ("INVALID_RESOURCE", Some(false)),
+    ("RESOURCE_ACCESS_DENIED", Some(false)),
+    ("INSUFFICIENT_COMPUTE", Some(false)),
+    ("TRANSIENT_ERROR", Some(true)),
+    ("INTERNAL_ERROR", Some(true)),
+    ("UNKNOWN_ERROR", None),
+];
+
+/// The alias a statement names an associated configured table by (model shape
+/// `TableAlias`, pattern `^[a-zA-Z0-9_](([a-zA-Z0-9_ ]+-)*([a-zA-Z0-9_ ]+))?$`).
+const ASSOCIATION_ALIAS: &str = "orders_assoc";
+
+/// What a row of the failure-category table holds before it submits its query.
+enum FailureSetup {
+    /// Nothing at all: the membership associates no configured table, so a statement that
+    /// names one reads a relation the collaboration does not expose.
+    Bare,
+    /// No analysis template under the membership, queried by an ARN in the membership's
+    /// own namespace.
+    AbsentTemplate,
+    /// An analysis template whose analysis is held as ARTIFACTS, queried by its ARN.
+    ArtifactsTemplate,
+    /// A configured table of the given `TableReferenceType`, associated under
+    /// [`ASSOCIATION_ALIAS`], carrying a `list` analysis rule only where `analysis_rule`
+    /// is set.
+    Association {
+        table_reference_type: &'static str,
+        analysis_rule: bool,
+    },
+}
+
+/// One row: what the membership holds, the statement submitted against it, and the
+/// category the query must report having failed in.
+struct FailureCase {
+    label: &'static str,
+    setup: FailureSetup,
+    /// The inline SQL the row submits; a row querying by analysis template passes `None`.
+    sql: Option<&'static str>,
+    expected_code: &'static str,
+}
+
+/// What the documented catalog says about running a query that failed in `code` again.
+fn documented_retryable(code: &str) -> Option<bool> {
+    DOCUMENTED_CATEGORIES
+        .iter()
+        .find(|(category, _)| *category == code)
+        .unwrap_or_else(|| panic!("{code:?} is not a documented ProtectedQueryError code"))
+        .1
+}
+
+/// Associate a configured table of `table_reference_type` under [`ASSOCIATION_ALIAS`],
+/// with a `list` analysis rule where `analysis_rule` is set.
+async fn given_failure_association(
+    emulator: &Emulator,
+    label: &str,
+    membership_id: &str,
+    table_reference_type: &str,
+    analysis_rule: bool,
+) {
+    let (status, created) = emulator
+        .create_configured_table(create_body(
+            "failure_category_table",
+            table_reference_type,
+            "DIRECT_QUERY",
+            None,
+            COLUMN_NAMES.len(),
+        ))
+        .await;
+    assert_eq!(
+        status, 200,
+        "case {label:?}: CreateConfiguredTable must succeed to set up the case, got {status} \
+         with {created}"
+    );
+    let configured_table_id = created["configuredTable"]["id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("case {label:?}: no configuredTable.id in {created}"))
+        .to_string();
+
+    if analysis_rule {
+        let (status, rule) = emulator
+            .create_analysis_rule(
+                &configured_table_id,
+                "LIST",
+                json!({
+                    "v1": {
+                        "list": {
+                            "joinColumns": [COLUMN_NAMES[0]],
+                            "listColumns": [COLUMN_NAMES[1]],
+                        },
+                    },
+                }),
+            )
+            .await;
+        assert_eq!(
+            status, 200,
+            "case {label:?}: CreateConfiguredTableAnalysisRule must succeed to set up the case, \
+             got {status} with {rule}"
+        );
+    }
+
+    let (status, associated) = emulator
+        .call(
+            "POST",
+            &format!("/memberships/{membership_id}/configuredTableAssociations"),
+            Some(json!({
+                "configuredTableIdentifier": configured_table_id,
+                "name": ASSOCIATION_ALIAS,
+                "roleArn": format!("arn:aws:iam::{}:role/clean-rooms-failure-category", account_id()),
+            })),
+        )
+        .await;
+    assert_eq!(
+        status, 200,
+        "case {label:?}: CreateConfiguredTableAssociation must succeed to set up the case, got \
+         {status} with {associated}"
+    );
+}
+
+/// Set a row up and answer the `sqlParameters` its `StartProtectedQuery` carries.
+async fn failure_query_parameters(
+    emulator: &Emulator,
+    case: &FailureCase,
+    membership_id: &str,
+) -> Value {
+    match case.setup {
+        FailureSetup::Bare => {}
+        FailureSetup::AbsentTemplate => {
+            return json!({ "analysisTemplateArn": analysis_template_arn(membership_id) })
+        }
+        FailureSetup::ArtifactsTemplate => {
+            let (status, created) = create_analysis_template(
+                emulator,
+                membership_id,
+                json!({
+                    "name": "artifacts_analysis",
+                    "format": "PYSPARK_1_0",
+                    "source": artifacts_source(),
+                }),
+            )
+            .await;
+            assert_eq!(
+                status, 200,
+                "case {:?}: CreateAnalysisTemplate must succeed to set up the case, got {status} \
+                 with {created}",
+                case.label
+            );
+            let arn = created["analysisTemplate"]["arn"]
+                .as_str()
+                .unwrap_or_else(|| {
+                    panic!("case {:?}: no analysisTemplate.arn in {created}", case.label)
+                })
+                .to_string();
+            return json!({ "analysisTemplateArn": arn });
+        }
+        FailureSetup::Association {
+            table_reference_type,
+            analysis_rule,
+        } => {
+            given_failure_association(
+                emulator,
+                case.label,
+                membership_id,
+                table_reference_type,
+                analysis_rule,
+            )
+            .await
+        }
+    }
+    json!({
+        "queryString": case
+            .sql
+            .unwrap_or_else(|| panic!("case {:?}: the row carries no SQL", case.label)),
+    })
+}
+
+/// A query that could not run reports the CATEGORY of its failure out of the catalog the
+/// model documents, and whether running the same query again might succeed.
+///
+/// The table varies what the rule generalises over — WHICH thing about the query failed:
+/// the statement (unreadable by the parser, or refused by the engine), a resource it names
+/// that nothing holds (an analysis template, the catalog table behind an associated
+/// configured table), and a resource that is there but cannot be used as it stands (a
+/// template whose analysis is artifacts rather than SQL, a configured table with no
+/// analysis rule, a table reference into a store the collaboration cannot read).
+#[tokio::test]
+async fn a_failed_protected_query_reports_its_category_and_whether_a_retry_might_succeed() {
+    let cases: Vec<FailureCase> = vec![
+        FailureCase {
+            label: "a statement naming a relation the membership associates nothing under",
+            setup: FailureSetup::Bare,
+            sql: Some("SELECT COUNT(*) FROM orders"),
+            expected_code: "MALFORMED_QUERY",
+        },
+        FailureCase {
+            label: "a statement the parser cannot read as a query at all",
+            setup: FailureSetup::Bare,
+            sql: Some("SELECT FROM WHERE"),
+            expected_code: "MALFORMED_QUERY",
+        },
+        FailureCase {
+            label: "an analysis template ARN nothing holds",
+            setup: FailureSetup::AbsentTemplate,
+            sql: None,
+            expected_code: "RESOURCE_NOT_FOUND",
+        },
+        FailureCase {
+            label: "an analysis template whose analysis is artifacts rather than SQL",
+            setup: FailureSetup::ArtifactsTemplate,
+            sql: None,
+            expected_code: "INVALID_RESOURCE",
+        },
+        FailureCase {
+            label: "an associated configured table carrying no analysis rule",
+            setup: FailureSetup::Association {
+                table_reference_type: "GLUE",
+                analysis_rule: false,
+            },
+            sql: Some("SELECT amount FROM orders_assoc"),
+            expected_code: "INVALID_RESOURCE",
+        },
+        FailureCase {
+            label: "an associated configured table referencing a catalog table nothing holds",
+            setup: FailureSetup::Association {
+                table_reference_type: "GLUE",
+                analysis_rule: true,
+            },
+            sql: Some("SELECT amount FROM orders_assoc"),
+            expected_code: "RESOURCE_NOT_FOUND",
+        },
+        FailureCase {
+            label: "an associated configured table referencing a store with no data behind it",
+            setup: FailureSetup::Association {
+                table_reference_type: "SNOWFLAKE",
+                analysis_rule: true,
+            },
+            sql: Some("SELECT amount FROM orders_assoc"),
+            expected_code: "INVALID_RESOURCE",
+        },
+    ];
+
+    for (row, case) in cases.iter().enumerate() {
+        let label = case.label;
+        // One membership per row: an association is held under the membership that made
+        // it, so each row's own setup is the only state its query reads.
+        let emulator = Emulator::new();
+        let membership = simple_membership(&emulator, &format!("failure-category-{row}")).await;
+        let membership_id = membership["id"]
+            .as_str()
+            .unwrap_or_else(|| panic!("case {label:?}: no membership id in {membership}"))
+            .to_string();
+        let sql_parameters = failure_query_parameters(&emulator, case, &membership_id).await;
+
+        let (status, started) = start_query(
+            &emulator,
+            &membership_id,
+            json!({ "type": "SQL", "sqlParameters": sql_parameters }),
+        )
+        .await;
+        assert_eq!(
+            status, 200,
+            "case {label:?}: expected StartProtectedQuery 200, got {status} with {started}"
+        );
+        let query_id = started["protectedQuery"]["id"]
+            .as_str()
+            .unwrap_or_else(|| panic!("case {label:?}: no protectedQuery.id in {started}"))
+            .to_string();
+
+        let query = poll_until_terminal(&emulator, &membership_id, &query_id).await;
+        assert_eq!(
+            query["status"].as_str(),
+            Some("FAILED"),
+            "case {label:?}: a query that could not run settles in FAILED, got {query}"
+        );
+        assert_eq!(
+            query["error"]["code"].as_str(),
+            Some(case.expected_code),
+            "case {label:?}: expected failure category {:?}, got {:?}",
+            case.expected_code,
+            query["error"]
+        );
+        assert!(
+            query["error"]["message"]
+                .as_str()
+                .is_some_and(|message| !message.trim().is_empty()),
+            "case {label:?}: the failure says why, got {:?}",
+            query["error"]
+        );
+        assert_eq!(
+            query["error"]["retry"]["retryable"].as_bool(),
+            documented_retryable(case.expected_code),
+            "case {label:?}: expected the retry advice the category {:?} carries, got {:?}",
+            case.expected_code,
+            query["error"]
+        );
+        assert!(
+            query.get("result").is_none() && query.get("statistics").is_none(),
+            "case {label:?}: a query that did not run reports no result and no statistics, got \
+             {query}"
+        );
+
+        // Reading again reports the same failure: the error is the stored outcome of the
+        // run, not something a read decides.
+        let (status, again) = get_query(&emulator, &membership_id, &query_id).await;
+        assert_eq!(
+            status, 200,
+            "case {label:?}: expected GetProtectedQuery 200, got {status} with {again}"
+        );
+        assert_eq!(
+            again["protectedQuery"], query,
+            "case {label:?}: a second read reports the same failed query, got {again}"
+        );
+    }
+}
+
+/// The row that must carry no failure at all: a statement reading no relation is one the
+/// engine answers, so the query succeeds and reports neither a category nor retry advice.
+#[tokio::test]
+async fn a_query_that_runs_reports_no_failure_category_at_all() {
+    let emulator = Emulator::new();
+    let membership = simple_membership(&emulator, "failure-category-none").await;
+    let membership_id = membership["id"].as_str().expect("membership id").to_string();
+
+    let (status, started) = start_query(
+        &emulator,
+        &membership_id,
+        json!({ "type": "SQL", "sqlParameters": { "queryString": "SELECT 1" } }),
+    )
+    .await;
+    assert_eq!(
+        status, 200,
+        "expected StartProtectedQuery 200, got {status} with {started}"
+    );
+    let query_id = started["protectedQuery"]["id"]
+        .as_str()
+        .expect("protected query id")
+        .to_string();
+
+    let query = poll_until_terminal(&emulator, &membership_id, &query_id).await;
+    assert_eq!(
+        query["status"].as_str(),
+        Some("SUCCESS"),
+        "a statement the engine answers succeeds, got {query}"
+    );
+    assert!(
+        query.get("error").is_none(),
+        "a query that ran carries no error, got {query}"
+    );
+}
+
+/// The retry advice is a property of the CATEGORY, so every category the model documents
+/// carries the one its own definition gives it — including the categories no end-to-end
+/// case of this suite reaches.
+#[test]
+fn every_documented_failure_category_carries_the_retry_advice_its_definition_gives_it() {
+    assert_eq!(
+        cleanrooms_state::PROTECTED_QUERY_ERROR_CODE_RETRYABILITY.len(),
+        DOCUMENTED_CATEGORIES.len(),
+        "the service covers every documented failure category, got {:?}",
+        cleanrooms_state::PROTECTED_QUERY_ERROR_CODE_RETRYABILITY
+    );
+    for (code, retryable) in DOCUMENTED_CATEGORIES {
+        assert!(
+            cleanrooms_state::PROTECTED_QUERY_ERROR_CODE_RETRYABILITY.contains(&(code, retryable)),
+            "case {code:?}: the service declares the documented retryability {retryable:?}, got \
+             {:?}",
+            cleanrooms_state::PROTECTED_QUERY_ERROR_CODE_RETRYABILITY
+        );
+        let error = cleanrooms_state::protected_query_error(code, format!("a {code} failure"));
+        assert_eq!(
+            error.code, code,
+            "case {code:?}: the error reports the category it was built for, got {error:?}"
+        );
+        assert_eq!(
+            error.retry.as_ref().and_then(|retry| retry.retryable),
+            retryable,
+            "case {code:?}: expected retryable {retryable:?}, got {:?}",
+            error.retry
+        );
+        assert_eq!(
+            error.retry.is_some(),
+            retryable.is_some(),
+            "case {code:?}: a category with no known transience reports no retry at all, got \
+             {:?}",
+            error.retry
+        );
+    }
+
+    // A category outside the documented catalog carries no retry advice: nothing is
+    // invented for a code the model says nothing about.
+    let unknown = cleanrooms_state::protected_query_error(
+        "NOT_A_DOCUMENTED_CATEGORY",
+        "an unclassified failure".to_string(),
+    );
+    assert!(
+        unknown.retry.is_none(),
+        "an undocumented category carries no retry advice, got {:?}",
+        unknown.retry
+    );
+    // The advice is reported through the model's own `RetryInfo`, so a transient category
+    // reports the retryable failure that shape describes.
+    let transient = cleanrooms_state::protected_query_error_retry(
+        cleanrooms_state::PROTECTED_QUERY_ERROR_CODE_TRANSIENT_ERROR,
+    );
+    assert!(
+        matches!(
+            transient,
+            Some(RetryInfo {
+                retryable: Some(true)
+            })
+        ),
+        "a transient category reports a retryable failure, got {transient:?}"
+    );
 }

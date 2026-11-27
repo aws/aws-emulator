@@ -504,8 +504,15 @@ async fn a_result_configuration_naming_an_unknown_bucket_fails_the_query() {
     );
     assert_eq!(
         query["error"]["code"].as_str(),
-        Some(cleanrooms_state::PROTECTED_QUERY_ERROR_CODE_INVALID_CONFIGURATION),
+        Some(cleanrooms_state::PROTECTED_QUERY_ERROR_CODE_RESOURCE_NOT_FOUND),
         "case {case:?}: unexpected failure code, got {query}"
+    );
+    // The bucket is not there to write to however often the query is run, so the failure
+    // reports that running it again is not expected to succeed.
+    assert_eq!(
+        query["error"]["retry"]["retryable"].as_bool(),
+        Some(false),
+        "case {case:?}: a result bucket nothing holds is no more there on a retry, got {query}"
     );
     assert!(
         query["error"]["message"]

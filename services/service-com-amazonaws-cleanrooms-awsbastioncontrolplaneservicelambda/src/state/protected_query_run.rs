@@ -50,34 +50,95 @@ use crate::ops::types::{
     ConfiguredTableAnalysisRulePolicyV1, ProtectedQuery, ProtectedQueryError,
     ProtectedQueryOutput, ProtectedQueryOutputConfiguration, ProtectedQueryResult,
     ProtectedQueryS3Output, ProtectedQueryS3OutputConfiguration, ProtectedQuerySingleMemberOutput,
-    TableReference,
+    RetryInfo, TableReference,
 };
 
 use super::CleanRoomsState;
 
-/// The `ProtectedQueryError.code` a query the SQL engine refused carries.
+/// The `ProtectedQueryError.code` of a query whose statement is not one that can be run:
+/// "the query is not valid (syntax, semantics, columns, or an unsupported operation)". The
+/// MESSAGE of such a failure is the engine's or the parser's own sentence about the
+/// statement, never a sentence written here.
+pub const PROTECTED_QUERY_ERROR_CODE_MALFORMED_QUERY: &str = "MALFORMED_QUERY";
+
+/// The `ProtectedQueryError.code` of a query that named a resource nothing holds: "a
+/// referenced resource doesn't exist" — the analysis template an ARN points at, the Data
+/// Catalog table a configured table references, the bucket a result configuration writes
+/// to.
+pub const PROTECTED_QUERY_ERROR_CODE_RESOURCE_NOT_FOUND: &str = "RESOURCE_NOT_FOUND";
+
+/// The `ProtectedQueryError.code` of a query whose resources are all there but cannot be
+/// used as they stand: "a referenced resource exists, but you can't use it because its
+/// configuration, state, or data is not valid" — a configured table carrying no analysis
+/// rule, a table reference into a store with no data behind it, data that does not decode
+/// as the format its own catalog entry declares, an output the results cannot be written
+/// to.
+pub const PROTECTED_QUERY_ERROR_CODE_INVALID_RESOURCE: &str = "INVALID_RESOURCE";
+
+/// The `ProtectedQueryError.code` of a query that was not allowed to reach what it reads:
+/// "a required permission is missing for a data source or resource".
+pub const PROTECTED_QUERY_ERROR_CODE_RESOURCE_ACCESS_DENIED: &str = "RESOURCE_ACCESS_DENIED";
+
+/// The `ProtectedQueryError.code` of a query that asked for more than there was to run it
+/// with: "the query exceeded the available compute (memory, disk, or time)" — which is
+/// what a run past [`MAX_RELATION_ROWS`] or [`MAX_RELATION_BYTES`] went past.
+pub const PROTECTED_QUERY_ERROR_CODE_INSUFFICIENT_COMPUTE: &str = "INSUFFICIENT_COMPUTE";
+
+/// The `ProtectedQueryError.code` of a query that failed on a condition that has since
+/// passed: "a temporary condition caused the failure, such as throttling or a network
+/// interruption".
+pub const PROTECTED_QUERY_ERROR_CODE_TRANSIENT_ERROR: &str = "TRANSIENT_ERROR";
+
+/// The `ProtectedQueryError.code` of a query the service itself could not carry out:
+/// "Clean Rooms encountered an unexpected error" — which is what a store this emulator
+/// could not reach at all is.
+pub const PROTECTED_QUERY_ERROR_CODE_INTERNAL_ERROR: &str = "INTERNAL_ERROR";
+
+/// The `ProtectedQueryError.code` of a failure none of the categories above describes:
+/// "the failure couldn't be classified".
+pub const PROTECTED_QUERY_ERROR_CODE_UNKNOWN_ERROR: &str = "UNKNOWN_ERROR";
+
+/// Every failure category the model declares for a protected query, with whether running
+/// the same query again might succeed.
 ///
-/// The service's own vocabulary for a request whose SQL it cannot run is
-/// `ValidationExceptionReason$INVALID_QUERY` (the model's enum: FIELD_VALIDATION_FAILED |
-/// IAM_SYNCHRONIZATION_DELAY | INVALID_CONFIGURATION | INVALID_QUERY), so a query that
-/// failed because its statement could not be parsed, named a relation the collaboration
-/// does not expose or a column its analysis rules do not allow, or was refused by the
-/// engine for any other reason, carries that code. The MESSAGE is the engine's own
-/// sentence about the statement, never a sentence written here.
-pub const PROTECTED_QUERY_ERROR_CODE_INVALID_QUERY: &str = "INVALID_QUERY";
+/// The categories are the valid values the model documents for `ProtectedQueryError$code`,
+/// and the second column is what `RetryInfo$retryable` says of each: `true` where the
+/// category IS a temporary condition, `false` where the failure is decided by the request
+/// or by state that running it again does not change, and nothing at all for the category
+/// that stands for a failure the service could not classify — whose transience is, by that
+/// definition, not known, so the member is left off rather than guessed.
+pub const PROTECTED_QUERY_ERROR_CODE_RETRYABILITY: &[(&str, Option<bool>)] = &[
+    (PROTECTED_QUERY_ERROR_CODE_MALFORMED_QUERY, Some(false)),
+    (PROTECTED_QUERY_ERROR_CODE_RESOURCE_NOT_FOUND, Some(false)),
+    (PROTECTED_QUERY_ERROR_CODE_INVALID_RESOURCE, Some(false)),
+    (PROTECTED_QUERY_ERROR_CODE_RESOURCE_ACCESS_DENIED, Some(false)),
+    (PROTECTED_QUERY_ERROR_CODE_INSUFFICIENT_COMPUTE, Some(false)),
+    (PROTECTED_QUERY_ERROR_CODE_TRANSIENT_ERROR, Some(true)),
+    (PROTECTED_QUERY_ERROR_CODE_INTERNAL_ERROR, Some(true)),
+    (PROTECTED_QUERY_ERROR_CODE_UNKNOWN_ERROR, None),
+];
 
-/// The `ProtectedQueryError.code` a query whose configuration cannot be read carries: the
-/// same model enum's `INVALID_CONFIGURATION`. The resources the query has to read are
-/// there (a membership, an association, a configured table) but something they name is
-/// not — the catalog table a configured table references, the bucket a result
-/// configuration points at.
-pub const PROTECTED_QUERY_ERROR_CODE_INVALID_CONFIGURATION: &str = "INVALID_CONFIGURATION";
+/// What a failure of category `code` reports about running the same query again, as
+/// `RetryInfo` carries it — `None` where that is not known, so nothing is reported.
+pub fn protected_query_error_retry(code: &str) -> Option<RetryInfo> {
+    let retryable = PROTECTED_QUERY_ERROR_CODE_RETRYABILITY
+        .iter()
+        .find(|(category, _)| *category == code)
+        .and_then(|(_, retryable)| *retryable)?;
+    Some(RetryInfo {
+        retryable: Some(retryable),
+    })
+}
 
-/// The `ProtectedQueryError.code` a query over a configured table that carries no analysis
-/// rule at all gets: the model's own name for that condition
-/// (`SchemaStatusReasonCode$ANALYSIS_RULE_MISSING`, "the analysis rule is missing"). A
-/// table with no rule allows no analysis of its data, so no query can read it.
-pub const PROTECTED_QUERY_ERROR_CODE_ANALYSIS_RULE_MISSING: &str = "ANALYSIS_RULE_MISSING";
+/// The error a failed protected query reports: the category it failed in, the sentence
+/// saying why, and the retry advice that category carries.
+pub fn protected_query_error(code: &str, message: String) -> ProtectedQueryError {
+    ProtectedQueryError {
+        code: code.to_string(),
+        message,
+        retry: protected_query_error_retry(code),
+    }
+}
 
 /// The most rows one run loads out of ONE relation.
 ///
@@ -121,11 +182,10 @@ pub(crate) fn run_protected_query<Eng: Send + Sync + 'static>(
     // table each relation stands for with the columns a query may read of it.
     let resolved = {
         let Some(state) = super::service_state(engine) else {
-            return QueryRun::Failed(ProtectedQueryError {
-                code: PROTECTED_QUERY_ERROR_CODE_INVALID_CONFIGURATION.to_string(),
-                message: "The collaboration this protected query runs in could not be read."
-                    .to_string(),
-            });
+            return QueryRun::Failed(protected_query_error(
+                PROTECTED_QUERY_ERROR_CODE_INTERNAL_ERROR,
+                "The collaboration this protected query runs in could not be read.".to_string(),
+            ));
         };
         let store = state.lock();
         statement_of(&store, query)
@@ -144,11 +204,11 @@ pub(crate) fn run_protected_query<Eng: Send + Sync + 'static>(
     let answered = match compute(&sql, &relations) {
         Ok(answered) => answered,
         Err(error) => {
-            return QueryRun::Failed(ProtectedQueryError {
-                code: PROTECTED_QUERY_ERROR_CODE_INVALID_QUERY.to_string(),
+            return QueryRun::Failed(protected_query_error(
+                PROTECTED_QUERY_ERROR_CODE_MALFORMED_QUERY,
                 // The ENGINE's own sentence about the statement it refused.
-                message: error.message,
-            })
+                error.message,
+            ))
         }
     };
     match write_result(engine, query, &answered) {
@@ -174,34 +234,34 @@ fn statement_of(store: &CleanRoomsState, query: &ProtectedQuery) -> Result<Strin
     }
     let Some(arn) = parameters.and_then(|parameters| parameters.analysis_template_arn.as_deref())
     else {
-        return Err(ProtectedQueryError {
-            code: PROTECTED_QUERY_ERROR_CODE_INVALID_QUERY.to_string(),
-            message: "The protected query carries no SQL to run: neither queryString nor \
-                      analysisTemplateArn identifies a statement."
+        return Err(protected_query_error(
+            PROTECTED_QUERY_ERROR_CODE_MALFORMED_QUERY,
+            "The protected query carries no SQL to run: neither queryString nor \
+             analysisTemplateArn identifies a statement."
                 .to_string(),
-        });
+        ));
     };
     let Some(template) = store
         .analysis_templates
         .values()
         .find(|template| template.arn == arn)
     else {
-        return Err(ProtectedQueryError {
-            code: PROTECTED_QUERY_ERROR_CODE_INVALID_CONFIGURATION.to_string(),
-            message: format!("The analysis template {arn} does not exist."),
-        });
+        return Err(protected_query_error(
+            PROTECTED_QUERY_ERROR_CODE_RESOURCE_NOT_FOUND,
+            format!("The analysis template {arn} does not exist."),
+        ));
     };
     match &template.source {
         AnalysisSource::Text(text) => Ok(text.clone()),
         // The other member of the union carries the analysis as ARTIFACTS — objects an
         // analysis is assembled from, not a statement this engine runs.
-        AnalysisSource::Artifacts(_) => Err(ProtectedQueryError {
-            code: PROTECTED_QUERY_ERROR_CODE_INVALID_QUERY.to_string(),
-            message: format!(
+        AnalysisSource::Artifacts(_) => Err(protected_query_error(
+            PROTECTED_QUERY_ERROR_CODE_INVALID_RESOURCE,
+            format!(
                 "The analysis template {arn} carries its analysis as artifacts rather than as \
                  SQL text, so it is not a statement that can be run as a SQL protected query."
             ),
-        }),
+        )),
     }
 }
 
@@ -248,9 +308,11 @@ fn resolve_relations(
     query: &ProtectedQuery,
     sql: &str,
 ) -> Result<Vec<RelationPlan>, ProtectedQueryError> {
-    let named = super::sql_referenced_tables(sql).map_err(|error| ProtectedQueryError {
-        code: PROTECTED_QUERY_ERROR_CODE_INVALID_QUERY.to_string(),
-        message: unparsed_statement_message(&error),
+    let named = super::sql_referenced_tables(sql).map_err(|error| {
+        protected_query_error(
+            PROTECTED_QUERY_ERROR_CODE_MALFORMED_QUERY,
+            unparsed_statement_message(&error),
+        )
     })?;
     let mut plans = Vec::new();
     for name in named {
@@ -262,26 +324,26 @@ fn resolve_relations(
         };
         let exposed = exposed_columns(store, table);
         if exposed.is_empty() {
-            return Err(ProtectedQueryError {
-                code: PROTECTED_QUERY_ERROR_CODE_ANALYSIS_RULE_MISSING.to_string(),
-                message: format!(
+            return Err(protected_query_error(
+                PROTECTED_QUERY_ERROR_CODE_INVALID_RESOURCE,
+                format!(
                     "The configured table {} associated as {name} carries no analysis rule that \
                      allows this query to read any of its columns.",
                     table.name
                 ),
-            });
+            ));
         }
         let TableReference::Glue(reference) = &table.table_reference else {
             // Every other member of the `TableReference` union names a table in a store
             // this emulator holds nothing of, so there is no data behind it to read.
-            return Err(ProtectedQueryError {
-                code: PROTECTED_QUERY_ERROR_CODE_INVALID_CONFIGURATION.to_string(),
-                message: format!(
+            return Err(protected_query_error(
+                PROTECTED_QUERY_ERROR_CODE_INVALID_RESOURCE,
+                format!(
                     "The configured table {} associated as {name} references a table this \
                      collaboration cannot read data from.",
                     table.name
                 ),
-            });
+            ));
         };
         plans.push(RelationPlan {
             name,
@@ -412,15 +474,20 @@ fn load_relation<Eng: Send + Sync + 'static>(
     plan: &RelationPlan,
     budget: &mut usize,
 ) -> Result<Relation, ProtectedQueryError> {
-    let unreadable = |detail: &str| ProtectedQueryError {
-        code: PROTECTED_QUERY_ERROR_CODE_INVALID_CONFIGURATION.to_string(),
-        message: format!(
-            "The Data Catalog table {}.{} that the configured table {} references {detail}",
-            plan.database, plan.table, plan.configured_table
-        ),
+    let unreadable = |code: &str, detail: &str| {
+        protected_query_error(
+            code,
+            format!(
+                "The Data Catalog table {}.{} that the configured table {} references {detail}",
+                plan.database, plan.table, plan.configured_table
+            ),
+        )
     };
     let Some(catalog) = ::service_com_amazonaws_glue_awsglue::state::service_state(engine) else {
-        return Err(unreadable("could not be read."));
+        return Err(unreadable(
+            PROTECTED_QUERY_ERROR_CODE_INTERNAL_ERROR,
+            "could not be read.",
+        ));
     };
     // What the catalog holds for this table is copied under its guard, and the guard is
     // released before the object store is reached.
@@ -436,7 +503,10 @@ fn load_relation<Eng: Send + Sync + 'static>(
             .cloned()
     };
     let Some(held) = held else {
-        return Err(unreadable("does not exist."));
+        return Err(unreadable(
+            PROTECTED_QUERY_ERROR_CODE_RESOURCE_NOT_FOUND,
+            "does not exist.",
+        ));
     };
     let storage = held.storage_descriptor.as_ref();
     let declared: Vec<(String, String)> = storage
@@ -469,6 +539,7 @@ fn load_relation<Eng: Send + Sync + 'static>(
         .collect();
     if read.is_empty() {
         return Err(unreadable(
+            PROTECTED_QUERY_ERROR_CODE_INVALID_RESOURCE,
             "declares none of the columns its analysis rules allow this query to read.",
         ));
     }
@@ -492,18 +563,19 @@ fn load_relation<Eng: Send + Sync + 'static>(
             // what the collaboration holds.
             Err(RowsRefusal::Undecodable) => {
                 return Err(unreadable(
+                    PROTECTED_QUERY_ERROR_CODE_INVALID_RESOURCE,
                     "holds data that could not be decoded as the format its SerDe declares.",
                 ))
             }
             Err(RowsRefusal::TooManyRows) => {
-                return Err(ProtectedQueryError {
-                    code: PROTECTED_QUERY_ERROR_CODE_INVALID_CONFIGURATION.to_string(),
-                    message: format!(
+                return Err(protected_query_error(
+                    PROTECTED_QUERY_ERROR_CODE_INSUFFICIENT_COMPUTE,
+                    format!(
                         "The data behind the configured table {} holds more than the \
                          {MAX_RELATION_ROWS} rows this emulator reads for one protected query.",
                         plan.configured_table
                     ),
-                })
+                ))
             }
         }
     }
@@ -522,12 +594,14 @@ fn object_bodies<Eng: Send + Sync + 'static>(
     table_name: &str,
     budget: &mut usize,
 ) -> Result<Vec<Vec<u8>>, ProtectedQueryError> {
-    let unreadable = |detail: &str| ProtectedQueryError {
-        code: PROTECTED_QUERY_ERROR_CODE_INVALID_CONFIGURATION.to_string(),
-        message: format!(
-            "The data of the Data Catalog table {database_name}.{table_name} could not be read: \
-             {detail}"
-        ),
+    let unreadable = |code: &str, detail: &str| {
+        protected_query_error(
+            code,
+            format!(
+                "The data of the Data Catalog table {database_name}.{table_name} could not be \
+                 read: {detail}"
+            ),
+        )
     };
     // A table whose catalog entry names no location has nothing under it to read, which is
     // an empty relation rather than a failure.
@@ -535,18 +609,23 @@ fn object_bodies<Eng: Send + Sync + 'static>(
         return Ok(Vec::new());
     };
     let Some((bucket_name, prefix)) = location_address(location) else {
-        return Err(unreadable(&format!(
-            "{location} is not an Amazon S3 location"
-        )));
+        return Err(unreadable(
+            PROTECTED_QUERY_ERROR_CODE_INVALID_RESOURCE,
+            &format!("{location} is not an Amazon S3 location"),
+        ));
     };
     let Some(objects) = ::service_com_amazonaws_s3_amazons3::state::service_state(engine) else {
-        return Err(unreadable("there is no object store to read it from"));
+        return Err(unreadable(
+            PROTECTED_QUERY_ERROR_CODE_INTERNAL_ERROR,
+            "there is no object store to read it from",
+        ));
     };
     let store = objects.lock();
     let Some(bucket) = store.bucket(&bucket_name) else {
-        return Err(unreadable(&format!(
-            "the bucket {bucket_name} that {location} names does not exist"
-        )));
+        return Err(unreadable(
+            PROTECTED_QUERY_ERROR_CODE_RESOURCE_NOT_FOUND,
+            &format!("the bucket {bucket_name} that {location} names does not exist"),
+        ));
     };
     let mut bodies = Vec::new();
     for (key, object) in bucket.objects() {
@@ -556,10 +635,13 @@ fn object_bodies<Eng: Send + Sync + 'static>(
             continue;
         }
         if object.body.len() > *budget {
-            return Err(unreadable(&format!(
-                "reading it would scan more than the {MAX_RELATION_BYTES} bytes this emulator \
-                 reads for one protected query"
-            )));
+            return Err(unreadable(
+                PROTECTED_QUERY_ERROR_CODE_INSUFFICIENT_COMPUTE,
+                &format!(
+                    "reading it would scan more than the {MAX_RELATION_BYTES} bytes this \
+                     emulator reads for one protected query"
+                ),
+            ));
         }
         *budget -= object.body.len();
         bodies.push(object.body.clone());
@@ -647,12 +729,11 @@ fn write_result<Eng: Send + Sync + 'static>(
         // An intermediate-table output writes the rows into a collaboration resource this
         // slice holds no data plane for.
         ProtectedQueryOutputConfiguration::intermediateTable(_) => {
-            return Err(ProtectedQueryError {
-                code: PROTECTED_QUERY_ERROR_CODE_INVALID_CONFIGURATION.to_string(),
-                message: "The results of this protected query cannot be written to an \
-                          intermediate table."
+            return Err(protected_query_error(
+                PROTECTED_QUERY_ERROR_CODE_INVALID_RESOURCE,
+                "The results of this protected query cannot be written to an intermediate table."
                     .to_string(),
-            })
+            ))
         }
     };
     Ok(Some(ProtectedQueryResult { output }))
@@ -679,24 +760,38 @@ fn write_object<Eng: Send + Sync + 'static>(
     } else {
         encode_csv(answered)
     }
-    .ok_or_else(|| ProtectedQueryError {
-        code: PROTECTED_QUERY_ERROR_CODE_INVALID_CONFIGURATION.to_string(),
-        message: format!(
-            "The results of this protected query could not be written in the {} format.",
-            target.result_format
-        ),
+    .ok_or_else(|| {
+        protected_query_error(
+            PROTECTED_QUERY_ERROR_CODE_INVALID_RESOURCE,
+            format!(
+                "The results of this protected query could not be written in the {} format.",
+                target.result_format
+            ),
+        )
     })?;
     let folder = result_folder(target.key_prefix.as_deref(), &query.id);
     let extension = if parquet { "parquet" } else { "csv" };
     let key = format!("{folder}{id}.{extension}", id = query.id);
     let Some(store) = objects::service_state(engine) else {
-        return Err(ProtectedQueryError {
-            code: PROTECTED_QUERY_ERROR_CODE_INVALID_CONFIGURATION.to_string(),
-            message: "There is no object store to write the results of this protected query to."
+        return Err(protected_query_error(
+            PROTECTED_QUERY_ERROR_CODE_INTERNAL_ERROR,
+            "There is no object store to write the results of this protected query to."
                 .to_string(),
-        });
+        ));
     };
     let mut store = store.lock();
+    // A bucket the result configuration names that nothing holds is a resource the query
+    // referenced and that does not exist, rather than a write this emulator refused.
+    if store.bucket(&target.bucket).is_none() {
+        return Err(protected_query_error(
+            PROTECTED_QUERY_ERROR_CODE_RESOURCE_NOT_FOUND,
+            format!(
+                "The bucket {} that the results of this protected query are written to does not \
+                 exist.",
+                target.bucket
+            ),
+        ));
+    }
     let encryption = objects::written_object_encryption(&store, &target.bucket, None);
     let object = objects::Object {
         etag: objects::stored_object_etag(&objects::object_etag(&body), &encryption),
@@ -727,13 +822,15 @@ fn write_object<Eng: Send + Sync + 'static>(
         store.put_object(&target.bucket, &key, object),
         Some(objects::ObjectWrite::Created | objects::ObjectWrite::Replaced)
     ) {
-        return Err(ProtectedQueryError {
-            code: PROTECTED_QUERY_ERROR_CODE_INVALID_CONFIGURATION.to_string(),
-            message: format!(
+        // The bucket is there, so what refused the write is a ceiling of the object store:
+        // the results went past the room there was to hold them.
+        return Err(protected_query_error(
+            PROTECTED_QUERY_ERROR_CODE_INSUFFICIENT_COMPUTE,
+            format!(
                 "The results of this protected query could not be written to the bucket {}.",
                 target.bucket
             ),
-        });
+        ));
     }
     Ok(ProtectedQueryS3Output {
         // The `s3://` spelling of the folder, through the scheme this workspace names an

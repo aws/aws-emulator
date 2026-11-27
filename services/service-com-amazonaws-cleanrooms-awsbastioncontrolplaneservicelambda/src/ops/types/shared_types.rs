@@ -1004,6 +1004,7 @@ pub struct IdNamespaceAssociation {
 #[derive(Debug, Clone)]
 pub enum PopulationAnalysisConfiguration {
     sqlParameters(PopulationAnalysisSqlParameters),
+    jobParameters(PopulationAnalysisJobParameters),
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.cleanrooms#PopulationAnalysisSqlParameters")]
@@ -1011,6 +1012,12 @@ pub enum PopulationAnalysisConfiguration {
 pub struct PopulationAnalysisSqlParameters {
     pub query_string: Option<String>,
     pub analysis_template_arn: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.cleanrooms#PopulationAnalysisJobParameters")]
+#[derive(Debug, Clone, Default)]
+pub struct PopulationAnalysisJobParameters {
+    pub analysis_template_arn: String,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.cleanrooms#IntermediateTable")]
@@ -1198,6 +1205,21 @@ pub enum WorkerComputeConfigurationProperties {
     Spark(std::collections::HashMap<String, String>),
 }
 
+#[smithy_macros::smithy(union_for = "com.amazonaws.cleanrooms#ProtectedJobComputeConfiguration")]
+#[allow(clippy::large_enum_variant)]
+#[derive(Debug, Clone)]
+pub enum ProtectedJobComputeConfiguration {
+    Worker(ProtectedJobWorkerComputeConfiguration),
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.cleanrooms#ProtectedJobWorkerComputeConfiguration")]
+#[derive(Debug, Clone, Default)]
+pub struct ProtectedJobWorkerComputeConfiguration {
+    pub r#type: String,
+    pub number: i32,
+    pub properties: Option<WorkerComputeConfigurationProperties>,
+}
+
 #[smithy_macros::smithy(shape = "com.amazonaws.cleanrooms#MembershipProtectedQueryResultConfiguration")]
 #[derive(Debug, Clone)]
 pub struct MembershipProtectedQueryResultConfiguration {
@@ -1238,6 +1260,7 @@ pub enum MembershipProtectedJobOutputConfiguration {
 #[smithy_macros::smithy(shape = "com.amazonaws.cleanrooms#ProtectedJobS3OutputConfigurationInput")]
 #[derive(Debug, Clone, Default)]
 pub struct ProtectedJobS3OutputConfigurationInput {
+    pub result_format: Option<String>,
     pub bucket: String,
     pub key_prefix: Option<String>,
 }
@@ -1387,6 +1410,7 @@ pub struct ProtectedJobResultConfigurationOutput {
 pub enum ProtectedJobOutputConfigurationOutput {
     S3(ProtectedJobS3OutputConfigurationOutput),
     Member(ProtectedJobMemberOutputConfigurationOutput),
+    intermediateTable(IntermediateTableOutputConfiguration),
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.cleanrooms#ProtectedJobS3OutputConfigurationOutput")]
@@ -1400,6 +1424,14 @@ pub struct ProtectedJobS3OutputConfigurationOutput {
 #[derive(Debug, Clone, Default)]
 pub struct ProtectedJobMemberOutputConfigurationOutput {
     pub account_id: String,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.cleanrooms#IntermediateTableOutputConfiguration")]
+#[derive(Debug, Clone, Default)]
+pub struct IntermediateTableOutputConfiguration {
+    pub id: String,
+    pub arn: String,
+    pub name: String,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.cleanrooms#ProtectedJobStatistics")]
@@ -1446,21 +1478,13 @@ pub struct ProtectedJobSingleMemberOutput {
 pub struct ProtectedJobError {
     pub message: String,
     pub code: String,
+    pub retry: Option<RetryInfo>,
 }
 
-#[smithy_macros::smithy(union_for = "com.amazonaws.cleanrooms#ProtectedJobComputeConfiguration")]
-#[allow(clippy::large_enum_variant)]
-#[derive(Debug, Clone)]
-pub enum ProtectedJobComputeConfiguration {
-    Worker(ProtectedJobWorkerComputeConfiguration),
-}
-
-#[smithy_macros::smithy(shape = "com.amazonaws.cleanrooms#ProtectedJobWorkerComputeConfiguration")]
+#[smithy_macros::smithy(shape = "com.amazonaws.cleanrooms#RetryInfo")]
 #[derive(Debug, Clone, Default)]
-pub struct ProtectedJobWorkerComputeConfiguration {
-    pub r#type: String,
-    pub number: i32,
-    pub properties: Option<WorkerComputeConfigurationProperties>,
+pub struct RetryInfo {
+    pub retryable: Option<bool>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.cleanrooms#ProtectedQuery")]
@@ -1525,14 +1549,6 @@ pub enum ProtectedQueryDistributeOutputConfigurationLocation {
     Member(ProtectedQueryMemberOutputConfiguration),
 }
 
-#[smithy_macros::smithy(shape = "com.amazonaws.cleanrooms#IntermediateTableOutputConfiguration")]
-#[derive(Debug, Clone, Default)]
-pub struct IntermediateTableOutputConfiguration {
-    pub id: String,
-    pub arn: String,
-    pub name: String,
-}
-
 #[smithy_macros::smithy(shape = "com.amazonaws.cleanrooms#ProtectedQueryStatistics")]
 #[derive(Debug, Clone, Default)]
 pub struct ProtectedQueryStatistics {
@@ -1585,6 +1601,7 @@ pub struct ProtectedQueryDistributeOutput {
 pub struct ProtectedQueryError {
     pub message: String,
     pub code: String,
+    pub retry: Option<RetryInfo>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.cleanrooms#DifferentialPrivacyParameters")]
@@ -1655,7 +1672,7 @@ pub const ALLOWED_AGGREGATE_EXPRESSION_TYPE_VALUES: &[&str] = &["ANY_EXPRESSION"
 
 
 /// The values `AnalysisFormat` accepts on the wire.
-pub const ANALYSIS_FORMAT_VALUES: &[&str] = &["PYSPARK_1_0", "SQL"];
+pub const ANALYSIS_FORMAT_VALUES: &[&str] = &["PYSPARK_1_0", "PYSPARK_2_0", "SQL"];
 
 
 /// The values `AnalysisLogExportStatus` accepts on the wire.
@@ -1823,7 +1840,7 @@ pub const PARAMETER_TYPE_VALUES: &[&str] = &["BIGINT", "BINARY", "BOOLEAN", "BYT
 
 
 /// The values `PopulateIntermediateTableAnalysisType` accepts on the wire.
-pub const POPULATE_INTERMEDIATE_TABLE_ANALYSIS_TYPE_VALUES: &[&str] = &["QUERY"];
+pub const POPULATE_INTERMEDIATE_TABLE_ANALYSIS_TYPE_VALUES: &[&str] = &["JOB", "QUERY"];
 
 
 /// The values `PrivacyBudgetTemplateAutoRefresh` accepts on the wire.

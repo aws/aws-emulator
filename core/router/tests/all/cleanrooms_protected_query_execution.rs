@@ -748,9 +748,18 @@ async fn a_statement_reading_a_column_no_analysis_rule_allows_is_refused() {
         assert_eq!(
             query["error"]["code"].as_str(),
             Some(
-                service_com_amazonaws_cleanrooms_awsbastioncontrolplaneservicelambda::state::PROTECTED_QUERY_ERROR_CODE_INVALID_QUERY
+                service_com_amazonaws_cleanrooms_awsbastioncontrolplaneservicelambda::state::PROTECTED_QUERY_ERROR_CODE_MALFORMED_QUERY
             ),
             "case {case:?}: unexpected failure code, got {query}"
+        );
+        // A statement no analysis rule allows is refused the same way however often it is
+        // submitted, so the failure reports that running it again is not expected to
+        // succeed.
+        assert_eq!(
+            query["error"]["retry"]["retryable"].as_bool(),
+            Some(false),
+            "case {case:?}: a statement the rules refuse is no more allowed on a retry, got \
+             {query}"
         );
         assert!(
             query.get("result").is_none() && query.get("statistics").is_none(),
