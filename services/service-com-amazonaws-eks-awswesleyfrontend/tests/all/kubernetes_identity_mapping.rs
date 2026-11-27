@@ -20,7 +20,15 @@
 //!   `username` and `groups`, so the cluster's RBAC objects bound to those groups
 //!   decide what it may do — while an ACCESS ENTRY for the same principal TAKES
 //!   PRECEDENCE over the mapping, and deleting that entry falls back to it. A
-//!   cluster in `API` mode alone has no ConfigMap mapping at all.
+//!   cluster in `API` mode alone has no ConfigMap mapping at all;
+//! * the identity the API server REPORTS about an authenticated request is a
+//!   complete Kubernetes `UserInfo`: beside that username and those groups, the
+//!   subject `uid` the cluster's authenticating authority minted for the calling
+//!   IAM principal — its own name, the account the principal belongs to and that
+//!   principal's unique id — and the `extra` the authority reports about it, whose
+//!   `principalId` is the very id the uid's last segment carries. Both are facts of
+//!   the credential that authenticated the request, so one IAM principal is one
+//!   subject under either mapping and however many sessions of it sign requests.
 //!
 //! The rows differ along what the rules generalise over: the form of the username
 //! the mapping carries (the one Amazon EKS specifies, one the caller chose, one
@@ -83,6 +91,11 @@ struct RoleSession {
     role_arn: String,
     session_name: String,
     access_key_id: String,
+    /// The unique id of the ROLE this is a session of: the part of the session's
+    /// `UserId` (`AssumedRoleUser$AssumedRoleId`, "<RoleId>:<RoleSessionName>")
+    /// before the session name, which is the id of the IAM principal the
+    /// credential speaks for however many sessions of it are minted.
+    principal_id: String,
 }
 
 impl RoleSession {
@@ -136,26 +149,45 @@ async fn assumed_role(
         status, 200,
         "setup: CreateRole {role_name:?} must succeed, got {status} {body}"
     );
+    another_session(router, &role_arn, session_name).await
+}
+
+/// Assume a role IAM ALREADY holds under `session_name`, answering the session STS
+/// minted — a SECOND credential of one IAM principal, which is what shows what a
+/// cluster reports about the principal rather than about the credential.
+async fn another_session(
+    router: &MultiServiceRouter,
+    role_arn: &str,
+    session_name: &str,
+) -> RoleSession {
     let (status, body) = query(
         router,
         "sts",
         "2011-06-15",
         "AssumeRole",
         &[
-            ("RoleArn", role_arn.clone()),
+            ("RoleArn", role_arn.to_string()),
             ("RoleSessionName", session_name.to_string()),
         ],
     )
     .await;
     assert_eq!(
         status, 200,
-        "setup: AssumeRole {role_name:?} must succeed, got {status} {body}"
+        "setup: AssumeRole {role_arn:?} must succeed, got {status} {body}"
     );
+    let assumed_role_id = xml_element(&body, "AssumedRoleId")
+        .unwrap_or_else(|| panic!("setup: AssumeRole must answer an AssumedRoleId, got {body}"));
     RoleSession {
-        role_arn,
+        role_arn: role_arn.to_string(),
         session_name: session_name.to_string(),
         access_key_id: xml_element(&body, "AccessKeyId")
             .unwrap_or_else(|| panic!("setup: AssumeRole must answer an AccessKeyId, got {body}")),
+        principal_id: assumed_role_id
+            .split_once(':')
+            .map_or_else(
+                || assumed_role_id.clone(),
+                |(role_id, _session)| role_id.to_string(),
+            ),
     }
 }
 
@@ -994,6 +1026,226 @@ async fn a_value_the_mapping_is_not_read_from_maps_nobody() {
             "case {case:?}: expected HTTP {expected} for a value the mapping is \
              {}read from, got {answered:?}",
             if *read { "" } else { "not " }
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// RULE: the identity the API server reports about an authenticated request is a
+// COMPLETE Kubernetes UserInfo — beside the username its mapping resolved and the
+// groups it carries, the SUBJECT UID the cluster's authenticating authority minted
+// for the calling IAM principal (that authority's name, the account the principal
+// belongs to and the principal's own unique id, joined by colons) and the `extra`
+// the authority reports about it, whose `principalId` is the very id the uid's last
+// segment carries. Both are facts of the CREDENTIAL that authenticated the request
+// and of the account's own records, so one principal is one subject under either of
+// the cluster's mappings and however many sessions of it sign requests.
+// ---------------------------------------------------------------------------
+
+/// The subject uid an Amazon EKS cluster's authenticating authority mints for the
+/// principal `principal_id`: its own name, the account of the principal — read from
+/// the account contract rather than written out — and that principal's unique id.
+fn expected_subject_uid(principal_id: &str) -> String {
+    format!(
+        "aws-iam-authenticator:{}:{principal_id}",
+        engine::emulator_account_id()
+    )
+}
+
+/// The group every authenticated identity carries, whatever its mapping names.
+const AUTHENTICATED_GROUP: &str = "system:authenticated";
+
+/// The rows naming two sessions of ONE role, which must be one subject, and the row
+/// naming the principal the ConfigMap maps, which must be another.
+const FIRST_SESSION_CASE: &str = "a session of a role an access entry maps";
+const SECOND_SESSION_CASE: &str = "another session of the same role";
+const LONG_TERM_CASE: &str = "the long-term credential of an IAM user";
+const CONFIG_MAP_CASE: &str = "a session of a role the aws-auth ConfigMap maps";
+
+#[tokio::test]
+async fn the_reported_identity_carries_the_subject_uid_of_the_authenticated_principal() {
+    let router = emulator_with_identity();
+    let cluster = "subject-uid";
+    let config = active_cluster(&router, cluster, "API_AND_CONFIG_MAP").await;
+
+    // ONE role assumed TWICE: two credentials of one IAM principal, which the
+    // cluster maps through the one access entry filed under that role.
+    let first = assumed_role(&router, "SubjectUidRole", "s2r-uid-first").await;
+    let second = another_session(&router, &first.role_arn, "s2r-uid-second").await;
+    let entry =
+        create_access_entry(&router, cluster, &first.role_arn, Some("uid-entry-user"), &[]).await;
+    assert_eq!(
+        entry.status, 200,
+        "setup: the access entry must be created, got {entry:?}"
+    );
+
+    // And another role, mapped by the cluster's OTHER mapping, so the rule is
+    // asserted under both of them.
+    let mapped = assumed_role(&router, "SubjectUidMappedRole", "s2r-uid-mapped").await;
+    let created = dial(
+        &config,
+        "the aws-auth ConfigMap",
+        "POST",
+        "/api/v1/namespaces/kube-system/configmaps",
+        Some(&json!({
+            "metadata": { "name": "aws-auth" },
+            "data": {
+                "mapRoles": format!(
+                    "- rolearn: {}\n  username: uid-config-map-user\n",
+                    mapped.role_arn
+                ),
+            },
+        })),
+    )
+    .await;
+    assert_eq!(
+        created.status, 201,
+        "setup: the aws-auth ConfigMap must be created, got {created:?}"
+    );
+
+    /// One credential the cluster authenticates, and what the API server must
+    /// report about the identity it serves it as.
+    struct Row {
+        case: &'static str,
+        access_key_id: String,
+        /// The username the cluster's mapping resolves for it.
+        username: String,
+        /// The permanent IAM principal the credential speaks for.
+        principal_arn: String,
+        /// That principal's own unique id.
+        principal_id: String,
+        /// The session the credential was minted for, empty for a long-term one.
+        session_name: String,
+    }
+
+    // The rows differ along what the rule generalises over: the KIND of credential
+    // (a long-term one, a session), WHICH of the cluster's two mappings maps the
+    // principal (the creator's own access entry, an entry the caller created, the
+    // aws-auth ConfigMap), and whether two rows are two sessions of ONE principal.
+    let rows = vec![
+        Row {
+            case: LONG_TERM_CASE,
+            access_key_id: DEFAULT_ACCESS_KEY_ID.to_string(),
+            // The cluster's creator is the account's own published credential, and
+            // the entry Amazon EKS files for it names that principal.
+            username: service_common::caller_principal::ambient_user_arn(),
+            principal_arn: service_common::caller_principal::ambient_user_arn(),
+            principal_id: service_common::caller_principal::ambient_user_id(),
+            session_name: String::new(),
+        },
+        Row {
+            case: FIRST_SESSION_CASE,
+            access_key_id: first.access_key_id.clone(),
+            username: "uid-entry-user".to_string(),
+            principal_arn: first.role_arn.clone(),
+            principal_id: first.principal_id.clone(),
+            session_name: first.session_name.clone(),
+        },
+        Row {
+            case: SECOND_SESSION_CASE,
+            access_key_id: second.access_key_id.clone(),
+            username: "uid-entry-user".to_string(),
+            principal_arn: second.role_arn.clone(),
+            principal_id: second.principal_id.clone(),
+            session_name: second.session_name.clone(),
+        },
+        Row {
+            case: CONFIG_MAP_CASE,
+            access_key_id: mapped.access_key_id.clone(),
+            username: "uid-config-map-user".to_string(),
+            principal_arn: mapped.role_arn.clone(),
+            principal_id: mapped.principal_id.clone(),
+            session_name: mapped.session_name.clone(),
+        },
+    ];
+
+    let mut subjects: Vec<(&str, String)> = Vec::new();
+    for row in &rows {
+        let case = row.case;
+        let answered = self_subject_review(&config, case, &row.access_key_id).await;
+        assert_eq!(
+            answered.status, 201,
+            "case {case:?}: a self subject review must be created, got {answered:?}"
+        );
+        let info = &answered.body["status"]["userInfo"];
+        assert_eq!(
+            info["username"],
+            json!(row.username),
+            "case {case:?}: expected the username {:?} the mapping resolves, got {answered:?}",
+            row.username
+        );
+        let expected = expected_subject_uid(&row.principal_id);
+        assert_eq!(
+            info["uid"],
+            json!(expected),
+            "case {case:?}: expected the subject uid {expected:?}, got {answered:?}"
+        );
+        assert_eq!(
+            info["extra"]["principalId"],
+            json!([row.principal_id]),
+            "case {case:?}: expected the principal id {:?} reported, got {answered:?}",
+            row.principal_id
+        );
+        // The uid is not opaque: its last segment IS the reported principal id, so
+        // the two members agree.
+        let uid = info["uid"].as_str().unwrap_or_default();
+        let last_segment = uid.rsplit(':').next().unwrap_or_default();
+        assert_eq!(
+            json!(last_segment),
+            info["extra"]["principalId"][0],
+            "case {case:?}: the uid's last segment must be the reported principalId, got \
+             {answered:?}"
+        );
+        assert_eq!(
+            info["extra"]["canonicalArn"],
+            json!([row.principal_arn]),
+            "case {case:?}: expected the IAM principal {:?} reported, got {answered:?}",
+            row.principal_arn
+        );
+        assert_eq!(
+            info["extra"]["sessionName"],
+            json!([row.session_name]),
+            "case {case:?}: expected the session {:?} the credential was minted for, got \
+             {answered:?}",
+            row.session_name
+        );
+        assert!(
+            info["groups"]
+                .as_array()
+                .is_some_and(|groups| groups.contains(&json!(AUTHENTICATED_GROUP))),
+            "case {case:?}: an authenticated identity is in {AUTHENTICATED_GROUP:?}, got \
+             {answered:?}"
+        );
+        subjects.push((case, uid.to_string()));
+    }
+
+    let subject_of = |wanted: &str| -> String {
+        subjects
+            .iter()
+            .find(|(case, _)| *case == wanted)
+            .map(|(_, uid)| uid.clone())
+            .unwrap_or_else(|| panic!("case {wanted:?}: the row must have been reviewed"))
+    };
+
+    // Two sessions of one role are ONE subject: the uid names the IAM principal,
+    // not the credential or the session it was minted for.
+    assert_eq!(
+        subject_of(FIRST_SESSION_CASE),
+        subject_of(SECOND_SESSION_CASE),
+        "case {SECOND_SESSION_CASE:?}: two sessions of one principal are one subject, got \
+         {subjects:?}"
+    );
+    // And two principals are two subjects, however the mappings name them.
+    for (left, right) in [
+        (LONG_TERM_CASE, FIRST_SESSION_CASE),
+        (LONG_TERM_CASE, CONFIG_MAP_CASE),
+        (FIRST_SESSION_CASE, CONFIG_MAP_CASE),
+    ] {
+        assert_ne!(
+            subject_of(left),
+            subject_of(right),
+            "case {left:?} against {right:?}: two IAM principals are two subjects, got \
+             {subjects:?}"
         );
     }
 }

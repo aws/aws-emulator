@@ -122,6 +122,13 @@ pub struct SubjectIdentity {
     /// ([`super::kubernetes_self_subject_review`]) rather than used in a decision:
     /// what an identity MAY do is decided by its username and groups alone.
     pub principal_arn: String,
+    /// The UNIQUE ID of that IAM principal: the `UserId` part
+    /// `sts:GetCallerIdentity` reports for the same credential, without the
+    /// session the credential was minted for. It is what the Kubernetes identity's
+    /// `uid` is built from ([`super::kubernetes_self_subject_review`]) — two
+    /// principals that happen to share a username are still two subjects, because
+    /// no two IAM principals share a unique id.
+    pub principal_id: String,
     /// The name of the assumed-role session the credential was minted for, and
     /// `None` for a long-term credential, which names no session.
     pub session_name: Option<String>,

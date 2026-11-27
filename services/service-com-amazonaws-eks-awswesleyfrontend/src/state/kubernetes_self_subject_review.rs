@@ -92,32 +92,67 @@ pub fn api_resource_list_document() -> ::serde_json::Value {
 /// The `SelfSubjectReview` the API server answers `identity` with: the user
 /// information it has about the client that made the request.
 ///
-/// The username and the groups are the ones the cluster's mapping resolved for
-/// the credential the request presented, so this answer and the identity every
-/// other answer on this address is decided under are one value. Beside them the
-/// `extra` map carries what the AUTHENTICATING authority knows about the identity,
-/// which on Amazon EKS is the IAM principal the credential spoke for: `arn` and
-/// `canonicalArn` name that principal, and `sessionName` the assumed-role session
-/// the credential was minted for — empty for a long-term credential, which names
-/// none. Nothing of the CREDENTIAL itself is reported. The object carries no name —
-/// a self subject review is not stored, it is computed for the request that asked —
-/// which is what Kubernetes reports as a null creation timestamp.
+/// The object carries no name — a self subject review is not stored, it is computed
+/// for the request that asked — which is what Kubernetes reports as a null creation
+/// timestamp. The identity itself is [`user_info`].
 #[must_use]
 pub fn self_subject_review(identity: &SubjectIdentity) -> ::serde_json::Value {
     ::serde_json::json!({
         "kind": SELF_SUBJECT_REVIEW_KIND,
         "apiVersion": AUTHENTICATION_API_VERSION,
         "metadata": { "creationTimestamp": ::serde_json::Value::Null },
-        "status": {
-            "userInfo": {
-                "username": identity.username,
-                "groups": identity.groups.iter().collect::<Vec<&String>>(),
-                "extra": {
-                    "arn": [identity.principal_arn],
-                    "canonicalArn": [identity.principal_arn],
-                    "sessionName": [identity.session_name.clone().unwrap_or_default()],
-                },
-            },
+        "status": { "userInfo": user_info(identity) },
+    })
+}
+
+/// The prefix the authenticating authority of an Amazon EKS cluster stamps on the
+/// `uid` of every identity it authenticates: the authenticator the cluster maps IAM
+/// principals to Kubernetes subjects with, naming itself as the authority the uid is
+/// unique within.
+const AUTHENTICATOR_UID_PREFIX: &str = "aws-iam-authenticator";
+
+/// The `UserInfo` the API server reports about an authenticated identity.
+///
+/// The username and the groups are the ones the cluster's mapping resolved for the
+/// credential the request presented, so this answer and the identity every other
+/// answer on this address is decided under are one value.
+///
+/// The `uid` is what Kubernetes distinguishes two subjects that share a username by,
+/// and the authenticating authority is what mints it: on Amazon EKS it is the
+/// authenticator's own name, the ACCOUNT the authenticated principal belongs to and
+/// that principal's UNIQUE ID, joined by colons — all three facts of the credential
+/// that authenticated the request and of the account's own records, never of the
+/// request's text. The uid's last segment is therefore the very id `extra.principalId`
+/// carries: one value, written once here.
+///
+/// Beside them the `extra` map carries what the AUTHENTICATING authority knows about
+/// the identity, which on Amazon EKS is the IAM principal the credential spoke for:
+/// `arn` and `canonicalArn` name that principal, `principalId` is its unique id, and
+/// `sessionName` the assumed-role session the credential was minted for — empty for a
+/// long-term credential, which names none. Nothing of the CREDENTIAL itself is
+/// reported.
+#[must_use]
+pub fn user_info(identity: &SubjectIdentity) -> ::serde_json::Value {
+    ::serde_json::json!({
+        "username": identity.username,
+        "uid": subject_uid(identity),
+        "groups": identity.groups.iter().collect::<Vec<&String>>(),
+        "extra": {
+            "arn": [identity.principal_arn],
+            "canonicalArn": [identity.principal_arn],
+            "principalId": [identity.principal_id],
+            "sessionName": [identity.session_name.clone().unwrap_or_default()],
         },
     })
+}
+
+/// The `uid` of [`user_info`]: the authenticator's name, the account the principal
+/// belongs to — read off that principal's own ARN, the one account reading of this
+/// service — and the principal's unique id.
+fn subject_uid(identity: &SubjectIdentity) -> String {
+    format!(
+        "{AUTHENTICATOR_UID_PREFIX}:{}:{}",
+        super::access_entry_usernames::arn_account_id(&identity.principal_arn),
+        identity.principal_id,
+    )
 }

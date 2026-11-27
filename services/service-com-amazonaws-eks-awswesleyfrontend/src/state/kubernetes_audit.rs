@@ -163,15 +163,18 @@ impl AuditedRequest {
     /// group.
     #[must_use]
     fn to_event(&self) -> ::serde_json::Value {
-        let (username, groups): (String, Vec<String>) = match &self.identity {
-            Some(identity) => (
-                identity.username.clone(),
-                identity.groups.iter().cloned().collect(),
-            ),
-            None => (
-                ANONYMOUS_USERNAME.to_string(),
-                vec![UNAUTHENTICATED_GROUP.to_string()],
-            ),
+        // The `user` of an audit event is the identity the request was served as,
+        // written as the same `UserInfo` the API server reports about it
+        // ([`super::kubernetes_self_subject_review::user_info`]), so an audit record
+        // and a self subject review of one request describe one subject. A request
+        // whose credential mapped to nobody was served as no identity at all, and is
+        // recorded under the user Kubernetes names an unauthenticated request.
+        let user = match &self.identity {
+            Some(identity) => super::kubernetes_self_subject_review::user_info(identity),
+            None => ::serde_json::json!({
+                "username": ANONYMOUS_USERNAME,
+                "groups": [UNAUTHENTICATED_GROUP],
+            }),
         };
         let mut event = ::serde_json::Map::new();
         event.insert("kind".to_string(), ::serde_json::json!("Event"));
@@ -189,10 +192,7 @@ impl AuditedRequest {
             ::serde_json::json!(self.attributes.path),
         );
         event.insert("verb".to_string(), ::serde_json::json!(self.attributes.verb));
-        event.insert(
-            "user".to_string(),
-            ::serde_json::json!({ "username": username, "groups": groups }),
-        );
+        event.insert("user".to_string(), user);
         if let Some(user_agent) = &self.user_agent {
             event.insert("userAgent".to_string(), ::serde_json::json!(user_agent));
         }

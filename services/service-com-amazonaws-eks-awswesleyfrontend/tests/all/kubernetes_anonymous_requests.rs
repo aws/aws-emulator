@@ -19,7 +19,10 @@
 //! in another API group, a path the server does not serve at all), the method (a
 //! read and a write), the FORM the missing credential takes (no header at all, a
 //! header in another scheme, a token of another version, a token whose segment is
-//! not base64url, a token whose URL carries no credential scope), and WHICH cluster
+//! not base64url, a token whose URL carries no credential scope, and a token whose
+//! URL is not the presigned caller-identity call a credential plugin builds — one
+//! calling another action, one signed for another service, one carrying no
+//! signature, one whose validity window is past the maximum), and WHICH cluster
 //! a presented token names.
 //!
 //! The client is the raw, kubeconfig-built one `kubernetes_api.rs` dials with.
@@ -130,7 +133,76 @@ fn unauthenticated_forms() -> Vec<(&'static str, Option<String>)> {
                 base64url("https://sts.us-west-2.amazonaws.com/?Action=GetCallerIdentity")
             )),
         ),
+        // A token is read as a credential only when it IS the request a credential
+        // plugin presigns, so these rows differ along WHICH part of that request the
+        // URL is not: the call it makes, the service its scope names, the signature
+        // its authorization is completed by, and the window it states.
+        (
+            "a bearer token whose URL calls another action",
+            Some(presented_url(&presigned_query(
+                "GetSessionToken",
+                "sts",
+                "60",
+                true,
+            ))),
+        ),
+        (
+            "a bearer token signed for another service",
+            Some(presented_url(&presigned_query(
+                "GetCallerIdentity",
+                "execute-api",
+                "60",
+                true,
+            ))),
+        ),
+        (
+            "a bearer token carrying no signature",
+            Some(presented_url(&presigned_query(
+                "GetCallerIdentity",
+                "sts",
+                "60",
+                false,
+            ))),
+        ),
+        (
+            // SOURCE: `X-Amz-Expires`, "the maximum value is 604800 seconds (seven
+            // days)" (AWS General Reference, Authenticating requests: using query
+            // parameters) — one second past that bound.
+            "a bearer token whose validity window is past the maximum",
+            Some(presented_url(&presigned_query(
+                "GetCallerIdentity",
+                "sts",
+                "604801",
+                true,
+            ))),
+        ),
     ]
+}
+
+/// The `Authorization` header a client presents the URL `query` under: the bearer
+/// token of a kubeconfig's credential plugin, carrying that URL.
+fn presented_url(query: &str) -> String {
+    format!(
+        "Bearer k8s-aws-v1.{}",
+        base64url(&format!("https://sts.us-west-2.amazonaws.com/?{query}"))
+    )
+}
+
+/// The query of a presigned call, as a credential plugin writes one: the `action` it
+/// calls, the `service` its credential scope names, the `expires` window it is valid
+/// for, and whether the SigV4 authorization is completed by a `signature`.
+fn presigned_query(action: &str, service: &str, expires: &str, signature: bool) -> String {
+    let signature = if signature {
+        "&X-Amz-Signature=0000"
+    } else {
+        ""
+    };
+    format!(
+        "Action={action}&Version=2011-06-15&X-Amz-Algorithm=AWS4-HMAC-SHA256\
+         &X-Amz-Credential=AKIDEXAMPLE%2F20260101%2Fus-west-2%2F{service}%2Faws4_request\
+         &X-Amz-Date=20260101T000000Z&X-Amz-Expires={expires}\
+         &X-Amz-SignedHeaders=host{signature}"
+    )
 }
 
 /// The base64url form of `text` (the two alphabet substitutions and the dropped

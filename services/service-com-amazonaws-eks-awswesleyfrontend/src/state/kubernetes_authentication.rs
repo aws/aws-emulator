@@ -28,6 +28,13 @@
 //! attributed to. An anonymous request is answered the `401 Unauthorized` below
 //! before anything is routed.
 //!
+//! A token is read as a credential only when it IS the request a credential plugin
+//! presigns — a `GetCallerIdentity` call on the token service, carrying a complete
+//! SigV4 query authorization within the window a presigned request may state
+//! ([`presigns_the_caller_identity_call`]) — so a bearer token a client assembled out
+//! of something else presents nothing, whatever key id it mentions, and is answered
+//! the same `401 Unauthorized`.
+//!
 //! A token is bound to ONE cluster: the plugin signs the cluster's name into the
 //! presigned request under `x-k8s-aws-id` ([`CLUSTER_ID_HEADER`]), so a token built
 //! for another cluster speaks for nobody at this one however good its credential is.
@@ -139,6 +146,7 @@ impl ApiServerPrincipals {
                 return Some(ApiCaller::of(
                     session.role_arn.clone().unwrap_or_else(|| presented.clone()),
                     Some(presented),
+                    &session.identity.user_id,
                 ));
             }
         }
@@ -148,7 +156,7 @@ impl ApiServerPrincipals {
             }
             None => sts_store::long_term_identity(None, access_key_id),
         };
-        Some(ApiCaller::of(identity.arn, None))
+        Some(ApiCaller::of(identity.arn, None, &identity.user_id))
     }
 }
 
@@ -169,12 +177,17 @@ pub struct ApiCaller {
     pub session_name: Option<String>,
     /// The account that principal belongs to, as its ARN names it.
     pub account_id: String,
+    /// The unique id of that principal: the `UserId` `sts:GetCallerIdentity`
+    /// reports for this credential, with the session it was minted for taken off
+    /// ([`principal_unique_id`]).
+    pub principal_id: String,
 }
 
 impl ApiCaller {
     /// The caller behind `principal_arn`, which `presented_arn` is the session
-    /// principal of when the credential was a session's.
-    fn of(principal_arn: String, presented_arn: Option<String>) -> Self {
+    /// principal of when the credential was a session's, and `user_id` the
+    /// `UserId` of.
+    fn of(principal_arn: String, presented_arn: Option<String>, user_id: &str) -> Self {
         let session_name = presented_arn.as_deref().and_then(|presented| {
             super::access_entry_usernames::assumed_role_session_name(presented)
                 .map(str::to_string)
@@ -183,6 +196,7 @@ impl ApiCaller {
             account_id: super::access_entry_usernames::arn_account_id(&principal_arn).to_string(),
             principal_arn,
             session_name,
+            principal_id: principal_unique_id(user_id).to_string(),
         }
     }
 
@@ -196,6 +210,21 @@ impl ApiCaller {
             &self.account_id,
         )
     }
+}
+
+/// The unique id of the IAM PRINCIPAL a credential's `UserId` names.
+///
+/// `sts:GetCallerIdentity` reports a temporary credential's `UserId` as the
+/// principal's unique id and the session it was minted for joined by a colon
+/// (`AssumedRoleUser$AssumedRoleId`: "the ARN and the assumed role ID … the role ID
+/// is … followed by the specified session name"), while a long-term credential's
+/// `UserId` is the holding principal's unique id alone. The id of the PRINCIPAL is
+/// therefore what precedes the session, and the session name is reported on its own
+/// beside it ([`ApiCaller::session_name`]) — so neither value repeats the other.
+fn principal_unique_id(user_id: &str) -> &str {
+    user_id
+        .split_once(':')
+        .map_or(user_id, |(principal_id, _session)| principal_id)
 }
 
 /// What the `Authorization` header of a Kubernetes API request PRESENTS, and `None`
@@ -212,12 +241,13 @@ impl ApiCaller {
 ///
 /// A request carrying NO `Authorization` header presents no credential at all, and a
 /// header that IS there but carries no credential this server can read — another
-/// scheme, a token of another version, a segment that is not base64url, a URL with no
-/// credential scope — presents nothing either. Both are answered `None`, which the
-/// caller turns into the `401 Unauthorized` the API server answers a request it cannot
-/// authenticate: the Kubernetes API is reached with a bearer token, so a request that
-/// carries none speaks for nobody rather than for the principal an unsigned AWS call
-/// would be attributed to.
+/// scheme, a token of another version, a segment that is not base64url, a URL that is
+/// not a presigned `sts:GetCallerIdentity` request ([`presigns_the_caller_identity_call`]),
+/// a URL with no credential scope — presents nothing either. Both are answered `None`,
+/// which the caller turns into the `401 Unauthorized` the API server answers a request
+/// it cannot authenticate: the Kubernetes API is reached with a bearer token, so a
+/// request that carries none speaks for nobody rather than for the principal an
+/// unsigned AWS call would be attributed to.
 #[must_use]
 pub fn presented_token(authorization: Option<&str>) -> Option<PresentedToken> {
     let header = authorization?;
@@ -231,6 +261,11 @@ pub fn presented_token(authorization: Option<&str>) -> Option<PresentedToken> {
         .body(())
         .ok()?
         .into_parts();
+    // WHAT the token carries has to be the one request this token is: anything else is
+    // not a credential a kubeconfig's plugin built for a cluster.
+    if !presigns_the_caller_identity_call(&parts.uri) {
+        return None;
+    }
     let access_key_id = ::service_common::request_access_key_id(&parts);
     // The scope the presigned URL carries, and nothing when it carries none: that URL
     // is the whole credential the token presents.
@@ -257,6 +292,65 @@ pub fn presented_token(authorization: Option<&str>) -> Option<PresentedToken> {
 fn no_credential_key_id() -> String {
     let (parts, ()) = ::http::Request::new(()).into_parts();
     ::service_common::request_access_key_id(&parts)
+}
+
+/// The query-protocol action a token's URL has to call.
+const CALLER_IDENTITY_ACTION: &str = "GetCallerIdentity";
+
+/// The signing name the token's credential scope has to name: the token IS a
+/// presigned call to that service, so a scope naming another one is a credential
+/// presented for something else.
+const STS_SIGNING_NAME: &str = "sts";
+
+/// The one algorithm a SigV4 presigned URL states, and the parameters it carries its
+/// authorization in (AWS General Reference, *Authenticating requests: using query
+/// parameters*).
+const SIGV4_ALGORITHM: &str = "AWS4-HMAC-SHA256";
+const ALGORITHM_PARAMETER: &str = "X-Amz-Algorithm";
+const SIGNATURE_PARAMETER: &str = "X-Amz-Signature";
+const EXPIRES_PARAMETER: &str = "X-Amz-Expires";
+const ACTION_PARAMETER: &str = "Action";
+
+/// The longest validity window a SigV4 query authorization may state: "the maximum
+/// value is 604800 seconds (seven days)" (AWS General Reference, *Authenticating
+/// requests: using query parameters*, `X-Amz-Expires`). A URL stating more than that,
+/// or none at all, is not a presigned request.
+const MAX_PRESIGN_WINDOW_SECONDS: u64 = 604_800;
+
+/// Whether `url` IS the request a kubeconfig's credential plugin presigns: a
+/// `GetCallerIdentity` call, signed for the token service, carrying a complete SigV4
+/// query authorization whose validity window is one a presigned request may state.
+///
+/// A bearer token is accepted for what it IS, not for the key id it happens to
+/// mention: a URL that calls something else, that was signed for another service, or
+/// that carries no signature or an out-of-bounds window is not such a token, so it
+/// presents no credential and the request is answered the `401 Unauthorized` of a
+/// request this server cannot authenticate.
+///
+/// The SIGNATURE over that request is not recomputed here, and no service in this tree
+/// recomputes one: a credential's secret is the emulator's authentication layer's to
+/// hold and that layer is what verifies a signature
+/// ([`::service_common::authentication_refusal`]), so what a service decides is which
+/// principal a credential speaks for — the same question, resolved from the same
+/// registries, that `sts:GetCallerIdentity` answers for the very call this token
+/// carries ([`ApiServerPrincipals::caller`]).
+fn presigns_the_caller_identity_call(url: &::http::Uri) -> bool {
+    let query = url.query().unwrap_or_default();
+    // Each parameter is read through this tree's ONE reader of a raw query parameter,
+    // the same one the credential scope above is read with.
+    let parameter = |name: &str| ::service_common::query_parameter(query, name);
+    let calls_the_action = parameter(ACTION_PARAMETER) == Some(CALLER_IDENTITY_ACTION);
+    let signed = parameter(ALGORITHM_PARAMETER) == Some(SIGV4_ALGORITHM)
+        && parameter(SIGNATURE_PARAMETER).is_some_and(|signature| !signature.is_empty());
+    let within_the_window = parameter(EXPIRES_PARAMETER).is_some_and(|expires| {
+        expires
+            .parse::<u64>()
+            .is_ok_and(|seconds| seconds > 0 && seconds <= MAX_PRESIGN_WINDOW_SECONDS)
+    });
+    let signed_for_the_token_service =
+        ::service_common::presigned_url_credential::signed_for(url).as_deref()
+            == Some(STS_SIGNING_NAME);
+    calls_the_action && signed && within_the_window && signed_for_the_token_service
 }
 
 /// The Kubernetes identity the cluster keyed `key` maps the calling IAM principal
@@ -297,6 +391,7 @@ pub fn authenticate(
             groups: SubjectIdentity::authenticated_groups(&entry.kubernetes_groups),
             grants,
             principal_arn: caller.principal_arn.clone(),
+            principal_id: caller.principal_id.clone(),
             session_name: caller.session_name.clone(),
         });
     }
@@ -315,6 +410,7 @@ pub fn authenticate(
                 // may do is decided by the cluster's own RBAC objects alone.
                 grants: Vec::new(),
                 principal_arn: caller.principal_arn.clone(),
+                principal_id: caller.principal_id.clone(),
                 session_name: caller.session_name.clone(),
             });
         }
