@@ -12,8 +12,9 @@ use std::ops::RangeInclusive;
 use std::time::{Duration, SystemTime};
 
 use crate::ops::types::{
-    Environment, LastUpdate, LoggingConfiguration, LoggingConfigurationInput,
-    ModuleLoggingConfiguration, ModuleLoggingConfigurationInput, NetworkConfiguration,
+    Environment, IdentityCenterConfiguration, LastUpdate, LoggingConfiguration,
+    LoggingConfigurationInput, ModuleLoggingConfiguration, ModuleLoggingConfigurationInput,
+    NetworkConfiguration, TeamConfig, UpdateTeamsInput,
 };
 
 /// Where the environment health metrics `PublishMetrics` accepts are published: the
@@ -109,6 +110,19 @@ pub const MAX_TORN_DOWN_ENVIRONMENTS: usize = MAX_ENVIRONMENTS;
 
 /// How many tags one environment can carry, from `TagMap`'s own `@length(1, 50)`.
 pub const MAX_TAGS: usize = 50;
+
+/// The fewest teams a configured `Teams` map holds, from `TeamMap`'s own `@length(1, 20)`
+/// — the same count the member's doc states ("You can configure between 1 and 20 teams").
+pub const MIN_TEAMS: usize = 1;
+
+/// How many teams one environment configures for Apache Airflow multi-team support, from
+/// that same `@length(1, 20)`.
+///
+/// The modelled bound holds for the map ONE request carries, and `UpdateEnvironment` merges
+/// its `Teams.AddOrUpdate` map onto the teams already configured, so the count the boundary
+/// validator judges is not the count the environment ends up with: the resolved
+/// configuration is held to it by [`EnvironmentSpec::validate`].
+pub const MAX_TEAMS: usize = 20;
 
 /// The tag-key namespace Amazon Web Services keeps for the tags it applies itself.
 ///
@@ -702,6 +716,82 @@ impl NetworkConfigurationRecord {
     }
 }
 
+/// The Amazon Web Services IAM Identity Center instance an environment authenticates its
+/// Apache Airflow web UI users against, as a create or an update supplied it.
+///
+/// Both members of `IdentityCenterConfiguration` are optional in the model, so each is kept
+/// exactly as the request carried it; a configuration carrying neither names no instance
+/// (see [`Self::names_instance`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct IdentityCenterConfigurationRecord {
+    pub start_url: Option<String>,
+    pub identity_store_id: Option<String>,
+}
+
+impl IdentityCenterConfigurationRecord {
+    /// The record for one `IdentityCenterConfiguration` a request carried.
+    #[must_use]
+    pub fn from_input(input: &IdentityCenterConfiguration) -> Self {
+        Self {
+            start_url: input.start_url.clone(),
+            identity_store_id: input.identity_store_id.clone(),
+        }
+    }
+
+    /// Whether this configuration names an IAM Identity Center instance at all: either its
+    /// access portal URL or its identity store id, carrying something.
+    ///
+    /// Both members are optional, and each is `@length(min: 1)` text whose empty value names
+    /// nothing, so a configuration that carries neither identifies no instance and
+    /// associates no Identity Center group with the environment.
+    #[must_use]
+    pub fn names_instance(&self) -> bool {
+        [
+            self.start_url.as_deref(),
+            self.identity_store_id.as_deref(),
+        ]
+        .into_iter()
+        .any(|member| member.is_some_and(|value| !value.is_empty()))
+    }
+
+    /// The modelled `IdentityCenterConfiguration` for this record.
+    fn to_modelled(&self) -> IdentityCenterConfiguration {
+        IdentityCenterConfiguration {
+            start_url: self.start_url.clone(),
+            identity_store_id: self.identity_store_id.clone(),
+        }
+    }
+}
+
+/// One team's settings for Apache Airflow multi-team support: where that team's DAG code
+/// lives.
+///
+/// Both members of `TeamConfig` are `@required`, so neither is optional here.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TeamRecord {
+    pub source_bucket_arn: String,
+    pub dag_s3_path: String,
+}
+
+impl TeamRecord {
+    /// The record for one `TeamConfig` a request carried.
+    #[must_use]
+    pub fn from_input(input: &TeamConfig) -> Self {
+        Self {
+            source_bucket_arn: input.source_bucket_arn.clone(),
+            dag_s3_path: input.dag_s3_path.clone(),
+        }
+    }
+
+    /// The modelled `TeamConfig` for this record.
+    fn to_modelled(&self) -> TeamConfig {
+        TeamConfig {
+            source_bucket_arn: self.source_bucket_arn.clone(),
+            dag_s3_path: self.dag_s3_path.clone(),
+        }
+    }
+}
+
 /// Everything about an environment that a caller chose: the create's members, as every
 /// later `UpdateEnvironment` merged into them.
 ///
@@ -735,6 +825,12 @@ pub struct EnvironmentSpec {
     pub weekly_maintenance_window_start: String,
     pub endpoint_management: String,
     pub logging_configuration: LoggingConfigurationRecord,
+    /// The IAM Identity Center instance the environment's Apache Airflow web UI
+    /// authenticates users against, or `None` for an environment configured with none.
+    pub identity_center_configuration: Option<IdentityCenterConfigurationRecord>,
+    /// The teams configured for Apache Airflow multi-team support, keyed by team name. A
+    /// `BTreeMap` so two equal team sets compare equal and read back in a stable order.
+    pub teams: BTreeMap<String, TeamRecord>,
 }
 
 impl EnvironmentSpec {
@@ -882,8 +978,136 @@ impl EnvironmentSpec {
                 ));
             }
         }
+        // Apache Airflow multi-team support names its teams after Identity Center groups:
+        // a team name "must match the display name of an Amazon Web Services IAM Identity
+        // Center group that you associate with your environment, so you must configure IAM
+        // Identity Center for the environment before you add teams" (the `Teams` member's
+        // own doc). A configuration that names no Identity Center instance associates no
+        // such group, so the teams it configures could match none.
+        if !self.teams.is_empty()
+            && self
+                .identity_center_configuration
+                .as_ref()
+                .is_none_or(|configured| !configured.names_instance())
+        {
+            return Err(teams_without_identity_center_message());
+        }
+        // `TeamMap` is `@length(1, 20)` and the `Teams` doc states the same count, but an
+        // update MERGES the teams it adds onto the ones already configured, so the count
+        // that has to lie in the range is the one the request would STORE rather than the
+        // one it carried. See [`MAX_TEAMS`].
+        if self.teams.len() > MAX_TEAMS {
+            return Err(team_count_message(self.teams.len()));
+        }
+        if let Some(overlap) = self.overlapping_dag_folders() {
+            return Err(overlap);
+        }
         Ok(())
     }
+
+    /// Apply one `UpdateTeamsInput` to the teams this configuration holds: the teams it
+    /// names for removal go, and the teams it adds or updates land with the settings it
+    /// gave them.
+    ///
+    /// The member is a pair of CHANGES rather than the team set itself ("A map of teams to
+    /// add to your environment, or to update if they already exist" / "A list of team names
+    /// to remove from your environment"), so a team the request names in neither keeps the
+    /// settings already stored for it. The removals are applied first, so a team the same
+    /// request both removes and configures ends up configured as that request asked.
+    pub fn apply_team_changes(&mut self, changes: &UpdateTeamsInput) {
+        for name in changes.remove.iter().flatten() {
+            self.teams.remove(name);
+        }
+        for (name, team) in changes.add_or_update.iter().flatten() {
+            self.teams.insert(name.clone(), TeamRecord::from_input(team));
+        }
+    }
+
+    /// The sentence refusing the first pair of this configuration's DAG folders that
+    /// overlap, or `None` when no two of them do.
+    ///
+    /// `TeamConfig.DagS3Path`'s own doc states the rule: "DAG folders can't overlap. A team
+    /// folder can't be inside the global folder or another team's folder, and the global
+    /// folder can't be inside a team folder. Amazon Managed Workflows for Apache Airflow
+    /// (Amazon MWAA) compares folder paths as Amazon S3 prefixes, so the trailing slash
+    /// matters." — so two folders of the SAME bucket overlap exactly when one of their paths
+    /// is an Amazon S3 prefix of the other, and two folders in different buckets are
+    /// different locations that cannot overlap. The paths are compared as the request wrote
+    /// them, which is what makes the trailing slash matter.
+    ///
+    /// The environment's own DAG folder (`SourceBucketArn` with `DagS3Path`) is one of the
+    /// folders compared: it is the global folder the doc names.
+    fn overlapping_dag_folders(&self) -> Option<String> {
+        let mut folders: Vec<(String, &str, &str)> = Vec::with_capacity(self.teams.len() + 1);
+        folders.push((
+            environment_dag_folder(&self.source_bucket_arn, &self.dag_s3_path),
+            self.source_bucket_arn.as_str(),
+            self.dag_s3_path.as_str(),
+        ));
+        folders.extend(self.teams.iter().map(|(name, team)| {
+            (
+                team_dag_folder(name, &team.source_bucket_arn, &team.dag_s3_path),
+                team.source_bucket_arn.as_str(),
+                team.dag_s3_path.as_str(),
+            )
+        }));
+        for (index, (described, bucket_arn, path)) in folders.iter().enumerate() {
+            for (other_described, other_bucket_arn, other_path) in &folders[index + 1..] {
+                if bucket_arn == other_bucket_arn
+                    && (path.starts_with(*other_path) || other_path.starts_with(*path))
+                {
+                    return Some(overlapping_dag_folders_message(described, other_described));
+                }
+            }
+        }
+        None
+    }
+}
+
+/// The environment's own (global) DAG folder, as a refusal names it: the member at fault,
+/// the path it is at and the bucket that path is in.
+#[must_use]
+pub fn environment_dag_folder(bucket_arn: &str, path: &str) -> String {
+    format!("the environment's DagS3Path {path} in {bucket_arn}")
+}
+
+/// One team's DAG folder, as a refusal names it — see [`environment_dag_folder`], plus the
+/// team whose folder it is.
+#[must_use]
+pub fn team_dag_folder(team: &str, bucket_arn: &str, path: &str) -> String {
+    format!("team {team}'s DagS3Path {path} in {bucket_arn}")
+}
+
+/// Why a configuration whose DAG folders overlap cannot be provisioned, worded from the
+/// two folders that overlap. See [`EnvironmentSpec::overlapping_dag_folders`].
+#[must_use]
+pub fn overlapping_dag_folders_message(first: &str, second: &str) -> String {
+    format!(
+        "DAG folders cannot overlap, and {first} overlaps {second}. A team's folder cannot \
+         be inside the environment's folder or inside another team's folder, and the \
+         environment's folder cannot be inside a team's folder."
+    )
+}
+
+/// Why teams cannot be configured for an environment that authenticates nobody through IAM
+/// Identity Center. See [`EnvironmentSpec::validate`].
+#[must_use]
+pub fn teams_without_identity_center_message() -> String {
+    "Teams cannot be configured for an environment that has no IdentityCenterConfiguration. \
+     Configure IAM Identity Center for the environment before you add teams."
+        .to_string()
+}
+
+/// Why a configuration holding `count` teams cannot be provisioned: the count the request
+/// would store, and the range `TeamMap`'s `@length(1, 20)` and the `Teams` doc fix. Worded
+/// like every other count a resolved configuration is held to (see
+/// [`EnvironmentSpec::validate`]).
+#[must_use]
+pub fn team_count_message(count: usize) -> String {
+    format!(
+        "{count} is not a valid number of Teams for an environment. Valid values: \
+         {MIN_TEAMS} to {MAX_TEAMS}."
+    )
 }
 
 /// The optional Amazon S3 objects an environment loads, exactly as ONE request named
@@ -1203,6 +1427,21 @@ impl EnvironmentRecord {
             endpoint_management: Some(self.spec.endpoint_management.clone()),
             min_webservers: Some(self.spec.min_webservers),
             max_webservers: Some(self.spec.max_webservers),
+            identity_center_configuration: self
+                .spec
+                .identity_center_configuration
+                .as_ref()
+                .map(IdentityCenterConfigurationRecord::to_modelled),
+            // `TeamMap` is `@length(1, 20)`, so an environment with no team configured
+            // reports no `Teams` member rather than an empty map outside that bound — the
+            // same reading as `Tags` (see [`Self::tags_member`]).
+            teams: (!self.spec.teams.is_empty()).then(|| {
+                self.spec
+                    .teams
+                    .iter()
+                    .map(|(name, team)| (name.clone(), team.to_modelled()))
+                    .collect()
+            }),
         }
     }
 

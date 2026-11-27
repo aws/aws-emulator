@@ -60,6 +60,8 @@ pub struct Environment {
     pub endpoint_management: Option<String>,
     pub min_webservers: Option<i32>,
     pub max_webservers: Option<i32>,
+    pub identity_center_configuration: Option<IdentityCenterConfiguration>,
+    pub teams: Option<std::collections::HashMap<String, TeamConfig>>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.mwaa#LoggingConfiguration")]

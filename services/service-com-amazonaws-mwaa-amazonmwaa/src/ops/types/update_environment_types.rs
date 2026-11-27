@@ -37,12 +37,21 @@ pub struct UpdateEnvironmentInput {
     pub startup_script_s3_object_version: Option<String>,
     pub webserver_access_mode: Option<String>,
     pub weekly_maintenance_window_start: Option<String>,
+    pub identity_center_configuration: Option<IdentityCenterConfiguration>,
+    pub teams: Option<UpdateTeamsInput>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.mwaa#UpdateNetworkConfigurationInput")]
 #[derive(Debug, Clone, Default)]
 pub struct UpdateNetworkConfigurationInput {
     pub security_group_ids: Vec<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.mwaa#UpdateTeamsInput")]
+#[derive(Debug, Clone, Default)]
+pub struct UpdateTeamsInput {
+    pub add_or_update: Option<std::collections::HashMap<String, TeamConfig>>,
+    pub remove: Option<Vec<String>>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.mwaa#UpdateEnvironmentOutput")]

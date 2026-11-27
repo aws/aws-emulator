@@ -379,6 +379,22 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 }
                 logging
             },
+            // The IAM Identity Center instance the environment's Apache Airflow web UI
+            // authenticates users against, as this create named it; a create that named
+            // none configures none, and its environment has no team either (see
+            // `crate::state::EnvironmentSpec::validate`).
+            identity_center_configuration: input
+                .identity_center_configuration
+                .as_ref()
+                .map(crate::state::IdentityCenterConfigurationRecord::from_input),
+            // The teams this create configures for Apache Airflow multi-team support, each
+            // with the Amazon S3 location of its own DAG code.
+            teams: input
+                .teams
+                .iter()
+                .flatten()
+                .map(|(name, team)| (name.clone(), crate::state::TeamRecord::from_input(team)))
+                .collect(),
             environment_class,
         };
 

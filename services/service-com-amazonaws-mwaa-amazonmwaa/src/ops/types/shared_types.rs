@@ -41,6 +41,20 @@ pub struct ModuleLoggingConfigurationInput {
     pub log_level: String,
 }
 
+#[smithy_macros::smithy(shape = "com.amazonaws.mwaa#IdentityCenterConfiguration")]
+#[derive(Debug, Clone, Default)]
+pub struct IdentityCenterConfiguration {
+    pub start_url: Option<String>,
+    pub identity_store_id: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.mwaa#TeamConfig")]
+#[derive(Debug, Clone, Default)]
+pub struct TeamConfig {
+    pub source_bucket_arn: String,
+    pub dag_s3_path: String,
+}
+
 #[smithy_macros::smithy(shape = "com.amazonaws.mwaa#InternalServerException")]
 #[derive(Debug, Clone, Default)]
 pub struct InternalServerException {

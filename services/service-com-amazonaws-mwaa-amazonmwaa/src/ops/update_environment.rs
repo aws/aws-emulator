@@ -434,6 +434,17 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         if let Some(value) = input.weekly_maintenance_window_start {
             spec.weekly_maintenance_window_start = value;
         }
+        if let Some(value) = input.identity_center_configuration.as_ref() {
+            spec.identity_center_configuration = Some(
+                crate::state::IdentityCenterConfigurationRecord::from_input(value),
+            );
+        }
+        if let Some(value) = input.teams.as_ref() {
+            // `Teams` is a pair of CHANGES on an update (`AddOrUpdate` and `Remove`) rather
+            // than the team set itself, so it is applied to the teams already configured
+            // (`crate::state::EnvironmentSpec::apply_team_changes`).
+            spec.apply_team_changes(value);
+        }
 
         // Each optional Amazon S3 object is recorded as the complete pair that identifies
         // it or not at all, so a patch that clears one side of a pair — either member can
