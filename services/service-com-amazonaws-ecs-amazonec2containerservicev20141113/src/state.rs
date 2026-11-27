@@ -115,7 +115,7 @@
 //! onto the account's default bus for each move, so a client can watch a task without
 //! calling Amazon ECS again.
 
-use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::time::{Duration, SystemTime};
 
 use ::aws_smithy_types::DateTime;
@@ -4725,6 +4725,18 @@ pub struct ComAmazonawsEcsAmazonec2containerservicev20141113State {
     pub deleted_daemons: BTreeMap<String, SystemTime>,
     /// `taskArn` -> the task.
     pub tasks: HashMap<String, TaskRecord>,
+    /// `taskArn` -> the load-balancer registrations Amazon ECS has ALREADY made for that
+    /// task's placement ([`PlacedRegistration`], one entry per binding it was placed under).
+    ///
+    /// What makes the registration of a task an EVENT of its placement rather than a set a
+    /// pass keeps re-asserting: "When a task from this service is placed ... the container
+    /// instance and port combination is registered as a target in the target group that's
+    /// specified here" (`CreateService$loadBalancers`), so a target this scheduler has
+    /// registered once is not registered again while that task runs — whatever the Elastic
+    /// Load Balancing callers have done with it since ([`reconcile_target_group_registrations`]).
+    /// Entries of tasks this store no longer holds are dropped as the registrations are
+    /// recorded, so this is bounded by the tasks themselves ([`MAX_TASKS`]).
+    pub placed_load_balancer_registrations: BTreeMap<String, BTreeSet<PlacedRegistration>>,
     /// `containerInstanceArn` -> the registered container instance.
     pub container_instances: HashMap<String, ContainerInstanceRecord>,
     /// `(clusterName, serviceName)` -> the service. Service names are unique within a

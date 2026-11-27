@@ -81,6 +81,15 @@ pub const MAX_SERVED_PORT_RANGES: usize = 100 * MAX_CONTAINER_DEFINITIONS;
 /// exactly as [`MAX_SERVED_PORT_RANGES`] holds the declared ports.
 pub const MAX_GUARDING_GROUPS: usize = 16;
 
+/// What identifies ONE registration Amazon ECS has made for a task's placement: the target
+/// group the binding named, the target the task is reached at, and the port the binding takes
+/// it at (`None` where the binding named none and the group's own port stands).
+///
+/// Recorded per task ([`ComAmazonawsEcsAmazonec2containerservicev20141113State::placed_load_balancer_registrations`])
+/// so the registration a placement owes is made ONCE: it is the three values a reconcile
+/// would otherwise keep re-asserting against the target group.
+pub type PlacedRegistration = (String, String, Option<i32>);
+
 /// One target an ECS service's task occupies in one ELBv2 target group.
 ///
 /// Every field is read off the stored task and the stored binding, so a registration stands
@@ -140,6 +149,16 @@ pub struct TargetRegistration {
     /// service's own alias for the shape, which is where this value is stored
     /// ([`GuardingGroups`]).
     pub guarding_groups: GuardingGroups,
+    /// Whether Amazon ECS has ALREADY registered this target for this task's placement
+    /// ([`ComAmazonawsEcsAmazonec2containerservicev20141113State::placed_load_balancer_registrations`]).
+    ///
+    /// A registration this scheduler has made is not made a second time while the task runs:
+    /// the registration is an event of the task's placement, so what the target group holds
+    /// for it from then on is whatever the Elastic Load Balancing callers left there
+    /// ([`reconcile_target_group_registrations`]). The registration is still WANTED — a
+    /// reconcile does not take it out while the task is running — which is why this is a fact
+    /// about the entry rather than a reason to leave it off the list.
+    pub already_placed: bool,
 }
 
 impl ComAmazonawsEcsAmazonec2containerservicev20141113State {
@@ -257,6 +276,14 @@ impl ComAmazonawsEcsAmazonec2containerservicev20141113State {
                     if !seen.insert((arn.to_string(), target_id.clone(), port)) {
                         continue;
                     }
+                    // Whether this very registration was already made for this task's
+                    // placement, read off what this store recorded when it was made.
+                    let already_placed = self
+                        .placed_load_balancer_registrations
+                        .get(&task.task_arn)
+                        .is_some_and(|made| {
+                            made.contains(&(arn.to_string(), target_id.clone(), port))
+                        });
                     registrations.push(TargetRegistration {
                         target_group_arn: arn.to_string(),
                         target_type,
@@ -266,6 +293,7 @@ impl ComAmazonawsEcsAmazonec2containerservicev20141113State {
                         task_arn: task.task_arn.clone(),
                         served_ports,
                         guarding_groups,
+                        already_placed,
                     });
                 }
             }
@@ -436,6 +464,17 @@ pub fn settle_load_balancer_targets<Eng: Send + Sync + 'static>(engine: &Eng) {
 /// that drains a task before tearing it down waits on. One a `RegisterTargets` caller made
 /// is left exactly as it is.
 ///
+/// A registration this scheduler has ALREADY made for a task's placement
+/// ([`TargetRegistration::already_placed`]) is not made again: registering is an event of the
+/// placement — "When a task from this service is placed ... the container instance and port
+/// combination is registered as a target in the target group that's specified here"
+/// (`CreateService$loadBalancers`) — so from then on the membership of the group is whatever
+/// the Elastic Load Balancing callers left there. A target a `DeregisterTargets` caller took
+/// out therefore STAYS out while its task runs, draining and then leaving the group as that
+/// call asked, rather than being put back by the next reconcile; a task placed again is
+/// registered as the first placement was. The registrations this call makes are recorded on
+/// the tasks they were made for, with the entries of tasks this store no longer holds dropped.
+///
 /// Nothing happens when the Elastic Load Balancing v2 store is unreachable (the engine is
 /// not the shared in-memory one): there is then no target group to register into and none
 /// Amazon ECS could have registered into, so there is nothing to add and nothing to clean
@@ -463,6 +502,10 @@ pub fn reconcile_target_group_registrations<Eng: Send + Sync + 'static>(
         String,
         ::service_com_amazonaws_elasticloadbalancingv2_elasticloadbalancing_v10::state::TargetKey,
     )> = Vec::new();
+    // The registrations this reconcile MADE for a placement, each as the task it was made
+    // for and what identifies it: recorded on that task once the store below is unlocked, so
+    // no later reconcile makes it again.
+    let mut placed: Vec<(String, PlacedRegistration)> = Vec::new();
     for (arn, group) in store.target_groups.iter_mut() {
         // What the clock already owes this group: a registration whose drain is over has
         // left it, so it occupies neither a key nor the group's quota.
@@ -505,6 +548,12 @@ pub fn reconcile_target_group_registrations<Eng: Send + Sync + 'static>(
             if group.target_type != registration.target_type {
                 continue;
             }
+            // The registration of this task's placement has been made already, so this
+            // reconcile makes nothing of it: what the group holds for it now is the Elastic
+            // Load Balancing callers' business, a target one of them deregistered included.
+            if registration.already_placed {
+                continue;
+            }
             // Whether the group ALREADY holds this registration decides how to read the
             // answer below: a key that is already there is the steady state, while a key
             // that is not and still is not afterwards is a registration the group had no
@@ -535,6 +584,20 @@ pub fn reconcile_target_group_registrations<Eng: Send + Sync + 'static>(
             if registered {
                 added.push((arn.clone(), key));
             }
+            // The placement's registration is MADE once this group holds it, whether this
+            // call put it there or it was already in service: either way the scheduler owes
+            // it no second registration. A group that had no room for it is left owing one,
+            // so a later reconcile makes it where room has come free.
+            if registered || held {
+                placed.push((
+                    registration.task_arn.clone(),
+                    (
+                        registration.target_group_arn.clone(),
+                        registration.target_id.clone(),
+                        registration.port,
+                    ),
+                ));
+            }
         }
     }
     // The registrations this reconcile made are CHECKED at once, the way the Elastic Load
@@ -545,10 +608,40 @@ pub fn reconcile_target_group_registrations<Eng: Send + Sync + 'static>(
     // reconcile that moved nothing checks nothing and no other registration is touched; with
     // the guard this reconcile held RELEASED, so the check takes the store's lock itself.
     drop(store);
+    record_placed_registrations(engine, placed);
     ::service_com_amazonaws_elasticloadbalancingv2_elasticloadbalancing_v10::state::check_registrations(
         engine,
         &added,
     );
+}
+
+/// Record on their own tasks the registrations a reconcile has just made, so none of them is
+/// made a second time ([`ComAmazonawsEcsAmazonec2containerservicev20141113State::placed_load_balancer_registrations`]).
+///
+/// Called with NO guard held, after the Elastic Load Balancing v2 store's has been released:
+/// it takes THIS store's lock and no other, which is the lock order this module's header
+/// states. A call that made nothing takes no lock at all.
+///
+/// The entries of tasks this store no longer holds are dropped as the new ones go in: a
+/// registration is remembered only while the task it was made for is, which bounds this by
+/// the tasks themselves.
+fn record_placed_registrations<Eng: Send + Sync + 'static>(
+    engine: &Eng,
+    placed: Vec<(String, PlacedRegistration)>,
+) {
+    if placed.is_empty() {
+        return;
+    }
+    let Some(state) = service_state(engine) else {
+        return;
+    };
+    let mut store = state.lock();
+    let mut recorded = ::std::mem::take(&mut store.placed_load_balancer_registrations);
+    recorded.retain(|task_arn, _| store.tasks.contains_key(task_arn));
+    for (task_arn, registration) in placed {
+        recorded.entry(task_arn).or_default().insert(registration);
+    }
+    store.placed_load_balancer_registrations = recorded;
 }
 
 /// Whether `workload` names a TASK of this service — the form
