@@ -374,6 +374,32 @@ impl Snapshot {
         i64::try_from(written).unwrap_or(i64::MAX)
     }
 
+    /// The LINEAR aggregate of the per-block checksums of the blocks WRITTEN into this
+    /// snapshot — the value `CompleteSnapshotRequest$Checksum` carries.
+    ///
+    /// The composition is the one that member documents: "arrange the checksums for each
+    /// written block in ascending order of their block index, concatenate them to form a
+    /// single string, and then generate the checksum on the entire string using the SHA256
+    /// algorithm", reported Base64 as every `Checksum` is
+    /// ([`checksum_base64_sha256`]). The per-block checksums are the stored ones, each
+    /// computed over the bytes the write persisted, so the aggregate describes the content
+    /// this snapshot really holds and nothing the request said about it. Iteration order is
+    /// the `BTreeMap`'s, which is ascending by `BlockIndex` — the order the member names.
+    ///
+    /// Only the blocks this snapshot's own producer WROTE are aggregated, for the same
+    /// reason only they are counted against `ChangedBlocksCount`
+    /// ([`Self::written_block_count`]): a block a child inherits from the snapshot it was
+    /// started from was written to that parent, and the aggregate is over "each written
+    /// block". A snapshot no block was written into therefore aggregates the empty string,
+    /// which is a value like any other.
+    pub fn written_blocks_linear_checksum(&self) -> String {
+        let mut concatenated = String::new();
+        for entry in self.blocks.values().filter(|entry| entry.written) {
+            concatenated.push_str(&entry.checksum);
+        }
+        checksum_base64_sha256(concatenated.as_bytes())
+    }
+
     /// Accept the completion a `CompleteSnapshot` declaring `declared_changed_blocks_count`
     /// asks for, as of `now`, and answer the status it finalises this snapshot to.
     ///
@@ -921,13 +947,15 @@ pub fn absent_required_member_message(smithy_member_name: &str) -> String {
     )
 }
 
-/// The message `PutSnapshotBlock` answers with when the checksum the request presented
-/// for its block payload is not the checksum of the bytes that arrived.
+/// The message this service answers with when the value a request presented in
+/// `x-amz-Checksum` is not the checksum the service computes, for ANY operation carrying
+/// that header: `PutSnapshotBlock`'s checksum of the block payload that arrived, and
+/// `CompleteSnapshot`'s aggregate over the blocks the snapshot holds.
 ///
-/// A request-derived template naming BOTH values: the one computed over the received
-/// payload and the one the request supplied in `x-amz-Checksum` (the member's
-/// `@httpHeader` binding), so a caller can tell a corrupted upload from a checksum it
-/// computed over the wrong bytes.
+/// A request-derived template naming BOTH values: the one the service computed and the one
+/// the request supplied in `x-amz-Checksum` (the member's `@httpHeader` binding), so a
+/// caller can tell content that did not arrive as it was sent from a checksum it computed
+/// over the wrong input.
 pub fn checksum_mismatch_message(computed: &str, supplied: &str) -> String {
     format!(
         "The value passed in as x-amz-Checksum does not match the computed checksum. \

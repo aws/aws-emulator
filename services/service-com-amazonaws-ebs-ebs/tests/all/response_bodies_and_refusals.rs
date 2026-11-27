@@ -31,6 +31,7 @@
 
 use smithy_server_runtime::MultiServiceRouter;
 
+use crate::aggregate_checksum_of_a_completion::linear_aggregate;
 use crate::declared_block_inputs::{assert_validation, invalid_volume_size_message};
 use crate::snapshot_block_loop::{
     block_bytes, checksum, complete_snapshot, complete_snapshot_with_algorithm, get_block,
@@ -1107,9 +1108,12 @@ async fn a_judged_complete_snapshot_header_is_refused_through_the_modelled_error
     );
     let snapshot_id = member(&started, "SnapshotId");
 
-    // Inside the modelled form: base64 of a SHA256 digest, which is what an aggregate
-    // checksum is, so the control at the end is refused by nothing.
-    let aggregate = checksum(&block_bytes(3));
+    // Inside the modelled form — base64 of a SHA256 digest, which is what an aggregate
+    // checksum is — and the aggregate this snapshot's own content produces: no block is
+    // written into it, so the LINEAR aggregation hashes the empty concatenation of
+    // per-block checksums (`aggregate_checksum_of_a_completion.rs` owns that rule). The
+    // control at the end is therefore refused by nothing, by its form or by its value.
+    let aggregate = linear_aggregate(&[]);
     let over_long = "A".repeat(CHECKSUM_MAX_LENGTH + 1);
     let malformed_checksum = "not*a*checksum";
     let outside_the_set = "NOTLINEAR";
@@ -1548,8 +1552,11 @@ async fn every_handler_judged_member_is_refused_through_the_modelled_error() {
     );
     // And the completion, which is also what proves the refused completions above sealed
     // nothing: the snapshot was still open to take that write and is still open now.
+    // The aggregate this snapshot's content produces: one block was written into it, so the
+    // LINEAR aggregation hashes that block's own per-block checksum.
+    let aggregate = linear_aggregate(std::slice::from_ref(&data_checksum));
     let completed =
-        complete_snapshot_with_headers(&router, &pending, 1, Some(&data_checksum), Some("LINEAR"))
+        complete_snapshot_with_headers(&router, &pending, 1, Some(&aggregate), Some("LINEAR"))
             .await;
     assert_eq!(
         completed.status, 202,

@@ -2,9 +2,10 @@
 
 //! @op CompleteSnapshot
 //!
-//! Implemented: checks the `ChangedBlocksCount` the request declares against the blocks
-//! written into the stored snapshot, finalises that record accordingly, and acknowledges
-//! with the status it was in when the request was accepted.
+//! Implemented: verifies the aggregate `Checksum` a request declares against the blocks
+//! written into the stored snapshot, checks the `ChangedBlocksCount` it declares against
+//! those same blocks, finalises that record accordingly, and acknowledges with the status
+//! it was in when the request was accepted.
 //!
 //! ## Shape of an operation
 //!
@@ -102,8 +103,9 @@ use ::aws_smithy_schema_server::constraints::{
 };
 
 use crate::state::{
-    is_well_formed_snapshot_id, malformed_snapshot_id_message, snapshot_not_found_message,
-    unsupported_checksum_algorithm_message, SnapshotStatus, CHECKSUM_ALGORITHM_SHA256,
+    checksum_mismatch_message, is_well_formed_snapshot_id, malformed_snapshot_id_message,
+    snapshot_not_found_message, unsupported_checksum_algorithm_message, SnapshotStatus,
+    CHECKSUM_ALGORITHM_SHA256,
 };
 
 // `#[operation_error]` below expands to an invocation of the LOCAL declarative
@@ -238,16 +240,39 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             return Err(not_found(snapshot_not_found_message(&input.snapshot_id)));
         };
 
-        // DECLINED, deliberately: the aggregate `Checksum` a well-formed request carries
-        // is not recomputed from the blocks the snapshot holds. Its FORM is judged above,
-        // with the modelled constraints its member declares, but the rule that turns the
-        // per-block checksums into the aggregate is not in the model and the published
-        // prose does not pin the byte-level composition (whether the per-block checksums
-        // are concatenated as their Base64 text or as their raw digests).
-        // Refusing on a guessed composition would reject requests a real client builds
-        // correctly, which is worse than not checking; so the snapshot is sealed on the
-        // evidence this service does have — the blocks it actually stored, checksum-
-        // verified one by one as `PutSnapshotBlock` persisted them.
+        // The aggregate `Checksum`, once its FORM has been judged above, is judged on what
+        // it SAYS: it is the producer's checksum over the content it wrote, so the service
+        // recomputes that aggregate from the blocks the snapshot holds and a request
+        // declaring any other value does not correspond to this snapshot's content. Such a
+        // request is refused and seals nothing — the member is optional, so a completion
+        // that declares no aggregate has nothing to disagree with and is unaffected.
+        //
+        // The composition is the one `CompleteSnapshotRequest$Checksum` documents, not a
+        // guessed one: the per-block checksums, in ascending block-index order,
+        // concatenated into a single string, hashed with SHA256
+        // ([`crate::state::Snapshot::written_blocks_linear_checksum`]). That is also what
+        // `ChecksumAggregationMethod` names — `LINEAR`, the one method the modelled enum
+        // declares and the only value the form walk above admits — so the aggregation a
+        // request that reaches here asked for, or left to the one method there is, is this
+        // one.
+        if let Some(declared) = input
+            .checksum
+            .as_deref()
+            // Compared against the blocks the snapshot HOLDS, which is the content the
+            // aggregate describes. A snapshot finalised to `error` released its blocks
+            // ([`crate::state::Snapshot::finalise_to_error`]), so there is no content left
+            // for an aggregate to describe and such a completion is answered by the status
+            // it is in, below.
+            .filter(|_| snapshot.status != SnapshotStatus::Error)
+        {
+            let computed = snapshot.written_blocks_linear_checksum();
+            if computed != declared {
+                return Err(validation(
+                    "INVALID_PARAMETER_VALUE",
+                    checksum_mismatch_message(&computed, declared),
+                ));
+            }
+        }
 
         // `ChangedBlocksCount` is the caller's own accounting of the writes it made ("The
         // number of blocks that were written to the snapshot"), bounded only by the
