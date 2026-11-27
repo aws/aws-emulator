@@ -100,6 +100,11 @@ pub mod connection_auth;
 pub mod cluster_data_plane;
 pub use cluster_data_plane::ClusterDataPlane;
 
+/// The ADVANCED MONITORING a cluster collects: the metric groups enabled on it, as a
+/// create asks for them, an update replaces them and a read reports them.
+pub mod metric_groups;
+pub use metric_groups::*;
+
 /// The `ClusterStatus` values this service drives a cluster through, spelled as
 /// the enum spells them on the wire (`smithy_query(query="shape",
 /// shape="ClusterStatus")`: CREATING | ACTIVE | IDLE | INACTIVE | UPDATING |
@@ -393,6 +398,13 @@ pub struct Cluster {
     pub multi_region_properties: Option<MultiRegionProperties>,
     /// The cluster's tags. Sorted so a read is deterministic.
     pub tags: BTreeMap<String, String>,
+    /// The advanced-monitoring metric groups this cluster collects, spelled as
+    /// `MetricGroup` spells them on the wire. A SET: the member that enables them is
+    /// `@uniqueItems`, so a group is either collected or not and the order a request
+    /// named them in carries nothing (see [`metric_groups`]). Empty for a cluster
+    /// created without the member, and emptied again by an update that carries an
+    /// empty list.
+    pub metric_groups: std::collections::BTreeSet<String>,
     /// The resource-based policy currently attached, if any.
     pub policy: Option<ClusterPolicy>,
     /// The cluster's CDC streams, keyed by `StreamId`. Bounded by
@@ -3241,6 +3253,12 @@ pub const ENCRYPTION_DETAILS_MEMBER: &str = "encryptionDetails";
 /// under ([`RecordedCall::answering`]).
 pub const MULTI_REGION_PROPERTIES_MEMBER: &str = "multiRegionProperties";
 
+/// The name a cluster's advanced-monitoring member carries on the wire
+/// (`smithy_query(query="operation", operation="CreateCluster")`: `metricGroups`),
+/// and so the key a recorded call keeps that answer under
+/// ([`RecordedCall::answering`], through [`encode_metric_groups`]).
+pub const METRIC_GROUPS_MEMBER: &str = "metricGroups";
+
 /// The name a retired resource's creation-time member carries on the wire
 /// (`smithy_query(query="operation", operation="DeleteCluster,DeleteStream")`: a
 /// `@required` `creationTime` on each), and so the key a recorded call keeps
@@ -3398,8 +3416,8 @@ impl RecordedStatus {
 /// A minted cluster's `identifier`, `arn`, `creationTime` and `endpoint` are
 /// fixed for its whole life, so a retry renders those from the stored record.
 /// The members here are not: the clock moves `status` on, and `UpdateCluster`
-/// writes `deletionProtectionEnabled`, `encryptionDetails` and
-/// `multiRegionProperties` again. Each is therefore kept with the token and
+/// writes `deletionProtectionEnabled`, `encryptionDetails`,
+/// `multiRegionProperties` and `metricGroups` again. Each is therefore kept with the token and
 /// served from the record, as [`RecordedCall`] requires of a value a later call
 /// can supersede, so the retry answers the result of the original request.
 #[derive(Debug, Clone)]
@@ -3412,6 +3430,8 @@ pub struct RecordedClusterCreation {
     pub encryption_details: Option<EncryptionDetails>,
     /// The `multiRegionProperties` the call answered, if it answered any.
     pub multi_region_properties: Option<MultiRegionProperties>,
+    /// The `metricGroups` the call answered.
+    pub metric_groups: std::collections::BTreeSet<String>,
 }
 
 impl RecordedClusterCreation {
@@ -3432,11 +3452,15 @@ impl RecordedClusterCreation {
                 MULTI_REGION_PROPERTIES_MEMBER,
                 &encode_multi_region(self.multi_region_properties.as_ref()),
             )
+            .answering(
+                METRIC_GROUPS_MEMBER,
+                &encode_metric_groups(&self.metric_groups),
+            )
     }
 
     /// The answer `recorded` holds, or `None` when it is missing any member a
     /// served create records — a record a handler has to refuse over rather than
-    /// serve a re-derived member from, since a served create records all four.
+    /// serve a re-derived member from, since a served create records every one.
     pub fn from_record(recorded: &RecordedCall) -> Option<Self> {
         Some(Self {
             status: recorded.answered(STATUS_MEMBER)?.to_string(),
@@ -3450,6 +3474,7 @@ impl RecordedClusterCreation {
             multi_region_properties: decode_multi_region(
                 recorded.answered(MULTI_REGION_PROPERTIES_MEMBER)?,
             )?,
+            metric_groups: decode_metric_groups(recorded.answered(METRIC_GROUPS_MEMBER)?)?,
         })
     }
 }

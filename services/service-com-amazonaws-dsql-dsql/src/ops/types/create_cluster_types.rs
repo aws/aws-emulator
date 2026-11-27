@@ -20,6 +20,7 @@ pub struct CreateClusterInput {
     pub client_token: Option<String>,
     pub multi_region_properties: Option<MultiRegionProperties>,
     pub policy: Option<String>,
+    pub metric_groups: Option<Vec<MetricGroupRequest>>,
     pub bypass_policy_lockout_safety_check: bool,
 }
 
@@ -34,5 +35,6 @@ pub struct CreateClusterOutput {
     pub encryption_details: Option<EncryptionDetails>,
     pub deletion_protection_enabled: bool,
     pub endpoint: Option<String>,
+    pub metric_groups: Option<Vec<MetricGroupResponse>>,
 }
 

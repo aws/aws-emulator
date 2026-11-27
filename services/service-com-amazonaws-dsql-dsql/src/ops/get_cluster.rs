@@ -215,6 +215,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             // address the create published and every other read of this cluster
             // reports.
             endpoint: Some(crate::state::cluster_endpoint(ctx)),
+            // The advanced monitoring this cluster collects, which a read always
+            // REPORTS — the empty list for a cluster collecting none
+            // ([`crate::state::reported_metric_groups`]).
+            metric_groups: Some(crate::state::reported_metric_groups(
+                &cluster.metric_groups,
+            )),
         })
     }
 }

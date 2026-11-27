@@ -128,6 +128,7 @@ fn stored_cluster(identifier: &str, status: &str) -> Cluster {
         encryption_details: None,
         multi_region_properties: None,
         tags: Default::default(),
+        metric_groups: Default::default(),
         policy: Some(ClusterPolicy {
             document: allow("dsql:DbConnect"),
             version: SEEDED_POLICY_VERSION.to_string(),

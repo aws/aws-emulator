@@ -279,7 +279,14 @@ fn refusal_for<O: Operation>(
 /// `violations` as the modelled `ValidationException` for fields that did not
 /// validate, or `None` when there is none to state — an empty set, and the two tag
 /// refusals [`refused_for`] answers as a bad request body instead.
-fn fields_that_did_not_validate(violations: &[Violation]) -> Option<ValidationException> {
+///
+/// Reachable from the rest of the crate because a MODELLED constraint this walk
+/// cannot reach — `@uniqueItems` over a list whose elements are structures, which
+/// the walk records no rendering for — is refused by the handler that owns the
+/// member, and that refusal has to read exactly as this one does.
+pub(crate) fn fields_that_did_not_validate(
+    violations: &[Violation],
+) -> Option<ValidationException> {
     if violations.is_empty()
         || violations.iter().any(is_tag_map_overflow)
         || violations.iter().any(is_outside_the_tag_character_set)

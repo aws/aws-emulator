@@ -14,6 +14,11 @@
 //! here named after an operation would make that operation's own module name
 //! ambiguous inside `ops` (`E0659`).
 
+/// The access denial every operation of this service can answer, declared in this
+/// crate's own source: the model binds `AccessDeniedException` to the SERVICE, so it
+/// is in no operation's own error list and the scaffold renders no declaration for it
+/// (see the module's own documentation).
+pub mod access_denied_types;
 pub mod create_cluster_types;
 pub mod create_stream_types;
 pub mod delete_cluster_policy_types;
@@ -32,6 +37,8 @@ pub mod tag_resource_types;
 pub mod untag_resource_types;
 pub mod update_cluster_types;
 
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use access_denied_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use create_cluster_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]

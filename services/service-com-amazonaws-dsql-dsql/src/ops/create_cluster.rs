@@ -9,7 +9,7 @@
 //! single-Region cluster, and `PENDING_SETUP` for one created with a
 //! `multiRegionProperties` configuration, whose peering is not established on
 //! both sides yet — and the `tags` / `kmsEncryptionKey` / `multiRegionProperties`
-//! / `policy` the caller supplied. A repeated `clientToken` with the same
+//! / `policy` / `metricGroups` the caller supplied. A repeated `clientToken` with the same
 //! parameters mints no second cluster and answers with the RESULT the first call
 //! produced — the status it reported and the configuration it reported, not the
 //! ones the clock and a later `UpdateCluster` have left on the cluster since;
@@ -28,7 +28,9 @@
 //! same document) — or one granting to an identity this account's IAM does not hold
 //! (`state::unresolved_policy_principal`, the same), and so is a `kmsEncryptionKey`
 //! naming a key KMS holds none of (`state::kms_key`, the check `UpdateCluster`
-//! applies to the same member).
+//! applies to the same member), and so is a `metricGroups` naming one metric group
+//! twice (`state::duplicated_metric_group`, the check `UpdateCluster` applies to the
+//! same member).
 //!
 //! ## Shape of an operation
 //!
@@ -306,6 +308,18 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 return Err(CreateClusterErrorModeled::ValidationException(invalid).into());
             }
 
+            // The advanced monitoring a create asks for names each group at most
+            // once (`MetricGroupRequestList` is `@uniqueItems`), a constraint the
+            // boundary walk does not reach over a list of structures, so a list
+            // naming one twice is refused here before any cluster is minted
+            // (`crate::state::duplicated_metric_group`).
+            if let Some(invalid) = crate::state::duplicated_metric_group(
+                crate::state::METRIC_GROUPS_MEMBER,
+                input.metric_groups.as_deref(),
+            ) {
+                return Err(CreateClusterErrorModeled::ValidationException(invalid).into());
+            }
+
             // A `policy` supplied here is persisted as the cluster's own policy record
             // and reported by `GetClusterPolicy` exactly as one `PutClusterPolicy`
             // attached, so the document is held to the same rule: it has to parse, and
@@ -346,11 +360,23 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // address a client afterwards dials with a PostgreSQL driver, so no cluster
         // is stored without the listener that serves it
         // (`crate::state::cluster_data_plane`). The core owns the socket, the bind
-        // interface and the port; this hands it the wire. The plane admits a
-        // session only once the cluster's own status says it is up, which is the
-        // status the clock settles a settle span from now — and a call that ends up
-        // minting no cluster at all (an idempotent replay, a refusal below) drops
-        // the plane unused, which closes the port with it.
+        // interface and the port; this hands it the wire.
+        //
+        // EVERY session on that listener AUTHENTICATES its caller, and this call
+        // arranges it: the handler that is handed to the core
+        // (`crate::state::cluster_data_plane::StoredClusterFacts`) answers the
+        // shared plane's login question (`ServedDatabase::verified_login`) by
+        // judging the credential the startup presented — the presigned Aurora DSQL
+        // auth token, against its action, the cluster's OWN announced host
+        // (`endpoint_host`, passed in here for exactly that) and its lifetime
+        // (`crate::state::connection_auth::admits`) — and the cluster holds no
+        // password, so a login presenting anything else, an empty password
+        // included, is refused and the connection closed. The cluster's own status
+        // is the SECOND condition, not the only one: the plane admits a session
+        // only once that status says it is up, which is the status the clock settles
+        // a settle span from now. A call that ends up minting no cluster at all (an
+        // idempotent replay, a refusal below) drops the plane unused, which closes
+        // the port with it.
         //
         // An emulator whose engine can open no listener at all leaves the cluster
         // without one rather than refusing a create every caller of such a host
@@ -478,6 +504,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             kms_encryption_key: customer_key.map(str::to_string),
             multi_region_properties: input.multi_region_properties.clone(),
             tags: input.tags.clone().unwrap_or_default().into_iter().collect(),
+            // The advanced monitoring this cluster collects: the groups the request
+            // names, and none for a request that names none
+            // (`crate::state::metric_groups`).
+            metric_groups: crate::state::requested_metric_groups(
+                input.metric_groups.as_deref(),
+            ),
             policy: None,
             streams: std::collections::BTreeMap::new(),
             pending: None,
@@ -516,6 +548,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 deletion_protection_enabled: created.deletion_protection_enabled,
                 encryption_details: created.encryption_details.clone(),
                 multi_region_properties: created.multi_region_properties.clone(),
+                metric_groups: crate::state::requested_metric_groups(
+                    input.metric_groups.as_deref(),
+                ),
             };
             state
                 .tokens(crate::state::TokenScope::CreateCluster)
@@ -551,6 +586,7 @@ fn create_fingerprint(input: &CreateClusterInput) -> String {
         crate::state::fingerprint_multi_region(input.multi_region_properties.as_ref()),
         crate::state::fingerprint_optional(input.policy.as_deref()),
         input.bypass_policy_lockout_safety_check.to_string(),
+        crate::state::fingerprint_metric_groups(input.metric_groups.as_deref()),
         crate::state::fingerprint_tags(input.tags.as_ref()),
     ])
 }
@@ -571,6 +607,10 @@ fn created_cluster_output(
         encryption_details: cluster.encryption_details.clone(),
         deletion_protection_enabled: cluster.deletion_protection_enabled,
         endpoint: Some(endpoint.to_string()),
+        // The advanced monitoring the created cluster collects, read off the record
+        // it was just stored with — the empty list for a cluster collecting none
+        // (`crate::state::reported_metric_groups`).
+        metric_groups: Some(crate::state::reported_metric_groups(&cluster.metric_groups)),
     }
 }
 
@@ -584,8 +624,8 @@ fn created_cluster_output(
 /// this cluster names; every member a later call can write again comes from what
 /// the original call answered
 /// ([`crate::state::RecordedClusterCreation`]), because the live cluster's
-/// configuration is not that result once an `UpdateCluster` or the clock has
-/// changed it.
+/// configuration — its advanced monitoring among it — is not that result once an
+/// `UpdateCluster` or the clock has changed it.
 fn replayed_cluster_output(
     cluster: &crate::state::Cluster,
     answered: crate::state::RecordedClusterCreation,
@@ -600,5 +640,8 @@ fn replayed_cluster_output(
         multi_region_properties: answered.multi_region_properties,
         encryption_details: answered.encryption_details,
         deletion_protection_enabled: answered.deletion_protection_enabled,
+        metric_groups: Some(crate::state::reported_metric_groups(
+            &answered.metric_groups,
+        )),
     }
 }

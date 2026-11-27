@@ -27,10 +27,11 @@ use std::sync::Arc;
 use serde_json::{json, Value};
 use service_com_amazonaws_dsql_dsql::ops::types::{KinesisTargetDefinition, TargetDefinition};
 use service_com_amazonaws_dsql_dsql::state::{
-    fingerprint_multi_region, fingerprint_optional, fingerprint_tags, fingerprint_target,
-    request_fingerprint, ComAmazonawsDsqlDsqlState, RecordedCall, RecordedClusterCreation,
-    TokenScope, POLICY_VERSION_MEMBER, RECORDED_RESULT_UNAVAILABLE_MESSAGE, STATUS_ACTIVE,
-    STATUS_CREATING, STATUS_MEMBER, STATUS_UPDATING, STREAM_STATUS_CREATING,
+    fingerprint_metric_groups, fingerprint_multi_region, fingerprint_optional, fingerprint_tags,
+    fingerprint_target, request_fingerprint, ComAmazonawsDsqlDsqlState, RecordedCall,
+    RecordedClusterCreation, TokenScope, POLICY_VERSION_MEMBER,
+    RECORDED_RESULT_UNAVAILABLE_MESSAGE, STATUS_ACTIVE, STATUS_CREATING, STATUS_MEMBER,
+    STATUS_UPDATING, STREAM_STATUS_CREATING,
 };
 
 use crate::harness::{wait_for_the_clock, Answer, Dsql};
@@ -238,22 +239,24 @@ fn fingerprint(which: Replay, target: &Target) -> String {
     match which {
         // `deletionProtectionEnabled`, `kmsEncryptionKey`,
         // `multiRegionProperties`, `policy`,
-        // `bypassPolicyLockoutSafetyCheck`, `tags`.
+        // `bypassPolicyLockoutSafetyCheck`, `metricGroups`, `tags`.
         Replay::CreateCluster => request_fingerprint(&[
             false.to_string(),
             fingerprint_optional(None::<&str>),
             fingerprint_multi_region(None),
             fingerprint_optional(None::<&str>),
             false.to_string(),
+            fingerprint_metric_groups(None),
             fingerprint_tags(None),
         ]),
         // `identifier`, `deletionProtectionEnabled`, `kmsEncryptionKey`,
-        // `multiRegionProperties`.
+        // `multiRegionProperties`, `metricGroups`.
         Replay::UpdateCluster => request_fingerprint(&[
             target.cluster.clone(),
             true.to_string(),
             fingerprint_optional(None::<&str>),
             fingerprint_multi_region(None),
+            fingerprint_metric_groups(None),
         ]),
         // `clusterIdentifier`, `ordering`, `format`, `targetDefinition`, `tags`.
         Replay::CreateStream => request_fingerprint(&[
@@ -288,6 +291,7 @@ fn complete_record(which: Replay, target: &Target) -> RecordedCall {
             deletion_protection_enabled: true,
             encryption_details: None,
             multi_region_properties: None,
+            metric_groups: Default::default(),
         }
         .into_record(target.resource()),
         _ => RecordedCall::new(target.resource())

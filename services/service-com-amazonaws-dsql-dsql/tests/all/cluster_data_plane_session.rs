@@ -331,10 +331,10 @@ async fn an_expired_token_is_refused_at_connect_while_an_open_session_survives()
 /// HOLDS opens a session; everything else is refused, and the hint says which of
 /// the token's facts failed.
 ///
-/// The rows span the class of logins that are not this cluster's: an ordinary
-/// password, a token minted for the other action, a token minted against another
-/// cluster's host, and a well-formed connect token naming a role the cluster does
-/// not hold.
+/// The rows span the class of logins that are not this cluster's: no credential at
+/// all, an ordinary password, a token minted for the other action, a token minted
+/// against another cluster's host, and a well-formed connect token naming a role the
+/// cluster does not hold.
 #[tokio::test]
 async fn a_credential_that_is_not_this_clusters_token_opens_no_session() {
     let cluster = Cluster::created().await;
@@ -345,6 +345,16 @@ async fn a_credential_that_is_not_this_clusters_token_opens_no_session() {
 
     // (case, the user, the password presented, the message expected, the hint expected)
     let rows: Vec<(&str, &str, String, &str, Option<String>)> = vec![
+        (
+            // The cluster holds no password of its own, so a startup that presents
+            // no credential at all is refused exactly as any other non-token is:
+            // nothing on this endpoint is served to an unauthenticated caller.
+            "no credential at all",
+            ADMIN_USER,
+            String::new(),
+            ACCESS_DENIED,
+            None,
+        ),
         (
             "an ordinary password",
             ADMIN_USER,

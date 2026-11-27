@@ -29,5 +29,6 @@ pub struct GetClusterOutput {
     pub tags: Option<std::collections::HashMap<String, String>>,
     pub encryption_details: Option<EncryptionDetails>,
     pub endpoint: Option<String>,
+    pub metric_groups: Option<Vec<MetricGroupResponse>>,
 }
 

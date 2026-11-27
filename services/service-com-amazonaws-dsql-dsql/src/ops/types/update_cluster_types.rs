@@ -19,6 +19,7 @@ pub struct UpdateClusterInput {
     pub kms_encryption_key: Option<String>,
     pub client_token: Option<String>,
     pub multi_region_properties: Option<MultiRegionProperties>,
+    pub metric_groups: Option<Vec<MetricGroupRequest>>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.dsql#UpdateClusterOutput")]

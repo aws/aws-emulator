@@ -11,12 +11,6 @@ use super::*;
 
 smithy_macros::smithy_model!("smithy-model/com-amazonaws-dsql-dsql.json");
 
-#[smithy_macros::smithy(shape = "com.amazonaws.dsql#AccessDeniedException")]
-#[derive(Debug, Clone, Default)]
-pub struct AccessDeniedException {
-    pub message: String,
-}
-
 #[smithy_macros::smithy(shape = "com.amazonaws.dsql#ResourceNotFoundException")]
 #[derive(Debug, Clone, Default)]
 pub struct ResourceNotFoundException {
@@ -42,12 +36,24 @@ pub struct MultiRegionProperties {
     pub clusters: Option<Vec<String>>,
 }
 
+#[smithy_macros::smithy(shape = "com.amazonaws.dsql#MetricGroupRequest")]
+#[derive(Debug, Clone, Default)]
+pub struct MetricGroupRequest {
+    pub metric_group: String,
+}
+
 #[smithy_macros::smithy(shape = "com.amazonaws.dsql#EncryptionDetails")]
 #[derive(Debug, Clone, Default)]
 pub struct EncryptionDetails {
     pub encryption_type: String,
     pub kms_key_arn: Option<String>,
     pub encryption_status: String,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.dsql#MetricGroupResponse")]
+#[derive(Debug, Clone, Default)]
+pub struct MetricGroupResponse {
+    pub metric_group: String,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.dsql#ConflictException")]
@@ -97,6 +103,10 @@ pub const ENCRYPTION_STATUS_VALUES: &[&str] = &["ENABLED", "ENABLING", "KMS_KEY_
 
 /// The values `EncryptionType` accepts on the wire.
 pub const ENCRYPTION_TYPE_VALUES: &[&str] = &["AWS_OWNED_KMS_KEY", "CUSTOMER_MANAGED_KMS_KEY"];
+
+
+/// The values `MetricGroup` accepts on the wire.
+pub const METRIC_GROUP_VALUES: &[&str] = &["STATEMENT_STATISTICS"];
 
 
 /// The values `StreamFailureErrorCode` accepts on the wire.

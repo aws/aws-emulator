@@ -75,7 +75,12 @@ use std::sync::Arc;
 /// `ValidationException` body it answers with. Internal to this crate — what a client
 /// sees of it is the error on the wire, which the crate's tests assert through the
 /// router.
-mod validation;
+///
+/// Visible to the rest of the crate because a MODELLED constraint the framework's
+/// constraint walk cannot reach is refused by the handler that owns the member, and
+/// such a refusal has to read exactly as the walk's own does
+/// ([`validation::fields_that_did_not_validate`]).
+pub(crate) mod validation;
 
 /// The `com-amazonaws-dsql-dsql` emulated service: the generated [`ServiceDefinition`] plus
 /// the behavioral seams this file owns.

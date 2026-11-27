@@ -1173,6 +1173,7 @@ pub fn retiring_cluster(identifier: &str, due_at: SystemTime) -> Cluster {
         encryption_details: None,
         multi_region_properties: None,
         tags: Default::default(),
+        metric_groups: Default::default(),
         policy: None,
         streams: Default::default(),
         pending: Some(PendingTransition {

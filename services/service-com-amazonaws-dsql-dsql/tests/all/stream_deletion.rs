@@ -427,6 +427,7 @@ fn seeded_cluster(region: &str, identifier: &str, status: &str, stream: Stream) 
         encryption_details: None,
         multi_region_properties: None,
         tags: Default::default(),
+        metric_groups: Default::default(),
         policy: None,
         streams: [(stream.stream_identifier.clone(), stream)]
             .into_iter()

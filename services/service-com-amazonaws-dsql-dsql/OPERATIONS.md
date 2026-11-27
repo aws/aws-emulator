@@ -50,8 +50,8 @@ contents — read that shape in the model above when you need its own members.
 ## CreateCluster
 
 - **Route:** `POST /cluster -> 200`
-- **Input:** `deletionProtectionEnabled` (boolean, default true, required), `kmsEncryptionKey` (string, len 1..2048, pattern ^[a-zA-Z0-9:/_-]+$), `tags` (map<string,string>, len 0..200), `clientToken` (string, len 1..128, pattern ^[!-~]+$, @idempotencyToken), `multiRegionProperties` (MultiRegionProperties), `policy` (string, len 1..20480), `bypassPolicyLockoutSafetyCheck` (boolean, default false, required)
-- **Output:** `identifier` (string, pattern ^[a-z0-9]{26}$, required), `arn` (string, pattern ^arn:aws(-[^:]+)?:dsql:[a-z0-9-]{1,20}:[0-9]{12}:cluster/[a-z0-9]{26}$, required), `status` (ClusterStatus, one of: ACTIVE | CREATING | DELETED | DELETING | FAILED | IDLE | INACTIVE | PENDING_DELETE | PENDING_SETUP | UPDATING, required), `creationTime` (timestamp, required), `multiRegionProperties` (MultiRegionProperties), `encryptionDetails` (EncryptionDetails), `deletionProtectionEnabled` (boolean, required), `endpoint` (string, pattern ^[a-zA-Z0-9.-]+$)
+- **Input:** `deletionProtectionEnabled` (boolean, default true, required), `kmsEncryptionKey` (string, len 1..2048, pattern ^[a-zA-Z0-9:/_-]+$), `tags` (map<string,string>, len 0..200), `clientToken` (string, len 1..128, pattern ^[!-~]+$, @idempotencyToken), `multiRegionProperties` (MultiRegionProperties), `policy` (string, len 1..20480), `metricGroups` (list<MetricGroupRequest>, len ..20), `bypassPolicyLockoutSafetyCheck` (boolean, default false, required)
+- **Output:** `identifier` (string, pattern ^[a-z0-9]{26}$, required), `arn` (string, pattern ^arn:aws(-[^:]+)?:dsql:[a-z0-9-]{1,20}:[0-9]{12}:cluster/[a-z0-9]{26}$, required), `status` (ClusterStatus, one of: ACTIVE | CREATING | DELETED | DELETING | FAILED | IDLE | INACTIVE | PENDING_DELETE | PENDING_SETUP | UPDATING, required), `creationTime` (timestamp, required), `multiRegionProperties` (MultiRegionProperties), `encryptionDetails` (EncryptionDetails), `deletionProtectionEnabled` (boolean, required), `endpoint` (string, pattern ^[a-zA-Z0-9.-]+$), `metricGroups` (list<MetricGroupResponse>, len ..20)
 - **Errors:** `ConflictException (HTTP 409)`, `ServiceQuotaExceededException (HTTP 402)`, `ValidationException (HTTP 400)`
 
 ## GetCluster
@@ -59,13 +59,13 @@ contents — read that shape in the model above when you need its own members.
 - **Route:** `GET /cluster/{identifier} -> 200`
 - **Traits:** @readonly
 - **Input:** `identifier` (string, pattern ^[a-z0-9]{26}$, @httpLabel, required)
-- **Output:** `identifier` (string, pattern ^[a-z0-9]{26}$, required), `arn` (string, pattern ^arn:aws(-[^:]+)?:dsql:[a-z0-9-]{1,20}:[0-9]{12}:cluster/[a-z0-9]{26}$, required), `status` (ClusterStatus, one of: ACTIVE | CREATING | DELETED | DELETING | FAILED | IDLE | INACTIVE | PENDING_DELETE | PENDING_SETUP | UPDATING, required), `creationTime` (timestamp, required), `deletionProtectionEnabled` (boolean, required), `multiRegionProperties` (MultiRegionProperties), `tags` (map<string,string>, len 0..200), `encryptionDetails` (EncryptionDetails), `endpoint` (string, pattern ^[a-zA-Z0-9.-]+$)
+- **Output:** `identifier` (string, pattern ^[a-z0-9]{26}$, required), `arn` (string, pattern ^arn:aws(-[^:]+)?:dsql:[a-z0-9-]{1,20}:[0-9]{12}:cluster/[a-z0-9]{26}$, required), `status` (ClusterStatus, one of: ACTIVE | CREATING | DELETED | DELETING | FAILED | IDLE | INACTIVE | PENDING_DELETE | PENDING_SETUP | UPDATING, required), `creationTime` (timestamp, required), `deletionProtectionEnabled` (boolean, required), `multiRegionProperties` (MultiRegionProperties), `tags` (map<string,string>, len 0..200), `encryptionDetails` (EncryptionDetails), `endpoint` (string, pattern ^[a-zA-Z0-9.-]+$), `metricGroups` (list<MetricGroupResponse>, len ..20)
 - **Errors:** `ResourceNotFoundException (HTTP 404)`
 
 ## UpdateCluster
 
 - **Route:** `POST /cluster/{identifier} -> 200`
-- **Input:** `identifier` (string, pattern ^[a-z0-9]{26}$, @httpLabel, required), `deletionProtectionEnabled` (boolean), `kmsEncryptionKey` (string, len 1..2048, pattern ^[a-zA-Z0-9:/_-]+$), `clientToken` (string, len 1..128, pattern ^[!-~]+$, @idempotencyToken), `multiRegionProperties` (MultiRegionProperties)
+- **Input:** `identifier` (string, pattern ^[a-z0-9]{26}$, @httpLabel, required), `deletionProtectionEnabled` (boolean), `kmsEncryptionKey` (string, len 1..2048, pattern ^[a-zA-Z0-9:/_-]+$), `clientToken` (string, len 1..128, pattern ^[!-~]+$, @idempotencyToken), `multiRegionProperties` (MultiRegionProperties), `metricGroups` (list<MetricGroupRequest>, len ..20)
 - **Output:** `identifier` (string, pattern ^[a-z0-9]{26}$, required), `arn` (string, pattern ^arn:aws(-[^:]+)?:dsql:[a-z0-9-]{1,20}:[0-9]{12}:cluster/[a-z0-9]{26}$, required), `status` (ClusterStatus, one of: ACTIVE | CREATING | DELETED | DELETING | FAILED | IDLE | INACTIVE | PENDING_DELETE | PENDING_SETUP | UPDATING, required), `creationTime` (timestamp, required)
 - **Errors:** `ConflictException (HTTP 409)`, `ResourceNotFoundException (HTTP 404)`, `ValidationException (HTTP 400)`
 

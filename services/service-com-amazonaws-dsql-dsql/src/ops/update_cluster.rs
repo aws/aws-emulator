@@ -9,13 +9,16 @@
 //! both sides. A `multiRegionProperties.clusters` REPLACES the peer list the cluster
 //! carried, so every current peer the new list omits is a peering this call removes:
 //! that peer stops naming this cluster too, and its own status is recomputed from
-//! what the removal leaves it with. Unknown identifier -> `ResourceNotFoundException` (404);
+//! what the removal leaves it with. A `metricGroups` REPLACES the advanced monitoring
+//! the cluster collected on the same terms — every group the new list omits stops
+//! being collected, and an empty list stops all of them. Unknown identifier -> `ResourceNotFoundException` (404);
 //! a cluster in a status that does not accept a mutation -> `ConflictException` (409),
 //! except that a cluster waiting in `PENDING_SETUP` takes a request asking for
 //! NOTHING BUT the configuration change that completes its peering;
 //! a `multiRegionProperties.witnessRegion` naming the cluster's OWN Region, a
 //! `multiRegionProperties.clusters` naming more peers than
-//! `state::MAX_MULTI_REGION_PEERS`, or a `kmsEncryptionKey` naming a key KMS holds
+//! `state::MAX_MULTI_REGION_PEERS`, a `metricGroups` naming one metric group twice
+//! (`state::duplicated_metric_group`), or a `kmsEncryptionKey` naming a key KMS holds
 //! none of (`state::kms_key`) ->
 //! `ValidationException` (400), with the cluster left unchanged.
 //! A repeat of the same `clientToken` with the same parameters is the same request,
@@ -286,6 +289,18 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             return Err(UpdateClusterErrorModeled::ValidationException(invalid).into());
         }
 
+        // The advanced monitoring a request asks for names each group at most once
+        // (`MetricGroupRequestList` is `@uniqueItems`), a constraint the boundary
+        // walk does not reach over a list of structures, so a list naming one twice
+        // is refused here with the cluster left unchanged
+        // (`crate::state::duplicated_metric_group`).
+        if let Some(invalid) = crate::state::duplicated_metric_group(
+            crate::state::METRIC_GROUPS_MEMBER,
+            input.metric_groups.as_deref(),
+        ) {
+            return Err(UpdateClusterErrorModeled::ValidationException(invalid).into());
+        }
+
         // `@idempotencyToken`: a repeat of the SAME request is the same request,
         // so it answers from the cluster the first call acted on — ahead of the
         // status gate below, which would otherwise refuse the retry for the very
@@ -415,6 +430,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         if let Some(multi_region_properties) = input.multi_region_properties {
             cluster.multi_region_properties = Some(multi_region_properties);
         }
+        // The advanced monitoring the cluster collects is REPLACED by the list the
+        // request carries: every group it does not name stops being collected, and an
+        // empty list stops all of them. A request that omits the member asks for no
+        // change at all, which is why the absent member is told from the empty one
+        // here (`crate::state::metric_groups`).
+        if let Some(metric_groups) = input.metric_groups.as_deref() {
+            cluster.metric_groups = crate::state::requested_metric_groups(Some(metric_groups));
+        }
 
         // A peer list REPLACES the one the cluster carried, so every current peer it
         // omits is a peering this call removes — the member this operation documents
@@ -483,13 +506,15 @@ fn updated_cluster_output(cluster: &crate::state::Cluster) -> UpdateClusterOutpu
 /// status refuses every other mutation.
 ///
 /// Every member of `UpdateClusterInput` that changes the stored cluster is weighed:
-/// `multiRegionProperties` is the configuration itself, `deletionProtectionEnabled`
-/// and `kmsEncryptionKey` are mutations of their own, and `identifier` addresses the
-/// cluster while `clientToken` only names the request, so neither asks for a change.
+/// `multiRegionProperties` is the configuration itself, `deletionProtectionEnabled`,
+/// `kmsEncryptionKey` and `metricGroups` are mutations of their own, and `identifier`
+/// addresses the cluster while `clientToken` only names the request, so neither asks
+/// for a change.
 fn configures_multi_region_only(input: &UpdateClusterInput) -> bool {
     input.multi_region_properties.is_some()
         && input.deletion_protection_enabled.is_none()
         && input.kms_encryption_key.is_none()
+        && input.metric_groups.is_none()
 }
 
 /// The parameters an `UpdateCluster` `clientToken` is bound to: the cluster it
@@ -504,5 +529,6 @@ fn update_fingerprint(input: &UpdateClusterInput) -> String {
             .unwrap_or_default(),
         crate::state::fingerprint_optional(input.kms_encryption_key.as_deref()),
         crate::state::fingerprint_multi_region(input.multi_region_properties.as_ref()),
+        crate::state::fingerprint_metric_groups(input.metric_groups.as_deref()),
     ])
 }
