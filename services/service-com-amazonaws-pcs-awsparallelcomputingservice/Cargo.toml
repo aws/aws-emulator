@@ -36,6 +36,15 @@ aws-sdk-iam = { version = "1", default-features = false }
 # `src/state/ec2_security_groups.rs`) before it mints anything. Only the generated client is
 # needed — the emulator supplies the transport.
 aws-sdk-ec2 = { version = "1", default-features = false }
+# The AWS SDK for Secrets Manager, driven over the same in-process callback: PCS generates a
+# cluster's Slurm keys and keeps each in a Secrets Manager secret, which is what the cluster
+# reports them by (`src/state/cluster_secrets.rs`). Only the generated client is needed — the
+# emulator supplies the transport.
+aws-sdk-secretsmanager = { version = "1", default-features = false }
+# The entropy behind the `ClientRequestToken` that stakes one secret version, so the version
+# a cluster reports for a key is unique to the call that created it
+# (`src/state/cluster_secrets.rs`).
+getrandom = "0.3"
 # The tree's shared IAM-ARN reading, in-process IAM client and `@pattern` rendering.
 service-common = { path = "../common" }
 # WHO a request speaks for: the principal `sts:GetCallerIdentity` answers with, read from
@@ -57,6 +66,11 @@ tokio = { workspace = true, features = ["time"] }
 # DEV-ONLY: this
 # crate depends on no other service's crate outside its tests.
 service-com-amazonaws-ec2-amazonec2 = { workspace = true }
+# The owner of the secrets a cluster's Slurm keys live in, mounted beside this service in the
+# test harness: that the key a cluster reports names a secret this emulator really holds can
+# only be driven end to end with Secrets Manager on the same engine, reading the secret back
+# through its OWN operations. DEV-ONLY, like the EC2 crate above.
+service-com-amazonaws-secretsmanager-secretsmanager = { workspace = true }
 
 [lints]
 workspace = true

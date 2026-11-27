@@ -165,8 +165,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        let _ = ctx;
-        let Some(state) = crate::state::service_state(&*self.engine) else {
+        let Some(store) = crate::state::service_state(&*self.engine) else {
             return Err(DeleteClusterErrorModeled::InternalServerException(
                 InternalServerException {
                     message: "the PCS emulator holds no state on this engine".to_string(),
@@ -175,78 +174,96 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .into());
         };
 
-        let mut state = state.lock();
-        state.settle();
+        // The delete this call accepts, written with the store LOCKED — and the guard
+        // released before the hop below, so nothing of this service's state is held across a
+        // call to another service.
+        let (cluster_arn, held_secrets) = {
+            let mut state = store.lock();
+            state.settle();
 
-        // An `@idempotencyToken` retry returns the first call's result and has NO further
-        // effect, so a delete that already used this token is replayed with its empty
-        // success — BEFORE the cluster is looked up, because the cluster the first call
-        // took out is exactly what a retry can no longer find, and while it is still on
-        // its way out it is no longer `ACTIVE` either. The token is remembered with the
-        // cluster that call deleted, so the same token naming another cluster is a
-        // conflict rather than a second delete; a request carrying no token is no retry at
-        // all (the SDK generates a fresh one per call), so it is answered on its own.
-        match state.remembered_delete(
-            Self::NAME,
-            input.client_token.as_ref(),
-            None,
-            &input.cluster_identifier,
-        ) {
-            Some(crate::state::RememberedDelete::Replay) => return Ok(DeleteClusterOutput {}),
-            Some(crate::state::RememberedDelete::Conflict(remembered)) => {
+            // An `@idempotencyToken` retry returns the first call's result and has NO further
+            // effect, so a delete that already used this token is replayed with its empty
+            // success — BEFORE the cluster is looked up, because the cluster the first call
+            // took out is exactly what a retry can no longer find, and while it is still on
+            // its way out it is no longer `ACTIVE` either. The token is remembered with the
+            // cluster that call deleted, so the same token naming another cluster is a
+            // conflict rather than a second delete; a request carrying no token is no retry
+            // at all (the SDK generates a fresh one per call), so it is answered on its own.
+            match state.remembered_delete(
+                Self::NAME,
+                input.client_token.as_ref(),
+                None,
+                &input.cluster_identifier,
+            ) {
+                Some(crate::state::RememberedDelete::Replay) => {
+                    return Ok(DeleteClusterOutput {})
+                }
+                Some(crate::state::RememberedDelete::Conflict(remembered)) => {
+                    return Err(DeleteClusterErrorModeled::ConflictException(
+                        crate::state::client_token_conflict(
+                            "delete",
+                            crate::state::CLUSTER,
+                            &remembered.resource_id,
+                        ),
+                    )
+                    .into());
+                }
+                None => {}
+            }
+
+            let Some(cluster) = state.cluster_mut(&input.cluster_identifier) else {
+                return Err(DeleteClusterErrorModeled::ResourceNotFoundException(
+                    crate::state::not_found(crate::state::CLUSTER, &input.cluster_identifier),
+                )
+                .into());
+            };
+
+            // "You must delete all queues and compute node groups associated with the cluster
+            // first": a cluster that still holds either is in an unstable state to delete.
+            if cluster.blocking_children() > 0 {
                 return Err(DeleteClusterErrorModeled::ConflictException(
-                    crate::state::client_token_conflict(
-                        "delete",
-                        crate::state::CLUSTER,
-                        &remembered.resource_id,
-                    ),
+                    crate::state::cluster_still_has_children(&cluster.id),
                 )
                 .into());
             }
-            None => {}
-        }
 
-        let Some(cluster) = state.cluster_mut(&input.cluster_identifier) else {
-            return Err(DeleteClusterErrorModeled::ResourceNotFoundException(
-                crate::state::not_found(crate::state::CLUSTER, &input.cluster_identifier),
-            )
-            .into());
+            // Only a settled cluster can be deleted; one still provisioning, or already on
+            // its way out, conflicts.
+            if cluster.status != crate::state::STATUS_ACTIVE {
+                return Err(DeleteClusterErrorModeled::ConflictException(
+                    crate::state::cluster_not_active(&cluster.id),
+                )
+                .into());
+            }
+
+            // PCS reports a cluster as DELETING until it is gone; the service owes the
+            // removal from the next request on.
+            cluster.status = crate::state::STATUS_DELETING.to_string();
+            cluster.modified_at = crate::state::now_date_time();
+            cluster.pending = Some(crate::state::PendingChange::Remove);
+            let cluster_id = cluster.id.clone();
+            let cluster_name = cluster.name.clone();
+            let cluster_arn = cluster.arn.clone();
+            // The secrets this cluster's Slurm keys live in go with the cluster: they are
+            // PCS's own, generated for this cluster and usable by nobody once it is gone, so
+            // they are taken out of the service that OWNS them rather than left behind
+            // (`crate::state::cluster_secrets::release`). The members go with them, so a
+            // cluster on its way out reports no key naming a secret that is already gone.
+            let held_secrets = crate::state::cluster_secrets::take(cluster);
+            // Remembered only now that the delete has been ACCEPTED: a retry replays a call
+            // that completed successfully, so a refused delete leaves its token free.
+            state.remember_delete(
+                Self::NAME,
+                input.client_token.as_ref(),
+                None,
+                &cluster_id,
+                &cluster_name,
+            );
+            (cluster_arn, held_secrets)
         };
 
-        // "You must delete all queues and compute node groups associated with the cluster
-        // first": a cluster that still holds either is in an unstable state to delete.
-        if cluster.blocking_children() > 0 {
-            return Err(DeleteClusterErrorModeled::ConflictException(
-                crate::state::cluster_still_has_children(&cluster.id),
-            )
-            .into());
-        }
-
-        // Only a settled cluster can be deleted; one still provisioning, or already on
-        // its way out, conflicts.
-        if cluster.status != crate::state::STATUS_ACTIVE {
-            return Err(DeleteClusterErrorModeled::ConflictException(
-                crate::state::cluster_not_active(&cluster.id),
-            )
-            .into());
-        }
-
-        // PCS reports a cluster as DELETING until it is gone; the service owes the
-        // removal from the next request on.
-        cluster.status = crate::state::STATUS_DELETING.to_string();
-        cluster.modified_at = crate::state::now_date_time();
-        cluster.pending = Some(crate::state::PendingChange::Remove);
-        let cluster_id = cluster.id.clone();
-        let cluster_name = cluster.name.clone();
-        // Remembered only now that the delete has been ACCEPTED: a retry replays a call
-        // that completed successfully, so a refused delete leaves its token free.
-        state.remember_delete(
-            Self::NAME,
-            input.client_token.as_ref(),
-            None,
-            &cluster_id,
-            &cluster_name,
-        );
+        crate::state::cluster_secrets::release(&*self.engine, ctx, &cluster_arn, &held_secrets)
+            .await;
         Ok(DeleteClusterOutput {})
     }
 }

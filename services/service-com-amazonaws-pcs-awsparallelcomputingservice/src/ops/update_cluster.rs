@@ -182,8 +182,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        let _ = ctx;
-        let Some(state) = crate::state::service_state(&*self.engine) else {
+        let Some(store) = crate::state::service_state(&*self.engine) else {
             return Err(UpdateClusterErrorModeled::InternalServerException(
                 InternalServerException {
                     message: "the PCS emulator holds no state on this engine".to_string(),
@@ -246,130 +245,187 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             }
         }
 
-        let mut state = state.lock();
-        state.settle();
+        // The change this update applies, decided and written with the store LOCKED — and
+        // the guard released before the hop below, so nothing of this service's state is
+        // held across a call to another service.
+        let (cluster_id, cluster_arn, owed_keys) = {
+            let mut state = store.lock();
+            state.settle();
 
-        let Some(cluster_id) = state.cluster_id_for(&input.cluster_identifier) else {
-            return Err(UpdateClusterErrorModeled::ResourceNotFoundException(
-                crate::state::not_found(crate::state::CLUSTER, &input.cluster_identifier),
-            )
-            .into());
-        };
-
-        // An `@idempotencyToken` retry returns the first call's result and has NO further
-        // effect, so the stored cluster is answered without applying the change a second
-        // time — and without moving the status again, which is what a second application
-        // would do. The token is remembered with the cluster the first call changed, so the
-        // same token naming another cluster is a conflict rather than a second update; a
-        // request carrying no token is no retry at all (the SDK generates a fresh one per
-        // call), so it is answered on its own. An entry whose cluster this service no
-        // longer holds has no first call's result left to answer with, so it is dropped
-        // rather than refusing later requests forever
-        // (`crate::state::remembered_action`).
-        if let Some(remembered) = state.remembered_action(Self::NAME, input.client_token.as_ref())
-        {
-            if remembered.resource_id != cluster_id {
-                return Err(UpdateClusterErrorModeled::ConflictException(
-                    crate::state::client_token_conflict(
-                        "update",
-                        crate::state::CLUSTER,
-                        &remembered.resource_id,
-                    ),
+            let Some(cluster_id) = state.cluster_id_for(&input.cluster_identifier) else {
+                return Err(UpdateClusterErrorModeled::ResourceNotFoundException(
+                    crate::state::not_found(crate::state::CLUSTER, &input.cluster_identifier),
                 )
                 .into());
+            };
+
+            // An `@idempotencyToken` retry returns the first call's result and has NO further
+            // effect, so the stored cluster is answered without applying the change a second
+            // time — and without moving the status again, which is what a second application
+            // would do. The token is remembered with the cluster the first call changed, so
+            // the same token naming another cluster is a conflict rather than a second
+            // update; a request carrying no token is no retry at all (the SDK generates a
+            // fresh one per call), so it is answered on its own. An entry whose cluster this
+            // service no longer holds has no first call's result left to answer with, so it is
+            // dropped rather than refusing later requests forever
+            // (`crate::state::remembered_action`).
+            if let Some(remembered) =
+                state.remembered_action(Self::NAME, input.client_token.as_ref())
+            {
+                if remembered.resource_id != cluster_id {
+                    return Err(UpdateClusterErrorModeled::ConflictException(
+                        crate::state::client_token_conflict(
+                            "update",
+                            crate::state::CLUSTER,
+                            &remembered.resource_id,
+                        ),
+                    )
+                    .into());
+                }
+                let Some(replayed) = state.clusters.get(&cluster_id) else {
+                    return Err(UpdateClusterErrorModeled::InternalServerException(
+                        InternalServerException {
+                            message: "the cluster disappeared while it was being read"
+                                .to_string(),
+                        },
+                    )
+                    .into());
+                };
+                return Ok(UpdateClusterOutput {
+                    cluster: Some(replayed.to_api()),
+                });
             }
-            let Some(replayed) = state.clusters.get(&cluster_id) else {
+
+            let Some(cluster) = state.clusters.get_mut(&cluster_id) else {
                 return Err(UpdateClusterErrorModeled::InternalServerException(
                     InternalServerException {
-                        message: "the cluster disappeared while it was being read".to_string(),
+                        message: "the cluster disappeared while it was being written".to_string(),
                     },
                 )
                 .into());
             };
-            return Ok(UpdateClusterOutput {
-                cluster: Some(replayed.to_api()),
-            });
-        }
 
-        let Some(cluster) = state.clusters.get_mut(&cluster_id) else {
+            // "You can only update clusters that are in ACTIVE, UPDATE_FAILED, or SUSPENDED
+            // state": one still provisioning, already updating, or on its way out conflicts.
+            if !crate::state::UPDATABLE_CLUSTER_STATUSES.contains(&cluster.status.as_str()) {
+                return Err(UpdateClusterErrorModeled::ConflictException(
+                    crate::state::cluster_not_active(&cluster.id),
+                )
+                .into());
+            }
+
+            // "All associated resources (queues and compute node groups) must be in ACTIVE
+            // state before you can update the cluster": a stored child the service is still
+            // settling — one provisioning, updating, suspended, failed, or on its way out and
+            // still reported — conflicts too, and the refusal names that child. Refused
+            // before the record is touched, so the cluster is left exactly as it was.
+            if let Some((kind, child_id)) = cluster.non_active_child() {
+                return Err(UpdateClusterErrorModeled::ConflictException(
+                    crate::state::not_active(kind, &child_id),
+                )
+                .into());
+            }
+
+            // "The scheduler version to update the cluster to. You can only update to a newer
+            // version" (`UpdateSchedulerRequest$version`): the requested release is compared
+            // with the one the cluster is ON, and an update that would leave it on the same
+            // release or move it back to an older one is refused before anything is written.
+            if let Some(scheduler) = input.scheduler.as_ref() {
+                if let Some(refusal) = crate::state::scheduler_version_order_violation(
+                    &cluster.scheduler.version,
+                    &scheduler.version,
+                ) {
+                    return Err(UpdateClusterErrorModeled::ValidationException(refusal).into());
+                }
+            }
+
+            // A member the request carries is applied; one it omits leaves the stored value
+            // alone. A request that asks for no change leaves the cluster where it is rather
+            // than moving its status for nothing.
+            let mut changed = false;
+            if let Some(scheduler) = input.scheduler {
+                cluster.scheduler.version = scheduler.version;
+                changed = true;
+            }
+            if let Some(slurm) = input.slurm_configuration {
+                let stored = cluster.slurm_configuration.take();
+                cluster.slurm_configuration = Some(crate::state::apply_slurm_update(stored, slurm));
+                changed = true;
+            }
+            if changed {
+                // PCS reports a cluster as UPDATING while it applies the change; the service
+                // owes it ACTIVE again from the next request on.
+                cluster.status = crate::state::STATUS_UPDATING.to_string();
+                cluster.modified_at = crate::state::now_date_time();
+                cluster.pending = Some(crate::state::PendingChange::Activate);
+            }
+
+            // The Slurm keys this cluster is owed once the change has been applied: a cluster
+            // whose Slurm REST API this update turned ON is owed the JWT key that daemon
+            // verifies its tokens with, and one already holding a key is owed nothing
+            // (`crate::state::cluster_secrets::owed`).
+            let owed_keys = crate::state::cluster_secrets::owed(cluster);
+            let cluster_arn = cluster.arn.clone();
+            let cluster_name = cluster.name.clone();
+            // Remembered only now that the update has been ACCEPTED: a retry replays a call
+            // that completed successfully, so a refused update leaves its token free.
+            state.remember_create(
+                Self::NAME,
+                input.client_token.as_ref(),
+                None,
+                &cluster_id,
+                &cluster_name,
+            );
+            (cluster_id, cluster_arn, owed_keys)
+        };
+        // The settle pass above is not run again below: the transition this update owes is
+        // materialised by the NEXT request, so the cluster this call answers with is still
+        // the UPDATING one it stored.
+
+        // The secret each generated key lives in is created the way the create path creates
+        // the cluster's own (`crate::state::cluster_secrets`): as this service's service
+        // principal, over the in-process callback, in the Region the cluster's own ARN names,
+        // and reported only once it exists.
+        let minted_keys = crate::state::cluster_secrets::mint(
+            &*self.engine,
+            ctx,
+            &cluster_arn,
+            &cluster_id,
+            owed_keys,
+        )
+        .await;
+        let minted_secrets = minted_keys.secret_arns();
+
+        // Answered from the STORED record, so the update and a later read cannot differ.
+        let answered = {
+            let mut state = store.lock();
+            state.clusters.get_mut(&cluster_id).map(|stored| {
+                let unused = crate::state::cluster_secrets::record(stored, minted_keys);
+                (stored.to_api(), unused)
+            })
+        };
+        // A secret this call created that the stored cluster did not take is released rather
+        // than left behind, exactly as on the create path.
+        let Some((cluster, unused_secrets)) = answered else {
+            crate::state::cluster_secrets::release(
+                &*self.engine,
+                ctx,
+                &cluster_arn,
+                &minted_secrets,
+            )
+            .await;
             return Err(UpdateClusterErrorModeled::InternalServerException(
                 InternalServerException {
-                    message: "the cluster disappeared while it was being written".to_string(),
+                    message: "the cluster disappeared while it was being read".to_string(),
                 },
             )
             .into());
         };
-
-        // "You can only update clusters that are in ACTIVE, UPDATE_FAILED, or SUSPENDED
-        // state": one still provisioning, already updating, or on its way out conflicts.
-        if !crate::state::UPDATABLE_CLUSTER_STATUSES.contains(&cluster.status.as_str()) {
-            return Err(UpdateClusterErrorModeled::ConflictException(
-                crate::state::cluster_not_active(&cluster.id),
-            )
-            .into());
-        }
-
-        // "All associated resources (queues and compute node groups) must be in ACTIVE
-        // state before you can update the cluster": a stored child the service is still
-        // settling — one provisioning, updating, suspended, failed, or on its way out and
-        // still reported — conflicts too, and the refusal names that child. Refused before
-        // the record is touched, so the cluster is left exactly as it was.
-        if let Some((kind, child_id)) = cluster.non_active_child() {
-            return Err(UpdateClusterErrorModeled::ConflictException(
-                crate::state::not_active(kind, &child_id),
-            )
-            .into());
-        }
-
-        // "The scheduler version to update the cluster to. You can only update to a newer
-        // version" (`UpdateSchedulerRequest$version`): the requested release is compared
-        // with the one the cluster is ON, and an update that would leave it on the same
-        // release or move it back to an older one is refused before anything is written.
-        if let Some(scheduler) = input.scheduler.as_ref() {
-            if let Some(refusal) = crate::state::scheduler_version_order_violation(
-                &cluster.scheduler.version,
-                &scheduler.version,
-            ) {
-                return Err(UpdateClusterErrorModeled::ValidationException(refusal).into());
-            }
-        }
-
-        // A member the request carries is applied; one it omits leaves the stored value
-        // alone. A request that asks for no change leaves the cluster where it is rather
-        // than moving its status for nothing.
-        let mut changed = false;
-        if let Some(scheduler) = input.scheduler {
-            cluster.scheduler.version = scheduler.version;
-            changed = true;
-        }
-        if let Some(slurm) = input.slurm_configuration {
-            let stored = cluster.slurm_configuration.take();
-            cluster.slurm_configuration = Some(crate::state::apply_slurm_update(stored, slurm));
-            changed = true;
-        }
-        if changed {
-            // PCS reports a cluster as UPDATING while it applies the change; the service
-            // owes it ACTIVE again from the next request on.
-            cluster.status = crate::state::STATUS_UPDATING.to_string();
-            cluster.modified_at = crate::state::now_date_time();
-            cluster.pending = Some(crate::state::PendingChange::Activate);
-        }
-
-        // Answered from the STORED record, so the update and a later read cannot differ.
-        let updated = cluster.to_api();
-        let cluster_name = cluster.name.clone();
-        // Remembered only now that the update has been ACCEPTED: a retry replays a call
-        // that completed successfully, so a refused update leaves its token free.
-        state.remember_create(
-            Self::NAME,
-            input.client_token.as_ref(),
-            None,
-            &cluster_id,
-            &cluster_name,
-        );
+        crate::state::cluster_secrets::release(&*self.engine, ctx, &cluster_arn, &unused_secrets)
+            .await;
 
         Ok(UpdateClusterOutput {
-            cluster: Some(updated),
+            cluster: Some(cluster),
         })
     }
 }

@@ -262,13 +262,14 @@ fn month_boundary(offset: i64) -> f64 {
 /// one this suite made up.
 ///
 /// Taken as the WIRE carries that instant: a JSON timestamp of these protocols is
-/// an epoch-seconds decimal, so what the segments read above hold is the double
-/// that decimal parses to. Reading the stored instant as a float directly rounds
-/// the very same instant its own way — the two differ in the last bit a double has
-/// at this magnitude for about half of the nanosecond values a clock can land on,
-/// which is a fraction of a microsecond and not a different instant, so comparing
-/// against the wire's own number is what makes this expectation exact rather than
-/// a coin flip.
+/// an epoch-seconds number, and what the segments read above hold is the double
+/// that number parses to — which is the double the stored instant itself is
+/// ([`aws_smithy_types::DateTime::as_secs_f64`]). Rendering it through a decimal of
+/// fewer digits first would round the very same instant its own way, so the two
+/// would differ in the last bit a double has at this magnitude — a fraction of a
+/// microsecond, not a different instant, but enough to make an exact expectation a
+/// coin flip. Reading the instant as the number a client reads is what makes this
+/// expectation exact.
 fn joined_at(engine: &Arc<engine::InMemoryEngine>) -> f64 {
     let organizations = engine.state::<OrganizationsState>();
     let organizations = organizations.lock();
@@ -277,11 +278,7 @@ fn joined_at(engine: &Arc<engine::InMemoryEngine>) -> f64 {
         .get(account_id())
         .map(|account| account.joined_timestamp)
         .expect("the organization records the account that created it");
-    joined
-        .fmt(aws_smithy_types::date_time::Format::EpochSeconds)
-        .expect("an instant renders as the epoch-seconds decimal the wire carries")
-        .parse::<f64>()
-        .expect("that decimal parses as the number a client reads")
+    joined.as_secs_f64()
 }
 
 /// Create the organization through Organizations' own `CreateOrganization` — the

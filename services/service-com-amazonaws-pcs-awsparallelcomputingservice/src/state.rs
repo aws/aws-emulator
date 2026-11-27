@@ -65,6 +65,14 @@ pub mod ec2_security_groups;
 /// one.
 pub mod cluster_authorization;
 
+/// The Secrets Manager secrets this service generates for a cluster's Slurm keys, which are
+/// what the cluster reports them by.
+pub mod cluster_secrets;
+
+/// The identity a call this service makes of its own presents, which is what lets it create
+/// and release a secret PCS owns.
+pub mod service_principal_call;
+
 /// The IAM instance profile a compute node group's instances assume, resolved against the
 /// service that owns instance profiles — both whether that account holds it and whether the
 /// role inside it is one this service may take out of it.
@@ -79,11 +87,12 @@ use crate::ops::types::{
     ClusterSlurmConfigurationRequest, ClusterSummary, ComputeNodeGroup,
     ComputeNodeGroupConfiguration, ComputeNodeGroupSlurmConfiguration,
     ComputeNodeGroupSlurmConfigurationRequest, ComputeNodeGroupSummary, ConflictException,
-    CustomLaunchTemplate, Endpoint, ErrorInfo, InstanceConfig, Networking, NetworkingRequest,
-    NodeLifecycleActions, NodeLifecycleActionsRequest, Queue, QueueSlurmConfiguration,
-    QueueSlurmConfigurationRequest, QueueSummary, ResourceNotFoundException, ScalingConfiguration,
-    ScalingConfigurationRequest, Scheduler, SchedulerRequest, ServiceQuotaExceededException,
-    SlurmRest, SlurmRestRequest, SpotOptions, UpdateClusterSlurmConfigurationRequest,
+    CustomLaunchTemplate, Endpoint, ErrorInfo, InstanceConfig, JwtAuth, JwtKey, Networking,
+    NetworkingRequest, NodeLifecycleActions, NodeLifecycleActionsRequest, Queue,
+    QueueSlurmConfiguration, QueueSlurmConfigurationRequest, QueueSummary,
+    ResourceNotFoundException, ScalingConfiguration, ScalingConfigurationRequest, Scheduler,
+    SchedulerRequest, ServiceQuotaExceededException, SlurmAuthKey, SlurmRest, SlurmRestRequest,
+    SpotOptions, UpdateClusterSlurmConfigurationRequest,
     UpdateComputeNodeGroupSlurmConfigurationRequest, UpdateNodeLifecycleActionsRequest,
     UpdateQueueSlurmConfigurationRequest, ValidationException, ValidationExceptionField,
 };
@@ -607,18 +616,33 @@ impl ClusterRecord {
         let accounting = slurm
             .and_then(|slurm| slurm.accounting.as_ref())
             .is_some_and(|accounting| accounting.mode == MODE_STANDARD);
-        let slurm_rest = slurm
-            .and_then(|slurm| slurm.slurm_rest.as_ref())
-            .is_some_and(|slurm_rest| slurm_rest.mode == MODE_STANDARD);
         [
             (ENDPOINT_SLURMCTLD, SLURMCTLD_PORT, true),
             (ENDPOINT_SLURMDBD, SLURMDBD_PORT, accounting),
-            (ENDPOINT_SLURMRESTD, SLURMRESTD_PORT, slurm_rest),
+            (
+                ENDPOINT_SLURMRESTD,
+                SLURMRESTD_PORT,
+                self.slurm_rest_enabled(),
+            ),
         ]
         .into_iter()
         .filter(|(_, _, published)| *published)
         .map(|(endpoint_type, port, _)| self.endpoint(endpoint_type, port))
         .collect()
+    }
+
+    /// Whether this cluster's Slurm REST API is ON: "A value of `STANDARD` means the Slurm
+    /// REST API is enabled" (`SlurmRest$mode`, whose documented default is
+    /// [`MODE_NONE`]).
+    ///
+    /// The ONE answer to that question, so the endpoint the daemon is published on
+    /// ([`Self::scheduler_endpoints`]) and the JWT key it verifies tokens with
+    /// ([`cluster_secrets::owed`]) cannot disagree about whether the cluster runs it.
+    pub fn slurm_rest_enabled(&self) -> bool {
+        self.slurm_configuration
+            .as_ref()
+            .and_then(|slurm| slurm.slurm_rest.as_ref())
+            .is_some_and(|slurm_rest| slurm_rest.mode == MODE_STANDARD)
     }
 
     /// One endpoint of this cluster's control plane, on the address family its
@@ -2190,9 +2214,10 @@ impl From<ClusterSlurmConfigurationRequest> for ClusterSlurmConfiguration {
             slurm_custom_settings: request.slurm_custom_settings,
             slurmdbd_custom_settings: request.slurmdbd_custom_settings,
             cgroup_custom_settings: request.cgroup_custom_settings,
-            // PCS reports the Secrets Manager secret it generated for the Slurm auth key
-            // and for JWT auth. The emulator generates no secret, so it reports neither
-            // rather than inventing an ARN.
+            // Neither key is a member of the REQUEST: PCS generates the Slurm keys itself
+            // and keeps each in a Secrets Manager secret, so what a cluster reports here is
+            // written when those secrets are created ([`cluster_secrets`]) rather than taken
+            // from anything the caller sent.
             auth_key: None,
             jwt_auth: None,
             accounting: request.accounting.map(Accounting::from),

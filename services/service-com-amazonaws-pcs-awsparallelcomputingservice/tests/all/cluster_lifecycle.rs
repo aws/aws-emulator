@@ -44,6 +44,12 @@ mod recreate_with_a_used_client_token;
 #[path = "cluster_lifecycle/documented_member_defaults.rs"]
 mod documented_member_defaults;
 
+// The Slurm keys a cluster reports, and the Secrets Manager secrets they name, are their own
+// suite, declared the same way. It builds a harness of its own, because the secrets are another
+// service's resources and that service has to be mounted beside this one.
+#[path = "cluster_lifecycle/slurm_cluster_secrets.rs"]
+mod slurm_cluster_secrets;
+
 use serde_json::{json, Value};
 use service_com_amazonaws_pcs_awsparallelcomputingservice::service::wire::CLIENT_ERROR_STATUS;
 use service_com_amazonaws_pcs_awsparallelcomputingservice::state::{

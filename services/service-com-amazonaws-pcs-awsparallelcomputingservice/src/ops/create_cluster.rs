@@ -183,7 +183,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        let Some(state) = crate::state::service_state(&*self.engine) else {
+        let Some(store) = crate::state::service_state(&*self.engine) else {
             return Err(CreateClusterErrorModeled::InternalServerException(
                 InternalServerException {
                     message: "the PCS emulator holds no state on this engine".to_string(),
@@ -322,111 +322,152 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             return Err(CreateClusterErrorModeled::ValidationException(refusal).into());
         }
 
-        let mut state = state.lock();
-        state.settle();
+        // The record this create stores, and the Slurm keys it is owed, are decided with the
+        // store LOCKED; the guard is released before the hop below, so nothing of this
+        // service's state is held across a call to another service.
+        let (id, arn, owed_keys) = {
+            let mut state = store.lock();
+            state.settle();
 
-        // An `@idempotencyToken` retry returns the first call's result and has no
-        // further effect, rather than creating a second cluster or conflicting on the
-        // name that call took. What the token is remembered with is the resource the
-        // first call MINTED — the `clusterName` it created the cluster under — so only a
-        // request asking for that same cluster is that retry: one naming another cluster
-        // conflicts rather than being answered with the first call's cluster while
-        // creating nothing. The remembered entry is never overwritten, so the token names
-        // the FIRST call's cluster for as long as that cluster is there to be replayed;
-        // once it is gone the entry is remembering nothing it can answer with, so it is
-        // dropped and this request is a create of its own
-        // (`crate::state::remembered_create_retry`).
-        match state.remembered_create_retry(
-            Self::NAME,
-            input.client_token.as_ref(),
-            None,
-            &input.cluster_name,
-        ) {
-            Some(crate::state::RememberedCreateRetry::Replay(resource_id)) => {
-                let Some(first) = state.clusters.get(&resource_id) else {
-                    return Err(CreateClusterErrorModeled::InternalServerException(
-                        InternalServerException {
-                            message: "the cluster disappeared while it was being read"
-                                .to_string(),
-                        },
+            // An `@idempotencyToken` retry returns the first call's result and has no
+            // further effect, rather than creating a second cluster or conflicting on the
+            // name that call took. What the token is remembered with is the resource the
+            // first call MINTED — the `clusterName` it created the cluster under — so only a
+            // request asking for that same cluster is that retry: one naming another cluster
+            // conflicts rather than being answered with the first call's cluster while
+            // creating nothing. The remembered entry is never overwritten, so the token names
+            // the FIRST call's cluster for as long as that cluster is there to be replayed;
+            // once it is gone the entry is remembering nothing it can answer with, so it is
+            // dropped and this request is a create of its own
+            // (`crate::state::remembered_create_retry`).
+            match state.remembered_create_retry(
+                Self::NAME,
+                input.client_token.as_ref(),
+                None,
+                &input.cluster_name,
+            ) {
+                Some(crate::state::RememberedCreateRetry::Replay(resource_id)) => {
+                    let Some(first) = state.clusters.get(&resource_id) else {
+                        return Err(CreateClusterErrorModeled::InternalServerException(
+                            InternalServerException {
+                                message: "the cluster disappeared while it was being read"
+                                    .to_string(),
+                            },
+                        )
+                        .into());
+                    };
+                    return Ok(CreateClusterOutput {
+                        cluster: Some(first.to_api()),
+                    });
+                }
+                Some(crate::state::RememberedCreateRetry::Conflict(remembered)) => {
+                    return Err(CreateClusterErrorModeled::ConflictException(
+                        crate::state::client_token_conflict(
+                            "create",
+                            crate::state::CLUSTER,
+                            &remembered.resource_id,
+                        ),
                     )
                     .into());
-                };
-                return Ok(CreateClusterOutput {
-                    cluster: Some(first.to_api()),
-                });
+                }
+                None => {}
             }
-            Some(crate::state::RememberedCreateRetry::Conflict(remembered)) => {
-                return Err(CreateClusterErrorModeled::ConflictException(
-                    crate::state::client_token_conflict(
-                        "create",
-                        crate::state::CLUSTER,
-                        &remembered.resource_id,
-                    ),
+
+            // A name another cluster already holds is a conflict. The message is the
+            // service's own fixed sentence: it names no cluster, so the caller-supplied
+            // name is not echoed back in it.
+            if let Some(existing) = state.cluster_ids_by_name.get(&input.cluster_name) {
+                return Err(CreateClusterErrorModeled::ConflictException(ConflictException {
+                    message: "A cluster with the name you specified already exists.".to_string(),
+                    resource_id: existing.clone(),
+                    resource_type: "cluster".to_string(),
+                })
+                .into());
+            }
+
+            // The store's ceiling, answered the way PCS answers a reached cluster quota.
+            if state.clusters.len() >= crate::state::MAX_CLUSTERS {
+                return Err(CreateClusterErrorModeled::ServiceQuotaExceededException(
+                    crate::state::quota_exceeded(crate::state::CLUSTER),
                 )
                 .into());
             }
-            None => {}
-        }
 
-        // A name another cluster already holds is a conflict. The message is the
-        // service's own fixed sentence: it names no cluster, so the caller-supplied
-        // name is not echoed back in it.
-        if let Some(existing) = state.cluster_ids_by_name.get(&input.cluster_name) {
-            return Err(CreateClusterErrorModeled::ConflictException(ConflictException {
-                message: "A cluster with the name you specified already exists.".to_string(),
-                resource_id: existing.clone(),
-                resource_type: "cluster".to_string(),
-            })
-            .into());
-        }
+            let (seq, id) = state.mint_id();
+            let now = crate::state::now_date_time();
+            let arn = crate::state::cluster_arn(&region, &id);
+            let record = crate::state::ClusterRecord {
+                seq,
+                arn: arn.clone(),
+                id: id.clone(),
+                name: input.cluster_name.clone(),
+                // PCS reports a new cluster as CREATING; the service owes it ACTIVE from
+                // the next request on.
+                status: crate::state::STATUS_CREATING.to_string(),
+                created_at: now,
+                modified_at: now,
+                scheduler: input.scheduler.into(),
+                size: input.size,
+                networking: input.networking.into(),
+                slurm_configuration: input.slurm_configuration.map(Into::into),
+                endpoints: Vec::new(),
+                error_info: Vec::new(),
+                tags: input.tags.unwrap_or_default(),
+                compute_node_groups: std::collections::HashMap::new(),
+                queues: std::collections::HashMap::new(),
+                pending: Some(crate::state::PendingChange::Activate),
+            };
 
-        // The store's ceiling, answered the way PCS answers a reached cluster quota.
-        if state.clusters.len() >= crate::state::MAX_CLUSTERS {
-            return Err(CreateClusterErrorModeled::ServiceQuotaExceededException(
-                crate::state::quota_exceeded(crate::state::CLUSTER),
-            )
-            .into());
-        }
+            // The Slurm keys this cluster is owed: the shared Slurm key every cluster has,
+            // and the JWT key one whose Slurm REST API is enabled has
+            // (`crate::state::cluster_secrets::owed`). Read off the record this create is
+            // about to store, so the request's own Slurm configuration decides them.
+            let owed_keys = crate::state::cluster_secrets::owed(&record);
 
-        let (seq, id) = state.mint_id();
-        let now = crate::state::now_date_time();
-        let record = crate::state::ClusterRecord {
-            seq,
-            arn: crate::state::cluster_arn(&region, &id),
-            id: id.clone(),
-            name: input.cluster_name.clone(),
-            // PCS reports a new cluster as CREATING; the service owes it ACTIVE from
-            // the next request on.
-            status: crate::state::STATUS_CREATING.to_string(),
-            created_at: now,
-            modified_at: now,
-            scheduler: input.scheduler.into(),
-            size: input.size,
-            networking: input.networking.into(),
-            slurm_configuration: input.slurm_configuration.map(Into::into),
-            endpoints: Vec::new(),
-            error_info: Vec::new(),
-            tags: input.tags.unwrap_or_default(),
-            compute_node_groups: std::collections::HashMap::new(),
-            queues: std::collections::HashMap::new(),
-            pending: Some(crate::state::PendingChange::Activate),
+            state
+                .cluster_ids_by_name
+                .insert(record.name.clone(), id.clone());
+            state.clusters.insert(id.clone(), record);
+            state.remember_create(
+                Self::NAME,
+                input.client_token.as_ref(),
+                None,
+                &id,
+                &input.cluster_name,
+            );
+            (id, arn, owed_keys)
         };
+        // The settle pass above is not run again below: the transition this create owes is
+        // materialised by the NEXT request, so the cluster this call answers with is still
+        // the CREATING one it stored.
 
-        state
-            .cluster_ids_by_name
-            .insert(record.name.clone(), id.clone());
-        state.clusters.insert(id.clone(), record);
-        state.remember_create(
-            Self::NAME,
-            input.client_token.as_ref(),
-            None,
-            &id,
-            &input.cluster_name,
-        );
+        // PCS generates the cluster's Slurm keys and keeps each in an Amazon Web Services
+        // Secrets Manager secret, which is what the cluster reports them by
+        // (`slurmConfiguration.authKey`, `slurmConfiguration.jwtAuth.jwtKey`). The secrets
+        // are created here, as this service's own service principal, over the same in-process
+        // callback the EC2 hops above go out on — so what the cluster reports names a secret
+        // this emulator really holds, and a hop that could not be made leaves the member
+        // absent rather than reporting an ARN nothing answers for
+        // (`crate::state::cluster_secrets`).
+        let minted_keys =
+            crate::state::cluster_secrets::mint(&*self.engine, ctx, &arn, &id, owed_keys).await;
+        let minted_secrets = minted_keys.secret_arns();
 
         // Answered from the STORED record, so a create and a later read cannot differ.
-        let Some(stored) = state.clusters.get(&id) else {
+        let answered = {
+            let mut settled = store.lock();
+            settled.clusters.get_mut(&id).map(|stored| {
+                let unused = crate::state::cluster_secrets::record(stored, minted_keys);
+                (stored.to_api(), unused)
+            })
+        };
+        // A secret this call created that the stored cluster did not take has nothing to
+        // report it and nothing to release it later, so it is released now rather than left
+        // behind: either the record is gone, or another call had already given the cluster
+        // that key.
+        let Some((cluster, unused_secrets)) = answered else {
+            crate::state::cluster_secrets::release(&*self.engine, ctx, &arn, &minted_secrets)
+                .await;
             return Err(CreateClusterErrorModeled::InternalServerException(
                 InternalServerException {
                     message: "the cluster was not persisted".to_string(),
@@ -434,8 +475,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             )
             .into());
         };
+        crate::state::cluster_secrets::release(&*self.engine, ctx, &arn, &unused_secrets).await;
         Ok(CreateClusterOutput {
-            cluster: Some(stored.to_api()),
+            cluster: Some(cluster),
         })
     }
 }
