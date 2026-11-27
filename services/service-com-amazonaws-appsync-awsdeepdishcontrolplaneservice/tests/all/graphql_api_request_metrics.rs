@@ -59,30 +59,30 @@ const NAMESPACE: &str = "AWS/AppSync";
 /// adds exactly one of beside it; the service's own copies are
 /// `service::graphql_api::metrics::{GRAPHQL_API_ID_DIMENSION, RESOLVER_DIMENSION,
 /// DATA_SOURCE_DIMENSION, OPERATION_DIMENSION}`.
-const API_DIMENSION: &str = "GraphQLAPIId";
-const RESOLVER_DIMENSION: &str = "Resolver";
-const DATA_SOURCE_DIMENSION: &str = "DataSource";
-const OPERATION_DIMENSION: &str = "Operation";
+pub(crate) const API_DIMENSION: &str = "GraphQLAPIId";
+pub(crate) const RESOLVER_DIMENSION: &str = "Resolver";
+pub(crate) const DATA_SOURCE_DIMENSION: &str = "DataSource";
+pub(crate) const OPERATION_DIMENSION: &str = "Operation";
 
 /// The series these cases read; the service's own copies are
 /// `service::graphql_api::metrics::{REQUESTS_METRIC, LATENCY_METRIC, CLIENT_ERROR_METRIC,
 /// SERVER_ERROR_METRIC, GRAPHQL_ERROR_METRIC, DATA_SOURCE_ERROR_METRIC}`.
-const REQUESTS: &str = "Requests";
-const LATENCY: &str = "Latency";
+pub(crate) const REQUESTS: &str = "Requests";
+pub(crate) const LATENCY: &str = "Latency";
 const CLIENT_ERROR: &str = "4XXError";
 const SERVER_ERROR: &str = "5XXError";
-const GRAPHQL_ERROR: &str = "GraphQLError";
-const DATA_SOURCE_ERRORS: &str = "Errors";
+pub(crate) const GRAPHQL_ERROR: &str = "GraphQLError";
+pub(crate) const DATA_SOURCE_ERRORS: &str = "Errors";
 
 /// The `StandardUnit` a span is reported in, and the one a count AppSync publishes with no
 /// unit of its own carries. Source: `StandardUnit`'s own values
 /// (`smithy_query(query="shape",shape="StandardUnit")` on the CloudWatch model).
-const MILLISECONDS: &str = "Milliseconds";
-const NO_UNIT: &str = "None";
+pub(crate) const MILLISECONDS: &str = "Milliseconds";
+pub(crate) const NO_UNIT: &str = "None";
 
 /// The path the GraphQL endpoint serves; the service's own copy is
 /// `service::graphql_api::query::GRAPHQL_PATH`.
-const GRAPHQL_PATH: &str = "/graphql";
+pub(crate) const GRAPHQL_PATH: &str = "/graphql";
 
 /// The `runtime` a resolver defined by `code` names. Source: `AppSyncRuntime`'s own values
 /// (`smithy_query(query="shape",shape="AppSyncRuntime,RuntimeName")`).
@@ -90,15 +90,15 @@ const RUNTIME: (&str, &str) = ("APPSYNC_JS", "1.0.0");
 
 /// One created GraphQL api: its id, the address its GraphQL endpoint is served on and a live
 /// API key.
-struct Api {
-    api_id: String,
+pub(crate) struct Api {
+    pub(crate) api_id: String,
     graphql: String,
-    api_key: String,
+    pub(crate) api_key: String,
 }
 
 /// One resolver a case attaches: the type and field it resolves, the data source it names,
 /// its definition and the `metricsConfig` it opts in (or out) with.
-struct Resolver<'a> {
+pub(crate) struct Resolver<'a> {
     type_name: &'a str,
     field: &'a str,
     data_source: &'a str,
@@ -109,7 +109,7 @@ struct Resolver<'a> {
 
 impl<'a> Resolver<'a> {
     /// A resolver defined by APPSYNC_JS `code`, on a field of the query root.
-    fn coded(field: &'a str, data_source: &'a str, code: String) -> Self {
+    pub(crate) fn coded(field: &'a str, data_source: &'a str, code: String) -> Self {
         Self {
             type_name: "Query",
             field,
@@ -134,13 +134,13 @@ impl<'a> Resolver<'a> {
     }
 
     /// The same resolver, attached to a field of another type of the schema.
-    fn on_type(mut self, type_name: &'a str) -> Self {
+    pub(crate) fn on_type(mut self, type_name: &'a str) -> Self {
         self.type_name = type_name;
         self
     }
 
     /// The same resolver, opting in or out of the enhanced resolver-level series.
-    fn reporting(mut self, metrics_config: &'a str) -> Self {
+    pub(crate) fn reporting(mut self, metrics_config: &'a str) -> Self {
         self.metrics_config = Some(metrics_config);
         self
     }
@@ -334,7 +334,7 @@ async fn an_error_a_definition_raises_carries_the_class_it_named() {
 }
 
 /// The schema the series cases are driven over.
-const SERVED_SCHEMA: &str = "type Query {\n  a: String\n  b: String\n  raises: String\n  \
+pub(crate) const SERVED_SCHEMA: &str = "type Query {\n  a: String\n  b: String\n  raises: String\n  \
      unreached: String\n}\n\
      \n\
      type Mutation {\n  touch: String\n}\n";
@@ -343,7 +343,7 @@ const SERVED_SCHEMA: &str = "type Query {\n  a: String\n  b: String\n  raises: S
 const SERVED_VALUE: &str = "served";
 
 /// The definition every resolving field of the series cases carries.
-fn answers() -> String {
+pub(crate) fn answers() -> String {
     format!(
         "export function request(ctx) {{ return {{payload: \"{SERVED_VALUE}\"}}; }}\n\
          export function response(ctx) {{ return ctx.result; }}"
@@ -352,7 +352,7 @@ fn answers() -> String {
 
 /// The definition the raising field carries: a class of its own, so what it produces is one
 /// GraphQL error of that field.
-fn raises() -> String {
+pub(crate) fn raises() -> String {
     "import { util } from '@aws-appsync/utils';\n\
      export function request(ctx) { util.error('this field refuses', 'Refused'); }\n\
      export function response(ctx) { return ctx.result; }"
@@ -541,7 +541,7 @@ async fn every_request_the_api_answered_is_counted_under_its_own_api_dimension()
 /// resolver and data source of the request whatever each says. Source:
 /// `smithy_query(query="shape",shape="EnhancedMetricsConfig,ResolverLevelMetricsBehavior,\
 /// DataSourceLevelMetricsBehavior,OperationLevelMetricsConfig")`.
-fn per_resource_metrics() -> Value {
+pub(crate) fn per_resource_metrics() -> Value {
     json!({
         "resolverLevelMetricsBehavior": "PER_RESOLVER_METRICS",
         "dataSourceLevelMetricsBehavior": "PER_DATA_SOURCE_METRICS",
@@ -568,7 +568,7 @@ const OPTED_OUT_SOURCE: &str = "unreported";
 /// with nothing beside its type (`crate::data_source_configuration_refusals` grades that
 /// rule). A step resolving against it makes no invocation, so no data-source series of it
 /// exists.
-const CALLED_TYPE: &str = "NONE";
+pub(crate) const CALLED_TYPE: &str = "NONE";
 const UNCALLED_TYPE: &str = "AMAZON_BEDROCK_RUNTIME";
 const UNCALLED_SOURCE: &str = "uncalled";
 
@@ -922,7 +922,10 @@ async fn enhanced_series_are_published_only_where_the_api_asked_for_them() {
 /// Every ENHANCED dimension KEY one api's `AWS/AppSync` series are published under, sorted:
 /// the `(name, value)` pair each series carries beside the api's own dimension, read through
 /// CloudWatch's own `ListMetrics`, with duplicates folded away.
-async fn enhanced_keys(router: &MultiServiceRouter, api_id: &str) -> Vec<(String, String)> {
+pub(crate) async fn enhanced_keys(
+    router: &MultiServiceRouter,
+    api_id: &str,
+) -> Vec<(String, String)> {
     let (status, body) = cloudwatch(
         router,
         "ListMetrics",
@@ -959,7 +962,7 @@ async fn enhanced_keys(router: &MultiServiceRouter, api_id: &str) -> Vec<(String
 
 /// POST (or otherwise address) one request to the address an api publishes for its GraphQL
 /// endpoint, through the crate's one socket client for a published address.
-async fn post(
+pub(crate) async fn post(
     case: &str,
     api: &Api,
     path: &str,
@@ -981,7 +984,7 @@ async fn post(
 /// Create one GraphQL api with an API key, `schema`, the data sources `data_sources` names
 /// (each with its own type and `metricsConfig`, or none) and one resolver per entry of
 /// `resolvers`, and read the address its GraphQL endpoint is served on.
-async fn create_api(
+pub(crate) async fn create_api(
     router: &MultiServiceRouter,
     name: &str,
     enhanced_metrics: Option<Value>,

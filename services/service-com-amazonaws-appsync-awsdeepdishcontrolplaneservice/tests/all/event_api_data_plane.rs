@@ -1077,6 +1077,19 @@ pub(crate) async fn statistics(
     metric: &str,
     dimensions: &[(&str, &str)],
 ) -> Vec<Value> {
+    statistics_in_unit(router, metric, dimensions, None).await
+}
+
+/// The same reading, for a client that NAMES the unit it wants — "if you specify a unit, the
+/// operation returns only data that was collected with that unit specified"
+/// (`GetMetricStatistics$Unit`) — or names none, which is what [`statistics`] asks for and
+/// sees every unit a datapoint was published with.
+pub(crate) async fn statistics_in_unit(
+    router: &MultiServiceRouter,
+    metric: &str,
+    dimensions: &[(&str, &str)],
+    unit: Option<&str>,
+) -> Vec<Value> {
     let dimensions: Vec<Value> = dimensions
         .iter()
         .map(|(name, value)| json!({"Name": name, "Value": value}))
@@ -1084,20 +1097,19 @@ pub(crate) async fn statistics(
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0.0, |since| since.as_secs_f64());
-    let (status, body) = cloudwatch(
-        router,
-        "GetMetricStatistics",
-        &json!({
-            "Namespace": "AWS/AppSync",
-            "MetricName": metric,
-            "Dimensions": dimensions,
-            "StartTime": now - 600.0,
-            "EndTime": now + 60.0,
-            "Period": 60,
-            "Statistics": ["SampleCount", "Sum", "Minimum", "Maximum"],
-        }),
-    )
-    .await;
+    let mut request = json!({
+        "Namespace": "AWS/AppSync",
+        "MetricName": metric,
+        "Dimensions": dimensions,
+        "StartTime": now - 600.0,
+        "EndTime": now + 60.0,
+        "Period": 60,
+        "Statistics": ["SampleCount", "Sum", "Minimum", "Maximum"],
+    });
+    if let Some(unit) = unit {
+        request["Unit"] = json!(unit);
+    }
+    let (status, body) = cloudwatch(router, "GetMetricStatistics", &request).await;
     assert_eq!(
         status, 200,
         "GetMetricStatistics for {metric} must answer 200, got {body}"

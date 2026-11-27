@@ -174,13 +174,53 @@ async fn billingconductor(
 }
 
 /// One segment as the response reports it.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 struct Segment {
     domain: Option<String>,
     begin: Option<f64>,
     end: Option<f64>,
     management_account_id: Option<String>,
     billing_group_primary_account_id: Option<String>,
+}
+
+/// How far apart two readings of ONE instant may be and still be the same
+/// boundary: one microsecond.
+///
+/// A boundary this rule cuts at is read twice over, and the two readings derive
+/// it differently: the expectation is the instant held in process, read off the
+/// owning service's own store as the `f64` of its `DateTime`
+/// ([`joined_at`]/[`month_boundary`]), while the actual is the JSON number the
+/// Billing response carried back — the same instant taken through
+/// `DateTime::from_secs_f64` and the protocol's own epoch-seconds writer. Those
+/// two paths can land one representable step of an `f64` apart, a fraction of a
+/// microsecond at this scale, which is a difference in the last bit of a float
+/// and not a difference in the boundary. What this rule tells apart is the
+/// instant a relationship began from the first instant of a calendar month,
+/// hours to days apart, so a microsecond stays orders of magnitude tighter than
+/// the smallest distinction asserted here — a bound shifted by a millisecond,
+/// let alone to the wrong relationship, still fails.
+const SAME_INSTANT: f64 = 1e-6;
+
+impl PartialEq for Segment {
+    /// Two segments report the same thing when they report it over the same
+    /// period ([`SAME_INSTANT`]) with the same domain and the same accounts.
+    fn eq(&self, other: &Self) -> bool {
+        self.domain == other.domain
+            && same_instant(self.begin, other.begin)
+            && same_instant(self.end, other.end)
+            && self.management_account_id == other.management_account_id
+            && self.billing_group_primary_account_id == other.billing_group_primary_account_id
+    }
+}
+
+/// Whether two reported bounds are the same instant ([`SAME_INSTANT`]), or are
+/// both absent — a bound neither reading carries.
+fn same_instant(left: Option<f64>, right: Option<f64>) -> bool {
+    match (left, right) {
+        (Some(left), Some(right)) => (left - right).abs() <= SAME_INSTANT,
+        (None, None) => true,
+        _ => false,
+    }
 }
 
 /// The expected segment over `[begin, end)`.
