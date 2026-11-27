@@ -90,6 +90,39 @@ pub fn detail_source_type(source_type: &str) -> String {
     source_type.to_ascii_uppercase().replace('-', "_")
 }
 
+/// Digits in the fractional-second field of a published `detail.Date`.
+///
+/// An Amazon RDS event names its instant at MILLISECOND precision
+/// (`2018-10-06T12:26:13.882Z`), so the field is always present and always this wide,
+/// whatever the instant's own sub-second value is — a whole second reads `...T12:26:13.000Z`,
+/// never `...T12:26:13Z`. The instant itself is held to the same resolution where the record
+/// is written (`super::events::event_instant`), so this states the WIDTH of the field, not a
+/// second truncation.
+const DATE_FRACTION_DIGITS: usize = 3;
+
+/// `rendered`, an RFC 3339 UTC date-time, with a fractional-second field exactly
+/// [`DATE_FRACTION_DIGITS`] digits wide.
+///
+/// [`::aws_smithy_types::date_time::Format::DateTime`] elides the field whenever the
+/// instant's sub-second part is zero and writes only the digits that part happens to carry
+/// otherwise, while every Amazon RDS event date carries all three — so the field is padded
+/// when it is shorter and cut when it is longer (the instant is reported to this resolution,
+/// never rounded up into another second).
+///
+/// Text the formatter did not shape as a `Z`-terminated date-time is handed back as it came:
+/// nothing is appended to a string whose instant cannot be located.
+fn with_millisecond_fraction(rendered: &str) -> String {
+    let Some(instant) = rendered.strip_suffix('Z') else {
+        return rendered.to_string();
+    };
+    let (whole, fraction) = instant.split_once('.').unwrap_or((instant, ""));
+    let mut digits: String = fraction.chars().take(DATE_FRACTION_DIGITS).collect();
+    while digits.len() < DATE_FRACTION_DIGITS {
+        digits.push('0');
+    }
+    format!("{whole}.{digits}Z")
+}
+
 /// How many publications one store holds before the oldest is dropped.
 ///
 /// The queue is drained by the request that filled it, so in practice it holds the one or
@@ -141,13 +174,17 @@ impl BusEvent {
     }
 
     /// `detail.Date`: the instant the change was recorded, as the RFC 3339 UTC text an
-    /// event's date is carried as.
+    /// event's date is carried as — at the MILLISECOND precision Amazon RDS dates an event
+    /// at, which is what [`DATE_FRACTION_DIGITS`] states and
+    /// [`with_millisecond_fraction`] holds the field to.
     #[must_use]
     pub fn date_text(&self) -> String {
-        self.record
+        let rendered = self
+            .record
             .date
             .fmt(::aws_smithy_types::date_time::Format::DateTime)
-            .unwrap_or_default()
+            .unwrap_or_default();
+        with_millisecond_fraction(&rendered)
     }
 
     /// The same instant in epoch milliseconds, which is what the envelope's own `time`
@@ -288,5 +325,120 @@ mod tests {
             None,
             "a source type nothing is published for publishes no detail-type"
         );
+    }
+
+    /// RULE: a published date names its instant with a fractional-second field exactly
+    /// [`DATE_FRACTION_DIGITS`] digits wide.
+    ///
+    /// The rows span what the rule generalises over — how many sub-second digits the
+    /// formatter wrote: none at all (an instant on a whole second), fewer than three (a
+    /// fraction whose trailing zeros it dropped), exactly three, and more than three (the
+    /// microseconds and nanoseconds a clock reading carries), which is reported to this
+    /// resolution rather than rounded into the next millisecond. The last row is text the
+    /// formatter never shapes, which is handed back as it came.
+    #[test]
+    fn a_published_date_carries_a_three_digit_fraction_of_a_second() {
+        let rows: [(&str, &str, &str); 7] = [
+            (
+                "an instant on a whole second",
+                "2026-01-01T00:00:00Z",
+                "2026-01-01T00:00:00.000Z",
+            ),
+            (
+                "a fraction of one digit",
+                "2026-01-01T00:00:00.2Z",
+                "2026-01-01T00:00:00.200Z",
+            ),
+            (
+                "a fraction of two digits",
+                "2026-01-01T00:00:00.23Z",
+                "2026-01-01T00:00:00.230Z",
+            ),
+            (
+                "a fraction already three digits wide",
+                "2018-10-06T12:26:13.882Z",
+                "2018-10-06T12:26:13.882Z",
+            ),
+            (
+                "a microsecond reading",
+                "2026-11-27T08:41:13.231936Z",
+                "2026-11-27T08:41:13.231Z",
+            ),
+            (
+                "a nanosecond reading whose next digits would round up",
+                "2026-11-27T08:41:13.999999999Z",
+                "2026-11-27T08:41:13.999Z",
+            ),
+            (
+                "text the formatter did not shape as an instant",
+                "",
+                "",
+            ),
+        ];
+        for (case, rendered, expected) in rows {
+            let actual = with_millisecond_fraction(rendered);
+            assert_eq!(
+                actual, expected,
+                "case {case:?}: expected {expected:?}, got {actual:?}"
+            );
+        }
+    }
+
+    /// The same rule over a RECORD: the envelope's `detail.Date` is the record's own instant
+    /// at millisecond precision, and the detail carries it under that name.
+    #[test]
+    fn the_published_detail_dates_the_record_at_millisecond_precision() {
+        let rows: [(&str, u32); 4] = [
+            ("an instant on a whole second", 0),
+            ("an instant carrying whole milliseconds", 231_000_000),
+            ("an instant carrying microseconds", 231_936_000),
+            ("an instant just under the next second", 999_999_999),
+        ];
+        for (case, nanos) in rows {
+            let reading = ::aws_smithy_types::DateTime::from_secs_and_nanos(1_767_225_600, nanos);
+            let mut log = EventLog::default();
+            let record = log.record_at(
+                DB_INSTANCE_RESTARTED,
+                "emu-dated-db",
+                "arn:aws:rds:us-east-1:000000000000:db:emu-dated-db".to_string(),
+                reading,
+            );
+            let event = BusEvent::of("us-east-1", record);
+            let dated = event.detail()["Date"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string();
+            let (whole, fraction) = dated
+                .trim_end_matches('Z')
+                .split_once('.')
+                .unwrap_or_default();
+            assert_eq!(
+                fraction.len(),
+                3,
+                "case {case:?}: expected a three-digit fraction of a second, got {dated:?}"
+            );
+            assert!(
+                fraction.chars().all(char::is_numeric) && whole.contains('T'),
+                "case {case:?}: expected an RFC 3339 UTC instant, got {dated:?}"
+            );
+            assert_eq!(
+                dated,
+                event.date_text(),
+                "case {case:?}: the detail carries the event's own dated text"
+            );
+            // The record kept the instant at that resolution, so every other reading of it
+            // — the row `DescribeEvents` reports — names the same instant.
+            assert_eq!(
+                event.record.date.subsec_nanos() % 1_000_000,
+                0,
+                "case {case:?}: expected the stored instant to carry whole milliseconds, \
+                 got {dated:?}"
+            );
+            assert_eq!(
+                event.record.date.to_millis().ok(),
+                reading.to_millis().ok(),
+                "case {case:?}: expected the same millisecond the reading named, got {dated:?}"
+            );
+        }
     }
 }

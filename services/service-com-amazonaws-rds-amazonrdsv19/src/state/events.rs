@@ -296,6 +296,23 @@ impl super::ComAmazonawsRdsAmazonrdsv19State {
     }
 }
 
+/// `date` at the resolution an Amazon RDS event is dated at: whole MILLISECONDS.
+///
+/// An Amazon RDS event names its instant with a fraction of a second three digits wide —
+/// `2018-10-06T12:26:13.882Z` — both in the `detail.Date` of the envelope it is published as
+/// ([`super::bus_events`]) and in the `Event$Date` the control plane reports, so nothing
+/// finer than a millisecond is observable of it. A reading taken off the clock carries the
+/// nanoseconds the host offers, which would be reported as a fraction nine digits wide and
+/// would let the two renderings of ONE record disagree about its digits, so the instant a
+/// record is dated with is brought to this resolution ONCE — here, where every record is
+/// written. TRUNCATED, never rounded: the instant is reported to the resolution the service
+/// dates an event at rather than moved into the next millisecond.
+#[must_use]
+pub fn event_instant(date: ::aws_smithy_types::DateTime) -> ::aws_smithy_types::DateTime {
+    date.to_millis()
+        .map_or(date, ::aws_smithy_types::DateTime::from_millis)
+}
+
 impl EventLog {
     /// Record `event` for the resource `source_identifier` / `source_arn`, timestamped
     /// now, dropping the oldest record when the log is full, and hand back the record that
@@ -336,7 +353,10 @@ impl EventLog {
             category: event.category,
             message: event.message.to_string(),
             source_arn,
-            date,
+            // At the resolution an event is dated at, applied where every record is
+            // written so the two renderings of one record cannot disagree on its digits
+            // ([`event_instant`]).
+            date: event_instant(date),
         };
         self.entries.push(record.clone());
         if self.entries.len() > MAX_EVENTS_PER_REGION {
@@ -424,6 +444,48 @@ mod tests {
                 check_event_source_type(row.source_type).is_ok(),
                 "source type {:?} must be one DescribeEvents accepts",
                 row.source_type
+            );
+        }
+    }
+
+    /// RULE: the instant a record is dated with is the reading brought to whole
+    /// milliseconds, truncated rather than rounded.
+    ///
+    /// The rows span what the rule generalises over — the sub-second part of the reading:
+    /// none, whole milliseconds already, microseconds, nanoseconds, and a reading so close
+    /// to the next second that rounding would move it there.
+    #[test]
+    fn a_recorded_event_is_dated_at_whole_milliseconds() {
+        let rows: [(&str, u32, i64); 5] = [
+            ("a reading on a whole second", 0, 1_767_225_600_000),
+            (
+                "a reading already at whole milliseconds",
+                231_000_000,
+                1_767_225_600_231,
+            ),
+            ("a reading carrying microseconds", 231_936_000, 1_767_225_600_231),
+            ("a reading carrying nanoseconds", 231_936_217, 1_767_225_600_231),
+            (
+                "a reading just under the next second",
+                999_999_999,
+                1_767_225_600_999,
+            ),
+        ];
+        for (case, nanos, expected) in rows {
+            let dated = event_instant(::aws_smithy_types::DateTime::from_secs_and_nanos(
+                1_767_225_600,
+                nanos,
+            ));
+            let actual = dated.to_millis().unwrap_or_default();
+            assert_eq!(
+                actual, expected,
+                "case {case:?}: expected {expected} epoch milliseconds, got {actual}"
+            );
+            assert_eq!(
+                dated.subsec_nanos() % 1_000_000,
+                0,
+                "case {case:?}: expected whole milliseconds, got {} nanoseconds",
+                dated.subsec_nanos()
             );
         }
     }
