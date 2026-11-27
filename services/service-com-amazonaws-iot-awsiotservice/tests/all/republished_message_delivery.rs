@@ -140,7 +140,15 @@ async fn iam(emulator: &Emulator, action: &str, params: &[(&str, &str)]) -> Stri
 /// Create `role_name` trusting the rules engine's service principal, with an inline policy
 /// granting the publish on every topic of this account when `grants_publish`, and answer the
 /// ARN IAM persisted.
-async fn given_role(emulator: &Emulator, role_name: &str, grants_publish: bool) -> String {
+///
+/// Shared with the sibling suite that drives what a republish action puts ON that topic
+/// (`tests/all/republished_statement_projection.rs`), so the role a republish runs under is
+/// written once.
+pub(crate) async fn given_role(
+    emulator: &Emulator,
+    role_name: &str,
+    grants_publish: bool,
+) -> String {
     let trust = json!({
         "Version": "2012-10-17",
         "Statement": [{
