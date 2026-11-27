@@ -160,15 +160,17 @@ impl RollingUpdatePolicy {
         })
     }
 
-    /// How many of `replaced` instances must have signalled success for the batch that
-    /// replaced them to count as through: the share `MinSuccessfulInstancesPercent` states,
+    /// How many of `replacements` instances must have signalled success for the batch that
+    /// brought them up to count as through: the share `MinSuccessfulInstancesPercent` states,
     /// rounded UP, since a percentage of instances is a number of whole instances and the
     /// member is the MINIMUM.
-    fn successes_required(&self, replaced: usize) -> usize {
-        let required = (replaced as u64)
+    fn successes_required(&self, replacements: usize) -> usize {
+        let required = (replacements as u64)
             .saturating_mul(self.min_successful_instances_percent)
             .div_ceil(100);
-        usize::try_from(required).unwrap_or(replaced).min(replaced)
+        usize::try_from(required)
+            .unwrap_or(replacements)
+            .min(replacements)
     }
 }
 
@@ -396,9 +398,21 @@ impl RollingUpdate {
             .iter()
             .any(|instance_id| held.contains(instance_id.as_str()));
         let in_service = reported.in_service();
-        // How many of the instances this replacement found have been replaced already, which
-        // is what the signals the batches have collected are counted against.
-        let replaced = self.original.len().saturating_sub(outstanding.len());
+        // The instances this replacement has BROUGHT UP that the group is serving: the ones it
+        // is serving that were not among the set the replacement found. "The Auto Scaling group
+        // waits on signals from NEW instances during an update"
+        // (`WaitOnResourceSignals`), so these are the instances a batch is through on the
+        // signals of — read as the set the group holds NOW rather than as a running total of
+        // every signal the update has collected: a signal sent by a replacement that came up in
+        // an EARLIER batch is not a signal from the one the batch in flight is waiting for, so a
+        // total would let a batch through on a signal it never received. That matters wherever
+        // the group had to LAUNCH before it could terminate (a floor that leaves it nothing to
+        // spare), which brings a replacement up ahead of the batch that needs it.
+        let replacements: Vec<&str> = in_service
+            .iter()
+            .copied()
+            .filter(|instance_id| !self.original.contains(*instance_id))
+            .collect();
         // While the group's launches are this replacement's to release, the batch is between
         // its two halves: its instances have been taken out of service and their replacements
         // are not launched yet, and NOTHING else of the replacement can make progress until
@@ -410,7 +424,7 @@ impl RollingUpdate {
         // under.
         if launch_withheld {
             if batch_in_flight || !self.replacements_due(now) {
-                return self.held_or_expired(now, replaced, signals);
+                return self.held_or_expired(now, &replacements, signals);
             }
             return BatchStep::LaunchReplacements(reported.desired_capacity);
         }
@@ -419,7 +433,8 @@ impl RollingUpdate {
             // replacements in service and they have signalled what the policy asks for.
             let settled = !batch_in_flight && in_service.len() >= reported.desired_capacity;
             let signalled = !self.policy.wait_on_resource_signals
-                || self.replacement_signals(signals) >= self.policy.successes_required(replaced);
+                || self.signalled_replacements(&replacements, signals)
+                    >= self.policy.successes_required(replacements.len());
             // "If you enable the `WaitOnResourceSignals` property, `PauseTime` is the amount
             // of time that CloudFormation should wait for the Auto Scaling group to receive
             // the required number of signals"; without it, `PauseTime` is the span
@@ -428,7 +443,7 @@ impl RollingUpdate {
             // through before it has elapsed.
             let paused = self.policy.wait_on_resource_signals || self.pause_elapsed(now);
             if !(settled && signalled && paused) {
-                return self.held_or_expired(now, replaced, signals);
+                return self.held_or_expired(now, &replacements, signals);
             }
         }
         if outstanding.is_empty() {
@@ -440,7 +455,7 @@ impl RollingUpdate {
                 return BatchStep::Shrink(self.desired);
             }
             if in_service.len() > self.desired {
-                return self.held_or_expired(now, replaced, signals);
+                return self.held_or_expired(now, &replacements, signals);
             }
             return BatchStep::Finished;
         }
@@ -469,7 +484,7 @@ impl RollingUpdate {
             // The group has nothing spare to take out of service right now: it is still
             // bringing the last batch's replacements up, and the next batch starts once it
             // has.
-            return self.held_or_expired(now, replaced, signals);
+            return self.held_or_expired(now, &replacements, signals);
         }
         BatchStep::Replace(outstanding.into_iter().take(size).collect())
     }
@@ -485,7 +500,7 @@ impl RollingUpdate {
     fn held_or_expired(
         &self,
         now: SystemTime,
-        replaced: usize,
+        replacements: &[&str],
         signals: &RecordedSignals,
     ) -> BatchStep {
         if self.batch_deadline() > now {
@@ -499,10 +514,10 @@ impl RollingUpdate {
                 self.batch.join(", ")
             ));
         }
-        let required = self.policy.successes_required(replaced);
+        let required = self.policy.successes_required(replacements.len());
         BatchStep::Failed(format!(
             "Failed to receive {} resource signal(s) within the specified duration",
-            required.saturating_sub(self.replacement_signals(signals))
+            required.saturating_sub(self.signalled_replacements(replacements, signals))
         ))
     }
 
@@ -534,17 +549,17 @@ impl RollingUpdate {
             .is_none_or(|elapsed_at| elapsed_at <= now)
     }
 
-    /// How many of the REPLACEMENTS the batches of this update launched have signalled
-    /// success.
+    /// How many of the REPLACEMENTS the group is serving have signalled success.
     ///
-    /// Counted over the instances the stack recorded a signal for that are NOT among the ones
-    /// this replacement found: those signalled the operation that created them, and a
-    /// replacement's own signal is the one this update waits on.
-    fn replacement_signals(&self, signals: &RecordedSignals) -> usize {
-        signals
-            .succeeded
+    /// Counted over `replacements` — the instances this replacement brought up that the group is
+    /// serving now ([`Self::next_step`]) — so the instances it has not replaced yet are left out
+    /// (those signalled the operation that created them), and so is one that is no longer
+    /// serving: a batch is through on the signals of the instances it brought up, never on a
+    /// total that an earlier batch's signal could pay for.
+    fn signalled_replacements(&self, replacements: &[&str], signals: &RecordedSignals) -> usize {
+        replacements
             .iter()
-            .filter(|instance_id| !self.original.contains(*instance_id))
+            .filter(|instance_id| signals.succeeded.contains(**instance_id))
             .count()
     }
 }

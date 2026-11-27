@@ -1,15 +1,6 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op ExportTransitGatewayRoutes
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `ExportTransitGatewayRoutes`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
-//!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`ExportTransitGatewayRoutes::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
 //!
 //! ## Shape of an operation
 //!
@@ -82,6 +73,8 @@
 #[allow(unused_imports)]
 use super::types::*;
 
+use ::std::time::SystemTime;
+
 // `#[operation_error]` below expands to an invocation of the LOCAL declarative
 // `smithy!` macro, which this line is what emits into the module. Without it the
 // expansion fails with `cannot find macro 'smithy' in this scope` and the
@@ -149,18 +142,448 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `ExportTransitGatewayRoutes` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(ExportTransitGatewayRoutesErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("ExportTransitGatewayRoutes"))
+        use crate::state;
+
+        // The only thing read off `ctx` besides the in-process transport below: the Region the
+        // request was signed for, which is where the object store the file is written into is
+        // addressed.
+        let region = state::request_region(ctx.parts());
+
+        // `TransitGatewayRouteTableId` and `S3Bucket` are both `@required` but modelled
+        // `clientOptional`, so a request that carried either of them EMPTY reaches this handler
+        // with the empty string rather than being refused at the boundary: a parameter the
+        // request did not really carry is EC2's `MissingParameter`, answered before anything is
+        // looked up because it is a fact of the request.
+        for (parameter, value) in [
+            (
+                "transitGatewayRouteTableId",
+                &input.transit_gateway_route_table_id,
+            ),
+            ("s3Bucket", &input.s3_bucket),
+        ] {
+            if value.is_empty() {
+                return Err(state::missing_parameter(format!(
+                    "The request must contain the parameter {parameter}"
+                )));
+            }
+        }
+
+        // "The name of the S3 bucket" (`S3Bucket`): EC2 names a bucket here rather than
+        // creating one, so what it can tell about the name without reading another service's
+        // state is whether it is a bucket name at all — the malformed-parameter answer every
+        // operation of this crate that takes a bucket name shares.
+        if !state::s3_bucket_name_is_well_formed(&input.s3_bucket) {
+            return Err(state::invalid_s3_bucket_name());
+        }
+
+        // "One or more filters" (`Filters`), which this operation does not require: "By default,
+        // all routes are exported. Alternatively, you can filter by CIDR range", so a request
+        // naming no filter exports every route the table holds.
+        let filters: &[Filter] = input.filters.as_deref().unwrap_or_default();
+
+        // Matching cost is filters x values x routes, so each request-controlled factor is
+        // capped BEFORE any work proportional to it is done, the model bounding none of them,
+        // and their PRODUCT is charged to one [`crate::state::MatchBudget`] below — the bound the
+        // per-factor caps cannot give. The same bounds the search of a route table holds its own
+        // `Filters` to, because it is the same member of the same resource.
+        if filters.len() > state::MAX_FILTERS {
+            return Err(state::invalid_parameter_value(format!(
+                "The request carries {supplied} filters, above the maximum of {maximum}",
+                supplied = filters.len(),
+                maximum = state::MAX_FILTERS,
+            )));
+        }
+
+        // A filter name this operation does not document is refused whether or not any route
+        // would have matched it, so an unsupported filter can never read as "no results". The
+        // attribute filters compare text, so each value is compiled into its pattern ONCE here;
+        // a `route-search.*` filter compares CIDR BLOCKS rather than text, so its values are
+        // read as blocks once here instead, and a value that is not a block is refused rather
+        // than compared as a string it would never equal.
+        let mut selectors: Vec<state::CompiledFilter> = Vec::with_capacity(filters.len());
+        let mut searches: Vec<state::RouteSearch> = Vec::new();
+        for filter in filters {
+            let name = filter.name.as_deref().unwrap_or_default();
+            if !EXPORT_ROUTE_FILTERS.contains(&name) {
+                return Err(state::invalid_filter_parameter_value(name));
+            }
+            let values = filter.values.as_deref().unwrap_or_default();
+            if values.len() > state::MAX_FILTER_VALUES {
+                return Err(state::invalid_parameter_value(format!(
+                    "The filter '{name}' carries {supplied} values, above the maximum of \
+                     {maximum}",
+                    supplied = values.len(),
+                    maximum = state::MAX_FILTER_VALUES,
+                )));
+            }
+            // A capped NUMBER of comparisons is not capped WORK: the text matcher's cost is the
+            // product of the pattern's length and the value's, so each value's size is bounded
+            // too, before any matching runs under the lock.
+            if let Some(oversize) = values
+                .iter()
+                .find(|value| value.len() > state::MAX_FILTER_VALUE_BYTES)
+            {
+                return Err(state::invalid_parameter_value(format!(
+                    "A value of the filter '{name}' carries {supplied} bytes, above the maximum \
+                     of {maximum}",
+                    supplied = oversize.len(),
+                    maximum = state::MAX_FILTER_VALUE_BYTES,
+                )));
+            }
+            match state::RouteSearchKind::of_filter(name) {
+                Some(kind) => {
+                    let mut blocks = Vec::with_capacity(values.len());
+                    for value in values {
+                        let block = state::canonical_cidr_block(value).ok_or_else(|| {
+                            // The same PARAMETER layer the unknown-name refusal above comes
+                            // from, which states its reason after the period: a `route-search.*`
+                            // filter relates CIDR BLOCKS, so a value that is not one relates to
+                            // nothing.
+                            state::invalid_parameter_value(format!(
+                                "Value ({value}) for parameter {FILTER_PARAMETER} is invalid. \
+                                 This is not a valid CIDR block."
+                            ))
+                        })?;
+                        blocks.push(block);
+                    }
+                    searches.push(state::RouteSearch::new(kind, blocks));
+                }
+                None => selectors.push(state::CompiledFilter::new(
+                    name.to_string(),
+                    values.to_vec(),
+                )),
+            }
+        }
+
+        // Everything this call needs of this service's state is read under ONE guard, which is
+        // then given back so the upload below can await: what the export WRITES is a file of the
+        // routes the table holds, so the document is built here and nothing of this service's
+        // own state is changed by it.
+        let document = {
+            let state_handle = state::require_service_state(&*self.engine)?;
+            let mut store = state_handle.lock();
+            // A move the clock already owes a record of this store fell due whether or not
+            // anybody called, so those moves are applied before this read — the export carries
+            // the state each resource is in NOW rather than the one it was written in, and it
+            // changes nothing a later caller would not have seen anyway.
+            store.materialize_due_transitions();
+
+            // "Exports routes from the SPECIFIED transit gateway route table": the table is the
+            // thing being read, so an id the account holds no table for is a refusal rather than
+            // an export of nothing. The form of the id first, so "not an id of this kind" never
+            // reads as "no such route table".
+            let route_table_id = input.transit_gateway_route_table_id.as_str();
+            state::require_well_formed_transit_gateway_route_table_id(route_table_id)?;
+            if !store.transit_gateway_route_tables.contains_key(route_table_id) {
+                return Err(state::invalid_transit_gateway_route_table_id_not_found(
+                    route_table_id,
+                ));
+            }
+
+            // DryRun sits AFTER every parameter has been read and the route table resolved, and
+            // BEFORE the first write: "checks whether you have the required permissions for the
+            // action, without actually making the request" (`DryRun`), so a request that would
+            // have been refused is refused with that reason instead, and one that would have
+            // succeeded leaves the bucket untouched. Every caller of this emulator is permitted.
+            if input.dry_run == Some(true) {
+                return Err(state::dry_run_operation());
+            }
+
+            // Every comparison, and every candidate, is charged to ONE budget, so the PRODUCT of
+            // the table's routes, the filters, their values and each value's length is bounded
+            // however the caller combines them — which is also what bounds how long this holds
+            // the state lock.
+            let mut budget = state::MatchBudget::new(state::MAX_FILTER_MATCH_STEPS);
+
+            // What the table holds NOW: the static routes created in it beside the `propagated`
+            // routes its propagations put there
+            // ([`crate::state::ComAmazonawsEc2Amazonec2State::transit_gateway_route_set`] is the
+            // one answer to that question, the same one `SearchTransitGatewayRoutes` reports).
+            let routes = store.transit_gateway_route_set(route_table_id);
+
+            // The destinations of the table, once: the order they come out in is the order the
+            // exported file lists them in, and the `route-search.longest-prefix-match` filters
+            // are resolved over the WHOLE set before any route is selected.
+            let destinations: Vec<&str> = routes
+                .iter()
+                .map(|(destination, _)| destination.as_str())
+                .collect();
+            for search in &mut searches {
+                search.resolve_longest_prefix(&destinations, &mut budget);
+            }
+
+            // "By default, all routes are exported"; every filter the request carries must then
+            // hold ("If you specify multiple filters, the filters are joined with an AND" —
+            // `Filter`).
+            let mut selected: Vec<&TransitGatewayRoute> = Vec::new();
+            for (destination, route) in &routes {
+                if budget.exhausted() {
+                    break;
+                }
+                if matches_every_filter(route, &selectors, &mut budget)
+                    && searches
+                        .iter()
+                        .all(|search| search.matches(Some(destination), &mut budget))
+                {
+                    selected.push(route);
+                }
+            }
+            // A spent budget means the selection is INCOMPLETE, which is not something to write
+            // into a file a caller will read as the table's routes: the request asked for more
+            // filtering than one call will do, and is told so rather than handed a silently
+            // truncated export.
+            if budget.exhausted() {
+                return Err(crate::scaffolded::Scaffolded::request_limit_exceeded(
+                    format!(
+                        "The request's filters would take more than {steps} comparisons to \
+                         evaluate; narrow them",
+                        steps = state::MAX_FILTER_MATCH_STEPS,
+                    ),
+                ));
+            }
+
+            exported_routes_document(filters, &selected)
+        };
+
+        // The file itself, written where it LIVES: "The routes are saved to the specified bucket
+        // in a JSON file", and that bucket is Amazon S3's resource — so the object a caller is
+        // handed a location for is stored by the service that serves `HeadObject` and
+        // `GetObject` for it, over the emulator's in-process callback. Made with NO guard of this
+        // service's store held, because it awaits.
+        let object_key =
+            exported_routes_object_key(&input.transit_gateway_route_table_id, SystemTime::now());
+        write_exported_routes(ctx, &region, &input.s3_bucket, &object_key, document).await?;
+
+        // "The URL of the exported file in Amazon S3. For example,
+        // s3://bucket_name/VPCTransitGateway/TransitGatewayRouteTables/file_name"
+        // (`$S3Location`): the address of the object that was just written, so a caller reads
+        // the exported file back at exactly the location it was told.
+        Ok(ExportTransitGatewayRoutesOutput {
+            s3_location: Some(format!(
+                "{scheme}://{bucket}/{object_key}",
+                scheme = ::service_common::s3_uri::S3_SCHEME,
+                bucket = input.s3_bucket,
+            )),
+        })
     }
+}
+
+/// The request member this operation's `Filters` are reported under when one of them is refused
+/// at the PARAMETER layer: the member of the request, singular, as that layer spells it — the
+/// same name [`crate::state::invalid_filter_parameter_value`] writes for an undocumented filter
+/// NAME, so the two refusals of one member cannot name it differently.
+const FILTER_PARAMETER: &str = "Filter";
+
+/// The filter names this operation documents, from `ExportTransitGatewayRoutesRequest$Filters`:
+///
+/// ```text
+/// smithy_query(query="doc",shape="ExportTransitGatewayRoutesRequest",member="Filters",model_path="services/service-com-amazonaws-ec2-amazonec2/smithy-model/com-amazonaws-ec2-amazonec2.json")
+/// ```
+///
+/// Deliberately NOT the set `SearchTransitGatewayRoutes` publishes: that operation's own doc
+/// lists `attachment.resource-type` and `prefix-list-id`, which this one does not, and this one
+/// lists `transit-gateway-route-destination-cidr-block`, which that one does not. Each entry is
+/// answered either by [`crate::state::transit_gateway_route_filter_values`] (an attribute of the
+/// route or of one of its attachments) or by [`crate::state::RouteSearchKind::of_filter`] (a CIDR
+/// relation between the route's destination and the value).
+const EXPORT_ROUTE_FILTERS: [&str; 9] = [
+    "attachment.resource-id",
+    "attachment.transit-gateway-attachment-id",
+    "route-search.exact-match",
+    "route-search.longest-prefix-match",
+    "route-search.subnet-of-match",
+    "route-search.supernet-of-match",
+    "state",
+    "transit-gateway-route-destination-cidr-block",
+    "type",
+];
+
+/// Does `route` satisfy every ATTRIBUTE filter?
+///
+/// The AND/OR evaluation EC2 defines for every `Filters` member, through the crate's one
+/// implementation of it ([`crate::state::matches_every_filter`]): "If you specify multiple
+/// filters, the filters are joined with an AND" (`Filter`), and within one filter "if you specify
+/// multiple values for a filter, the values are joined with an OR" (`Filter$Values`) — each value
+/// matched case-sensitively, with EC2's own `*`/`?` wildcards, against the values the crate's one
+/// reader of a transit gateway route's attributes holds for that name
+/// ([`crate::state::transit_gateway_route_filter_values`]).
+fn matches_every_filter(
+    route: &TransitGatewayRoute,
+    selectors: &[crate::state::CompiledFilter],
+    budget: &mut crate::state::MatchBudget,
+) -> bool {
+    crate::state::matches_every_filter(selectors, budget, &|name| {
+        crate::state::transit_gateway_route_filter_values(route, name)
+    })
+}
+
+/// The key space an exported route table's file sits in, from the location this operation's own
+/// output documents: "s3://bucket_name/VPCTransitGateway/TransitGatewayRouteTables/file_name"
+/// (`ExportTransitGatewayRoutesResult$S3Location`).
+const EXPORTED_ROUTES_KEY_PREFIX: &str = "VPCTransitGateway/TransitGatewayRouteTables";
+
+/// The key the file of the route table `route_table_id`, exported at `at`, is written under:
+/// the documented key space above, then the route table the file is of and the instant it was
+/// exported, and the `.json` suffix the file's own format carries ("The routes are saved to the
+/// specified bucket in a JSON file").
+///
+/// The instant records WHEN the routes were read, so a caller handed the location can tell which
+/// reading of the table the file is. It is written in the BASIC ISO 8601 form
+/// (`20260102T030405Z`), so the key carries none of the characters Amazon S3 asks a reader of a
+/// key to handle specially (Amazon S3 User Guide, "Creating object key names") — the same compact
+/// spelling the other EC2 export to a bucket publishes for its own file name
+/// (`StartDeclarativePoliciesReport`).
+fn exported_routes_object_key(route_table_id: &str, at: SystemTime) -> String {
+    let seconds = at
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map(|since| i64::try_from(since.as_secs()).unwrap_or(i64::MAX))
+        .unwrap_or_default();
+    // Whole seconds, so the stamp carries no fractional part, and then the separators of the
+    // extended form removed — the difference between the two ISO 8601 forms of one instant.
+    let stamp = ::aws_smithy_types::DateTime::from_secs(seconds)
+        .fmt(::aws_smithy_types::date_time::Format::DateTime)
+        .map(|text| {
+            text.chars()
+                .filter(|character| !matches!(character, '-' | ':'))
+                .collect::<String>()
+        })
+        .unwrap_or_else(|_| seconds.to_string());
+    format!("{EXPORTED_ROUTES_KEY_PREFIX}/{route_table_id}_{stamp}.json")
+}
+
+/// The media type of the object an export writes: the JSON document below.
+const EXPORTED_ROUTES_MEDIA_TYPE: &str = "application/json";
+
+/// The file one export writes: the routes the table holds, as the JSON document the bucket's
+/// reader parses.
+///
+/// "The routes are saved to the specified bucket in a JSON file" — so what the object holds is
+/// the selected routes themselves, each member spelled as the wire spells it
+/// (`TransitGatewayRoute`'s own `xmlName`s: `destinationCidrBlock`, `transitGatewayAttachments`,
+/// `type`, `state`), beside the filters the export was narrowed by, so a reader of the file can
+/// tell which routes of the table it is a report of. A member the route does not carry is left
+/// out rather than written null, exactly as the wire omits an unset member, and the routes keep
+/// the destination order the table reports them in.
+fn exported_routes_document(filters: &[Filter], routes: &[&TransitGatewayRoute]) -> Vec<u8> {
+    let attachment_of = |attachment: &TransitGatewayRouteAttachment| {
+        let mut written = ::serde_json::Map::new();
+        for (member, value) in [
+            (
+                "transitGatewayAttachmentId",
+                attachment.transit_gateway_attachment_id.as_deref(),
+            ),
+            ("resourceId", attachment.resource_id.as_deref()),
+            ("resourceType", attachment.resource_type.as_deref()),
+        ] {
+            if let Some(value) = value {
+                written.insert(member.to_string(), ::serde_json::json!(value));
+            }
+        }
+        ::serde_json::Value::Object(written)
+    };
+    let route_of = |route: &TransitGatewayRoute| {
+        let mut written = ::serde_json::Map::new();
+        for (member, value) in [
+            (
+                "destinationCidrBlock",
+                route.destination_cidr_block.as_deref(),
+            ),
+            ("prefixListId", route.prefix_list_id.as_deref()),
+            (
+                "transitGatewayRouteTableAnnouncementId",
+                route.transit_gateway_route_table_announcement_id.as_deref(),
+            ),
+            ("type", route.r#type.as_deref()),
+            ("state", route.state.as_deref()),
+        ] {
+            if let Some(value) = value {
+                written.insert(member.to_string(), ::serde_json::json!(value));
+            }
+        }
+        if let Some(attachments) = route.transit_gateway_attachments.as_deref() {
+            written.insert(
+                "transitGatewayAttachments".to_string(),
+                ::serde_json::Value::Array(attachments.iter().map(attachment_of).collect()),
+            );
+        }
+        ::serde_json::Value::Object(written)
+    };
+    let mut document = ::serde_json::Map::new();
+    if !filters.is_empty() {
+        document.insert(
+            "filters".to_string(),
+            ::serde_json::Value::Array(
+                filters
+                    .iter()
+                    .map(|filter| {
+                        ::serde_json::json!({
+                            "name": filter.name.clone().unwrap_or_default(),
+                            "values": filter.values.clone().unwrap_or_default(),
+                        })
+                    })
+                    .collect(),
+            ),
+        );
+    }
+    document.insert(
+        "routes".to_string(),
+        ::serde_json::Value::Array(routes.iter().map(|route| route_of(route)).collect()),
+    );
+    ::serde_json::Value::Object(document).to_string().into_bytes()
+}
+
+/// Write the exported file `body` into `bucket` under `object_key`.
+///
+/// The write goes WHERE the file lives: Amazon S3 owns the bucket, so the object is stored
+/// through the tree's one construction of the in-process Amazon S3 client
+/// (`service_common::s3_client`), and a caller handed the location reads the file back through
+/// Amazon S3's own `GetObject`. Nothing here opens a socket or names another service crate.
+///
+/// A refusal the object store ANSWERED — a bucket the account does not hold, a policy denying the
+/// write — means no file was saved, so this call did not export anything: it is refused with the
+/// crate's one sentence for an Amazon S3 location it could not use
+/// ([`crate::state::s3_resource_request_invalid`]) rather than answering a location nothing can
+/// be read at. A failure carrying no error code is not an answer about the bucket at all — there
+/// was no object store to ask — so it establishes nothing and refuses nothing, the rule every
+/// cross-service hop of this crate follows.
+///
+/// Call it with NO state guard held — it awaits.
+async fn write_exported_routes(
+    ctx: &smithy_server_runtime::OperationContext<'_>,
+    region: &str,
+    bucket: &str,
+    object_key: &str,
+    body: Vec<u8>,
+) -> Result<(), ExportTransitGatewayRoutesError> {
+    use ::aws_smithy_types::error::metadata::ProvideErrorMetadata;
+
+    let answered = ::service_common::s3_client::s3_client(ctx.callback(), region)
+        .put_object()
+        .bucket(bucket)
+        .key(object_key)
+        .content_type(EXPORTED_ROUTES_MEDIA_TYPE)
+        .body(::aws_sdk_s3::primitives::ByteStream::from(body))
+        .send()
+        .await;
+    let error = match answered {
+        Ok(_) => return Ok(()),
+        Err(error) => error,
+    };
+    if error.code().is_none() {
+        ::tracing::warn!(
+            bucket = %bucket,
+            key = %object_key,
+            error = ?error,
+            "nothing answered the write of an exported transit gateway route table: this \
+             emulator has no Amazon S3 to save it in"
+        );
+        return Ok(());
+    }
+    ::tracing::warn!(
+        bucket = %bucket,
+        key = %object_key,
+        code = ?error.code(),
+        "the emulator's Amazon S3 refused the write of an exported transit gateway route table"
+    );
+    Err(crate::state::s3_resource_request_invalid(bucket, object_key))
 }

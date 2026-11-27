@@ -404,9 +404,9 @@ const FILTER_PARAMETER: &str = "Filter";
 ///
 /// That doc names no `tag:<key>` or `tag-key` filter for this operation, and the modelled
 /// `TransitGatewayRoute` carries no tags either, so neither is accepted here. Every entry is
-/// answered either by [`filter_values`] (an attribute of the route or of one of its
-/// attachments) or by [`crate::state::RouteSearchKind::of_filter`] (a CIDR relation between the
-/// route's destination and the value).
+/// answered either by [`crate::state::transit_gateway_route_filter_values`] (an attribute of the
+/// route or of one of its attachments) or by [`crate::state::RouteSearchKind::of_filter`] (a CIDR
+/// relation between the route's destination and the value).
 const ROUTE_FILTERS: [&str; 10] = [
     "attachment.resource-id",
     "attachment.resource-type",
@@ -420,56 +420,6 @@ const ROUTE_FILTERS: [&str; 10] = [
     "type",
 ];
 
-/// The values the EC2 filter `name` compares against this route, for the filters that compare
-/// an ATTRIBUTE of the route as text.
-///
-/// A filter naming an attribute this route does not carry compares against NO values, so it
-/// selects nothing — the same answer AWS gives for any attribute a resource holds no value
-/// for. The `attachment.*` names compare against EVERY attachment of the route, because one
-/// filter value matching any of them is what "the id of the transit gateway attachment" asks.
-/// The `route-search.*` names are not here: they relate CIDR blocks rather than text, and are
-/// answered by the crate's shared [`crate::state::RouteSearch`].
-fn filter_values<'a>(
-    route: &'a TransitGatewayRoute,
-    name: &str,
-) -> Vec<::std::borrow::Cow<'a, str>> {
-    use ::std::borrow::Cow;
-
-    let text = |value: Option<&'a str>| -> Vec<Cow<'a, str>> {
-        value.map(Cow::Borrowed).into_iter().collect()
-    };
-    let attachments = || route.transit_gateway_attachments.as_deref().unwrap_or_default();
-    let of_each = |member: fn(&'a TransitGatewayRouteAttachment) -> Option<&'a str>| {
-        attachments()
-            .iter()
-            .filter_map(member)
-            .map(Cow::Borrowed)
-            .collect()
-    };
-    match name {
-        // "attachment.transit-gateway-attachment-id - The id of the transit gateway
-        // attachment."
-        "attachment.transit-gateway-attachment-id" => {
-            of_each(|attachment| attachment.transit_gateway_attachment_id.as_deref())
-        }
-        // "attachment.resource-id - The resource id of the transit gateway attachment."
-        "attachment.resource-id" => of_each(|attachment| attachment.resource_id.as_deref()),
-        // "attachment.resource-type - The attachment resource type."
-        "attachment.resource-type" => of_each(|attachment| attachment.resource_type.as_deref()),
-        // "prefix-list-id - The ID of the prefix list": the prefix list a route that came from
-        // a prefix list reference names (`TransitGatewayRoute$PrefixListId`).
-        "prefix-list-id" => text(route.prefix_list_id.as_deref()),
-        // "state - The state of the route (active | blackhole)."
-        "state" => text(route.state.as_deref()),
-        // "type - The type of route (propagated | static)."
-        "type" => text(route.r#type.as_deref()),
-        // Unreachable: the handler has already refused every other name, and the
-        // `route-search.*` ones never reach here. An undefined name compares against nothing,
-        // so it could never widen a result even if that check were bypassed.
-        _ => Vec::new(),
-    }
-}
-
 /// Does `route` satisfy every ATTRIBUTE filter?
 ///
 /// The AND/OR evaluation EC2 defines for every `Filters` member, through the crate's one
@@ -478,10 +428,17 @@ fn filter_values<'a>(
 /// specify multiple values for a filter, the values are joined with an OR" (`Filter$Values`) —
 /// each value matched case-sensitively, with EC2's own `*`/`?` wildcards, by the pattern the
 /// value was compiled into.
+///
+/// What each documented name compares against is the crate's one reader of a transit gateway
+/// route's attributes ([`crate::state::transit_gateway_route_filter_values`]), shared with the
+/// other operation that narrows the routes of a table, so the two cannot answer one name
+/// differently; the names this operation accepts at all are [`ROUTE_FILTERS`] above.
 fn matches_every_filter(
     route: &TransitGatewayRoute,
     selectors: &[crate::state::CompiledFilter],
     budget: &mut crate::state::MatchBudget,
 ) -> bool {
-    crate::state::matches_every_filter(selectors, budget, &|name| filter_values(route, name))
+    crate::state::matches_every_filter(selectors, budget, &|name| {
+        crate::state::transit_gateway_route_filter_values(route, name)
+    })
 }

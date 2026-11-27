@@ -140,6 +140,71 @@ pub struct TransitGatewayRouteSpec {
     pub attachment: Option<TransitGatewayRouteAttachment>,
 }
 
+/// The values the EC2 filter `name` compares against the transit gateway route `route`, for the
+/// filters that compare an ATTRIBUTE of the route — or of one of its attachments — as text.
+///
+/// The ONE such reader for this crate: every operation that narrows the routes of a transit
+/// gateway route table (`SearchTransitGatewayRoutes` and `ExportTransitGatewayRoutes`) publishes
+/// the same attribute names out of one union, so what a name compares against belongs here
+/// rather than once per operation, where two copies could answer one name differently. What
+/// stays with the operation is which of these names it DOCUMENTS at all: a name its own
+/// `Filters` doc does not list is refused by that operation before anything is compared.
+///
+/// A filter naming an attribute this route does not carry compares against NO values, so it
+/// selects nothing — the same answer AWS gives for any attribute a resource holds no value for.
+/// The `attachment.*` names compare against EVERY attachment of the route, because one filter
+/// value matching any of them is what "the id of the transit gateway attachment" asks. The
+/// `route-search.*` names are not here: they relate CIDR BLOCKS rather than text, and are
+/// answered by the crate's shared [`super::RouteSearch`].
+pub fn transit_gateway_route_filter_values<'a>(
+    route: &'a TransitGatewayRoute,
+    name: &str,
+) -> Vec<::std::borrow::Cow<'a, str>> {
+    use ::std::borrow::Cow;
+
+    let text = |value: Option<&'a str>| -> Vec<Cow<'a, str>> {
+        value.map(Cow::Borrowed).into_iter().collect()
+    };
+    let attachments = || {
+        route
+            .transit_gateway_attachments
+            .as_deref()
+            .unwrap_or_default()
+    };
+    let of_each = |member: fn(&'a TransitGatewayRouteAttachment) -> Option<&'a str>| {
+        attachments()
+            .iter()
+            .filter_map(member)
+            .map(Cow::Borrowed)
+            .collect()
+    };
+    match name {
+        // "attachment.transit-gateway-attachment-id - The id of the transit gateway attachment."
+        "attachment.transit-gateway-attachment-id" => {
+            of_each(|attachment| attachment.transit_gateway_attachment_id.as_deref())
+        }
+        // "attachment.resource-id - The resource id of the transit gateway attachment."
+        "attachment.resource-id" => of_each(|attachment| attachment.resource_id.as_deref()),
+        // "attachment.resource-type - The attachment resource type."
+        "attachment.resource-type" => of_each(|attachment| attachment.resource_type.as_deref()),
+        // "prefix-list-id - The ID of the prefix list": the prefix list a route that came from
+        // a prefix list reference names (`TransitGatewayRoute$PrefixListId`).
+        "prefix-list-id" => text(route.prefix_list_id.as_deref()),
+        // "state - The state of the route (active | blackhole)."
+        "state" => text(route.state.as_deref()),
+        // "transit-gateway-route-destination-cidr-block - The CIDR range": the destination the
+        // route matches, which is also what names it inside its table.
+        "transit-gateway-route-destination-cidr-block" => {
+            text(route.destination_cidr_block.as_deref())
+        }
+        // "type - The type of route (propagated | static)."
+        "type" => text(route.r#type.as_deref()),
+        // A name no operation documents compares against nothing, so it can never widen a
+        // result: each caller has already refused it before reaching here.
+        _ => Vec::new(),
+    }
+}
+
 impl ComAmazonawsEc2Amazonec2State {
     /// The route the transit gateway route table `route_table_id` holds for `destination`, if
     /// it holds one.
