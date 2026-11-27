@@ -1898,21 +1898,19 @@ impl PackageVersion {
     ///
     /// Every member is derived from the stored version, so a summary can never disagree
     /// with the description of the same version: the `revision` is the same derived token
-    /// ([`Self::revision`]), the `publishedTime` is the same stored instant
-    /// [`Self::description`] reports, and the `origin` is the same entry point and origin
-    /// type. The coordinate members a description carries (`format`, `namespace`,
-    /// `packageName`) are NOT repeated per summary — the listing reports the package's
-    /// coordinate once, beside the page.
+    /// ([`Self::revision`]) and the `origin` is the same entry point and origin type. A
+    /// summary carries exactly the members the shape models — `version`, `revision`,
+    /// `status` and `origin`
+    /// (`smithy_query(query="shape",shape="PackageVersionSummary")`). The members only a
+    /// description carries (the coordinate `format`, `namespace`, `packageName`, and the
+    /// publish instant `publishedTime`) are NOT repeated per summary: the listing reports
+    /// the package's coordinate once beside the page, and a per-version read reports the
+    /// rest.
     pub fn summary(&self) -> PackageVersionSummary {
         PackageVersionSummary {
             version: self.version.clone(),
             revision: Some(self.revision()),
             status: self.status.clone(),
-            // The instant the version was published, projected into the listing from the
-            // same stored field the description reports: a listing a client sorts or
-            // filters by publish time carries it per entry, so resolving the newest
-            // version costs no per-version read.
-            published_time: Some(self.published_time.into()),
             origin: Some(PackageVersionOrigin {
                 domain_entry_point: Some(DomainEntryPoint {
                     repository_name: Some(self.entry_point_repository.clone()),
