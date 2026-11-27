@@ -187,8 +187,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             crate::state::TaggedResourceAddress::Resource(resource) => resource,
             // A Glue resource ARN naming a resource type this service places no entity
             // under at all: an absence, not a refusal of the member, and one no owning
-            // surface words.
-            crate::state::TaggedResourceAddress::NoEntity => {
+            // surface words. A kind that carries no tag set is the same answer to a WRITE:
+            // there is no tag set for the write to land in.
+            crate::state::TaggedResourceAddress::UntaggedResource(_)
+            | crate::state::TaggedResourceAddress::NoEntity => {
                 return Err(TagResourceErrorModeled::EntityNotFoundException(
                     EntityNotFoundException {
                         message: Some(

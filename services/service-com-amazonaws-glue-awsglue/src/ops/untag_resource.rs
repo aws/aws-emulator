@@ -185,7 +185,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // an absence.
         let resource = match crate::state::resolve_tagged_resource(&input.resource_arn) {
             crate::state::TaggedResourceAddress::Resource(resource) => resource,
-            crate::state::TaggedResourceAddress::NoEntity => {
+            // A kind that carries no tag set, and one this service places no entity under at
+            // all, are the same answer to a WRITE: there is no tag set for it to land in, so
+            // the write reports the absence the tagging surface words for such an ARN.
+            crate::state::TaggedResourceAddress::UntaggedResource(_)
+            | crate::state::TaggedResourceAddress::NoEntity => {
                 return Err(UntagResourceErrorModeled::EntityNotFoundException(
                     EntityNotFoundException {
                         message: Some(

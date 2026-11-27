@@ -1205,7 +1205,11 @@ fn glue<Eng: Send + Sync + 'static>(
     // ([`owner_glue::state::INVALID_RESOURCE_ARN_MESSAGE`]).
     let resource = match owner_glue::state::resolve_tagged_resource(&arn.arn) {
         owner_glue::state::TaggedResourceAddress::Resource(resource) => resource,
-        owner_glue::state::TaggedResourceAddress::NoEntity => {
+        // A kind whose record carries no tag set reads back the empty map through Glue's own
+        // tag read, but holds no tag set for THIS API to read or write, so it is the same
+        // per-resource miss as an ARN that service places no entity under at all.
+        owner_glue::state::TaggedResourceAddress::UntaggedResource(_)
+        | owner_glue::state::TaggedResourceAddress::NoEntity => {
             return absent(
                 "EntityNotFoundException",
                 owner_glue::state::messages::UNPLACEABLE_RESOURCE_ARN_NOT_FOUND.to_string(),

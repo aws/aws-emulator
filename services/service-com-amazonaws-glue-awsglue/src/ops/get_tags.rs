@@ -15,16 +15,23 @@
 //! workflow and the rest among them, because the modelled `ResourceArn` places no
 //! restriction on which kind of Glue resource the ARN names.
 //!
+//! A resource whose record carries NO tag set — a kind whose create models no `Tags` map,
+//! the catalog table among them — has no tags rather than no tag reading: this read answers
+//! the empty map for one this endpoint HOLDS
+//! ([`crate::state::ComAmazonawsGlueAwsglueState::holds_untagged_resource`]), because the
+//! modelled `ResourceArn` restricts no resource type and the modelled `Tags` map admits
+//! length 0.
+//!
 //! An ARN that IS a Glue resource ARN naming one of Glue's resource types but names no
 //! resource this endpoint holds earns the
 //! modelled `EntityNotFoundException` carrying the miss sentence of the surface that OWNS
 //! that kind ([`crate::state::tag_read_not_found_message`]) — the read dispatches on the
 //! resource type to the lookup of a resource of that kind, so the refusal says WHICH lookup
 //! failed — as does one naming another Region's or another account's estate. A Glue resource
-//! ARN whose resource TYPE this service places no entity under AT ALL (a catalog table, a
-//! partition, a resource type it tags nothing of, a resource portion naming no one resource
-//! of its kind) is an absence too, and there is no owning surface to word it, so it carries
-//! the generic sentence recorded for exactly that ARN form
+//! ARN whose resource TYPE this service holds no record under AT ALL (a resource type it holds
+//! no record of, an ARN form of a record that hangs off a table, a resource portion naming no
+//! one resource of its kind) is an absence too, and there is no owning surface to word it, so
+//! it carries the generic sentence recorded for exactly that ARN form
 //! ([`crate::state::messages::UNPLACEABLE_RESOURCE_ARN_NOT_FOUND`]).
 //!
 //! The modelled client-input refusal is this handler's, not the framework boundary's
@@ -189,6 +196,28 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // fails to place is an absence and not a bad parameter.
         let resource = match crate::state::resolve_tagged_resource(&input.resource_arn) {
             crate::state::TaggedResourceAddress::Resource(resource) => resource,
+            // A resource of a kind that carries no tag set at all: it is THERE or it is not,
+            // and one that is there holds no tags — which is the empty map, the same answer
+            // a taggable resource created without any gets, and not a refusal.
+            crate::state::TaggedResourceAddress::UntaggedResource(resource) => {
+                let held = resource.region() == region
+                    && state.lock().holds_untagged_resource(&resource);
+                if !held {
+                    return Err(GetTagsErrorModeled::EntityNotFoundException(
+                        EntityNotFoundException {
+                            message: Some(
+                                crate::state::messages::UNPLACEABLE_RESOURCE_ARN_NOT_FOUND
+                                    .to_string(),
+                            ),
+                            from_federation_source: None,
+                        },
+                    )
+                    .into());
+                }
+                return Ok(GetTagsOutput {
+                    tags: Some(::std::collections::HashMap::new()),
+                });
+            }
             // A Glue resource ARN whose resource type this service places no entity under at
             // all: an absence, not a refusal of the member, and one no owning surface words.
             crate::state::TaggedResourceAddress::NoEntity => {

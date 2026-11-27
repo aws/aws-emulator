@@ -248,11 +248,19 @@ pub enum TaggedResourceAddress {
     /// through the surface that owns the kind ([`tag_read_not_found_message`]) and the
     /// WRITES through their own fixed sentence ([`messages::TAGGED_RESOURCE_NOT_FOUND`]).
     Resource(TaggedResource),
+    /// The ARN names one resource of a kind this service DOES hold a record of but whose
+    /// record carries no tag set of its own ([`parse_untagged_resource`]) — a catalog table.
+    /// Whether this store holds that resource is
+    /// [`ComAmazonawsGlueAwsglueState::holds_untagged_resource`]'s answer, and a resource it
+    /// holds has no tags rather than no tag READING: the read reports the empty map for it.
+    UntaggedResource(UntaggedResource),
     /// A Glue resource ARN that names a resource TYPE under which this service places no
-    /// entity at all: a type it dispatches no lookup for — a catalog table, a table
-    /// version, a user defined function, a partition, each of which carries no tag set of
-    /// its own — or a resource portion that names the type of a taggable kind but no single
-    /// resource of it. There is nothing there,
+    /// entity at all: a type it dispatches no lookup for — a user defined function, a
+    /// development endpoint, an integration, none of which this store holds a record of, and
+    /// the ARN forms of the records that hang off a table, whose tag read no recording states
+    /// ([`UntaggedResource`]) — the account's own Data Catalog, which is the namespace those
+    /// records live in rather than a record of its own, and a resource portion that names the
+    /// type of a kind it does place but no single resource of it. There is nothing there,
     /// which is an absence and not a bad parameter
     /// ([`messages::UNPLACEABLE_RESOURCE_ARN_NOT_FOUND`]).
     NoEntity,
@@ -388,10 +396,90 @@ pub fn resolve_tagged_resource(resource_arn: &str) -> TaggedResourceAddress {
     if !is_glue_resource_address(resource_arn) {
         return TaggedResourceAddress::NotGlueResourceAddress;
     }
-    match parse_tagged_resource(resource_arn) {
-        Some(resource) => TaggedResourceAddress::Resource(resource),
+    if let Some(resource) = parse_tagged_resource(resource_arn) {
+        return TaggedResourceAddress::Resource(resource);
+    }
+    // A kind that carries no tag set is still a resource this store PLACES, and a resource
+    // that is there has no tags rather than no tag reading at all.
+    match parse_untagged_resource(resource_arn) {
+        Some(resource) => TaggedResourceAddress::UntaggedResource(resource),
         None => TaggedResourceAddress::NoEntity,
     }
+}
+
+/// A Glue resource addressed by an ARN whose KIND carries no tag set of its own — its create
+/// models no `Tags` map — and whose RECORD this store holds all the same, so the only question
+/// a tag read asks of it is whether it is THERE.
+///
+/// A resource of such a kind holds no tags, which is what the empty map a tag read reports
+/// says; that is not the same answer as an ARN this service can place no entity under at all
+/// ([`TaggedResourceAddress::NoEntity`]).
+///
+/// The catalog TABLE is the one such kind here, because it is the one whose ARN a tag read is
+/// RECORDED answering with the empty map. The other Glue resource types that carry no tag set
+/// ([`UNTAGGED_RESOURCE_TYPES`]) stay absences: a user defined function, a development endpoint
+/// and an integration have no record in this store at all, and for the ARN forms of the records
+/// that hang off a table — a partition ([`TableEntry::partitions`]), an archived version
+/// ([`TableEntry::archived_versions`]) — no recording and no doc states what a tag read answers,
+/// so nothing here guesses one. The account's own Data Catalog
+/// ([`DATA_CATALOG_RESOURCE`]) is the namespace those records live IN rather than a record of
+/// its own. A kind joins this enum when a recording states the read's answer for its ARN form.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UntaggedResource {
+    /// `table/<database>/<name>`: a catalog table, whose create models no `Tags` map, held in
+    /// a database of the catalog the ARN's account field names ([`table_arn`] spells the
+    /// same form).
+    Table {
+        /// Field 4 of the ARN: the Region whose estate the table belongs to.
+        region: String,
+        /// Field 5 of the ARN, which for a Data Catalog resource is also the `CatalogId` it
+        /// lives under, exactly as [`TaggedResource::account_id`] is.
+        catalog_id: String,
+        /// The database that holds the table, folded as the catalog keys it.
+        database: String,
+        /// The table itself, folded the same way.
+        table: String,
+    },
+}
+
+impl UntaggedResource {
+    /// Field 4 of the ARN: the Region whose estate the resource belongs to, which every form
+    /// carries, so the Region check a tagging call makes is one check.
+    pub fn region(&self) -> &str {
+        match self {
+            Self::Table { region, .. } => region,
+        }
+    }
+}
+
+/// The Glue resource of a kind carrying no tag set that `resource_arn` names, or `None` when
+/// the ARN names no resource of one of those kinds — it is no Glue ARN, its resource portion
+/// names another type, or it names the type but no single resource of it.
+///
+/// Only the KIND and the identity fields are read here; whether this store holds the resource
+/// is [`ComAmazonawsGlueAwsglueState::holds_untagged_resource`]'s answer, exactly as
+/// [`parse_tagged_resource`] leaves that question to the tag-set accessor.
+pub fn parse_untagged_resource(resource_arn: &str) -> Option<UntaggedResource> {
+    let parsed = parse_glue_arn(resource_arn)?;
+    // The resource portion names exactly one resource of the kind: the type segment, then
+    // every part of the name that kind carries, each non-empty and nothing after them — the
+    // reading [`parse_tagged_resource`] makes of a taggable kind's portion.
+    let (segment, name) = parsed.resource.split_once('/')?;
+    if segment != TABLE_ARN_RESOURCE_TYPE {
+        return None;
+    }
+    let (database, table) = name.split_once('/')?;
+    if database.is_empty() || table.is_empty() || table.contains('/') {
+        return None;
+    }
+    // A database and a table are keyed by the Hive-compatible fold of their names
+    // ([`fold_name`]), so an ARN resolves the record whatever case it spells them in.
+    Some(UntaggedResource::Table {
+        region: parsed.region.clone(),
+        catalog_id: parsed.account_id.clone(),
+        database: fold_name(database),
+        table: fold_name(table),
+    })
 }
 
 /// The message a refusal carries for a `ResourceArn` of a known kind that names no
@@ -580,6 +668,27 @@ impl ComAmazonawsGlueAwsglueState {
     /// API that projects this store — resolved it.
     pub fn resource_tags(&self, resource: &TaggedResource) -> Option<&HashMap<String, String>> {
         tag_set_of!(self, resource, get, as_ref, &)
+    }
+
+    /// Whether this store holds the resource `resource` names — one of a kind that carries
+    /// no tag set of its own, so being THERE is the whole of what a tag read asks about it.
+    ///
+    /// Each kind is looked up exactly where the surface that owns it looks it up, and under
+    /// the same identity its create stored it by: a catalog table lives in a database of the
+    /// catalog the ARN's account field names ([`ComAmazonawsGlueAwsglueState::database`]),
+    /// keyed by the fold the catalog stores both names under, which is the lookup
+    /// `GetTable` itself makes.
+    pub fn holds_untagged_resource(&self, resource: &UntaggedResource) -> bool {
+        match resource {
+            UntaggedResource::Table {
+                catalog_id,
+                database,
+                table,
+                ..
+            } => self
+                .database(catalog_id, database)
+                .is_some_and(|database| database.tables.contains_key(&fold_name(table))),
+        }
     }
 
     /// [`Self::resource_tags`] mutably: the ONE record every tag WRITE lands in, so a tag

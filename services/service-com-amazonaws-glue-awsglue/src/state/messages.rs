@@ -787,9 +787,15 @@ pub const TAGGED_RESOURCE_NOT_FOUND: &str = "Entity not found";
 
 /// The miss a tagging call answers for a `ResourceArn` that ADDRESSES a Glue resource
 /// ([`crate::state::is_glue_resource_address`]) whose resource TYPE this service places no
-/// entity under at all: a resource type it dispatches no lookup for (a catalog table, a table
-/// version, a user defined function, a partition — none of which carries a tag set), and a
-/// resource portion that names a type but no one resource of it.
+/// entity under at all: a resource type it dispatches no lookup for (a user defined function,
+/// a development endpoint, an integration), the ARN forms of the records that hang off a table,
+/// the account's own Data Catalog, and
+/// a resource portion that names a type but no one resource of it. It is also the READ's
+/// answer for a resource of a kind that carries no tag set
+/// ([`crate::state::UntaggedResource`]) that this endpoint does not hold — a catalog table no
+/// database holds — which is
+/// the same absence and reads the same as that surface's own table miss
+/// ([`TABLE_ENTITY_NOT_FOUND`]).
 ///
 /// RECORDED constant, and the whole message: the surface answers its modelled
 /// `EntityNotFoundException` with this fixed sentence — it names neither the ARN it was
