@@ -15,6 +15,11 @@
 //!
 //! Every assertion goes over a real socket the core opened for the instance, dialled at the
 //! address the control plane published; nothing reaches into the service's state.
+//!
+//! The session harness below ([`Session`] and the readers around it) is `pub(crate)`, so the
+//! sibling suite that drives a CLUSTER's own endpoint the same way
+//! (`tests/all/cluster_endpoint_own_address.rs`) speaks the wire through one harness rather
+//! than a copy of it.
 
 use std::sync::Arc;
 
@@ -31,11 +36,12 @@ const MASTER_USERNAME: &str = "docdbadmin";
 /// Its password, which only this test and the credential derived from it ever see.
 const MASTER_PASSWORD: &str = "a-Secret-99";
 
-/// A byte stream a session runs on: a plaintext socket, or the TLS stream over one.
-type Stream = Box<dyn Transport>;
+/// A byte stream a session runs on: a plaintext socket, the TLS stream over one, or a
+/// connection an in-process client opened to a published address.
+pub(crate) type Stream = Box<dyn Transport>;
 
 /// What a session needs of its connection.
-trait Transport: ::tokio::io::AsyncRead + ::tokio::io::AsyncWrite + Unpin + Send {}
+pub(crate) trait Transport: ::tokio::io::AsyncRead + ::tokio::io::AsyncWrite + Unpin + Send {}
 impl<T: ::tokio::io::AsyncRead + ::tokio::io::AsyncWrite + Unpin + Send> Transport for T {}
 
 /// `OP_MSG`, the message a driver sends every command in.
@@ -44,13 +50,24 @@ const OP_MSG: i32 = 2013;
 /// `OP_QUERY`, the message a driver's first handshake travels in.
 const OP_QUERY: i32 = 2004;
 
-/// One client session on an instance's endpoint.
-struct Session {
+/// One client session on an endpoint of a cluster or of one of its members.
+pub(crate) struct Session {
     stream: Stream,
     request_id: i32,
 }
 
 impl Session {
+    /// A session on a connection a client has already opened — the one an IN-PROCESS client of
+    /// this emulator opens to the address the control plane published
+    /// (`service_common::dialable_data_planes`), which is the vantage point a cluster endpoint
+    /// is reachable from.
+    pub(crate) fn over(stream: Stream) -> Self {
+        Self {
+            stream,
+            request_id: 1,
+        }
+    }
+
     /// Open a plaintext session on the address the control plane published — over a REAL
     /// socket, as any client of this machine dials it: the published pair is the one the core
     /// bound and assigned, so the client that reads it out of the control plane and connects
@@ -127,7 +144,7 @@ impl Session {
 
     /// Send one command as an `OP_MSG`, the form every command of a driver travels in, and
     /// read the reply document.
-    async fn command(&mut self, case: &str, database: &str, command: Document) -> Document {
+    pub(crate) async fn command(&mut self, case: &str, database: &str, command: Document) -> Document {
         let mut command = command;
         command.insert("$db".to_string(), database);
         let mut body: Vec<u8> = Vec::new();
@@ -141,7 +158,12 @@ impl Session {
 
     /// Send one command as an `OP_QUERY` against `<db>.$cmd`, which is how a driver that does
     /// not yet know what it is talking to sends its first handshake.
-    async fn legacy_command(&mut self, case: &str, database: &str, command: Document) -> Document {
+    pub(crate) async fn legacy_command(
+        &mut self,
+        case: &str,
+        database: &str,
+        command: Document,
+    ) -> Document {
         let mut body: Vec<u8> = Vec::new();
         body.extend_from_slice(&0_i32.to_le_bytes());
         body.extend_from_slice(format!("{database}.$cmd\0").as_bytes());
@@ -210,7 +232,12 @@ impl Session {
 
     /// Authenticate as `username` with `password` over SCRAM-SHA-256, the exchange a driver
     /// runs, and answer the reply of its last step.
-    async fn authenticate(&mut self, case: &str, username: &str, password: &str) -> Document {
+    pub(crate) async fn authenticate(
+        &mut self,
+        case: &str,
+        username: &str,
+        password: &str,
+    ) -> Document {
         let client_nonce = "Y2xpZW50bm9uY2U5OQ==";
         let first_bare = format!("n={username},r={client_nonce}");
         let started = self
@@ -314,7 +341,7 @@ fn hmac_sha_256(key: &[u8], data: &[u8]) -> Vec<u8> {
 }
 
 /// The `ok` of a reply, which every reply carries.
-fn ok(reply: &Document) -> f64 {
+pub(crate) fn ok(reply: &Document) -> f64 {
     match reply.get("ok") {
         Some(Bson::Double(value)) => *value,
         Some(Bson::Int32(value)) => f64::from(*value),
@@ -324,7 +351,7 @@ fn ok(reply: &Document) -> f64 {
 }
 
 /// The `code` of a refusal.
-fn code(reply: &Document) -> i32 {
+pub(crate) fn code(reply: &Document) -> i32 {
     reply
         .get_i32("code")
         .unwrap_or_else(|_| panic!("expected a refusal carrying a code, got {reply:?}"))
@@ -639,8 +666,9 @@ async fn an_instance_endpoint_serves_the_document_wire_it_published() {
 async fn a_cluster_with_tls_turned_off_is_served_in_the_clear() {
     // The `tls` cluster parameter decides the wire: with it disabled the endpoint answers a
     // connection in the clear, and with it at its default the endpoint is encrypted (the row
-    // above). A cluster created with no master user has no credential a client could present,
-    // so its session is served as itself.
+    // above). Who the session is is decided the same way on either wire: the handshake reaches
+    // the endpoint as itself, and everything past it is served only to a session that has
+    // authenticated as the cluster's master user.
     let docdb = Docdb::new();
     let case = "a cluster with tls disabled";
     docdb
@@ -671,7 +699,7 @@ async fn a_cluster_with_tls_turned_off_is_served_in_the_clear() {
         case,
         "plain-cluster",
         "plain-instance",
-        false,
+        true,
         Some("plaintext-group"),
     )
     .await;
@@ -683,6 +711,26 @@ async fn a_cluster_with_tls_turned_off_is_served_in_the_clear() {
         1.0,
         "case {case}: the endpoint must answer a ping in the clear, got {pinged:?}"
     );
+    let unauthenticated = session
+        .command(
+            case,
+            "shop",
+            doc! { "insert": "widgets", "documents": [{ "_id": 1_i32, "name": "only" }] },
+        )
+        .await;
+    assert_eq!(
+        (ok(&unauthenticated), code(&unauthenticated)),
+        (0.0, 13),
+        "case {case}: a wire in the clear admits no unauthenticated write either, got \
+         {unauthenticated:?}"
+    );
+    assert_eq!(
+        ok(&session
+            .authenticate(case, MASTER_USERNAME, MASTER_PASSWORD)
+            .await),
+        1.0,
+        "case {case}: the master user must authenticate a session on the wire in the clear"
+    );
     let inserted = session
         .command(
             case,
@@ -693,7 +741,7 @@ async fn a_cluster_with_tls_turned_off_is_served_in_the_clear() {
     assert_eq!(
         (ok(&inserted), inserted.get_i32("n").ok()),
         (1.0, Some(1)),
-        "case {case}: a cluster with no master user serves its session, got {inserted:?}"
+        "case {case}: the authenticated session is served in the clear, got {inserted:?}"
     );
     let found = session
         .command(case, "shop", doc! { "find": "widgets", "filter": { "name": "only" } })
@@ -707,6 +755,75 @@ async fn a_cluster_with_tls_turned_off_is_served_in_the_clear() {
         1,
         "case {case}: the session must read back what it wrote, got {batch:?}"
     );
+}
+
+#[tokio::test]
+async fn an_endpoint_whose_cluster_recorded_no_credential_admits_no_session() {
+    // RULE: a command outside the handshake is served only to a session that has
+    // AUTHENTICATED on this endpoint. A cluster that recorded no master credential has nothing
+    // a client could authenticate against, so its endpoint answers the handshake and serves
+    // nothing else — a socket this emulator opened never hands a cluster's documents to a
+    // client that presented nothing.
+    let docdb = Docdb::new();
+    let case = "a cluster that recorded no master credential";
+    docdb
+        .ok(
+            case,
+            "CreateDBClusterParameterGroup",
+            &[
+                ("DBClusterParameterGroupName", "anonymous-group"),
+                ("DBParameterGroupFamily", "docdb5.0"),
+                ("Description", "tls off"),
+            ],
+        )
+        .await;
+    docdb
+        .ok(
+            case,
+            "ModifyDBClusterParameterGroup",
+            &[
+                ("DBClusterParameterGroupName", "anonymous-group"),
+                ("Parameters.Parameter.1.ParameterName", "tls"),
+                ("Parameters.Parameter.1.ParameterValue", "disabled"),
+                ("Parameters.Parameter.1.ApplyMethod", "pending-reboot"),
+            ],
+        )
+        .await;
+    cluster_with_member(
+        &docdb,
+        case,
+        "anonymous-cluster",
+        "anonymous-instance",
+        false,
+        Some("anonymous-group"),
+    )
+    .await;
+    let (address, port) = published_endpoint(&docdb, case, "anonymous-instance").await;
+    let mut session = Session::open(&docdb, case, &address, &port).await;
+    // The handshake and the liveness check reach the endpoint as itself: a driver sends them
+    // before it has authenticated anything.
+    assert_eq!(
+        ok(&session.command(case, "admin", doc! { "ping": 1_i32 }).await),
+        1.0,
+        "case {case}: the handshake must reach the endpoint"
+    );
+    // Every command past it is refused, whichever kind it is.
+    for (which, command) in [
+        (
+            "a write",
+            doc! { "insert": "widgets", "documents": [{ "_id": 1_i32 }] },
+        ),
+        ("a read", doc! { "find": "widgets", "filter": {} }),
+        ("a drop", doc! { "drop": "widgets" }),
+    ] {
+        let refused = session.command(case, "shop", command).await;
+        assert_eq!(
+            (ok(&refused), code(&refused)),
+            (0.0, 13),
+            "case {case}: {which} on a session that authenticated against nothing must be \
+             refused, got {refused:?}"
+        );
+    }
 }
 
 #[tokio::test]
@@ -746,7 +863,7 @@ async fn every_member_is_an_address_onto_its_clusters_documents() {
     // replica serves reads only, which is what the engine's own `NotWritablePrimary` says.
     let docdb = Docdb::new();
     let case = "two members of one cluster";
-    cluster_with_member(&docdb, case, "members-cluster", "members-writer", false, None).await;
+    cluster_with_member(&docdb, case, "members-cluster", "members-writer", true, None).await;
     docdb
         .ok(
             case,
@@ -769,6 +886,13 @@ async fn every_member_is_an_address_onto_its_clusters_documents() {
     );
 
     let mut writer = Session::open_tls(&docdb, case, &writer_address, &writer_port).await;
+    assert_eq!(
+        ok(&writer
+            .authenticate(case, MASTER_USERNAME, MASTER_PASSWORD)
+            .await),
+        1.0,
+        "case {case}: the writer must authenticate the cluster's master user"
+    );
     let inserted = writer
         .command(
             case,
@@ -788,6 +912,13 @@ async fn every_member_is_an_address_onto_its_clusters_documents() {
         hello.get_bool("isWritablePrimary").ok(),
         Some(false),
         "case {case}: a replica must report itself as no writer, got {hello:?}"
+    );
+    assert_eq!(
+        ok(&replica
+            .authenticate(case, MASTER_USERNAME, MASTER_PASSWORD)
+            .await),
+        1.0,
+        "case {case}: a replica authenticates the same master user as the writer"
     );
     let read = replica
         .command(case, "shop", doc! { "find": "widgets", "filter": { "name": "shared" } })
@@ -817,9 +948,16 @@ async fn a_unique_index_refuses_a_duplicate_and_a_cursor_pages_a_result() {
     // key, and a result bigger than one batch is handed over through a cursor.
     let docdb = Docdb::new();
     let case = "indexes and cursors";
-    cluster_with_member(&docdb, case, "index-cluster", "index-instance", false, None).await;
+    cluster_with_member(&docdb, case, "index-cluster", "index-instance", true, None).await;
     let (address, port) = published_endpoint(&docdb, case, "index-instance").await;
     let mut session = Session::open_tls(&docdb, case, &address, &port).await;
+    assert_eq!(
+        ok(&session
+            .authenticate(case, MASTER_USERNAME, MASTER_PASSWORD)
+            .await),
+        1.0,
+        "case {case}: the session must authenticate before the engine serves it"
+    );
 
     let built = session
         .command(
@@ -981,5 +1119,129 @@ async fn the_socket_closes_with_the_instance() {
     assert!(
         refused,
         "case {case}: {authority} must stop accepting connections once the instance is deleted"
+    );
+}
+
+#[tokio::test]
+async fn an_aggregate_is_bounded_by_the_memory_it_would_materialise() {
+    // RULE: a pipeline is bounded by the MEMORY it would build as well as by how many
+    // documents it visits. An accumulator's argument is a client expression resolved once per
+    // member of every group, so the bytes one command materialises are the product of the
+    // documents it visits, the accumulators over each and the SIZE of that expression — and a
+    // command past that product is refused instead of being built.
+    //
+    // The rows differ in that one factor, the expression's size: the same pipeline over the
+    // same documents is served with a small expression and refused with one large enough that
+    // resolving it per document would outgrow the ceiling.
+    let docdb = Docdb::new();
+    let case = "the memory a pipeline would materialise";
+    cluster_with_member(&docdb, case, "budget-cluster", "budget-instance", true, None).await;
+    let (address, port) = published_endpoint(&docdb, case, "budget-instance").await;
+    let mut session = Session::open_tls(&docdb, case, &address, &port).await;
+    assert_eq!(
+        ok(&session
+            .authenticate(case, MASTER_USERNAME, MASTER_PASSWORD)
+            .await),
+        1.0,
+        "case {case}: the session must authenticate before the engine serves it"
+    );
+    // The documents the pipeline visits, each tiny: the size under test is the EXPRESSION's.
+    let documents: Vec<Document> = (0..50)
+        .map(|index| doc! { "_id": index, "group": "one" })
+        .collect();
+    let inserted = session
+        .command(
+            case,
+            "shop",
+            doc! { "insert": "ledger", "documents": documents },
+        )
+        .await;
+    assert_eq!(
+        (ok(&inserted), inserted.get_i32("n").ok()),
+        (1.0, Some(50)),
+        "case {case}: the documents the pipeline reads must be stored, got {inserted:?}"
+    );
+    for (row, literal_bytes, served) in [
+        ("an expression of a few bytes", 8_usize, true),
+        // 50 documents x one accumulator x ~400 KB resolves to ~20 MB, past the ceiling one
+        // command may materialise.
+        ("an expression of 400 KB", 400 * 1024, false),
+    ] {
+        let answered = session
+            .command(
+                case,
+                "shop",
+                doc! {
+                    "aggregate": "ledger",
+                    "pipeline": [
+                        {
+                            "$group": {
+                                "_id": "$group",
+                                "collected": { "$push": "x".repeat(literal_bytes) },
+                            }
+                        }
+                    ],
+                    "cursor": {},
+                },
+            )
+            .await;
+        match served {
+            true => assert_eq!(
+                ok(&answered),
+                1.0,
+                "case {case} ({row}): a pipeline inside the budget must be served, got \
+                 {answered:?}"
+            ),
+            false => assert_eq!(
+                (ok(&answered), code(&answered)),
+                (0.0, 8),
+                "case {case} ({row}): a pipeline that would outgrow the budget must be \
+                 refused, got the reply's own code"
+            ),
+        }
+    }
+
+    // The other half of the same rule, which the SIZE of the expression cannot show: a field
+    // path of a few bytes resolves to whatever the document holds, so the budget is charged
+    // for the VALUE and not for the expression. Twenty documents each carrying ~900 KB are
+    // stored in batches, and the same `$push` over the field they carry is refused.
+    let payload = "y".repeat(900 * 1024);
+    for batch in 0..5 {
+        let documents: Vec<Document> = (0..4)
+            .map(|index| {
+                doc! { "_id": batch * 4 + index, "group": "one", "payload": payload.clone() }
+            })
+            .collect();
+        let stored = session
+            .command(
+                case,
+                "shop",
+                doc! { "insert": "payloads", "documents": documents },
+            )
+            .await;
+        assert_eq!(
+            (ok(&stored), stored.get_i32("n").ok()),
+            (1.0, Some(4)),
+            "case {case}: the documents the field path reads must be stored, got {stored:?}"
+        );
+    }
+    let answered = session
+        .command(
+            case,
+            "shop",
+            doc! {
+                "aggregate": "payloads",
+                "pipeline": [
+                    { "$group": { "_id": "$group", "collected": { "$push": "$payload" } } }
+                ],
+                "cursor": {},
+            },
+        )
+        .await;
+    assert_eq!(
+        (ok(&answered), code(&answered)),
+        (0.0, 8),
+        "case {case} (a field path over large documents): the budget is charged for the value \
+         the expression resolves to, so this must be refused, got the reply's own code"
     );
 }

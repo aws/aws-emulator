@@ -25,15 +25,15 @@ pub mod ec2_subnets;
 /// The connection address an instance announces for a client to dial.
 pub mod announced_address;
 
-/// The data plane behind that address: the socket a client of an instance connects to and
-/// the documents its cluster holds.
+/// The data plane behind that address: the socket a client of a cluster or of one of its
+/// instances connects to, and the documents the cluster holds.
 pub mod cluster_data_plane;
 
 pub use announced_address::announced_instance_host;
 
 pub use cluster_data_plane::{
-    endpoints_are_encrypted, engine_speaks_the_document_wire, serve_instance, ClusterDocuments,
-    InstanceDataPlanes, ServedEndpoint, SharedVolume,
+    endpoints_are_encrypted, engine_speaks_the_document_wire, serve_cluster, serve_instance,
+    ClusterDocuments, ServedDataPlanes, ServedEndpoint, SharedVolume,
 };
 
 pub use ec2_subnets::{
@@ -465,9 +465,11 @@ pub struct ClusterMember {
 ///
 /// The identifier is stored lowercased (`DBClusterIdentifier`: "This parameter is stored
 /// as a lowercase string"), and is also this record's key in
-/// [`ComAmazonawsDocdbAmazonrdsv19State::clusters`]. The ARN and the two endpoint host
-/// names are DERIVED from the identifier rather than stored, because renaming a cluster
-/// through `ModifyDBCluster` changes all three.
+/// [`ComAmazonawsDocdbAmazonrdsv19State::clusters`]. The ARN, and the endpoint host names of
+/// a cluster this emulator serves no data plane for, are DERIVED from the identifier rather
+/// than stored, because renaming a cluster through `ModifyDBCluster` moves them; the address a
+/// SERVED cluster publishes is its socket's and is stored, because a rename does not move a
+/// socket.
 #[derive(Debug, Clone)]
 pub struct DbClusterRecord {
     /// The lowercased `DBClusterIdentifier`.
@@ -480,6 +482,11 @@ pub struct DbClusterRecord {
     /// The DNS suffix shared by this cluster's endpoints and its instances' endpoints:
     /// `<token>.<region>.docdb.amazonaws.com`.
     pub endpoint_suffix: String,
+    /// The address this cluster's OWN socket answers on, published as `Endpoint` and
+    /// `ReaderEndpoint` where this emulator serves the cluster's data plane
+    /// ([`cluster_data_plane::serve_cluster`]). `None` for a cluster it serves none for, which
+    /// publishes the names Amazon DocumentDB's own zone would carry instead.
+    pub served_endpoint: Option<ServedEndpoint>,
     /// `Status`.
     pub status: String,
     /// When the `creating` -> `available` transition falls due; `None` once settled.
@@ -556,13 +563,46 @@ impl DbClusterRecord {
     }
 
     /// `Endpoint`: the cluster (writer) endpoint.
+    ///
+    /// The HOST this emulator answers the cluster's data plane at where it serves one, and the
+    /// name the cluster's own control plane would give it where it serves none: an endpoint is
+    /// an address the service ANSWERS on, and a name in Amazon DocumentDB's own DNS zone
+    /// resolves to nothing on the machine this emulator runs on.
+    ///
+    /// A HOST and nothing else: `DBCluster` gives the cluster one `Port` member for both of its
+    /// endpoints ([`Self::published_port`]), so neither carries a port of its own.
     pub fn endpoint(&self) -> String {
-        format!("{}.cluster-{}", self.identifier, self.endpoint_suffix)
+        match &self.served_endpoint {
+            Some(served) => served.host.clone(),
+            None => format!("{}.cluster-{}", self.identifier, self.endpoint_suffix),
+        }
     }
 
     /// `ReaderEndpoint`: the load-balanced reader endpoint.
+    ///
+    /// The address this emulator answers the cluster's data plane at for a cluster it serves
+    /// one for, exactly as [`Self::endpoint`] publishes it: the read path and the write path of
+    /// one cluster are two endpoints in front of ONE plane, and the host a client dials to
+    /// reach that plane is the host this emulator answers it on. A cluster this emulator serves
+    /// no plane for keeps the name its own control plane would give it, under the published
+    /// `cluster-ro-` label, so the two names differ in that label and in nothing else.
     pub fn reader_endpoint(&self) -> String {
-        format!("{}.cluster-ro-{}", self.identifier, self.endpoint_suffix)
+        match &self.served_endpoint {
+            Some(served) => served.host.clone(),
+            None => format!("{}.cluster-ro-{}", self.identifier, self.endpoint_suffix),
+        }
+    }
+
+    /// `Port`: "the port that the database engine is listening on" — the port this cluster was
+    /// created with, or the one a modify moved it to.
+    ///
+    /// The configured port rather than the one the core assigned the cluster's socket: it is
+    /// the one port the model gives the cluster's two endpoint members, so it is what a client
+    /// completes the published host with, and the address it composes that way is recorded as
+    /// one this emulator answers the cluster at
+    /// ([`cluster_data_plane::open_endpoint_data_plane`]).
+    pub fn published_port(&self) -> i32 {
+        self.port
     }
 
     /// Materialise the `creating` -> `available` transition if the clock already owes it.
@@ -895,7 +935,11 @@ pub struct ComAmazonawsDocdbAmazonrdsv19State {
     /// The sockets this emulator has open for its instances, keyed by the instance they
     /// serve. Kept beside the records because a live socket is not a cloneable value; see
     /// [`cluster_data_plane`].
-    pub instance_data_planes: InstanceDataPlanes,
+    pub instance_data_planes: ServedDataPlanes,
+    /// The sockets this emulator has open for its clusters' OWN endpoints, keyed by the
+    /// cluster's immutable `DbClusterResourceId` — which a rename does not move — for the same
+    /// reason; see [`cluster_data_plane::serve_cluster`].
+    pub cluster_data_planes: ServedDataPlanes,
     /// Monotonic counter behind every minted resource id, so ids are deterministic.
     pub next_resource_id: u64,
 }
@@ -1720,7 +1764,7 @@ pub fn cluster_to_shape(
         engine: Some(record.engine.clone()),
         engine_version: Some(record.engine_version.clone()),
         latest_restorable_time: restore_window.map(|(_, latest)| latest),
-        port: Some(record.port),
+        port: Some(record.published_port()),
         master_username: record.master_username.clone(),
         preferred_backup_window: Some(record.preferred_backup_window.clone()),
         preferred_maintenance_window: Some(record.preferred_maintenance_window.clone()),

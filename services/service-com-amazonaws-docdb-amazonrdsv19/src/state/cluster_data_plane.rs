@@ -11,13 +11,21 @@
 //! DocumentDB's own DNS zone resolves to nothing on the machine this emulator runs on, so an
 //! instance that reported one published an address no client could reach.
 //!
-//! So every instance this emulator creates for a cluster whose engine speaks the document
-//! wire ([`engine_speaks_the_document_wire`]) is given a socket of the EMULATOR's own, opened
-//! through the core (`engine.listeners()`, which owns the socket, the bind interface, the port
-//! range, the TLS material and the connection caps), and what the instance's
-//! `Endpoint{Address,Port}` reports is an address that socket answers at. A client dials
-//! exactly what it was told, and what answers there is the server [`wire`] runs over the
+//! So every endpoint this emulator publishes for a cluster whose engine speaks the document
+//! wire ([`engine_speaks_the_document_wire`]) — the CLUSTER's own two endpoints and each of its
+//! members' — is given a socket of the EMULATOR's own, opened through the core
+//! (`engine.listeners()`, which owns the socket, the bind interface, the port range, the TLS
+//! material and the connection caps), and what `DBCluster{Endpoint,ReaderEndpoint}` and an
+//! instance's `Endpoint{Address,Port}` report is an address that socket answers at. A client
+//! dials exactly what it was told, and what answers there is the server [`wire`] runs over the
 //! documents [`documents`] holds.
+//!
+//! `DBCluster` gives the cluster's two endpoint members no port of their own — one `Port`
+//! member serves both — so a client completes the published host with that `Port`, which is
+//! the port the cluster's engine was configured to listen on rather than the one the core
+//! assigned its socket. The address a client composes that way is therefore recorded BESIDE
+//! the socket's own, so the pair the control plane publishes is one this emulator answers at
+//! ([`open_endpoint_data_plane`]).
 //!
 //! WHICH address of that socket is published is the one the CORE says it is dialable at, with
 //! the port the core assigned: a socket is bound on one address and answers a connection
@@ -107,9 +115,10 @@ pub fn lock_volume(volume: &SharedVolume) -> std::sync::MutexGuard<'_, Volume> {
     volume.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// What every session on ONE instance's socket is served from.
+/// What every session on ONE endpoint's socket is served from — a cluster's own endpoints and
+/// each of its members'.
 #[derive(Clone)]
-pub struct InstanceSocket {
+pub struct EndpointSocket {
     /// The endpoint's facts, read on every command, so a change the control plane makes while
     /// a session is open is in force on its next command.
     pub facts: FactsSource,
@@ -119,13 +128,13 @@ pub struct InstanceSocket {
     pub next_connection_id: Arc<AtomicI64>,
 }
 
-impl std::fmt::Debug for InstanceSocket {
+impl std::fmt::Debug for EndpointSocket {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.debug_struct("InstanceSocket").finish_non_exhaustive()
+        formatter.debug_struct("EndpointSocket").finish_non_exhaustive()
     }
 }
 
-impl InstanceSocket {
+impl EndpointSocket {
     /// The `connectionId` the next connection on this socket reports.
     #[must_use]
     pub fn take_connection_id(&self) -> i64 {
@@ -144,10 +153,10 @@ impl InstanceSocket {
     }
 }
 
-/// What a connection on ONE instance's socket is served from: a session of the command layer
+/// What a connection on ONE endpoint's socket is served from: a session of the command layer
 /// below ([`commands`]), and every command answered out of the cluster's documents with the
 /// endpoint's facts as they are at that instant.
-impl wire::WireEndpoint for InstanceSocket {
+impl wire::WireEndpoint for EndpointSocket {
     type Session = commands::Session;
 
     fn open_session(&self) -> Self::Session {
@@ -214,70 +223,126 @@ fn docdb_store_facts(
     }
 }
 
-/// One instance's data plane, as the store holds it.
+/// ONE endpoint's data plane, as the store holds it.
 ///
-/// Dropping it closes the port, so it is held for exactly as long as the instance it belongs
+/// Dropping it closes the port, so it is held for exactly as long as the resource it belongs
 /// to.
-pub struct InstanceDataPlane {
-    /// The address this instance answers on, which the control plane publishes.
+pub struct ServedDataPlane {
+    /// The address this endpoint answers on, which the control plane publishes.
     endpoint: ServedEndpoint,
     /// The socket itself. Never read: it is held because dropping it closes the port.
     _listener: ::emulator_server::ResourceListener,
     /// The record that makes the published address one an IN-PROCESS client of this emulator
     /// can open a session on — the same server as the socket's, over the same documents.
-    /// Never read: it is held because dropping it withdraws the address, exactly as dropping
-    /// the listener closes the port. `None` on an engine that vends no such register.
-    _dialable: Option<::service_common::dialable_data_planes::OpenedPlanes>,
+    /// Held because dropping it withdraws the addresses, exactly as dropping the listener
+    /// closes the port, and replaced when the control plane moves the port it publishes beside
+    /// this endpoint's host ([`ServedDataPlane::publishes_port`]). `None` on an engine that
+    /// vends no such register, and for an endpoint served on its socket alone.
+    dialable: Option<::service_common::dialable_data_planes::OpenedPlanes>,
+    /// The server itself, as the register of in-process planes holds it — kept so the
+    /// addresses it answers at can be re-recorded without re-opening the socket. `None` for an
+    /// endpoint that is served on its socket alone.
+    served: Option<::std::sync::Arc<dyn ::service_common::dialable_data_planes::DialablePlane>>,
 }
 
-impl std::fmt::Debug for InstanceDataPlane {
+impl std::fmt::Debug for ServedDataPlane {
     /// Everything about this record that is not a live socket: where it answers.
     /// `ResourceListener` is not `Debug`.
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
-            .debug_struct("InstanceDataPlane")
+            .debug_struct("ServedDataPlane")
             .field("endpoint", &self.endpoint)
             .finish_non_exhaustive()
     }
 }
 
-impl InstanceDataPlane {
-    /// The address a client reaches this instance at.
+impl ServedDataPlane {
+    /// The address a client reaches this endpoint at.
     #[must_use]
     pub fn endpoint(&self) -> &ServedEndpoint {
         &self.endpoint
     }
+
+    /// Re-record the address a client COMPOSES from this endpoint's published host and the
+    /// port the control plane publishes beside it, for a control plane that MOVED that port.
+    ///
+    /// The socket does not move — the core owns the port it bound, and a cluster's `Port` is
+    /// not that port — so what changes is only the second address this one server answers at:
+    /// the pair the caller is handed from now on. Synchronous, and the register it writes is
+    /// the last lock in this service's order, so it is called with the store's guard held.
+    /// Does nothing for an endpoint served on its socket alone.
+    pub fn publishes_port<Eng: Send + Sync + 'static>(&mut self, engine: &Eng, port: i32) {
+        let Some(served) = self.served.clone() else {
+            return;
+        };
+        let Some(planes) = ::service_common::dialable_data_planes::DialablePlanes::of(engine)
+        else {
+            return;
+        };
+        let authorities = answered_authorities(&self.endpoint.host, self.endpoint.port, Some(port));
+        // The new recording replaces the addresses it names; the handle held before is dropped
+        // with the assignment, which withdraws only the addresses still holding ITS recording
+        // — the port no longer published.
+        self.dialable = Some(planes.opening(authorities, SIGNING_NAME, &served));
+    }
 }
 
-/// The sockets this emulator has open for its instances, keyed by the instance they serve.
+/// The addresses ONE server answers at: the socket's own `host:port`, and — for an endpoint
+/// whose published member carries no port of its own — that host completed with the port the
+/// control plane publishes beside it, which is the address a client composes out of the two
+/// members it was handed.
+fn answered_authorities(host: &str, port: i32, published_port: Option<i32>) -> Vec<String> {
+    let authority = |port: i32| {
+        u16::try_from(port)
+            .ok()
+            .map(|port| ::service_common::data_plane_addressing::host_port_authority(host, port))
+    };
+    [
+        authority(port),
+        published_port.filter(|beside| *beside != port).and_then(authority),
+    ]
+    .into_iter()
+    .flatten()
+    .collect()
+}
+
+/// The sockets this emulator has open for one KIND of resource, keyed by the resource each of
+/// them serves — its instances by instance identifier, its clusters by the cluster's immutable
+/// `DbClusterResourceId`, which a rename does not move.
 ///
-/// Kept beside the instance records rather than on them, because a record is a cloneable value
-/// and a live socket is not.
+/// Kept beside the records rather than on them, because a record is a cloneable value and a
+/// live socket is not.
 #[derive(Debug, Default)]
-pub struct InstanceDataPlanes {
-    open: BTreeMap<String, InstanceDataPlane>,
+pub struct ServedDataPlanes {
+    open: BTreeMap<String, ServedDataPlane>,
 }
 
-impl InstanceDataPlanes {
-    /// The data plane of the instance keyed `identifier`, if this emulator opened one.
+impl ServedDataPlanes {
+    /// The data plane keyed `identifier`, if this emulator opened one.
     #[must_use]
-    pub fn get(&self, identifier: &str) -> Option<&InstanceDataPlane> {
+    pub fn get(&self, identifier: &str) -> Option<&ServedDataPlane> {
         self.open.get(identifier)
     }
 
-    /// Hold `plane` as the data plane of the instance keyed `identifier`, closing whatever was
-    /// held for it before.
-    pub fn insert(&mut self, identifier: &str, plane: InstanceDataPlane) {
+    /// The data plane keyed `identifier`, to re-record what it publishes
+    /// ([`ServedDataPlane::publishes_port`]).
+    pub fn get_mut(&mut self, identifier: &str) -> Option<&mut ServedDataPlane> {
+        self.open.get_mut(identifier)
+    }
+
+    /// Hold `plane` as the data plane keyed `identifier`, closing whatever was held for it
+    /// before.
+    pub fn insert(&mut self, identifier: &str, plane: ServedDataPlane) {
         self.open.insert(identifier.to_string(), plane);
     }
 
-    /// Close the data plane of the instance keyed `identifier`: the port and every connection
-    /// on it go with the handle.
-    pub fn close(&mut self, identifier: &str) -> Option<InstanceDataPlane> {
+    /// Close the data plane keyed `identifier`: the port and every connection on it go with
+    /// the handle.
+    pub fn close(&mut self, identifier: &str) -> Option<ServedDataPlane> {
         self.open.remove(identifier)
     }
 
-    /// How many sockets are open, which is what bounds this map: one per served instance.
+    /// How many sockets are open, which is what bounds this map: one per served resource.
     #[must_use]
     pub fn len(&self) -> usize {
         self.open.len()
@@ -321,7 +386,21 @@ pub fn endpoints_are_encrypted(
     !setting.is_some_and(|value| value.eq_ignore_ascii_case(TLS_DISABLED))
 }
 
-/// Open the socket one instance is served on, and report the address it answers at — `None`
+/// Open the socket one instance is served on, and report the address it answers at.
+///
+/// [`open_endpoint_data_plane`] for a resource whose published endpoint carries a port member
+/// of its own (`Endpoint$Port`), so the address a client composes is the socket's own and no
+/// second one is recorded for it.
+pub async fn open_instance_data_plane<Eng: Send + Sync + 'static>(
+    engine: &Eng,
+    facts: FactsSource,
+    volume: SharedVolume,
+    encrypted: bool,
+) -> Option<ServedDataPlane> {
+    open_endpoint_data_plane(engine, facts, volume, encrypted, None).await
+}
+
+/// Open the socket ONE endpoint is served on, and report the address it answers at — `None`
 /// when this engine vends no listeners or the core could not bind, in which case the caller
 /// publishes the name Amazon DocumentDB's own zone would carry instead.
 ///
@@ -339,18 +418,32 @@ pub fn endpoints_are_encrypted(
 /// host socket — the code of a function attached to the cluster's virtual private cloud, which
 /// is the vantage point a cluster endpoint is reachable from — opens its connection to the
 /// published address and is served by this same server.
-pub async fn open_instance_data_plane<Eng: Send + Sync + 'static>(
+///
+/// `published_port` is the port the control plane publishes BESIDE the host for an endpoint
+/// whose own published member carries none — `DBCluster` gives its two endpoint members one
+/// shared `Port`, the port the cluster's engine was configured to listen on — and the address
+/// a client composes from the two is then recorded as a second address of this same server,
+/// because it is the pair the caller was handed. `None` for an endpoint published as a whole
+/// `host`/`port` pair of the socket's own, which needs no second address.
+///
+/// That configured port is ONE port of the ONE interface the core binds on, so it names no
+/// cluster in particular: the cluster that published its endpoints last answers there, while
+/// each endpoint's own socket address keeps reaching its own endpoint throughout. Giving every
+/// cluster an address of its own to answer that port at needs a core listener that takes an
+/// address or a port, and `vendor/server/src/listeners.rs` takes neither.
+pub async fn open_endpoint_data_plane<Eng: Send + Sync + 'static>(
     engine: &Eng,
     facts: FactsSource,
     volume: SharedVolume,
     encrypted: bool,
-) -> Option<InstanceDataPlane> {
+    published_port: Option<i32>,
+) -> Option<ServedDataPlane> {
     let shared = (engine as &dyn ::std::any::Any).downcast_ref::<::engine::InMemoryEngine>()?;
     let listeners = shared.listeners();
-    // ONE server per instance, served at BOTH ends of its address: the socket the core accepts
+    // ONE server per endpoint, served at BOTH ends of its address: the socket the core accepts
     // a client's connections on, and the connections an in-process client of this emulator
     // opens to the address the control plane publishes.
-    let served = Arc::new(wire::MongoWire::new(InstanceSocket {
+    let served = Arc::new(wire::MongoWire::new(EndpointSocket {
         facts,
         volume,
         next_connection_id: Arc::new(AtomicI64::new(1)),
@@ -396,17 +489,24 @@ pub async fn open_instance_data_plane<Eng: Send + Sync + 'static>(
         host: host.clone(),
         port,
     };
-    let dialable = in_process
-        .then(|| ::service_common::dialable_data_planes::DialablePlanes::of(engine))
-        .flatten()
-        .map(|planes| {
-            let plane = ::service_common::dialable_data_planes::served_in_process(served, upgrader);
-            planes.opening(vec![authority], SIGNING_NAME, &plane)
-        });
-    Some(InstanceDataPlane {
+    // The addresses this one server answers at ([`answered_authorities`]): the socket's own,
+    // and — for an endpoint whose published member carries no port of its own — that host
+    // completed with the port the control plane publishes beside it.
+    let authorities = answered_authorities(&host, port, published_port);
+    // The server as the register of in-process planes holds it, kept on the record so the
+    // addresses it answers at can be re-recorded when the control plane moves the port it
+    // publishes ([`ServedDataPlane::publishes_port`]).
+    let served = in_process
+        .then(|| ::service_common::dialable_data_planes::served_in_process(served, upgrader));
+    let dialable = served.clone().and_then(|served| {
+        ::service_common::dialable_data_planes::DialablePlanes::of(engine)
+            .map(|planes| planes.opening(authorities, SIGNING_NAME, &served))
+    });
+    Some(ServedDataPlane {
         endpoint: published,
         _listener: listener,
-        _dialable: dialable,
+        dialable,
+        served,
     })
 }
 
@@ -465,5 +565,127 @@ pub async fn serve_instance<Eng: Send + Sync + 'static>(
     store
         .instance_data_planes
         .insert(instance_identifier, plane);
+    Some(endpoint)
+}
+
+/// The facts of a CLUSTER's own endpoint, read under this service's store and the shared
+/// cluster storage's.
+///
+/// The cluster is found by its immutable `DbClusterResourceId` rather than by its identifier,
+/// because `ModifyDBCluster` renames a cluster under the live sessions of its endpoints and the
+/// resource id is what does not move.
+///
+/// `DBCluster$Endpoint` is the connection endpoint for the cluster's PRIMARY instance, so what
+/// answers here answers as that primary: writes are accepted, and the endpoint serves only
+/// while the cluster is available and the member it writes through is — a cluster with no
+/// member yet has no engine behind its endpoint, exactly as one still being created has none.
+fn docdb_cluster_facts(
+    state: &::engine::ServiceState<super::ComAmazonawsDocdbAmazonrdsv19State>,
+    documents: Option<&::engine::ServiceState<ClusterDocuments>>,
+    resource_id: &str,
+) -> EndpointFacts {
+    let mut store = state.lock();
+    store.settle_clock();
+    let Some(cluster) = store
+        .clusters
+        .values()
+        .find(|cluster| cluster.resource_id == resource_id)
+    else {
+        return EndpointFacts {
+            exists: false,
+            serving: false,
+            status: super::STATUS_DELETING.to_string(),
+            is_writer: false,
+            engine_version: super::DEFAULT_ENGINE_VERSION.to_string(),
+            credentials: None,
+        };
+    };
+    // The member the cluster writes through, which is the instance this endpoint leads to.
+    let writer = cluster
+        .members
+        .iter()
+        .find(|member| member.is_cluster_writer)
+        .and_then(|member| store.instances.get(&member.db_instance_identifier));
+    EndpointFacts {
+        exists: true,
+        serving: cluster.status == super::STATUS_AVAILABLE
+            && writer.is_some_and(|instance| instance.status == super::STATUS_AVAILABLE),
+        // Why a session is not served, when it is not: the primary's own status where the
+        // cluster has one, and the cluster's own while it has no member to lead to.
+        status: writer.map_or_else(
+            || cluster.status.clone(),
+            |instance| instance.status.clone(),
+        ),
+        is_writer: true,
+        engine_version: cluster.engine_version.clone(),
+        credentials: documents.and_then(|documents| {
+            documents.lock().credentials(&cluster.resource_id)
+        }),
+    }
+}
+
+/// Open the socket the CLUSTER keyed `cluster_identifier` is served on and publish its address
+/// on the cluster's record, so `DBCluster$Endpoint` and `DBCluster$ReaderEndpoint` are an
+/// address a client can reach rather than a name in Amazon DocumentDB's own DNS zone.
+///
+/// Called by the create once the record is stored, and again by a modify that MOVES the port
+/// the cluster publishes — the address a client composes from the published host and `Port`
+/// changes with it, so the server is re-opened to answer at the new one. Both call it with the
+/// store NOT locked: opening a socket is asynchronous and the store's lock is held across no
+/// await anywhere in this service. Whatever was open for the cluster closes as the new plane
+/// replaces it, which is what a port change does to the sessions on the old port.
+///
+/// Answers the address published, or `None` for a cluster whose engine speaks no wire this
+/// emulator serves and for an engine that vends no listeners — in which case the cluster keeps
+/// the names Amazon DocumentDB's own zone would carry.
+pub async fn serve_cluster<Eng: Send + Sync + 'static>(
+    engine: &Eng,
+    state: &::engine::ServiceState<super::ComAmazonawsDocdbAmazonrdsv19State>,
+    cluster_identifier: &str,
+) -> Option<ServedEndpoint> {
+    let documents = ClusterDocuments::of(engine);
+    // Everything read from the store is read before the await, and the volume handle is the
+    // CLUSTER's, so the cluster's endpoint and its members' are addresses onto one set of
+    // documents.
+    let (resource_id, volume, encrypted, published_port) = {
+        let store = state.lock();
+        let cluster = store.clusters.get(cluster_identifier)?;
+        if !engine_speaks_the_document_wire(&cluster.engine) {
+            return None;
+        }
+        let resource_id = cluster.resource_id.clone();
+        let published_port = cluster.port;
+        let encrypted = endpoints_are_encrypted(&store, cluster_identifier);
+        // The cluster's storage is taken under this service's own store, which is the lock
+        // order [`volumes`] fixes.
+        (
+            resource_id.clone(),
+            documents.as_ref()?.lock().volume(&resource_id),
+            encrypted,
+            published_port,
+        )
+    };
+    let facts: FactsSource = {
+        let state = state.clone();
+        let documents = documents.clone();
+        let resource_id = resource_id.clone();
+        Arc::new(move || docdb_cluster_facts(&state, documents.as_ref(), &resource_id))
+    };
+    let plane =
+        open_endpoint_data_plane(engine, facts, volume, encrypted, Some(published_port)).await?;
+    let endpoint = plane.endpoint().clone();
+    let mut store = state.lock();
+    // The record publishes what the socket answers on, so every later read of the cluster
+    // reports the same host.
+    //
+    // The lock was released while the socket was opened, so the record is read back fallibly: a
+    // delete that ran in between removed the cluster, so there is nothing to publish here and
+    // the socket closes with the plane as this returns rather than being held open for a
+    // cluster no record has.
+    let cluster = store.clusters.get_mut(cluster_identifier)?;
+    cluster.served_endpoint = Some(endpoint.clone());
+    // Keyed by the resource id, which a rename does not move, so the socket of a renamed
+    // cluster is still the socket that cluster's delete closes.
+    store.cluster_data_planes.insert(&resource_id, plane);
     Some(endpoint)
 }

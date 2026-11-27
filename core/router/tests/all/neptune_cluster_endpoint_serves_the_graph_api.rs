@@ -77,9 +77,9 @@ struct Row {
     /// Request members beyond `DBClusterIdentifier` and `Engine`.
     extra: &'static [(&'static str, &'static str)],
     /// The `host` this emulator is reached at and the `Port` the create configured, which is
-    /// what a cluster whose data plane this emulator serves must publish; `None` for one it
-    /// serves neither way, which keeps the AWS DNS name of its engine's control plane and
-    /// the port the create configured.
+    /// what a cluster whose data plane this emulator serves as the graph API must publish;
+    /// `None` for one whose plane is a WIRE of its own, which publishes the host that wire is
+    /// answered on beside the port its engine was configured with.
     served_at: Option<(&'static str, &'static str)>,
 }
 
@@ -115,7 +115,7 @@ const ROWS: &[Row] = &[
         served_at: Some(("127.0.0.1", "1150")),
     },
     Row {
-        case: "a DocumentDB cluster, whose data plane this emulator serves neither way",
+        case: "a DocumentDB cluster, whose data plane is a wire of its own",
         engine: "docdb",
         endpoint: "https://127.0.0.1:9297/",
         extra: &[],
@@ -216,17 +216,27 @@ fn a_neptune_clusters_published_endpoint_answers_the_graph_api() {
                 let port = element(&created, "Port");
 
                 let Some((expected_host, expected_port)) = row.served_at else {
-                    // The boundary of the rule: no data plane of this cluster is served
-                    // here, so there is no address of this process to publish and the
-                    // cluster keeps the published DNS form of its own control plane, with
-                    // the port its engine was configured with.
-                    let suffix = ".us-east-1.docdb.amazonaws.com";
+                    // The boundary of the rule: this cluster's data plane is not the graph API
+                    // served at THIS emulator's endpoint but a wire of its own, answered on a
+                    // listener the create opened for the cluster — so the pair it publishes is
+                    // that listener's host beside the port its engine was configured with, and
+                    // the session on it is driven by the suite of that wire
+                    // (`services/service-com-amazonaws-rds-amazonrdsv19/tests/all/docdb_document_plane.rs`).
                     assert!(
-                        endpoint.ends_with(suffix),
-                        "case {case:?}: expected an <Endpoint> ending {suffix}, got \
+                        endpoint
+                            .trim_matches(['[', ']'])
+                            .parse::<std::net::IpAddr>()
+                            .is_ok_and(|address| address.is_loopback()),
+                        "case {case:?}: expected an <Endpoint> this emulator answers on, got \
                          {endpoint:?}"
                     );
-                    // The port Amazon DocumentDB publishes as its default.
+                    assert_eq!(
+                        reader, endpoint,
+                        "case {case:?}: both endpoints in front of one plane name the address \
+                         it is answered at, got {reader:?} and {endpoint:?}"
+                    );
+                    // The port Amazon DocumentDB publishes as its default, which is the port a
+                    // client completes that host with.
                     assert_eq!(
                         port, "27017",
                         "case {case:?}: expected <Port> \"27017\", got {port:?}"

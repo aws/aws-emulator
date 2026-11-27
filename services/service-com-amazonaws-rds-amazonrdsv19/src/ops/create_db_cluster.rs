@@ -1177,6 +1177,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             // Filled in below from the cluster's own engine listener, for a cluster whose
             // engine speaks a wire this emulator serves.
             served_endpoint: None,
+            // And from the cluster's own DOCUMENT-wire socket, for an Amazon DocumentDB
+            // cluster.
+            served_document_host: None,
             // A newly created DB cluster is not yet usable: RDS answers `creating`, and the
             // cluster reaches `available` on its own. The due instant is stored on the
             // record, so nothing sleeps on this thread.
@@ -1428,6 +1431,16 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         if record.served_endpoint.is_none() {
             record.served_endpoint = crate::state::api_plane_endpoint(&record.engine, ctx);
         }
+        // An Amazon DocumentDB cluster — created HERE because an AWS SDK DocumentDB client
+        // signs `rds` — is served the DOCUMENT wire on a socket of its own, over the documents
+        // the cluster holds, and publishes the host that socket answers on for both of its
+        // endpoints ([`crate::state::document_plane`]). The handle is kept below, beside the
+        // record, because dropping it closes the port.
+        let document_plane =
+            crate::state::open_cluster_document_plane(&*self.engine, &state, &record).await;
+        if let Some(plane) = &document_plane {
+            record.served_document_host = Some(crate::state::published_cluster_host(plane));
+        }
         // A cluster created with backtracking ON keeps the consistent point it starts from:
         // "Backtracks a DB cluster to a specific time", which it can only do to a time it
         // kept the data of, and the cluster's own storage as the engine just opened it is
@@ -1502,11 +1515,16 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     database_insights_mode: Some(record.database_insights_mode.clone()),
                 };
                 let cluster_arn = record.arn();
+                let key_for_plane = key.clone();
                 store.db_clusters.insert(key.clone(), record);
                 // The listener is the cluster's: the store holds it, so it stays open for as
                 // long as the cluster does and closes with it.
                 if let Some(endpoint) = endpoint {
                     store.db_cluster_engine_endpoints.insert(key, endpoint);
+                }
+                // The same for its own DOCUMENT-wire socket, where this create opened one.
+                if let Some(plane) = document_plane {
+                    store.cluster_document_planes.insert(key_for_plane, plane);
                 }
                 // The create happened, so the region's event log records it: that entry is
                 // what `DescribeEvents` reports for this cluster from now on.

@@ -329,8 +329,9 @@ pub mod data_plane;
 // implementation of that wire this tree has, which the DocumentDB control plane's crate owns.
 pub mod document_plane;
 pub use document_plane::{
-    engine_serves_the_document_wire, forget_cluster_documents, open_document_plane,
-    published_address, record_master_credential, DocumentPlane,
+    engine_serves_the_document_wire, forget_cluster_documents, open_cluster_document_plane,
+    open_document_plane, published_address, published_cluster_host, record_master_credential,
+    DocumentPlane,
 };
 // The subnets a request NAMES, resolved against the service that owns them: a subnet's
 // Availability Zone is Amazon EC2's fact, and this is the one place this crate asks for it.
@@ -767,6 +768,15 @@ pub struct ComAmazonawsRdsAmazonrdsv19State {
     /// ([`data_plane::cluster_endpoint`]), and [`Self::settle_due_transitions`] drops it
     /// with the cluster.
     pub db_cluster_engine_endpoints: BTreeMap<RegionalKey, DbEngineEndpoint>,
+    /// The DOCUMENT-wire socket of each DB CLUSTER that has one, by the same
+    /// `(region, DBClusterIdentifier)` key as [`Self::db_clusters`] — the Amazon DocumentDB
+    /// clusters this door created ([`document_plane`]).
+    ///
+    /// The cluster's counterpart of [`Self::document_planes`], and the same contract: the
+    /// handle held here is what keeps the port open for exactly as long as the cluster, and an
+    /// entry removed from here closes it. Bounded by the per-region cluster quota, because an
+    /// entry exists only for a cluster this store holds.
+    pub cluster_document_planes: BTreeMap<RegionalKey, DocumentPlane>,
     /// The CUSTOM endpoints of DB clusters by `(region, db_cluster_endpoint_key)` — the
     /// identifier folded as `DBClusterEndpointIdentifier` documents ("this parameter is
     /// stored as a lowercase string"). Ordered, so `DescribeDBClusterEndpoints` pages
@@ -1013,6 +1023,9 @@ impl ComAmazonawsRdsAmazonrdsv19State {
             // The cluster is gone from the service, so its engine endpoint goes with it:
             // dropping the record closes the port and severs every session on it.
             self.db_cluster_engine_endpoints.remove(&key);
+            // And its own DOCUMENT-wire socket, where it had one, for the same reason
+            // ([`document_plane`]).
+            self.cluster_document_planes.remove(&key);
             // And so do the custom endpoints that stood in front of it: a custom endpoint
             // "associated with an Amazon Aurora DB cluster" has nothing to point at once
             // that cluster is gone, which is why it is removed here rather than left

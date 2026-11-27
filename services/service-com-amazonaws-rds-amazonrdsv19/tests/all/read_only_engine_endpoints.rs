@@ -432,19 +432,21 @@ async fn deleting_a_cluster_closes_the_reader_port_with_the_writer_one() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_cluster_whose_wire_this_emulator_does_not_serve_keeps_its_dns_reader_name() {
     let router = emulator();
-    // Amazon DocumentDB speaks the MongoDB wire, which this emulator runs no server for, so
-    // its cluster publishes a name for both endpoints rather than a port that would answer
+    // An Amazon Neptune cluster's data plane is its graph API, served at the address THIS
+    // emulator is reached at — and this request is addressed to this service's own AWS host,
+    // which is no address of this process's. The cluster therefore has no local plane to lead
+    // a client to and publishes a name for both endpoints rather than a port that would answer
     // nothing.
     let created = the_cluster(
-        "docdb",
+        "neptune",
         &expect_ok(
-            "docdb",
+            "neptune",
             call(
                 &router,
                 "CreateDBCluster",
                 &[
-                    ("DBClusterIdentifier", "emu-reader-docdb".to_string()),
-                    ("Engine", "docdb".to_string()),
+                    ("DBClusterIdentifier", "emu-reader-neptune".to_string()),
+                    ("Engine", "neptune".to_string()),
                 ],
             )
             .await,
@@ -452,7 +454,7 @@ async fn a_cluster_whose_wire_this_emulator_does_not_serve_keeps_its_dns_reader_
     );
     let reader = text(&created, "ReaderEndpoint");
     assert!(
-        reader.contains(".cluster-ro-") && reader.ends_with(".docdb.amazonaws.com"),
+        reader.contains(".cluster-ro-") && reader.ends_with(".neptune.amazonaws.com"),
         "a cluster this emulator serves no wire for keeps its DNS-form reader endpoint, got \
          {reader:?}"
     );

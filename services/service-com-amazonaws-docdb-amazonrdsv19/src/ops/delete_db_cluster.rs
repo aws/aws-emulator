@@ -349,9 +349,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         record.status = docdb::STATUS_DELETING.to_string();
         record.available_at = None;
         // The cluster's DOCUMENTS are its storage, so nothing of them outlives it — and the
-        // credential its endpoints checked a login against goes with them. The socket of any
-        // member still held is closed too: a port onto a cluster that is gone would answer
-        // out of nothing.
+        // credential its endpoints checked a login against goes with them. The socket of the
+        // cluster's own endpoints, and of any member still held, is closed too: a port onto a
+        // cluster that is gone would answer out of nothing.
+        store.cluster_data_planes.close(&record.resource_id);
         for member in &record.members {
             store
                 .instance_data_planes

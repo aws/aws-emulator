@@ -341,18 +341,23 @@ async fn every_clusters_published_endpoint_serves_its_engines_wire() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_cluster_whose_wire_this_emulator_does_not_serve_keeps_its_dns_endpoint() {
     let router = emulator();
-    // Amazon DocumentDB speaks the MongoDB wire, which this emulator runs no server for, so
-    // its cluster publishes a name rather than a port that would answer nothing.
+    // An Amazon Neptune cluster's data plane is its graph API, served at the address THIS
+    // emulator is reached at — and this request is addressed to this service's own AWS host,
+    // which is no address of this process's: the cluster publishes a name rather than a port
+    // that would answer nothing.
     let created = the_cluster(
-        "docdb",
+        "neptune",
         &expect_ok(
-            "docdb",
+            "neptune",
             call(
                 &router,
                 "CreateDBCluster",
                 &[
-                    ("DBClusterIdentifier", "emu-cluster-wire-docdb".to_string()),
-                    ("Engine", "docdb".to_string()),
+                    (
+                        "DBClusterIdentifier",
+                        "emu-cluster-wire-neptune".to_string(),
+                    ),
+                    ("Engine", "neptune".to_string()),
                 ],
             )
             .await,
@@ -360,13 +365,13 @@ async fn a_cluster_whose_wire_this_emulator_does_not_serve_keeps_its_dns_endpoin
     );
     let endpoint = text(&created, "Endpoint");
     assert!(
-        endpoint.ends_with(".docdb.amazonaws.com"),
+        endpoint.ends_with(".neptune.amazonaws.com"),
         "a cluster this emulator serves no wire for keeps its DNS-form endpoint, got \
          {endpoint:?}"
     );
     let port = text(&created, "Port");
     assert_eq!(
-        port, "27017",
+        port, "8182",
         "such a cluster publishes the port its engine's control plane documents, got \
          {port:?}"
     );

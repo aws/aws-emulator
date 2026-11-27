@@ -80,6 +80,17 @@ pub struct DbClusterRecord {
     /// cluster's own engine wire; a cluster whose plane is served as an AWS API publishes its
     /// own configured `Port` beside this host ([`Self::published_port`]).
     pub served_endpoint: Option<ServedEndpoint>,
+    /// The HOST this emulator answers this cluster's DOCUMENT wire on, where it serves one
+    /// ([`crate::state::document_plane`]) — an Amazon DocumentDB cluster, which an AWS SDK
+    /// DocumentDB client creates HERE because it signs `rds`; `None` for every other cluster.
+    ///
+    /// A host and nothing else, unlike [`Self::served_endpoint`]: the endpoints in front of
+    /// that plane carry no port of their own, so a client composes the address it dials from
+    /// this host and the cluster's one `Port` member — the port its engine is configured to
+    /// listen on, which the plane records as a second address it answers at. Publishing the
+    /// port the core assigned the socket instead would report a port the engine does not
+    /// listen on for a cluster whose `Port` a client reads to build its connection string.
+    pub served_document_host: Option<String>,
     /// `Status`.
     pub status: String,
     /// The transition the clock owes this cluster, if any.
@@ -595,8 +606,13 @@ impl DbClusterRecord {
     ///
     /// One reading for all three, because the question is about the PLANE rather than about
     /// which endpoint fronts it: every one of them fronts the same plane, so every one of them
-    /// publishes the address that plane is answered at.
+    /// publishes the address that plane is answered at. A cluster served the DOCUMENT wire
+    /// publishes the host that plane is answered on ([`Self::served_document_host`]), which
+    /// carries no port of its own.
     fn serves_at_its_own_host(&self) -> Option<String> {
+        if let Some(host) = &self.served_document_host {
+            return Some(host.clone());
+        }
         self.served_endpoint
             .as_ref()
             .map(|served| served.host.clone())
@@ -662,6 +678,13 @@ impl DbClusterRecord {
     /// and not of the cluster: it differs between two clusters and between two boots, where
     /// `Port` is the value the create carried and every later read of the cluster reports it
     /// unchanged.
+    ///
+    /// The same holds for a cluster served the DOCUMENT wire
+    /// ([`Self::served_document_host`]), whose endpoint members carry no port of their own:
+    /// the port the cluster was created with is the one its plane is recorded as answering at
+    /// beside the published host ([`crate::state::document_plane`]), so a client that composes
+    /// `Endpoint` + `Port` reaches it, and a `Port` a modify moved is published the moment it
+    /// moves.
     pub fn published_port(&self) -> i32 {
         self.own_wire_listener_port().unwrap_or(self.port)
     }

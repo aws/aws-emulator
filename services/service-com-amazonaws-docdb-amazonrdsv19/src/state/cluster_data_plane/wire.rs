@@ -44,7 +44,7 @@ use ::emulator_server::{ListenerConn, NativeHandler};
 use ::tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use super::commands;
-use super::{fault, query, InstanceSocket};
+use super::{fault, query, EndpointSocket};
 
 /// The message header every message starts with: its length, its id, what it answers and its
 /// opcode.
@@ -90,10 +90,10 @@ const COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
 /// while it is open, and the reply to one command document.
 ///
 /// The framing above is the engine's own and says nothing about which resource is behind the
-/// address — the same messages carry a command to an instance of a cluster this service holds
-/// ([`InstanceSocket`], the implementation beside it) and to any other resource of this
-/// emulator whose clients speak this wire. So what an endpoint serves is this one seam, and
-/// nothing of the protocol is written twice.
+/// address — the same messages carry a command to a cluster this service holds or to one of its
+/// member instances ([`EndpointSocket`], the implementation beside it) and to any other resource
+/// of this emulator whose clients speak this wire. So what an endpoint serves is this one seam,
+/// and nothing of the protocol is written twice.
 pub trait WireEndpoint: Clone + Send + Sync + 'static {
     /// The state ONE connection on this endpoint holds while it is open — who it has
     /// authenticated as, the cursors it holds — which travels through every message it sends.
@@ -127,7 +127,7 @@ pub trait WireEndpoint: Clone + Send + Sync + 'static {
 }
 
 /// The server one endpoint of this wire answers with.
-pub struct MongoWire<E = InstanceSocket> {
+pub struct MongoWire<E = EndpointSocket> {
     endpoint: E,
 }
 

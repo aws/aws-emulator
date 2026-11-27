@@ -294,10 +294,12 @@ async fn a_served_clusters_published_endpoint_is_the_address_its_engine_listener
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_cluster_this_emulator_serves_no_wire_for_publishes_its_control_planes_dns_name() {
     let (router, engine) = emulator_with_engine();
-    // Amazon DocumentDB speaks the MongoDB wire, which this emulator runs no server for: the
-    // cluster has no local plane to lead a client to, so it keeps the published AWS form.
+    // An Amazon Neptune cluster's data plane is its graph API, served at the address THIS
+    // emulator is reached at — and this request is addressed to this service's own AWS host,
+    // which is no address of this process's: the cluster has no local plane to lead a client
+    // to, so it keeps the published AWS form.
     let case = "a cluster whose engine wire this emulator serves nothing for";
-    let identifier = "emu-sca-docdb";
+    let identifier = "emu-sca-neptune";
     let created = the_cluster(
         case,
         &expect_ok(
@@ -307,7 +309,7 @@ async fn a_cluster_this_emulator_serves_no_wire_for_publishes_its_control_planes
                 "CreateDBCluster",
                 &[
                     ("DBClusterIdentifier", identifier),
-                    ("Engine", "docdb"),
+                    ("Engine", "neptune"),
                 ],
             )
             .await,
@@ -316,7 +318,7 @@ async fn a_cluster_this_emulator_serves_no_wire_for_publishes_its_control_planes
     let endpoint = text(&created, "Endpoint");
     assert!(
         endpoint.starts_with(&format!("{identifier}.cluster-"))
-            && endpoint.ends_with(&format!(".{REGION}.docdb.amazonaws.com")),
+            && endpoint.ends_with(&format!(".{REGION}.neptune.amazonaws.com")),
         "case {case:?}: expected the published DNS form of the cluster endpoint, got \
          {endpoint:?}"
     );

@@ -1,19 +1,21 @@
 // SPDX-License-Identifier: CC0-1.0
 
-//! End-to-end tests for the endpoint an Amazon DocumentDB DB instance publishes HERE: an AWS
-//! SDK DocumentDB client signs `rds`, so `CreateDBCluster` / `CreateDBInstance` with
-//! `Engine: docdb` are served by this front door, and the resource they create is an Amazon
-//! DocumentDB cluster.
+//! End-to-end tests for the endpoints an Amazon DocumentDB DB CLUSTER and its DB instances
+//! publish HERE: an AWS SDK DocumentDB client signs `rds`, so `CreateDBCluster` /
+//! `CreateDBInstance` with `Engine: docdb` are served by this front door, and the resource they
+//! create is an Amazon DocumentDB cluster.
 //!
 //! The rule under test: an endpoint a service advertises is an address the service ANSWERS on,
-//! so `Endpoint{Address,Port}` of such an instance is an address of THIS emulator's — its own
-//! address on the interface the core bound, with the engine port its cluster publishes — and a
-//! client dialling it is served the document wire out of that cluster's own documents. A name
-//! under Amazon DocumentDB's own DNS zone resolves to nothing on the machine this emulator
-//! runs on and would be no connection endpoint at all.
+//! so `DBCluster$Endpoint`, `DBCluster$ReaderEndpoint` and `Endpoint{Address,Port}` of such a
+//! cluster and its members are addresses of THIS emulator's — its own address on the interface
+//! the core bound, with the port published beside it — and a client dialling one is served the
+//! document wire out of that cluster's own documents. A name under Amazon DocumentDB's own DNS
+//! zone resolves to nothing on the machine this emulator runs on and would be no connection
+//! endpoint at all.
 //!
 //! The tables span what the rule generalises over: whether the cluster chose its engine port,
-//! how many members it has (each reached at an endpoint of its own), whether the session has
+//! which endpoint of the cluster is dialled (the cluster's own two, each member's), how many
+//! members it has (each reached at an endpoint of its own), whether the session has
 //! authenticated, and which commands it sends. Every assertion goes over a real connection to
 //! the address the control plane published, opened the way a client inside the cluster's
 //! virtual private cloud opens one — the only vantage point such an endpoint is reachable from
@@ -155,6 +157,60 @@ trait Transport: ::tokio::io::AsyncRead + ::tokio::io::AsyncWrite + Unpin + Send
 impl<T: ::tokio::io::AsyncRead + ::tokio::io::AsyncWrite + Unpin + Send> Transport for T {}
 
 impl Session {
+    /// Open a session on the address the control plane published for a CLUSTER, the way a
+    /// client inside the cluster's virtual private cloud opens one: through the register of the
+    /// planes this emulator serves in process, at exactly the `host:port` it was handed.
+    ///
+    /// A cluster's two endpoint members carry no port of their own — the cluster has one `Port`
+    /// member for both — so the pair a client composes is the published host with that port,
+    /// and that is the address asked for here.
+    async fn on_cluster_endpoint(
+        engine: &Arc<engine::InMemoryEngine>,
+        case: &str,
+        address: &str,
+        port: u16,
+    ) -> Self {
+        let planes = DialablePlanes::of(&**engine)
+            .expect("the engine vends the register of served data planes");
+        let dialed = planes.dialable(address, port).unwrap_or_else(|| {
+            panic!("case {case:?}: nothing is served at the published pair {address}:{port}")
+        });
+        assert_eq!(
+            dialed.served_by, "rds",
+            "case {case:?}: the published pair must be served by this front door, got {dialed:?}"
+        );
+        let conn = dialed.plane.dial(None).await.unwrap_or_else(|error| {
+            panic!("case {case:?}: {address}:{port} must accept a connection, got {error}")
+        });
+        Self::over_tls(case, Box::new(conn)).await
+    }
+
+    /// Run the TLS handshake a client of an encrypted endpoint opens with — the cluster's `tls`
+    /// parameter is at its default (`enabled`), and the core terminates that handshake at both
+    /// ends of the address — and answer the session over the stream it yields.
+    async fn over_tls(case: &str, conn: Box<dyn Transport>) -> Self {
+        let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
+        let config = rustls::ClientConfig::builder_with_provider(Arc::clone(&provider))
+            .with_safe_default_protocol_versions()
+            .expect("the provider supports the default protocol versions")
+            .dangerous()
+            .with_custom_certificate_verifier(Arc::new(AcceptTheEmulatorsCertificate(provider)))
+            .with_no_client_auth();
+        let connector = tokio_rustls::TlsConnector::from(Arc::new(config));
+        let server_name = rustls::pki_types::ServerName::try_from("localhost")
+            .expect("localhost is a server name");
+        let stream = connector
+            .connect(server_name, conn)
+            .await
+            .unwrap_or_else(|error| {
+                panic!("case {case:?}: the endpoint must complete a TLS handshake, got {error}")
+            });
+        Self {
+            stream: Box::new(stream),
+            request_id: 1,
+        }
+    }
+
     /// Open a session on the published endpoint over a REAL socket, as any client of this
     /// machine dials it: the pair the control plane published is the one the core bound and
     /// assigned. The register of the planes this emulator serves in process holds that same
@@ -199,26 +255,7 @@ impl Session {
         .unwrap_or_else(|error| {
             panic!("case {case:?}: {authority} must accept a connection, got {error}")
         });
-        let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
-        let config = rustls::ClientConfig::builder_with_provider(Arc::clone(&provider))
-            .with_safe_default_protocol_versions()
-            .expect("the provider supports the default protocol versions")
-            .dangerous()
-            .with_custom_certificate_verifier(Arc::new(AcceptTheEmulatorsCertificate(provider)))
-            .with_no_client_auth();
-        let connector = tokio_rustls::TlsConnector::from(Arc::new(config));
-        let server_name = rustls::pki_types::ServerName::try_from("localhost")
-            .expect("localhost is a server name");
-        let stream = connector
-            .connect(server_name, conn)
-            .await
-            .unwrap_or_else(|error| {
-                panic!("case {case:?}: the endpoint must complete a TLS handshake, got {error}")
-            });
-        Self {
-            stream: Box::new(stream),
-            request_id: 1,
-        }
+        Self::over_tls(case, Box::new(conn)).await
     }
 
     /// Send one command in the message form a driver sends every command in, and read the
@@ -753,5 +790,150 @@ async fn the_endpoint_answers_nothing_once_the_instance_is_deleted() {
             "case {case:?}: {authority} must answer nothing once the instance is deleted"
         );
         std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
+
+#[tokio::test]
+async fn a_documentdb_cluster_publishes_endpoints_that_serve_its_documents() {
+    // RULE: a cluster's own endpoint members — `DBCluster$Endpoint`, "the connection endpoint
+    // for the primary instance of the DB cluster", and `DBCluster$ReaderEndpoint` — are the
+    // HOST this emulator answers that cluster's document wire on, and the one `Port` the
+    // cluster publishes beside them completes the address a client composes, which is an
+    // address that plane answers at. The rows span the port the create asked for: none, so the
+    // engine's documented default stands, and one of its own.
+    let (router, engine) = emulator_with_engine();
+    for (case, cluster, member, asked_port, expected_port) in [
+        (
+            "a cluster that took the engine's default port",
+            "docdb-cluster-endpoint-default",
+            "docdb-cluster-endpoint-default-1",
+            None,
+            // `CreateDBClusterMessage$Port` of the DocumentDB model: "Default: 27017".
+            "27017",
+        ),
+        (
+            "a cluster that asked for a port of its own",
+            "docdb-cluster-endpoint-named",
+            "docdb-cluster-endpoint-named-1",
+            Some("27019"),
+            "27019",
+        ),
+    ] {
+        cluster_with_members(&router, cluster, &[member], asked_port).await;
+        let described = expect_ok(
+            case,
+            call(
+                &router,
+                "DescribeDBClusters",
+                &params!["DBClusterIdentifier" => cluster],
+            )
+            .await,
+        );
+        let writer = text(&described, "Endpoint");
+        let reader = text(&described, "ReaderEndpoint");
+        let port = text(&described, "Port");
+        assert_eq!(
+            port, expected_port,
+            "case {case:?}: expected the port the cluster's engine is configured to listen on, \
+             got {port:?} in {described}"
+        );
+        for (member_name, host) in [("Endpoint", &writer), ("ReaderEndpoint", &reader)] {
+            assert!(
+                !host.ends_with("docdb.amazonaws.com"),
+                "case {case:?}: {member_name} must be an address this emulator answers on, not \
+                 a name in Amazon DocumentDB's own DNS zone, got {host:?}"
+            );
+            assert!(
+                host.trim_matches(['[', ']'])
+                    .parse::<std::net::IpAddr>()
+                    .is_ok_and(|address| address.is_loopback()),
+                "case {case:?}: {member_name} must name the interface the core bound this \
+                 cluster's listener on, got {host:?}"
+            );
+        }
+        let dialed_port: u16 = port
+            .parse()
+            .unwrap_or_else(|_| panic!("case {case:?}: the published port must be a port"));
+
+        // The pair the control plane published is dialled exactly as handed over, and what
+        // answers is the cluster's primary over the CLUSTER's documents.
+        let mut session =
+            Session::on_cluster_endpoint(&engine, case, &writer, dialed_port).await;
+        let hello = session.command(case, "admin", doc! { "hello": 1_i32 }).await;
+        assert_eq!(
+            ok(&hello),
+            1.0,
+            "case {case:?}: the published pair must answer the handshake, got {hello:?}"
+        );
+        assert_eq!(
+            hello.get_bool("isWritablePrimary").ok(),
+            Some(true),
+            "case {case:?}: the cluster endpoint leads to the primary, so it serves writes, \
+             got {hello:?}"
+        );
+        assert_eq!(
+            ok(&session.authenticate(case, MASTER_USER, MASTER_PASSWORD).await),
+            1.0,
+            "case {case:?}: the cluster's master user must authenticate a session on the \
+             cluster's own endpoint"
+        );
+        let inserted = session
+            .command(
+                case,
+                "shop",
+                doc! {
+                    "insert": "orders",
+                    "documents": [{ "_id": 11_i32, "sku": "through-the-cluster" }],
+                },
+            )
+            .await;
+        assert_eq!(
+            (ok(&inserted), inserted.get_i32("n").ok()),
+            (1.0, Some(1)),
+            "case {case:?}: the write sent to the cluster endpoint must be served, got \
+             {inserted:?}"
+        );
+
+        // The READER endpoint fronts the same plane, so a session on it finds that write.
+        let mut through_reader =
+            Session::on_cluster_endpoint(&engine, case, &reader, dialed_port).await;
+        through_reader
+            .authenticate(case, MASTER_USER, MASTER_PASSWORD)
+            .await;
+        let read = through_reader
+            .command(case, "shop", doc! { "find": "orders", "filter": { "_id": 11_i32 } })
+            .await;
+        assert_eq!(
+            batch(case, &read, "firstBatch").len(),
+            1,
+            "case {case:?}: the reader endpoint must serve the read, got {read:?}"
+        );
+
+        // And the documents are the CLUSTER's: the MEMBER's own endpoint, on a socket and a
+        // port of its own, answers out of the same volume.
+        let member_envelope = expect_ok(
+            case,
+            call(
+                &router,
+                "DescribeDBInstances",
+                &params!["DBInstanceIdentifier" => member],
+            )
+            .await,
+        );
+        let (member_address, member_port) = endpoint_of(case, &member_envelope);
+        let mut through_member =
+            Session::open(&engine, case, &member_address, member_port).await;
+        through_member
+            .authenticate(case, MASTER_USER, MASTER_PASSWORD)
+            .await;
+        let from_member = through_member
+            .command(case, "shop", doc! { "find": "orders", "filter": { "_id": 11_i32 } })
+            .await;
+        assert_eq!(
+            batch(case, &from_member, "firstBatch").len(),
+            1,
+            "case {case:?}: one cluster is one volume, so the member's endpoint must find what \
+             the cluster endpoint wrote, got {from_member:?}"
+        );
     }
 }

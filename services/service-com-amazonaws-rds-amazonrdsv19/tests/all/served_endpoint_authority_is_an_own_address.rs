@@ -450,11 +450,13 @@ async fn every_served_resource_publishes_the_address_its_own_listener_answers_on
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_resource_this_emulator_serves_no_plane_for_keeps_the_published_aws_name() {
     let (router, engine) = emulator_with_engine();
-    // Amazon DocumentDB speaks the MongoDB wire and Oracle its own, neither of which this
-    // emulator runs a server for: there is no local plane for such a resource to lead a client
-    // to, so it publishes no address of this emulator's at all.
+    // An Amazon Neptune cluster's data plane is its graph API, served at the address THIS
+    // emulator is reached at, and Oracle speaks a wire this emulator runs no server for: these
+    // requests are addressed to this service's own AWS host, so there is no local plane for
+    // such a resource to lead a client to and it publishes no address of this emulator's at
+    // all.
     let case = "a cluster whose engine wire this emulator serves nothing for";
-    let cluster = "emu-sea-docdb";
+    let cluster = "emu-sea-neptune";
     let created = the_cluster(
         case,
         &expect_ok(
@@ -462,7 +464,7 @@ async fn a_resource_this_emulator_serves_no_plane_for_keeps_the_published_aws_na
             call(
                 &router,
                 "CreateDBCluster",
-                &[("DBClusterIdentifier", cluster), ("Engine", "docdb")],
+                &[("DBClusterIdentifier", cluster), ("Engine", "neptune")],
             )
             .await,
         ),
@@ -472,7 +474,7 @@ async fn a_resource_this_emulator_serves_no_plane_for_keeps_the_published_aws_na
         ("ReaderEndpoint", text(&created, "ReaderEndpoint")),
     ] {
         assert!(
-            value.ends_with(&format!(".{REGION}.docdb.amazonaws.com"))
+            value.ends_with(&format!(".{REGION}.neptune.amazonaws.com"))
                 && value.parse::<IpAddr>().is_err(),
             "case {case:?}: expected the published AWS form in <{member}>, got {value:?}"
         );

@@ -363,22 +363,25 @@ async fn the_cluster_lifecycle_is_computed_from_persisted_state() {
         resource_id.starts_with("cluster-"),
         "case \"create\": expected a cluster-prefixed resource id, got {resource_id:?}"
     );
-    assert_eq!(
-        text(&created, "Endpoint"),
-        format!(
-            "my-cluster.cluster-{}.{REGION}.docdb.amazonaws.com",
-            resource_id
-                .trim_start_matches("cluster-")
-                .to_ascii_lowercase()
-        ),
-        "case \"create\": the cluster endpoint must carry the cluster's own DNS segment, \
-         got {created}"
+    // The cluster's endpoints are addresses this emulator answers its document wire on, which
+    // the create opened through the core: an endpoint is an address the service ANSWERS on, and
+    // a name in Amazon DocumentDB's own DNS zone resolves to nothing here. The suite that
+    // drives a session on the published pair is `tests/all/cluster_endpoint_own_address.rs`;
+    // here the pair is only read back as the create published it.
+    let endpoint = text(&created, "Endpoint");
+    assert!(
+        !endpoint.ends_with("docdb.amazonaws.com")
+            && endpoint
+                .parse::<std::net::IpAddr>()
+                .is_ok_and(|host| host.is_loopback()),
+        "case \"create\": the cluster endpoint must be an address this emulator answers on, \
+         got {endpoint:?} in {created}"
     );
     assert_eq!(
         text(&created, "ReaderEndpoint"),
-        text(&created, "Endpoint").replacen(".cluster-", ".cluster-ro-", 1),
-        "case \"create\": the reader endpoint is the writer endpoint's -ro- sibling, \
-         got {created}"
+        endpoint,
+        "case \"create\": the reader endpoint fronts the same plane, so it is published at the \
+         address that plane is answered at, got {created}"
     );
     assert_eq!(
         count(&created, "DBClusterMember"),
@@ -1498,6 +1501,10 @@ async fn renaming_a_cluster_rekeys_it_and_moves_its_arn_and_endpoints() {
         )
         .await;
     let resource_id = text(&created, "DbClusterResourceId");
+    // The address this cluster's own socket answers on, which it publishes for both of its
+    // endpoints: the rename below must not move it, because it is the socket's and not the
+    // name's.
+    let endpoint_before = text(&created, "Endpoint");
     docdb
         .ok(
             "rename member",
@@ -1556,9 +1563,11 @@ async fn renaming_a_cluster_rekeys_it_and_moves_its_arn_and_endpoints() {
         format!("arn:aws:rds:{REGION}:000000000000:cluster:after"),
         "case \"rename\": the ARN follows the name, got {renamed}"
     );
-    assert!(
-        text(&renamed, "Endpoint").starts_with("after.cluster-"),
-        "case \"rename\": the endpoint follows the name, got {renamed}"
+    assert_eq!(
+        text(&renamed, "Endpoint"),
+        endpoint_before,
+        "case \"rename\": the cluster is served at the address its own socket answers on, and a \
+         rename does not move a socket, got {renamed}"
     );
     assert_eq!(
         text(&renamed, "DbClusterResourceId"),

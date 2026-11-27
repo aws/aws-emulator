@@ -66,6 +66,19 @@ const MAX_GROUP_ACCUMULATORS: usize = 32;
 /// accumulator from outgrowing the documents it accumulated.
 const MAX_ACCUMULATED_VALUES: usize = documents::MAX_DOCUMENTS_PER_COLLECTION;
 
+/// How many BYTES one pipeline command may MATERIALISE: the values its stages resolve and hold
+/// while they run, as opposed to how many of them there are.
+///
+/// CHOSEN as a process bound on that product, which the counting bounds do not reach: an
+/// accumulator's argument is an arbitrary client expression, and resolving one builds a value
+/// of about its own size for every member of every group, so a command carrying a large
+/// expression would ask for memory in proportion to the documents it visits however few values
+/// that is. Sized at the ceiling the engine publishes for ONE document
+/// ([`documents::MAX_BSON_OBJECT_SIZE`]), so one command may build at most as much as one
+/// document may hold — reached by nothing a client sends and by anything that would exhaust
+/// this process.
+const MAX_PIPELINE_MATERIALISED_BYTES: usize = documents::MAX_BSON_OBJECT_SIZE as usize;
+
 /// How many documents one WRITE command may visit: the statements it carries times the
 /// documents the collection holds, each of which it walks.
 ///
@@ -89,21 +102,26 @@ pub const ADMIN_DATABASE: &str = "admin";
 /// command.
 #[derive(Debug, Clone)]
 pub struct EndpointFacts {
-    /// Whether the instance this endpoint belongs to is still in state.
+    /// Whether what this endpoint leads to — its instance, or the cluster whose primary a
+    /// cluster endpoint leads to — is still in state.
     pub exists: bool,
-    /// Whether that instance is SERVING: an instance still being created has no engine to
-    /// answer out of yet, so only the handshake reaches it.
+    /// Whether that resource is SERVING: one still being created has no engine to answer out
+    /// of yet, so only the handshake reaches it.
     pub serving: bool,
-    /// `DBInstanceStatus`, which a refusal names so a client can tell why it is not served.
+    /// The status a refusal names so a client can tell why it is not served: `DBInstanceStatus`
+    /// for a member's endpoint, and for a cluster's own the status of the member it writes
+    /// through — the cluster's own while it has no member to lead to.
     pub status: String,
-    /// Whether this member is the one its cluster writes through: a member that is not
-    /// serves reads only, as a replica does.
+    /// Whether writes are served here: a member that is not the one its cluster writes through
+    /// serves reads only, as a replica does, while a cluster's own endpoint leads to its
+    /// primary.
     pub is_writer: bool,
     /// The cluster's `EngineVersion`, which decides the wire version the handshake reports.
     pub engine_version: String,
-    /// The master user's SCRAM credentials, or `None` for a cluster created without a master
-    /// user — which this emulator then serves without authentication, because there is no
-    /// credential for a client to present.
+    /// The master user's SCRAM credentials, or `None` for a cluster that recorded none — whose
+    /// endpoints then admit no session at all, because there is nothing a client could
+    /// authenticate against and a command outside the handshake is served only to a session
+    /// that has authenticated.
     pub credentials: Option<ScramCredentials>,
 }
 
@@ -242,14 +260,22 @@ fn run(
     command: &Document,
 ) -> Result<Document, WireFault> {
     if !served_unauthenticated(name) {
-        if facts.credentials.is_some() && session.authenticated.is_none() {
+        // Who the session is, before anything else: a command outside the handshake is served
+        // only to a session that has AUTHENTICATED on this endpoint, whether or not the
+        // cluster has a credential to authenticate against. An endpoint whose cluster recorded
+        // none can admit no session at all — Amazon DocumentDB's `CreateDBCluster` requires a
+        // master user, so no cluster of this engine is reached without one — and failing closed
+        // is what keeps a socket this emulator opened from serving documents to a client that
+        // presented nothing.
+        if session.authenticated.is_none() {
             return Err(fault::unauthorized(name));
         }
-        // A command that is not part of the handshake is served only once the instance is
-        // serving: an instance still being created has no engine to answer out of yet.
+        // A command that is not part of the handshake is served only once the resource behind
+        // this endpoint is serving: one still being created has no engine to answer out of
+        // yet, and a cluster endpoint has none until the member it writes through has one.
         if !facts.exists || !facts.serving {
             return Err(fault::illegal_operation(format!(
-                "not serving: the instance behind this endpoint is {}",
+                "not serving: the resource behind this endpoint is {}",
                 facts.status
             )));
         }
@@ -1120,6 +1146,15 @@ fn aggregate(
     // documents the stages before it produced and evaluates its accumulators over each, so
     // what is capped is the PRODUCT of the three.
     within_pipeline_work(stages.len(), accumulators, documents.len())?;
+    // And the MEMORY it would materialise, which that product does not reach: resolving an
+    // accumulator's argument builds a value of about that expression's own size once per
+    // member of every group, so the bytes are capped before the first value is built
+    // ([`within_pipeline_memory`]).
+    within_pipeline_memory(
+        documents.len(),
+        accumulators,
+        widest_expression_bytes(stages),
+    )?;
     for stage in stages {
         let Bson::Document(stage) = stage else {
             return Err(fault::failed_to_parse("every pipeline stage must be an object"));
@@ -1128,6 +1163,10 @@ fn aggregate(
             return Err(fault::failed_to_parse("a pipeline stage names no stage"));
         };
         documents = run_stage(name, argument, documents)?;
+        // And the SIZE of what the stage produced, which the bounds above do not reach: they
+        // count documents, and a stage can emit a document larger than the ones it read
+        // ([`within_document_sizes`]).
+        within_document_sizes(name, &documents)?;
     }
     let batch_size = command
         .get_document("cursor")
@@ -1245,6 +1284,68 @@ fn widest_accumulator_spec(stages: &[Bson]) -> Result<usize, WireFault> {
     Ok(widest)
 }
 
+/// The BYTES of the widest expression any `$group` stage of a pipeline would resolve per
+/// document: its key expression and each of its accumulator arguments.
+///
+/// Read from the stages BEFORE any of them runs, for the same reason their COUNT is: an
+/// expression is an arbitrary client document arriving inside the command, and resolving one
+/// builds a value of about its own size for every document of every group — so the memory a
+/// pipeline asks of this process is the product of how many documents it visits and how big
+/// the expression it resolves over each of them is ([`within_pipeline_memory`]), and neither
+/// factor bounds the other.
+fn widest_expression_bytes(stages: &[Bson]) -> usize {
+    let mut widest = 0_usize;
+    for stage in stages {
+        let Some(spec) = stage
+            .as_document()
+            .and_then(|stage| stage.get_document("$group").ok())
+        else {
+            continue;
+        };
+        for (_field, expression) in spec {
+            widest = widest.max(value_bytes(expression));
+        }
+    }
+    widest
+}
+
+/// How many BYTES a value is on the wire, measured by the engine's own document encoder
+/// ([`documents::encoded_len`]) over the document that would carry it.
+///
+/// One value at a time, so measuring a value costs one copy of THAT value and never of the
+/// collection it is measured for — which is what lets a budget refuse the collection before it
+/// grows ([`within_pipeline_memory`], [`group`]).
+fn value_bytes(value: &Bson) -> usize {
+    let mut carrier = Document::new();
+    carrier.insert("v".to_string(), value.clone());
+    documents::encoded_len(&carrier)
+}
+
+/// Whether the MEMORY a pipeline would materialise is within
+/// [`MAX_PIPELINE_MATERIALISED_BYTES`]: every accumulator of every group resolves its argument
+/// expression once per member, so what is bounded here is the product of the documents
+/// visited, the accumulators over each and the SIZE of the expression each resolves — the
+/// factor the counting bounds above do not reach.
+fn within_pipeline_memory(
+    documents_visited: usize,
+    accumulators: usize,
+    expression_bytes: usize,
+) -> Result<(), WireFault> {
+    let bytes = documents_visited
+        .max(1)
+        .saturating_mul(accumulators.max(1))
+        .saturating_mul(expression_bytes);
+    if bytes > MAX_PIPELINE_MATERIALISED_BYTES {
+        return Err(fault::over_capacity(format!(
+            "this emulator materialises at most {MAX_PIPELINE_MATERIALISED_BYTES} bytes in one \
+             command, and resolving an expression of {expression_bytes} bytes over \
+             {documents_visited} documents for {accumulators} accumulators would materialise \
+             {bytes}"
+        )));
+    }
+    Ok(())
+}
+
 /// How many ACCUMULATORS a `$group` spec names: its fields but the key expression, which is
 /// evaluated once per document rather than once per document per field.
 fn accumulators_of(spec: &Document) -> usize {
@@ -1269,6 +1370,30 @@ fn within_pipeline_work(
              command, and a pipeline of {stages} stages accumulating {accumulators} fields \
              over {documents} documents would visit {visits}"
         )));
+    }
+    Ok(())
+}
+
+/// Whether every document a pipeline stage PRODUCED is within the engine's own document
+/// ceiling ([`documents::MAX_BSON_OBJECT_SIZE`], which the handshake publishes as
+/// `maxBsonObjectSize` and a write is held to).
+///
+/// The pipeline's other bounds are COUNTS — the stages, the accumulators and the documents
+/// they walk ([`within_pipeline_work`], [`within_accumulated_values`]) — and a stage can emit a
+/// document far LARGER than the ones it read without emitting more of them: an accumulator's
+/// argument is an arbitrary client expression, and one that assembles a document out of fields
+/// it names several times grows what it emits while the count stays as it was. Each stage's
+/// output feeds the next, so that growth would compound over the pipeline; checking it here
+/// bounds the memory one command can ask of this process by the ceiling the engine publishes.
+fn within_document_sizes(stage: &str, produced: &[Document]) -> Result<(), WireFault> {
+    let ceiling = documents::MAX_BSON_OBJECT_SIZE as usize;
+    for document in produced {
+        let size = documents::encoded_len(document);
+        if size > ceiling {
+            return Err(fault::over_capacity(format!(
+                "{stage} produced a document of {size} bytes, past the {ceiling} byte limit"
+            )));
+        }
     }
     Ok(())
 }
@@ -1334,8 +1459,17 @@ fn group(spec: &Document, documents: Vec<Document>) -> Result<Vec<Document>, Wir
     let mut positions: BTreeMap<ComparedValue, usize> = BTreeMap::new();
     let mut keys: Vec<Bson> = Vec::new();
     let mut grouped: Vec<Vec<Document>> = Vec::new();
+    // The bytes THIS STAGE has materialised, carried across every group and every accumulator
+    // of it: one budget for the whole stage, so what is bounded is everything the stage builds
+    // and not each group's own share of it ([`charged`]). It is charged for every value the
+    // stage resolves — a group key, an accumulator's value over a member, the accumulated
+    // result — because each is a value this process holds and none of their sizes is bounded by
+    // the expression that produced it: a field path of a few bytes resolves to whatever the
+    // stored field holds.
+    let mut materialised = 0_usize;
     for document in documents {
         let key = evaluate(&key_expression, &document)?;
+        materialised = charged(materialised, value_bytes(&key), "the $group key")?;
         match positions.get(&ComparedValue(key.clone())) {
             Some(position) => grouped[*position].push(document),
             None => {
@@ -1363,16 +1497,49 @@ fn group(spec: &Document, documents: Vec<Document>) -> Result<Vec<Document>, Wir
                     "the accumulator of {field} names no operator"
                 )));
             };
-            let values: Vec<Bson> = members
-                .iter()
-                .map(|document| evaluate(argument, document))
-                .collect::<Result<Vec<Bson>, WireFault>>()?;
+            // The values of this accumulator over this group's members, built ONE at a time
+            // under the stage's running byte budget: the argument is a client expression and
+            // the value it resolves to is whatever the document holds, so the collection is
+            // refused as it grows rather than after it has been materialised, and the count it
+            // may reach is the accumulator's own ceiling ([`within_accumulated_values`]).
+            let mut values: Vec<Bson> = Vec::new();
+            for document in &members {
+                within_accumulated_values(operator, values.len() + 1)?;
+                let value = evaluate(argument, document)?;
+                materialised = charged(materialised, value_bytes(&value), operator)?;
+                values.push(value);
+            }
             let value = accumulate(operator, &values)?;
+            // And the accumulated result, which is what the stage HOLDS once the values it was
+            // accumulated from are dropped.
+            materialised = charged(materialised, value_bytes(&value), operator)?;
             result.insert(field.clone(), value);
         }
+        // The document this group produced, held to the engine's own document ceiling as it is
+        // produced rather than once the whole stage has been built
+        // ([`within_document_sizes`]).
+        within_document_sizes("$group", std::slice::from_ref(&result))?;
         out.push(result);
     }
     Ok(out)
+}
+
+/// Charge `bytes` against what this command has MATERIALISED so far, refusing it past
+/// [`MAX_PIPELINE_MATERIALISED_BYTES`] — `what` names the expression or accumulator that asked
+/// for them, so a refusal says which part of the pipeline reached the ceiling.
+///
+/// Monotonic over one stage: a budget that only ever grows refuses a command by what it has
+/// built in total, which is the one reading that cannot be escaped by building the same bytes
+/// again under another group or another accumulator.
+fn charged(materialised: usize, bytes: usize, what: &str) -> Result<usize, WireFault> {
+    let total = materialised.saturating_add(bytes);
+    if total > MAX_PIPELINE_MATERIALISED_BYTES {
+        return Err(fault::over_capacity(format!(
+            "this emulator materialises at most {MAX_PIPELINE_MATERIALISED_BYTES} bytes in one \
+             command, and {what} has reached {total}"
+        )));
+    }
+    Ok(total)
 }
 
 /// One accumulator over the values of one group.
@@ -1439,8 +1606,8 @@ fn accumulate(operator: &str, values: &[Bson]) -> Result<Bson, WireFault> {
     }
 }
 
-/// Whether an accumulator that RETAINS its values may retain this many
-/// ([`MAX_ACCUMULATED_VALUES`]), asked before the array is built.
+/// Whether an accumulator may hold this many values ([`MAX_ACCUMULATED_VALUES`]), asked as the
+/// collection grows and again before an array is built out of it.
 fn within_accumulated_values(operator: &str, values: usize) -> Result<(), WireFault> {
     if values > MAX_ACCUMULATED_VALUES {
         return Err(fault::over_capacity(format!(

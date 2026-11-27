@@ -98,7 +98,14 @@ struct EngineCase {
     /// cluster publishes the address of its own engine listener rather than a DNS name and
     /// the configured port.
     serves_the_engines_wire: bool,
-    /// The DNS domain both cluster endpoints must sit in.
+    /// Whether the cluster publishes an address of THIS emulator's for its two endpoint
+    /// members: true for every cluster whose data plane this emulator answers on a listener of
+    /// its own, including the one whose wire is the DOCUMENT protocol — whose endpoint members
+    /// carry no port of their own, so such a cluster publishes the host its plane is answered
+    /// at beside the port its ENGINE is configured to listen on, which is the pair a client
+    /// composes.
+    publishes_an_own_host: bool,
+    /// The DNS domain both cluster endpoints must sit in, for a cluster that publishes names.
     expected_domain: &'static str,
     /// The `AllocatedStorage` the cluster must report.
     expected_allocated_storage: &'static str,
@@ -127,6 +134,7 @@ const ENGINE_CASES: &[EngineCase] = &[
         // The port Amazon DocumentDB publishes as its default.
         expected_port: "27017",
         serves_the_engines_wire: false,
+        publishes_an_own_host: true,
         expected_domain: DOCDB_DOMAIN,
         expected_allocated_storage: "1",
     },
@@ -137,6 +145,7 @@ const ENGINE_CASES: &[EngineCase] = &[
         // The request's port wins: the default only fills a port nobody asked for.
         expected_port: "27018",
         serves_the_engines_wire: false,
+        publishes_an_own_host: true,
         expected_domain: DOCDB_DOMAIN,
         expected_allocated_storage: "1",
     },
@@ -147,6 +156,7 @@ const ENGINE_CASES: &[EngineCase] = &[
         // `CreateDBClusterMessage$Port` of the Neptune model: "Default: 8182".
         expected_port: "8182",
         serves_the_engines_wire: false,
+        publishes_an_own_host: false,
         expected_domain: NEPTUNE_DOMAIN,
         expected_allocated_storage: "1",
     },
@@ -157,6 +167,7 @@ const ENGINE_CASES: &[EngineCase] = &[
         // "RDS for MySQL and Aurora MySQL - 3306".
         expected_port: "3306",
         serves_the_engines_wire: true,
+        publishes_an_own_host: true,
         expected_domain: RDS_DOMAIN,
         expected_allocated_storage: "1",
     },
@@ -167,6 +178,7 @@ const ENGINE_CASES: &[EngineCase] = &[
         // "RDS for PostgreSQL and Aurora PostgreSQL - 5432".
         expected_port: "5432",
         serves_the_engines_wire: true,
+        publishes_an_own_host: true,
         expected_domain: RDS_DOMAIN,
         expected_allocated_storage: "1",
     },
@@ -176,6 +188,7 @@ const ENGINE_CASES: &[EngineCase] = &[
         extra: MULTI_AZ_SETTINGS,
         expected_port: "5432",
         serves_the_engines_wire: true,
+        publishes_an_own_host: true,
         expected_domain: RDS_DOMAIN,
         // The size the request allocated to each DB instance in the cluster.
         expected_allocated_storage: "400",
@@ -210,10 +223,10 @@ fn assert_engine_defaults(case: &str, label: &str, cluster: &str, row: &EngineCa
     );
     let identifier = text(cluster, "DBClusterIdentifier");
     // What a cluster's two endpoint members carry: the address this emulator answers its data
-    // plane at for a cluster whose engine wire it SERVES, and the pair of names the cluster
+    // plane at for a cluster whose data plane it SERVES, and the pair of names the cluster
     // mints from its own identifier under the endpoint domain of the control plane that owns
     // its engine for a cluster it serves no data plane for.
-    if row.serves_the_engines_wire {
+    if row.publishes_an_own_host {
         crate::db_clusters::assert_served_endpoint_pair(
             &case,
             &text(cluster, "Endpoint"),

@@ -16,15 +16,17 @@
 //!
 //! The rows span what the rule generalises over: both engine wires this emulator speaks
 //! (PostgreSQL and MySQL), both cluster types (an Aurora cluster, including a Serverless v2
-//! one with no member instance at all, and a Multi-AZ DB cluster), and an engine this emulator
-//! serves no data plane for, which is the contrast row. Each row is read through EVERY
-//! operation that answers with a cluster envelope — `CreateDBCluster`, `DescribeDBClusters`,
-//! `ModifyDBCluster` and `DeleteDBCluster`, the three this issue's replay binds plus the
-//! mutation between them — and each published pair is then RESOLVED, looked up in the register
-//! an in-process client of this emulator dials through, and (for the writer, the member a
-//! client composes with the one published `Port`) DIALLED over a real TCP connection carrying
-//! a round-tripped row, so a member naming an address this emulator does not answer on could
-//! not pass.
+//! one with no member instance at all, and a Multi-AZ DB cluster), an engine whose data plane
+//! is a wire of its own this suite dials no session on (Amazon DocumentDB's document wire,
+//! driven end to end by `tests/all/docdb_document_plane.rs`), and an engine this emulator
+//! serves no data plane for at the address these requests reach it on, which is the contrast
+//! row. Each row is read through EVERY operation that answers with a cluster envelope —
+//! `CreateDBCluster`, `DescribeDBClusters`, `ModifyDBCluster` and `DeleteDBCluster`, the three
+//! this issue's replay binds plus the mutation between them — and each published pair is then
+//! RESOLVED, looked up in the register an in-process client of this emulator dials through,
+//! and (for the writer, the member a client composes with the one published `Port`) DIALLED
+//! over a real TCP connection carrying a round-tripped row, so a member naming an address this
+//! emulator does not answer on could not pass.
 
 use std::net::SocketAddr;
 
@@ -41,11 +43,12 @@ struct ClusterRow {
     case: &'static str,
     identifier: &'static str,
     engine: &'static str,
-    /// The wire a client opens a session on, for a row whose engine this emulator serves one
-    /// for — `None` for the row it serves none for, which has no plane to dial.
+    /// The wire a client opens a session on, for a row whose engine speaks one this suite's
+    /// session harness drives — `None` for a row driven by the suite of its own wire.
     wire: Option<Wire>,
     /// The DNS domain this row's endpoint NAMES sit in, for a cluster that publishes names at
-    /// all: the endpoint domain of the control plane that owns the engine.
+    /// all: the endpoint domain of the control plane that owns the engine. `None` for a cluster
+    /// whose data plane this emulator serves, which publishes the address it answers it at.
     unserved_domain: Option<&'static str>,
     /// The parameters the create adds beyond the identifier, engine, database and master user.
     extra: &'static [(&'static str, &'static str)],
@@ -80,13 +83,28 @@ const CLUSTERS: &[ClusterRow] = &[
         extra: MULTI_AZ_SETTINGS,
     },
     ClusterRow {
-        case: "a cluster of an engine this emulator serves no data plane for",
+        case: "a cluster whose data plane is the document wire",
         identifier: "emu-ceoh-docdb",
         engine: "docdb",
+        // The document wire is not one this suite's session harness speaks, so this row is
+        // read rather than dialled; `tests/all/docdb_document_plane.rs` drives a session on it.
+        wire: None,
+        unserved_domain: None,
+        extra: &[],
+    },
+    ClusterRow {
+        case: "a cluster of an engine this emulator serves no data plane for",
+        identifier: "emu-ceoh-neptune",
+        engine: "neptune",
+        // An Amazon Neptune cluster's data plane is its graph API, served at the address THIS
+        // emulator is reached at — and these requests are addressed to this service's own AWS
+        // host, which is no address of this process's, so the cluster has no local plane to
+        // lead a client to and keeps the names it minted
+        // (`tests/all/api_plane_cluster_endpoint.rs` drives the served side of that rule).
         wire: None,
         // The endpoint domain of the control plane that owns the engine, which is where the
         // names such a cluster publishes sit.
-        unserved_domain: Some("docdb.amazonaws.com"),
+        unserved_domain: Some("neptune.amazonaws.com"),
         extra: &[],
     },
 ];
@@ -140,10 +158,17 @@ async fn create_cluster(
     let mut request: Vec<(&str, String)> = vec![
         ("DBClusterIdentifier", row.identifier.to_string()),
         ("Engine", row.engine.to_string()),
-        ("DatabaseName", DATABASE.to_string()),
-        ("MasterUsername", MASTER_USER.to_string()),
-        ("MasterUserPassword", MASTER_PASSWORD.to_string()),
     ];
+    // The master user credential, for an engine whose own API takes one: Amazon Neptune
+    // documents `MasterUserPassword` as "Not supported by Neptune", so the row of that engine
+    // names none.
+    if row.engine != "neptune" {
+        request.extend([
+            ("DatabaseName", DATABASE.to_string()),
+            ("MasterUsername", MASTER_USER.to_string()),
+            ("MasterUserPassword", MASTER_PASSWORD.to_string()),
+        ]);
+    }
     request.extend(
         row.extra
             .iter()

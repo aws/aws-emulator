@@ -23,8 +23,9 @@
 //!
 //! The rows span what the rule generalises over: the MEMBERSHIP the cluster has (no instance at
 //! all, one member, a writer beside a replica), the engines and wires (Aurora PostgreSQL,
-//! Aurora MySQL, the Multi-AZ DB cluster of a community engine, and two engines this emulator
-//! serves no data plane for), and the identifier SHAPES a request can name (the shortest, a
+//! Aurora MySQL, the Multi-AZ DB cluster of a community engine, and an engine this emulator
+//! serves no data plane for at the address these requests reach it on), and the identifier
+//! SHAPES a request can name (the shortest, a
 //! long hyphenated one, and one written in another case, which is "stored as a lowercase
 //! string"). Every row is read through each operation that answers with a cluster envelope —
 //! the create, the describe and the modify — and through `DescribeDBClusterEndpoints`, the
@@ -136,11 +137,11 @@ const ROWS: &[Row] = &[
     // request can name.
     Row {
         case: "a cluster of an engine this emulator serves no data plane for",
-        identifier: "emu-cidn-docdb",
-        stored: "emu-cidn-docdb",
-        engine: "docdb",
+        identifier: "emu-cidn-neptune",
+        stored: "emu-cidn-neptune",
+        engine: "neptune",
         wire: None,
-        suffix: Some("docdb.amazonaws.com"),
+        suffix: Some("neptune.amazonaws.com"),
         members: 0,
         extra: &[],
     },
@@ -150,9 +151,9 @@ const ROWS: &[Row] = &[
         case: "the shortest identifier, on a cluster that publishes minted names",
         identifier: "e",
         stored: "e",
-        engine: "docdb",
+        engine: "neptune",
         wire: None,
-        suffix: Some("docdb.amazonaws.com"),
+        suffix: Some("neptune.amazonaws.com"),
         members: 0,
         extra: &[],
     },
@@ -160,11 +161,11 @@ const ROWS: &[Row] = &[
         // The other bound: 63 characters, hyphenated, and written in another case, which is
         // stored lowercased — so the minted names follow the STORED spelling.
         case: "an identifier of the published maximum length, written in another case",
-        identifier: "EMU-CIDN-DocDB-Cluster-With-A-Very-Long-Identifier-000000000001",
-        stored: "emu-cidn-docdb-cluster-with-a-very-long-identifier-000000000001",
-        engine: "docdb",
+        identifier: "EMU-CIDN-Neptune-Cluster-With-A-Very-Long-Identifier-0000000001",
+        stored: "emu-cidn-neptune-cluster-with-a-very-long-identifier-0000000001",
+        engine: "neptune",
         wire: None,
-        suffix: Some("docdb.amazonaws.com"),
+        suffix: Some("neptune.amazonaws.com"),
         members: 0,
         extra: &[],
     },
@@ -178,10 +179,17 @@ async fn create_cluster(
     let mut request: Vec<(&str, String)> = vec![
         ("DBClusterIdentifier", row.identifier.to_string()),
         ("Engine", row.engine.to_string()),
-        ("DatabaseName", DATABASE.to_string()),
-        ("MasterUsername", MASTER_USER.to_string()),
-        ("MasterUserPassword", MASTER_PASSWORD.to_string()),
     ];
+    // The master user credential, for an engine whose own API takes one: Amazon Neptune
+    // documents `MasterUserPassword` as "Not supported by Neptune", so the rows of that engine
+    // name none.
+    if row.engine != "neptune" {
+        request.extend([
+            ("DatabaseName", DATABASE.to_string()),
+            ("MasterUsername", MASTER_USER.to_string()),
+            ("MasterUserPassword", MASTER_PASSWORD.to_string()),
+        ]);
+    }
     request.extend(
         row.extra
             .iter()

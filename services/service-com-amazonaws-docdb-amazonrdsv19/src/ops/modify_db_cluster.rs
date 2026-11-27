@@ -479,6 +479,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             }
         }
 
+        // The port the cluster published before this call, so the plane is re-opened below
+        // exactly when the modify MOVED it.
+        let port_before = store.clusters.get(&key).map_or(0, |record| record.port);
+
         {
             let record = store
                 .clusters
@@ -587,6 +591,22 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 );
             }
         }
+        // A `Port` this modify MOVED moves the address a client composes from the published
+        // host and the cluster's one `Port` member, so the plane in front of that host
+        // re-records the address it answers at. The SOCKET does not move: the core owns the
+        // port it bound, and a cluster's `Port` is not that port
+        // (`docdb::cluster_data_plane::ServedDataPlane::publishes_port`).
+        let moved_port = (stored.port != port_before)
+            .then(|| (stored.resource_id.clone(), stored.port));
+        if let Some((resource_id, port)) = moved_port {
+            if let Some(plane) = store.cluster_data_planes.get_mut(&resource_id) {
+                plane.publishes_port(&*self.engine, port);
+            }
+        }
+        let stored = store
+            .clusters
+            .get(&new_key)
+            .expect("the renamed cluster is in the store");
         Ok(ModifyDBClusterOutput {
             db_cluster: Some(docdb::cluster_to_shape(stored, &store.instances)),
         })

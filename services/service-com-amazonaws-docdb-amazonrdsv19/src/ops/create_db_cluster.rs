@@ -381,6 +381,51 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 "the docdb emulator could not reach its state store",
             ));
         };
+        // Everything this create STORES is written under ONE guard, in a method of its own:
+        // the socket below is opened with the store NOT locked, and a guard whose SCOPE
+        // spanned that await would make this future non-`Send`.
+        self.store_cluster(&state, input, region, identifier.clone(), engine_version)?;
+        // The cluster's DATA PLANE: the socket a client of its endpoints connects to and
+        // speaks the engine's own wire on, opened through the core over the documents the
+        // cluster holds. What it answers on is published as this cluster's `Endpoint` and
+        // `ReaderEndpoint`, because an endpoint is an address the service answers on
+        // (`docdb::cluster_data_plane`). An engine this emulator serves no wire for, and a
+        // process whose engine vends no listeners, leave the cluster with the names its
+        // control plane publishes instead.
+        docdb::serve_cluster(&*self.engine, &state, &identifier).await;
+        let store = state.lock();
+        // The lock was released while the socket was opened, so the record is read back
+        // fallibly: another request may have deleted the cluster in between, and this
+        // emulator's own failure to find it is a 500 rather than a panic.
+        let Some(stored) = store.clusters.get(&identifier) else {
+            return Err(crate::scaffolded::Scaffolded::internal_failure(
+                "the docdb cluster this create stored is no longer in the store",
+            ));
+        };
+        Ok(CreateDBClusterOutput {
+            db_cluster: Some(docdb::cluster_to_shape(stored, &store.instances)),
+        })
+    }
+}
+
+impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> CreateDBCluster<Eng> {
+    /// Mint and store the cluster this create was asked for, refusing it — with nothing
+    /// stored — where it names a resource this service does not hold, an engine version the
+    /// engine does not offer, or an identifier already in use.
+    ///
+    /// A method of its own because the store's guard must not be in scope while the cluster's
+    /// socket is opened: `handle` awaits that with no lock held, as every socket in this
+    /// service is opened.
+    fn store_cluster(
+        &self,
+        state: &::engine::ServiceState<crate::state::ComAmazonawsDocdbAmazonrdsv19State>,
+        input: CreateDBClusterInput,
+        region: String,
+        identifier: String,
+        engine_version: String,
+    ) -> Result<(), CreateDBClusterError> {
+        use crate::state as docdb;
+
         let mut store = state.lock();
         store.settle_clock();
 
@@ -493,6 +538,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 "{}.{region}.docdb.amazonaws.com",
                 token.to_ascii_lowercase()
             ),
+            // The address the cluster's own socket answers on, published below once this
+            // create has opened it (`docdb::serve_cluster`).
+            served_endpoint: None,
             region,
             status: docdb::STATUS_CREATING.to_string(),
             available_at: Some(::std::time::Instant::now() + docdb::PROVISIONING_DELAY),
@@ -542,30 +590,37 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         store.clusters.insert(identifier.clone(), record);
 
-        let stored = store
-            .clusters
-            .get(&identifier)
-            .expect("the cluster was inserted on the line above");
-        let resource_id = stored.resource_id.clone();
-        let engine = stored.engine.clone();
-        // The credential a client of this cluster's ENDPOINTS authenticates with, derived from
-        // the password the create carried: what is kept is the SCRAM credential a login is
-        // checked against, never the password or any form it can be recovered from. It is held
-        // with the cluster's documents, under the cluster's immutable resource id, because
-        // both belong to the CLUSTER rather than to the view of this front door that created
-        // it (`docdb::cluster_data_plane::volumes`). A create that named no master user
-        // records none, and its endpoints then have nothing to check a client against. The
-        // DocumentDB store is held and the shared storage taken second, the order its doc
-        // fixes.
-        let credentials = match (
-            stored.master_username.as_deref(),
-            input.master_user_password.as_deref(),
-        ) {
-            (Some(username), Some(password)) => Some(
-                docdb::cluster_data_plane::auth::ScramCredentials::derive(username, password),
-            ),
-            _ => None,
+        // What this create needs from the record it just stored, taken as OWNED values: the
+        // borrow of the store ends with this block, so the guard is released before the socket
+        // below is opened — a borrow of it still in scope across that await would make this
+        // future non-`Send`.
+        let (resource_id, engine, credentials) = {
+            let stored = store
+                .clusters
+                .get(&identifier)
+                .expect("the cluster was inserted on the line above");
+            // The credential a client of this cluster's ENDPOINTS authenticates with, derived
+            // from the password the create carried: what is kept is the SCRAM credential a
+            // login is checked against, never the password or any form it can be recovered
+            // from. It is held with the cluster's documents, under the cluster's immutable
+            // resource id, because both belong to the CLUSTER rather than to the view of this
+            // front door that created it (`docdb::cluster_data_plane::volumes`). A create that
+            // named no master user records none, and its endpoints then admit no session at
+            // all: the wire serves a command outside the handshake only to a session that has
+            // authenticated, so there is nothing such an endpoint can be asked for.
+            let credentials = match (
+                stored.master_username.as_deref(),
+                input.master_user_password.as_deref(),
+            ) {
+                (Some(username), Some(password)) => Some(
+                    docdb::cluster_data_plane::auth::ScramCredentials::derive(username, password),
+                ),
+                _ => None,
+            };
+            (stored.resource_id.clone(), stored.engine.clone(), credentials)
         };
+        // The DocumentDB store is held and the shared storage taken second, the order its doc
+        // fixes.
         if credentials.is_some() {
             if let Some(documents) = docdb::ClusterDocuments::of(&*self.engine) {
                 documents
@@ -573,7 +628,6 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     .set_credentials(&resource_id, credentials);
             }
         }
-        let db_cluster = docdb::cluster_to_shape(stored, &store.instances);
         // The `DbClusterResourceId` just minted is recorded in the SHARED
         // data-source directory, so a service that monitors this cluster
         // (Performance Insights addresses a data source by its resource id) can tell
@@ -587,8 +641,6 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 &engine,
             );
         }
-        Ok(CreateDBClusterOutput {
-            db_cluster: Some(db_cluster),
-        })
+        Ok(())
     }
 }

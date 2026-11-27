@@ -337,10 +337,12 @@ const IDENTITY_CASES: &[IdentityCase] = &[
     },
     IdentityCase {
         identifier: "emu-identity-five",
-        // An engine whose wire this emulator serves no data plane for, so its cluster's
-        // endpoints are the names its own control plane's DNS domain carries.
-        engine: "docdb",
-        suffix: Some("docdb.amazonaws.com"),
+        // An engine this emulator serves no data plane for at the address these requests
+        // reach it on — an Amazon Neptune cluster's plane is its graph API, served at the
+        // address THIS emulator is reached at — so its cluster's endpoints are the names its
+        // own control plane's DNS domain carries.
+        engine: "neptune",
+        suffix: Some("neptune.amazonaws.com"),
         extra: &[],
     },
 ];

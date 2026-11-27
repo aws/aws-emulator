@@ -832,6 +832,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             )
             .into());
         };
+        // The port the cluster published before this call, so the plane of a document-wire
+        // cluster is re-opened below exactly when this modify MOVED it.
+        let port_before = record.port;
 
         // Which modifications take the cluster OUT OF SERVICE while they are applied, and
         // so move its reported `Status`.
@@ -1101,7 +1104,32 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // the listener a client is connected to stays the endpoint this cluster publishes,
         // whatever it is now called.
         store.move_cluster_engine_endpoint(&key, &renamed_key);
+        // The same for its own DOCUMENT-wire socket, where it has one: a rename moves the key
+        // the handle is held under, so the port stays the endpoint this cluster publishes
+        // ([`crate::state::document_plane`]).
+        if key != renamed_key {
+            if let Some(plane) = store.cluster_document_planes.remove(&key) {
+                store
+                    .cluster_document_planes
+                    .insert(renamed_key.clone(), plane);
+            }
+        }
         let db_cluster = store.cluster_to_wire(&answered);
+        // A `Port` this modify MOVED moves the address a client composes from the published
+        // host and the cluster's one `Port` member, so the plane in front of that host
+        // re-records the address it answers at. The SOCKET does not move: the core owns the
+        // port it bound, and a cluster's `Port` is not that port
+        // ([`crate::state::document_plane`]).
+        let moved_port = store
+            .db_clusters
+            .get(&renamed_key)
+            .filter(|record| record.port != port_before)
+            .map(|record| record.port);
+        if let Some(port) = moved_port {
+            if let Some(plane) = store.cluster_document_planes.get_mut(&renamed_key) {
+                plane.publishes_port(&*self.engine, port);
+            }
+        }
         drop(store);
         // A modification can turn the Aurora Serverless v2 capacity of a cluster on, change its
         // minimum to or from 0 ACUs, or change the idle period before an auto-pause: the series

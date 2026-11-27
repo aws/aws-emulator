@@ -24,10 +24,11 @@
 //! The table spans what the rule generalises over: the address the client is talking to
 //! (loopback by number and by name, with and without a port), the port the request asks
 //! for (none, the engine default, another value), an engine whose data plane this emulator
-//! serves as a native WIRE instead (which publishes its own listener's port), an engine whose
-//! data plane it does not serve at all (which keeps its AWS DNS name and its engine's port),
-//! and a request addressed to this service's own AWS host on an emulator served on no port
-//! (which has no host of its own to publish).
+//! serves as a native WIRE instead (which publishes its own listener's port, and so does the
+//! one whose wire is the document protocol), an engine whose data plane it does not serve at
+//! all (which keeps its AWS DNS name and its engine's port), and a request addressed to this
+//! service's own AWS host on an emulator served on no port (which has no host of its own to
+//! publish).
 
 use crate::db_clusters::{describe_one, the_cluster};
 use crate::db_instance_engine_endpoint::endpoint_of;
@@ -108,12 +109,12 @@ const ADDRESS_CASES: &[AddressCase] = &[
         expected: Expected::DnsName("neptune.amazonaws.com", "8182"),
     },
     AddressCase {
-        name: "a DocumentDB cluster, whose data plane this emulator serves neither way",
+        name: "a DocumentDB cluster, whose data plane is the document wire served on a \
+               listener of its own",
         engine: "docdb",
         endpoint: "https://127.0.0.1:9297/",
         extra: &[],
-        // The port Amazon DocumentDB publishes as its default.
-        expected: Expected::DnsName("docdb.amazonaws.com", "27017"),
+        expected: Expected::OwnListener,
     },
     AddressCase {
         name: "an Aurora PostgreSQL cluster, whose native wire this emulator serves",

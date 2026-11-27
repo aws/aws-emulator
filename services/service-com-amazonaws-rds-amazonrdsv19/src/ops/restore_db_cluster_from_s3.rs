@@ -921,6 +921,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             endpoint_host: crate::state::mint_endpoint_host(mint),
             // Filled in below from the cluster's own engine listener.
             served_endpoint: None,
+            // And from the cluster's own DOCUMENT-wire socket, for an Amazon DocumentDB
+            // cluster.
+            served_document_host: None,
             // A restored DB cluster is not usable the instant the call returns: RDS answers
             // `creating` and the cluster reaches `available` on its own — "You can create DB
             // instances only after the RestoreDBClusterFromS3 operation has completed and the
@@ -1144,6 +1147,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         if record.served_endpoint.is_none() {
             record.served_endpoint = crate::state::api_plane_endpoint(&record.engine, ctx);
         }
+        // An Amazon DocumentDB cluster is served the DOCUMENT wire on a socket of its own,
+        // over the documents the cluster holds, and publishes the host that socket answers on
+        // for both of its endpoints ([`crate::state::document_plane`]). The handle is kept
+        // below, beside the record, because dropping it closes the port.
+        let document_plane =
+            crate::state::open_cluster_document_plane(&*self.engine, &state, &record).await;
+        if let Some(plane) = &document_plane {
+            record.served_document_host = Some(crate::state::published_cluster_host(plane));
+        }
 
         // Another request may have taken this identifier while this one was minting and
         // binding, so the conflict is answered again here rather than overwriting a stored
@@ -1165,11 +1177,16 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     database_insights_mode: Some(record.database_insights_mode.clone()),
                 };
                 let cluster_arn = record.arn();
+                let key_for_plane = key.clone();
                 store.db_clusters.insert(key.clone(), record);
                 // The listener is the cluster's: the store holds it, so it stays open for as
                 // long as the cluster does and closes with it.
                 if let Some(endpoint) = endpoint {
                     store.db_cluster_engine_endpoints.insert(key, endpoint);
+                }
+                // The same for its own DOCUMENT-wire socket, where this restore opened one.
+                if let Some(plane) = document_plane {
+                    store.cluster_document_planes.insert(key_for_plane, plane);
                 }
                 // A DB cluster came to exist, so the region's event log records it: the
                 // restore is how this one came to be, and `DescribeEvents` reports that entry

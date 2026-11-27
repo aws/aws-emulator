@@ -139,9 +139,19 @@ const ENDPOINT_CASES: &[EndpointCase] = &[
     },
     EndpointCase {
         case: "a cluster whose wire this emulator serves no data plane for",
+        identifier: "emu-envelope-neptune",
+        engine: "neptune",
+        // An Amazon Neptune cluster's data plane is its graph API, served at the address THIS
+        // emulator is reached at — and these requests are addressed to this service's own AWS
+        // host, which is no address of this process's.
+        served: false,
+        extra: &[],
+    },
+    EndpointCase {
+        case: "a cluster whose data plane is the document wire",
         identifier: "emu-envelope-docdb",
         engine: "docdb",
-        served: false,
+        served: true,
         extra: &[],
     },
 ];
