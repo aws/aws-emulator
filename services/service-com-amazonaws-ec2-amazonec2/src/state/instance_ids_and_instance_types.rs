@@ -3145,13 +3145,28 @@ pub(super) fn network_performance(baseline_centi: i64, peak_centi: i64) -> Strin
 /// whichever family and whichever size, rather than a per-type published count.
 pub(super) const PRE_ENA_QUEUES_PER_INTERFACE: i32 = 1;
 
+/// The interface type every network card takes: an ordinary network interface, the one kind
+/// that may be attached to any card — one value of the modelled `NetworkCardInterfaceType`.
+const INTERFACE_TYPE_INTERFACE: &str = "interface";
+
+/// The interface type a card of a type offered an Elastic Fabric Adapter takes beside it: an
+/// adapter carrying both the EFA transport and the interface's own traffic.
+const INTERFACE_TYPE_EFA: &str = "efa";
+
+/// And the adapter that carries the EFA transport ALONE, with no interface traffic and no
+/// address of its own: a type offered an Elastic Fabric Adapter is offered both forms of it,
+/// so a card that lists `efa` lists this beside it.
+const INTERFACE_TYPE_EFA_ONLY: &str = "efa-only";
+
 /// The network cards of one instance type, as `NetworkInfo$NetworkCards` reports them.
 ///
 /// The cards of one instance are identical, so each gets an equal share of the host's
 /// bandwidth and of the interfaces the type can attach, and the figures a card reports are
 /// the ones the type itself reports divided by the number of cards. `interface_types` names
-/// what may be attached to a card: an ordinary network interface, plus the Elastic Fabric
-/// Adapter on a type that is offered one.
+/// what may be attached to a card: an ordinary network interface, plus BOTH forms of the
+/// Elastic Fabric Adapter on a type that is offered one — the adapter that carries an
+/// interface's traffic beside the EFA transport, and the one that carries that transport
+/// alone.
 ///
 /// `facts` is the published row the catalog holds for the type, where it holds one: its
 /// network performance as the published table writes that column, that same figure in Gbps
@@ -3202,9 +3217,10 @@ pub(super) fn network_cards(
         Some(performance) if cards <= 1 || published_bandwidth.is_some() => performance.to_string(),
         _ => network_performance(per_card_baseline, per_card_peak),
     };
-    let mut interface_types = vec!["interface".to_string()];
+    let mut interface_types = vec![INTERFACE_TYPE_INTERFACE.to_string()];
     if efa_interfaces > 0 {
-        interface_types.push("efa".to_string());
+        interface_types.push(INTERFACE_TYPE_EFA.to_string());
+        interface_types.push(INTERFACE_TYPE_EFA_ONLY.to_string());
     }
     // "The default number of the ENA queues for each interface"
     // (`NetworkCardInfo$DefaultEnaQueueCountPerInterface`): the figure the catalog publishes for

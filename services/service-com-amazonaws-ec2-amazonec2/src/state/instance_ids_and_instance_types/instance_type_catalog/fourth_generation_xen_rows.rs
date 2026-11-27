@@ -186,14 +186,19 @@ pub(super) static FOURTH_GENERATION_XEN_INSTANCE_TYPE_FACTS: &[PublishedInstance
     // local instance store. Its published memory is 15.25 GiB per `large` unit of size, which
     // is not a whole number of GiB at any size, and each size publishes ONE EBS figure of its
     // own. Enhanced networking with ENA is offered on the whole family, so no row says
-    // otherwise. The largest size's cores sit on two processor sockets and are taken one per
-    // socket.
+    // otherwise, and each of its interfaces is given the eight ENA queues that adapter carries,
+    // whatever the size. Its network figures are the published ones: the four narrowest sizes
+    // sustain the family's own baseline ladder and burst to 10 Gigabit, while the `8xlarge`
+    // holds a dedicated 10 and the size that IS the host its whole 25. The largest size's cores
+    // sit on two processor sockets and are taken one per socket.
     PublishedInstanceTypeFacts::of("r4.large")
         .previous_generation()
         .memory_mib(15_616)
         .ebs(425, 3_000, 425, 3_000)
         .shared_ebs_attachments(40)
         .network("Up to 10 Gigabit")
+        .network_bandwidth(0.75, 10.0)
+        .ena_queues(R4_ENA_QUEUES_PER_INTERFACE)
         .processor("Intel", 2.3)
         .dedicated_hosts(true)
         .host_features(true, false),
@@ -203,6 +208,8 @@ pub(super) static FOURTH_GENERATION_XEN_INSTANCE_TYPE_FACTS: &[PublishedInstance
         .ebs(850, 6_000, 850, 6_000)
         .shared_ebs_attachments(40)
         .network("Up to 10 Gigabit")
+        .network_bandwidth(1.25, 10.0)
+        .ena_queues(R4_ENA_QUEUES_PER_INTERFACE)
         .processor("Intel", 2.3)
         .dedicated_hosts(true)
         .host_features(true, false),
@@ -212,6 +219,8 @@ pub(super) static FOURTH_GENERATION_XEN_INSTANCE_TYPE_FACTS: &[PublishedInstance
         .ebs(1_700, 12_000, 1_700, 12_000)
         .shared_ebs_attachments(40)
         .network("Up to 10 Gigabit")
+        .network_bandwidth(2.5, 10.0)
+        .ena_queues(R4_ENA_QUEUES_PER_INTERFACE)
         .processor("Intel", 2.3)
         .dedicated_hosts(true)
         .host_features(true, false),
@@ -221,6 +230,8 @@ pub(super) static FOURTH_GENERATION_XEN_INSTANCE_TYPE_FACTS: &[PublishedInstance
         .ebs(3_500, 18_750, 3_500, 18_750)
         .shared_ebs_attachments(40)
         .network("Up to 10 Gigabit")
+        .network_bandwidth(5.0, 10.0)
+        .ena_queues(R4_ENA_QUEUES_PER_INTERFACE)
         .processor("Intel", 2.3)
         .dedicated_hosts(true)
         .host_features(true, false),
@@ -229,7 +240,12 @@ pub(super) static FOURTH_GENERATION_XEN_INSTANCE_TYPE_FACTS: &[PublishedInstance
         .memory_mib(249_856)
         .ebs(7_000, 37_500, 7_000, 37_500)
         .shared_ebs_attachments(40)
-        .network_bandwidth(10.0, 10.0)
+        .network("10 Gigabit")
+        // The published figure of the size that holds half the host is 12 Gbps, sustained and
+        // reached alike — the same figure the half-host sizes of the next generation publish,
+        // and not the round 10 Gigabit of the column published beside it.
+        .network_bandwidth(12.0, 12.0)
+        .ena_queues(R4_ENA_QUEUES_PER_INTERFACE)
         .processor("Intel", 2.3)
         .dedicated_hosts(true)
         .host_features(true, false),
@@ -240,6 +256,7 @@ pub(super) static FOURTH_GENERATION_XEN_INSTANCE_TYPE_FACTS: &[PublishedInstance
         .ebs(14_000, 75_000, 14_000, 75_000)
         .shared_ebs_attachments(40)
         .network_bandwidth(25.0, 25.0)
+        .ena_queues(R4_ENA_QUEUES_PER_INTERFACE)
         .processor("Intel", 2.3)
         .dedicated_hosts(true)
         .host_features(true, false),
@@ -253,3 +270,7 @@ const C4_HOST_NETWORK_GBPS: f64 = 10.0;
 /// The ENA queues one interface of that family is given by default: a figure of the adapter
 /// its hardware carries, which is the same at every size of it.
 const C4_ENA_QUEUES_PER_INTERFACE: i32 = 8;
+
+/// The ENA queues one interface of the memory optimized family is given by default: a figure
+/// of the Elastic Network Adapter its hardware carries, the same at every size of it.
+const R4_ENA_QUEUES_PER_INTERFACE: i32 = 8;

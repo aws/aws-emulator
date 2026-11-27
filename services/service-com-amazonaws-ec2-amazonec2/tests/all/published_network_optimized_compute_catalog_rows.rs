@@ -222,12 +222,14 @@ const ROWS: [Row; 9] = [
     Row {
         instance_type: "c5a.4xlarge",
         memory_mib: 32_768,
-        ebs: (1_580, 6_320, 3_170, 13_300),
+        ebs: (1_580, 6_600, 3_170, 13_300),
         ebs_attachments: (27, "shared"),
         network_performance: "Up to 10 Gigabit",
         processor: ("AMD", 3.3),
         hibernation: false,
-        valid_cores: &[2, 4, 6, 8],
+        // The AMD sizes from this one up take their cores ALL at once, so the one count
+        // published for the size is its default.
+        valid_cores: &[8],
         efa_interfaces: None,
         boot_modes: &["legacy-bios", "uefi"],
         recovery: (true, "supported"),

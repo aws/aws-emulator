@@ -32,13 +32,16 @@ pub(super) static FIFTH_GENERATION_INTEL_COMPUTE_INSTANCE_TYPE_FACTS: &[Publishe
     // published ones: the four narrowest sizes sustain the family's own baseline ladder and
     // burst to 10 Gigabit, and from the `9xlarge` up each size reports the dedicated figure
     // published for it. Each of its interfaces is given the eight ENA queues its adapter
-    // carries, whatever the size. The published core counts go up in twos from the `xlarge`,
-    // the bare metal size publishing every count. Dedicated Hosts are offered on the family
+    // carries, whatever the size. The published core counts go up in twos from the `xlarge`
+    // and start at four on the `18xlarge`, whose published list begins above that step, while
+    // the bare metal size publishes every count. Dedicated Hosts are offered on the family
     // EXCEPT on the two sizes that hold the whole host, and the bare metal size is offered the
     // legacy BIOS boot mode alone, supports CloudWatch action based recovery — which the sizes
     // with no instance store already do — and supports reboot migration, the move to another
     // host being the HOST's to make and not the hypervisor's that a bare metal instance has
-    // none of.
+    // none of. That size's EBS volumes are attached beside the shared pool rather than out of
+    // it, so it holds the volumes a whole host carries, and the packets of a session are copied
+    // by the host's own card, which it still has.
     PublishedInstanceTypeFacts::of("c5.large")
         .previous_generation()
         .ebs(650, 4_000, 4_750, 20_000)
@@ -93,6 +96,10 @@ pub(super) static FIFTH_GENERATION_INTEL_COMPUTE_INSTANCE_TYPE_FACTS: &[Publishe
     PublishedInstanceTypeFacts::of("c5.18xlarge")
         .previous_generation()
         .cores_in_steps_of(2)
+        // The size whose cores sit on two sockets of 18 publishes its counts from FOUR, not
+        // from the two its step would start at: the published list of this size begins above
+        // its step, as the same host's NVMe sibling does at the same size.
+        .cores_from(4)
         .ebs(19_000, 80_000, 19_000, 80_000)
         .network_bandwidth(25.0, 25.0)
         .ena_queues(C5_ENA_QUEUES_PER_INTERFACE)
@@ -109,11 +116,19 @@ pub(super) static FIFTH_GENERATION_INTEL_COMPUTE_INSTANCE_TYPE_FACTS: &[Publishe
     PublishedInstanceTypeFacts::of("c5.metal")
         .previous_generation()
         .ebs(19_000, 80_000, 19_000, 80_000)
+        // A bare metal instance's volumes come out of the larger attachment pool the whole
+        // host carries, and it has no hypervisor passing anything else through to draw on it,
+        // so it holds the 31 volumes "Instance volume limits" publishes for one.
+        .ebs_attachments(31)
         .network_bandwidth(25.0, 25.0)
         .ena_queues(C5_ENA_QUEUES_PER_INTERFACE)
         .processor("Intel", 3.6)
         .dedicated_hosts(false)
         .auto_recovery(true)
+        // The packets of a session are copied by the host's own card, which a bare metal
+        // instance still has, so Traffic Mirroring is offered on it even though the
+        // hypervisor-backed rule would deny it.
+        .traffic_mirroring(true)
         .host_features(true, false)
         .boot_modes(LEGACY_BIOS_BOOT_MODE),
 ];

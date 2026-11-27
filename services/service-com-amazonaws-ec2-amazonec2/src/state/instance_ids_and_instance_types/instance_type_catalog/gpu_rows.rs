@@ -35,6 +35,11 @@ const T4G_ACCELERATOR: (&str, i32) = ("T4g", 16_384);
 /// The `GpuDeviceInfo$Manufacturer` of every accelerator here.
 const NVIDIA: &str = "NVIDIA";
 
+/// The ENA queues each interface of a memory-rich graphics instance is given by default
+/// (`NetworkCardInfo$DefaultEnaQueueCountPerInterface`): the queue count of the adapter that
+/// family's network card carries, which both of its sizes publish whatever their vCPUs.
+const GR6_ENA_QUEUES_PER_INTERFACE: i32 = 8;
+
 /// The published hardware facts of the GPU families' instance types, one row per type.
 pub(super) static GPU_INSTANCE_TYPE_FACTS: &[PublishedInstanceTypeFacts] = &[
     // Gr6 — the graphics family's memory-rich pair, 3rd generation AMD EPYC at a sustained
@@ -46,12 +51,17 @@ pub(super) static GPU_INSTANCE_TYPE_FACTS: &[PublishedInstanceTypeFacts] = &[
     // 8,000 Mbps and 32,000 IOPS and the `8xlarge` twice that. Neither size is offered on a
     // Dedicated Host, ENA Express is not offered on the family, and the Elastic Fabric Adapter
     // is offered on the larger size alone, which also has the whole 25 Gigabit of its share of
-    // the host's network rather than bursting up to it.
+    // the host's network rather than bursting up to it. The smaller size sustains 10 Gbps of
+    // that 25 — the figure published for it, which is neither its share of the host nor the
+    // ceiling it bursts to — and each interface of either size is given the eight ENA queues
+    // the family's adapter carries.
     PublishedInstanceTypeFacts::of("gr6.4xlarge")
         .ebs(8_000, 32_000, 8_000, 32_000)
         .dedicated_ebs_attachments(32)
         .instance_store(1, 600)
         .network("Up to 25 Gigabit")
+        .network_bandwidth(10.0, 25.0)
+        .ena_queues(GR6_ENA_QUEUES_PER_INTERFACE)
         .gpus(1, L4_ACCELERATOR.0, NVIDIA, L4_ACCELERATOR.1, ML_AI_WORKLOAD)
         .processor("AMD", 3.6)
         .dedicated_hosts(false)
@@ -61,6 +71,7 @@ pub(super) static GPU_INSTANCE_TYPE_FACTS: &[PublishedInstanceTypeFacts] = &[
         .dedicated_ebs_attachments(32)
         .instance_store(2, 450)
         .network("25 Gigabit")
+        .ena_queues(GR6_ENA_QUEUES_PER_INTERFACE)
         .efa(1)
         .gpus(1, L4_ACCELERATOR.0, NVIDIA, L4_ACCELERATOR.1, ML_AI_WORKLOAD)
         .processor("AMD", 3.6)

@@ -67,11 +67,13 @@ async fn a_network_card_reports_the_adapter_its_own_type_publishes() {
         ("c4.2xlarge", 2.5, 10.0, "High"),
         ("c4.4xlarge", 5.0, 10.0, "High"),
         ("c4.8xlarge", 10.0, 10.0, "10 Gigabit"),
-        // M4 and R4 — the two sizes of the same generation that hold a whole host publish
-        // their own figure as both the one they sustain and the one they reach.
+        // M4 and R4 — the sizes of the same generation that hold a whole host publish their own
+        // figure as both the one they sustain and the one they reach, while the size that holds
+        // HALF a host publishes the 12 Gbps of its own row beside the round column published
+        // for it.
         ("m4.10xlarge", 10.0, 10.0, "10 Gigabit"),
         ("m4.16xlarge", 25.0, 25.0, "25 Gigabit"),
-        ("r4.8xlarge", 10.0, 10.0, "10 Gigabit"),
+        ("r4.8xlarge", 12.0, 12.0, "10 Gigabit"),
         ("r4.16xlarge", 25.0, 25.0, "25 Gigabit"),
         // T1 — the first burstable family's one size, whose column reads in words and which
         // bursts to four times what it sustains.

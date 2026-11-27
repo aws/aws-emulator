@@ -1688,14 +1688,14 @@ static PUBLISHED_INSTANCE_TYPE_FACTS: &[PublishedInstanceTypeFacts] = &[
         .traffic_mirroring(false),
     // C5a — compute optimized on the AMD EPYC 7R32 at a sustained 3.3 GHz, with no local
     // instance store. The family's EBS bandwidth doubles up the ladder and is DEDICATED from
-    // the 8xlarge up, the four sizes below that one bursting to the 8xlarge's figure. Its EBS
+    // the 8xlarge up, the four sizes below that one bursting to the 8xlarge's figure; the
+    // `4xlarge` publishes HALF the dedicated figures of that size, bandwidth and IOPS alike,
+    // rather than the four IOPS per Mbps the three smaller sizes carry. Its EBS
     // volumes come out of the shared Nitro attachment pool, which the derivation above already
     // counts, so these rows leave that limit unset. The family is offered on NO Dedicated Host
-    // and supports no On-Demand hibernation. Two cells are the family's own RATIO rather than a
-    // figure read off the published table — the 4xlarge's IOPS, which is four times its
-    // bandwidth as the three smaller sizes' published pairs are, and the core counts going up
-    // in twos from the 4xlarge, where the published list is shorter than every count up to the
-    // default — so a published figure for either replaces it.
+    // and supports no On-Demand hibernation. Its three narrowest sizes publish every core count
+    // up to their own, while each size from the `4xlarge` up takes its cores ALL at once — so
+    // the one count such a size publishes is its default.
     PublishedInstanceTypeFacts::of("c5a.large")
         .ebs(200, 800, 3_170, 13_300)
         .network("Up to 10 Gigabit")
@@ -1715,35 +1715,35 @@ static PUBLISHED_INSTANCE_TYPE_FACTS: &[PublishedInstanceTypeFacts] = &[
         .dedicated_hosts(false)
         .hibernation(false),
     PublishedInstanceTypeFacts::of("c5a.4xlarge")
-        .cores_in_steps_of(2)
-        .ebs(1_580, 6_320, 3_170, 13_300)
+        .cores_all_at_once()
+        .ebs(1_580, 6_600, 3_170, 13_300)
         .network("Up to 10 Gigabit")
         .processor("AMD", 3.3)
         .dedicated_hosts(false)
         .hibernation(false),
     PublishedInstanceTypeFacts::of("c5a.8xlarge")
-        .cores_in_steps_of(2)
+        .cores_all_at_once()
         .ebs(3_170, 13_300, 3_170, 13_300)
         .network("10 Gigabit")
         .processor("AMD", 3.3)
         .dedicated_hosts(false)
         .hibernation(false),
     PublishedInstanceTypeFacts::of("c5a.12xlarge")
-        .cores_in_steps_of(2)
+        .cores_all_at_once()
         .ebs(4_750, 20_000, 4_750, 20_000)
         .network("12 Gigabit")
         .processor("AMD", 3.3)
         .dedicated_hosts(false)
         .hibernation(false),
     PublishedInstanceTypeFacts::of("c5a.16xlarge")
-        .cores_in_steps_of(2)
+        .cores_all_at_once()
         .ebs(6_300, 26_700, 6_300, 26_700)
         .network("20 Gigabit")
         .processor("AMD", 3.3)
         .dedicated_hosts(false)
         .hibernation(false),
     PublishedInstanceTypeFacts::of("c5a.24xlarge")
-        .cores_in_steps_of(2)
+        .cores_all_at_once()
         .ebs(9_500, 40_000, 9_500, 40_000)
         .network("20 Gigabit")
         .processor("AMD", 3.3)
