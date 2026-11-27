@@ -461,8 +461,17 @@ impl ComAmazonawsSupportappSupportappState {
     /// workspace this API can act on, which is the resource miss
     /// `ResourceNotFoundException` reports — "The specified resource is missing or
     /// doesn't exist, such as an account alias, Slack channel configuration, or Slack
-    /// workspace configuration" — and is settled, like every other lookup of the
-    /// resource a request IDENTIFIES, before any precondition on the CALLING ACCOUNT.
+    /// workspace configuration".
+    ///
+    /// That console step is the step the model places on the account that registers a
+    /// workspace for its organization, so this is the precondition of a caller the model
+    /// asks to take it, settled — like every other lookup of the resource a request
+    /// IDENTIFIES — before any further precondition on the CALLING ACCOUNT. It is NOT
+    /// the precondition of a member account: "Member accounts don't need to authorize the
+    /// Slack workspace manually through the Amazon Web Services Support Center", so a
+    /// member account's call is decided by whether the management account has registered
+    /// the workspace for the organization ([`Self::workspace_is_registered`]) and this is
+    /// not consulted for it.
     pub fn unauthorized_workspace_not_found(&self, team_id: &str) -> Option<String> {
         (!self.console_authorized_slack_workspaces.contains(team_id))
             .then(|| slack_workspace_not_authorized_message(team_id))

@@ -10,22 +10,29 @@
 //! alias, Slack channel configuration, or Slack workspace configuration"
 //! (`smithy_query(query="operation",operation="RegisterSlackWorkspaceForOrganization",
 //! model_path="services/service-com-amazonaws-supportapp-supportapp/smithy-model/com-amazonaws-supportapp-supportapp.json")`).
-//! For this operation the resource is the Slack workspace itself: one reaches this API
-//! only through the interactive flow in the Amazon Web Services Support Center console —
-//! "Sign in to the Amazon Web Services Support Center and authorize the Slack workspaces
-//! where you want your organization to have access to", after which the API
+//! For this operation the resource is the Slack workspace itself: a workspace reaches
+//! this API through the interactive flow in the Amazon Web Services Support Center
+//! console — "Sign in to the Amazon Web Services Support Center and authorize the Slack
+//! workspaces where you want your organization to have access to", after which the API
 //! "authorize[s] each Slack workspace for the organization"
-//! (`smithy_query(query="doc",shape="RegisterSlackWorkspaceForOrganization")`) — so a
-//! `teamId` no console authorization recorded is that 404, never the `ConflictException`
-//! (409) of an account topology, and nothing is registered.
+//! (`smithy_query(query="doc",shape="RegisterSlackWorkspaceForOrganization")`) — so for a
+//! caller the model asks to take that console step a `teamId` no console authorization
+//! recorded is that 404, never the `ConflictException` (409) of an account topology, and
+//! nothing is registered.
+//!
+//! The caller the model EXEMPTS from the console step — a member account, which "[doesn't]
+//! need to authorize the Slack workspace manually through the Amazon Web Services Support
+//! Center" — is therefore outside this rule, and is covered in
+//! [`crate::member_account_console_step_exemption`].
 //!
 //! So the tables below run the rule over what it generalises over, with the recorded
 //! `T<10 uppercase hex>` case as a single row:
 //!
 //! * the `teamId` form and length, at both published `len 1..256` bounds;
-//! * the ACCOUNT TOPOLOGY the lookup happens in — the default account, which belongs to
-//!   no organization, an organization the caller manages, and one another account manages
-//!   — because the resource miss is settled ahead of every one of them;
+//! * the ACCOUNT TOPOLOGY the lookup happens in, among those the console step is the
+//!   caller's own — the default account, which belongs to no organization, and an
+//!   organization the caller manages — because the resource miss is settled ahead of
+//!   every one of them;
 //! * what the account holds BESIDES the named workspace: nothing, or other workspaces
 //!   authorized and registered;
 //! * how many times the call is repeated, since a refusal is not a state transition.
@@ -66,13 +73,7 @@ enum Topology {
     NoOrganization,
     /// An organization the calling account manages.
     ManagedByTheCaller,
-    /// An organization another account manages, so the caller is a member of it.
-    ManagedByAnotherAccount,
 }
-
-/// The 12-digit account id the member-account rows hand the organization to; it is not the
-/// account the emulator presents.
-const OTHER_MANAGEMENT_ACCOUNT: &str = "111122223333";
 
 /// Put the account in the topology `topology` names, with `neighbours` other workspaces
 /// authorized in the console beside the one the row names — and registered too wherever
@@ -80,8 +81,7 @@ const OTHER_MANAGEMENT_ACCOUNT: &str = "111122223333";
 /// that holds nothing.
 ///
 /// The organization itself is created by driving the Organizations emulator's own
-/// `CreateOrganization`, and the hand-over to another management account is read back with
-/// `DescribeOrganization`.
+/// `CreateOrganization`.
 async fn arrange(emulator: &Emulator, label: &str, topology: Topology, neighbours: &[String]) {
     for neighbour in neighbours {
         emulator.authorize_workspace_in_console(neighbour);
@@ -99,19 +99,6 @@ async fn arrange(emulator: &Emulator, label: &str, topology: Topology, neighbour
             "case {label:?}: the neighbour workspace {} must register, so the row's answer \
              is not about an empty registry",
             &neighbour[..neighbour.len().min(16)]
-        );
-    }
-    if topology == Topology::ManagedByAnotherAccount {
-        emulator.hand_organization_to(OTHER_MANAGEMENT_ACCOUNT);
-        let described = emulator
-            .organizations("DescribeOrganization", json!({}))
-            .await;
-        assert_eq!(
-            described.body["Organization"]["MasterAccountId"].as_str(),
-            Some(OTHER_MANAGEMENT_ACCOUNT),
-            "case {label:?}: expected the organization to be managed by \
-             {OTHER_MANAGEMENT_ACCOUNT}, got {}",
-            described.body
         );
     }
 }
@@ -204,11 +191,7 @@ fn never_authorized_team_ids() -> Vec<String> {
 
 #[tokio::test]
 async fn a_workspace_no_console_authorization_recorded_is_not_found() {
-    for topology in [
-        Topology::NoOrganization,
-        Topology::ManagedByTheCaller,
-        Topology::ManagedByAnotherAccount,
-    ] {
+    for topology in [Topology::NoOrganization, Topology::ManagedByTheCaller] {
         for team_id in never_authorized_team_ids() {
             // Rows differ in how much the account holds besides the named workspace: an
             // empty account, and one already holding other authorized, registered
