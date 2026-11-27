@@ -431,7 +431,9 @@ async fn a_reshard_writes_the_shards_a_later_read_reports() {
 }
 
 /// Of two reshards of one group, exactly one wins: the first leaves the group transient,
-/// and the second is refused with the modelled state fault until the clock settles it.
+/// and the second — sent after the first has answered, so the `modifying` status it left is
+/// published — is refused with the modelled state fault stating the state a modification
+/// requires, until the clock settles the group.
 #[tokio::test]
 async fn only_one_of_two_reshards_of_a_group_wins() {
     let emulator = Emulator::new();
@@ -463,9 +465,9 @@ async fn only_one_of_two_reshards_of_a_group_wins() {
     );
     assert_eq!(
         second.error_message(),
-        state::RESHARD_STATE_MESSAGE,
-        "expected the state refusal this service words for a reshard it could not carry out, got \
-         {:?}",
+        "Replication group must be in available state to modify.",
+        "expected the sentence this service states for a change to a group whose published \
+         status is not available, got {:?}",
         second.error_message()
     );
 

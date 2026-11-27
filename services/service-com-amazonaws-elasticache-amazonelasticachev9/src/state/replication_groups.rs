@@ -806,6 +806,14 @@ pub struct ReplicationGroupRecord {
     /// [`TEST_FAILOVER_IN_PROGRESS_MESSAGE`]. Keyed by `NodeGroupId`, so it
     /// holds at most one entry per shard the group has.
     pub test_failovers_in_flight: BTreeMap<String, SystemTime>,
+    /// How many shard-reconfiguration calls on this group have been ADMITTED but
+    /// have not answered yet: what tells a second such call that it collided with
+    /// one being admitted alongside it, rather than that it found the group in a
+    /// status it had already published (see
+    /// [`ReplicationGroupRecord::reshard_admission_in_flight`]). `ReplicationGroup`
+    /// models no member for it, so it is state only, and it is back to zero as soon
+    /// as the call that raised it answers.
+    pub reshard_admissions: usize,
     /// The Global datastore this group is a member of, and its role in it,
     /// which is what `ReplicationGroup$GlobalReplicationGroupInfo` reports.
     /// `CreateGlobalReplicationGroup` writes them for the primary it builds a
@@ -904,6 +912,30 @@ impl ReplicationGroupRecord {
         self.test_failovers_in_flight
             .get(node_group_id)
             .is_some_and(|due| now < *due)
+    }
+
+    /// Whether a shard reconfiguration of this group has been admitted and has
+    /// not answered yet: the conflict between two such calls being admitted at
+    /// once, which ElastiCache tells the one that lost to try again
+    /// ([`RESHARD_COLLISION_MESSAGE`]) rather than reporting the status the
+    /// winner has not published to anybody yet.
+    pub fn reshard_admission_in_flight(&self) -> bool {
+        self.reshard_admissions > 0
+    }
+
+    /// Record that a shard reconfiguration of this group has been admitted, and
+    /// has not answered yet; see
+    /// [`ReplicationGroupRecord::reshard_admission_in_flight`].
+    pub fn begin_reshard_admission(&mut self) {
+        self.reshard_admissions = self.reshard_admissions.saturating_add(1);
+    }
+
+    /// Record that an admitted shard reconfiguration of this group is answering,
+    /// so the status it left the group in is one every later caller reads as
+    /// published; the other half of
+    /// [`ReplicationGroupRecord::begin_reshard_admission`].
+    pub fn end_reshard_admission(&mut self) {
+        self.reshard_admissions = self.reshard_admissions.saturating_sub(1);
     }
 
     /// Record that a test of automatic failover on the shard `node_group_id` is

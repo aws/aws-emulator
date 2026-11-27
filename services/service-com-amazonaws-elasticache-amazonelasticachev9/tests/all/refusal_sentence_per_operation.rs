@@ -13,12 +13,15 @@
 //!   found for replication group <replication-group-id>`, which carries no
 //!   trailing stop and names both the shard asked about and the group it was
 //!   asked about in;
-//! * a shard-configuration change refused on the group's STATUS reports the
-//!   reshard's own sentence (`Could not reshard replication group. Please try
-//!   again later.`) under `InvalidReplicationGroupState`, so the loser of a race
-//!   between two reshards learns the reshard is what could not be carried out,
-//!   while a replica-count change refused on the same group keeps the general
-//!   modification sentence;
+//! * a shard-configuration change refused on the group's published STATUS
+//!   reports the one modification sentence this service states for a group that
+//!   is not available (`Replication group must be in available state to
+//!   modify.`) under `InvalidReplicationGroupState`, the same sentence a
+//!   replica-count change refused on that same group reports — while a reshard
+//!   that COLLIDED with another one admitted at the same instant, before either
+//!   call had answered, reports the reshard's own sentence (`Could not reshard
+//!   replication group. Please try again later.`), so the loser of that race is
+//!   told to retry rather than to wait for a status nobody has been handed;
 //! * a serverless cache's `SnapshotRetentionLimit` outside the published range
 //!   reports `Invalid snapshot retention limit: <n>. Snapshot retention limit
 //!   must be between 0 and 35.` under `InvalidParameterValue`, on the create and
@@ -37,11 +40,18 @@ use std::time::{Duration, SystemTime};
 
 use service_com_amazonaws_elasticache_amazonelasticachev9::state;
 
-use crate::harness::{assert_refusal, params, poll_until, Emulator, Reply, REGION};
+use crate::harness::{
+    assert_refusal, params, poll_until, Emulator, Reply, REGION, SETTLE_DEADLINE,
+};
 
 /// A span far longer than any transition this service publishes, for a record a
 /// row holds in a non-terminal status on purpose.
 const NEVER_SETTLES: Duration = Duration::from_secs(60 * 60);
+
+/// How many reshards of one group a race releases from one barrier: the recorded
+/// pair, and enough more beside them that one of them is waiting on the group
+/// while the winner's own call is still being answered.
+const CONTENDERS: usize = 8;
 
 /// AWS's `NodeGroupNotFoundFault` sentence: `Node group <node-group-id> was not
 /// found for replication group <replication-group-id>` — no trailing stop.
@@ -49,9 +59,15 @@ fn node_group_not_found(node_group_id: &str, replication_group_id: &str) -> Stri
     format!("Node group {node_group_id} was not found for replication group {replication_group_id}")
 }
 
-/// AWS's state sentence for a shard-configuration change it could not carry out:
-/// wholly fixed text, with neither the group nor its status in it.
-const RESHARD_SENTENCE: &str = "Could not reshard replication group. Please try again later.";
+/// AWS's state sentence for a change to a replication group whose published
+/// status is not `available`: wholly fixed text, with neither the group nor its
+/// status in it.
+const MODIFY_STATE_SENTENCE: &str = "Replication group must be in available state to modify.";
+
+/// AWS's sentence for a shard-configuration change that collided with another one
+/// admitted at the same instant: wholly fixed text too.
+const RESHARD_COLLISION_SENTENCE: &str =
+    "Could not reshard replication group. Please try again later.";
 
 /// AWS's sentence for a `SnapshotRetentionLimit` outside the range a serverless
 /// cache publishes, whose one variable part is the rejected value.
@@ -141,6 +157,48 @@ async fn reshard(emulator: &Emulator, id: &str, extra: &[(&str, &str)]) -> Reply
     emulator
         .call("ModifyReplicationGroupShardConfiguration", &pairs)
         .await
+}
+
+/// The pairs one `ModifyReplicationGroupShardConfiguration` sends, as a row writes
+/// them beside the group and `ApplyImmediately`.
+fn reshard_request(id: &str, extra: &[(&str, &str)]) -> Vec<(String, String)> {
+    let mut pairs = params(&[("ReplicationGroupId", id), ("ApplyImmediately", "true")]);
+    pairs.extend(params(extra));
+    pairs
+}
+
+/// Release every request in `requests` from ONE barrier, each on its own thread,
+/// and answer with every reply.
+///
+/// Threads, not futures of one task: futures of one task are polled one after the
+/// other, so a call that never yields runs to completion before the next one
+/// starts — which is the SEQUENTIAL case, not a race. Each thread drives its call
+/// on a runtime of its own, so the calls are carried out at the same instant and
+/// the store is what sequences them.
+fn race_through_one_barrier(emulator: &Emulator, requests: &[Vec<(String, String)>]) -> Vec<Reply> {
+    let barrier = ::std::sync::Barrier::new(requests.len());
+    ::std::thread::scope(|scope| {
+        let threads: Vec<_> = requests
+            .iter()
+            .map(|request| {
+                let barrier = &barrier;
+                scope.spawn(move || {
+                    let runtime = ::tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .expect("a thread of this race must have a runtime to call through");
+                    barrier.wait();
+                    runtime.block_on(
+                        emulator.call("ModifyReplicationGroupShardConfiguration", request),
+                    )
+                })
+            })
+            .collect();
+        threads
+            .into_iter()
+            .map(|thread| thread.join().expect("a racing call must answer"))
+            .collect()
+    })
 }
 
 #[tokio::test]
@@ -238,9 +296,12 @@ async fn an_unknown_node_group_is_reported_before_the_groups_own_status() {
 }
 
 #[tokio::test]
-async fn a_reshard_refused_on_the_groups_status_states_the_reshard_sentence() {
+async fn a_reshard_refused_on_the_groups_status_states_the_modification_sentence() {
     // The axis: the status the group is held in, and the direction of the change
-    // the request asks for — out, and in with each side of the selection.
+    // the request asks for — out, and in with each side of the selection. Every
+    // row holds a status the group PUBLISHED, with no reshard call of its own
+    // outstanding, which is the gate the modification sentence states; the
+    // collision between two reshards admitted together is the test below.
     type Row = (
         &'static str,
         &'static str,
@@ -303,12 +364,12 @@ async fn a_reshard_refused_on_the_groups_status_states_the_reshard_sentence() {
             &refused,
             400,
             "InvalidReplicationGroupState",
-            RESHARD_SENTENCE,
+            MODIFY_STATE_SENTENCE,
         );
 
-        // A replica-count change refused on the very same group keeps the
-        // general modification sentence: the reshard sentence belongs to the
-        // operation that could not reshard, not to the state fault as such.
+        // A replica-count change refused on the very same group states the same
+        // sentence: one gate, one statement of the state a change requires,
+        // whichever operation asked for it.
         let other = emulator
             .call(
                 "IncreaseReplicaCount",
@@ -324,7 +385,7 @@ async fn a_reshard_refused_on_the_groups_status_states_the_reshard_sentence() {
             &other,
             400,
             "InvalidReplicationGroupState",
-            "Replication group must be in available state to modify.",
+            MODIFY_STATE_SENTENCE,
         );
     }
 }
@@ -334,7 +395,8 @@ async fn of_two_reshards_released_together_the_loser_states_the_reshard_sentence
     // The recorded instance of the rule: two reshards of one group, released
     // together, each asking for a shard configuration that would be served on
     // its own. Exactly one is carried out and the other is told the reshard
-    // could not be.
+    // could not be — the status the winner left is published to nobody while its
+    // own call is still being answered, so the loser has no state to wait for.
     type Row = (
         &'static str,
         &'static [(&'static str, &'static str)],
@@ -368,36 +430,79 @@ async fn of_two_reshards_released_together_the_loser_states_the_reshard_sentence
     ];
 
     for (case, first_extra, second_extra) in rows.iter() {
-        let emulator = Emulator::new();
-        settled_group(
-            &emulator,
-            case,
-            "raced-group",
-            &[("NumNodeGroups", "2"), ("ReplicasPerNodeGroup", "1")],
-        )
-        .await;
+        // The host decides whether two calls released together really are carried
+        // out at the same instant: one it runs strictly one after the other is the
+        // SEQUENTIAL case (`crate::shard_configuration::only_one_of_two_reshards_of_a_group_wins`)
+        // and a different gate, so this row LOOKS AGAIN — a fresh group, the
+        // requests released together once more — until a call really did reach the
+        // gate while the winner's own call was unanswered. Every attempt asserts
+        // the answer the run it got must carry, so no attempt accepts a sentence
+        // outside the two this fault states, and the deadline fails the row if the
+        // calls never overlap at all.
+        //
+        // More requests than the recorded pair are released together, all of them
+        // well-formed on the group as it stands: the shard is what sequences them,
+        // so the more of them are waiting on it, the surer it is that one is
+        // waiting while the winner is still being answered.
+        let mut requests = vec![
+            reshard_request("raced-group", first_extra),
+            reshard_request("raced-group", second_extra),
+        ];
+        while requests.len() < CONTENDERS {
+            requests.push(reshard_request("raced-group", second_extra));
+        }
 
-        let (first, second) = ::tokio::join!(
-            reshard(&emulator, "raced-group", first_extra),
-            reshard(&emulator, "raced-group", second_extra),
-        );
-        let accepted = [&first, &second]
-            .into_iter()
-            .filter(|reply| reply.status == 200)
-            .count();
-        assert_eq!(
-            accepted, 1,
-            "case {case:?}: exactly one of two reshards released together wins, got {} {} and {} {}",
-            first.status, first.body, second.status, second.body
-        );
-        let loser = if first.status == 200 { &second } else { &first };
-        assert_refusal(
-            case,
-            loser,
-            400,
-            "InvalidReplicationGroupState",
-            RESHARD_SENTENCE,
-        );
+        let deadline = ::std::time::Instant::now() + SETTLE_DEADLINE;
+        let mut races = 0usize;
+        let mut collided = false;
+        while !collided {
+            races += 1;
+            let emulator = Emulator::new();
+            settled_group(
+                &emulator,
+                case,
+                "raced-group",
+                &[("NumNodeGroups", "2"), ("ReplicasPerNodeGroup", "1")],
+            )
+            .await;
+
+            let replies = race_through_one_barrier(&emulator, &requests);
+            let accepted = replies.iter().filter(|reply| reply.status == 200).count();
+            assert_eq!(
+                accepted, 1,
+                "case {case:?}: exactly one of the reshards released together wins, got {:?}",
+                replies
+                    .iter()
+                    .map(|reply| (reply.status, reply.error_message().to_string()))
+                    .collect::<Vec<_>>()
+            );
+            for loser in replies.iter().filter(|reply| reply.status != 200) {
+                assert_eq!(
+                    loser.status, 400,
+                    "case {case:?}: a reshard that lost the group is refused, got {} {}",
+                    loser.status, loser.body
+                );
+                assert_eq!(
+                    loser.error_code(),
+                    "InvalidReplicationGroupState",
+                    "case {case:?}: expected the modelled state fault, got {}",
+                    loser.body
+                );
+                let message = loser.error_message();
+                assert!(
+                    message == RESHARD_COLLISION_SENTENCE || message == MODIFY_STATE_SENTENCE,
+                    "case {case:?}: a reshard refused beside an accepted one states either the \
+                     collision sentence or the published-status sentence, got {message:?}"
+                );
+                collided |= message == RESHARD_COLLISION_SENTENCE;
+            }
+            assert!(
+                collided || ::std::time::Instant::now() < deadline,
+                "case {case:?}: after {races} sets of reshards released together, none ever \
+                 reached the group while the winner's own call was unanswered, so the collision \
+                 refusal was never stated"
+            );
+        }
     }
 }
 

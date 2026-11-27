@@ -234,6 +234,45 @@ pub async fn poll_until(
     }
 }
 
+/// Read one replication group back until it reports `available`, and answer with
+/// that reply.
+///
+/// A report answers from the record as it stands, so the status the clock owes a
+/// group is reached by looking again ([`poll_until`]) rather than by waiting a
+/// fixed time.
+pub async fn poll_replication_group_available(emulator: &Emulator, case: &str, id: &str) -> Reply {
+    poll_until(
+        emulator,
+        REGION,
+        case,
+        &format!("the replication group {id} settling at available"),
+        "DescribeReplicationGroups",
+        &params(&[("ReplicationGroupId", id)]),
+        |reply| reply.text("Status") == Some(state::STATUS_AVAILABLE),
+    )
+    .await
+}
+
+/// Hold the stored replication group `id` in `status`, with the status the clock
+/// owes it due far beyond any run of this suite ([`HELD_OUT_OF_REACH`]).
+///
+/// A suite that asserts about a GATE rather than about a span holds the record
+/// where it needs it instead of racing the transition the clock owes; the group
+/// is reached through the same store the handlers read.
+pub fn hold_replication_group_status(emulator: &Emulator, id: &str, status: &str) {
+    emulator.with_state(|store| {
+        let group = store
+            .replication_groups
+            .get_mut(id)
+            .unwrap_or_else(|| panic!("the replication group {id} a suite created must be stored"));
+        group.status = status.to_string();
+        group.pending_status = Some(state::PendingTransition {
+            due: ::std::time::SystemTime::now() + HELD_OUT_OF_REACH,
+            status: state::STATUS_AVAILABLE.to_string(),
+        });
+    });
+}
+
 /// One refusal row: the case name, the form pairs that make the request, and
 /// the HTTP status plus `awsQuery` error code it must be answered with.
 pub type RefusalCase = (

@@ -501,6 +501,16 @@ impl ComAmazonawsElasticacheAmazonelasticachev9State {
             let Some(cluster) = self.cache_clusters.remove(&cache_cluster_id) else {
                 continue;
             };
+            // The socket that cluster was served on closes with it, for the reason
+            // [`Self::purge_deleted_replication_groups`] gives: nothing answers for a
+            // node that is gone, and the port it held goes back. Closing one twice is
+            // the same as closing it once, so the delete that began the teardown
+            // having closed it already is no obstacle.
+            close_cache_cluster_data_plane(
+                self,
+                &cache_cluster_id,
+                cluster.replication_group_id.as_deref(),
+            );
             if let Some(group) = cluster
                 .replication_group_id
                 .as_deref()
@@ -1659,6 +1669,8 @@ impl ComAmazonawsElasticacheAmazonelasticachev9State {
             migration: None,
             // Nothing has tested failover on a shard of a group this new.
             test_failovers_in_flight: BTreeMap::new(),
+            // Nothing has asked to reshard a group that is only being created.
+            reshard_admissions: 0,
             // A created group belongs to no Global datastore: the Global
             // datastore operations are what make a group a member, and
             // `CreateReplicationGroup` does not create the secondary of one.

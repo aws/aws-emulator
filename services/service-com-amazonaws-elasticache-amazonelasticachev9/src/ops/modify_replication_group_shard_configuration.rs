@@ -252,7 +252,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // members it adds are served on are opened after it: opening one is async,
         // and no await may happen while the store is held.
         let group_id = input.replication_group_id.to_ascii_lowercase();
-        let replication_group = {
+        let (replication_group, admission) = {
         let mut store = state.lock();
         // The status change the clock owes the group is materialised first, so what
         // this call reads and gates on is the group THIS instant owes.
@@ -281,16 +281,28 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         }
         // The gate every change to a group applies: one still `creating`,
         // already `modifying` (a reshard of its own included) or on its way out
-        // cannot take another change. The sentence is THIS operation's — the
-        // reshard could not be carried out and is worth retrying
-        // (`crate::state::RESHARD_STATE_MESSAGE`) — rather than the general
-        // modification refusal, so the loser of a race between two reshards is
-        // told which work it lost.
+        // cannot take another change.
+        //
+        // WHICH sentence says so depends on whether the status this call reads
+        // has been published to anybody. A reshard that was admitted and has
+        // not answered its own caller yet left a status no caller has been
+        // handed, so a second reshard arriving alongside it has not found the
+        // group in a state to wait for — it collided, and is told to try again
+        // (`crate::state::RESHARD_COLLISION_MESSAGE`). Once that status is
+        // published, every change to the group — a reshard among them — is
+        // refused on the status itself, with the one sentence this service words
+        // that gate in (`crate::state::replication_group_modify_state_refusal`),
+        // which states the state a modification requires.
         if group.status != crate::state::STATUS_AVAILABLE {
+            let message = if group.reshard_admission_in_flight() {
+                crate::state::RESHARD_COLLISION_MESSAGE.to_string()
+            } else {
+                crate::state::replication_group_modify_state_refusal()
+            };
             return Err(
                 ModifyReplicationGroupShardConfigurationErrorModeled::InvalidReplicationGroupStateFault(
                     InvalidReplicationGroupStateFault {
-                        message: Some(crate::state::RESHARD_STATE_MESSAGE.to_string()),
+                        message: Some(message),
                     },
                 )
                 .into(),
@@ -467,7 +479,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 crate::state::STORE_UNAVAILABLE,
             ));
         };
-        replication_group
+        // This call is now ADMITTED and has not answered yet, which is what a
+        // second reshard arriving alongside it is told it collided with: the
+        // `modifying` status the write above left has been handed to nobody until
+        // this call answers it. The admission is a GUARD, so a call whose future
+        // is dropped part-way gives it back rather than leaving the group
+        // answering the collision sentence for good.
+        let admission = crate::state::ReshardAdmission::raise(&state, &mut store, &group_id);
+        (replication_group, admission)
         };
         // A member a new shard brought with it is served exactly as the ones the
         // create made: its own socket, over the group's one keyspace, and its
@@ -479,6 +498,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // the pass reconciles that inventory with the cache nodes this store holds now
         // (`crate::state::ec2_cache_node_interfaces`).
         crate::state::ec2_cache_node_interfaces::settle_cache_node_interfaces(&*self.engine);
+        // The admission ends where the answer begins: from here the group's
+        // `modifying` status is one a caller has been handed, so the next change
+        // to it is refused on that status rather than on a collision with this
+        // call.
+        drop(admission);
         let replication_group = state
             .lock()
             .modeled_replication_group(&group_id)

@@ -42,18 +42,71 @@ pub const RESHARD_WORK: Duration = Duration::from_millis(500);
 pub const SHARDS_NEED_CLUSTER_MODE_MESSAGE: &str =
     "Operation is only applicable for cluster mode enabled replication groups.";
 
-/// How ElastiCache refuses a shard-configuration change on a replication group
-/// whose status cannot take one: the sentence states that the reshard could not be
-/// carried out and that it is worth retrying, which is what a caller whose reshard
-/// lost a race against another one acts on.
+/// How ElastiCache refuses a shard-configuration change that COLLIDED with
+/// another one being admitted at the same time: the sentence states that the
+/// reshard could not be carried out and that it is worth retrying, which is what
+/// a caller whose reshard lost such a race acts on.
 ///
-/// The state gate of the operation that RESHARDS a group, worded for that
-/// operation rather than through the general modification refusal
-/// ([`replication_group_modify_state_refusal`]), because the work it could not
-/// start is its own. Wholly fixed text: neither the group nor the status it is in
-/// appears in it.
-pub const RESHARD_STATE_MESSAGE: &str =
+/// This is the answer only while the reshard that won has not answered its own
+/// caller yet, so the status it left the group in has been published to nobody:
+/// there is no state for the loser to be told to wait for, only the collision.
+/// Once that status IS published, a later change to the group is refused on the
+/// status itself, with the one sentence this service words that gate in
+/// ([`replication_group_modify_state_refusal`]). Wholly fixed text: neither the
+/// group nor the status it is in appears in it.
+pub const RESHARD_COLLISION_MESSAGE: &str =
     "Could not reshard replication group. Please try again later.";
+
+/// The admission of ONE shard-reconfiguration call on one replication group, held
+/// for as long as that call has not answered.
+///
+/// Raising it is what tells a reshard arriving alongside this one that it collided
+/// with a call whose status change has been published to nobody
+/// ([`RESHARD_COLLISION_MESSAGE`]), and dropping it is what makes the group's
+/// status one every later caller is refused on
+/// ([`replication_group_modify_state_refusal`]). It is a GUARD rather than a pair
+/// of calls so that the admission cannot outlive its call: a handler whose future
+/// is dropped part-way — a caller that went away — gives it back here, instead of
+/// leaving the group answering the collision sentence for good.
+pub struct ReshardAdmission {
+    state: ::engine::ServiceState<ComAmazonawsElasticacheAmazonelasticachev9State>,
+    replication_group_id: String,
+}
+
+impl ReshardAdmission {
+    /// Raise the admission on the stored group `replication_group_id`, through the
+    /// store the caller already holds, and hand back the guard that gives it back.
+    ///
+    /// `state` is the handle the guard reaches the store through when it is
+    /// dropped, which is why it is taken beside the `store` the caller holds: the
+    /// store's guard cannot be locked a second time from here.
+    pub fn raise(
+        state: &::engine::ServiceState<ComAmazonawsElasticacheAmazonelasticachev9State>,
+        store: &mut ComAmazonawsElasticacheAmazonelasticachev9State,
+        replication_group_id: &str,
+    ) -> Self {
+        if let Some(group) = store.replication_groups.get_mut(replication_group_id) {
+            group.begin_reshard_admission();
+        }
+        Self {
+            state: state.clone(),
+            replication_group_id: replication_group_id.to_string(),
+        }
+    }
+}
+
+impl Drop for ReshardAdmission {
+    fn drop(&mut self) {
+        if let Some(group) = self
+            .state
+            .lock()
+            .replication_groups
+            .get_mut(&self.replication_group_id)
+        {
+            group.end_reshard_admission();
+        }
+    }
+}
 
 /// How ElastiCache words a node group (shard) the replication group a request
 /// named does not hold: `Node group <node-group-id> was not found for replication
