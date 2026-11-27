@@ -280,9 +280,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // A READ: it reports the tags the store holds and writes nothing. The ARN
-        // carries the Region the resource lives in, so nothing here reads the
-        // request's Region.
+        // A READ: it reports the tags the store holds. The one write it makes is
+        // materialising what the clock already owed by the instant it answers,
+        // including the REMOVALS a delete only began: a resource whose teardown
+        // the clock has carried through has ceased to exist and carries no tags
+        // any more, so the ARN naming it resolves to nothing. The ARN carries the
+        // Region the resource lives in, so nothing here reads the request's
+        // Region.
         let _ = ctx;
         let Some(state) = crate::state::service_state(&*self.engine) else {
             return Err(crate::scaffolded::Scaffolded::validation(
@@ -290,7 +294,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             ));
         };
 
-        let store = state.lock();
+        let now = ::std::time::SystemTime::now();
+        let mut store = state.lock();
+        store.settle_every_resource(now);
         let stored = store
             .resource_tags(&input.resource_name)
             .map_err(reject)?;

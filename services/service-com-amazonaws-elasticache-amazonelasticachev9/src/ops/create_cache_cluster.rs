@@ -649,6 +649,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // await may happen while the store is held.
         let (cache_cluster_id, cache_cluster, restored) = {
         let mut store = state.lock();
+        // The removals the clock has already carried through are materialised
+        // before anything is resolved: a cluster whose teardown is already over
+        // — one a `DeleteCacheCluster` took, or a member of a replication group
+        // a `DeleteReplicationGroup` took — has ceased to exist, so its
+        // identifier is FREE for this create rather than one it collides on, and
+        // a replication group that is equally gone is resolved as not found
+        // rather than joined. One write, owed by the clock alone; see
+        // `crate::state::ComAmazonawsElasticacheAmazonelasticachev9State::settle_all`.
+        store.settle_all(now);
 
         // The parameter group the cluster joins has to be one this account
         // holds, so the name is resolved against the stored groups — the

@@ -330,6 +330,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         };
 
         let mut store = state.lock();
+        // The removals the clock has already carried through are materialised
+        // before the ARN is resolved: a resource whose teardown the clock has
+        // carried through has ceased to exist, so nothing can be tagged onto it;
+        // see
+        // `crate::state::ComAmazonawsElasticacheAmazonelasticachev9State::settle_every_resource`.
+        store.settle_every_resource(::std::time::SystemTime::now());
         let stored = store
             .resource_tags_mut(&input.resource_name)
             .map_err(reject)?;

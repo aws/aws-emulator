@@ -571,9 +571,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
     ) -> Result<Self::Output, Self::Error> {
         // A reporting operation: it reads the engine, engine version and node
         // type of the resource the request names and splits this service's
-        // node-type catalogue around them. It writes nothing — not even the
-        // status change the clock may owe that resource, because what this
-        // operation reports does not depend on its status.
+        // node-type catalogue around them. The one write it makes is
+        // materialising what the clock already owed by the instant it answers —
+        // the status changes, and the REMOVALS a delete only began, because a
+        // resource whose teardown the clock has carried through has ceased to
+        // exist and this operation must resolve it to nothing rather than scale
+        // it; see
+        // `crate::state::ComAmazonawsElasticacheAmazonelasticachev9State::settle_all`.
         let _ = ctx;
         let Some(state) = crate::state::service_state(&*self.engine) else {
             return Err(crate::scaffolded::Scaffolded::validation(
@@ -581,7 +585,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             ));
         };
 
-        let store = state.lock();
+        let now = ::std::time::SystemTime::now();
+        let mut store = state.lock();
+        store.settle_all(now);
+
         // Both inputs document "You must provide a value for either the
         // CacheClusterId or the ReplicationGroupId", so naming neither — and
         // naming both, which would name two different current node types — is

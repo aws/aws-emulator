@@ -743,6 +743,22 @@ impl ComAmazonawsElasticacheAmazonelasticachev9State {
         self.expire_events(now);
     }
 
+    /// Materialise every change the clock owes EVERY resource this store holds,
+    /// for a caller that resolves a resource of any kind.
+    ///
+    /// [`Self::settle_all`] covers the caches, the groups and the snapshots;
+    /// users and user groups carry a clock of their own
+    /// ([`Self::settle_users`], [`Self::settle_user_groups`]), so an operation
+    /// whose request may name any kind of resource — a tagging call, which takes
+    /// an ARN — goes through all three here rather than choosing a subset, and
+    /// cannot resolve a resource whose removal the clock has already carried
+    /// through.
+    pub fn settle_every_resource(&mut self, now: SystemTime) {
+        self.settle_all(now);
+        self.settle_users(now);
+        self.settle_user_groups(now);
+    }
+
     /// Materialise the removal of every user whose deletion has fallen due by
     /// `now`.
     ///
@@ -1137,6 +1153,12 @@ impl ComAmazonawsElasticacheAmazonelasticachev9State {
         id: &str,
         now: SystemTime,
     ) -> Option<&mut GlobalReplicationGroupRecord> {
+        // A datastore reports, and acts on, the MEMBER replication groups it is
+        // made of, so a member whose teardown the clock has carried through is
+        // dropped from that membership first: a composite cannot resolve a
+        // resource that has ceased to exist; see
+        // [`Self::purge_deleted_replication_groups`].
+        self.purge_deleted_replication_groups(now);
         let group = self.global_replication_groups.get_mut(id)?;
         group.settle(now);
         Some(group)

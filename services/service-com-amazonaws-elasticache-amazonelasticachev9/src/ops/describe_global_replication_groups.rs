@@ -202,6 +202,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // state the clock owed whether or not anybody had called.
         let now = ::std::time::SystemTime::now();
         let mut store = state.lock();
+        // A datastore's `Members` are the MEMBER replication groups it is made
+        // of, so a member whose teardown the clock has carried through is
+        // dropped from that membership before the report is built: a composite
+        // cannot report a resource that has ceased to exist.
+        store.purge_deleted_replication_groups(now);
         store.settle_global_replication_groups(now);
 
         // With `GlobalReplicationGroupId` the answer is that one datastore, or
