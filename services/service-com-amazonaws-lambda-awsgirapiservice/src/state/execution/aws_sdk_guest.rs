@@ -84,7 +84,13 @@
 //!   travels as the base64 text an AWS JSON protocol carries it
 //!   as, in both directions, and `bytes` a handler passes are encoded to it. A `datetime`
 //!   a handler passes for a timestamp member travels as the seconds since the epoch that
-//!   same protocol carries a timestamp as, whether or not it carries a zone of its own.
+//!   same protocol carries a timestamp as, whether or not it carries a zone of its own. A
+//!   member of an ANSWER the called service's model types as a timestamp is handed back the
+//!   other way: the SDK materialises the epoch seconds the protocol carried into a `datetime`
+//!   in UTC, because that is what a client gives a caller for one, so a handler formats,
+//!   compares and does date arithmetic on it. WHICH of
+//!   an answer's values those are is the called service's own model's to say
+//!   ([`super::blob_members`]), read by the host beside the blob members.
 //! * A client is built with the CONFIGURATION the SDK's own `botocore.config.Config`
 //!   carries, whose options and defaults are the SDK's: the Region it names is the one the
 //!   client's calls are made in, and an option name the SDK does not have is refused the way
@@ -1050,30 +1056,77 @@ def _copy_source(value):
     return rendered
 
 
-def _materialise_bytes(document, path):
-    """Replace the value `path` reaches with the bytes its base64 text carries.
+def _materialise(document, path, convert):
+    """Replace the value `path` reaches with what `convert` makes of it.
 
     `path` is the object keys and list indices that reach one value from the root of the
-    answer's document, as the runtime read them out of the called operation's own model: a
-    JSON protocol carries a blob as base64 text, and what the SDK gives a caller is the
-    bytes. A path the document does not hold, or a value that is not that text, is left
-    exactly as it arrived.
+    answer's document, as the runtime read them out of the called operation's own model. A
+    path the document does not hold, and a value `convert` answers nothing for, are left
+    exactly as they arrived.
     """
+    if not path:
+        return
     held = document
     for step in path[:-1]:
         try:
             held = held[step]
         except (KeyError, IndexError, TypeError):
             return
-    if not path:
-        return
     last = path[-1]
     try:
         carried = held[last]
     except (KeyError, IndexError, TypeError):
         return
+    replaced = convert(carried)
+    if replaced is not None:
+        held[last] = replaced
+
+
+def _bytes_of(carried):
+    """The BYTES the base64 text of a blob carries, which is what the SDK gives a caller for a
+    blob member: a JSON protocol has no byte type, so one travels as that text. A value that is
+    not text is left as it arrived.
+    """
     if isinstance(carried, str):
-        held[last] = base64.b64decode(carried)
+        return base64.b64decode(carried)
+    return None
+
+
+def _instant_of(carried):
+    """The native `datetime` an SDK gives a caller for a member its service's model types as a
+    timestamp, which is what a handler reads `.isoformat()`, `.timestamp()` and the arithmetic
+    of a date off.
+
+    A JSON protocol carries a timestamp as the seconds since the epoch — whole or fractional —
+    and the SDK reports one in UTC, as this SDK's own date and time library spells that zone;
+    the fraction is kept to the microsecond a `datetime` holds. A member whose own trait states
+    the ISO text instead carries that text, which is parsed the way the SDK parses it. A value
+    in neither form — and a boolean, which is not a number here however Python types it — is
+    left exactly as it arrived rather than reported as an instant nothing answered. So is a
+    number no instant can be built from: an epoch beyond what a `datetime` holds is reported as
+    the number the answer carried rather than as a failure of the call that answered it.
+    """
+    import datetime
+
+    from dateutil.tz import tzutc
+
+    if isinstance(carried, bool):
+        return None
+    if isinstance(carried, (int, float)):
+        try:
+            return datetime.datetime(1970, 1, 1, tzinfo=tzutc()) + datetime.timedelta(
+                microseconds=round(carried * 1000000)
+            )
+        except (ValueError, OverflowError, OSError):
+            return None
+    if isinstance(carried, str):
+        from dateutil.parser import parse
+
+        try:
+            return parse(carried)
+        except (TypeError, ValueError, OverflowError):
+            return None
+    return None
 
 
 def _error_shape(error_type, document):
@@ -1541,7 +1594,14 @@ class Client:
             # protocol travels one as base64 text, so the text is decoded wherever the
             # answer places it — at whatever depth, inside a list or a map as well.
             for path in answered.get("blobs") or ():
-                _materialise_bytes(document, path)
+                _materialise(document, path, _bytes_of)
+            # Every value the answer says carries an INSTANT is handed over as the native
+            # date-time the SDK gives a caller for a member the service's model types as a
+            # timestamp: the protocol carries one as the seconds since the epoch, so a handler
+            # reads an instant it can format and compare rather than that number — at whatever
+            # depth the answer places it, inside a list or a map as well.
+            for path in answered.get("instants") or ():
+                _materialise(document, path, _instant_of)
             document["ResponseMetadata"] = metadata
             return document
         shape = _error_shape(answered.get("errorType"), document)

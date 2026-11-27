@@ -202,10 +202,27 @@ async fn iam(router: &MultiServiceRouter, action: &str, params: &[(&str, &str)])
 /// The client is built at MODULE scope, which is where a real function builds one: a runtime
 /// whose SDK carries no model for the service fails there, before any handler code runs.
 const HANDLER_SOURCE: &str = r#"
+import datetime
+
 import boto3
 import botocore.exceptions
 
 SCHEDULER = boto3.client("scheduler")
+
+
+def _reported(value):
+    """`value` as JSON, which is what an invocation's payload has to be.
+
+    An SDK hands a member the called service's model types as a timestamp over as a `datetime`,
+    so a handler reporting the whole answer renders each instant in it as its ISO-8601 text.
+    """
+    if isinstance(value, datetime.datetime):
+        return value.isoformat()
+    if isinstance(value, dict):
+        return {name: _reported(held) for name, held in value.items()}
+    if isinstance(value, list):
+        return [_reported(held) for held in value]
+    return value
 
 
 def lambda_handler(event, context):
@@ -233,11 +250,11 @@ def lambda_handler(event, context):
             {
                 "ok": True,
                 "status": answered["ResponseMetadata"]["HTTPStatusCode"],
-                "answered": {
+                "answered": _reported({
                     name: value
                     for name, value in answered.items()
                     if name != "ResponseMetadata"
-                },
+                }),
             }
         )
     return {"results": results}

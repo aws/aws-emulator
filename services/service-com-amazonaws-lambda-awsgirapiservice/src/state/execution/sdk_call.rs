@@ -511,7 +511,29 @@ pub(super) fn insert_timestamp(
     value: Option<&::aws_smithy_types::DateTime>,
 ) {
     if let Some(value) = value {
-        document.insert(name.to_string(), Value::Number(value.secs().into()));
+        document.insert(name.to_string(), epoch_seconds(value));
+    }
+}
+
+/// One instant as the epoch-second number an AWS JSON protocol carries a timestamp as: the
+/// seconds since the epoch, FRACTION INCLUDED, because that protocol carries one as a number
+/// that may be fractional and an instant this seam truncated would reach the handler as a
+/// different instant from the one the service reported.
+///
+/// The fraction is carried at MICROSECOND resolution, which is the resolution the SDKs' own
+/// instant types hold and the one a parser of this wire reads a sub-second fraction at, so the
+/// value a handler reads back and the value a client reads on the wire are the same instant.
+fn epoch_seconds(value: &::aws_smithy_types::DateTime) -> Value {
+    let micros = i64::from(value.subsec_nanos() / 1_000);
+    if micros == 0 {
+        return Value::Number(value.secs().into());
+    }
+    let fractional = value.secs() as f64 + micros as f64 / 1_000_000.0;
+    match ::serde_json::Number::from_f64(fractional) {
+        Some(number) => Value::Number(number),
+        // No instant a service reports is a value a JSON number cannot hold; one that
+        // somehow is, is reported as its whole seconds rather than left off the answer.
+        None => Value::Number(value.secs().into()),
     }
 }
 
@@ -561,6 +583,8 @@ pub(super) fn insert_text_map(
 
 #[cfg(test)]
 mod tests {
+    use ::serde_json::{Map, Value};
+
     use super::Input;
 
     /// The service the refusals below name, as a seam for one service passes it in.
@@ -799,6 +823,56 @@ mod tests {
                     answered.ok()
                 ),
             }
+        }
+    }
+
+    /// RULE: an instant is handed over as the epoch seconds a JSON protocol carries a timestamp
+    /// as, FRACTION INCLUDED, so a handler reads back the instant the service reported rather
+    /// than one truncated to its whole second.
+    ///
+    /// The rows differ along the fraction the instant carries: none, a half second, a fraction
+    /// stated to the microsecond, one stated FINER than a microsecond (truncated the way a
+    /// parser of this wire truncates it, so the two readings of one instant agree), and an
+    /// instant before the epoch, whose seconds are negative while its fraction is not.
+    #[test]
+    fn an_instant_is_carried_as_the_epoch_seconds_its_fraction_included() {
+        use ::aws_smithy_types::DateTime;
+
+        let rows: [(&str, DateTime, f64); 5] = [
+            ("a whole second", DateTime::from_secs(1_761_000_000), 1_761_000_000.0),
+            (
+                "half a second",
+                DateTime::from_secs_and_nanos(1_761_000_000, 500_000_000),
+                1_761_000_000.5,
+            ),
+            (
+                "a fraction stated to the microsecond",
+                DateTime::from_secs_and_nanos(1_761_000_000, 389_170_000),
+                1_761_000_000.389_17,
+            ),
+            (
+                "a fraction stated finer than a microsecond",
+                DateTime::from_secs_and_nanos(1_761_000_000, 389_170_923),
+                1_761_000_000.389_17,
+            ),
+            (
+                "an instant before the epoch",
+                DateTime::from_secs_and_nanos(-2, 250_000_000),
+                -1.75,
+            ),
+        ];
+        for (case, instant, expected) in rows {
+            let mut document = Map::new();
+            super::insert_timestamp(&mut document, "At", Some(&instant));
+            let carried = document
+                .get("At")
+                .and_then(Value::as_f64)
+                .unwrap_or_else(|| panic!("case {case:?}: expected the member to be carried"));
+            // Compared to the microsecond, which is the resolution this seam carries one at.
+            assert!(
+                (carried - expected).abs() < 5e-7,
+                "case {case:?}: expected the epoch seconds {expected}, got {carried}"
+            );
         }
     }
 }

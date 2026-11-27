@@ -168,6 +168,24 @@ pub(crate) fn member_trait<'a>(member: &'a Value, name: &str) -> Option<&'a Valu
     traits(member).and_then(|traits| traits.get(name))
 }
 
+/// Whether a member bound to the WHOLE body, whose shape the model declares as `kind`, carries
+/// what a JSON BODY carries.
+///
+/// A structure, a union, a list, a map or a document IS the body: [`read`] hands that member over
+/// as the document the body decoded to, so every value inside it travels in the form a body
+/// carries one in. Anything else — a blob, text — is the body's own bytes or text, which that
+/// member's value then IS.
+///
+/// Read here, in the module that binds a `restJson1` call, so the seam that reads such an answer
+/// back and the plan of the values an SDK materialises out of it ([`super::blob_members`]) cannot
+/// disagree about one binding.
+pub(crate) fn payload_is_the_body(kind: &str) -> bool {
+    matches!(
+        kind,
+        "structure" | "union" | "list" | "map" | "document"
+    )
+}
+
 /// The shape a member targets.
 pub(crate) fn target(member: &Value) -> &str {
     member
@@ -477,11 +495,9 @@ pub fn read(
         } else if member_trait(member, RESPONSE_CODE).is_some() {
             read.insert(name.clone(), Value::from(status));
         } else if member_trait(member, PAYLOAD).is_some() {
-            let carried = match model.kind(target(member)) {
-                "structure" | "union" | "list" | "map" | "document" => {
-                    from_wire(model, target(member), &document)
-                }
-                _ => Value::String(body.to_string()),
+            let carried = match payload_is_the_body(model.kind(target(member))) {
+                true => from_wire(model, target(member), &document),
+                false => Value::String(body.to_string()),
             };
             read.insert(name.clone(), carried);
         } else if let Some(carried) = document.get(wire_name(name, member)) {

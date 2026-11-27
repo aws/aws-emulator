@@ -98,7 +98,9 @@ def summary(item):
         "domain_name": item["DomainName"],
         "enabled": item["Enabled"],
         "price_class": item["PriceClass"],
-        "last_modified": item["LastModifiedTime"],
+        # The SDK hands a member the model types as a timestamp over as a `datetime`, so what
+        # this report carries is the instant it stands for.
+        "last_modified": item["LastModifiedTime"].timestamp(),
         "aliases": item["Aliases"].get("Items", []),
         "alias_quantity": item["Aliases"]["Quantity"],
         "origin_quantity": item["Origins"]["Quantity"],
@@ -778,7 +780,7 @@ async fn a_handler_reads_the_distribution_surface_then_invalidates_what_it_found
             "case {case:?}: expected no alternate domain names, got {found}"
         );
         assert!(
-            found["last_modified"].as_i64().unwrap_or_default() > 0,
+            found["last_modified"].as_f64().unwrap_or_default() > 0.0,
             "case {case:?}: expected the time the distribution was last modified, got {found}"
         );
 

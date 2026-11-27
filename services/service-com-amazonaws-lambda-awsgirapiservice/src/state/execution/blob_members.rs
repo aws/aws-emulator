@@ -44,9 +44,12 @@
 //!
 //! * a `@streaming` blob, which an SDK hands over as a stream rather than as bytes and which
 //!   this runtime reports separately ([`super::aws_api::Answer::streams`]);
-//! * a member an answer binds somewhere other than its JSON body — an HTTP payload, a header,
-//!   the response code — whose value is the bytes or the text of that binding
-//!   ([`super::rest_json`] reads those).
+//! * a member an answer binds somewhere other than its JSON body in a form that is not the
+//!   body's — a header, a prefix of headers, the response code, and a payload that IS the
+//!   body's own bytes or text — whose value is the bytes or the text of that binding
+//!   ([`super::rest_json`] reads those). A payload that is the body itself is NOT one of them:
+//!   that document's values travel in the form a body carries and are part of the plan
+//!   ([`carries_the_bodys_form`], which reads WHICH payloads those are from that same seam).
 
 use ::std::collections::{BTreeMap, BTreeSet};
 use ::std::sync::OnceLock;
@@ -59,15 +62,17 @@ const STREAMING: &str = "smithy.api#streaming";
 /// The name a member travels under in a JSON body, when it is not the member's own name.
 const JSON_NAME: &str = "smithy.api#jsonName";
 
-/// The traits that bind a member somewhere other than its JSON body, so what the value reads
-/// as is that binding's and not the form a JSON body carries.
+/// The traits that bind a member somewhere other than its JSON body in a form that is not the
+/// body's, so what the value reads as is that binding's and not the form a JSON body carries.
 ///
 /// The REST bindings of a REQUEST are here beside an ANSWER's: a timestamp a request binds to
 /// a URI label or a query parameter travels in that binding's own form rather than as the
 /// seconds a JSON body carries one as, so it is no part of a plan over a request's document
 /// either. An answer binds nothing to a label or a query, so one list serves both.
-const OUTSIDE_THE_BODY: [&str; 7] = [
-    "smithy.api#httpPayload",
+///
+/// The binding to the WHOLE body is NOT among them: it is the one binding whose form depends on
+/// what the member targets, which [`carries_the_bodys_form`] decides.
+const OUTSIDE_THE_BODY: [&str; 6] = [
     "smithy.api#httpHeader",
     "smithy.api#httpPrefixHeaders",
     "smithy.api#httpResponseCode",
@@ -75,6 +80,10 @@ const OUTSIDE_THE_BODY: [&str; 7] = [
     "smithy.api#httpQuery",
     "smithy.api#httpQueryParams",
 ];
+
+/// The trait that binds a member to the WHOLE body, which is the one binding whose form depends
+/// on what the member targets ([`carries_the_bodys_form`]).
+const PAYLOAD: &str = "smithy.api#httpPayload";
 
 /// One service's Smithy model, and where the plan read out of it is kept.
 ///
@@ -438,11 +447,7 @@ fn carrier_of(
                 .filter(|(_name, member)| carrying.contains(target_of(member)))
                 // A member an answer binds outside its JSON body does not carry the form a
                 // JSON body carries, so it is not part of the plan at all.
-                .filter(|(_name, member)| {
-                    !OUTSIDE_THE_BODY
-                        .iter()
-                        .any(|bound| member_trait(member, bound).is_some())
-                })
+                .filter(|(_name, member)| carries_the_bodys_form(shapes, member))
                 .map(|(name, member)| Member {
                     name: name.clone(),
                     wire: member_trait(member, JSON_NAME)
@@ -461,6 +466,30 @@ fn carrier_of(
         )),
         _ => None,
     }
+}
+
+/// Whether the value of `member` in an ANSWER carries the form a JSON body carries, which is
+/// what makes it part of the plan at all.
+///
+/// A member bound to a HEADER, to a prefix of headers or to the response code carries the text
+/// or the number of that binding rather than the body's own form, so none of those is in the
+/// plan. A member bound to the WHOLE body is the one binding whose form depends on what it
+/// targets, and WHICH kinds of payload are the body is read from the seam that reads such an
+/// answer back ([`super::rest_json::payload_is_the_body`]) rather than restated here: a payload
+/// the model types as a blob or as text IS the body's own bytes or text, while a payload it
+/// types as a document IS the body — every value inside it travels in exactly the form a body
+/// carries one in, so an SDK materialises those values as it does any other.
+fn carries_the_bodys_form(shapes: &Map<String, Value>, member: &Value) -> bool {
+    if OUTSIDE_THE_BODY
+        .iter()
+        .any(|bound| member_trait(member, bound).is_some())
+    {
+        return false;
+    }
+    if member_trait(member, PAYLOAD).is_none() {
+        return true;
+    }
+    super::rest_json::payload_is_the_body(kind_of(shapes, target_of(member)))
 }
 
 /// The prelude's own blob shape, which a member may target although no service declares it.
@@ -576,8 +605,8 @@ mod tests {
 
     /// The model the rows below are read against: one operation whose output carries a blob
     /// member, a blob inside a list, a blob inside a map, a blob under a `@jsonName`, a
-    /// streaming blob, a blob bound to the payload, a text member, and the timestamp members
-    /// the instant rows are read off.
+    /// streaming blob, a blob bound to the payload, a STRUCTURE bound to the payload, a text
+    /// member, and the timestamp members the instant rows are read off.
     const MODEL: &str = r#"{
       "smithy": "2.0",
       "shapes": {
@@ -607,6 +636,10 @@ mod tests {
             "Stream": {"target": "example#Streamed"},
             "Payload": {
               "target": "example#Bytes",
+              "traits": {"smithy.api#httpPayload": {}}
+            },
+            "Document": {
+              "target": "example#Nested",
               "traits": {"smithy.api#httpPayload": {}}
             },
             "At": {"target": "smithy.api#Timestamp"},
@@ -689,6 +722,11 @@ mod tests {
                 "a blob bound to the answer's payload, which is its own bytes",
                 json!({"Payload": "not base64 at all"}),
                 json!([]),
+            ),
+            (
+                "a blob inside a STRUCTURE bound to the answer's payload, which is the body",
+                json!({"Document": {"Inner": "AAE="}}),
+                json!([["Document", "Inner"]]),
             ),
             (
                 "several blob values at once",
@@ -820,6 +858,12 @@ mod tests {
                 json!([]),
             ),
             (
+                "a timestamp inside a STRUCTURE bound to the answer's payload, which is the \
+                 body",
+                json!({"Document": {"InnerAt": 1_761_000_000}}),
+                json!([["Document", "InnerAt"]]),
+            ),
+            (
                 "an answer carrying none of them",
                 json!({"Text": "1761000000", "Value": "AAE="}),
                 json!([]),
@@ -869,6 +913,53 @@ mod tests {
         assert!(
             item.is_empty(),
             "expected no instant in an item's attribute values, got {item:?}"
+        );
+    }
+
+    /// The instant plan read out of the CloudFront model this crate embeds, whose answers bind
+    /// their one output member to the response PAYLOAD: that payload is a STRUCTURE, so it is
+    /// the body, and the instants inside it are reported at their own depth — one for the
+    /// invalidation a create or a read answers, and one per summary of a listing's page.
+    #[test]
+    fn a_timestamp_inside_an_answers_structure_payload_is_reported_at_its_depth() {
+        let plan = AnswerPlan::of(super::super::aws_api::CLOUDFRONT_MODEL, Materialised::Instant);
+        for operation in ["CreateInvalidation", "GetInvalidation"] {
+            let paths = plan.answer_paths(
+                operation,
+                &json!({
+                    "Invalidation": {
+                        "Id": "IDEXAMPLE",
+                        "Status": "InProgress",
+                        "CreateTime": 1_761_000_000,
+                        "InvalidationBatch": {"CallerReference": "a-reference"},
+                    },
+                }),
+            );
+            assert_eq!(
+                rendered(&paths),
+                vec!["Invalidation.CreateTime".to_string()],
+                "case {operation:?}: expected the invalidation's own creation instant, got \
+                 {paths:?}"
+            );
+        }
+        let listed = plan.answer_paths(
+            "ListInvalidations",
+            &json!({
+                "InvalidationList": {
+                    "Items": [
+                        {"Id": "A", "Status": "Completed", "CreateTime": 1_761_000_000},
+                        {"Id": "B", "Status": "Completed", "CreateTime": 1_761_000_001},
+                    ],
+                },
+            }),
+        );
+        assert_eq!(
+            rendered(&listed),
+            vec![
+                "InvalidationList.Items.0.CreateTime".to_string(),
+                "InvalidationList.Items.1.CreateTime".to_string(),
+            ],
+            "expected each summary's own creation instant, got {listed:?}"
         );
     }
 }

@@ -2533,6 +2533,7 @@ fn call_answer(answered: &Result<super::aws_api::Answer, Refusal>) -> String {
             "errorMembers": answer.error_members,
             "streams": answer.streams,
             "blobs": answer.blobs,
+            "instants": answer.instants,
             "payloadBlobs": answer.payload_blobs,
         })
         .to_string(),

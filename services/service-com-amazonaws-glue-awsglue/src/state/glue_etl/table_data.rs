@@ -250,10 +250,25 @@ def _data_keys(bucket, prefix, left, recurse=True, source=None):
                     "one read of a table takes at most %d of the objects at its location"
                     % (MAX_OBJECTS,)
                 )
-            keys.append((key, size, int(entry.get("LastModified") or 0)))
+            keys.append((key, size, _modified_at(entry.get("LastModified"))))
         token = listed.get("NextContinuationToken")
         if not token or not listed.get("IsTruncated"):
             return keys
+
+
+def _modified_at(value):
+    """The instant a listing reports for one object, as the whole epoch seconds a bookmarked
+    read orders objects by (`_bookmark`).
+
+    The SDK this runtime calls hands a member the called service's model types as a timestamp
+    over as a native date-time, so the instant is read off that value rather than from a
+    number; a listing carrying none reports the epoch, which is before every object.
+    """
+    if value is None:
+        return 0
+    if hasattr(value, "timestamp"):
+        return int(value.timestamp())
+    return int(value)
 
 
 def _object_text(bucket, key, size, left_bytes, source=None):

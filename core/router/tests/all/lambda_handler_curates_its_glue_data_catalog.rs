@@ -644,9 +644,12 @@ async fn a_handlers_own_sdk_curates_the_glue_data_catalog() {
     );
     let creation_time = partition.get("CreationTime").cloned().unwrap_or(Value::Null);
     assert!(
-        creation_time.as_f64().is_some_and(|seconds| seconds > 0.0),
-        "case {case:?}: expected the catalog's own CreationTime on the partition, got \
-         {creation_time} in {partition}"
+        creation_time.as_str().is_some_and(|text| {
+            text.starts_with("20") && text.contains(':') && text.ends_with("+00:00")
+        }),
+        "case {case:?}: expected the catalog's own CreationTime on the partition — the instant \
+         the SDK handed the handler for a timestamp member, in UTC, as the handler's own report \
+         rendered it — got {creation_time} in {partition}"
     );
 
     // Both slices are resolvable through the paginated read a consumer uses, and the handler
