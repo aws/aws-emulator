@@ -73,6 +73,10 @@ use crate::response_headers_policy_lifecycle::escape;
 /// than read from the crate, so a reworded refusal fails this suite.
 const NO_SUCH_CONTROL_MESSAGE: &str = "The specified origin access control does not exist.";
 
+/// The sentence it answers a value written in no alphabet CloudFront mints an identifier in,
+/// under the same code and status — spelled out here for the same reason.
+const UNREADABLE_IDENTIFIER_MESSAGE: &str = "Id format is invalid";
+
 // ---------------------------------------------------------------------------
 // Calling the origin access control surface
 // ---------------------------------------------------------------------------
@@ -494,11 +498,14 @@ async fn create_persists_the_configuration_every_read_then_reports() {
         );
     }
 
-    // An id no control holds is answered under ONE code and its 404, and this surface reads
-    // NOTHING of the value to decide the sentence: `Id` is a plain `string` `@httpLabel` with
-    // no `@pattern` and no `@length`, so a value of the form this service mints a control's id
-    // in, an unminted namespace letter, a single digit, a lower-cased id, a bare word and a
-    // UUID are all resolved against the store and reported as the control that is ABSENT.
+    // An id no control holds is answered under ONE code and its 404, and WHICH sentence it
+    // carries follows the ALPHABET the value is written in and nothing else: `Id` is a plain
+    // `string` `@httpLabel` with no `@pattern` and no `@length`, so a value of the alphabet an
+    // entity identifier is minted in — under the control's own namespace letter, an unminted
+    // one, or a single digit — is resolved against the store and reported as the control that
+    // is ABSENT, while a value written outside that alphabet (a lower-cased id, a bare word, a
+    // UUID) could never have been an identifier of this mint and is the identifier the route
+    // reports it cannot READ.
     let distribution_id = created
         .first()
         .map(|(_, id)| id.clone())
@@ -506,13 +513,13 @@ async fn create_persists_the_configuration_every_read_then_reports() {
     let lower_cased = distribution_id.to_lowercase();
     for (id, expected) in [
         ("E1AAAAAAAAAAAA", NO_SUCH_CONTROL_MESSAGE),
-        ("not-an-id", NO_SUCH_CONTROL_MESSAGE),
+        ("not-an-id", UNREADABLE_IDENTIFIER_MESSAGE),
         ("0", NO_SUCH_CONTROL_MESSAGE),
-        (lower_cased.as_str(), NO_SUCH_CONTROL_MESSAGE),
+        (lower_cased.as_str(), UNREADABLE_IDENTIFIER_MESSAGE),
         ("W1AAAAAAAAAAAA", NO_SUCH_CONTROL_MESSAGE),
         (
             "00000000-0000-0000-0000-000000000000",
-            NO_SUCH_CONTROL_MESSAGE,
+            UNREADABLE_IDENTIFIER_MESSAGE,
         ),
     ] {
         let missing = get_control(&router, id).await;

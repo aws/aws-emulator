@@ -34,20 +34,23 @@
 //! * the PUBLIC KEY routes refuse the form of every value that could never be an identifier
 //!   issued for their kind, the same three ways the field-level encryption documents' routes do
 //!   ([`unresolved_public_key`]);
-//! * the ORIGIN ACCESS CONTROL reads NOTHING of the value: every operation addressed by one
-//!   ([`super::no_such_origin_access_control`]) carries the id it was handed straight through
-//!   to the store and reports the control ABSENT for every id the account holds no control
-//!   under, whatever the id is written in.
+//! * the ORIGIN ACCESS CONTROL reads the ALPHABET and nothing more
+//!   ([`unresolved_origin_access_control_id`]), the way the distribution does and for the same
+//!   reason: its identifiers come from the namespace its kind SHARES with the distributions,
+//!   the streaming distributions and the origin access identities, so neither the letter a
+//!   value opens with nor the width of its body says which of them issued it, while a value
+//!   written outside that alphabet was issued for nothing at all and is the identifier the
+//!   route reports it cannot READ.
 //!
 //! The same split, for the kinds whose identifier form IS decided by the value alone, is made
 //! by the free functions beside the refusals they answer with:
-//! [`super::unresolved_distribution_id`], [`super::unresolved_key_group_id`], the public key's
+//! [`super::unresolved_distribution_id`], [`unresolved_origin_access_control_id`],
+//! [`super::unresolved_key_group_id`], the public key's
 //! and the two field-level encryption records'. A kind whose recorded contract
 //! makes NO such split reads nothing of the value at all and reports the absent resource for
-//! every identifier it cannot resolve, which is what the origin access control and the
-//! field-level encryption configuration's RESOURCE read do
-//! ([`super::no_such_origin_access_control`],
-//! [`super::no_such_field_level_encryption_config`]).
+//! every identifier it cannot resolve, which is what the field-level encryption
+//! configuration's RESOURCE read does
+//! ([`super::no_such_field_level_encryption_config`]).
 //!
 //! Nothing here echoes the submitted value: both sentences are fixed text.
 
@@ -89,6 +92,40 @@ pub fn unresolved_public_key(id: &str) -> crate::ops::types::NoSuchPublicKey {
         }
     } else {
         no_such_public_key()
+    }
+}
+
+/// The modelled `NoSuchOriginAccessControl` (HTTP 404) an operation ADDRESSED by an origin
+/// access control `Id` in its path answers an `Id` it cannot resolve.
+///
+/// These operations model this one not-found code and no argument error
+/// (`smithy_query(query="operation",operation="GetOriginAccessControl,GetOriginAccessControlConfig,UpdateOriginAccessControl,DeleteOriginAccessControl")`
+/// reports `AccessDenied` and `NoSuchOriginAccessControl` as the only errors covering an `Id`
+/// they cannot resolve), so one code and one status cover two conditions and the MESSAGE is
+/// what tells them apart — decided from the value alone, and therefore before the store is
+/// consulted.
+///
+/// What the value has to say for the format refusal to be the answer is the same thing it has
+/// to say on the DISTRIBUTION's routes ([`super::unresolved_distribution_id`]), because the two
+/// kinds are minted in one form: a value written in the alphabet CloudFront writes an entity
+/// identifier in ([`is_entity_id_form`]) is an identifier of that mint, and WHICH one was ever
+/// issued — and for which of the kinds that share the namespace letter — is a property of the
+/// STORE, so such a value the account holds no control under is the control reported ABSENT
+/// ([`no_such_origin_access_control`]). A value written OUTSIDE that alphabet — in lower case,
+/// around a separator, as a UUID, as a word or as a domain name — was never an identifier of
+/// this mint at all, so no record of any kind could answer to it and the route reports the
+/// identifier it cannot READ ([`id_format_invalid_message`]).
+///
+/// Only an identifier that ADDRESSES the operation is judged this way: a control id borne by a
+/// submitted distribution configuration (`Origin$OriginAccessControlId`) addresses nothing
+/// here, so it is resolved against the store alone and refused as that configuration's own
+/// unusable reference ([`invalid_origin_access_control`]).
+pub fn unresolved_origin_access_control_id(id: &str) -> NoSuchOriginAccessControl {
+    if is_entity_id_form(id) {
+        return no_such_origin_access_control();
+    }
+    NoSuchOriginAccessControl {
+        message: Some(id_format_invalid_message(ADDRESSED_BY_ID)),
     }
 }
 

@@ -141,16 +141,17 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let _ = ctx;
         let store = state.lock();
 
-        // "The unique identifier of the origin access control": the `Id` is resolved against
-        // the STORE — the model constrains that member no further than `string`, so the form
-        // of the value decides nothing here — and an `Id` the account holds no control under
-        // is the control that is absent
-        // ([`crate::state::no_such_origin_access_control`]), exactly as the control's own
-        // read reports it.
+        // "The unique identifier of the origin access control": one written in the alphabet
+        // CloudFront writes an entity identifier in is resolved against the STORE, and an `Id`
+        // the account holds no control under is the control that is absent; a value written
+        // outside that alphabet was never an identifier of this mint, so it is the identifier
+        // this route reports it cannot read
+        // ([`crate::state::unresolved_origin_access_control_id`] words both), exactly as the
+        // control's own read reports them.
         let Some(stored) = store.origin_access_control(&input.id) else {
             return Err(
                 GetOriginAccessControlConfigErrorModeled::NoSuchOriginAccessControl(
-                    crate::state::no_such_origin_access_control(),
+                    crate::state::unresolved_origin_access_control_id(&input.id),
                 )
                 .into(),
             );

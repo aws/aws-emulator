@@ -10,9 +10,9 @@
 //! a real key" (`ListObjectsV2Output$NextContinuationToken`) — written in the alphabet AWS
 //! writes THAT listing's own tokens in: the account's bucket listing and the listings of a
 //! bucket's id-addressed configurations hand back a lowercase-hex value, the listings of what
-//! a bucket holds hand back a value in base64's STANDARD alphabet (RFC 4648 §4), padded — the
-//! alphabet those listings' recorded tokens are written in, whose three reserved characters a
-//! caller percent-encodes when it hands the value back
+//! a bucket holds hand back a value in base64's URL AND FILENAME SAFE alphabet (RFC 4648 §5),
+//! unpadded — the base64 those listings' recorded tokens are written in, drawn from the
+//! characters a query component carries unchanged, because a caller hands the value back on one
 //! ([`super::continuation_token_query_safety`]). Whichever
 //! alphabet it is, the value is a cursor the service reads back and no caller can mint: the
 //! page it names is served, a value one character away from it is refused, and a token one
@@ -41,7 +41,7 @@ use super::object_storage::{list_objects_v2, listing_of, store_keys};
 enum Alphabet {
     /// Lowercase hexadecimal.
     Hex,
-    /// Base64 in the standard alphabet, padded (RFC 4648 §4), `A-Za-z0-9+/` over `=`.
+    /// Base64 in the URL and filename safe alphabet, unpadded (RFC 4648 §5), `A-Za-z0-9-_`.
     Base64,
 }
 
@@ -54,7 +54,7 @@ impl Alphabet {
                     .chars()
                     .all(|character| matches!(character, '0'..='9' | 'a'..='f')),
                 Self::Base64 => token.chars().all(|character| {
-                    character.is_ascii_alphanumeric() || matches!(character, '+' | '/' | '=')
+                    character.is_ascii_alphanumeric() || matches!(character, '-' | '_')
                 }),
             }
     }
@@ -82,16 +82,14 @@ fn assert_written_in(case: &str, token: &str, alphabet: Alphabet, position: &str
     }
 }
 
-/// `token` with its last NON-PADDING character replaced by another of the same alphabet — a
-/// value one character away from the one a listing issued, which only the authenticator inside
-/// it can refuse.
+/// `token` with its last character replaced by another of the same alphabet — a value one
+/// character away from the one a listing issued, which only the authenticator inside it can
+/// refuse.
 ///
-/// Not the padding a base64 value ends in: a change there would be refused for the spelling
-/// rather than for the authenticator.
+/// Never a padding character: neither alphabet this service writes a token in carries any, so
+/// the change always lands on a character the value is free in.
 fn one_character_away(token: &str, alphabet: Alphabet) -> String {
     let mut characters: Vec<char> = token.chars().collect();
-    // The padding a base64 token ends in is not a character the value is free in, so the
-    // change is made at the last character that is not padding.
     let at = characters
         .iter()
         .rposition(|character| *character != '=')
@@ -238,10 +236,10 @@ async fn a_configuration_listing_writes_its_cursor_in_lowercase_hex() {
     );
 }
 
-/// RULE, on the other alphabet: a bucket's object listing writes its cursor in standard
+/// RULE, on the other alphabet: a bucket's object listing writes its cursor in URL-safe
 /// base64, and that value resumes the listing where the page stopped.
 #[tokio::test]
-async fn an_object_listing_writes_its_cursor_in_standard_base64() {
+async fn an_object_listing_writes_its_cursor_in_url_safe_base64() {
     let router = router();
     let case = "one bucket's objects, one per page";
     let name = "spelling-objects";

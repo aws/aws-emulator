@@ -229,6 +229,30 @@ fn url_safe_token(bytes: &[u8]) -> String {
     ::base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
 }
 
+/// `bytes` rendered as a token of the ASCII ALPHANUMERICS alone, one character per byte.
+///
+/// The alphabet a token written this way is drawn from is a property of the RENDERING rather
+/// than of the bytes, which is what a value whose published form admits no other character
+/// needs ([`mint_version_id`]): an encoding whose alphabet is wider than that form writes some
+/// draws inside it and some outside, and which one a draw lands on is not something this
+/// service chooses.
+fn alphanumeric_token(bytes: &[u8]) -> String {
+    bytes
+        .iter()
+        .map(|byte| {
+            char::from(
+                ALPHANUMERIC_TOKEN_ALPHABET
+                    [usize::from(*byte) % ALPHANUMERIC_TOKEN_ALPHABET.len()],
+            )
+        })
+        .collect()
+}
+
+/// The characters [`alphanumeric_token`] draws a token from: the ASCII alphanumerics, upper
+/// case first, as every alphanumeric token alphabet is ordered.
+const ALPHANUMERIC_TOKEN_ALPHABET: &[u8] =
+    b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+
 /// The entity tag S3 reports for an object written by a single `PutObject`.
 ///
 /// The rule is `PutObjectOutput$ETag`'s own documentation: "General purpose buckets - To
@@ -1966,11 +1990,20 @@ fn principal_display_name(principal_arn: &str) -> Option<String> {
 /// store — therefore never collide, and the value stays what it was once stored, because
 /// nothing re-derives it.
 ///
-/// The rendering is the URL-safe Base64 token every opaque id of this store is written in
-/// ([`url_safe_token`]), which is the alphabet S3's own published version ids are drawn from
-/// (`3HL4kqtJlcpXroDTDmJ_RGrmHJ1PyFCY`, Amazon S3 User Guide, *Working with object
-/// versioning*) — led by one character of [`VERSION_ID_LEAD_CHARS`], derived from the same
-/// digest. That lead character is what makes the token a version id BY CONSTRUCTION rather
+/// The rendering is the ASCII-ALPHANUMERIC token ([`alphanumeric_token`]) — the characters
+/// EVERY version id S3 publishes is written in (`3HL4kqtJlcpXroDTDmJ_RGrmHJ1PyFCY`, Amazon S3
+/// User Guide, *Working with object versioning*, is alphanumeric but for one character) — led
+/// by one character of [`VERSION_ID_LEAD_CHARS`], derived from the same digest.
+///
+/// The alphabet is a PROPERTY OF EVERY DRAW rather than of one: the wider URL-safe Base64
+/// alphabet this store writes its other opaque ids in ([`url_safe_token`]) admits `-` and `_`
+/// beside the alphanumerics, so a digest rendered in it comes out written like a published
+/// version id only SOMETIMES — which character a draw lands on is not something this service
+/// chooses — while the alphanumerics are what every published id is written in, so rendering in
+/// them makes every minted id shaped like one. An id stays unique either way: the 31 drawn
+/// characters carry the digest of the bucket, the key and the mint sequence.
+///
+/// The lead character is what makes the token a version id BY CONSTRUCTION rather
 /// than by inspection: it is not a hexadecimal digit, so the id can never come out in the form
 /// this service renders an object's ENTITY TAG in ([`is_entity_tag_shaped`]) — the two are
 /// different kinds of token, and a version id written in the tag's form would make them
@@ -1984,7 +2017,7 @@ pub fn mint_version_id(bucket: &str, key: &str, sequence: u64) -> String {
         .map_or(VERSION_ID_LEAD_CHARS[0], |byte| {
             VERSION_ID_LEAD_CHARS[usize::from(*byte) % VERSION_ID_LEAD_CHARS.len()]
         });
-    let rest: String = url_safe_token(&digest)
+    let rest: String = alphanumeric_token(&digest)
         .chars()
         .take(VERSION_ID_CHARS - 1)
         .collect();

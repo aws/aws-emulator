@@ -22,8 +22,9 @@
 //!
 //! * an origin access control's identifier comes from the namespace its kind SHARES with the
 //!   distributions and the origin access identities, so neither the letter a value opens with
-//!   nor the width of its body says which of them issued it: those routes read NOTHING of the
-//!   value and report every identifier they cannot resolve as the control that is ABSENT;
+//!   nor the width of its body says which of them issued it: those routes read the ALPHABET and
+//!   nothing more, and report every identifier of it they cannot resolve as the control that is
+//!   ABSENT;
 //! * a field-level encryption configuration's and a profile's identifiers come from namespaces
 //!   of their OWN (`C` and `P`), so those routes read the WIDTH and the NAMESPACE LETTER too: a
 //!   value WIDER than the width this service issues an identifier at could be none of these
@@ -129,7 +130,8 @@ impl Route {
     /// has one of its own — asserted against the identifiers the creates in [`live`] really
     /// answered with. An origin access control has none of its own: its kind shares [`
     /// ISSUED_NAMESPACES`]'s `E` with the distributions and the origin access identities, so the
-    /// letter says nothing about which of them issued the identifier.
+    /// letter says nothing about which of them issued the identifier, and its routes read the
+    /// ALPHABET alone.
     fn own_namespace(self) -> Option<char> {
         match self {
             Self::OriginAccessControl | Self::OriginAccessControlConfig => None,
@@ -140,21 +142,25 @@ impl Route {
 
     /// The sentence this route owes `id` when nothing of its kind answers to it.
     ///
-    /// How much of the value a route reads is the resource kind's own recorded contract. The
-    /// origin access control's routes read NOTHING of it, because its identifiers come from
-    /// the namespace its kind SHARES with the distributions: every value is carried through to
+    /// How much of the value a route reads is the resource kind's own recorded contract, and
+    /// every one of them reads the ALPHABET: a value written outside the characters CloudFront
+    /// writes an identifier in is no identifier of this mint at all, so no record of any kind
+    /// could answer to it and it is unreadable everywhere. Past that, the origin access
+    /// control's routes read NOTHING MORE of it, because its identifiers come from the namespace
+    /// its kind SHARES with the distributions: every value of the alphabet is carried through to
     /// the store, so the record it holds none under is reported ABSENT. The field-level
-    /// encryption routes read the WIDTH and the NAMESPACE LETTER: a value WIDER than an
+    /// encryption routes read the WIDTH and the NAMESPACE LETTER too: a value WIDER than an
     /// identifier of this mint is issued could be none of them, and a value written exactly the
     /// way an identifier is ISSUED under another kind's letter IS that kind's identifier, so both
     /// are unreadable, while a value of the alphabet narrower than the issued width, or at that
     /// width under a letter no kind of this service issues one under, is carried through to the
-    /// store; a value outside the alphabet is no identifier of this mint at all, so it is
-    /// unreadable there too.
+    /// store.
     fn expected(self, id: &str) -> &'static str {
+        if !in_the_identifier_alphabet(id) {
+            return UNREADABLE_IDENTIFIER;
+        }
         let unreadable = self.own_namespace().is_some_and(|own| {
-            !in_the_identifier_alphabet(id)
-                || id.len() > MINTED_ID_WIDTH
+            id.len() > MINTED_ID_WIDTH
                 || (id.len() == MINTED_ID_WIDTH
                     && id
                         .chars()

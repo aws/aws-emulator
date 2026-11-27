@@ -3153,16 +3153,19 @@ pub const NO_SUCH_RESPONSE_HEADERS_POLICY_MESSAGE: &str =
     "The specified response headers policy does not exist.";
 
 /// The modelled `NoSuchOriginAccessControl` (HTTP 404) for an origin access control id
-/// the store does not hold — the answer EVERY operation addressed by an origin access
-/// control `Id` gives an id it cannot resolve (`GetOriginAccessControl`,
+/// the store does not hold, which is what an operation ADDRESSED by such an id answers a
+/// WELL-FORMED one it cannot resolve (`GetOriginAccessControl`,
 /// `GetOriginAccessControlConfig`, `UpdateOriginAccessControl`,
-/// `DeleteOriginAccessControl`).
+/// `DeleteOriginAccessControl`, through
+/// [`unresolved_origin_access_control_id`], which words the other half).
 ///
 /// `Id` is a plain `string` `@httpLabel` with no `@pattern` and no `@length`
-/// (`smithy_query(query="operation",operation="GetOriginAccessControlConfig")`), so the FORM
-/// of the value decides nothing on these routes: whether a control answers to an id is a
-/// property of the STORE alone, and every id the account holds no control under is the
-/// control reported ABSENT, whatever alphabet, width or namespace letter it is written in.
+/// (`smithy_query(query="operation",operation="GetOriginAccessControlConfig")`), so no route
+/// refuses a value for breaking a modelled constraint; what the recorded service does read is
+/// the ALPHABET the value is written in, and a value written in the one an entity identifier is
+/// written in is resolved against the STORE alone — every id of that alphabet the account holds
+/// no control under is the control reported ABSENT, whatever width or namespace letter it
+/// carries, since the four kinds of that namespace share the letter.
 ///
 /// The sentence is a property of the store rather than of the request, so nothing from
 /// the request belongs in the text.

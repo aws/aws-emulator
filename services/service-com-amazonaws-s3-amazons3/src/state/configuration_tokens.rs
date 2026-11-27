@@ -42,16 +42,20 @@
 //! listing writes is a fidelity question — which is why it is read off the recordings rather
 //! than chosen.
 //!
-//! What is NOT free in either alphabet is the CHARACTER SET: lowercase hex, and base64 in the
-//! STANDARD alphabet over its padding (RFC 4648 §4), which is what the recorded tokens of the
-//! object listings are written in. The two characters of that alphabet a URI query component
-//! does not carry unchanged (`+` and `/`), and its padding (`=`), travel percent-encoded on
-//! the `continuation-token` parameter the caller hands the value back on, exactly as any other
-//! query value does — so a listing whose page is addressed on the QUERY STRING of a SIGNED
-//! request is minted in the hex alphabet, whose every character a query component carries as
-//! itself: a character with two spellings on the wire has only one of them inside the
-//! signature over that request, so a client that resumes such a listing with the value it was
-//! handed must not have to agree with the service about which spelling the signature covers.
+//! What is NOT free in either alphabet is the CHARACTER SET: a token travels BACK on the
+//! `continuation-token` query parameter, so every character of one has to be a character a URI
+//! query component carries unchanged — RFC 3986's unreserved set, `A-Za-z0-9` with `-`, `.`,
+//! `_` and `~`. A character outside it has TWO spellings on that parameter, itself and its
+//! percent-encoding, and a request is signed over only one of them, so a token carrying one is
+//! a cursor a signed hand-back cannot be relied on to resume: which spelling of the value
+//! reaches the signature is the client's to choose and the service's to verify. Both alphabets
+//! here stay inside that set: lowercase hex, and base64 in the URL AND FILENAME SAFE alphabet
+//! without padding (RFC 4648 §5, `A-Za-z0-9-_`), which is that section's own reason for
+//! existing — where base64's STANDARD alphabet would add `+`, `/` and the `=` padding, none of
+//! which a query component carries as itself. That is also why the listing whose page is
+//! addressed on the QUERY STRING of a SIGNED request — the directory-bucket listing, resumed on
+//! the `continuation-token` parameter of a signed `GET /` to the Express control endpoint — is
+//! minted in the hex alphabet, the one the recordings of that listing write.
 //!
 //! No page is kept on the side: the cursor is the position the next page resumes at — a
 //! configuration id, a bucket name, an object key, an annotation name — which is why every
@@ -107,8 +111,8 @@ impl PagedListing {
     /// The alphabet THIS listing's token is written in, which is the alphabet the recorded
     /// answers of that listing write it in: a lowercase-hex value for the two listings of an
     /// ACCOUNT's buckets — the general purpose ones and the directory ones — and for the four
-    /// listings of a bucket's id-addressed configurations, a base64 one — the standard
-    /// alphabet, padded — for the listings of what a bucket or an object version holds.
+    /// listings of a bucket's id-addressed configurations, a base64 one — the URL-safe
+    /// alphabet, unpadded — for the listings of what a bucket or an object version holds.
     ///
     /// The token is round-tripped unread either way — "an opaque value that Amazon S3
     /// understands" — so which of the two it is changes nothing a client can do with the
@@ -141,11 +145,12 @@ impl PagedListing {
 enum Spelling {
     /// Lowercase hexadecimal (RFC 4648 §8's alphabet, lowercased).
     Hex,
-    /// Base64 in the STANDARD alphabet, padded (RFC 4648 §4, `A-Za-z0-9+/` over `=`): the
-    /// alphabet the recorded tokens of these listings are written in, which is what a client
-    /// reading the value's FORM, or a recorded-answer comparison, sees. A client hands the
-    /// value back on a query parameter, where the two characters outside the unreserved set
-    /// travel percent-encoded, as every SDK writes a query value.
+    /// Base64 in the URL AND FILENAME SAFE alphabet, unpadded (RFC 4648 §5, `A-Za-z0-9-_`):
+    /// the base64 the recorded tokens of these listings are written in, drawn from the
+    /// characters a URI query component carries unchanged, because a client hands the value
+    /// back on one (the module docs). The standard alphabet's `+` and `/` and its `=` padding
+    /// are outside that set, so a token carrying them has two spellings on that parameter and
+    /// only one of them is inside the signature a client sends it under.
     Base64,
 }
 
@@ -155,7 +160,7 @@ impl Spelling {
         use ::base64::Engine as _;
         match self {
             Self::Hex => ::hex::encode(bytes),
-            Self::Base64 => ::base64::engine::general_purpose::STANDARD.encode(bytes),
+            Self::Base64 => ::base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes),
         }
     }
 
@@ -179,7 +184,9 @@ impl Spelling {
             }
             Self::Base64 => {
                 use ::base64::Engine as _;
-                ::base64::engine::general_purpose::STANDARD.decode(token).ok()
+                ::base64::engine::general_purpose::URL_SAFE_NO_PAD
+                    .decode(token)
+                    .ok()
             }
         }
     }
@@ -400,17 +407,18 @@ mod tests {
                 Some(id),
                 "case {listing:?}/{id:?}: a minted token must name its position, got {token:?}"
             );
-            // The same token handed back on a query parameter: the hex alphabet is written in
-            // the characters a query component carries unchanged, and base64's standard
-            // alphabet adds `+`, `/` and the `=` padding, which travel percent-encoded as any
-            // other query value's reserved characters do (the module docs).
+            // The same token handed back on a query parameter: whichever alphabet a listing
+            // writes its token in, every character of the value is one a query component
+            // carries unchanged (RFC 3986's unreserved set), so the value a client hands back
+            // is the value it was given whether it percent-encodes it or not (the module
+            // docs).
             assert!(
                 token
                     .chars()
                     .all(|character| character.is_ascii_alphanumeric()
-                        || matches!(character, '-' | '.' | '_' | '~' | '+' | '/' | '=')),
-                "case {listing:?}/{id:?}: a token is written in one of the two published \
-                 alphabets, got {token:?}"
+                        || matches!(character, '-' | '.' | '_' | '~')),
+                "case {listing:?}/{id:?}: a token is written in the characters a query \
+                 component carries unchanged, got {token:?}"
             );
             assert_eq!(
                 decode_continuation_token(&other_store, listing, scope, &token),
@@ -460,8 +468,8 @@ mod tests {
                 Spelling::Base64 => assert!(
                     !token.is_empty()
                         && token.chars().all(|character| character.is_ascii_alphanumeric()
-                            || matches!(character, '+' | '/' | '=')),
-                    "case {listing:?}/{id:?}: a token of this listing is standard base64, got \
+                            || matches!(character, '-' | '_')),
+                    "case {listing:?}/{id:?}: a token of this listing is URL-safe base64, got \
                      {token:?}"
                 ),
             }
@@ -475,7 +483,7 @@ mod tests {
             ::hex::encode([0_u8; ::service_common::page_tokens::AUTHENTICATOR_BYTES + 1]);
         let shaped_base64 = {
             use ::base64::Engine as _;
-            ::base64::engine::general_purpose::STANDARD
+            ::base64::engine::general_purpose::URL_SAFE_NO_PAD
                 .encode([0_u8; ::service_common::page_tokens::AUTHENTICATOR_BYTES + 1])
         };
         for listing in [PagedListing::Metrics, PagedListing::Objects] {
@@ -484,7 +492,7 @@ mod tests {
                 ("empty", String::new()),
                 ("neither alphabet", "not a token".to_string()),
                 ("hex but too short", "6b657074".to_string()),
-                ("base64 but too short", "a2VwdA==".to_string()),
+                ("base64 but too short", "a2VwdA".to_string()),
                 ("a minted token's shape, in hex", shaped_hex.clone()),
                 ("a minted token's shape, in base64", shaped_base64.clone()),
             ] {

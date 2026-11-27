@@ -181,11 +181,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         else {
             return Err(
                 DeleteOriginAccessControlErrorModeled::NoSuchOriginAccessControl(
-                    // The model constrains the `Id` no further than `string`, so the form of
-                    // the value decides nothing: the id is resolved against the STORE, and
-                    // one the account holds no control under is the control that is absent
-                    // ([`crate::state::no_such_origin_access_control`]).
-                    crate::state::no_such_origin_access_control(),
+                    // A value written in the alphabet CloudFront writes an entity identifier
+                    // in is resolved against the STORE, and one the account holds no control
+                    // under is the control that is absent; a value written outside that
+                    // alphabet was never an identifier of this mint, so it is the identifier
+                    // this route reports it cannot read
+                    // ([`crate::state::unresolved_origin_access_control_id`] words both).
+                    crate::state::unresolved_origin_access_control_id(&input.id),
                 )
                 .into(),
             );

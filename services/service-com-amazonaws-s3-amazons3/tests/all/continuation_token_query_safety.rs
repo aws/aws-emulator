@@ -6,14 +6,14 @@
 //! service mints for the caller to hand back on the `continuation-token` query parameter —
 //! "you can use this ContinuationToken for the pagination of the list results"
 //! (`ListDirectoryBucketsRequest$ContinuationToken`), "an opaque value that Amazon S3
-//! understands" (`ListBucketMetricsConfigurationsOutput$NextContinuationToken`) — so a client
-//! that puts the value on that parameter the way it puts any other query value there, with the
-//! characters a query component reads otherwise percent-encoded
-//! ([`handed_back_in_query`]), resumes the listing exactly where the page stopped. The value a
-//! listing writes in LOWERCASE HEX carries only characters of RFC 3986's unreserved set, so
-//! there the encoded hand-back and the verbatim one are the SAME bytes; the value written in
-//! base64's STANDARD alphabet carries `+`, `/` and `=`, which travel percent-encoded as any
-//! other reserved character of a query value does.
+//! understands" (`ListBucketMetricsConfigurationsOutput$NextContinuationToken`) — so every
+//! character of one is a character a URI query component carries unchanged (RFC 3986's
+//! unreserved set): the value a client hands back is then the value it was given whether the
+//! client percent-encodes it ([`handed_back_in_query`]) or returns it verbatim, and the one
+//! spelling of it that reaches the wire is the one inside the signature the client signed the
+//! hand-back with. Both alphabets this service writes a token in stay inside that set —
+//! lowercase hex, and base64's URL and filename safe alphabet without padding — so the encoded
+//! hand-back and the verbatim one are the SAME bytes for either.
 //!
 //! The rows span what the rule generalises over: WHICH paged listing minted the token, which
 //! covers both alphabets this service writes a token in (`super::continuation_token_alphabet`
@@ -73,33 +73,35 @@ pub(crate) fn is_unreserved(token: &str) -> bool {
         })
 }
 
-/// Whether every character of `token` is one of the two alphabets this service writes a token
-/// in: lowercase hex, or base64's standard alphabet over its padding.
+/// Whether `token` is written in one of the two alphabets this service writes a token in:
+/// lowercase hex, or base64's URL and filename safe alphabet without padding.
 fn is_a_published_alphabet(token: &str) -> bool {
     !token.is_empty()
-        && token.chars().all(|character| {
-            character.is_ascii_alphanumeric() || matches!(character, '+' | '/' | '=')
-        })
+        && token
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
 }
 
 /// Assert the rule about the token ITSELF: it is written in one of the two alphabets this
-/// service publishes, so a client puts it on the query parameter the way it puts any query
-/// value there.
+/// service publishes, both of which are inside the characters a query component carries
+/// unchanged — so the value a client hands back is the value it was given, percent-encoded or
+/// verbatim.
 fn assert_a_published_alphabet(case: &str, token: &str) {
     assert!(
         is_a_published_alphabet(token),
         "case {case:?}: a continuation token is written in one of the two published alphabets, \
          got {token:?}"
     );
+    assert_travels_unchanged(case, token);
 }
 
-/// Assert the rule for a token of the HEX alphabet: every character of it is one a query
-/// component carries unchanged, so percent-encoding it as a client encodes a query value leaves
-/// the value it hands back identical to the one it was given.
+/// Assert the rule that holds for a token of EITHER alphabet: every character of it is one a
+/// query component carries unchanged, so percent-encoding it as a client encodes a query value
+/// leaves the value it hands back identical to the one it was given.
 fn assert_travels_unchanged(case: &str, token: &str) {
     assert!(
         is_unreserved(token),
-        "case {case:?}: a hex continuation token is written in the characters a query component \
+        "case {case:?}: a continuation token is written in the characters a query component \
          carries unchanged, got {token:?}"
     );
     let encoded = handed_back_in_query(token);

@@ -1,31 +1,36 @@
 // SPDX-License-Identifier: CC0-1.0
 
-//! What an origin access control `Id` that names no control earns on EVERY route addressed by
-//! one, end to end over HTTP.
+//! What an origin access control `Id` of the identifier ALPHABET that names no control earns on
+//! EVERY route addressed by one, end to end over HTTP.
 //!
-//! The rule under test: a route addressed by a path identifier the model places no format
-//! constraint on reads NOTHING of the way that identifier is written before it resolves it
-//! against the store, so every value the account holds no resource under is that resource
-//! reported ABSENT under the operation's own not-found code, status and fixed sentence. For the
-//! origin access control that is `NoSuchOriginAccessControl`, HTTP 404 and "The specified
-//! origin access control does not exist." on all four of its routes
+//! The rule under test: once a value is written in the alphabet CloudFront writes an entity
+//! identifier in (decimal digits and uppercase ASCII letters), a route addressed by an origin
+//! access control `Id` reads NOTHING ELSE of the way it is written before it resolves it against
+//! the store — not the width of it, not the namespace letter it opens with — because the width
+//! this emulator mints at is one width CloudFront writes an identifier in rather than the only
+//! one, and the letter is shared by the four kinds of that namespace (a distribution, a
+//! streaming distribution, an origin access identity and an origin access control), so WHICH
+//! identifier of that alphabet was ever issued, and for which kind, is a property of the STORE
+//! alone. Every such value the account holds no control under is therefore the control reported
+//! ABSENT: `NoSuchOriginAccessControl`, HTTP 404 and "The specified origin access control does
+//! not exist." on all four of its routes
 //! (`smithy_query(query="operation",operation="GetOriginAccessControlConfig,GetOriginAccessControl,UpdateOriginAccessControl,DeleteOriginAccessControl")`
 //! reports `Id` as a required `@httpLabel` on a plain `string` — no `@pattern`, no `@length` —
-//! and the two reads' whole error set as `[AccessDenied, NoSuchOriginAccessControl]`, so
-//! nothing in the model makes a refusal of the identifier's FORM available on these routes:
-//! the argument errors the two mutations model are about the configuration and the version
-//! they carry).
+//! and the two reads' whole error set as `[AccessDenied, NoSuchOriginAccessControl]`, so nothing
+//! in the model makes a refusal of the identifier's width or namespace available on these
+//! routes: the argument errors the two mutations model are about the configuration and the
+//! version they carry).
 //!
-//! The rows span what the rule generalises over — the FORM of the submitted value, which is
-//! what the routes must stop reading: the namespace letter it opens with (the one the control's
-//! own kind is minted under, another kind's, one no kind of this service mints, none at all),
-//! its width (one character, the issued width, far wider than any identifier CloudFront
-//! issues), its alphabet (the digits and uppercase letters an identifier is minted in, lower
-//! case, mixed case, hex), and its separators (none, a hyphen, an underscore, a dot, the
-//! 8-4-4-4-12 grouping of a UUID) — beside two values a caller really could confuse for an
-//! identifier: a control's own NAME, and the identifier of a control a delete has retired. Each
-//! row is driven through all four routes; the sentence is fixed text, so every row also asserts
-//! the answer echoes nothing of the value submitted.
+//! What a value written OUTSIDE that alphabet earns — the identifier the route reports it cannot
+//! READ — is the other half of the same split, and the suite that owns it is
+//! `origin_access_control_identifier_form`.
+//!
+//! The rows span what THIS half of the rule generalises over: the namespace letter the value
+//! opens with (the one the control's own kind is minted under, another kind's, one no kind of
+//! this service mints, none at all) and its width (one character, the issued width, far wider
+//! than any identifier CloudFront issues), beside an identifier this account really issued for a
+//! control a delete has retired. Each row is driven through all four routes; the sentence is
+//! fixed text, so every row also asserts the answer echoes nothing of the value submitted.
 //!
 //! The positive control stands beside them: the control this account really holds is read back
 //! through `GetOriginAccessControlConfig` after every refusal, reporting the `Name`, the
@@ -138,9 +143,18 @@ async fn live(router: &MultiServiceRouter) -> Live {
     }
 }
 
-/// The values that name no origin access control, each a (case, id) pair. `minted` is an
-/// identifier this account really holds, so the rows can vary a real one; `retired` is the
-/// identifier of a control a delete has retired.
+/// Whether `value` is written in the characters CloudFront writes an entity identifier in:
+/// decimal digits and uppercase ASCII letters, and nothing else. Every row below is one.
+fn in_the_identifier_alphabet(value: &str) -> bool {
+    !value.is_empty()
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || byte.is_ascii_uppercase())
+}
+
+/// The values of the identifier alphabet that name no origin access control, each a (case, id)
+/// pair. `minted` is an identifier this account really holds, so the rows can vary a real one;
+/// `retired` is the identifier of a control a delete has retired.
 fn names_no_control(minted: &str, retired: &str) -> Vec<(String, String)> {
     let body = &minted[1..];
     vec![
@@ -162,67 +176,20 @@ fn names_no_control(minted: &str, retired: &str) -> Vec<(String, String)> {
         // Widths CloudFront issues no identifier at.
         ("a single character".to_string(), "E".to_string()),
         (
+            "a body one character short of the issued width".to_string(),
+            format!("E{}", &body[1..]),
+        ),
+        (
             "a body far wider than any identifier this service issues".to_string(),
             format!("E{}", "A".repeat(200)),
         ),
-        // Alphabets no identifier of this mint is written in.
-        (
-            "a minted identifier in lower case".to_string(),
-            minted.to_lowercase(),
-        ),
-        (
-            "a minted identifier in mixed case".to_string(),
-            mixed_case(minted),
-        ),
-        ("a run of digits".to_string(), "0123456789".to_string()),
-        // Separators no minted identifier carries.
-        (
-            "a UUID, the namespace the policy kinds are keyed by".to_string(),
-            "3f2504e0-4f89-11d3-9a0c-0305e82c3301".to_string(),
-        ),
-        (
-            "the same UUID with its separators removed".to_string(),
-            "3f2504e04f8911d39a0c0305e82c3301".to_string(),
-        ),
-        (
-            "a value around an underscore".to_string(),
-            "oac_absent_control".to_string(),
-        ),
-        ("a bare word".to_string(), "nonexistent".to_string()),
-        (
-            "a hyphenated token a caller made up".to_string(),
-            "no-such-origin-access-control".to_string(),
-        ),
-        (
-            "a domain name rather than an identifier".to_string(),
-            "d111111abcdef8.cloudfront.net".to_string(),
-        ),
-        // Two values a caller really can confuse for an identifier.
-        (
-            "the live control's name rather than its identifier".to_string(),
-            LIVE_CONTROL_NAME.to_string(),
-        ),
+        ("a run of digits under no letter".to_string(), "0123456789".to_string()),
+        // A value this account really did issue for a control, which a delete retired.
         (
             "the identifier of a control a delete retired".to_string(),
             retired.to_string(),
         ),
     ]
-}
-
-/// `value` with every other character lower-cased — an alphabet no identifier of this mint is
-/// written in, built from one this account really issued.
-fn mixed_case(value: &str) -> String {
-    value
-        .chars()
-        .enumerate()
-        .map(|(index, character)| {
-            if index % 2 == 0 {
-                character
-            } else {
-                character.to_ascii_lowercase()
-            }
-        })
-        .collect()
 }
 
 /// Assert one refusal: the status, the code, the sentence, and that nothing of the submitted
@@ -279,12 +246,13 @@ async fn assert_live_control_reads_back(router: &MultiServiceRouter, live: &Live
     );
 }
 
-/// RULE: every route addressed by an origin access control `Id` reports an id the account holds
-/// no control under as the control that is ABSENT — 404, `NoSuchOriginAccessControl` and the one
-/// sentence that condition is stated in — whatever namespace letter, width, alphabet or
-/// separator the value is written with, and the control the account does hold is untouched.
+/// RULE: every route addressed by an origin access control `Id` reports an id of the identifier
+/// ALPHABET that the account holds no control under as the control that is ABSENT — 404,
+/// `NoSuchOriginAccessControl` and the one sentence that condition is stated in — whatever width
+/// or namespace letter the value is written with, and the control the account does hold is
+/// untouched.
 #[tokio::test]
-async fn every_unresolved_identifier_is_the_absent_control_on_every_route() {
+async fn every_unresolved_identifier_of_the_alphabet_is_the_absent_control_on_every_route() {
     let router = emulator();
     let live = live(&router).await;
 
@@ -316,6 +284,13 @@ async fn every_unresolved_identifier_is_the_absent_control_on_every_route() {
 
     for route in ROUTES {
         for (case, id) in names_no_control(&live.id, &retired) {
+            // Every row of this suite is written in the identifier alphabet: what a value
+            // outside it earns is the other suite's rule.
+            assert!(
+                in_the_identifier_alphabet(&id),
+                "case {case}: this row is meant to be written in the identifier alphabet, got \
+                 {id:?}"
+            );
             let answer = route.send(&router, &id, &live.document, &live.etag).await;
             assert_absent(&answer, &format!("{route:?} with {case} ({id:?})"), &id);
         }
@@ -344,8 +319,8 @@ async fn reporting_an_absent_control_leaves_the_next_caller_the_same_answer() {
     }
 
     // The control this account holds is served at its own identifier until the delete, and
-    // reported absent by the same read afterwards — the store, not the form of the id, is what
-    // decides.
+    // reported absent by the same read afterwards — the store, not the width or the namespace
+    // letter of the id, is what decides.
     assert_live_control_reads_back(&router, &live, "before the delete").await;
     let deleted = call(
         &router,

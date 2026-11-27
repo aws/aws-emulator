@@ -54,6 +54,10 @@ use crate::origin_access_control_lifecycle::{
 /// constant cannot make the assertion below pass.
 const ALREADY_EXISTS_MESSAGE: &str = "An origin access control with the same name already exists.";
 
+/// The sentence these routes answer a value written in no alphabet CloudFront mints an
+/// identifier in, under the same code and status as the absent control.
+const UNREADABLE_IDENTIFIER_MESSAGE: &str = "Id format is invalid";
+
 // ---------------------------------------------------------------------------
 // Calling the surface under test
 // ---------------------------------------------------------------------------
@@ -474,9 +478,11 @@ async fn an_id_no_control_holds_is_refused() {
     let (id, etag) = create(&router, &rows[0]).await;
 
     // Ids no control holds: one of the shape this service mints, one of another entity
-    // family's shape, and one that is no entity id at all. This route reads NOTHING of the
-    // value's form — `Id` carries no `@pattern` and no `@length` — so each is resolved
-    // against the store and reported as the control that is absent.
+    // family's shape, and one that is no entity id at all. The ALPHABET the value is written in
+    // is what decides the sentence — `Id` carries no `@pattern` and no `@length`, so the value
+    // of the alphabet an identifier is minted in is resolved against the store and reported as
+    // the control that is absent, while the two written outside it could never have been an
+    // identifier of this mint and are the identifier the route reports it cannot read.
     for (case, missing, expected) in [
         (
             "minted-shape",
@@ -486,13 +492,9 @@ async fn an_id_no_control_holds_is_refused() {
         (
             "another-family",
             "cg_1A2B3C4D5E6F7",
-            NO_SUCH_ORIGIN_ACCESS_CONTROL_MESSAGE,
+            UNREADABLE_IDENTIFIER_MESSAGE,
         ),
-        (
-            "not-an-id",
-            "no-such-control",
-            NO_SUCH_ORIGIN_ACCESS_CONTROL_MESSAGE,
-        ),
+        ("not-an-id", "no-such-control", UNREADABLE_IDENTIFIER_MESSAGE),
     ] {
         for (version_case, if_match) in [
             ("no-if-match", None),
