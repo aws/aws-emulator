@@ -181,7 +181,7 @@ async fn windows(
 
 /// The series `ListMetrics` reports, as `(metric name, dimensions)` pairs with the dimensions in
 /// the order they are reported.
-async fn listed_series(
+pub(crate) async fn listed_series(
     router: &MultiServiceRouter,
     case: &str,
     request: &Value,
