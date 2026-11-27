@@ -4,26 +4,19 @@
 //! state.
 //!
 //! RULE under test: **a container given nothing but a wait is a container with nothing to do
-//! but wait, so the seconds it names are the span it runs for. For the argument vector an image
-//! exec's that is the whole of it; for the SHELL spelling of the same program
-//! (`["sh", "-c", "sleep 3600"]`) it holds where nothing is waiting for that program to END —
-//! which is a container whose task a SERVICE maintains, since a service "runs and maintains
-//! your desired number of tasks from a specified task definition" (`CreateService`) and the end
-//! of such a container is the task leaving the set the service holds rather than a verdict a
-//! caller polls for. So a service whose containers are given such a program reaches the
-//! `desiredCount` its caller asked for and HOLDS it; a container that exited at once would
-//! leave it replacing a task for ever and a `runningCount` it never reaches.**
+//! but wait, so the seconds it names are the span it runs for — in either spelling of such a
+//! program, the argument vector an image exec's and the SHELL spelling of it
+//! (`["sh", "-c", "sleep 3600"]`) alike. So a service whose containers are given such a program
+//! reaches the `desiredCount` its caller asked for and HOLDS it; a container that exited at once
+//! would leave it replacing a task for ever and a `runningCount` it never reaches.**
 //!
 //! Why this suite is beside [`crate::container_whole_program_wait`], which pins the same
-//! reading on a task run on its own: that suite's running rows are all the argument-vector
-//! form, because the SHELL form of a standalone task's program is one something IS waiting to
-//! see the end of — the Batch crate's `job_settles_whatever_wait_its_container_states` pins
-//! exactly that. What a SERVICE does with such a container — the count it then holds — is the
-//! premise every rollout of this crate rests on, and the one an Application Auto Scaling
-//! movement of the `ecs:service:DesiredCount` dimension is fulfilled by. A wait inside a
-//! program that does something ELSE keeps the stated reading for a task run on its own
-//! ([`crate::container_stated_waits`]) and is spent for a container whose task a service
-//! maintains, which [`crate::zz_tmp_diag`] pins.
+//! reading on a task run on its own: what a SERVICE does with such a container — the count it
+//! then holds — is the premise every rollout of this crate rests on, and the one an Application
+//! Auto Scaling movement of the `ecs:service:DesiredCount` dimension is fulfilled by. A wait
+//! inside a program that does something ELSE is spent just the same, wherever it stands
+//! ([`crate::container_program_waits`]), which for a service's task is what
+//! [`crate::zz_tmp_diag`] pins.
 //!
 //! Sources: `smithy_query(query="operation",operation="DescribeServices")` for
 //! `Service$runningCount` ("the number of tasks in the cluster that are in the RUNNING state")

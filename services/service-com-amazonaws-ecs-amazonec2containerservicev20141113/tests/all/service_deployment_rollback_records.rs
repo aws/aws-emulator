@@ -68,10 +68,9 @@ const CIRCUIT_BREAKER_ROLLED_BACK_REASON: &str =
 
 /// The command the container of a revision that stays up runs.
 ///
-/// A wait the program states in seconds is taken as STATED rather than spent, so a program
-/// that ends on one ends at once and its container with it (`container_stated_waits.rs`
-/// pins that rule); a container that has to stay up therefore waits inside a LOOP, which
-/// is what the sibling suites that need a revision to stay up run too.
+/// A wait is SPENT, wherever it stands in the program (`container_program_waits.rs` pins that
+/// rule), so a container told to wait inside a LOOP has no end of its own to reach at all,
+/// which is what the sibling suites that need a revision to stay up run too.
 const STAYS_UP: [&str; 3] = ["sh", "-c", "while true; do sleep 1; done"];
 
 /// The command the container of the revision the circuit-breaker row rolls out runs: it ends

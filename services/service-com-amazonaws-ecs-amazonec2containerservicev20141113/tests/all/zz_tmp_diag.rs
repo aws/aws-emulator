@@ -6,14 +6,11 @@
 //! The rule under test:
 //!
 //! > A service's rollout is stable only while the tasks it placed are RUNNING, and a task runs
-//! > only while its essential container's program does. Nothing waits for the program of a
-//! > container whose task a SERVICE maintains to END — the end of such a task is the task
-//! > leaving the set the service holds — so every wait that program names is one the container
-//! > is up for: a program that goes round a LOOP on a wait and one that ENDS on a wait of so
-//! > many seconds both keep their container up, and the service's rollout comes to rest with
-//! > its desired count running either way. (A task run on its OWN is the other reading, which
-//! > `crate::container_stated_waits` pins: something there is waiting to see that program end,
-//! > so a wait among its steps is taken as stated.)
+//! > only while its essential container's program does. Every wait a container's program names
+//! > is one the container is up for: a program that goes round a LOOP on a wait and one that
+//! > ENDS on a wait of so many seconds both keep their container up, and the service's rollout
+//! > comes to rest with its desired count running either way. (The same reading on a task run
+//! > on its OWN is what `crate::container_program_waits` pins.)
 //!
 //! The docs the rule is read off:
 //!
@@ -32,7 +29,7 @@
 //! The rows differ along the FORM the program's wait takes — one the program goes round a loop
 //! on, and one the program ends on after a step of its own — and each is asserted on a
 //! CONDITION a poll waits for, never on how long anything took. The sibling suite
-//! `crate::container_stated_waits` pins the stated reading on a task run on its own; this one
+//! `crate::container_program_waits` pins the same reading on a task run on its own; this one
 //! pins what a program's wait means for the SERVICE that placed the task, which is the premise
 //! every rollout suite of this crate rests on.
 
@@ -47,9 +44,8 @@ const CLUSTER: &str = "staysupcluster";
 /// A program whose wait is one it goes round a LOOP on, which is the container that stays up.
 const LOOPS: &str = "echo up; while true; do sleep 1; done";
 
-/// A program that ENDS on a wait of so many seconds: in a container whose task a service
-/// maintains, nothing is waiting to see that program end, so the container is up for the
-/// seconds it named.
+/// A program that ENDS on a wait of so many seconds: the container is up for the seconds it
+/// named, so the service holds the task it placed throughout.
 const STATES_A_WAIT: &str = "echo up; sleep 600";
 
 /// The `ServiceDeploymentStatus` a rollout that stabilised comes to rest in.
@@ -192,9 +188,8 @@ async fn a_rollout_stabilises_on_a_program_whose_wait_is_a_loop() {
     );
 }
 
-/// RULE: a program that ENDS on a wait of so many seconds keeps its container up for them too,
-/// in a container whose task a SERVICE maintains — nothing is waiting to see that program end —
-/// so that rollout comes to rest with its task running and NO task of the service stops with
+/// RULE: a program that ENDS on a wait of so many seconds keeps its container up for them, so
+/// that rollout comes to rest with its task running and NO task of the service stops with
 /// `EssentialContainerExited`.
 #[tokio::test]
 async fn a_rollout_stabilises_on_a_program_that_ends_on_a_wait() {

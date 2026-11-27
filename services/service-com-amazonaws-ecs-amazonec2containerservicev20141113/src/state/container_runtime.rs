@@ -987,7 +987,7 @@ async fn run_container<Eng: Send + Sync + 'static>(
         shell = shell.with_http_client(http);
     }
     // Whether anything is waiting for this container's program to END, which is what decides
-    // the shell spelling of a program that is nothing but a wait
+    // whether this emulator puts a ceiling on the waits that program names
     // ([`ContainerShell::maintained_by_a_service`]).
     if launch.maintained_by_a_service {
         shell = shell.maintained_by_a_service();

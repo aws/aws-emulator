@@ -1,50 +1,43 @@
 // SPDX-License-Identifier: CC0-1.0
 
-//! What a duration a container's PROGRAM states costs this emulator, and what it does not.
+//! What a container's program does AFTER a wait it names — and what the task it runs in then
+//! reports.
 //!
-//! RULE under test, for a task run on its OWN — something IS waiting to see that program end:
-//! **the seconds in a container's `sleep` are its program's own account of
-//! how long that program took, so a wait a program STATES among steps of its own is taken as
-//! stated and what the program does next — its next step, or its own end — follows at once:
-//! the task stops on the status its program exited with, however many seconds that program
-//! said it waited. The wait a container has nothing but something OUTSIDE its program to end
-//! it is another thing: a wait with no end of its own (`sleep infinity`), one the program goes
-//! round a LOOP on and one a container is given as its WHOLE program — in either spelling of
-//! such a program — are the container waiting for something else to end it, which is how a
-//! container stays up, so those are spent: the argument-vector spelling for the seconds it
-//! names ([`crate::container_whole_program_wait`]), the shell spelling up to this emulator's
-//! own ceiling on it (past which the task stops on the status that wait answered), the others
-//! up to the run's own deadline.**
+//! RULE under test: **a wait a container's program names is spent, wherever it stands in that
+//! program, and the program then carries on from it: the step after the wait is taken, the
+//! program reaches its own end, and the status it ends with is the `exitCode` its container
+//! reports and the stop its task takes (`EssentialContainerExited`, "the task stopped because
+//! an essential container exited"). A wait with no end of its own, and one the program goes
+//! round a loop on, name no end for the program to carry on to, so those keep the container up
+//! instead.**
 //!
-//! Why the bound has to be this emulator's: a container's program is request-supplied, and
-//! everything that waits on its task waits with it — the AWS Batch job whose dependents are
-//! held until it ends (`core/router/tests/all/batch_job_dependency_gate.rs`), the client
-//! polling `DescribeTasks` for the terminal status of the task it ran. A program's own words
-//! must not decide how long any of them takes to reach a verdict, exactly as they must not
-//! decide how many steps it may take (`MAX_COMMANDS_PER_RUN`) or how long the run may live
-//! (the run's deadline). Every row below therefore runs its task on its own; a container whose
-//! task a SERVICE maintains has no such verdict behind it and is up for every wait it names,
-//! which `crate::zz_tmp_diag` pins.
+//! This is the other half of the rule [`crate::container_program_waits`] pins: there the wait
+//! is minutes long, so the task is still RUNNING while the program waits it out; here the wait
+//! is brief, so the same program is read past it and what the container reports is its own
+//! program's outcome. Neither half depends on where the wait stands, which is the axis this
+//! suite's rows vary.
 //!
 //! Sources: `smithy_query(query="operation",operation="DescribeTasks")` for `Task$lastStatus`,
-//! `Task$stopCode`/`stoppedReason` and `Container$exitCode` ("the exit code returned from the
-//! container"); `smithy_query(query="shape",shape="TaskStopCode")` for the stop code of a task
-//! whose essential container exited. POSIX states what `sleep` means for the PROGRAM ("suspend
-//! execution for at least the integral number of seconds"), which is the duration it states;
-//! nothing in the model or the guide says a service's own reporting waits for it.
+//! `Task$stopCode` and `Container$exitCode` ("the exit code returned from the container");
+//! `smithy_query(query="shape",shape="TaskStopCode")` for the stop code of a task whose
+//! essential container exited. POSIX states what the wait means for the program: "the `sleep`
+//! utility shall suspend execution for at least the integral number of seconds specified by the
+//! `time` operand".
 //!
 //! The rows differ along what the rule generalises over: WHERE the wait stands in the program
-//! (between two steps, among several, inside a branch that is followed by more, last, last
-//! after other steps, as the whole argument vector, inside a loop, with no end of its own), HOW
-//! LONG it states (seconds far beyond this suite's whole budget, down to one second) and the
-//! FORM the container states it in (a shell program and a bare argument vector).
+//! (between two steps, among several, inside a branch the program carries on from, before the
+//! second half of an and-or list, as the last thing the program does, as the whole program),
+//! the FORM the program is written in (a shell program and the argument vector the runtime
+//! exec's), how the duration is WRITTEN (whole and fractional seconds), the STATUS the program
+//! then ends with (success and several failures), and the BOUNDARY — the waits that name no end
+//! for a program to carry on to.
 
 use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 use smithy_server_runtime::MultiServiceRouter;
 
-use crate::ecs_wire::{cluster_with_capacity, list, ok, present_count, service, string};
+use crate::ecs_wire::{cluster_with_capacity, list, ok, poll_until, present_count, service, string};
 
 /// The cluster every task below runs in.
 const CLUSTER: &str = "statedwaits";
@@ -53,17 +46,13 @@ const CLUSTER: &str = "statedwaits";
 /// `command` the revision states.
 const IMAGE: &str = "public.ecr.aws/nginx/nginx:latest";
 
-/// How often a poll re-reads, and how long it keeps trying. The budget is generous and every
-/// poll stops the instant its own condition holds; it is far under the seconds the programs of
-/// the stopping rows state, which is what makes those rows about the RULE rather than about
-/// this machine's speed.
-const POLL_INTERVAL: Duration = Duration::from_millis(60);
-const POLL_BUDGET: Duration = Duration::from_secs(90);
-
 /// How long the rows that must GO ON running are watched, re-read inside the loop that spends
 /// it. Their waits name no end of their own, so a run that honoured one is still running at the
 /// end of this window however slowly the host got there.
 const WATCH_WINDOW: Duration = Duration::from_secs(2);
+
+/// How often that window re-reads.
+const WATCH_INTERVAL: Duration = Duration::from_millis(100);
 
 /// `Task$lastStatus` members this suite names.
 const RUNNING: &str = "RUNNING";
@@ -72,12 +61,11 @@ const STOPPED: &str = "STOPPED";
 /// `Task$stopCode` of a task whose essential container exited.
 const ESSENTIAL_CONTAINER_EXITED: &str = "EssentialContainerExited";
 
-/// What one row's program does with the time it states.
+/// What one row's program does once its wait is over.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Ends {
-    /// The program states a wait and then goes on — to another step, or to its own end: the
-    /// task stops with this exit status, which a run that SPENT a wait stated among the
-    /// program's own steps could not reach inside [`POLL_BUDGET`].
+    /// The program carries on from the wait to its own end: the task stops with this exit
+    /// status.
     Exits(i64),
     /// The program's wait names no end of its own, so the container stays up and the task
     /// goes on RUNNING through [`WATCH_WINDOW`].
@@ -94,50 +82,50 @@ struct Row {
 const ROWS: &[Row] = &[
     Row {
         case: "a wait between two steps",
-        command: &["/bin/sh", "-c", "sleep 600; exit 7"],
+        command: &["/bin/sh", "-c", "sleep 1; exit 7"],
         ends: Ends::Exits(7),
     },
     Row {
         case: "a wait among several steps",
-        command: &["/bin/sh", "-c", "echo one; sleep 1200; echo two; exit 0"],
+        command: &["/bin/sh", "-c", "echo one; sleep 1; echo two; exit 0"],
         ends: Ends::Exits(0),
     },
     Row {
         // The wait stands inside a compound form, and what follows it is outside that form:
-        // the program still has a step to come, so the wait is stated.
+        // the program carries on from the wait to the step after the branch.
         case: "a wait inside a branch the program carries on from",
-        command: &["/bin/sh", "-c", "if true; then sleep 900; fi; exit 3"],
+        command: &["/bin/sh", "-c", "if true; then sleep 1; fi; exit 3"],
         ends: Ends::Exits(3),
     },
     Row {
-        // An and-or list: the second half of it is the step still to come.
+        // An and-or list: the second half of it is the step the program carries on to.
         case: "a wait before the second half of an and-or list",
-        command: &["/bin/sh", "-c", "sleep 3600 && exit 5"],
+        command: &["/bin/sh", "-c", "sleep 1 && exit 5"],
         ends: Ends::Exits(5),
     },
     Row {
         // The wait is the last thing the program has to do, and it names an end of its own:
         // the program comes to its end there, with the status the wait answered.
         case: "a wait the program ends on",
-        command: &["/bin/sh", "-c", "echo up; sleep 30"],
+        command: &["/bin/sh", "-c", "echo up; sleep 1"],
         ends: Ends::Exits(0),
     },
     Row {
-        // The container's WHOLE program: the seconds are spent, so the task stops on the
-        // status that wait answered once they are up — well inside this suite's budget for
-        // the seconds this row names ([`crate::container_whole_program_wait`]).
+        // The container's WHOLE program, as the vector the runtime exec's.
         case: "a wait the program states as its whole argument vector",
-        command: &["sleep", "30"],
+        command: &["sleep", "1"],
         ends: Ends::Exits(0),
     },
     Row {
-        // The container's WHOLE program, in the SHELL spelling of it: the container was given
-        // nothing to do but wait there either, so the seconds are the span it runs for — up to
-        // this emulator's own ceiling on them, which is what the task then stops on the status
-        // of, well inside this suite's budget and far short of the hour the program named.
+        // The same program in its SHELL spelling: one reading, so one outcome.
         case: "a wait the program states as its whole shell program",
-        command: &["/bin/sh", "-c", "sleep 3600"],
+        command: &["/bin/sh", "-c", "sleep 1"],
         ends: Ends::Exits(0),
+    },
+    Row {
+        case: "a wait written in fractional seconds",
+        command: &["/bin/sh", "-c", "sleep 0.5; exit 2"],
+        ends: Ends::Exits(2),
     },
     Row {
         case: "a wait the program goes round a loop on",
@@ -183,29 +171,6 @@ async fn described(router: &MultiServiceRouter, arn: &str, case: &str) -> Value 
         .unwrap_or_else(|| panic!("case {case:?}: expected the task {arn} back, got {body}"))
 }
 
-/// Read one task again until its `lastStatus` is `status`, and answer it. Waits for the
-/// CONDITION, never for a span.
-async fn until_status(
-    router: &MultiServiceRouter,
-    arn: &str,
-    status: &str,
-    case: &str,
-) -> Value {
-    let deadline = Instant::now() + POLL_BUDGET;
-    loop {
-        let task = described(router, arn, case).await;
-        if string(&task, "lastStatus", case) == status {
-            return task;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "case {case:?}: expected the task to reach {status} within the poll budget, got \
-             {task}"
-        );
-        tokio::time::sleep(POLL_INTERVAL).await;
-    }
-}
-
 /// The exit status the one container of a described task reports, and `None` for a container
 /// that reported none.
 fn exit_code_of(task: &Value, case: &str) -> Option<i64> {
@@ -216,10 +181,11 @@ fn exit_code_of(task: &Value, case: &str) -> Option<i64> {
     present_count(container, "exitCode", case)
 }
 
-/// RULE: a wait a program states is stated, not spent; a wait that names no end of its own
-/// keeps the container up.
+/// RULE: a program carries on from a wait it spent, wherever that wait stood, and the task
+/// stops on the status that program ended with; a wait that names no end of its own keeps the
+/// container up instead.
 #[tokio::test]
-async fn a_wait_a_program_states_between_its_steps_is_not_spent() {
+async fn a_program_carries_on_from_the_wait_it_states() {
     let router = service();
     cluster_with_capacity(&router, CLUSTER, "waits a program states").await;
 
@@ -247,15 +213,20 @@ async fn a_wait_a_program_states_between_its_steps_is_not_spent() {
         launched.push((row, run_task(&router, &family, row.case).await));
     }
 
-    // The rows whose program goes on — to another step or to its own end: the task stops on
-    // the status that program exited with, inside a budget far shorter than the seconds it said
-    // it waited.
+    // The rows whose program carries on from its wait: the task stops on the status that
+    // program exited with.
     for (row, arn) in &launched {
         let Ends::Exits(status) = row.ends else {
             continue;
         };
         let case = row.case;
-        let task = until_status(&router, arn, STOPPED, case).await;
+        let task = poll_until(
+            case,
+            "the task to stop on the status its program exited with",
+            || described(&router, arn, case),
+            |task| task["lastStatus"] == json!(STOPPED),
+        )
+        .await;
         assert_eq!(
             string(&task, "stopCode", case),
             ESSENTIAL_CONTAINER_EXITED,
@@ -279,11 +250,18 @@ async fn a_wait_a_program_states_between_its_steps_is_not_spent() {
         .map(|(row, arn)| (*row, arn))
         .collect();
     for (row, arn) in &waiting {
-        until_status(&router, arn, RUNNING, row.case).await;
+        let case = row.case;
+        poll_until(
+            case,
+            &format!("the task to reach {RUNNING}"),
+            || described(&router, arn, case),
+            |task| task["lastStatus"] == json!(RUNNING) || task["lastStatus"] == json!(STOPPED),
+        )
+        .await;
     }
     let until = Instant::now() + WATCH_WINDOW;
     while Instant::now() < until {
-        tokio::time::sleep(POLL_INTERVAL).await;
+        tokio::time::sleep(WATCH_INTERVAL).await;
         for (row, arn) in &waiting {
             let case = row.case;
             let task = described(&router, arn, case).await;
