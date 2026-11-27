@@ -9,7 +9,10 @@
 //! zone, so a zone that cannot be created is a namespace that cannot exist: a `Vpc`
 //! Amazon EC2 holds no VPC for leaves the association impossible, and a creation Route 53
 //! itself refuses leaves no zone to be, so in either case the operation lands `FAIL` with
-//! `CANNOT_CREATE_HOSTED_ZONE` and the staged namespace is rolled back with it.
+//! `CANNOT_CREATE_HOSTED_ZONE` and the staged namespace is rolled back with it. The reason
+//! each failure reports is the refusal of the creation it failed on, never a sentence this
+//! operation words of its own: `crate::state::namespace_vpc::absent_vpc_message` for a VPC
+//! that resolves to nothing, and Route 53's own answer for a zone it declined.
 //!
 //! ## Shape of an operation
 //!
@@ -318,7 +321,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // asynchronous step associates its hosted zone with the VPC the request named: a
         // `Vpc` the account holds no VPC for leaves that step nothing to associate, and the
         // operation this call already answered with lands `FAIL` carrying the documented
-        // `CANNOT_CREATE_HOSTED_ZONE` code rather than `SUCCESS`. The synchronous call
+        // `CANNOT_CREATE_HOSTED_ZONE` code rather than `SUCCESS`, with the reason that
+        // association is refused with — the invalid-VPC sentence, whose fixed text and
+        // request-taken values live in one place
+        // (`crate::state::namespace_vpc::absent_vpc_message`). The synchronous call
         // still succeeds — the failure is reported through `GetOperation`, which is the
         // channel this operation publishes its outcome on — and the namespace record the
         // create staged is rolled back with that terminal status. EC2 answering nothing

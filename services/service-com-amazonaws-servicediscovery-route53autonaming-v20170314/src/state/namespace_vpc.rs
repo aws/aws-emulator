@@ -69,14 +69,33 @@ pub async fn resolve(
     }
 }
 
+/// The fixed text of [`absent_vpc_message`], before the VPC the request named.
+///
+/// A constant because it is the part of the sentence that is NOT the request's: a reader
+/// looking for what this service words of that refusal finds the whole of it in these two
+/// pieces, and a test states the same two rather than the sentence of one run.
+pub const ABSENT_VPC_MESSAGE_OPENING: &str = "The VPC: ";
+
+/// The fixed text of [`absent_vpc_message`] between the VPC and the Region, for the reason
+/// [`ABSENT_VPC_MESSAGE_OPENING`] is a constant.
+pub const ABSENT_VPC_MESSAGE_REGION_CLAUSE: &str = " not found in region ";
+
 /// The `Operation$ErrorMessage` the asynchronous step reports when the VPC is absent.
 ///
-/// A private namespace's asynchronous work is the association of its Route 53 private hosted
-/// zone with that VPC, and the refusal a caller sees is the one that association fails with:
-/// Route 53's invalid-VPC sentence, naming the VPC the request asked for and the Region it
-/// was asked in. Both variable parts come from the request.
+/// A private DNS namespace IS a private Route 53 hosted zone bound to the VPC its create
+/// named, so the asynchronous step that cannot complete is that zone's creation, and the
+/// reason a caller polling `GetOperation` is given is the one that creation is refused with
+/// for a VPC that resolves to nothing: the invalid-VPC sentence, naming the VPC the request
+/// asked for and the Region it was asked in. Its FIXED text is
+/// [`ABSENT_VPC_MESSAGE_OPENING`] and [`ABSENT_VPC_MESSAGE_REGION_CLAUSE`]; its only
+/// variable parts are those two values, both taken from the request, so no value of one
+/// call is part of the sentence of another. The reason is coupled to `Status` by the record
+/// it is stored on ([`crate::state::ComAmazonawsServicediscoveryRoute53autonamingV20170314State::fail_when_due`]):
+/// it is set when the clock settles the operation `FAIL`, and an operation that is not
+/// `FAIL` carries none, exactly as `Operation$ErrorMessage` documents ("If the value of
+/// Status is FAIL, the reason that the operation failed").
 pub fn absent_vpc_message(vpc_id: &str, region: &str) -> String {
-    format!("The VPC: {vpc_id} not found in region {region}")
+    format!("{ABSENT_VPC_MESSAGE_OPENING}{vpc_id}{ABSENT_VPC_MESSAGE_REGION_CLAUSE}{region}")
 }
 
 /// Trace a VPC Amazon EC2 answered nothing about, which this service resolves neither way

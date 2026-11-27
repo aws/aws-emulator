@@ -55,8 +55,9 @@ emulator-core-build-support = { workspace = true }
 [dev-dependencies]
 # `tests/all/main.rs` declares one module per suite file under `tests/all/`.
 automod = { workspace = true }
-# `tests/all/async_namespace_operations.rs`: the VPC a private DNS namespace is created
-# for is resolved in Amazon EC2, so the test mounts EC2 beside this service on the one
+# `tests/all/async_namespace_operations.rs` and
+# `tests/all/namespace_vpc_failure_reason.rs`: the VPC a private DNS namespace is created
+# for is resolved in Amazon EC2, so the tests mount EC2 beside this service on the one
 # shared engine, exactly as the assembled emulator does.
 service-com-amazonaws-ec2-amazonec2 = { workspace = true }
 

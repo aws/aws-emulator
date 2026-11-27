@@ -53,8 +53,22 @@ pub(crate) fn emulator_with_engine() -> (MultiServiceRouter, Arc<engine::InMemor
 
 /// Dispatch one operation and return its HTTP status and JSON body.
 pub(crate) async fn call(router: &MultiServiceRouter, operation: &str, body: Value) -> (u16, Value) {
+    call_signed_for(router, REGION, operation, body).await
+}
+
+/// [`call`], with the Region the request is SIGNED for chosen by the caller.
+///
+/// The Region reaches a handler through the signature's credential scope, so a suite whose
+/// rule generalises over it — a value a response takes from the Region the call was made in
+/// — drives the same dispatch through here instead of carrying a second copy of it.
+pub(crate) async fn call_signed_for(
+    router: &MultiServiceRouter,
+    region: &str,
+    operation: &str,
+    body: Value,
+) -> (u16, Value) {
     let authorization = format!(
-        "AWS4-HMAC-SHA256 Credential=AKIDEMULATOR/20260101/{REGION}/servicediscovery/aws4_request, \
+        "AWS4-HMAC-SHA256 Credential=AKIDEMULATOR/20260101/{region}/servicediscovery/aws4_request, \
          SignedHeaders=host;x-amz-date, Signature=unsigned"
     );
     let request = http::Request::builder()

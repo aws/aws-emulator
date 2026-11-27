@@ -26,7 +26,8 @@
 /// What a service's `DnsConfig` may declare, and the instance attributes those records
 /// require.
 pub mod dns_records;
-/// The Amazon VPC a private DNS namespace is visible inside, resolved in Amazon EC2.
+/// The Amazon VPC a private DNS namespace is visible inside, resolved in Amazon EC2, and
+/// the reason a create whose `Vpc` resolves to nothing reports.
 pub mod namespace_vpc;
 /// The Route 53 hosted zone a DNS namespace is backed by, and the record sets Cloud Map
 /// publishes into it for the namespace's services and instances.

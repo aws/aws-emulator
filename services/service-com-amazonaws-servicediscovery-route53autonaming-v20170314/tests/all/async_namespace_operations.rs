@@ -292,7 +292,10 @@ async fn a_delete_is_applied_without_anybody_polling_its_operation() {
 /// One emulator with this service, Route 53 and Amazon EC2 on the one shared engine — the
 /// three the assembled emulator mounts for a private DNS namespace, whose hosted zone is a
 /// zone of that Route 53 and whose `Vpc` is a VPC of that EC2.
-fn emulator_with_ec2() -> (MultiServiceRouter, Arc<engine::InMemoryEngine>) {
+///
+/// `pub(crate)` because the sibling suite that asserts the failure REASON of an absent VPC
+/// drives the same three services rather than carrying a second copy of this mounting.
+pub(crate) fn emulator_with_ec2() -> (MultiServiceRouter, Arc<engine::InMemoryEngine>) {
     let (mut router, engine) = emulator_with_engine();
     router.register_service(service_com_amazonaws_ec2_amazonec2::EmulatedService::new(
         Arc::clone(&engine),
@@ -388,6 +391,10 @@ async fn a_private_namespace_fails_its_operation_when_its_vpc_does_not_exist() {
                 (&json!("FAIL"), &json!("CANNOT_CREATE_HOSTED_ZONE")),
                 "case {case:?}: the operation must fail with the documented code, got {settled}"
             );
+            // The reason is the one the association of the namespace's hosted zone with
+            // that VPC is refused with, which names the VPC that could not be resolved and
+            // the Region it was asked in. Its wording is pinned by the sibling suite that
+            // owns the rule.
             let message = settled["Operation"]["ErrorMessage"]
                 .as_str()
                 .unwrap_or_default()
