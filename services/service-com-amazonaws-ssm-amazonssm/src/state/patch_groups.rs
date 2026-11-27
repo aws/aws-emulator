@@ -2,8 +2,9 @@
 
 //! Which patch baseline a PATCH GROUP is patched against: the registration
 //! `RegisterPatchBaselineForPatchGroup` writes, the one
-//! `GetPatchBaselineForPatchGroup` reports, and the one
-//! `DeregisterPatchBaselineForPatchGroup` takes away.
+//! `GetPatchBaselineForPatchGroup` reports, the one
+//! `DeregisterPatchBaselineForPatchGroup` takes away, and the ones `DescribePatchGroups`
+//! lists.
 //!
 //! A patch group is not a resource of this service: it is a VALUE a managed node carries as
 //! a tag ([`super::patch_runs::PATCH_GROUP_TAG_KEYS`]), and what a register persists is the
@@ -29,8 +30,14 @@
 //! baseline Patch Manager patches such a node against
 //! ([`ComAmazonawsSsmAmazonssmState::patch_baseline_in_force`]).
 
-use super::patch_baselines::ResolvedBaseline;
+use std::collections::BTreeMap;
+
+use super::patch_baselines::{
+    PatchBaselineIdentityRecord, ResolvedBaseline, FILTER_KEY_NAME_PREFIX,
+    FILTER_KEY_OPERATING_SYSTEM,
+};
 use super::ComAmazonawsSsmAmazonssmState;
+use crate::ops::types::PatchGroupPatchBaselineMapping;
 
 /// How many patch-group registrations this store holds across every Region.
 ///
@@ -242,5 +249,110 @@ impl ComAmazonawsSsmAmazonssmState {
                 held_region != region
                     || (reference.as_str() != baseline_id && reference.as_str() != arn)
             });
+    }
+
+    /// Every registration reachable through `region`'s endpoint, as the mapping between a
+    /// patch group and the baseline it is registered with — what `DescribePatchGroups`
+    /// lists: "Lists all patch groups that have been registered with patch baselines".
+    ///
+    /// A READ: whatever a register persisted is what this projects, and nothing is written.
+    /// The baseline side is the SAME basic information a baseline listing reports
+    /// ([`ComAmazonawsSsmAmazonssmState::patch_baseline_identities`]), so the two reads
+    /// cannot disagree about a baseline's name, operating system, description or whether it
+    /// is the default of its operating system. A registration whose baseline this endpoint
+    /// no longer holds reports nothing rather than a baseline nothing holds — the same
+    /// reading [`Self::patch_group_registration`] takes.
+    ///
+    /// The order is total and taken from the registrations themselves — by patch group, with
+    /// the baseline's id breaking a tie for a group registered with a baseline of each of
+    /// several operating systems — so it is independent of the request, two reads report the
+    /// same sequence, and a page resumes where the last one stopped.
+    pub fn patch_group_mappings(&self, region: &str) -> Vec<PatchGroupMappingRecord> {
+        let identities: BTreeMap<String, PatchBaselineIdentityRecord> = self
+            .patch_baseline_identities(region)
+            .into_iter()
+            .map(|identity| (identity.baseline_id.clone(), identity))
+            .collect();
+        let mut mappings: Vec<PatchGroupMappingRecord> = self
+            .patch_group_baselines
+            .iter()
+            .filter(|((held_region, _, _), _)| held_region == region)
+            .filter_map(|((_, patch_group, _), reference)| {
+                let resolved = self.resolve_patch_baseline(region, reference)?;
+                let baseline = identities.get(&resolved.baseline_id)?.clone();
+                Some(PatchGroupMappingRecord {
+                    patch_group: patch_group.clone(),
+                    baseline,
+                })
+            })
+            .collect();
+        mappings.sort_by(|left, right| {
+            (&left.patch_group, &left.baseline.baseline_id)
+                .cmp(&(&right.patch_group, &right.baseline.baseline_id))
+        });
+        mappings
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Listing the registrations an endpoint holds
+// ---------------------------------------------------------------------------
+
+/// Every key a patch group listing filters on, in the order its own documentation lists
+/// them: "Supported keys for DescribePatchGroups include the following: NAME_PREFIX Sample
+/// values: AWS- | My-. OPERATING_SYSTEM Sample values: AMAZON_LINUX | SUSE | WINDOWS"
+/// (`smithy_query(query="doc", shape="DescribePatchGroupsRequest", member="Filters")`).
+///
+/// Both name a property of the BASELINE a group is registered with — the sample values of
+/// `NAME_PREFIX` are baseline names and `OPERATING_SYSTEM` is the operating system a
+/// baseline applies to — so a filter narrows the listing to the registrations whose baseline
+/// meets it ([`super::patch_baselines::PatchBaselineIdentityRecord::matches_filter`], the one
+/// matcher a baseline listing uses). `OWNER` is a key of the baseline listing and NOT of
+/// this one, so it is refused here.
+pub const PATCH_GROUP_FILTER_KEYS: &[&str] =
+    &[FILTER_KEY_NAME_PREFIX, FILTER_KEY_OPERATING_SYSTEM];
+
+/// Whether `key` is a key a patch group listing filters on ([`PATCH_GROUP_FILTER_KEYS`]).
+pub fn is_patch_group_filter_key(key: &str) -> bool {
+    PATCH_GROUP_FILTER_KEYS.contains(&key)
+}
+
+/// What separates the two halves of the cursor a page of registrations resumes at.
+///
+/// Neither half can carry it: a patch group matches `^([\p{L}\p{Z}\p{N}_.:/=+\-@]*)$`
+/// (`PatchGroupPatchBaselineMapping$PatchGroup`) and a baseline id `^[a-zA-Z0-9_\-:/]{20,128}$`
+/// (`PatchBaselineIdentity$BaselineId`), so a cursor names exactly one registration.
+const CURSOR_SEPARATOR: char = '|';
+
+/// One registration an endpoint holds, as the mapping a listing reports: the patch group,
+/// and the basic information of the baseline it is registered with.
+#[derive(Debug, Clone)]
+pub struct PatchGroupMappingRecord {
+    /// "The name of the patch group registered with the patch baseline."
+    pub patch_group: String,
+    /// "The patch baseline the patch group is registered with", as the basic information
+    /// every baseline read of this service reports about it.
+    pub baseline: PatchBaselineIdentityRecord,
+}
+
+impl PatchGroupMappingRecord {
+    /// The `NextToken` a page hands out to resume AT this registration.
+    ///
+    /// A listing walks `(patch group, baseline id)` pairs in ascending order, so the position
+    /// it resumes at is that pair and not an offset into a list that may have changed between
+    /// two pages.
+    pub fn page_token(&self) -> String {
+        format!(
+            "{}{CURSOR_SEPARATOR}{}",
+            self.patch_group, self.baseline.baseline_id
+        )
+    }
+
+    /// This registration as the mapping a listing reports.
+    pub fn to_mapping(&self) -> PatchGroupPatchBaselineMapping {
+        PatchGroupPatchBaselineMapping {
+            patch_group: Some(self.patch_group.clone()),
+            baseline_identity: Some(self.baseline.to_identity()),
+        }
     }
 }
