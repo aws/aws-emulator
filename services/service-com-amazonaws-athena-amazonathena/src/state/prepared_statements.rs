@@ -25,7 +25,9 @@ use std::collections::BTreeMap;
 use std::time::SystemTime;
 
 use super::reported_time;
-use crate::ops::types::{PreparedStatement, PreparedStatementSummary};
+use crate::ops::types::{
+    PreparedStatement, PreparedStatementSummary, UnprocessedPreparedStatementName,
+};
 
 /// How many prepared statements one workgroup holds in this emulator.
 ///
@@ -361,12 +363,32 @@ pub fn prepared_statement_already_exists(name: &str, work_group: &str) -> String
 /// The reason `BatchGetPreparedStatement` reports beside
 /// [`ERROR_CODE_STATEMENT_NAME_NOT_FOUND`] for a name the workgroup holds no statement under.
 ///
-/// `UnprocessedPreparedStatementName$ErrorMessage` documents the reason for this class
-/// itself — "A prepared statement with the name provided could not be found" — so that is
-/// what a batch read states, rather than one of the sentences a single-statement operation
-/// refuses with.
-pub fn prepared_statement_name_not_found() -> String {
-    "A prepared statement with the name provided could not be found.".to_string()
+/// Athena's own wording for this class on the wire: the fixed text is `PreparedStatement `
+/// and ` was not found`, and the one variable part is the `StatementName` the request
+/// carried — the only place a partial answer reports WHICH of the submitted names failed,
+/// since the entry's `ErrorCode` carries the class alone. It is not the generic sentence
+/// `UnprocessedPreparedStatementName$ErrorMessage` lists in prose ("A prepared statement with
+/// the name provided could not be found"): that documentation names the class of message,
+/// and the recorded wire form governs where the two disagree — the same reading
+/// [`ERROR_CODE_STATEMENT_NAME_NOT_FOUND`] is taken under.
+pub fn prepared_statement_name_not_found(name: &str) -> String {
+    format!("PreparedStatement {name} was not found")
+}
+
+/// How a batch read of prepared statements reports ONE requested name it could not resolve.
+///
+/// The ONE place such an entry is built, pairing the class
+/// ([`ERROR_CODE_STATEMENT_NAME_NOT_FOUND`]) with the sentence that names the statement
+/// ([`prepared_statement_name_not_found`]), beside [`super::unprocessed_named_query`]: a
+/// batch read answers in two parts rather than refusing the whole request, and each entry
+/// reports the name it was asked for together with the class and the reason that name
+/// resolved to nothing.
+pub fn unprocessed_prepared_statement(name: &str) -> UnprocessedPreparedStatementName {
+    UnprocessedPreparedStatementName {
+        statement_name: Some(name.to_string()),
+        error_code: Some(ERROR_CODE_STATEMENT_NAME_NOT_FOUND.to_string()),
+        error_message: Some(prepared_statement_name_not_found(name)),
+    }
 }
 
 /// The refusal message for a create that would take `work_group` past

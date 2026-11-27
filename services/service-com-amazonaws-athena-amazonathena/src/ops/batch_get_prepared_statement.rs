@@ -201,13 +201,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             }
             match store.prepared_statements.statement(&input.work_group, name) {
                 Some(record) => statements.push(record.to_prepared_statement()),
-                None => unprocessed.push(UnprocessedPreparedStatementName {
-                    statement_name: Some(name.clone()),
-                    error_code: Some(
-                        crate::state::ERROR_CODE_STATEMENT_NAME_NOT_FOUND.to_string(),
-                    ),
-                    error_message: Some(crate::state::prepared_statement_name_not_found()),
-                }),
+                // Built in the ONE place such an entry is worded, so the class and the
+                // sentence that names the statement cannot drift apart.
+                None => unprocessed.push(crate::state::unprocessed_prepared_statement(name)),
             }
         }
 

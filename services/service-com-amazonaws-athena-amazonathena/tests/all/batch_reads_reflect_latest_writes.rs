@@ -690,6 +690,7 @@ async fn batch_get_prepared_statement_answers_the_last_write_in_request_order() 
              {unprocessed:?}"
         );
         for entry in &unprocessed {
+            let name = entry["StatementName"].as_str().unwrap_or_default();
             assert_eq!(
                 entry["ErrorCode"].as_str(),
                 Some(ERROR_CODE_STATEMENT_NAME_NOT_FOUND),
@@ -698,8 +699,9 @@ async fn batch_get_prepared_statement_answers_the_last_write_in_request_order() 
             );
             assert_eq!(
                 entry["ErrorMessage"].as_str(),
-                Some(prepared_statement_name_not_found().as_str()),
-                "case {case:?}: expected the documented reason, got {entry:?}"
+                Some(prepared_statement_name_not_found(name).as_str()),
+                "case {case:?}: expected the reason naming the statement asked for, got \
+                 {entry:?}"
             );
         }
     }

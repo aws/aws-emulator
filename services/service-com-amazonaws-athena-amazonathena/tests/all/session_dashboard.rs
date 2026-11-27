@@ -13,11 +13,12 @@
 //! refused with HTTP 400 `InvalidRequestException` carrying one sentence for the whole class.
 //!
 //! The rows span what the rule generalises over: the ARN forms AWS writes a resource in (the
-//! slash and the colon separator, the session named alone and scoped to its workgroup, the
-//! Region and account fields empty, another partition), and every form of ARN that resolves
-//! nothing (not an ARN at all, another vendor, another account, another Region, another
-//! resource type, no session id, an id nothing was started under, a session scoped to a
-//! workgroup it does not belong to, and a session whose workgroup has been deleted).
+//! slash and the colon separator, the session named alone and scoped to its workgroup,
+//! another partition), and every ARN that names a session this account resolves none of
+//! (another vendor, another account, another Region, an id nothing was started under, a
+//! session scoped to a workgroup it does not belong to, and a session whose workgroup has
+//! been deleted). A value out of which no session reference can be read at all is refused for
+//! its FORM instead, which `tests/all/refusal_condition_reported_first.rs` drives.
 //!
 //! Nothing here waits for a fixed span: the one test that needs a transition the clock owes
 //! POLLS the service for the state it is waiting on, under a deadline far above the span that
@@ -229,9 +230,11 @@ async fn a_sessions_arn_addresses_that_sessions_dashboard_in_every_arn_form() {
 
     // The forms differ along what the rule generalises over: which separator divides the
     // resource field (AWS writes a resource as `<type>/<id>` and as `<type>:<id>`), whether
-    // the ARN scopes the session to the workgroup it belongs to, and whether the Region and
-    // account fields are filled in or left empty (AWS writes a partition-global or
-    // account-less resource that way) — and the partition, which this endpoint does not read.
+    // the ARN scopes the session to the workgroup it belongs to, and the partition, which
+    // this endpoint does not read. Every form spells out the Region and the account: a
+    // session is a regional resource of one account, so an ARN leaving either field empty is
+    // not a complete ARN of a session at all
+    // (`tests/all/refusal_condition_reported_first.rs`).
     let forms = [
         (
             "the session named alone",
@@ -254,14 +257,6 @@ async fn a_sessions_arn_addresses_that_sessions_dashboard_in_every_arn_form() {
                 "arn:aws:athena:{REGION}:{account}:workgroup:{SPARK_WORK_GROUP}:session:\
                  {session_id}"
             ),
-        ),
-        (
-            "an account-less ARN",
-            format!("arn:aws:athena:{REGION}::session/{session_id}"),
-        ),
-        (
-            "a Region-less ARN",
-            format!("arn:aws:athena::{account}:session/{session_id}"),
         ),
         (
             "another partition",
@@ -380,9 +375,10 @@ async fn an_arn_no_session_resolves_from_is_refused_as_an_invalid_request() {
     let account = account();
     let unknown = ::uuid::Uuid::new_v4().to_string();
 
+    // Every row here SPELLS OUT the ARN of a session and still resolves none: a value out of
+    // which no session reference can be read at all is a different condition, worded apart,
+    // and is driven in `tests/all/refusal_condition_reported_first.rs`.
     let unresolvable = [
-        ("not an ARN at all", "not-an-arn".to_string()),
-        ("an ARN with no resource field", "arn:aws:athena:us-east-1".to_string()),
         (
             "another vendor's ARN",
             format!("arn:aws:glue:{REGION}:{account}:session/{session_id}"),
@@ -394,22 +390,6 @@ async fn an_arn_no_session_resolves_from_is_refused_as_an_invalid_request() {
         (
             "another Region's ARN",
             format!("arn:aws:athena:eu-west-1:{account}:session/{session_id}"),
-        ),
-        (
-            "a resource type that is not a session",
-            format!("arn:aws:athena:{REGION}:{account}:datacatalog/{session_id}"),
-        ),
-        (
-            "the workgroup alone",
-            format!("arn:aws:athena:{REGION}:{account}:workgroup/{SPARK_WORK_GROUP}"),
-        ),
-        (
-            "no session id",
-            format!("arn:aws:athena:{REGION}:{account}:session/"),
-        ),
-        (
-            "a segment past the session id",
-            format!("arn:aws:athena:{REGION}:{account}:session/{session_id}/live"),
         ),
         (
             "a session id nothing was started under",

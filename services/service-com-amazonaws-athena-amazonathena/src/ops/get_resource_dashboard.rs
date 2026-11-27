@@ -8,11 +8,17 @@
 //! [`crate::state::addressed_session`], against the one session registry every other
 //! session-addressed operation reads — and answers with the presigned address of the
 //! interface THAT session serves ([`crate::state::SessionRecord::dashboard_url`]): the live
-//! one while its resources are running, the persistent one once they are gone. An ARN this
-//! account resolves no session from is refused with the modelled `InvalidRequestException`
-//! (HTTP 400) and this service's one sentence for that class
-//! ([`crate::state::RESOURCE_ARN_NOT_FOUND`]), which names the member and nothing of the
-//! value it carried.
+//! one while its resources are running, the persistent one once they are gone.
+//!
+//! The submitted member is read in two steps, and each refusal is the modelled
+//! `InvalidRequestException` (HTTP 400) with the sentence for its own condition, naming the
+//! member and nothing of the value it carried: a value out of which no session reference can
+//! be read at all — not a complete ARN, or one whose resource field does not spell out a
+//! session — is an input-shape failure
+//! ([`crate::state::RESOURCE_ARN_NOT_COMPLETE_OR_INVALID`]), told apart from a value that
+//! does name a session this account resolves none of
+//! ([`crate::state::RESOURCE_ARN_NOT_FOUND`]) — the request to correct against the session
+//! that is absent.
 //!
 //! A READ: the dashboard is a projection of the session's record, so nothing here writes the
 //! store and what the next caller sees is what it would have seen anyway.
@@ -124,6 +130,17 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
+        // The value's own FORM first, on the request alone and before the store is read at
+        // all: a value out of which no session reference can be read — not a complete ARN, or
+        // one whose resource field does not spell out a session — names no session in any
+        // account, so it is the REQUEST that is wrong rather than a session that is missing,
+        // and the two conditions are worded apart.
+        if crate::state::session_arn_reference(&input.resource_arn).is_none() {
+            return Err(GetResourceDashboardError::invalid_request(
+                crate::state::ERROR_CODE_INVALID_INPUT,
+                crate::state::RESOURCE_ARN_NOT_COMPLETE_OR_INVALID,
+            ));
+        }
         // No IAM decision here, for the reason `GetSession` and `ListExecutors` state: an
         // Athena action is scoped by the WORKGROUP the request names, and what this request
         // names is one session.
@@ -144,10 +161,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // moves nothing on.
         let store = state.lock();
 
-        // ONE refusal for the whole class: an ARN this account resolves no session from —
-        // because it is not an Athena ARN of this account and Region, because it names no
-        // session at all, because no session is held under the id it names, or because the
-        // session it names is not one of the workgroup it scopes it to.
+        // ONE refusal for the whole class: an ARN that names a session this account resolves
+        // none of — because it names another vendor's, another account's or another Region's
+        // session, because no session is held under the id it names, or because the session it
+        // names is not one of the workgroup it scopes it to.
         let addressed = crate::state::addressed_session(&input.resource_arn, &region);
         let found = addressed.and_then(|addressed| {
             store

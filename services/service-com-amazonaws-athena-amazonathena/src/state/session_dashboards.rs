@@ -5,13 +5,17 @@
 //!
 //! One concern of this service's state, in two halves:
 //!
-//! * WHICH session an ARN names ([`addressed_session`]). `GetResourceDashboardRequest$
-//!   ResourceARN` is documented "The Amazon Resource Name (ARN) for a session", so the
-//!   resource the call addresses is a session of this account — read out of the ARN the
-//!   caller submitted and resolved against the one [`SessionRegistry`] every other
-//!   session-addressed operation reads, rather than against a second copy. The ARN is read
-//!   through [`::service_common::arn`], the one place this tree parses a caller-supplied
-//!   ARN.
+//! * WHICH session an ARN names ([`session_arn_reference`] and [`addressed_session`]).
+//!   `GetResourceDashboardRequest$ResourceARN` is documented "The Amazon Resource Name (ARN)
+//!   for a session", so the resource the call addresses is a session of this account — read
+//!   out of the ARN the caller submitted and resolved against the one [`SessionRegistry`]
+//!   every other session-addressed operation reads, rather than against a second copy. The
+//!   ARN is read through [`::service_common::arn`], the one place this tree parses a
+//!   caller-supplied ARN. The reading is in two steps, because the two failures are
+//!   client-visibly different: whether the value spells out the ARN of a session AT ALL is
+//!   the request's own FORM ([`session_arn_reference`],
+//!   [`RESOURCE_ARN_NOT_COMPLETE_OR_INVALID`]), and whether the session it names is one this
+//!   account holds is RESOLUTION ([`addressed_session`], [`RESOURCE_ARN_NOT_FOUND`]).
 //! * WHAT that session's interface is ([`SessionRecord::dashboard_url`]).
 //!   `GetResourceDashboardResponse$Url` is documented "The Live UI/Persistence UI url for a
 //!   session": those are the two interfaces a Spark session has, and WHICH of them the URL
@@ -49,13 +53,25 @@ pub const SESSION_RESOURCE_TYPE: &str = "session";
 /// The message a dashboard read answers an ARN it resolved no session of this account from
 /// with.
 ///
-/// ONE sentence for the whole class, naming the MEMBER that was wrong and nothing of the
-/// value it carried: a value that is not an ARN, an ARN of another vendor, Region or
-/// account, one naming no session at all, and one naming a session this account does not
-/// hold are all answered alike, because what the service reports is that the submitted
-/// `ResourceARN` resolved to nothing — and a refusal that quoted the ARN back would
-/// disclose which ARNs do resolve.
+/// ONE sentence for the whole class of RESOLUTION misses, naming the MEMBER that was wrong
+/// and nothing of the value it carried: an ARN naming another vendor's, another Region's or
+/// another account's session, and one naming a session this account does not hold, are all
+/// answered alike, because what the service reports is that the submitted `ResourceARN`
+/// resolved to nothing — and a refusal that quoted the ARN back would disclose which ARNs do
+/// resolve. A value that spells out no session ARN at all is the other condition
+/// ([`RESOURCE_ARN_NOT_COMPLETE_OR_INVALID`]).
 pub const RESOURCE_ARN_NOT_FOUND: &str = "ResourceARN is not found";
+
+/// The message a dashboard read answers a `ResourceARN` out of which no session reference
+/// can be read at all.
+///
+/// Athena's own wording for the input-shape failure, and wholly fixed text (no terminating
+/// period): it quotes nothing of the value the request carried. A different condition from
+/// [`RESOURCE_ARN_NOT_FOUND`] and reported before it — a value that does not spell out the
+/// ARN of a session names no session in any account, so the remedy is to correct the
+/// REQUEST, while a value that does spell one out and resolves to nothing says the session it
+/// names is absent.
+pub const RESOURCE_ARN_NOT_COMPLETE_OR_INVALID: &str = "ResourceARN is not complete or invalid";
 
 /// The session a `ResourceARN` addresses: its id, and the workgroup when the ARN scopes it
 /// to one.
@@ -73,30 +89,33 @@ pub struct AddressedSession<'arn> {
     pub session_id: &'arn str,
 }
 
-/// The session the ARN `arn` addresses, where `region` is the Region the CALL was made in
-/// (see [`authorization::region_from_request`]), or `None` for an ARN no session of this
-/// endpoint resolves from.
+/// The session reference the value `arn` spells out, read from its FORM alone, or `None` for
+/// a value out of which no session reference can be read at all.
 ///
-/// A dashboard read reaches the sessions of the account it was signed for, in the Region it
-/// was addressed to, so an ARN of another vendor, Region or account resolves nothing here —
-/// the same reading [`addressed_resource`] makes of a tagging call's ARN, except that
-/// "another account" is not told apart from the rest: this operation reports only that the
-/// submitted member resolved to no session ([`RESOURCE_ARN_NOT_FOUND`]).
+/// `ResourceARN` is documented "The Amazon Resource Name (ARN) for a session", so the value
+/// has to spell out the ARN of a session completely: the six colon-separated fields of
+/// [`::service_common::arn`]'s form with the partition, the vendor, the Region, the account
+/// and the resource all filled in — a session is a REGIONAL resource of one account, so
+/// every field of the ARN that names one is written — and a resource field naming a session,
+/// either directly (`session/<SessionId>`) or scoped to the workgroup the session belongs to
+/// (`workgroup/<WorkGroupName>/session/<SessionId>`), with no segment left empty and none
+/// past the id.
 ///
-/// The partition is not read: one endpoint serves one partition, and the account and Region
-/// above already say whether the ARN addresses what this endpoint holds. An EMPTY account or
-/// Region field names no account or Region to mismatch — AWS writes a partition-global or
-/// account-less resource that way — so such an ARN is read for the session it names.
+/// WHOSE session that is — the vendor, the account and the Region fields — is not read here:
+/// that is resolution, which [`addressed_session`] applies on top of this reading. A value
+/// this reads nothing out of is the REQUEST being wrong, however complete the account's
+/// session registry is ([`RESOURCE_ARN_NOT_COMPLETE_OR_INVALID`]).
 #[must_use]
-pub fn addressed_session<'arn>(arn: &'arn str, region: &str) -> Option<AddressedSession<'arn>> {
-    let parsed = ::service_common::arn::parse(arn)?;
-    if parsed.vendor != authorization::ACTION_PREFIX {
-        return None;
-    }
-    if !parsed.account.is_empty() && parsed.account != ::engine::emulator_account_id() {
-        return None;
-    }
-    if !parsed.region.is_empty() && parsed.region != region {
+pub fn session_arn_reference(arn: &str) -> Option<AddressedSession<'_>> {
+    session_reference_of(::service_common::arn::parse(arn)?)
+}
+
+/// The same reading, from an ARN already parsed — so a caller that has read the other fields
+/// of `parsed` does not split the value a second time.
+fn session_reference_of<'arn>(
+    parsed: ::service_common::arn::Arn<'arn>,
+) -> Option<AddressedSession<'arn>> {
+    if parsed.region.is_empty() || parsed.account.is_empty() {
         return None;
     }
     // AWS writes a resource in either form, `<type>/<id>` and `<type>:<id>`, so both
@@ -121,6 +140,40 @@ pub fn addressed_session<'arn>(arn: &'arn str, region: &str) -> Option<Addressed
             .work_group
             .is_none_or(|work_group| !work_group.is_empty()))
     .then_some(addressed)
+}
+
+/// The session the ARN `arn` addresses, where `region` is the Region the CALL was made in
+/// (see [`authorization::region_from_request`]), or `None` for an ARN no session of this
+/// endpoint resolves from.
+///
+/// RESOLUTION on top of the reading [`session_arn_reference`] makes: a dashboard read reaches
+/// the sessions of the account it was signed for, in the Region it was addressed to, so an
+/// ARN naming another vendor's, another account's or another Region's session resolves
+/// nothing here — the same reading [`addressed_resource`] makes of a tagging call's ARN,
+/// except that "another account" is not told apart from the rest: this operation reports only
+/// that the submitted member resolved to no session ([`RESOURCE_ARN_NOT_FOUND`]).
+///
+/// The partition is not read: one endpoint serves one partition, and the account and Region
+/// above already say whether the ARN addresses what this endpoint holds.
+///
+/// The account and the Region are compared for EQUALITY here, so an empty field matches
+/// nothing rather than matching every account or Region: an ARN that leaves either blank is
+/// already no session ARN at all ([`session_reference_of`]), and the allowance other services
+/// make for a partition-global or account-less resource has no place on a member documented
+/// as the ARN of a session.
+#[must_use]
+pub fn addressed_session<'arn>(arn: &'arn str, region: &str) -> Option<AddressedSession<'arn>> {
+    let parsed = ::service_common::arn::parse(arn)?;
+    if parsed.vendor != authorization::ACTION_PREFIX {
+        return None;
+    }
+    if parsed.account != ::engine::emulator_account_id() {
+        return None;
+    }
+    if parsed.region != region {
+        return None;
+    }
+    session_reference_of(parsed)
 }
 
 /// The path segment the interface of a session whose resources are RUNNING is served on:

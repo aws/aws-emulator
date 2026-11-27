@@ -29,6 +29,10 @@ use crate::ops::types::{CapacityAssignment, CapacityAssignmentConfiguration};
 /// AWS's own wording for that miss, and wholly fixed text: neither the assignment nor the
 /// workgroup name the request carried is interpolated into it, so a put naming one unknown
 /// workgroup and a put naming several read the same way.
+///
+/// It is also the FIRST condition a put reports: the workgroups the request assigns are
+/// resolved before the reservation the put is addressed to
+/// ([`ComAmazonawsAthenaAmazonathenaState::put_capacity_assignments`]).
 pub const WORK_GROUPS_NOT_FOUND: &str = "One or more WorkGroups are not found.";
 
 /// The message a put naming a workgroup ANOTHER reservation's capacity still serves is
@@ -129,20 +133,24 @@ impl ComAmazonawsAthenaAmazonathenaState {
     /// Store `assignments` as the capacity assignment configuration of the reservation
     /// `name`, replacing the one it held.
     ///
-    /// `Err` carries the sentence saying why NOTHING was stored: the account holds no such
-    /// reservation, an assignment names a workgroup it does not hold, or an assignment names
-    /// a workgroup another live reservation already serves. All three are measured before the
-    /// configuration is touched, so a put that is refused leaves the reservation configured
-    /// exactly as the last accepted put left it.
+    /// `Err` carries the sentence saying why NOTHING was stored: an assignment names a
+    /// workgroup this account does not hold, the account holds no such reservation, or an
+    /// assignment names a workgroup another live reservation already serves. All three are
+    /// measured before the configuration is touched, so a put that is refused leaves the
+    /// reservation configured exactly as the last accepted put left it.
+    ///
+    /// Whether every assigned workgroup RESOLVES is asked first, before the reservation the
+    /// put is addressed to: what the request carries is checked before what it is addressed
+    /// to, so a put whose assignment names a workgroup this account does not hold reports
+    /// that condition whatever the state of the named reservation — and a client reads the
+    /// one remedy that is its own to take (correct or create the workgroups it is assigning)
+    /// rather than one about a reservation.
     pub fn put_capacity_assignments(
         &mut self,
         name: &str,
         assignments: Vec<CapacityAssignment>,
         now: SystemTime,
     ) -> Result<(), String> {
-        if self.capacity_reservations.reservation(name, now).is_none() {
-            return Err(capacity_reservation_not_found(name));
-        }
         // A configuration assigns WORKGROUPS, so every name it carries must be one this
         // account holds — asked of the ONE place a workgroup name is resolved
         // ([`ComAmazonawsAthenaAmazonathenaState::holds_work_group`]), which is why the
@@ -150,6 +158,9 @@ impl ComAmazonawsAthenaAmazonathenaState {
         if !assigned_work_groups(&assignments).all(|work_group| self.holds_work_group(work_group))
         {
             return Err(WORK_GROUPS_NOT_FOUND.to_string());
+        }
+        if self.capacity_reservations.reservation(name, now).is_none() {
+            return Err(capacity_reservation_not_found(name));
         }
         // And a workgroup is served by at most ONE reservation: a name another reservation
         // that still holds its capacity assigns is capacity this reservation cannot also

@@ -127,10 +127,10 @@ fn query_execution_miss(id: &str) -> String {
     state::query_execution_not_found(id)
 }
 
-/// The sentence a miss of a `StatementName` is stated in. Fixed text: Athena's wording for
-/// that miss names no statement, so the name the request carried is not interpolated.
-fn prepared_statement_miss(_name: &str) -> String {
-    state::prepared_statement_name_not_found()
+/// The sentence a miss of a `StatementName` is stated in: Athena's wording for that miss
+/// names the statement, so the name the request carried is its one variable part.
+fn prepared_statement_miss(name: &str) -> String {
+    state::prepared_statement_name_not_found(name)
 }
 
 /// `held` with its last character replaced: an id of exactly the form this service holds,

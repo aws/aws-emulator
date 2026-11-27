@@ -3,8 +3,10 @@
 //! @op PutCapacityAssignmentConfiguration
 //! IMPLEMENTED: makes the assignments the request carried the capacity assignment
 //! configuration of the named capacity reservation, replacing the one it held, and refuses
-//! a reservation this account does not hold or an assignment naming a workgroup it does not
-//! hold without storing anything, as it does a configuration larger than this service stores.
+//! an assignment naming a workgroup this account does not hold — the condition reported
+//! first, before the named reservation is resolved — or a reservation this account does not
+//! hold, without storing anything, as it does a configuration larger than this service
+//! stores.
 //! `GetCapacityAssignmentConfiguration` answers out of the same field.
 //!
 //! ## Shape of an operation

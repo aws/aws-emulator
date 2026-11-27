@@ -676,6 +676,7 @@ async fn a_batch_read_reports_held_statements_and_lists_the_rest_as_unprocessed(
              {unprocessed_names:?}"
         );
         for entry in &unprocessed {
+            let name = entry["StatementName"].as_str().unwrap_or_default();
             assert_eq!(
                 entry["ErrorCode"].as_str(),
                 Some(ERROR_CODE_STATEMENT_NAME_NOT_FOUND),
@@ -684,8 +685,9 @@ async fn a_batch_read_reports_held_statements_and_lists_the_rest_as_unprocessed(
             );
             assert_eq!(
                 entry["ErrorMessage"].as_str(),
-                Some(prepared_statement_name_not_found().as_str()),
-                "case {case:?}: expected the documented reason, got {entry:?}"
+                Some(prepared_statement_name_not_found(name).as_str()),
+                "case {case:?}: expected the reason naming the statement asked for, got \
+                 {entry:?}"
             );
         }
         // Every statement reported carries the query string it was created with, so the
