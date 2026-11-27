@@ -86,12 +86,18 @@ const SESSION_TOKEN_HEADER: &str = "x-amz-security-token";
 
 /// The largest input document one call may carry.
 ///
-/// A HOST bound, well above any operation's own input limit and far below what a run's
-/// memory ceiling allows, so a guest cannot turn one invocation into an unbounded request.
-pub const MAX_REQUEST_BYTES: usize = 1024 * 1024;
+/// A HOST bound, so a guest cannot turn one invocation into an unbounded request. It is far
+/// below what a run's memory ceiling allows and above the largest payload the operations
+/// this seam carries take: an object's own BYTES, which travel as the base64 a JSON document
+/// carries a blob in — a third larger than the bytes themselves — so a document carrying one
+/// part of a multipart upload at the smallest size Amazon S3 accepts for one ("each part
+/// must be at least 5 MB in size, except the last part", `UploadPart`) travels, and so does
+/// the whole of an object a managed transfer sends in one call.
+pub const MAX_REQUEST_BYTES: usize = 16 * 1024 * 1024;
 
-/// The largest answer one call may read back, for the same reason.
-pub const MAX_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
+/// The largest answer one call may read back: the same bound in the other direction, because
+/// an object a call writes is an object a later call reads back whole.
+pub const MAX_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
 
 /// How many calls one run may make.
 ///
@@ -237,6 +243,22 @@ impl Api {
             | Protocol::CloudFormationQuery
             | Protocol::Ec2Query => "application/json".to_string(),
         }
+    }
+}
+
+impl Protocol {
+    /// Whether an answer of this protocol is a document this runtime BUILT out of the output
+    /// members an SDK CLIENT of this crate reported ([`super::sdk_call`]), rather than the body
+    /// the service answered as its protocol wrote it.
+    ///
+    /// A built document is keyed by the output's own member names and states every member in
+    /// the form a JSON body carries one, WHEREVER the wire bound that member, because the
+    /// client has already read the answer's headers and XML into its output — which is what
+    /// decides where such an answer's instants sit
+    /// ([`super::blob_members::AnswerPlan::built_answer_paths`]). The two JSON protocols are
+    /// the ones whose answer this seam reads off the wire itself.
+    fn answer_is_built_here(&self) -> bool {
+        !matches!(self, Self::AwsJson { .. } | Self::RestJson(_))
     }
 }
 
@@ -2401,7 +2423,7 @@ impl AwsAccess {
             // the output members its own client reported ([`super::sdk_call`]) states its
             // instants in the same form a JSON body carries them in.
             Ok(Ok(answer)) => Ok(Answer {
-                instants: answer_instants(api.sdk_token, operation, &answer).await,
+                instants: answer_instants(api, operation, &answer).await,
                 ..answer
             }),
             Ok(refused) => refused,
@@ -3054,7 +3076,7 @@ async fn sent(
     })
 }
 
-/// WHERE the answer of a call to the service `token` carries an INSTANT: one path per value
+/// WHERE the answer of a call to the service `api` names carries an INSTANT: one path per value
 /// `answered` holds that the called operation's own model types as a `timestamp`
 /// ([`super::blob_members`]).
 ///
@@ -3063,27 +3085,37 @@ async fn sent(
 /// timestamps. The answer is read from the same held reading of that model every other question
 /// about the called service is answered from ([`super::sdk_model::client_exports`]).
 ///
+/// WHICH walk over the document reads it is the protocol's: an answer this seam BUILT from the
+/// output members an SDK client of this crate reported states every member in the form a JSON
+/// body carries, wherever the wire bound that member, while an answer read off the protocol's
+/// own body carries a member bound elsewhere in that binding's own form
+/// ([`Protocol::answer_is_built_here`]).
+///
 /// Nothing is reported for a REFUSAL: an answer that is not a success carries no output member
 /// at all. The reading runs on a BLOCKING THREAD of the runtime for the reason the blob paths
 /// are read on one: reading a service's model for the first time in this process parses a
 /// document of several megabytes, and the thread this is called on is the RUN's own, whose
 /// faulted pages are what the invocation's memory ceiling is measured from.
 async fn answer_instants(
-    token: &'static str,
+    api: &'static Api,
     operation: &str,
     answered: &Answer,
 ) -> Vec<::serde_json::Value> {
     if !(200..300).contains(&answered.status) {
         return Vec::new();
     }
+    let token = api.sdk_token;
+    let built = api.protocol.answer_is_built_here();
     let operation = operation.to_string();
     let body = answered.body.clone();
     ::tokio::task::spawn_blocking(move || {
         let document =
             ::serde_json::from_str::<::serde_json::Value>(&body).unwrap_or(::serde_json::Value::Null);
-        super::sdk_model::client_exports(token)
-            .answer_instants
-            .answer_paths(&operation, &document)
+        let plan = &super::sdk_model::client_exports(token).answer_instants;
+        match built {
+            true => plan.built_answer_paths(&operation, &document),
+            false => plan.answer_paths(&operation, &document),
+        }
     })
     .await
     .unwrap_or_default()

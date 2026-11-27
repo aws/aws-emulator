@@ -50,6 +50,13 @@
 //!   ([`super::rest_json`] reads those). A payload that is the body itself is NOT one of them:
 //!   that document's values travel in the form a body carries and are part of the plan
 //!   ([`carries_the_bodys_form`], which reads WHICH payloads those are from that same seam).
+//!
+//! The second exception is decided per WALK for the bindings whose form depends on which answer
+//! is being read — a header, a prefix of headers, the response code — because it does not hold
+//! of an answer this runtime BUILT itself ([`AnswerPlan::built_answer_paths`]): a seam that
+//! reads an answer off the output members an SDK CLIENT of this crate reported
+//! ([`super::sdk_call`]) states every one of them in the form a JSON body carries, wherever the
+//! wire bound it, so an instant of such an answer is an instant whichever binding carried it.
 
 use ::std::collections::{BTreeMap, BTreeSet};
 use ::std::sync::OnceLock;
@@ -195,6 +202,22 @@ struct Member {
     wire: Option<String>,
     /// The shape it targets.
     target: String,
+    /// Whether the protocol binds it somewhere other than the JSON body
+    /// ([`OUTSIDE_THE_BODY`]), which is what decides the walks that report it.
+    outside_the_body: bool,
+}
+
+/// How one walk over a document reads it.
+#[derive(Debug, Clone, Copy)]
+struct Reading {
+    /// Whether a value in ANY form is one of the plan's kind, which is what tells a REQUEST's
+    /// walk from an ANSWER's: an answer carries each value in the one form its protocol
+    /// states, so a value in another form is not one of this kind at all, while a request
+    /// states one in whatever form its caller handed over.
+    any_form: bool,
+    /// Whether a member the protocol binds outside the JSON body is reported
+    /// ([`AnswerPlan::built_answer_paths`]).
+    bound_outside_the_body: bool,
 }
 
 impl AnswerPlan {
@@ -269,11 +292,40 @@ impl AnswerPlan {
     /// `@jsonName` gives it, so one walk serves both.
     #[must_use]
     pub fn answer_paths(&self, operation: &str, document: &Value) -> Vec<Value> {
+        self.answered(operation, document, false)
+    }
+
+    /// The same, for an answer this runtime BUILT out of the output members an SDK CLIENT of
+    /// this crate reported ([`super::sdk_call`]).
+    ///
+    /// Such a document is keyed by the output's own member names and states every member in the
+    /// form a JSON body carries one — a timestamp as the seconds since the epoch
+    /// ([`super::sdk_call::insert_timestamp`]) — WHEREVER the wire bound that member, because
+    /// the client has already read the answer's headers and XML into its output. So a member
+    /// bound outside the body is part of this walk, while it is no part of the one above, where
+    /// the value in the document is that binding's own form.
+    #[must_use]
+    pub fn built_answer_paths(&self, operation: &str, document: &Value) -> Vec<Value> {
+        self.answered(operation, document, true)
+    }
+
+    /// Where the answer of `operation` carries a value of this plan's kind, for a walk that
+    /// does or does not report the members bound outside the body.
+    fn answered(&self, operation: &str, document: &Value, bound: bool) -> Vec<Value> {
         let Some(output) = self.outputs.get(operation) else {
             return Vec::new();
         };
         let mut paths = Vec::new();
-        self.walk(output, document, &mut Vec::new(), &mut paths, false);
+        self.walk(
+            output,
+            document,
+            &mut Vec::new(),
+            &mut paths,
+            Reading {
+                any_form: false,
+                bound_outside_the_body: bound,
+            },
+        );
         paths
     }
 
@@ -292,30 +344,37 @@ impl AnswerPlan {
             return Vec::new();
         };
         let mut paths = Vec::new();
-        self.walk(input, document, &mut Vec::new(), &mut paths, true);
+        self.walk(
+            input,
+            document,
+            &mut Vec::new(),
+            &mut paths,
+            Reading {
+                any_form: true,
+                // A value a REQUEST binds outside its body travels in that binding's own
+                // form, which the client writes rather than this seam.
+                bound_outside_the_body: false,
+            },
+        );
         paths
     }
 
     /// Collect the paths of every value of this plan's kind that `document` carries under the
     /// shape `id`.
-    ///
-    /// `any_form` is what tells a REQUEST's walk from an ANSWER's: an answer carries each value
-    /// in the one form its protocol states, so a value in another form is not one of this kind
-    /// at all, while a request states one in whatever form its caller handed over.
     fn walk(
         &self,
         id: &str,
         document: &Value,
         path: &mut Vec<Value>,
         paths: &mut Vec<Value>,
-        any_form: bool,
+        reading: Reading,
     ) {
         match self.shapes.get(id) {
             Some(Carrier::Leaf) => {
                 // A blob the document carries as text is the base64 of its bytes, and a
                 // timestamp it carries as a number is the seconds since the epoch; anything
                 // else is not a value this seam materialises.
-                let carried = if any_form {
+                let carried = if reading.any_form {
                     !document.is_null()
                 } else {
                     self.kind.is_some_and(|kind| kind.carried_by(document))
@@ -329,11 +388,17 @@ impl AnswerPlan {
                     return;
                 };
                 for member in members {
+                    // A member the protocol binds OUTSIDE the JSON body is reported only
+                    // where the walk reads a document whose values are all in the form a body
+                    // carries.
+                    if member.outside_the_body && !reading.bound_outside_the_body {
+                        continue;
+                    }
                     let Some((key, carried)) = member.carried(object) else {
                         continue;
                     };
                     path.push(Value::String(key));
-                    self.walk(&member.target, carried, path, paths, any_form);
+                    self.walk(&member.target, carried, path, paths, reading);
                     path.pop();
                 }
             }
@@ -343,7 +408,7 @@ impl AnswerPlan {
                 };
                 for (index, carried) in entries.iter().enumerate() {
                     path.push(Value::from(index));
-                    self.walk(entry, carried, path, paths, any_form);
+                    self.walk(entry, carried, path, paths, reading);
                     path.pop();
                 }
             }
@@ -353,7 +418,7 @@ impl AnswerPlan {
                 };
                 for (key, carried) in entries {
                     path.push(Value::String(key.clone()));
-                    self.walk(value, carried, path, paths, any_form);
+                    self.walk(value, carried, path, paths, reading);
                     path.pop();
                 }
             }
@@ -445,8 +510,6 @@ fn carrier_of(
             let members = members_of(shapes, id)?
                 .iter()
                 .filter(|(_name, member)| carrying.contains(target_of(member)))
-                // A member an answer binds outside its JSON body does not carry the form a
-                // JSON body carries, so it is not part of the plan at all.
                 .filter(|(_name, member)| carries_the_bodys_form(shapes, member))
                 .map(|(name, member)| Member {
                     name: name.clone(),
@@ -454,6 +517,12 @@ fn carrier_of(
                         .and_then(Value::as_str)
                         .map(str::to_string),
                     target: target_of(member).to_string(),
+                    // A member an answer binds outside its JSON body does not carry the form
+                    // a JSON body carries, so only a walk over a document whose values are
+                    // all in that form reports it ([`Reading`]).
+                    outside_the_body: OUTSIDE_THE_BODY
+                        .iter()
+                        .any(|bound| member_trait(member, bound).is_some()),
                 })
                 .collect::<Vec<Member>>();
             (!members.is_empty()).then_some(Carrier::Members(members))
@@ -471,21 +540,19 @@ fn carrier_of(
 /// Whether the value of `member` in an ANSWER carries the form a JSON body carries, which is
 /// what makes it part of the plan at all.
 ///
-/// A member bound to a HEADER, to a prefix of headers or to the response code carries the text
-/// or the number of that binding rather than the body's own form, so none of those is in the
-/// plan. A member bound to the WHOLE body is the one binding whose form depends on what it
-/// targets, and WHICH kinds of payload are the body is read from the seam that reads such an
-/// answer back ([`super::rest_json::payload_is_the_body`]) rather than restated here: a payload
-/// the model types as a blob or as text IS the body's own bytes or text, while a payload it
-/// types as a document IS the body — every value inside it travels in exactly the form a body
-/// carries one in, so an SDK materialises those values as it does any other.
+/// A member bound to the WHOLE body is the one binding whose form depends on what it targets,
+/// and WHICH kinds of payload are the body is read from the seam that reads such an answer back
+/// ([`super::rest_json::payload_is_the_body`]) rather than restated here: a payload the model
+/// types as a blob or as text IS the body's own bytes or text, while a payload it types as a
+/// document IS the body — every value inside it travels in exactly the form a body carries one
+/// in, so an SDK materialises those values as it does any other.
+///
+/// A member bound to a HEADER, to a prefix of headers or to the response code is part of the
+/// plan too, carrying [`Member::outside_the_body`]: what form ITS value has depends on which
+/// answer is being read, so which walks report it is decided per walk ([`Reading`]) rather than
+/// here — an answer read off the protocol's own body carries that binding's own text, while one
+/// this runtime BUILT from an SDK client's output states every member in the body's form.
 fn carries_the_bodys_form(shapes: &Map<String, Value>, member: &Value) -> bool {
-    if OUTSIDE_THE_BODY
-        .iter()
-        .any(|bound| member_trait(member, bound).is_some())
-    {
-        return false;
-    }
     if member_trait(member, PAYLOAD).is_none() {
         return true;
     }

@@ -959,7 +959,7 @@ def lambda_handler(event, context):
     );
     tokio::time::sleep(ACTIVATION_DELAY + SLACK).await;
 
-    for service in ["s3", "ec2"] {
+    for service in ["ec2", "sqs"] {
         let payload = invoke(
             &router,
             case,
@@ -974,7 +974,9 @@ def lambda_handler(event, context):
         );
         let refusal = payload["refusal"].as_str().unwrap_or_default();
         assert!(
-            refusal.contains(service) && refusal.contains("dynamodb"),
+            refusal.contains(service)
+                && refusal.contains("dynamodb")
+                && refusal.contains("s3"),
             "case {case:?} ({service}): expected the refusal to name the service asked for \
              and the ones there are classes for, got {refusal:?}"
         );

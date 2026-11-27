@@ -895,7 +895,7 @@ def lambda_handler(event, context):
     client = boto3.client("s3")
     reported = {}
     for name, call in (
-        ("unbound_operation", lambda: client.get_bucket_policy(Bucket=event["bucket"])),
+        ("unbound_operation", lambda: client.get_bucket_website(Bucket=event["bucket"])),
         ("unbound_parameter", lambda: client.get_object(
             Bucket=event["bucket"], Key=event["key"], PartNumber=2)),
     ):
@@ -933,7 +933,7 @@ def lambda_handler(event, context):
     );
     let operation = payload["unbound_operation"].as_str().unwrap_or_default();
     assert!(
-        operation.contains("GetBucketPolicy") && operation.contains("GetObject"),
+        operation.contains("GetBucketWebsite") && operation.contains("GetObject"),
         "case {case:?}: expected the unbound operation to be named beside the bound ones, \
          got {payload}"
     );

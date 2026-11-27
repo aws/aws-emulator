@@ -973,22 +973,7 @@ const DYNAMODB_TABLE_SOURCE: &str = r##"
 from botocore import xform_name
 
 from boto3.dynamodb.transform import DocumentClient
-
-
-class ResourceMeta:
-    """What a resource was built for, and what the service has said about it."""
-
-    def __init__(self, service_name, client, identifiers=None, data=None):
-        self.service_name = service_name
-        self.client = client
-        self.identifiers = identifiers or []
-        self.data = data
-
-    def __repr__(self):
-        return "ResourceMeta('%s', identifiers=%s)" % (
-            self.service_name,
-            self.identifiers,
-        )
+from boto3.resources.base import ResourceMeta
 
 
 class BatchWriter:

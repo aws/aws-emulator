@@ -2548,6 +2548,9 @@ fn call_answer(answered: &Result<super::aws_api::Answer, Refusal>) -> String {
             "errorMembers": answer.error_members,
             "streams": answer.streams,
             "blobs": answer.blobs,
+            // WHERE the answer carries an INSTANT, which the SDK the guest calls hands over
+            // as a timezone-aware date-time rather than as the number the wire carried
+            // ([`super::blob_members`], [`super::aws_sdk_guest`]).
             "instants": answer.instants,
             "payloadBlobs": answer.payload_blobs,
         })

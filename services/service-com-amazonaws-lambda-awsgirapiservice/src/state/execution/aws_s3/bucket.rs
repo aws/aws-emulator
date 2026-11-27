@@ -9,9 +9,9 @@
 //! whether a bucket is there and usable at all, lists the account's buckets, reads the Region
 //! a bucket resides in, reads and
 //! replaces the notification container that decides where a bucket's object events are
-//! published, reads and replaces the bucket's tag set, its versioning state and its default
-//! server-side encryption, lists the versions a bucket holds and removes a set of them in
-//! one call. Every one of them is bound exactly as the object calls
+//! published, reads, replaces and REMOVES the bucket's tag set, its resource policy and its
+//! default server-side encryption, reads and replaces its versioning state, lists the
+//! versions a bucket holds and removes a set of them in one call. Every one of them is bound exactly as the object calls
 //! beside it are ([`super`]): the request is built, signed and parsed by the S3 client this
 //! crate holds, over the in-process callback, so the answer is the emulated S3 service's
 //! own — that operation's output members for a success, and S3's own code, message and
@@ -499,6 +499,114 @@ pub(super) async fn put_bucket_tagging(
     }
 }
 
+/// `DeleteBucketTagging`: the tag set removed from the bucket altogether.
+///
+/// The REMOVAL beside the read and the replacement above: "deletes the tags from the bucket"
+/// (`DeleteBucketTagging`) leaves a bucket carrying no tag set at all, which is a different
+/// state from one carrying an empty one, and a handler that cleans up after itself is how a
+/// bucket reaches it.
+pub(super) async fn delete_bucket_tagging(
+    client: &Client,
+    input: &Input,
+    observed: &Observed,
+) -> Result<Answer, Refusal> {
+    input.only(&["Bucket", "ExpectedBucketOwner"])?;
+    let sent = client
+        .delete_bucket_tagging()
+        .bucket(input.required_text("Bucket")?)
+        .set_expected_bucket_owner(input.text("ExpectedBucketOwner")?)
+        .send()
+        .await;
+    match sent {
+        // The operation's output is `Unit`: the success IS the status, with no member to
+        // report.
+        Ok(_) => observed.answer(Map::new(), Vec::new()),
+        Err(error) => refused(&error, observed),
+    }
+}
+
+/// `GetBucketPolicy`: the resource policy in force on the bucket, as the document it is.
+///
+/// "Returns the policy of a specified bucket" (`GetBucketPolicy`): the member is the policy
+/// DOCUMENT's own text (`GetBucketPolicyOutput$Policy`, bound to the whole payload), so what
+/// a handler reads back is the text it would parse, not a container around it. A bucket
+/// carrying no policy is S3's own refusal, reported as every other refusal of this seam is.
+pub(super) async fn get_bucket_policy(
+    client: &Client,
+    input: &Input,
+    observed: &Observed,
+) -> Result<Answer, Refusal> {
+    input.only(&["Bucket", "ExpectedBucketOwner"])?;
+    let sent = client
+        .get_bucket_policy()
+        .bucket(input.required_text("Bucket")?)
+        .set_expected_bucket_owner(input.text("ExpectedBucketOwner")?)
+        .send()
+        .await;
+    let read = match sent {
+        Ok(read) => read,
+        Err(error) => return refused(&error, observed),
+    };
+    let mut document = Map::new();
+    insert_text(&mut document, "Policy", read.policy());
+    observed.answer(document, Vec::new())
+}
+
+/// `PutBucketPolicy`: the whole resource policy, replacing whatever the bucket carried.
+pub(super) async fn put_bucket_policy(
+    client: &Client,
+    input: &Input,
+    observed: &Observed,
+) -> Result<Answer, Refusal> {
+    input.only(&[
+        "Bucket",
+        "Policy",
+        "ChecksumAlgorithm",
+        "ContentMD5",
+        "ConfirmRemoveSelfBucketAccess",
+        "ExpectedBucketOwner",
+    ])?;
+    let sent = client
+        .put_bucket_policy()
+        .bucket(input.required_text("Bucket")?)
+        // The policy is the operation's required payload (`PutBucketPolicyRequest$Policy`),
+        // so a call carrying none stops here rather than replacing a policy with nothing.
+        .policy(input.required_text("Policy")?)
+        .set_checksum_algorithm(
+            input
+                .text("ChecksumAlgorithm")?
+                .map(|value| ChecksumAlgorithm::from(value.as_str())),
+        )
+        .set_content_md5(input.text("ContentMD5")?)
+        .set_confirm_remove_self_bucket_access(input.boolean("ConfirmRemoveSelfBucketAccess")?)
+        .set_expected_bucket_owner(input.text("ExpectedBucketOwner")?)
+        .send()
+        .await;
+    match sent {
+        Ok(_) => observed.answer(Map::new(), Vec::new()),
+        Err(error) => refused(&error, observed),
+    }
+}
+
+/// `DeleteBucketPolicy`: the policy removed, leaving the bucket with none.
+pub(super) async fn delete_bucket_policy(
+    client: &Client,
+    input: &Input,
+    observed: &Observed,
+) -> Result<Answer, Refusal> {
+    input.only(&["Bucket", "ExpectedBucketOwner"])?;
+    let sent = client
+        .delete_bucket_policy()
+        .bucket(input.required_text("Bucket")?)
+        .set_expected_bucket_owner(input.text("ExpectedBucketOwner")?)
+        .send()
+        .await;
+    match sent {
+        Ok(_) => observed.answer(Map::new(), Vec::new()),
+        Err(error) => refused(&error, observed),
+    }
+}
+
 /// `GetBucketVersioning`: the versioning state the bucket is in.
 ///
 /// "If the versioning state has never been set on a bucket, it has no versioning state"
@@ -706,6 +814,26 @@ pub(super) async fn put_bucket_encryption(
                 .text("ChecksumAlgorithm")?
                 .map(|value| ChecksumAlgorithm::from(value.as_str())),
         )
+        .set_expected_bucket_owner(input.text("ExpectedBucketOwner")?)
+        .send()
+        .await;
+    match sent {
+        Ok(_) => observed.answer(Map::new(), Vec::new()),
+        Err(error) => refused(&error, observed),
+    }
+}
+
+/// `DeleteBucketEncryption`: the default-encryption container removed, leaving the bucket
+/// with the encryption S3 applies to one that states none.
+pub(super) async fn delete_bucket_encryption(
+    client: &Client,
+    input: &Input,
+    observed: &Observed,
+) -> Result<Answer, Refusal> {
+    input.only(&["Bucket", "ExpectedBucketOwner"])?;
+    let sent = client
+        .delete_bucket_encryption()
+        .bucket(input.required_text("Bucket")?)
         .set_expected_bucket_owner(input.text("ExpectedBucketOwner")?)
         .send()
         .await;

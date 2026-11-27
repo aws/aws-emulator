@@ -126,6 +126,10 @@ use super::package::PackageModule;
 /// marshalling between a plain Python value and an attribute value.
 mod dynamodb;
 
+/// Amazon S3's resource interface: the service resource, its buckets, their objects and the
+/// collections those are reached through.
+mod s3_resource;
+
 /// The paginator a client answers with for a paginated operation.
 mod paginator;
 
@@ -167,11 +171,14 @@ pub fn runtime_modules() -> Vec<PackageModule> {
         ("botocore/client.py", BOTOCORE_CLIENT_SOURCE),
         ("boto3/__init__.py", BOTO3_SOURCE),
         ("boto3/session.py", BOTO3_SESSION_SOURCE),
+        ("boto3/resources/__init__.py", BOTO3_RESOURCES_SOURCE),
+        ("boto3/resources/base.py", BOTO3_RESOURCES_BASE_SOURCE),
     ]
     .into_iter()
     .chain(paginator::modules())
     .chain(waiter::modules())
     .chain(dynamodb::modules())
+    .chain(s3_resource::modules())
     .chain(urllib3::modules())
     .chain(s3transfer::modules())
     .chain(jmespath::modules())
@@ -1415,16 +1422,39 @@ class Client:
     def close(self):
         return None
 
+    def _transfer_manager(self, Config):
+        """The manager one of this client's managed transfers is run by.
+
+        A transfer is not an operation: the SDK performs each of them through the managed
+        transfer library ([`boto3.s3.transfer`]), which is what decides the CALLS one makes —
+        one `PutObject` or `GetObject` for an object inside the configured threshold, and the
+        parts of a multipart upload for one over it. Imported here rather than at module
+        scope, like the paginator above: a handler that transfers nothing pays nothing for the
+        library.
+        """
+        from boto3.s3.transfer import create_transfer_manager
+
+        return create_transfer_manager(self, Config)
+
+    @staticmethod
+    def _transfer_subscribers(Callback):
+        """The subscribers a caller's own progress callback is told of a transfer through."""
+        if Callback is None:
+            return None
+        from boto3.s3.transfer import ProgressCallbackInvoker
+
+        return [ProgressCallbackInvoker(Callback)]
+
     def _transfer_upload_fileobj(
         self, Fileobj, Bucket, Key, ExtraArgs=None, Callback=None, Config=None
     ):
         """`upload_fileobj`: "Upload a file-like object to S3."
 
-        The object is read from where it stands ([`_file_like_bytes`]) and written with one
-        `PutObject`, carrying every member `ExtraArgs` names ("Extra arguments that may be
-        passed to the client operation") — which is how a transfer states the object's
-        `ContentType`, its metadata or its encryption. `Callback` is told how many bytes were
-        transferred, as a transfer's progress callback is.
+        The object is read from where it stands and sent through the managed transfer
+        ([`_transfer_manager`]), carrying every member `ExtraArgs` names ("Extra arguments
+        that may be passed to the client operation") — which is how a transfer states the
+        object's `ContentType`, its metadata or its encryption. `Callback` is told how many
+        bytes were transferred, as a transfer's progress callback is.
 
         "The file-like object must be in binary mode": the transfer itself checks that the
         value it was handed is one it can read, before it reads anything, and says which
@@ -1432,14 +1462,10 @@ class Client:
         """
         if not callable(getattr(Fileobj, "read", None)):
             raise ValueError("Fileobj must implement read")
-        carried = _file_like_bytes(Fileobj)
-        if carried is None:
-            raise ParamValidationError(report=_blob_type_report("Fileobj", Fileobj))
-        parameters = dict(ExtraArgs or {})
-        parameters.update(Bucket=Bucket, Key=Key, Body=carried)
-        self._call("PutObject", parameters)
-        if Callback is not None:
-            Callback(len(carried))
+        with self._transfer_manager(Config) as manager:
+            manager.upload(
+                Fileobj, Bucket, Key, ExtraArgs, self._transfer_subscribers(Callback)
+            ).result()
         return None
 
     def _transfer_download_fileobj(
@@ -1447,27 +1473,17 @@ class Client:
     ):
         """`download_fileobj`: "Download an object from S3 to a file-like object."
 
-        One `GetObject`, whose body is written to the object the caller handed in — which is
-        where a handler that reads an object it then parses in memory puts it. The value is
-        checked for the method it has to carry first, as the upload above is.
+        The object's bytes are written to the value the caller handed in — which is where a
+        handler that reads an object it then parses in memory puts it — through the same
+        managed transfer. The value is checked for the method it has to carry first, as the
+        upload above is.
         """
         if not callable(getattr(Fileobj, "write", None)):
             raise ValueError("Fileobj must implement write")
-        parameters = dict(ExtraArgs or {})
-        parameters.update(Bucket=Bucket, Key=Key)
-        answered = self._call("GetObject", parameters)
-        # The answer side hands a blob over as a stream or as its own bytes ([`_blob_bytes`]
-        # reads either), so a `Body` that is neither is no object this transfer can write:
-        # writing nothing and reporting success would be indistinguishable from an empty
-        # object, which is a different answer.
-        carried = _blob_bytes(answered.get("Body"))
-        if carried is None:
-            raise SdkCallNotMade(
-                detail="GetObject answered a Body this SDK cannot read as bytes"
-            )
-        Fileobj.write(carried)
-        if Callback is not None:
-            Callback(len(carried))
+        with self._transfer_manager(Config) as manager:
+            manager.download(
+                Bucket, Key, Fileobj, ExtraArgs, self._transfer_subscribers(Callback)
+            ).result()
         return None
 
     def _transfer_upload_file(
@@ -1476,32 +1492,25 @@ class Client:
         """`upload_file`: "Upload a file to an S3 object", named by its path.
 
         The path is the function's own — the ephemeral storage a handler writes its working
-        files to — and the upload is the one above over the file's own bytes. WHICH paths a
-        run can open at all is the runtime's own file layer's to decide, not this transfer's:
-        `open` dispatches there, so a path that layer does not serve is refused by it.
+        files to — and the transfer is the one above, over the file the manager opens. WHICH
+        paths a run can open at all is the runtime's own file layer's to decide, not this
+        transfer's: `open` dispatches there, so a path that layer does not serve is refused by
+        it.
         """
-        with open(Filename, "rb") as held:
-            return self._transfer_upload_fileobj(
-                held, Bucket, Key, ExtraArgs=ExtraArgs, Callback=Callback, Config=Config
-            )
+        with self._transfer_manager(Config) as manager:
+            manager.upload(
+                Filename, Bucket, Key, ExtraArgs, self._transfer_subscribers(Callback)
+            ).result()
+        return None
 
     def _transfer_download_file(
         self, Bucket, Key, Filename, ExtraArgs=None, Callback=None, Config=None
     ):
-        """`download_file`: "Download an S3 object to a file", named by its path.
-
-        The object is fetched BEFORE the path is opened, so a download the service refused
-        leaves whatever stood at that path untouched rather than truncated — the ordering a
-        transfer that stages its download has.
-        """
-        import io
-
-        buffered = io.BytesIO()
-        self._transfer_download_fileobj(
-            Bucket, Key, buffered, ExtraArgs=ExtraArgs, Callback=Callback, Config=Config
-        )
-        with open(Filename, "wb") as held:
-            held.write(buffered.getvalue())
+        """`download_file`: "Download an S3 object to a file", named by its path."""
+        with self._transfer_manager(Config) as manager:
+            manager.download(
+                Bucket, Key, Filename, ExtraArgs, self._transfer_subscribers(Callback)
+            ).result()
         return None
 
     def generate_presigned_url(
@@ -1686,6 +1695,42 @@ def setup_default_session(**kwargs):
     return None
 "#;
 
+/// `boto3.resources`: the package the resource interfaces' shared base lives under.
+const BOTO3_RESOURCES_SOURCE: &str = r#"
+"""The resource interfaces of the SDK, and what every resource of one carries."""
+"#;
+
+/// `boto3.resources.base`: what every resource reports about itself, which is where the SDK
+/// keeps it.
+///
+/// One class for every resource interface this runtime supplies ([`dynamodb`],
+/// [`s3_resource`]), so a handler reading `table.meta.client` and one reading
+/// `bucket.meta.client` read the same thing.
+const BOTO3_RESOURCES_BASE_SOURCE: &str = r#"
+"""What a resource was built for, and what the service has said about it."""
+
+
+class ResourceMeta:
+    """What a resource was built for, and what the service has said about it.
+
+    `client` is the client every call this resource makes is made through, `identifiers` are
+    the values that name this resource, and `data` is what the service answered about it —
+    `None` until something is asked for that only the service can say.
+    """
+
+    def __init__(self, service_name, client=None, identifiers=None, data=None):
+        self.service_name = service_name
+        self.client = client
+        self.identifiers = identifiers or []
+        self.data = data
+
+    def __repr__(self):
+        return "ResourceMeta('%s', identifiers=%s)" % (
+            self.service_name,
+            self.identifiers,
+        )
+"#;
+
 /// `boto3.session`: the session a client is built from.
 const BOTO3_SESSION_SOURCE: &str = r#"
 """The session a client is built from."""
@@ -1695,7 +1740,7 @@ from botocore.credentials import Credentials
 from botocore.exceptions import SdkCallNotMade
 
 # The services this runtime's SDK supplies resource classes for.
-_RESOURCE_SERVICES = ("dynamodb",)
+_RESOURCE_SERVICES = ("dynamodb", "s3")
 
 
 class Session:
@@ -1767,10 +1812,17 @@ class Session:
         )
 
     def resource(self, service_name, region_name=None, **kwargs):
-        if service_name in _RESOURCE_SERVICES:
-            # Imported here rather than at module scope: a handler that only builds
-            # clients pays nothing for the resource interface's own modules.
+        # Imported inside each arm rather than at module scope: a handler that only builds
+        # clients, or builds the resource of one service, pays nothing for the resource
+        # interface's other modules.
+        if service_name == "dynamodb":
             from boto3.dynamodb.table import service_resource
+
+            return service_resource(
+                self.client(service_name, region_name=region_name, **kwargs)
+            )
+        if service_name == "s3":
+            from boto3.s3.resource import service_resource
 
             return service_resource(
                 self.client(service_name, region_name=region_name, **kwargs)

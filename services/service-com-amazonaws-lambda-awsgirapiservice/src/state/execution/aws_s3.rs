@@ -77,6 +77,13 @@ pub const BOUND_OPERATIONS: &[&str] = &[
     "CopyObject",
     "DeleteObject",
     "ListObjectsV2",
+    // The same listing in the form the API bound FIRST, which a handler written against it
+    // walks with a key MARKER rather than with a continuation token.
+    "ListObjects",
+    // What the metadata of ONE object says about it — its tag, its size, its storage class,
+    // its checksum and the parts it was assembled from — "without returning the object
+    // itself" (`GetObjectAttributes`).
+    "GetObjectAttributes",
     // An object's own TAG SET, which is a subresource of the object rather than of its
     // bytes: what a handler that classifies or marks the objects it is handed reads,
     // replaces and removes.
@@ -93,13 +100,14 @@ pub const BOUND_OPERATIONS: &[&str] = &[
     "CompleteMultipartUpload",
     "AbortMultipartUpload",
     "ListMultipartUploads",
+    "ListParts",
     // The bucket-wide half ([`bucket`]): what a handler administering a bucket calls —
     // bringing a bucket into being and tearing it down again,
     // probing whether the bucket is there and usable, listing the account's buckets,
     // reading the Region a bucket resides in,
-    // reading and replacing the bucket's own notification, tagging, versioning and default
-    // encryption subresources, listing the versions it holds, and removing a set of them in
-    // one call.
+    // reading, replacing and REMOVING the bucket's own notification, tagging, policy,
+    // versioning and default encryption subresources, listing the versions it holds, and
+    // removing a set of them in one call.
     "CreateBucket",
     "DeleteBucket",
     "HeadBucket",
@@ -109,10 +117,15 @@ pub const BOUND_OPERATIONS: &[&str] = &[
     "PutBucketNotificationConfiguration",
     "GetBucketTagging",
     "PutBucketTagging",
+    "DeleteBucketTagging",
+    "GetBucketPolicy",
+    "PutBucketPolicy",
+    "DeleteBucketPolicy",
     "GetBucketVersioning",
     "PutBucketVersioning",
     "GetBucketEncryption",
     "PutBucketEncryption",
+    "DeleteBucketEncryption",
     "ListObjectVersions",
     "DeleteObjects",
 ];
@@ -147,6 +160,8 @@ pub async fn call(
         "PutObjectTagging" => put_object_tagging(&client, &input, &observed).await,
         "DeleteObjectTagging" => delete_object_tagging(&client, &input, &observed).await,
         "ListObjectsV2" => list_objects_v2(&client, &input, &observed).await,
+        "ListObjects" => list_objects(&client, &input, &observed).await,
+        "GetObjectAttributes" => get_object_attributes(&client, &input, &observed).await,
         "CreateMultipartUpload" => {
             multipart::create_multipart_upload(&client, &input, &observed).await
         }
@@ -161,6 +176,7 @@ pub async fn call(
         "ListMultipartUploads" => {
             multipart::list_multipart_uploads(&client, &input, &observed).await
         }
+        "ListParts" => multipart::list_parts(&client, &input, &observed).await,
         "CreateBucket" => bucket::create_bucket(&client, &input, &observed).await,
         "DeleteBucket" => bucket::delete_bucket(&client, &input, &observed).await,
         "HeadBucket" => bucket::head_bucket(&client, &input, &observed).await,
@@ -174,10 +190,19 @@ pub async fn call(
         }
         "GetBucketTagging" => bucket::get_bucket_tagging(&client, &input, &observed).await,
         "PutBucketTagging" => bucket::put_bucket_tagging(&client, &input, &observed).await,
+        "DeleteBucketTagging" => {
+            bucket::delete_bucket_tagging(&client, &input, &observed).await
+        }
+        "GetBucketPolicy" => bucket::get_bucket_policy(&client, &input, &observed).await,
+        "PutBucketPolicy" => bucket::put_bucket_policy(&client, &input, &observed).await,
+        "DeleteBucketPolicy" => bucket::delete_bucket_policy(&client, &input, &observed).await,
         "GetBucketVersioning" => bucket::get_bucket_versioning(&client, &input, &observed).await,
         "PutBucketVersioning" => bucket::put_bucket_versioning(&client, &input, &observed).await,
         "GetBucketEncryption" => bucket::get_bucket_encryption(&client, &input, &observed).await,
         "PutBucketEncryption" => bucket::put_bucket_encryption(&client, &input, &observed).await,
+        "DeleteBucketEncryption" => {
+            bucket::delete_bucket_encryption(&client, &input, &observed).await
+        }
         "ListObjectVersions" => bucket::list_object_versions(&client, &input, &observed).await,
         "DeleteObjects" => bucket::delete_objects(&client, &input, &observed).await,
         other => Err(Refusal::NotMade(format!(
@@ -822,8 +847,68 @@ async fn list_objects_v2(
     if let Some(truncated) = listed.is_truncated() {
         document.insert("IsTruncated".to_string(), Value::Bool(truncated));
     }
-    let contents: Vec<Value> = listed
-        .contents()
+    insert_contents(&mut document, listed.contents());
+    insert_common_prefixes(&mut document, listed.common_prefixes());
+    observed.answer(document, Vec::new())
+}
+
+/// `ListObjects`: the same page of a bucket's current objects, in the form the API bound
+/// first.
+///
+/// Both forms list the same objects — "returns some or all (up to 1,000) of the objects in a
+/// bucket" (`ListObjects`) — and differ in how a caller asks for the NEXT page: this one is
+/// continued from the key the answer's `NextMarker` names, passed back as `Marker`, which is
+/// what a handler written against it walks a listing with.
+async fn list_objects(
+    client: &Client,
+    input: &Input,
+    observed: &Observed,
+) -> Result<Answer, Refusal> {
+    input.only(&[
+        "Bucket",
+        "Prefix",
+        "Delimiter",
+        "MaxKeys",
+        "Marker",
+        "ExpectedBucketOwner",
+    ])?;
+    let sent = client
+        .list_objects()
+        .bucket(input.required_text("Bucket")?)
+        .set_prefix(input.text("Prefix")?)
+        .set_delimiter(input.text("Delimiter")?)
+        .set_max_keys(input.number("MaxKeys")?)
+        .set_marker(input.text("Marker")?)
+        .set_expected_bucket_owner(input.text("ExpectedBucketOwner")?)
+        .send()
+        .await;
+    let listed = match sent {
+        Ok(listed) => listed,
+        Err(error) => return refused(&error, observed),
+    };
+    let mut document = Map::new();
+    insert_text(&mut document, "Name", listed.name());
+    insert_text(&mut document, "Prefix", listed.prefix());
+    insert_text(&mut document, "Delimiter", listed.delimiter());
+    insert_text(&mut document, "Marker", listed.marker());
+    insert_text(&mut document, "NextMarker", listed.next_marker());
+    insert_number(&mut document, "MaxKeys", listed.max_keys().map(i64::from));
+    insert_flag(&mut document, "IsTruncated", listed.is_truncated());
+    insert_contents(&mut document, listed.contents());
+    insert_common_prefixes(&mut document, listed.common_prefixes());
+    observed.answer(document, Vec::new())
+}
+
+/// Put the objects a listing's page holds on its document, under the member both forms of the
+/// listing report them in (`ListObjectsOutput$Contents`, `ListObjectsV2Output$Contents`).
+///
+/// One entry per object, carrying what the `Object` shape says about it. A page holding none
+/// is left off the document, as every other absent member is.
+fn insert_contents(document: &mut Map<String, Value>, objects: &[::aws_sdk_s3::types::Object]) {
+    if objects.is_empty() {
+        return;
+    }
+    let contents: Vec<Value> = objects
         .iter()
         .map(|object| {
             let mut entry = Map::new();
@@ -841,11 +926,19 @@ async fn list_objects_v2(
             Value::Object(entry)
         })
         .collect();
-    if !contents.is_empty() {
-        document.insert("Contents".to_string(), Value::Array(contents));
+    document.insert("Contents".to_string(), Value::Array(contents));
+}
+
+/// The same for the COMMON PREFIXES a delimited listing rolled its keys up into
+/// (`CommonPrefix$Prefix`).
+fn insert_common_prefixes(
+    document: &mut Map<String, Value>,
+    prefixes: &[::aws_sdk_s3::types::CommonPrefix],
+) {
+    if prefixes.is_empty() {
+        return;
     }
-    let prefixes: Vec<Value> = listed
-        .common_prefixes()
+    let held: Vec<Value> = prefixes
         .iter()
         .map(|common| {
             let mut entry = Map::new();
@@ -853,10 +946,132 @@ async fn list_objects_v2(
             Value::Object(entry)
         })
         .collect();
-    if !prefixes.is_empty() {
-        document.insert("CommonPrefixes".to_string(), Value::Array(prefixes));
+    document.insert("CommonPrefixes".to_string(), Value::Array(held));
+}
+
+/// `GetObjectAttributes`: what the metadata of one object says about it, without its bytes.
+///
+/// "Retrieves all the metadata from an object without returning the object itself"
+/// (`GetObjectAttributes`), and WHICH of that metadata is reported is the caller's own
+/// `ObjectAttributes` list's to say — the tag, the size, the storage class, the checksum and
+/// the parts the object was assembled from (`smithy_query(query="shape",
+/// shape="ObjectAttributes")`), which is why the member is required and is sent exactly as
+/// the handler asked for it.
+async fn get_object_attributes(
+    client: &Client,
+    input: &Input,
+    observed: &Observed,
+) -> Result<Answer, Refusal> {
+    input.only(&[
+        "Bucket",
+        "Key",
+        "ObjectAttributes",
+        "VersionId",
+        "MaxParts",
+        "PartNumberMarker",
+        "ExpectedBucketOwner",
+    ])?;
+    let asked: Vec<::aws_sdk_s3::types::ObjectAttributes> = input
+        .required_text_list("ObjectAttributes")?
+        .iter()
+        .map(|value| ::aws_sdk_s3::types::ObjectAttributes::from(value.as_str()))
+        .collect();
+    let sent = client
+        .get_object_attributes()
+        .bucket(input.required_text("Bucket")?)
+        .key(input.required_text("Key")?)
+        .set_object_attributes(Some(asked))
+        .set_version_id(input.text("VersionId")?)
+        .set_max_parts(input.number("MaxParts")?)
+        .set_part_number_marker(input.text("PartNumberMarker")?)
+        .set_expected_bucket_owner(input.text("ExpectedBucketOwner")?)
+        .send()
+        .await;
+    let read = match sent {
+        Ok(read) => read,
+        Err(error) => return refused(&error, observed),
+    };
+    let mut document = Map::new();
+    insert_text(&mut document, "ETag", read.e_tag());
+    insert_number(&mut document, "ObjectSize", read.object_size());
+    insert_text(
+        &mut document,
+        "StorageClass",
+        read.storage_class()
+            .map(::aws_sdk_s3::types::StorageClass::as_str),
+    );
+    insert_timestamp(&mut document, "LastModified", read.last_modified());
+    insert_text(&mut document, "VersionId", read.version_id());
+    insert_flag(&mut document, "DeleteMarker", read.delete_marker());
+    if let Some(checksum) = read.checksum() {
+        let mut held = Map::new();
+        insert_checksums(
+            &mut held,
+            checksum.checksum_crc32(),
+            checksum.checksum_crc32_c(),
+            checksum.checksum_sha1(),
+            checksum.checksum_sha256(),
+        );
+        document.insert("Checksum".to_string(), Value::Object(held));
+    }
+    if let Some(parts) = read.object_parts() {
+        let mut held = Map::new();
+        insert_number(
+            &mut held,
+            "TotalPartsCount",
+            parts.total_parts_count().map(i64::from),
+        );
+        insert_text(&mut held, "PartNumberMarker", parts.part_number_marker());
+        insert_text(
+            &mut held,
+            "NextPartNumberMarker",
+            parts.next_part_number_marker(),
+        );
+        insert_number(&mut held, "MaxParts", parts.max_parts().map(i64::from));
+        insert_flag(&mut held, "IsTruncated", parts.is_truncated());
+        let each: Vec<Value> = parts
+            .parts()
+            .iter()
+            .map(|part| {
+                let mut entry = Map::new();
+                insert_number(&mut entry, "PartNumber", part.part_number().map(i64::from));
+                insert_number(&mut entry, "Size", part.size());
+                insert_checksums(
+                    &mut entry,
+                    part.checksum_crc32(),
+                    part.checksum_crc32_c(),
+                    part.checksum_sha1(),
+                    part.checksum_sha256(),
+                );
+                Value::Object(entry)
+            })
+            .collect();
+        if !each.is_empty() {
+            held.insert("Parts".to_string(), Value::Array(each));
+        }
+        document.insert("ObjectParts".to_string(), Value::Object(held));
     }
     observed.answer(document, Vec::new())
+}
+
+/// Put the CHECKSUM values an answer carried on its document, each under the member its own
+/// algorithm names it (`Checksum$ChecksumCRC32`, `$ChecksumCRC32C`, `$ChecksumSHA1`,
+/// `$ChecksumSHA256`).
+///
+/// One shape per algorithm, and a value the answer carried none of is left off, so what a
+/// handler reads is the algorithm the object was really stored under. Shared by the object's
+/// own checksum and by each of its parts', which carry the same members.
+fn insert_checksums(
+    document: &mut Map<String, Value>,
+    crc32: Option<&str>,
+    crc32c: Option<&str>,
+    sha1: Option<&str>,
+    sha256: Option<&str>,
+) {
+    insert_text(document, "ChecksumCRC32", crc32);
+    insert_text(document, "ChecksumCRC32C", crc32c);
+    insert_text(document, "ChecksumSHA1", sha1);
+    insert_text(document, "ChecksumSHA256", sha256);
 }
 
 /// The input document one call carries: the keyword arguments the handler passed, read as

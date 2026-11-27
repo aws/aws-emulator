@@ -287,6 +287,80 @@ fn read_completed_upload(input: &Input) -> Result<Option<CompletedMultipartUploa
     ))
 }
 
+/// `ListParts`: the parts one upload has received so far, which is how a handler that
+/// resumes or audits an upload learns what it already holds.
+///
+/// "Lists the parts that have been uploaded for a specific multipart upload" (`ListParts`):
+/// each part by its number, the tag it was stored under, its size and the instant it was
+/// uploaded.
+pub(super) async fn list_parts(
+    client: &Client,
+    input: &Input,
+    observed: &Observed,
+) -> Result<Answer, Refusal> {
+    input.only(&[
+        "Bucket",
+        "Key",
+        "UploadId",
+        "MaxParts",
+        "PartNumberMarker",
+        "ExpectedBucketOwner",
+    ])?;
+    let sent = client
+        .list_parts()
+        .bucket(input.required_text("Bucket")?)
+        .key(input.required_text("Key")?)
+        .upload_id(input.required_text("UploadId")?)
+        .set_max_parts(input.number("MaxParts")?)
+        .set_part_number_marker(input.text("PartNumberMarker")?)
+        .set_expected_bucket_owner(input.text("ExpectedBucketOwner")?)
+        .send()
+        .await;
+    let listed = match sent {
+        Ok(listed) => listed,
+        Err(error) => return refused(&error, observed),
+    };
+    let mut document = Map::new();
+    insert_text(&mut document, "Bucket", listed.bucket());
+    insert_text(&mut document, "Key", listed.key());
+    insert_text(&mut document, "UploadId", listed.upload_id());
+    insert_text(
+        &mut document,
+        "PartNumberMarker",
+        listed.part_number_marker(),
+    );
+    insert_text(
+        &mut document,
+        "NextPartNumberMarker",
+        listed.next_part_number_marker(),
+    );
+    insert_number(&mut document, "MaxParts", listed.max_parts().map(i64::from));
+    if let Some(truncated) = listed.is_truncated() {
+        document.insert("IsTruncated".to_string(), Value::Bool(truncated));
+    }
+    insert_text(
+        &mut document,
+        "StorageClass",
+        listed.storage_class().map(StorageClass::as_str),
+    );
+    let parts: Vec<Value> = listed
+        .parts()
+        .iter()
+        .map(|part| {
+            let mut held = Map::new();
+            insert_number(&mut held, "PartNumber", part.part_number().map(i64::from));
+            insert_text(&mut held, "ETag", part.e_tag());
+            insert_number(&mut held, "Size", part.size());
+            insert_timestamp(&mut held, "LastModified", part.last_modified());
+            Value::Object(held)
+        })
+        .collect();
+    if !parts.is_empty() {
+        document.insert("Parts".to_string(), Value::Array(parts));
+    }
+    observed.answer(document, Vec::new())
+}
+
 /// `ListMultipartUploads`: the uploads of a bucket that are still in progress, which is what a
 /// handler cleaning up after an interrupted transfer reads.
 pub(super) async fn list_multipart_uploads(
