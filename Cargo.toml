@@ -18,6 +18,7 @@ members = [
     "services/service-com-amazonaws-apigateway-backplanecontrolservice",
     "services/service-com-amazonaws-apigatewaymanagementapi-apigatewaymanagementapi",
     "services/service-com-amazonaws-apigatewayv2-apigatewayv2",
+    "services/service-com-amazonaws-apiportal-apiportalcontrolservice",
     "services/service-com-amazonaws-appconfig-amazonappconfig",
     "services/service-com-amazonaws-appconfigdata-appconfigdata",
     "services/service-com-amazonaws-appfabric-fabricfrontendservice",
@@ -491,6 +492,7 @@ service-com-amazonaws-amplifyuibuilder-amplifyuibuilder = { path = "services/ser
 service-com-amazonaws-apigateway-backplanecontrolservice = { path = "services/service-com-amazonaws-apigateway-backplanecontrolservice" }
 service-com-amazonaws-apigatewaymanagementapi-apigatewaymanagementapi = { path = "services/service-com-amazonaws-apigatewaymanagementapi-apigatewaymanagementapi" }
 service-com-amazonaws-apigatewayv2-apigatewayv2 = { path = "services/service-com-amazonaws-apigatewayv2-apigatewayv2" }
+service-com-amazonaws-apiportal-apiportalcontrolservice = { path = "services/service-com-amazonaws-apiportal-apiportalcontrolservice" }
 service-com-amazonaws-appconfig-amazonappconfig = { path = "services/service-com-amazonaws-appconfig-amazonappconfig" }
 service-com-amazonaws-appconfigdata-appconfigdata = { path = "services/service-com-amazonaws-appconfigdata-appconfigdata" }
 service-com-amazonaws-appfabric-fabricfrontendservice = { path = "services/service-com-amazonaws-appfabric-fabricfrontendservice" }

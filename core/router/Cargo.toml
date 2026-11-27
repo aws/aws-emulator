@@ -29,6 +29,7 @@ service-com-amazonaws-amplifyuibuilder-amplifyuibuilder = { workspace = true }
 service-com-amazonaws-apigateway-backplanecontrolservice = { workspace = true }
 service-com-amazonaws-apigatewaymanagementapi-apigatewaymanagementapi = { workspace = true }
 service-com-amazonaws-apigatewayv2-apigatewayv2 = { workspace = true }
+service-com-amazonaws-apiportal-apiportalcontrolservice = { workspace = true }
 service-com-amazonaws-appconfig-amazonappconfig = { workspace = true }
 service-com-amazonaws-appconfigdata-appconfigdata = { workspace = true }
 service-com-amazonaws-appfabric-fabricfrontendservice = { workspace = true }

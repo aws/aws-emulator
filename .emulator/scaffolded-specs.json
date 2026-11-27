@@ -73,6 +73,10 @@
       "spec_url": "https://raw.githubusercontent.com/aws/api-models-aws/refs/heads/main/models/apigatewayv2/service/2018-11-29/apigatewayv2-2018-11-29.json"
     },
     {
+      "shape_id": "com.amazonaws.apiportal#APIPortalControlService",
+      "spec_url": "https://raw.githubusercontent.com/aws/api-models-aws/d504436b2739873d202b10a26bdecb620fa1e4f0/models/apiportal/service/2026-04-30/apiportal-2026-04-30.json"
+    },
+    {
       "shape_id": "com.amazonaws.appconfig#AmazonAppConfig",
       "spec_url": "https://raw.githubusercontent.com/aws/api-models-aws/refs/heads/main/models/appconfig/service/2019-10-09/appconfig-2019-10-09.json"
     },
