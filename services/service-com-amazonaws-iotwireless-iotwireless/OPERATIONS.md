@@ -314,7 +314,7 @@ contents — read that shape in the model above when you need its own members.
 
 - **Route:** `GET /fuota-tasks/{Id} -> 200`
 - **Input:** `Id` (string, len 0..256, @httpLabel, required)
-- **Output:** `ProtocolType` (FuotaTaskType, one of: LoRaWAN), `Arn` (string, len 0..128), `Id` (string, len 0..256), `Status` (FuotaTaskStatus, one of: Delete_Waiting | FuotaDone | FuotaSession_Waiting | In_FuotaSession | Pending), `Name` (string, len 0..256), `Description` (string, len 0..2048), `LoRaWAN` (LoRaWANFuotaTaskGetInfo), `FirmwareUpdateImage` (string, len 1..4096), `FirmwareUpdateRole` (string, len 1..2048), `CreatedAt` (timestamp), `RedundancyPercent` (integer, range 0..100), `FragmentSizeBytes` (integer, range 1..), `FragmentIntervalMS` (integer, range 1..), `Descriptor` (string, len 0..332, pattern ^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$)
+- **Output:** `Arn` (string, len 0..128), `Id` (string, len 0..256), `Status` (FuotaTaskStatus, one of: Delete_Waiting | FuotaDone | FuotaSession_Waiting | In_FuotaSession | Pending), `Name` (string, len 0..256), `Description` (string, len 0..2048), `LoRaWAN` (LoRaWANFuotaTaskGetInfo), `FirmwareUpdateImage` (string, len 1..4096), `FirmwareUpdateRole` (string, len 1..2048), `CreatedAt` (timestamp), `RedundancyPercent` (integer, range 0..100), `FragmentSizeBytes` (integer, range 1..), `FragmentIntervalMS` (integer, range 1..), `Descriptor` (string, len 0..332, pattern ^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$)
 - **Errors:** `AccessDeniedException (HTTP 403)`, `InternalServerException (HTTP 500)`, `ResourceNotFoundException (HTTP 404)`, `ThrottlingException (HTTP 429)`, `ValidationException (HTTP 400)`
 
 ## GetLogLevelsByResourceTypes

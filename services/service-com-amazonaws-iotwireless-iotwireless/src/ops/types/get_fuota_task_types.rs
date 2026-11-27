@@ -29,7 +29,6 @@ pub struct GetFuotaTaskOutput {
     pub firmware_update_image: Option<String>,
     pub firmware_update_role: Option<String>,
     pub created_at: Option<::aws_smithy_types::DateTime>,
-    pub protocol_type: Option<String>,
     pub redundancy_percent: Option<i32>,
     pub fragment_size_bytes: Option<i32>,
     pub fragment_interval_ms: Option<i32>,

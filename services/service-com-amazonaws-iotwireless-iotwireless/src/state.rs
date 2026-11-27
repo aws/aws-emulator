@@ -1423,10 +1423,6 @@ pub struct FuotaTask {
     pub firmware_update_image: String,
     /// The role the firmware update is applied under. Required, like the image.
     pub firmware_update_role: String,
-    /// The protocol the firmware update is transferred with. Every FUOTA task this
-    /// service creates is a LoRaWAN task — `CreateFuotaTask`'s only radio-settings
-    /// member is `LoRaWAN` — so this carries [`FUOTA_TASK_PROTOCOL_TYPE_LORAWAN`].
-    pub protocol_type: String,
     /// The task's EFFECTIVE fragmentation settings: the values the create carried, or
     /// the service defaults ([`DEFAULT_FUOTA_REDUNDANCY_PERCENT`],
     /// [`DEFAULT_FUOTA_FRAGMENT_SIZE_BYTES`], [`DEFAULT_FUOTA_FRAGMENT_INTERVAL_MS`])
@@ -1456,12 +1452,6 @@ pub struct FuotaTask {
 /// the task leaves it only when an operation moves it (the session operations are still
 /// scaffolded).
 pub const FUOTA_TASK_STATUS_PENDING: &str = "Pending";
-
-/// The `ProtocolType` a stored FUOTA task reports: the only protocol a FUOTA task
-/// carries radio settings for, as the modelled `FuotaTaskType` catalog
-/// ([`crate::ops::types::FUOTA_TASK_TYPE_VALUES`]) and `CreateFuotaTask`'s single
-/// `LoRaWAN` settings member both state.
-pub const FUOTA_TASK_PROTOCOL_TYPE_LORAWAN: &str = "LoRaWAN";
 
 /// The `RedundancyPercent` a FUOTA task is created with when the request names none:
 /// half the fragments of the image are added as redundant ones, which is the value the

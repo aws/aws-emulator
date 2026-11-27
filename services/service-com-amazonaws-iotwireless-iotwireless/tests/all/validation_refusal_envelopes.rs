@@ -66,8 +66,8 @@ const GATEWAY_EUI_PATTERN: &str =
     r"^(([0-9A-Fa-f]{2}-){7}|([0-9A-Fa-f]{2}:){7}|([0-9A-Fa-f]{2}\s){7}|([0-9A-Fa-f]{2}){7})([0-9A-Fa-f]{2})$";
 
 /// `LoRaWANDeviceProfile$MaxEirp`'s published ceiling.
-/// Source: `smithy_query(query="shape", shape="LoRaWANDeviceProfile")` — `@range` 0..15.
-const DEVICE_PROFILE_MAX_EIRP: i64 = 15;
+/// Source: `smithy_query(query="shape", shape="LoRaWANDeviceProfile")` — `@range` 0..36.
+const DEVICE_PROFILE_MAX_EIRP: i64 = 36;
 const DEVICE_PROFILE_MIN_EIRP: i64 = 0;
 
 /// `LoRaWANGateway$MaxEirp`'s published ceiling, a FLOAT member.

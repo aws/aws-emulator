@@ -12,8 +12,9 @@
 //!
 //! * a created task's transfer plan is COMPLETE: for each optional fragmentation
 //!   member the create carried, the reader reports that value, and for each one it
-//!   omitted the reader reports the default the service applied — and the task reports
-//!   the protocol its radio settings belong to;
+//!   omitted the reader reports the default the service applied;
+//! * a read of a task reports the members `GetFuotaTaskResponse` declares and NOTHING
+//!   else, whichever optional members the create carried;
 //! * `UpdateFuotaTask` applies every member the patch carries to the stored task and
 //!   leaves every member it omits exactly as it stood, so the reader reports the
 //!   updated configuration;
@@ -30,26 +31,57 @@ use http::{Method, StatusCode};
 use serde_json::{json, Value};
 use smithy_server_runtime::MultiServiceRouter;
 
-/// The fragmentation defaults and the protocol type the service publishes, so this
-/// suite asserts what the implementation declares rather than numbers copied by hand.
+/// The fragmentation defaults the service publishes, so this suite asserts what the
+/// implementation declares rather than numbers copied by hand.
 use service_com_amazonaws_iotwireless_iotwireless::state::{
     DEFAULT_FUOTA_FRAGMENT_INTERVAL_MS, DEFAULT_FUOTA_FRAGMENT_SIZE_BYTES,
-    DEFAULT_FUOTA_REDUNDANCY_PERCENT, FUOTA_TASK_PROTOCOL_TYPE_LORAWAN,
-    FUOTA_TASK_RESOURCE_TYPE,
+    DEFAULT_FUOTA_REDUNDANCY_PERCENT, FUOTA_TASK_RESOURCE_TYPE,
 };
 
 use super::destination_and_wireless_device_lifecycle::{
     call, error_code, request_signed_for, router, REGION,
 };
 
-/// `FuotaTaskType`'s modelled values — the model-generated constant, so the suite and
-/// the model cannot drift apart.
-const FUOTA_TASK_TYPES: &[&str] =
-    service_com_amazonaws_iotwireless_iotwireless::ops::types::FUOTA_TASK_TYPE_VALUES;
-
 /// The two required members of a FUOTA task, reused by every case.
 const IMAGE: &str = "s3://fuota-images/update-and-delete.bin";
 const ROLE: &str = "arn:aws:iam::000000000000:role/iotwireless-fuota";
+
+/// Every member `GetFuotaTask`'s output shape declares, and nothing else.
+/// Source: `smithy_query(query="operation", operation="GetFuotaTask")`.
+const GET_FUOTA_TASK_OUTPUT_MEMBERS: &[&str] = &[
+    "Arn",
+    "CreatedAt",
+    "Description",
+    "Descriptor",
+    "FirmwareUpdateImage",
+    "FirmwareUpdateRole",
+    "FragmentIntervalMS",
+    "FragmentSizeBytes",
+    "Id",
+    "LoRaWAN",
+    "Name",
+    "RedundancyPercent",
+    "Status",
+];
+
+/// Every member the nested `LoRaWAN` structure of a task read declares.
+/// Source: `smithy_query(query="shape", shape="LoRaWANFuotaTaskGetInfo")`.
+const LORAWAN_GET_INFO_MEMBERS: &[&str] = &["RfRegion", "StartTime"];
+
+/// The members a STORED task always has, so a read of one reports every one of them
+/// whatever the create carried: its identity, its two required members, its status, its
+/// creation instant and the three members of its transfer plan.
+const ALWAYS_REPORTED_MEMBERS: &[&str] = &[
+    "Arn",
+    "CreatedAt",
+    "FirmwareUpdateImage",
+    "FirmwareUpdateRole",
+    "FragmentIntervalMS",
+    "FragmentSizeBytes",
+    "Id",
+    "RedundancyPercent",
+    "Status",
+];
 
 /// The three optional fragmentation members, each beside the default the service
 /// applies when a create names none.
@@ -285,18 +317,81 @@ async fn a_created_task_reports_its_effective_fragmentation_plan() {
                 fetched.get(member)
             );
         }
+    }
+}
 
-        let protocol_type = fetched["ProtocolType"].as_str().unwrap_or_default();
-        assert!(
-            FUOTA_TASK_TYPES.contains(&protocol_type),
-            "case {case:?}: {protocol_type:?} is not in the modelled catalog \
-             {FUOTA_TASK_TYPES:?}"
-        );
+/// A read of a task reports the members its OUTPUT SHAPE declares and nothing else: no
+/// member outside [`GET_FUOTA_TASK_OUTPUT_MEMBERS`] reaches the wire, every member a
+/// stored task always has is there, and the nested `LoRaWAN` structure is held to its
+/// own declared members. The cases span which optional members the create carried, so
+/// the surface is asserted on a task that pinned none, on several that pinned one each
+/// and on one that pinned them all.
+#[tokio::test]
+async fn a_read_task_reports_only_the_members_its_output_shape_models() {
+    let router = router();
+
+    // (case, the optional members the create carries beside the two required ones)
+    let cases: Vec<(&str, Value)> = vec![
+        ("required only", json!({})),
+        ("named", json!({ "Name": "FuotaTask-surface" })),
+        ("described", json!({ "Description": "the whole reported surface" })),
+        ("lorawan region", json!({ "LoRaWAN": { "RfRegion": "US915" } })),
+        ("descriptor", json!({ "Descriptor": "c3VyZmFjZQ==" })),
+        (
+            "every optional member",
+            json!({
+                "Name": "FuotaTask-surface-full",
+                "Description": "every optional member at once",
+                "LoRaWAN": { "RfRegion": "EU868" },
+                "RedundancyPercent": 25,
+                "FragmentSizeBytes": 64,
+                "FragmentIntervalMS": 1_500,
+                "Descriptor": "c3VyZmFjZS1mdWxs",
+                "Tags": [{ "Key": "stage", "Value": "surface" }],
+            }),
+        ),
+    ];
+
+    for (case, optional) in cases {
+        let mut body = json!({ "FirmwareUpdateImage": IMAGE, "FirmwareUpdateRole": ROLE });
+        for (member, value) in optional.as_object().expect("an object") {
+            body[member] = value.clone();
+        }
+
+        let id = seed_task(case, &router, body).await;
+        let (status, fetched) = get_task(&router, &id).await;
         assert_eq!(
-            protocol_type, FUOTA_TASK_PROTOCOL_TYPE_LORAWAN,
-            "case {case:?}: a task carrying LoRaWAN radio settings reports \
-             {FUOTA_TASK_PROTOCOL_TYPE_LORAWAN}, got {protocol_type:?}"
+            status,
+            StatusCode::OK,
+            "case {case:?}: expected 200 from the read, got {status} {fetched}"
         );
+
+        let reported = fetched
+            .as_object()
+            .unwrap_or_else(|| panic!("case {case:?}: expected a JSON object, got {fetched}"));
+        for member in reported.keys() {
+            assert!(
+                GET_FUOTA_TASK_OUTPUT_MEMBERS.contains(&member.as_str()),
+                "case {case:?}: {member:?} is not one of the operation's modelled output \
+                 members {GET_FUOTA_TASK_OUTPUT_MEMBERS:?}, got {fetched}"
+            );
+        }
+        for member in ALWAYS_REPORTED_MEMBERS {
+            assert!(
+                reported.contains_key(*member),
+                "case {case:?}: expected {member} in every read of a stored task, got \
+                 {fetched}"
+            );
+        }
+        if let Some(lorawan) = reported.get("LoRaWAN").and_then(Value::as_object) {
+            for member in lorawan.keys() {
+                assert!(
+                    LORAWAN_GET_INFO_MEMBERS.contains(&member.as_str()),
+                    "case {case:?}: LoRaWAN.{member} is not one of the nested structure's \
+                     modelled members {LORAWAN_GET_INFO_MEMBERS:?}, got {fetched}"
+                );
+            }
+        }
     }
 }
 
@@ -403,18 +498,12 @@ async fn an_update_applies_its_members_and_leaves_the_others_standing() {
             "case {case:?}: expected LoRaWAN.RfRegion = {expected_region:?}, got {:?}",
             fetched["LoRaWAN"].get("RfRegion")
         );
-        // The identity and the protocol are not patchable, so they stand.
+        // The identity is not patchable, so it stands.
         assert_eq!(
             fetched["Id"],
             json!(id),
             "case {case:?}: a patch must not move the task's Id, got {:?}",
             fetched["Id"]
-        );
-        assert_eq!(
-            fetched["ProtocolType"],
-            json!(FUOTA_TASK_PROTOCOL_TYPE_LORAWAN),
-            "case {case:?}: expected the protocol to stand, got {:?}",
-            fetched["ProtocolType"]
         );
     }
 }

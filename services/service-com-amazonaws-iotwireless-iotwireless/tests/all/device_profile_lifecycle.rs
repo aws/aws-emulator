@@ -138,7 +138,7 @@ fn cases() -> Vec<Case> {
                 "RxDataRate2": 8,
                 "RxFreq2": 1000000,
                 "FactoryPresetFreqsList": [1000000, 16700000],
-                "MaxEirp": 15,
+                "MaxEirp": 36,
                 "MaxDutyCycle": 100,
                 "SupportsJoin": true,
                 "Supports32BitFCnt": true,
