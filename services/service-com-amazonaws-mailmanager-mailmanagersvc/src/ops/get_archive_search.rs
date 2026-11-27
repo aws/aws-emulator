@@ -164,10 +164,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // A `SearchId` is served only while the archive it searched still serves job
         // operations, through the one resolution both search reads share: a job of an
         // archive that is gone, or marked for deletion, is no longer reachable, and is
-        // reported exactly as one that was never minted.
+        // reported exactly as one that was never minted. This operation models no not-found
+        // error, so resolving the id is part of VALIDATING the request: the refusal names
+        // the unacceptable input member and echoes nothing back.
         let Some(job) = store.resolve_search_job(&input.search_id) else {
             return Err(GetArchiveSearchErrorModeled::ValidationException(ValidationException {
-                message: Some(crate::state::SEARCH_NOT_FOUND.to_string()),
+                message: Some(crate::state::SEARCH_ID_INVALID.to_string()),
             })
             .into());
         };

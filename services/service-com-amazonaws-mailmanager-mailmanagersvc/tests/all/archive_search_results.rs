@@ -44,7 +44,7 @@ const SEARCH_NOT_COMPLETED: &str = "Search is not completed yet.";
 
 /// The message a `SearchId` that resolves to no search job is refused with; spelled out for
 /// the same reason as [`SEARCH_NOT_COMPLETED`].
-const SEARCH_NOT_FOUND: &str = "Search not found.";
+const SEARCH_ID_INVALID: &str = "Invalid SearchId";
 
 /// The lower bound of the range every search below is asked over, in epoch MILLISECONDS.
 const RANGE_FROM_MILLIS: i64 = 1_761_000_000_000;
@@ -834,7 +834,7 @@ async fn search_results_refuse_a_search_id_that_resolves_to_no_job() {
         );
         assert_eq!(
             out["message"].as_str().or_else(|| out["Message"].as_str()),
-            Some(SEARCH_NOT_FOUND),
+            Some(SEARCH_ID_INVALID),
             "case {search_id:?}: unexpected message, got {out:?}"
         );
     }
@@ -879,7 +879,7 @@ async fn search_results_refuse_a_search_id_that_resolves_to_no_job() {
     );
     assert_eq!(
         out["message"].as_str().or_else(|| out["Message"].as_str()),
-        Some(SEARCH_NOT_FOUND),
+        Some(SEARCH_ID_INVALID),
         "case \"an archive marked for deletion\": unexpected message, got {out:?}"
     );
 }

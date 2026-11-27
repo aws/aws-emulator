@@ -8,12 +8,13 @@
 //! pins is the emulator's HTTP behaviour, not an internal helper.
 //!
 //! RULE: deleting an archive takes its search jobs out of reach, so a read that takes a
-//! `SearchId` reports the search as NOT THERE — HTTP 400, `ValidationException`, one fixed
-//! text that echoes no id — however far the job had got before the deletion, while a listing
-//! scoped on the archive itself reports the ARCHIVE as no longer active. The table spans what
-//! that generalises over: how far the job had got when its archive was deleted (submitted and
-//! still on its way, and already reported `COMPLETED`), the shape of the search it was
-//! (filtered and unfiltered, several `MaxResults`), and both reads a `SearchId` reaches.
+//! `SearchId` refuses the id as an unacceptable input member — HTTP 400,
+//! `ValidationException`, one fixed text that echoes no id — however far the job had got
+//! before the deletion, while a listing scoped on the archive itself reports the ARCHIVE as
+//! no longer active. The table spans what that generalises over: how far the job had got
+//! when its archive was deleted (submitted and still on its way, and already reported
+//! `COMPLETED`), the shape of the search it was (filtered and unfiltered, several
+//! `MaxResults`), and both reads a `SearchId` reaches.
 //!
 //! `archive_search_reachability.rs` pins the same wording for an id that was never minted;
 //! `archive_lifecycle.rs` pins the archive resource's own lifecycle. Nothing here waits for a
@@ -31,10 +32,10 @@ const REGION: &str = "eu-west-1";
 
 /// The message a read of a `SearchId` that resolves to no search job carries, spelled out
 /// here rather than read off the implementation so a change of wording fails this suite.
-const SEARCH_NOT_FOUND: &str = "Search not found.";
+const SEARCH_ID_INVALID: &str = "Invalid SearchId";
 
 /// The message an archive-scoped listing carries once its archive is no longer active;
-/// spelled out for the same reason as [`SEARCH_NOT_FOUND`].
+/// spelled out for the same reason as [`SEARCH_ID_INVALID`].
 const ARCHIVE_NOT_ACTIVE: &str = "Archive is not active.";
 
 /// The `SearchState` a job reports once its completion has fallen due.
@@ -201,12 +202,12 @@ async fn poll_until_completed(harness: &Harness, case: &str, search_id: &str) {
     }
 }
 
-/// Deleting an archive makes every read of its searches report a search that is NOT FOUND —
-/// the same status, code and fixed text however far the job had got, for both reads — while
-/// the listings scoped on that archive report the archive as not active, and another
-/// archive's searches keep serving.
+/// Deleting an archive makes every read of its searches refuse the `SearchId` as an
+/// unacceptable input member — the same status, code and fixed text however far the job had
+/// got, for both reads — while the listings scoped on that archive report the archive as not
+/// active, and another archive's searches keep serving.
 #[tokio::test]
-async fn deleting_an_archive_makes_reads_of_its_searches_report_not_found() {
+async fn deleting_an_archive_makes_reads_of_its_searches_refuse_the_search_id() {
     let harness = Harness::new();
 
     // A bystander archive whose own search must be untouched by any other archive's
@@ -294,7 +295,7 @@ async fn deleting_an_archive_makes_reads_of_its_searches_report_not_found() {
             );
             assert_eq!(
                 error_message(&out),
-                Some(SEARCH_NOT_FOUND),
+                Some(SEARCH_ID_INVALID),
                 "case {case:?} ({operation}): unexpected message, got {out:?}"
             );
             let rendered = out.to_string();

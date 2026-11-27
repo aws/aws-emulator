@@ -282,7 +282,9 @@ pub fn member_of_address_list_not_found_message(address_list_id: &str) -> String
 ///
 /// The text is entirely fixed: it states that the `JobId` member is not acceptable and
 /// echoes no id back, which is why this is the modelled `ValidationException` (already
-/// `@httpError 400`) rather than the address-list answer above.
+/// `@httpError 400`) rather than the address-list answer above. The one wording every
+/// validation refusal of an unresolvable identifier in this service carries — "Invalid "
+/// followed by the input member's name (see [`SEARCH_ID_INVALID`]).
 pub const IMPORT_JOB_ID_INVALID: &str = "Invalid JobId";
 
 /// The `ImportJobStatus` a created address-list import job carries.
@@ -664,12 +666,14 @@ pub const SEARCH_NOT_COMPLETED: &str = "Search is not completed yet.";
 /// this store serves — one that was never minted, and one whose archive is gone or no
 /// longer [`ARCHIVE_STATE_ACTIVE`].
 ///
-/// The condition reported is a search that is NOT THERE, so the text says exactly that: it
-/// is entirely fixed and echoes no id back. It is carried by the modelled
-/// `ValidationException` (already `@httpError 400`) because the search reads model no
-/// `ResourceNotFoundException` at all, so a `SearchId` that names nothing is answered as a
-/// fault in the request.
-pub const SEARCH_NOT_FOUND: &str = "Search not found.";
+/// The search reads model no `ResourceNotFoundException` at all, so a `SearchId` that names
+/// nothing is a fault in the REQUEST, carried by the modelled `ValidationException`
+/// (already `@httpError 400`); a validation refusal of an identifier states that the input
+/// MEMBER is unacceptable, so the text is "Invalid " followed by the member's name as the
+/// model spells it — entirely fixed, echoing neither the id it was handed nor anything from
+/// the store. The same wording the import-job read's `JobId` carries
+/// ([`IMPORT_JOB_ID_INVALID`]).
+pub const SEARCH_ID_INVALID: &str = "Invalid SearchId";
 
 /// The most rule sets this emulator keeps, i.e. its per-account rule-set quota.
 ///
@@ -983,7 +987,7 @@ impl ComAmazonawsMailmanagerMailmanagersvcState {
     /// Shared by the two search reads, so one `SearchId` resolves the same way for both: a
     /// job of an archive that is gone, or one no longer [`ARCHIVE_STATE_ACTIVE`], is no
     /// longer reachable and is reported exactly as one that was never minted (see
-    /// [`SEARCH_NOT_FOUND`]).
+    /// [`SEARCH_ID_INVALID`]).
     pub fn resolve_search_job(&self, search_id: &str) -> Option<&SearchJobRecord> {
         self.archive_searches
             .get(search_id)

@@ -7,12 +7,12 @@
 //! `awsJson1_0` bodies, `POST /` and `X-Amz-Target: MailManagerSvc.<Operation>` — so what it
 //! pins is the emulator's HTTP behaviour, not an internal helper.
 //!
-//! RULE: an operation that cannot resolve the search a `SearchId` names reports a search that
-//! is NOT THERE, in one fixed wording that echoes no id back — whichever of the two reads
-//! resolved it, and whichever way the id failed to resolve. The table below is that class:
-//! both reads against both ways a `SearchId` resolves to nothing (one never minted, at both
-//! ends of the modelled 1..64 length and inside it; and a real job whose archive no longer
-//! serves job operations).
+//! RULE: an operation that cannot resolve the search a `SearchId` names refuses the id as an
+//! unacceptable input MEMBER, in one fixed wording that echoes no id back — whichever of the
+//! two reads resolved it, and whichever way the id failed to resolve. The table below is that
+//! class: both reads against both ways a `SearchId` resolves to nothing (one never minted, at
+//! both ends of the modelled 1..64 length and inside it; and a real job whose archive no
+//! longer serves job operations).
 //!
 //! The minted `ArchiveId`'s own form, and the search lifecycle on it, are pinned by
 //! `archive_lifecycle.rs`; the rows a completed search reports by `archive_search_results.rs`.
@@ -30,7 +30,7 @@ const REGION: &str = "eu-west-1";
 
 /// The message every refusal of an id that resolves to no search job carries, spelled out
 /// here rather than read off the implementation so a change of wording fails this suite.
-const SEARCH_NOT_FOUND: &str = "Search not found.";
+const SEARCH_ID_INVALID: &str = "Invalid SearchId";
 
 /// The two instants the search below is asked over. Any pair inside `Timestamp`'s range does;
 /// these are epoch seconds a day apart.
@@ -102,11 +102,11 @@ fn error_message(body: &Value) -> Option<&str> {
         .or_else(|| body["message"].as_str())
 }
 
-/// An id that resolves to no search job is refused as a search that is NOT FOUND — same
+/// An id that resolves to no search job is refused as an unacceptable `SearchId` — same
 /// status, same error code and same fixed text for both reads that take a `SearchId` and for
 /// both ways an id resolves to nothing.
 #[tokio::test]
-async fn an_unresolvable_search_id_is_refused_as_a_search_that_is_not_found() {
+async fn an_unresolvable_search_id_is_refused_as_an_invalid_search_id() {
     let harness = Harness::new();
 
     // A real job, of an archive that is then deleted — the archive going away is what takes
@@ -174,7 +174,7 @@ async fn an_unresolvable_search_id_is_refused_as_a_search_that_is_not_found() {
             );
             assert_eq!(
                 error_message(&out),
-                Some(SEARCH_NOT_FOUND),
+                Some(SEARCH_ID_INVALID),
                 "case {case:?} ({operation}): unexpected message, got {out:?}"
             );
         }

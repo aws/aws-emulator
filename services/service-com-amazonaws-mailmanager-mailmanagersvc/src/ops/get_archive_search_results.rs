@@ -160,11 +160,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         store.purge_permanently_deleted(now);
 
         // A `SearchId` resolves exactly as it does for `GetArchiveSearch`, through the one
-        // resolution both search reads share.
+        // resolution both search reads share, and an id that resolves to nothing is refused
+        // in the same wording: this operation models no not-found error either, so the
+        // refusal is a validation one naming the unacceptable input member.
         let Some(job) = store.resolve_search_job(&input.search_id) else {
             return Err(GetArchiveSearchResultsErrorModeled::ValidationException(
                 ValidationException {
-                    message: Some(crate::state::SEARCH_NOT_FOUND.to_string()),
+                    message: Some(crate::state::SEARCH_ID_INVALID.to_string()),
                 },
             )
             .into());
