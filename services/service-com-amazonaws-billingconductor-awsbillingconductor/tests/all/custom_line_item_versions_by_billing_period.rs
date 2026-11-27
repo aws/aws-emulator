@@ -61,6 +61,16 @@ fn period(months: i64) -> String {
     format!("{:04}-{:02}", total.div_euclid(12), total.rem_euclid(12) + 1)
 }
 
+/// The billing period as a cost report REPORTS it in a breakdown attribute: the month by
+/// name and the four-digit year, rather than the `YYYY-MM` form a request names a period
+/// with. `tests/all/billing_group_cost_report_period_attribute.rs` owns that rule; here it
+/// is only how the row a bill is read off names the period it is for.
+fn period_as_reported(billing_period: &str) -> String {
+    service_com_amazonaws_billingconductor_awsbillingconductor::state::reported_billing_period(
+        billing_period,
+    )
+}
+
 /// The same billing period with its month spelled without a leading zero — the other
 /// spelling the modelled `BillingPeriod` pattern allows. A month from October on has
 /// only the one spelling, so for those this is the value it was given.
@@ -238,7 +248,8 @@ impl Emulator {
     }
 
     /// The pro forma cost of each billing period a cost report over `[start, end)`
-    /// covers, keyed by the period it is reported for.
+    /// covers, keyed by the period it is reported for, as the report NAMES that period
+    /// ([`period_as_reported`]).
     async fn proforma_by_period(
         &self,
         case: &str,
@@ -681,10 +692,12 @@ async fn repeated_writes_leave_one_version_per_stretch_of_billing_periods() {
     );
     for ((period, proforma), (expected_period, expected_proforma)) in reported.iter().zip(expected)
     {
+        let expected_reported = period_as_reported(&expected_period);
         assert_eq!(
             period.as_str(),
-            expected_period.as_str(),
-            "case {case:?}: expected the {expected_period} row, got {period}"
+            expected_reported.as_str(),
+            "case {case:?}: expected the {expected_period} row reported as \
+             {expected_reported:?}, got {period}"
         );
         assert!(
             (proforma - expected_proforma).abs() < TOLERANCE,
@@ -1020,10 +1033,12 @@ async fn a_write_naming_no_range_keeps_every_superseded_generation() {
                 reported.iter().zip(&row.bills)
             {
                 let expected_period = period(*offset);
+                let expected_reported = period_as_reported(&expected_period);
                 assert_eq!(
                     reported_period.as_str(),
-                    expected_period.as_str(),
-                    "case {case:?}: expected the {expected_period} row, got {reported_period}"
+                    expected_reported.as_str(),
+                    "case {case:?}: expected the {expected_period} row reported as \
+                     {expected_reported:?}, got {reported_period}"
                 );
                 assert!(
                     (proforma - expected_proforma).abs() < TOLERANCE,

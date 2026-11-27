@@ -943,26 +943,37 @@ async fn an_accepted_submission_is_pending_the_pass_whatever_window_it_covers() 
                 .get_profile_accepting(&name, &query, Some(JSON))
                 .await;
             if answer.status == 200 {
-                break answer;
+                // The pass collects a submission once the aggregation IT owes falls due,
+                // and each of a row's submissions arrived at its own instant, so a window
+                // several of them reported into can be served while the last of them is
+                // still pending. The condition this poll waits for is therefore the whole
+                // window — every submission of the row reported into it — and not the
+                // first answer the window is served with.
+                let (_, _, reported_agents) = aggregation_of(case, &answer.body);
+                if reported_agents >= i64::try_from(row.posts).unwrap_or(0) {
+                    break answer;
+                }
+            } else {
+                assert_eq!(
+                    answer.status,
+                    404,
+                    "case {case:?}, attempt {attempts}: GetProfile must answer the payload \
+                     or its modelled 404, got {} {}",
+                    answer.status,
+                    String::from_utf8_lossy(&answer.body)
+                );
+                assert_eq!(
+                    answer.error_message(),
+                    NO_PROFILES_IN_TIME_RANGE,
+                    "case {case:?}, attempt {attempts}: expected the fixed no-data text, \
+                     got {:?}",
+                    answer.error_message()
+                );
             }
-            assert_eq!(
-                answer.status,
-                404,
-                "case {case:?}, attempt {attempts}: GetProfile must answer the payload or \
-                 its modelled 404, got {} {}",
-                answer.status,
-                String::from_utf8_lossy(&answer.body)
-            );
-            assert_eq!(
-                answer.error_message(),
-                NO_PROFILES_IN_TIME_RANGE,
-                "case {case:?}, attempt {attempts}: expected the fixed no-data text, got {:?}",
-                answer.error_message()
-            );
             assert!(
                 std::time::Instant::now() < deadline,
-                "case {case:?}: the aggregation pass never let the submission through: \
-                 {attempts} attempts answered 404"
+                "case {case:?}: the aggregation pass never let every submission of the \
+                 window through: {attempts} attempts answered no complete aggregation"
             );
             attempts += 1;
             tokio::time::sleep(POLL_INTERVAL).await;

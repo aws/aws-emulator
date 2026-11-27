@@ -11,6 +11,9 @@
 //! `BILLING_PERIOD` — is a row, carrying the summary it has whether or not the group holds
 //! a charge there; only the products charges are presented under, which no request
 //! enumerates, are read off the stored charges.
+//! Each row names its own group in the attributes of that breakdown, a billing period
+//! among them reported by month name and year (`crate::state::reported_billing_period`)
+//! rather than in the `YYYY-MM` form the wire names a period with.
 //! The subject is a group that was billing in one of those periods, so a group a delete
 //! has since removed is still reported on for the periods before that delete took effect
 //! (`crate::state::billing_groups_in`).
@@ -130,9 +133,11 @@ struct ReportRow {
 
 /// The cursor key of one row — what orders the rows and what a `NextToken` names.
 ///
-/// It is built from the row's OWN attribute values, so the rows run by billing period
-/// (chronological, since a period is enumerated in the canonical zero-padded spelling)
-/// and then by product name, and resuming from a token lands on the row it named.
+/// It is built from the group of the breakdown the row IS — the canonical billing period
+/// (`YYYY-MM`) and the product name — so the rows run by billing period (chronological,
+/// since a period is keyed in the canonical zero-padded spelling, whatever form the row
+/// REPORTS it in) and then by product name, and resuming from a token lands on the row it
+/// named.
 ///
 /// Each half is present only where the breakdown asked for that attribute, so the KEYSPACE
 /// a cursor points into has a different shape for every breakdown — which is why the
@@ -343,6 +348,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // are presented under are the one attribute a request does NOT enumerate — nothing
         // bounds the products a group might be charged for — so a breakdown that names
         // `PRODUCT_NAME` has the rows the stored charges name and no others.
+        //
+        // Each row names its group in the `Attributes` of the breakdown, with the value a
+        // report REPORTS that attribute as: a product under the name the charges are
+        // presented under, and a billing period by month name and year
+        // (`crate::state::reported_billing_period`) — the form the member's one documented
+        // value takes, which is a value for a client to display rather than one a later
+        // request names a period with, so the cursor key and the token scope below keep the
+        // canonical `YYYY-MM` form.
         let mut rows: BTreeMap<String, ReportRow> = BTreeMap::new();
         if !by_product_name {
             if by_billing_period {
@@ -352,7 +365,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                         ReportRow {
                             attributes: vec![Attribute {
                                 key: Some(GROUP_BY_BILLING_PERIOD.to_string()),
-                                value: Some(billing_period.clone()),
+                                value: Some(crate::state::reported_billing_period(billing_period)),
                             }],
                             proforma_cost: 0.0,
                         },
@@ -376,7 +389,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                         .map(|attribute| Attribute {
                             key: Some((*attribute).to_string()),
                             value: Some(if *attribute == GROUP_BY_BILLING_PERIOD {
-                                billing_period.clone()
+                                crate::state::reported_billing_period(billing_period)
                             } else {
                                 product_name.clone()
                             }),

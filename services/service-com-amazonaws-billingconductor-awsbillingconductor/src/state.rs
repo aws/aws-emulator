@@ -207,15 +207,22 @@ pub fn billing_period_range_covers(
     after_start && before_end
 }
 
+/// The year and the month (`1..=12`) a comparable month count ([`billing_period_key`])
+/// names.
+///
+/// The inverse of that count, which is `year * 12 + month` with the month in `1..=12`, so
+/// the year is the count one month back divided by twelve and the month is what is left of
+/// it. Every rendering of a billing period reads the two apart through this, so the inverse
+/// lives in one place.
+fn year_and_month(key: i64) -> (i64, i64) {
+    let year = (key - 1).div_euclid(12);
+    (year, key - year * 12)
+}
+
 /// The billing period a comparable month count ([`billing_period_key`]) names, in the
 /// canonical `YYYY-MM` spelling [`billing_period_at`] renders.
-///
-/// The inverse of [`billing_period_key`], whose count is `year * 12 + month` with the
-/// month in `1..=12`, so the year is the count one month back divided by twelve and the
-/// month is what is left of it.
 fn billing_period_of_key(key: i64) -> String {
-    let year = (key - 1).div_euclid(12);
-    let month = key - year * 12;
+    let (year, month) = year_and_month(key);
     format!("{year:04}-{month:02}")
 }
 
@@ -233,6 +240,48 @@ pub fn canonical_billing_period(value: &str) -> String {
     billing_period_key(value)
         .map(billing_period_of_key)
         .unwrap_or_else(|| value.to_string())
+}
+
+/// The abbreviated month names a billing period is REPORTED with, indexed from January.
+///
+/// The one documented value of a reported billing period spells November 2023 `Nov 2023`
+/// (`BillingGroupCostReportResultElement$Attributes`,
+/// `smithy_query(query="shape",shape="BillingGroupCostReportResultElement")`), so the month
+/// is the three-letter abbreviation of its English name and the year the four digits a
+/// `BillingPeriod` carries.
+const REPORTED_MONTH_NAMES: [&str; 12] = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
+
+/// The billing period `value` names as a READ REPORTS it to a client: the abbreviated month
+/// name and the four-digit year, `Nov 2023` for November 2023.
+///
+/// A billing period travels the WIRE in the `YYYY-MM` form `BillingPeriod`'s pattern
+/// (`^\d{4}-(0?[1-9]|1[012])$`) admits — the form every request names one in, every stored
+/// record keeps it in and [`canonical_billing_period`] renders — but a value a report hands
+/// back for a client to DISPLAY, rather than for a later request to name a period with,
+/// carries the month by name: that is the one documented value of such a member
+/// ([`REPORTED_MONTH_NAMES`]). So a period is converted here at the point it is reported and
+/// nowhere else; nothing of this store is keyed, ordered or scoped by this form.
+///
+/// Both spellings of one month report the same value, since the month is read through
+/// [`billing_period_key`]. A value that is no billing period at all names no month, so it is
+/// reported as it stands.
+pub fn reported_billing_period(value: &str) -> String {
+    let Some(key) = billing_period_key(value) else {
+        return value.to_string();
+    };
+    let (year, month) = year_and_month(key);
+    match usize::try_from(month - 1)
+        .ok()
+        .and_then(|index| REPORTED_MONTH_NAMES.get(index))
+    {
+        Some(name) => format!("{name} {year:04}"),
+        // Unreachable: [`billing_period_key`] returns a count whose month is in `1..=12`.
+        // The canonical spelling still names the month, so a read is answered rather than
+        // failed — and never with another month's name.
+        None => billing_period_of_key(key),
+    }
 }
 
 /// The billing periods of the half-open range `[inclusive_start, exclusive_end)`, in

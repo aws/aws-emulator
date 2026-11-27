@@ -55,6 +55,16 @@ fn period(months: i64) -> String {
     format!("{:04}-{:02}", total.div_euclid(12), total.rem_euclid(12) + 1)
 }
 
+/// The billing period as a cost report REPORTS it in a breakdown attribute: the month by
+/// name and the four-digit year, rather than the `YYYY-MM` form a request names a period
+/// with. `tests/all/billing_group_cost_report_period_attribute.rs` owns that rule; here it
+/// is only how the row a cost is read off names the period it is for.
+fn period_as_reported(billing_period: &str) -> String {
+    service_com_amazonaws_billingconductor_awsbillingconductor::state::reported_billing_period(
+        billing_period,
+    )
+}
+
 /// The same billing period with its month spelled without a leading zero — the other
 /// spelling the modelled `BillingPeriod` pattern allows. A month from October on has only
 /// the one spelling, so for those this is the value it was given.
@@ -200,7 +210,8 @@ impl Emulator {
     }
 
     /// The pro forma cost `GetBillingGroupCostReport` attributes to each billing period
-    /// of the half-open range `[start, end)`, as pairs in the order it reports them.
+    /// of the half-open range `[start, end)`, as pairs in the order it reports them, each
+    /// period named as the report NAMES it ([`period_as_reported`]).
     async fn cost_by_period(
         &self,
         case: &str,
@@ -513,10 +524,12 @@ async fn a_billing_period_before_an_item_was_created_carries_none_of_its_charge(
     for ((billing_period, proforma), (expected_period, expected_proforma)) in
         reported.iter().zip(expected)
     {
+        let expected_reported = period_as_reported(&expected_period);
         assert_eq!(
             billing_period.as_str(),
-            expected_period.as_str(),
-            "case {case:?}: expected the {expected_period} row, got {billing_period}"
+            expected_reported.as_str(),
+            "case {case:?}: expected the {expected_period} row reported as \
+             {expected_reported:?}, got {billing_period}"
         );
         assert!(
             (proforma - expected_proforma).abs() < TOLERANCE,

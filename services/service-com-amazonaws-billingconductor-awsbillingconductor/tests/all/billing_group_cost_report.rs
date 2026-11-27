@@ -327,6 +327,19 @@ fn one_digit_month(billing_period: &str) -> String {
     format!("{year}-{}", month.trim_start_matches('0'))
 }
 
+/// The billing period as a report REPORTS it in a breakdown attribute: the month by name
+/// and the four-digit year, rather than the `YYYY-MM` form a request names a period with.
+///
+/// How that value is rendered is pinned against the member's own documented value, over
+/// every month of the year, in `tests/all/billing_group_cost_report_period_attribute.rs`,
+/// which owns that rule; here it is only how a row of this file's tables names the period
+/// it is for.
+fn reported_period(billing_period: &str) -> String {
+    service_com_amazonaws_billingconductor_awsbillingconductor::state::reported_billing_period(
+        billing_period,
+    )
+}
+
 /// RULE: the pro forma cost of a billing group is the SIGNED sum of the charges of the
 /// custom line items in effect for it, the actual cost is the metered usage this emulator
 /// records (none), and the margin and its percentage follow from the two.
@@ -631,7 +644,7 @@ async fn the_proforma_cost_is_the_signed_sum_of_the_custom_line_items_in_effect(
 
 /// RULE: a report grouped by billing period reports one row per period of the requested
 /// range — the periods the half-open range enumerates — each carrying that period's own
-/// charges and the period as its attribute in the canonical spelling.
+/// charges and the period as its attribute, reported by month name and year.
 #[tokio::test]
 async fn a_report_grouped_by_billing_period_reports_each_period_of_the_range() {
     let em = Emulator::new();
@@ -673,7 +686,7 @@ async fn a_report_grouped_by_billing_period_reports_each_period_of_the_range() {
     .await;
 
     // The range is spelled with a single-digit month, which the `BillingPeriod` pattern
-    // admits; the reported attribute is the canonical zero-padded period either way.
+    // admits; the reported attribute names the same month either way.
     let rows = em
         .rows(
             "three periods grouped by billing period",
@@ -703,7 +716,7 @@ async fn a_report_grouped_by_billing_period_reports_each_period_of_the_range() {
         let case = format!("the {period} row");
         assert_eq!(
             attributes(row),
-            vec![("BILLING_PERIOD".to_string(), period.to_string())],
+            vec![("BILLING_PERIOD".to_string(), reported_period(&period))],
             "case {case:?}: expected the period as the row's one attribute, got {row}"
         );
         assert_summary(row, &group, proforma, &case);
@@ -860,7 +873,7 @@ async fn a_report_grouped_by_product_name_reports_each_presented_product() {
             attributes(row),
             vec![
                 ("PRODUCT_NAME".to_string(), product.to_string()),
-                ("BILLING_PERIOD".to_string(), period.to_string()),
+                ("BILLING_PERIOD".to_string(), reported_period(&period)),
             ],
             "case {row_case:?}: expected both attributes in the requested order, got {row}"
         );
@@ -1276,8 +1289,11 @@ async fn a_billing_period_breakdown_reports_every_period_of_the_range() {
                 let row_case = format!("{label}: the {billing_period} row");
                 assert_eq!(
                     attributes(row),
-                    vec![("BILLING_PERIOD".to_string(), billing_period.clone())],
-                    "case {row_case:?}: expected the canonical period as the row's one \
+                    vec![(
+                        "BILLING_PERIOD".to_string(),
+                        reported_period(billing_period)
+                    )],
+                    "case {row_case:?}: expected the reported period as the row's one \
                      attribute, got {row}"
                 );
                 assert_summary(row, &group, *proforma, &row_case);
@@ -1371,8 +1387,14 @@ async fn a_product_breakdown_reports_only_the_products_the_charges_name() {
             group: bare.clone(),
             group_by: vec!["BILLING_PERIOD"],
             expected: vec![
-                (vec![("BILLING_PERIOD".to_string(), period(-1))], 0.0),
-                (vec![("BILLING_PERIOD".to_string(), period(0))], 0.0),
+                (
+                    vec![("BILLING_PERIOD".to_string(), reported_period(&period(-1)))],
+                    0.0,
+                ),
+                (
+                    vec![("BILLING_PERIOD".to_string(), reported_period(&period(0)))],
+                    0.0,
+                ),
             ],
         },
         ProductRowsCase {
@@ -1387,7 +1409,7 @@ async fn a_product_breakdown_reports_only_the_products_the_charges_name() {
             group_by: vec!["BILLING_PERIOD", "PRODUCT_NAME"],
             expected: vec![(
                 vec![
-                    ("BILLING_PERIOD".to_string(), period(-1)),
+                    ("BILLING_PERIOD".to_string(), reported_period(&period(-1))),
                     ("PRODUCT_NAME".to_string(), "S3".to_string()),
                 ],
                 9.0,
@@ -1398,8 +1420,14 @@ async fn a_product_breakdown_reports_only_the_products_the_charges_name() {
             group: charged.clone(),
             group_by: vec!["BILLING_PERIOD"],
             expected: vec![
-                (vec![("BILLING_PERIOD".to_string(), period(-1))], 9.0),
-                (vec![("BILLING_PERIOD".to_string(), period(0))], 0.0),
+                (
+                    vec![("BILLING_PERIOD".to_string(), reported_period(&period(-1)))],
+                    9.0,
+                ),
+                (
+                    vec![("BILLING_PERIOD".to_string(), reported_period(&period(0)))],
+                    0.0,
+                ),
             ],
         },
     ];
