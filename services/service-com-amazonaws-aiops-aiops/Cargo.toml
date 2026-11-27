@@ -35,6 +35,8 @@ aws-sdk-kms = { version = "1", default-features = false, features = ["rt-tokio",
 emulator-core-build-support = { workspace = true }
 
 [dev-dependencies]
+# Declares one module per `tests/all/<name>.rs`, so a suite is a new file and nothing else.
+automod = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
 # The role-resolution suite mounts IAM beside this service on one engine and creates the

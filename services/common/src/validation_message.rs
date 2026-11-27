@@ -1349,9 +1349,8 @@ pub fn map_key_requirements_refusal(
         None => "Value at".to_string(),
     };
     let clause = format!(
-        "{stated_value} '{member_path}' failed to satisfy constraint: Map keys must satisfy \
-         constraint: {}",
-        bracketed_findings(requirements)
+        "{stated_value} '{member_path}' failed to satisfy constraint: {}",
+        map_key_set_requirement(requirements)
     );
     // The ENVELOPE is the framework's too: one placeholder violation about the same
     // member renders it, and that violation's own clause is then swapped for the one
@@ -2178,12 +2177,30 @@ const MAP_VALUE_SET_OPEN: &str = "Map value must satisfy constraint: [";
 /// [`element_constraint_set`] reads off the model — in the order the clause states them.
 ///
 /// THE HOME for this sentence, under the same rule as [`element_set_requirement`]:
-/// `sagemaker-sagemaker`, `aiops-aiops` and `pipes-pipes` each carry their own inlined copy,
-/// written before this module had one, and are to be MIGRATED onto this one rather than
-/// copied again.
+/// `sagemaker-sagemaker` and `pipes-pipes` each carry their own inlined copy, written before
+/// this module had one, and are to be MIGRATED onto this one rather than copied again.
 #[must_use]
 pub fn map_value_set_requirement(requirements: &[String]) -> String {
     format!("{MAP_VALUE_SET_OPEN}{}]", requirements.join(", "))
+}
+
+/// What a clause opens the KEY shape's constraint set with, when the set is stated at the
+/// MAP member whose keys it is about — the key counterpart of [`MAP_VALUE_SET_OPEN`].
+const MAP_KEY_SET_OPEN: &str = "Map keys must satisfy constraint: [";
+
+/// The requirement a clause states at a MAP member for a constraint its KEYS broke: the key
+/// shape's whole declared set, nested inside `Map keys must satisfy constraint: [ … ]`.
+///
+/// THE HOME for this sentence, for the reason [`map_value_set_requirement`] is the home for
+/// the value one: [`map_key_requirements_refusal`] states a whole refusal around it, while a
+/// service that states its own clauses — one whose dialect this module's whole-refusal entry
+/// points do not cover — needs the requirement half on its own, and the two cannot be allowed
+/// to word one constraint set two ways. `requirements` are the key shape's requirement
+/// sentences ([`requirement`] over the constraints it declares), in the order the clause
+/// states them.
+#[must_use]
+pub fn map_key_set_requirement(requirements: &[String]) -> String {
+    format!("{MAP_KEY_SET_OPEN}{}]", requirements.join(", "))
 }
 
 /// The ONE body behind both grouped entry points: the framework's envelope over the

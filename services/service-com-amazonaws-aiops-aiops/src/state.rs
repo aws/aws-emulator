@@ -549,27 +549,20 @@ fn unanchored(pattern: &str) -> &str {
 
 /// The requirement half of a clause: what the value had to satisfy.
 ///
-/// Read off the FRAMEWORK's own rendering of `kind` — with an empty path and no value,
-/// so every word of the sentence is the framework's or the model's and none of it is
-/// anything a caller sent — and then cut at the clause separator. A constraint class
-/// the framework learns to check therefore cannot drift from this wording, and
-/// [`ViolationKind`] being `#[non_exhaustive]` costs nothing here.
+/// Taken out of the FRAMEWORK's own rendering of `kind` by
+/// `service_common::validation_message::requirement`, the one home for that derivation —
+/// rendered with an empty path and no value, so every word of the sentence is the
+/// framework's or the model's and none of it is anything a caller sent. A constraint
+/// class the framework learns to check therefore cannot drift from this wording,
+/// [`ViolationKind`] being `#[non_exhaustive]` costs nothing here, and this crate words a
+/// requirement exactly as every other crate stating its own clauses does.
 ///
 /// A `@pattern` requirement is restated through [`applied_pattern`].
 pub fn requirement_text(kind: ViolationKind) -> String {
-    let rendered = Violation {
-        path: String::new(),
-        kind,
-        value: None,
-        sensitive: false,
-    }
-    .message();
-    let requirement = rendered
-        .split_once(CONSTRAINT_SEPARATOR)
-        .map_or(rendered.as_str(), |(_, requirement)| requirement);
+    let requirement = ::service_common::validation_message::requirement(kind);
     match requirement.strip_prefix(PATTERN_REQUIREMENT) {
         Some(pattern) => format!("{PATTERN_REQUIREMENT}{}", applied_pattern(pattern)),
-        None => requirement.to_string(),
+        None => requirement,
     }
 }
 
@@ -597,10 +590,10 @@ pub fn absent_member_clause(member_path: &str, requirement: &str) -> String {
 ///
 /// The envelope's own words — the count word and what separates two clauses — are the
 /// FRAMEWORK's, read back out of its own rendering by the shared renderer rather than
-/// spelled here, for the same reason [`requirement_text`] reads the requirement half of
-/// a clause off that rendering: the boundary refusals this wording is deliberately kept
-/// in step with are rendered by the framework, so a framework that re-words the
-/// envelope re-words a handler-stated refusal with it.
+/// spelled here, for the same reason [`requirement_text`] takes the requirement half of
+/// a clause out of that rendering through the same shared module: the boundary refusals
+/// this wording is deliberately kept in step with are rendered by the framework, so a
+/// framework that re-words the envelope re-words a handler-stated refusal with it.
 ///
 /// No clause is nothing to put in an envelope, which the shared renderer answers `None`
 /// for; every caller here states at least one, so this never renders a count of no
@@ -681,11 +674,6 @@ const REFUSABLE_INPUTS: &[&Schema] = &[
 
 /// The character separating one step of a member path from the next.
 const PATH_SEPARATOR: char = '.';
-
-/// How a clause states what a MAP ENTRY's value had to satisfy: the requirement is the
-/// value shape's whole constraint set, bundled at the map member, because the member is
-/// the subject of the clause and one map may hold many entries that break it.
-const MAP_VALUE_REQUIREMENT_PREFIX: &str = "Map value must satisfy constraint: ";
 
 /// The member schema that `segment` names, where this service models that member as a
 /// MAP, and `None` for every other segment (a scalar or collection member's name, a
@@ -810,7 +798,12 @@ fn violation_clause(violation: &Violation) -> String {
         let requirement = if requirements.is_empty() {
             requirement_text(violation.kind.clone())
         } else {
-            format!("{MAP_VALUE_REQUIREMENT_PREFIX}[{}]", requirements.join(", "))
+            // What a clause states a MAP ENTRY's value had to satisfy: the value shape's
+            // whole constraint set, bundled at the map member, because the member is the
+            // subject of the clause and one map may hold many entries that break it. The
+            // sentence around the set is the shared module's, so it cannot drift from the
+            // one a framework-rendered refusal states.
+            ::service_common::validation_message::map_value_set_requirement(&requirements)
         };
         return constraint_clause(member_path, &requirement);
     }
@@ -876,12 +869,6 @@ pub fn validation_exception_message(violations: &[Violation]) -> Option<String> 
 // A map entry whose VALUE the walk refuses never reaches a handler, so a request
 // breaking a key rule and a value rule at once is refused by the walk's clause alone.
 // ---------------------------------------------------------------------------
-
-/// How a clause states what a map entry's KEY had to satisfy: the key shape's whole
-/// constraint set, bundled at the map member for the same reason a value bundle is
-/// ([`MAP_VALUE_REQUIREMENT_PREFIX`]) — the member is the subject of the clause and one
-/// map may hold many entries that break the rule.
-const MAP_KEY_REQUIREMENT_PREFIX: &str = "Map keys must satisfy constraint: ";
 
 /// This service's Smithy namespace, for the key member schemas below.
 const NAMESPACE: &str = "com.amazonaws.aiops";
@@ -1007,11 +994,15 @@ fn map_keys_clause<'a>(
     keys.into_iter()
         .any(|key| !satisfies_key_shape(shape.key, key))
         .then(|| {
+            // What a clause states a map entry's KEY had to satisfy: the key shape's
+            // whole constraint set, bundled at the map member for the same reason a value
+            // bundle is — the member is the subject of the clause and one map may hold
+            // many entries that break the rule. The sentence around the set is the shared
+            // module's, the one the framework's own key refusals are worded with.
             constraint_clause(
                 shape.member,
-                &format!(
-                    "{MAP_KEY_REQUIREMENT_PREFIX}[{}]",
-                    requirement_bundle(shape.key.traits()).join(", ")
+                &::service_common::validation_message::map_key_set_requirement(
+                    &requirement_bundle(shape.key.traits()),
                 ),
             )
         })
@@ -1039,7 +1030,8 @@ fn map_keys_clause<'a>(
 // a list member schema — and the decision is [`validate`], the same walk the request
 // boundary runs, driven over a list of that entry's size. The clause names the map
 // MEMBER and bundles the value shape's requirements, the wording every other refusal
-// about a map entry's value already uses ([`MAP_VALUE_REQUIREMENT_PREFIX`]).
+// about a map entry's value already uses
+// (`service_common::validation_message::map_value_set_requirement`).
 // ---------------------------------------------------------------------------
 
 /// `ChatConfigurationArns`' own modelled `@length`, as the model declares it
@@ -1130,9 +1122,8 @@ fn map_value_collections_clause<'a>(
         .then(|| {
             constraint_clause(
                 shape.member,
-                &format!(
-                    "{MAP_VALUE_REQUIREMENT_PREFIX}[{}]",
-                    requirement_bundle(shape.value.traits()).join(", ")
+                &::service_common::validation_message::map_value_set_requirement(
+                    &requirement_bundle(shape.value.traits()),
                 ),
             )
         })
