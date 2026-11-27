@@ -323,56 +323,68 @@ const CODEBUILD_ARN_SERVICE: &str = "codebuild";
 /// provisioned out of band — so only a statement that DENIES it holds the start back.
 /// Everything that is not an answer (no IAM to ask, a value naming no role of this account,
 /// a failed hop) withholds nothing.
+///
+/// Which of IAM's rules withheld the grant is read off the DECISION itself rather than off
+/// how much the role states: a statement that denies the action is an explicit deny whether
+/// or not the same role also grants it, and a policy set that merely does not mention the
+/// action is IAM's default deny. So the question is put in its three-valued form
+/// (`role_action_decision_through`), and the role's own statements are only consulted for
+/// the one case where a default deny is not an answer: a role carrying no identity-based
+/// policy at all.
 async fn start_build_denial(
     callback: &smithy_server_runtime::EmbeddedEmulator,
     region: &str,
     role_arn: &str,
     project_name: &str,
 ) -> Option<String> {
+    use ::service_common::iam_authorization::Decision;
+
     let project = ::engine::emulator_arn(
         CODEBUILD_ARN_SERVICE,
         region,
         &format!("project/{project_name}"),
     );
-    let states_permissions =
-        ::service_common::iam_role::role_states_permissions_through(callback, region, role_arn)
-            .await;
-    let withheld = if states_permissions {
-        ::service_common::iam_role::role_withholds_action_through(
-            callback,
-            region,
-            role_arn,
-            START_BUILD_ACTION,
-            &project,
-        )
-        .await
-    } else {
-        ::service_common::iam_role::role_denies_action_through(
-            callback,
-            region,
-            role_arn,
-            START_BUILD_ACTION,
-            &project,
-        )
-        .await
-    };
-    withheld.then(|| {
-        // The sentence AWS refuses the call with, worded once for every service that
-        // decides the identity-based question (`::service_common::iam_authorization`): the
-        // principal the call is made by, the action it asked for, the project it asked for,
-        // and which of IAM's rules withheld the grant.
-        let reason = if states_permissions {
-            ::service_common::iam_authorization::no_identity_policy_allows(START_BUILD_ACTION)
-        } else {
+    let decision = ::service_common::iam_role::role_action_decision_through(
+        callback,
+        region,
+        role_arn,
+        START_BUILD_ACTION,
+        &project,
+        &[],
+    )
+    .await?;
+    let reason = match decision {
+        Decision::Allowed => return None,
+        // A fact about the role's own documents, so the sentence names them rather than the
+        // action.
+        Decision::Denied => {
             ::service_common::iam_authorization::IDENTITY_POLICY_EXPLICIT_DENY.to_string()
-        };
+        }
+        // IAM's default deny — an answer about this role only where the role STATES
+        // identity-based policies at all (see above).
+        Decision::NotStated => {
+            if !::service_common::iam_role::role_states_permissions_through(
+                callback, region, role_arn,
+            )
+            .await
+            {
+                return None;
+            }
+            ::service_common::iam_authorization::no_identity_policy_allows(START_BUILD_ACTION)
+        }
+    };
+    // The sentence AWS refuses the call with, worded once for every service that decides the
+    // identity-based question (`::service_common::iam_authorization`): the principal the call
+    // is made by, the action it asked for, the project it asked for, and which of IAM's rules
+    // withheld the grant.
+    Some(
         ::service_common::iam_authorization::not_authorized_by_identity_policy(
             role_arn,
             START_BUILD_ACTION,
             &project,
             &reason,
-        )
-    })
+        ),
+    )
 }
 
 /// A CodeBuild client over the in-process callback into this same emulator.
