@@ -122,7 +122,7 @@ fn signing_profile(index: usize) -> String {
 /// The ONE writer every package below is assembled with, so a package and the contents a
 /// signature was taken over carry the same entry names: an archive this writes and reads back
 /// is what [`service_common::code_signing_signature::content_digest`] states.
-fn archive_of(entries: &[(&str, Vec<u8>)]) -> Vec<u8> {
+pub(crate) fn archive_of(entries: &[(&str, Vec<u8>)]) -> Vec<u8> {
     let mut buffer = std::io::Cursor::new(Vec::new());
     {
         let mut writer = zip::ZipWriter::new(&mut buffer);
@@ -1105,7 +1105,7 @@ async fn get_function_code_signing_config_reports_the_association_as_a_whole() {
 // ---------------------------------------------------------------------------------------
 
 /// The key pair of one signing profile version, as the signing service holds it.
-type SigningKey =
+pub(crate) type SigningKey =
     service_com_amazonaws_signer_wallabyservice::state::payload_signing::PayloadSigningKey;
 
 /// A signing platform of the code-signing workflow the signing service publishes, and the
@@ -1123,7 +1123,7 @@ const SIGNER_AUTHORIZATION: &str = "AWS4-HMAC-SHA256 \
 /// here — these packages are signed without one — so a function deploying such a package
 /// reports its publisher and no `SigningJobArn`; the job half is what the cross-service suite
 /// that signs through a real `StartSigningJob` pins.
-const JOB_ID: &str = "11111111-2222-3333-4444-555555555555";
+pub(crate) const JOB_ID: &str = "11111111-2222-3333-4444-555555555555";
 
 /// The status a function's `LastUpdateStatus` reports while the update's completion is still
 /// owed by the clock, and the one it settles to.
@@ -1132,15 +1132,15 @@ const UPDATE_SUCCESSFUL: &str = "Successful";
 
 /// One signing profile of the signing service: the version ARN a signature of it names, the
 /// profile ARN that version belongs to, and the key pair it signs with.
-struct Publisher {
-    version_arn: String,
-    profile_arn: String,
-    key: SigningKey,
+pub(crate) struct Publisher {
+    pub(crate) version_arn: String,
+    pub(crate) profile_arn: String,
+    pub(crate) key: SigningKey,
 }
 
 /// `PutSigningProfile` on the signing service, then the key pair that profile version signs
 /// with, read out of that service's own store.
-async fn publisher(
+pub(crate) async fn publisher(
     engine: &Arc<engine::InMemoryEngine>,
     router: &MultiServiceRouter,
     label: &str,
