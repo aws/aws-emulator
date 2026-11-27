@@ -24,6 +24,7 @@ pub struct InvokeModelInput {
     pub performance_config_latency: String,
     pub service_tier: Option<String>,
     pub request_metadata: Option<String>,
+    pub project_identifier: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.bedrockruntime#InvokeModelResponse")]

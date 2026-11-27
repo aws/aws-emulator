@@ -20,6 +20,7 @@ pub struct ConverseInput {
     pub inference_config: Option<InferenceConfiguration>,
     pub tool_config: Option<ToolConfiguration>,
     pub guardrail_config: Option<GuardrailConfiguration>,
+    pub project_identifier: Option<String>,
     pub additional_model_request_fields: Option<::aws_smithy_types::Document>,
     pub prompt_variables: Option<std::collections::HashMap<String, PromptVariableValues>>,
     pub additional_model_response_field_paths: Option<Vec<String>>,
@@ -123,7 +124,6 @@ pub struct TokenUsage {
     pub cache_read_input_tokens: Option<i32>,
     pub cache_write_input_tokens: Option<i32>,
     pub cache_details: Option<Vec<CacheDetail>>,
-    pub server_tool_usage: Option<std::collections::HashMap<String, i32>>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.bedrockruntime#CacheDetail")]

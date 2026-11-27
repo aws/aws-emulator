@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! What a synchronous inference call REPORTS about the turn it served: the token
-//! accounting in its usage envelope, the per-tool accounting beside it, and the
+//! accounting in its usage envelope, the members that envelope carries, and the
 //! generation cap that bounds the turn — end to end over HTTP.
 //!
 //! Three rules are asserted here, each over a SET of inputs rather than over the one
@@ -12,8 +12,9 @@
 //!   not hold is cut into the pieces it does hold — and every surface that counts an input
 //!   (`CountTokens`, `Converse`, `InvokeModel`) reports the same number for the same text,
 //!   with `totalTokens` the sum of what was counted in and what was generated;
-//! * a `Converse` response always reports the per-tool accounting beside those counts, as
-//!   an object, empty when no system-defined tool served anything for the turn;
+//! * a `Converse` response's usage envelope reports exactly the members `TokenUsage`
+//!   declares — the three required counts on every turn, and the cache members only on a
+//!   turn that engaged the prompt cache — and no member the shape does not declare;
 //! * the generation cap a request carries is read under EVERY name the invoked family's
 //!   request format publishes for it, and the cap is reported as the cause of the stop
 //!   exactly when the served tokens spend the whole of it with more left to say.
@@ -200,25 +201,39 @@ async fn the_prompt_tokens_reported_are_the_byte_pair_count_of_the_prompt_text()
 }
 
 // ---------------------------------------------------------------------------
-// The per-tool accounting
+// The members of the usage envelope
 // ---------------------------------------------------------------------------
 
-/// One Converse request, for the rule that every response reports the per-tool accounting.
-struct ServerToolRow {
+/// One Converse request, for the rule about which members its usage envelope carries.
+struct UsageRow {
     case: &'static str,
     request: fn() -> Value,
+    /// Whether the turn engages the prompt cache, which is what the cache members are
+    /// reported for.
+    caches: bool,
 }
+
+/// The members `TokenUsage` declares: the three `@required` counts every turn reports, and
+/// the three that report the prompt cache. Source:
+/// `smithy_query(query="shape", shape="TokenUsage")`.
+const REQUIRED_USAGE_MEMBERS: &[&str] = &["inputTokens", "outputTokens", "totalTokens"];
+const CACHE_USAGE_MEMBERS: &[&str] = &[
+    "cacheReadInputTokens",
+    "cacheWriteInputTokens",
+    "cacheDetails",
+];
 
 /// The table: rows differ along what the turn DOES — plain text, a system prompt, a turn
 /// obliged to request a tool, a turn the generation cap cuts off, and a turn carrying a
-/// cache checkpoint — since the member is reported on every response, not on some of them.
-fn server_tool_rows() -> Vec<ServerToolRow> {
+/// cache checkpoint — since the envelope's membership is the shape's, whatever the turn did.
+fn usage_rows() -> Vec<UsageRow> {
     vec![
-        ServerToolRow {
+        UsageRow {
             case: "a plain turn",
             request: || json!({ "messages": [{"role": "user", "content": [{"text": "hello"}]}] }),
+            caches: false,
         },
-        ServerToolRow {
+        UsageRow {
             case: "a turn with a system prompt",
             request: || {
                 json!({
@@ -226,8 +241,9 @@ fn server_tool_rows() -> Vec<ServerToolRow> {
                     "messages": [{"role": "user", "content": [{"text": "Name one planet."}]}],
                 })
             },
+            caches: false,
         },
-        ServerToolRow {
+        UsageRow {
             case: "a turn obliged to request a tool",
             request: || {
                 json!({
@@ -245,8 +261,9 @@ fn server_tool_rows() -> Vec<ServerToolRow> {
                     },
                 })
             },
+            caches: false,
         },
-        ServerToolRow {
+        UsageRow {
             case: "a turn the generation cap cuts off",
             request: || {
                 json!({
@@ -254,8 +271,9 @@ fn server_tool_rows() -> Vec<ServerToolRow> {
                     "inferenceConfig": {"maxTokens": 2},
                 })
             },
+            caches: false,
         },
-        ServerToolRow {
+        UsageRow {
             case: "a turn carrying a cache checkpoint",
             request: || {
                 json!({
@@ -266,18 +284,21 @@ fn server_tool_rows() -> Vec<ServerToolRow> {
                     ]}],
                 })
             },
+            caches: true,
         },
     ]
 }
 
-/// RULE: a `Converse` response reports the per-tool accounting beside its token counts on
-/// EVERY turn — as an object, empty when no system-defined tool served a request while the
-/// turn was generated — so a client that reads it unconditionally finds an object.
+/// RULE: a `Converse` response's usage envelope carries exactly the members the modelled
+/// `TokenUsage` declares — the three required counts on every turn whatever it did, the
+/// cache members only on a turn that engaged the prompt cache — and no member the shape
+/// does not declare, so a client reading the envelope finds every count the shape promises
+/// and nothing the shape no longer carries.
 #[tokio::test]
-async fn every_converse_turn_reports_the_server_tool_accounting() {
+async fn a_converse_turn_reports_exactly_the_members_the_usage_shape_declares() {
     let router = emulator();
 
-    for row in server_tool_rows() {
+    for row in usage_rows() {
         let case = row.case;
         let call = post_json(
             &router,
@@ -293,11 +314,39 @@ async fn every_converse_turn_reports_the_server_tool_accounting() {
             String::from_utf8_lossy(&call.body)
         );
         let usage = call.json()["usage"].clone();
-        let reported = usage.get("serverToolUsage").cloned();
-        assert_eq!(
-            reported,
-            Some(json!({})),
-            "case {case:?}: expected an empty per-tool accounting, got {reported:?} in {usage}"
+        let reported: Vec<String> = usage
+            .as_object()
+            .unwrap_or_else(|| panic!("case {case:?}: the usage envelope must be an object"))
+            .keys()
+            .cloned()
+            .collect();
+        for member in REQUIRED_USAGE_MEMBERS {
+            assert!(
+                usage.get(member).and_then(Value::as_i64).is_some(),
+                "case {case:?}: expected {member} to be reported as a count, got {usage}"
+            );
+        }
+        for member in CACHE_USAGE_MEMBERS {
+            assert_eq!(
+                usage.get(member).is_some(),
+                row.caches,
+                "case {case:?}: expected {member} to be reported only for a cached turn, got \
+                 {usage}"
+            );
+        }
+        let declared: Vec<&str> = REQUIRED_USAGE_MEMBERS
+            .iter()
+            .chain(CACHE_USAGE_MEMBERS)
+            .copied()
+            .collect();
+        let undeclared: Vec<&String> = reported
+            .iter()
+            .filter(|member| !declared.contains(&member.as_str()))
+            .collect();
+        assert!(
+            undeclared.is_empty(),
+            "case {case:?}: the envelope must carry no member TokenUsage does not declare, \
+             got {undeclared:?} in {usage}"
         );
     }
 }

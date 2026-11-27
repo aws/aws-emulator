@@ -44,6 +44,7 @@ pub struct ConverseStreamInput {
     pub inference_config: Option<InferenceConfiguration>,
     pub tool_config: Option<ToolConfiguration>,
     pub guardrail_config: Option<GuardrailStreamConfiguration>,
+    pub project_identifier: Option<String>,
     pub additional_model_request_fields: Option<::aws_smithy_types::Document>,
     pub prompt_variables: Option<std::collections::HashMap<String, PromptVariableValues>>,
     pub additional_model_response_field_paths: Option<Vec<String>>,
@@ -185,6 +186,7 @@ pub struct InvokeModelWithResponseStreamInput {
     pub performance_config_latency: String,
     pub service_tier: Option<String>,
     pub request_metadata: Option<String>,
+    pub project_identifier: Option<String>,
 }
 
 /// The `@httpHeader`-bound half of `InvokeModelWithResponseStreamResponse`; `body` is

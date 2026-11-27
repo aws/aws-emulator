@@ -2711,18 +2711,16 @@ impl ConverseTurn {
     }
 
     /// The modelled `TokenUsage` for this turn: the counts actually served, with
-    /// `totalTokens` their sum, and the per-tool accounting the Converse APIs
-    /// report beside them ([`Self::server_tool_requests`]).
+    /// `totalTokens` their sum.
     ///
     /// A turn that engaged the prompt cache reports the two cache counters too,
     /// and `totalTokens` closes over all four: the prefix tokens are billed as
     /// a cache write on the call that cached them and as a cache read on the
     /// call that matched them, never a second time as `inputTokens`.
     ///
-    /// `serverToolUsage` is always present, so a client that reads it finds an
-    /// object rather than nothing — empty for a turn no system-defined tool
-    /// served anything for. `Converse` and `ConverseStream` report one turn's
-    /// usage, so both report it.
+    /// Only the members the shape declares are reported: `Converse` and
+    /// `ConverseStream` bind the same `TokenUsage`, so both report exactly
+    /// these counts.
     pub fn usage(&self) -> TokenUsage {
         let cached_tokens = self
             .cache
@@ -2749,22 +2747,7 @@ impl ConverseTurn {
                 .cache
                 .as_ref()
                 .map(|cache| cache.cache_details.clone()),
-            server_tool_usage: Some(self.server_tool_requests()),
         }
-    }
-
-    /// How many requests each SYSTEM-DEFINED tool served while this turn was
-    /// generated, by tool name.
-    ///
-    /// A system-defined tool is one "created and provided by the model provider"
-    /// (the modelled `SystemTool`), which the SERVICE runs while generating the
-    /// turn rather than handing back to the caller. Nothing provider-side runs in
-    /// this emulator — a turn that asks for a tool, system-defined or not, hands
-    /// that request back as a `toolUse` block for the caller to answer — so no
-    /// system-defined tool served a request while this turn was served and the
-    /// accounting it reports is empty.
-    pub fn server_tool_requests(&self) -> HashMap<String, i32> {
-        HashMap::new()
     }
 }
 

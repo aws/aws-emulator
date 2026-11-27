@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! The Bedrock Runtime streaming surface, end to end over HTTP: `ConverseStream`
-//! and `InvokeModelWithResponseStream`, plus the model-identifier rule every
-//! operation that takes a `modelId` follows.
+//! and `InvokeModelWithResponseStream`, plus the request rules every operation that
+//! invokes a model follows — the `modelId` it names the model with, and the
+//! `projectIdentifier` it names the project the invocation runs under.
 //!
 //! Every case drives the real router, so what is asserted is the wire behaviour a
 //! client sees — status, headers, and the `vnd.amazon.eventstream` frames — never a
@@ -1931,5 +1932,250 @@ async fn a_streamed_inference_is_recorded_in_the_inference_log() {
             entry.input_tokens > 0 && entry.output_tokens > 0,
             "every entry carries the counts actually served, got {entry:?}"
         );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The project an invocation runs under, across every surface that invokes a model
+// ---------------------------------------------------------------------------
+
+/// One surface that invokes a model, and where it carries `projectIdentifier`.
+///
+/// The Converse surfaces bind the member in the request BODY and the invoke
+/// surfaces bind it to the `X-Amzn-Bedrock-ProjectIdentifier` header
+/// (`smithy_query(query="operation",operation="Converse,ConverseStream,InvokeModel,\
+/// InvokeModelWithResponseStream")`), so the same member reaches the service two
+/// ways and the rule has to hold on both.
+struct ProjectSurface {
+    operation: &'static str,
+    /// The path under `/model/{modelId}`.
+    path: &'static str,
+    /// Whether the member travels in the body; otherwise it is the header above.
+    in_body: bool,
+    /// Whether a served answer is an event stream.
+    streamed: bool,
+}
+
+/// The header the invoke surfaces bind `projectIdentifier` to.
+const PROJECT_HEADER: &str = "x-amzn-bedrock-projectidentifier";
+
+/// Every surface that invokes a model, with the binding each gives the member.
+const PROJECT_SURFACES: &[ProjectSurface] = &[
+    ProjectSurface {
+        operation: "Converse",
+        path: "converse",
+        in_body: true,
+        streamed: false,
+    },
+    ProjectSurface {
+        operation: "ConverseStream",
+        path: "converse-stream",
+        in_body: true,
+        streamed: true,
+    },
+    ProjectSurface {
+        operation: "InvokeModel",
+        path: "invoke",
+        in_body: false,
+        streamed: false,
+    },
+    ProjectSurface {
+        operation: "InvokeModelWithResponseStream",
+        path: "invoke-with-response-stream",
+        in_body: false,
+        streamed: true,
+    },
+];
+
+/// One value of `projectIdentifier`, and what the surface owes for it.
+struct ProjectRow {
+    case: &'static str,
+    /// The value the request carries; `None` omits the member altogether.
+    value: Option<String>,
+    /// The requirement the value breaks, as the per-member refusal states it, or
+    /// `None` when the value is one the member admits and the call is served.
+    breaks: Option<&'static str>,
+    /// Whether the value can be carried by a surface that binds the member to a
+    /// HEADER: an empty header field value is indistinguishable from an absent
+    /// one, so the member's minimum length is exercised where it is a body member.
+    on_a_header: bool,
+}
+
+/// The published bounds of `ProjectIdentifier`: `@length min 1 max 2048`
+/// (`smithy_query(query="shape",shape="ProjectIdentifier")`).
+const PROJECT_IDENTIFIER_MIN_LENGTH: usize = 1;
+const PROJECT_IDENTIFIER_MAX_LENGTH: usize = 2048;
+
+/// The table: the forms `ProjectIdentifier`'s own `@pattern` admits — the default
+/// project named by omitting the member and by naming it, a bare project id, and a
+/// `project/` ARN — and values outside the shape, breaking its pattern and each
+/// published length bound. Sources: the member's `@pattern`
+/// `^([a-zA-Z0-9_-]+|arn:aws(…):bedrock:[0-9a-z-]{1,20}:[0-9]{12}:project/[a-zA-Z0-9_-]+)$`
+/// and its `@length`, plus the member's own documentation for what omitting it and
+/// the literal `default` mean
+/// (`smithy_query(query="doc",shape="ConverseRequest",member="projectIdentifier")`).
+fn project_rows() -> Vec<ProjectRow> {
+    vec![
+        ProjectRow {
+            case: "the member omitted, which names the account's default project",
+            value: None,
+            breaks: None,
+            on_a_header: true,
+        },
+        ProjectRow {
+            case: "the default project named outright",
+            value: Some("default".to_string()),
+            breaks: None,
+            on_a_header: true,
+        },
+        ProjectRow {
+            case: "a project id of the admitted character set",
+            value: Some("analytics_team-2".to_string()),
+            breaks: None,
+            on_a_header: true,
+        },
+        ProjectRow {
+            case: "a project ARN",
+            value: Some(format!(
+                "arn:aws:bedrock:us-east-1:{}:project/analytics",
+                ::engine::emulator_account_id()
+            )),
+            breaks: None,
+            on_a_header: true,
+        },
+        ProjectRow {
+            case: "a project id at the member's minimum length",
+            value: Some("a".repeat(PROJECT_IDENTIFIER_MIN_LENGTH)),
+            breaks: None,
+            on_a_header: true,
+        },
+        ProjectRow {
+            case: "a project id at the member's maximum length",
+            value: Some("a".repeat(PROJECT_IDENTIFIER_MAX_LENGTH)),
+            breaks: None,
+            on_a_header: true,
+        },
+        ProjectRow {
+            case: "a project id one character past the member's maximum length",
+            value: Some("a".repeat(PROJECT_IDENTIFIER_MAX_LENGTH + 1)),
+            breaks: Some("Member must have length less than or equal to 2048"),
+            on_a_header: true,
+        },
+        ProjectRow {
+            case: "a project id one character below the member's minimum length",
+            value: Some(String::new()),
+            breaks: Some("Member must have length greater than or equal to 1"),
+            on_a_header: false,
+        },
+        ProjectRow {
+            case: "a project id carrying characters the member admits nowhere",
+            value: Some("my project!".to_string()),
+            breaks: Some("Member must satisfy regular expression pattern"),
+            on_a_header: true,
+        },
+        ProjectRow {
+            case: "a bare resource path rather than an id or an ARN",
+            value: Some("project/analytics".to_string()),
+            breaks: Some("Member must satisfy regular expression pattern"),
+            on_a_header: true,
+        },
+        ProjectRow {
+            case: "an ARN of another resource of this service",
+            value: Some(format!(
+                "arn:aws:bedrock:us-east-1:{}:guardrail/abcd1234efgh",
+                ::engine::emulator_account_id()
+            )),
+            breaks: Some("Member must satisfy regular expression pattern"),
+            on_a_header: true,
+        },
+    ]
+}
+
+/// RULE: the project an invocation runs under is named by `projectIdentifier`, which
+/// every surface that invokes a model takes — in the body on the Converse surfaces
+/// and as a header on the invoke surfaces — and the value is checked against that
+/// member's OWN constraints: every form its pattern admits, inside its published
+/// length, is served exactly as the same request without the member is (the member
+/// selects a project, it does not change what the model answers), and a value
+/// outside them is refused `400 ValidationException` with the per-member envelope
+/// naming `projectIdentifier` and the requirement it broke.
+#[tokio::test]
+async fn the_project_an_invocation_names_is_taken_on_every_surface_that_invokes_a_model() {
+    let router = emulator();
+    // A model offered for on-demand invocation whose `InvokeModel` request shape is
+    // the Converse API's own `messages` envelope, so one body serves all four
+    // surfaces and no case fails on its body instead of on the member under test.
+    let model = "amazon.nova-lite-v1:0";
+    let conversation = json!({ "messages": [{"role": "user", "content": [{"text": "hi"}]}] });
+
+    for surface in PROJECT_SURFACES {
+        let operation = surface.operation;
+        let uri = format!("/model/{model}/{}", surface.path);
+        for row in project_rows() {
+            if !surface.in_body && !row.on_a_header {
+                continue;
+            }
+            let case = format!("{} on {operation}", row.case);
+            let mut body = conversation.clone();
+            let mut headers = vec![("content-type", "application/json")];
+            match (&row.value, surface.in_body) {
+                (Some(value), true) => {
+                    body["projectIdentifier"] = Value::String(value.clone());
+                }
+                (Some(value), false) => headers.push((PROJECT_HEADER, value.as_str())),
+                (None, _) => {}
+            }
+            let call = send(
+                &router,
+                "POST",
+                &uri,
+                &headers,
+                serde_json::to_vec(&body).expect("a serializable test body"),
+            )
+            .await;
+
+            let Some(requirement) = row.breaks else {
+                assert_eq!(
+                    call.status,
+                    200,
+                    "case {case:?}: expected the invocation to be served, got {} / {}",
+                    call.status,
+                    String::from_utf8_lossy(&call.body)
+                );
+                let expected_media = match surface.streamed {
+                    true => EVENT_STREAM,
+                    false => "application/json",
+                };
+                assert_eq!(
+                    call.media_type(),
+                    expected_media,
+                    "case {case:?}: expected {expected_media}, got {:?}",
+                    call.media_type()
+                );
+                continue;
+            };
+            assert_eq!(
+                call.status,
+                400,
+                "case {case:?}: expected the member's own refusal, got {} / {}",
+                call.status,
+                String::from_utf8_lossy(&call.body)
+            );
+            assert_eq!(
+                call.error_code(),
+                "ValidationException",
+                "case {case:?}: expected ValidationException, got {:?}",
+                call.error_code()
+            );
+            let message = call.json()["message"].as_str().unwrap_or_default().to_string();
+            assert!(
+                message.contains("projectIdentifier"),
+                "case {case:?}: expected the envelope to name projectIdentifier, got {message:?}"
+            );
+            assert!(
+                message.contains(requirement),
+                "case {case:?}: expected the clause {requirement:?}, got {message:?}"
+            );
+        }
     }
 }
