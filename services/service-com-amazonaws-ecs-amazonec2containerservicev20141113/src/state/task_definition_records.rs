@@ -41,6 +41,10 @@ pub struct TaskDefinitionRecord {
     pub ephemeral_storage: Option<EphemeralStorage>,
     pub runtime_platform: Option<RuntimePlatform>,
     pub enable_fault_injection: Option<bool>,
+    /// `TaskDefinition$trustedExecutionConfiguration`: the isolation mode, and the
+    /// attestation policy where one was given, as the registration set it — "You set this
+    /// configuration when you register a task definition".
+    pub trusted_execution_configuration: Option<TrustedExecutionConfiguration>,
     pub tags: Vec<Tag>,
     /// The principal that registered this revision, resolved when the registration ran
     /// — not when it is read back.
@@ -273,6 +277,8 @@ impl TaskDefinitionRecord {
             registered_by: Some(self.registered_by.clone()),
             ephemeral_storage: self.ephemeral_storage.clone(),
             enable_fault_injection: self.enable_fault_injection,
+            // The configuration the registration set, reported back as it was stored.
+            trusted_execution_configuration: self.trusted_execution_configuration.clone(),
             // The status the revision held before THIS call is a property of a call that
             // moved it, not of the stored revision, so a projection that moved nothing
             // reports none ([`TaskDefinitionRecord::transition_view`]).

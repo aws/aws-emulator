@@ -4165,6 +4165,9 @@ impl ComAmazonawsEcsAmazonec2containerservicev20141113State {
             containers,
             cpu: definition.cpu.clone(),
             memory: definition.memory.clone(),
+            // The isolation the revision this placement runs was registered with, copied
+            // onto the task so what it reports cannot drift from what it was launched with.
+            trusted_execution_configuration: definition.trusted_execution_configuration.clone(),
             // A service's placement overrides nothing of the revision it runs, so the
             // overrides its tasks run under name each of that revision's containers and
             // override nothing of them ([`resolved_task_overrides`]).

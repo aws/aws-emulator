@@ -1079,6 +1079,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 containers,
                 cpu: definition.cpu.clone(),
                 memory: definition.memory.clone(),
+                // The isolation the revision this run places was registered with, copied
+                // onto the task so what it reports cannot drift from what it was launched
+                // with.
+                trusted_execution_configuration: definition
+                    .trusted_execution_configuration
+                    .clone(),
                 overrides: Some(overrides.clone()),
                 launch_type: reported_launch_type,
                 capacity_provider_name: provider.clone(),

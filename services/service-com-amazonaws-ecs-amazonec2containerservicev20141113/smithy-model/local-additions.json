@@ -1,0 +1,682 @@
+{
+  "smithy": "2.0",
+  "shapes": {
+    "com.amazonaws.ecs#Service": {
+      "type": "structure",
+      "members": {
+        "serviceArn": { "target": "com.amazonaws.ecs#String" },
+        "serviceName": { "target": "com.amazonaws.ecs#String" },
+        "clusterArn": { "target": "com.amazonaws.ecs#String" },
+        "loadBalancers": { "target": "com.amazonaws.ecs#LoadBalancers" },
+        "serviceRegistries": { "target": "com.amazonaws.ecs#ServiceRegistries" },
+        "status": { "target": "com.amazonaws.ecs#String" },
+        "desiredCount": {
+          "target": "com.amazonaws.ecs#Integer",
+          "traits": { "smithy.api#default": 0 }
+        },
+        "runningCount": {
+          "target": "com.amazonaws.ecs#Integer",
+          "traits": { "smithy.api#default": 0 }
+        },
+        "pendingCount": {
+          "target": "com.amazonaws.ecs#Integer",
+          "traits": { "smithy.api#default": 0 }
+        },
+        "launchType": { "target": "com.amazonaws.ecs#LaunchType" },
+        "capacityProviderStrategy": { "target": "com.amazonaws.ecs#CapacityProviderStrategy" },
+        "platformVersion": { "target": "com.amazonaws.ecs#String" },
+        "platformFamily": { "target": "com.amazonaws.ecs#String" },
+        "taskDefinition": { "target": "com.amazonaws.ecs#String" },
+        "deploymentConfiguration": { "target": "com.amazonaws.ecs#DeploymentConfiguration" },
+        "taskSets": { "target": "com.amazonaws.ecs#TaskSets" },
+        "deployments": { "target": "com.amazonaws.ecs#Deployments" },
+        "roleArn": { "target": "com.amazonaws.ecs#String" },
+        "events": { "target": "com.amazonaws.ecs#ServiceEvents" },
+        "createdAt": { "target": "com.amazonaws.ecs#Timestamp" },
+        "currentServiceDeployment": { "target": "com.amazonaws.ecs#String" },
+        "currentServiceRevisions": {
+          "target": "com.amazonaws.ecs#ServiceCurrentRevisionSummaryList"
+        },
+        "placementConstraints": { "target": "com.amazonaws.ecs#PlacementConstraints" },
+        "placementStrategy": { "target": "com.amazonaws.ecs#PlacementStrategies" },
+        "networkConfiguration": { "target": "com.amazonaws.ecs#NetworkConfiguration" },
+        "healthCheckGracePeriodSeconds": { "target": "com.amazonaws.ecs#BoxedInteger" },
+        "schedulingStrategy": { "target": "com.amazonaws.ecs#SchedulingStrategy" },
+        "deploymentController": { "target": "com.amazonaws.ecs#DeploymentController" },
+        "tags": { "target": "com.amazonaws.ecs#Tags" },
+        "createdBy": { "target": "com.amazonaws.ecs#String" },
+        "enableECSManagedTags": {
+          "target": "com.amazonaws.ecs#Boolean",
+          "traits": { "smithy.api#default": false }
+        },
+        "propagateTags": { "target": "com.amazonaws.ecs#PropagateTags" },
+        "enableExecuteCommand": {
+          "target": "com.amazonaws.ecs#Boolean",
+          "traits": { "smithy.api#default": false }
+        },
+        "availabilityZoneRebalancing": {
+          "target": "com.amazonaws.ecs#AvailabilityZoneRebalancing"
+        },
+        "resourceManagementType": { "target": "com.amazonaws.ecs#ResourceManagementType" },
+        "version": {
+          "target": "com.amazonaws.ecs#Long",
+          "traits": { "smithy.api#default": 0 }
+        },
+        "runStatus": { "target": "com.amazonaws.ecs#String" },
+        "extendDeploymentTimePeriod": {
+          "target": "com.amazonaws.ecs#Integer",
+          "traits": { "smithy.api#default": 0 }
+        }
+      }
+    },
+    "com.amazonaws.ecs#Deployment": {
+      "type": "structure",
+      "members": {
+        "id": { "target": "com.amazonaws.ecs#String" },
+        "status": { "target": "com.amazonaws.ecs#String" },
+        "taskDefinition": { "target": "com.amazonaws.ecs#String" },
+        "desiredCount": {
+          "target": "com.amazonaws.ecs#Integer",
+          "traits": { "smithy.api#default": 0 }
+        },
+        "pendingCount": {
+          "target": "com.amazonaws.ecs#Integer",
+          "traits": { "smithy.api#default": 0 }
+        },
+        "runningCount": {
+          "target": "com.amazonaws.ecs#Integer",
+          "traits": { "smithy.api#default": 0 }
+        },
+        "failedTasks": {
+          "target": "com.amazonaws.ecs#Integer",
+          "traits": { "smithy.api#default": 0 }
+        },
+        "healthyTaskCount": {
+          "target": "com.amazonaws.ecs#Integer",
+          "traits": { "smithy.api#default": 0 }
+        },
+        "failedLaunchTaskCount": {
+          "target": "com.amazonaws.ecs#Integer",
+          "traits": { "smithy.api#default": 0 }
+        },
+        "replacedTaskCount": {
+          "target": "com.amazonaws.ecs#Integer",
+          "traits": { "smithy.api#default": 0 }
+        },
+        "totalFailedTasks": {
+          "target": "com.amazonaws.ecs#Integer",
+          "traits": { "smithy.api#default": 0 }
+        },
+        "scale": { "target": "com.amazonaws.ecs#Scale" },
+        "stabilityStatus": { "target": "com.amazonaws.ecs#String" },
+        "createdAt": { "target": "com.amazonaws.ecs#Timestamp" },
+        "updatedAt": { "target": "com.amazonaws.ecs#Timestamp" },
+        "capacityProviderStrategy": { "target": "com.amazonaws.ecs#CapacityProviderStrategy" },
+        "launchType": { "target": "com.amazonaws.ecs#LaunchType" },
+        "platformVersion": { "target": "com.amazonaws.ecs#String" },
+        "platformFamily": { "target": "com.amazonaws.ecs#String" },
+        "networkConfiguration": { "target": "com.amazonaws.ecs#NetworkConfiguration" },
+        "rolloutState": { "target": "com.amazonaws.ecs#DeploymentRolloutState" },
+        "rolloutStateReason": { "target": "com.amazonaws.ecs#String" },
+        "serviceConnectConfiguration": {
+          "target": "com.amazonaws.ecs#ServiceConnectConfiguration"
+        },
+        "serviceConnectResources": {
+          "target": "com.amazonaws.ecs#ServiceConnectServiceResourceList"
+        },
+        "volumeConfigurations": { "target": "com.amazonaws.ecs#ServiceVolumeConfigurations" },
+        "fargateEphemeralStorage": { "target": "com.amazonaws.ecs#DeploymentEphemeralStorage" },
+        "vpcLatticeConfigurations": { "target": "com.amazonaws.ecs#VpcLatticeConfigurations" }
+      }
+    },
+    "com.amazonaws.ecs#DeploymentCircuitBreaker": {
+      "type": "structure",
+      "members": {
+        "enable": {
+          "target": "com.amazonaws.ecs#Boolean",
+          "traits": { "smithy.api#default": false }
+        },
+        "rollback": {
+          "target": "com.amazonaws.ecs#Boolean",
+          "traits": { "smithy.api#default": false }
+        },
+        "resetOnHealthyTask": { "target": "com.amazonaws.ecs#BoxedBoolean" },
+        "thresholdConfiguration": { "target": "com.amazonaws.ecs#ThresholdConfiguration" }
+      }
+    },
+    "com.amazonaws.ecs#ThresholdConfiguration": {
+      "type": "structure",
+      "members": {
+        "type": {
+          "target": "com.amazonaws.ecs#ThresholdType",
+          "traits": { "smithy.api#required": {} }
+        },
+        "value": {
+          "target": "com.amazonaws.ecs#Integer",
+          "traits": { "smithy.api#default": 0 }
+        }
+      }
+    },
+    "com.amazonaws.ecs#DeploymentAlarms": {
+      "type": "structure",
+      "members": {
+        "alarmNames": {
+          "target": "com.amazonaws.ecs#StringList",
+          "traits": { "smithy.api#required": {} }
+        },
+        "rollback": {
+          "target": "com.amazonaws.ecs#Boolean",
+          "traits": { "smithy.api#default": false }
+        },
+        "enable": {
+          "target": "com.amazonaws.ecs#Boolean",
+          "traits": { "smithy.api#default": false }
+        }
+      }
+    },
+    "com.amazonaws.ecs#DeploymentEarlySuccessCriteria": {
+      "type": "structure",
+      "members": {
+        "enable": {
+          "target": "com.amazonaws.ecs#Boolean",
+          "traits": { "smithy.api#default": false }
+        },
+        "healthyPercent": { "target": "com.amazonaws.ecs#HealthyPercentInteger" },
+        "sourceServiceRevisionCleanup": { "target": "com.amazonaws.ecs#ServiceRevisionCleanup" }
+      }
+    },
+    "com.amazonaws.ecs#TaskDefinition": {
+      "type": "structure",
+      "members": {
+        "taskDefinitionArn": { "target": "com.amazonaws.ecs#String" },
+        "containerDefinitions": { "target": "com.amazonaws.ecs#ContainerDefinitions" },
+        "family": { "target": "com.amazonaws.ecs#String" },
+        "taskRoleArn": { "target": "com.amazonaws.ecs#String" },
+        "executionRoleArn": { "target": "com.amazonaws.ecs#String" },
+        "networkMode": { "target": "com.amazonaws.ecs#NetworkMode" },
+        "revision": {
+          "target": "com.amazonaws.ecs#Integer",
+          "traits": { "smithy.api#default": 0 }
+        },
+        "volumes": { "target": "com.amazonaws.ecs#VolumeList" },
+        "status": { "target": "com.amazonaws.ecs#TaskDefinitionStatus" },
+        "requiresAttributes": { "target": "com.amazonaws.ecs#RequiresAttributes" },
+        "placementConstraints": {
+          "target": "com.amazonaws.ecs#TaskDefinitionPlacementConstraints"
+        },
+        "compatibilities": { "target": "com.amazonaws.ecs#CompatibilityList" },
+        "runtimePlatform": { "target": "com.amazonaws.ecs#RuntimePlatform" },
+        "requiresCompatibilities": { "target": "com.amazonaws.ecs#CompatibilityList" },
+        "cpu": { "target": "com.amazonaws.ecs#String" },
+        "memory": { "target": "com.amazonaws.ecs#String" },
+        "inferenceAccelerators": { "target": "com.amazonaws.ecs#InferenceAccelerators" },
+        "pidMode": { "target": "com.amazonaws.ecs#PidMode" },
+        "ipcMode": { "target": "com.amazonaws.ecs#IpcMode" },
+        "proxyConfiguration": { "target": "com.amazonaws.ecs#ProxyConfiguration" },
+        "registeredAt": { "target": "com.amazonaws.ecs#Timestamp" },
+        "deregisteredAt": { "target": "com.amazonaws.ecs#Timestamp" },
+        "deleteRequestedAt": { "target": "com.amazonaws.ecs#Timestamp" },
+        "registeredBy": { "target": "com.amazonaws.ecs#String" },
+        "ephemeralStorage": { "target": "com.amazonaws.ecs#EphemeralStorage" },
+        "enableFaultInjection": { "target": "com.amazonaws.ecs#BoxedBoolean" },
+        "trustedExecutionConfiguration": {
+          "target": "com.amazonaws.ecs#TrustedExecutionConfiguration"
+        },
+        "previousStatus": { "target": "com.amazonaws.ecs#String" }
+      }
+    },
+    "com.amazonaws.ecs#Task": {
+      "type": "structure",
+      "members": {
+        "attachments": { "target": "com.amazonaws.ecs#Attachments" },
+        "attributes": { "target": "com.amazonaws.ecs#Attributes" },
+        "availabilityZone": { "target": "com.amazonaws.ecs#String" },
+        "capacityProviderName": { "target": "com.amazonaws.ecs#String" },
+        "clusterArn": { "target": "com.amazonaws.ecs#String" },
+        "connectivity": { "target": "com.amazonaws.ecs#Connectivity" },
+        "connectivityAt": { "target": "com.amazonaws.ecs#Timestamp" },
+        "containerInstanceArn": { "target": "com.amazonaws.ecs#String" },
+        "containers": { "target": "com.amazonaws.ecs#Containers" },
+        "cpu": { "target": "com.amazonaws.ecs#String" },
+        "createdAt": { "target": "com.amazonaws.ecs#Timestamp" },
+        "desiredStatus": { "target": "com.amazonaws.ecs#String" },
+        "enableExecuteCommand": {
+          "target": "com.amazonaws.ecs#Boolean",
+          "traits": { "smithy.api#default": false }
+        },
+        "executionStoppedAt": { "target": "com.amazonaws.ecs#Timestamp" },
+        "group": { "target": "com.amazonaws.ecs#String" },
+        "healthStatus": { "target": "com.amazonaws.ecs#HealthStatus" },
+        "inferenceAccelerators": { "target": "com.amazonaws.ecs#InferenceAccelerators" },
+        "lastStatus": { "target": "com.amazonaws.ecs#String" },
+        "launchType": { "target": "com.amazonaws.ecs#LaunchType" },
+        "memory": { "target": "com.amazonaws.ecs#String" },
+        "overrides": { "target": "com.amazonaws.ecs#TaskOverride" },
+        "platformVersion": { "target": "com.amazonaws.ecs#String" },
+        "platformFamily": { "target": "com.amazonaws.ecs#String" },
+        "provisionedCpu": { "target": "com.amazonaws.ecs#String" },
+        "provisionedMemory": { "target": "com.amazonaws.ecs#String" },
+        "pullStartedAt": { "target": "com.amazonaws.ecs#Timestamp" },
+        "pullStoppedAt": { "target": "com.amazonaws.ecs#Timestamp" },
+        "startedAt": { "target": "com.amazonaws.ecs#Timestamp" },
+        "startedBy": { "target": "com.amazonaws.ecs#String" },
+        "stopCode": { "target": "com.amazonaws.ecs#TaskStopCode" },
+        "stoppedAt": { "target": "com.amazonaws.ecs#Timestamp" },
+        "stoppedReason": { "target": "com.amazonaws.ecs#String" },
+        "stoppingAt": { "target": "com.amazonaws.ecs#Timestamp" },
+        "tags": { "target": "com.amazonaws.ecs#Tags" },
+        "taskArn": { "target": "com.amazonaws.ecs#String" },
+        "taskDefinitionArn": { "target": "com.amazonaws.ecs#String" },
+        "version": {
+          "target": "com.amazonaws.ecs#Long",
+          "traits": { "smithy.api#default": 0 }
+        },
+        "ephemeralStorage": { "target": "com.amazonaws.ecs#EphemeralStorage" },
+        "fargateEphemeralStorage": { "target": "com.amazonaws.ecs#TaskEphemeralStorage" },
+        "trustedExecutionSummary": { "target": "com.amazonaws.ecs#TrustedExecutionSummary" }
+      }
+    },
+    "com.amazonaws.ecs#ManagedScaling": {
+      "type": "structure",
+      "members": {
+        "status": { "target": "com.amazonaws.ecs#ManagedScalingStatus" },
+        "targetCapacity": { "target": "com.amazonaws.ecs#ManagedScalingTargetCapacity" },
+        "minimumScalingStepSize": { "target": "com.amazonaws.ecs#ManagedScalingStepSize" },
+        "maximumScalingStepSize": { "target": "com.amazonaws.ecs#ManagedScalingStepSize" },
+        "instanceWarmupPeriod": {
+          "target": "com.amazonaws.ecs#ManagedScalingInstanceWarmupPeriod"
+        },
+        "scalingApproach": { "target": "com.amazonaws.ecs#String" }
+      }
+    },
+    "com.amazonaws.ecs#String": { "type": "string" },
+    "com.amazonaws.ecs#Integer": { "type": "integer" },
+    "com.amazonaws.ecs#BoxedInteger": { "type": "integer" },
+    "com.amazonaws.ecs#Long": { "type": "long" },
+    "com.amazonaws.ecs#Boolean": { "type": "boolean" },
+    "com.amazonaws.ecs#BoxedBoolean": { "type": "boolean" },
+    "com.amazonaws.ecs#Timestamp": { "type": "timestamp" },
+    "com.amazonaws.ecs#HealthyPercentInteger": {
+      "type": "integer",
+      "traits": { "smithy.api#range": { "min": 0, "max": 100 } }
+    },
+    "com.amazonaws.ecs#LaunchType": {
+      "type": "enum",
+      "members": {
+        "EC2": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "EC2" } },
+        "FARGATE": {
+          "target": "smithy.api#Unit",
+          "traits": { "smithy.api#enumValue": "FARGATE" }
+        },
+        "EXTERNAL": {
+          "target": "smithy.api#Unit",
+          "traits": { "smithy.api#enumValue": "EXTERNAL" }
+        },
+        "MANAGED_INSTANCES": {
+          "target": "smithy.api#Unit",
+          "traits": { "smithy.api#enumValue": "MANAGED_INSTANCES" }
+        }
+      }
+    },
+    "com.amazonaws.ecs#DeploymentRolloutState": {
+      "type": "enum",
+      "members": {
+        "COMPLETED": {
+          "target": "smithy.api#Unit",
+          "traits": { "smithy.api#enumValue": "COMPLETED" }
+        },
+        "FAILED": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "FAILED" } },
+        "IN_PROGRESS": {
+          "target": "smithy.api#Unit",
+          "traits": { "smithy.api#enumValue": "IN_PROGRESS" }
+        }
+      }
+    },
+    "com.amazonaws.ecs#SchedulingStrategy": {
+      "type": "enum",
+      "members": {
+        "REPLICA": {
+          "target": "smithy.api#Unit",
+          "traits": { "smithy.api#enumValue": "REPLICA" }
+        },
+        "DAEMON": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "DAEMON" } }
+      }
+    },
+    "com.amazonaws.ecs#PropagateTags": {
+      "type": "enum",
+      "members": {
+        "TASK_DEFINITION": {
+          "target": "smithy.api#Unit",
+          "traits": { "smithy.api#enumValue": "TASK_DEFINITION" }
+        },
+        "SERVICE": {
+          "target": "smithy.api#Unit",
+          "traits": { "smithy.api#enumValue": "SERVICE" }
+        },
+        "NONE": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "NONE" } }
+      }
+    },
+    "com.amazonaws.ecs#AvailabilityZoneRebalancing": {
+      "type": "enum",
+      "members": {
+        "ENABLED": {
+          "target": "smithy.api#Unit",
+          "traits": { "smithy.api#enumValue": "ENABLED" }
+        },
+        "DISABLED": {
+          "target": "smithy.api#Unit",
+          "traits": { "smithy.api#enumValue": "DISABLED" }
+        }
+      }
+    },
+    "com.amazonaws.ecs#ResourceManagementType": {
+      "type": "enum",
+      "members": {
+        "CUSTOMER": {
+          "target": "smithy.api#Unit",
+          "traits": { "smithy.api#enumValue": "CUSTOMER" }
+        },
+        "ECS": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "ECS" } }
+      }
+    },
+    "com.amazonaws.ecs#ThresholdType": {
+      "type": "enum",
+      "members": {
+        "COUNT": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "COUNT" } },
+        "BOUNDED_PERCENT": {
+          "target": "smithy.api#Unit",
+          "traits": { "smithy.api#enumValue": "BOUNDED_PERCENT" }
+        },
+        "UNBOUNDED_PERCENT": {
+          "target": "smithy.api#Unit",
+          "traits": { "smithy.api#enumValue": "UNBOUNDED_PERCENT" }
+        }
+      }
+    },
+    "com.amazonaws.ecs#ServiceRevisionCleanup": {
+      "type": "enum",
+      "members": {
+        "BLOCKING": {
+          "target": "smithy.api#Unit",
+          "traits": { "smithy.api#enumValue": "BLOCKING" }
+        },
+        "DEFERRED": {
+          "target": "smithy.api#Unit",
+          "traits": { "smithy.api#enumValue": "DEFERRED" }
+        }
+      }
+    },
+    "com.amazonaws.ecs#ManagedScalingStatus": {
+      "type": "enum",
+      "members": {
+        "ENABLED": {
+          "target": "smithy.api#Unit",
+          "traits": { "smithy.api#enumValue": "ENABLED" }
+        },
+        "DISABLED": {
+          "target": "smithy.api#Unit",
+          "traits": { "smithy.api#enumValue": "DISABLED" }
+        }
+      }
+    },
+    "com.amazonaws.ecs#ManagedScalingTargetCapacity": {
+      "type": "integer",
+      "traits": { "smithy.api#range": { "min": 1, "max": 100 } }
+    },
+    "com.amazonaws.ecs#ManagedScalingStepSize": {
+      "type": "integer",
+      "traits": { "smithy.api#range": { "min": 1, "max": 10000 } }
+    },
+    "com.amazonaws.ecs#ManagedScalingInstanceWarmupPeriod": {
+      "type": "integer",
+      "traits": { "smithy.api#range": { "min": 0, "max": 10000 } }
+    },
+    "com.amazonaws.ecs#NetworkMode": {
+      "type": "enum",
+      "members": {
+        "BRIDGE": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "bridge" } },
+        "HOST": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "host" } },
+        "AWSVPC": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "awsvpc" } },
+        "NONE": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "none" } }
+      }
+    },
+    "com.amazonaws.ecs#TaskDefinitionStatus": {
+      "type": "enum",
+      "members": {
+        "ACTIVE": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "ACTIVE" } },
+        "INACTIVE": {
+          "target": "smithy.api#Unit",
+          "traits": { "smithy.api#enumValue": "INACTIVE" }
+        },
+        "DELETE_IN_PROGRESS": {
+          "target": "smithy.api#Unit",
+          "traits": { "smithy.api#enumValue": "DELETE_IN_PROGRESS" }
+        }
+      }
+    },
+    "com.amazonaws.ecs#Compatibility": {
+      "type": "enum",
+      "members": {
+        "EC2": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "EC2" } },
+        "FARGATE": {
+          "target": "smithy.api#Unit",
+          "traits": { "smithy.api#enumValue": "FARGATE" }
+        },
+        "EXTERNAL": {
+          "target": "smithy.api#Unit",
+          "traits": { "smithy.api#enumValue": "EXTERNAL" }
+        },
+        "MANAGED_INSTANCES": {
+          "target": "smithy.api#Unit",
+          "traits": { "smithy.api#enumValue": "MANAGED_INSTANCES" }
+        }
+      }
+    },
+    "com.amazonaws.ecs#PidMode": {
+      "type": "enum",
+      "members": {
+        "HOST": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "host" } },
+        "TASK": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "task" } }
+      }
+    },
+    "com.amazonaws.ecs#IpcMode": {
+      "type": "enum",
+      "members": {
+        "HOST": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "host" } },
+        "TASK": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "task" } },
+        "NONE": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "none" } }
+      }
+    },
+    "com.amazonaws.ecs#Connectivity": {
+      "type": "enum",
+      "members": {
+        "CONNECTED": {
+          "target": "smithy.api#Unit",
+          "traits": { "smithy.api#enumValue": "CONNECTED" }
+        },
+        "DISCONNECTED": {
+          "target": "smithy.api#Unit",
+          "traits": { "smithy.api#enumValue": "DISCONNECTED" }
+        }
+      }
+    },
+    "com.amazonaws.ecs#HealthStatus": {
+      "type": "enum",
+      "members": {
+        "HEALTHY": {
+          "target": "smithy.api#Unit",
+          "traits": { "smithy.api#enumValue": "HEALTHY" }
+        },
+        "UNHEALTHY": {
+          "target": "smithy.api#Unit",
+          "traits": { "smithy.api#enumValue": "UNHEALTHY" }
+        },
+        "UNKNOWN": {
+          "target": "smithy.api#Unit",
+          "traits": { "smithy.api#enumValue": "UNKNOWN" }
+        }
+      }
+    },
+    "com.amazonaws.ecs#TaskStopCode": {
+      "type": "enum",
+      "members": {
+        "TASK_FAILED_TO_START": {
+          "target": "smithy.api#Unit",
+          "traits": { "smithy.api#enumValue": "TaskFailedToStart" }
+        },
+        "ESSENTIAL_CONTAINER_EXITED": {
+          "target": "smithy.api#Unit",
+          "traits": { "smithy.api#enumValue": "EssentialContainerExited" }
+        },
+        "USER_INITIATED": {
+          "target": "smithy.api#Unit",
+          "traits": { "smithy.api#enumValue": "UserInitiated" }
+        },
+        "SERVICE_SCHEDULER_INITIATED": {
+          "target": "smithy.api#Unit",
+          "traits": { "smithy.api#enumValue": "ServiceSchedulerInitiated" }
+        },
+        "SPOT_INTERRUPTION": {
+          "target": "smithy.api#Unit",
+          "traits": { "smithy.api#enumValue": "SpotInterruption" }
+        },
+        "TERMINATION_NOTICE": {
+          "target": "smithy.api#Unit",
+          "traits": { "smithy.api#enumValue": "TerminationNotice" }
+        },
+        "INFRASTRUCTURE_HEALTH": {
+          "target": "smithy.api#Unit",
+          "traits": { "smithy.api#enumValue": "InfrastructureHealth" }
+        }
+      }
+    },
+    "com.amazonaws.ecs#Attachments": {
+      "type": "list",
+      "member": { "target": "com.amazonaws.ecs#Attachment" }
+    },
+    "com.amazonaws.ecs#Attributes": {
+      "type": "list",
+      "member": { "target": "com.amazonaws.ecs#Attribute" }
+    },
+    "com.amazonaws.ecs#Containers": {
+      "type": "list",
+      "member": { "target": "com.amazonaws.ecs#Container" }
+    },
+    "com.amazonaws.ecs#StringList": {
+      "type": "list",
+      "member": { "target": "com.amazonaws.ecs#String" }
+    },
+    "com.amazonaws.ecs#CompatibilityList": {
+      "type": "list",
+      "member": { "target": "com.amazonaws.ecs#Compatibility" }
+    },
+    "com.amazonaws.ecs#ContainerDefinitions": {
+      "type": "list",
+      "member": { "target": "com.amazonaws.ecs#ContainerDefinition" }
+    },
+    "com.amazonaws.ecs#VolumeList": {
+      "type": "list",
+      "member": { "target": "com.amazonaws.ecs#Volume" }
+    },
+    "com.amazonaws.ecs#RequiresAttributes": {
+      "type": "list",
+      "member": { "target": "com.amazonaws.ecs#Attribute" }
+    },
+    "com.amazonaws.ecs#TaskDefinitionPlacementConstraints": {
+      "type": "list",
+      "member": { "target": "com.amazonaws.ecs#TaskDefinitionPlacementConstraint" }
+    },
+    "com.amazonaws.ecs#InferenceAccelerators": {
+      "type": "list",
+      "member": { "target": "com.amazonaws.ecs#InferenceAccelerator" }
+    },
+    "com.amazonaws.ecs#LoadBalancers": {
+      "type": "list",
+      "member": { "target": "com.amazonaws.ecs#LoadBalancer" }
+    },
+    "com.amazonaws.ecs#ServiceRegistries": {
+      "type": "list",
+      "member": { "target": "com.amazonaws.ecs#ServiceRegistry" }
+    },
+    "com.amazonaws.ecs#CapacityProviderStrategy": {
+      "type": "list",
+      "member": { "target": "com.amazonaws.ecs#CapacityProviderStrategyItem" }
+    },
+    "com.amazonaws.ecs#TaskSets": {
+      "type": "list",
+      "member": { "target": "com.amazonaws.ecs#TaskSet" }
+    },
+    "com.amazonaws.ecs#Deployments": {
+      "type": "list",
+      "member": { "target": "com.amazonaws.ecs#Deployment" }
+    },
+    "com.amazonaws.ecs#ServiceEvents": {
+      "type": "list",
+      "member": { "target": "com.amazonaws.ecs#ServiceEvent" }
+    },
+    "com.amazonaws.ecs#ServiceCurrentRevisionSummaryList": {
+      "type": "list",
+      "member": { "target": "com.amazonaws.ecs#ServiceCurrentRevisionSummary" }
+    },
+    "com.amazonaws.ecs#PlacementConstraints": {
+      "type": "list",
+      "member": { "target": "com.amazonaws.ecs#PlacementConstraint" }
+    },
+    "com.amazonaws.ecs#PlacementStrategies": {
+      "type": "list",
+      "member": { "target": "com.amazonaws.ecs#PlacementStrategy" }
+    },
+    "com.amazonaws.ecs#Tags": {
+      "type": "list",
+      "traits": { "smithy.api#length": { "min": 0, "max": 50 } },
+      "member": { "target": "com.amazonaws.ecs#Tag" }
+    },
+    "com.amazonaws.ecs#ServiceConnectServiceResourceList": {
+      "type": "list",
+      "member": { "target": "com.amazonaws.ecs#ServiceConnectServiceResource" }
+    },
+    "com.amazonaws.ecs#ServiceVolumeConfigurations": {
+      "type": "list",
+      "member": { "target": "com.amazonaws.ecs#ServiceVolumeConfiguration" }
+    },
+    "com.amazonaws.ecs#VpcLatticeConfigurations": {
+      "type": "list",
+      "member": { "target": "com.amazonaws.ecs#VpcLatticeConfiguration" }
+    },
+    "com.amazonaws.ecs#LoadBalancer": { "type": "structure", "members": {} },
+    "com.amazonaws.ecs#ServiceRegistry": { "type": "structure", "members": {} },
+    "com.amazonaws.ecs#CapacityProviderStrategyItem": { "type": "structure", "members": {} },
+    "com.amazonaws.ecs#TaskSet": { "type": "structure", "members": {} },
+    "com.amazonaws.ecs#ServiceEvent": { "type": "structure", "members": {} },
+    "com.amazonaws.ecs#ServiceCurrentRevisionSummary": { "type": "structure", "members": {} },
+    "com.amazonaws.ecs#PlacementConstraint": { "type": "structure", "members": {} },
+    "com.amazonaws.ecs#PlacementStrategy": { "type": "structure", "members": {} },
+    "com.amazonaws.ecs#Tag": { "type": "structure", "members": {} },
+    "com.amazonaws.ecs#DeploymentConfiguration": { "type": "structure", "members": {} },
+    "com.amazonaws.ecs#NetworkConfiguration": { "type": "structure", "members": {} },
+    "com.amazonaws.ecs#DeploymentController": { "type": "structure", "members": {} },
+    "com.amazonaws.ecs#ServiceConnectConfiguration": { "type": "structure", "members": {} },
+    "com.amazonaws.ecs#ServiceConnectServiceResource": { "type": "structure", "members": {} },
+    "com.amazonaws.ecs#ServiceVolumeConfiguration": { "type": "structure", "members": {} },
+    "com.amazonaws.ecs#DeploymentEphemeralStorage": { "type": "structure", "members": {} },
+    "com.amazonaws.ecs#VpcLatticeConfiguration": { "type": "structure", "members": {} },
+    "com.amazonaws.ecs#Scale": { "type": "structure", "members": {} },
+    "com.amazonaws.ecs#ContainerDefinition": { "type": "structure", "members": {} },
+    "com.amazonaws.ecs#Volume": { "type": "structure", "members": {} },
+    "com.amazonaws.ecs#Attribute": { "type": "structure", "members": {} },
+    "com.amazonaws.ecs#TaskDefinitionPlacementConstraint": {
+      "type": "structure",
+      "members": {}
+    },
+    "com.amazonaws.ecs#InferenceAccelerator": { "type": "structure", "members": {} },
+    "com.amazonaws.ecs#RuntimePlatform": { "type": "structure", "members": {} },
+    "com.amazonaws.ecs#ProxyConfiguration": { "type": "structure", "members": {} },
+    "com.amazonaws.ecs#EphemeralStorage": { "type": "structure", "members": {} },
+    "com.amazonaws.ecs#TrustedExecutionConfiguration": { "type": "structure", "members": {} },
+    "com.amazonaws.ecs#TrustedExecutionSummary": { "type": "structure", "members": {} },
+    "com.amazonaws.ecs#TaskOverride": { "type": "structure", "members": {} },
+    "com.amazonaws.ecs#TaskEphemeralStorage": { "type": "structure", "members": {} },
+    "com.amazonaws.ecs#Attachment": { "type": "structure", "members": {} },
+    "com.amazonaws.ecs#Container": { "type": "structure", "members": {} }
+  }
+}

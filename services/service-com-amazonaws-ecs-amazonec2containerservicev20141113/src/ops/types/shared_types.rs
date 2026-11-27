@@ -11,158 +11,6 @@ use super::*;
 
 smithy_macros::smithy_model!("smithy-model/com-amazonaws-ecs-amazonec2containerservicev20141113.json");
 
-// ---------------------------------------------------------------------------
-// Structures a request may send partially, because the model gives their
-// members defaults
-// ---------------------------------------------------------------------------
-
-/// A modelled structure read with the model's DEFAULT for every member the request left
-/// out, rather than refused for leaving one out.
-///
-/// `@default` on a member states the value the structure carries when a request does not
-/// carry that member, so a caller may send the one member it means and leave the rest of
-/// the structure to the model — and the answer reports the whole structure, the defaults
-/// filled in. The reader generated for a shape refuses an absent member that is both
-/// `@required` and `@default`, so a structure whose defaulted members a caller may omit is
-/// held in this wrapper instead: it starts from [`DefaultedStructure::modelled_defaults`]
-/// and reads into it each member the request DID carry, through the shape's OWN generated
-/// schema ([`DefaultedStructure::schema`]).
-///
-/// It is DEFAULTS this relaxes and nothing else: a member the model gives no usable default
-/// ([`DefaultedStructure::MEMBERS_WITHOUT_DEFAULTS`]) is still the modelled validation
-/// failure when a request omits it, answered with the same `missing_member` the generated
-/// reader answers.
-///
-/// Nothing else about such a shape is hand-written: its schema, its member names and its
-/// writer stay generated, and this wrapper writes exactly what the shape writes — so the
-/// structure that reaches the wire, in a request echo or a later read, is unchanged.
-///
-/// It exists only because the decision belongs to the generator and a service crate cannot
-/// change it; a core issue is filed to move it there, after which these impls and this
-/// wrapper can be deleted and the member types put back to the plain shape.
-#[derive(Debug, Clone, Default)]
-pub struct Defaulted<T>(pub T);
-
-/// A modelled structure [`Defaulted`] can read member by member.
-pub trait DefaultedStructure: Sized {
-    /// The members this shape declares that the model gives NO usable `@default`, in the
-    /// order the shape declares them. A request that omits one of these omits a value this
-    /// wrapper may not invent, so reading refuses it.
-    const MEMBERS_WITHOUT_DEFAULTS: &'static [&'static str];
-
-    /// This shape's schema, as the `#[smithy(...)]` macro generated it from the model: the
-    /// member names, their wire names and their constraints all come from there.
-    fn schema() -> &'static ::aws_smithy_schema::Schema;
-
-    /// This structure with every member at the value the MODEL declares for its absence —
-    /// each member's `@default`, and absent (or empty, for a member whose absence reading
-    /// refuses anyway) for a member the model gives none.
-    fn modelled_defaults() -> Self;
-
-    /// Read the one member `member` names out of `deserializer` into `self`. Every member
-    /// the shape's schema declares is placed by the implementations below, so a member that
-    /// matches none of them is one the shape GREW later, which reading refuses rather than
-    /// dropping the value the request carried.
-    fn read_member(
-        &mut self,
-        member: &::aws_smithy_schema::Schema,
-        deserializer: &mut dyn ::aws_smithy_schema::serde::ShapeDeserializer,
-    ) -> ::std::result::Result<(), ::aws_smithy_schema::serde::SerdeError>;
-}
-
-/// Read one [`Defaulted`] structure nested inside another, for a member whose own type is
-/// one — the call a [`DefaultedStructure::read_member`] makes for such a member.
-pub fn read_defaulted<T: DefaultedStructure>(
-    deserializer: &mut dyn ::aws_smithy_schema::serde::ShapeDeserializer,
-) -> ::std::result::Result<Defaulted<T>, ::aws_smithy_schema::serde::SerdeError> {
-    <Defaulted<T> as ::aws_smithy_schema_server::DeserializableStruct>::deserialize(deserializer)
-}
-
-/// The error a member a shape declares with no usable `@default` earns when the request
-/// omits it: the one the generated reader answers for the same absence, so a caller cannot
-/// tell the two readers apart.
-fn missing_undefaulted_member(
-    member_name: &str,
-) -> ::aws_smithy_schema::serde::SerdeError {
-    ::aws_smithy_schema_server::missing_member(member_name)
-}
-
-/// The error a member a shape GREW after its [`DefaultedStructure`] was written earns: the
-/// value the request carried for it has nowhere to go, and dropping it would answer success
-/// for a member nothing stored, so reading fails instead.
-fn unplaced_member(
-    shape: &str,
-    member_name: Option<&str>,
-) -> ::aws_smithy_schema::serde::SerdeError {
-    ::aws_smithy_schema::serde::SerdeError::custom(format!(
-        "{shape} member {} is not read by this service",
-        member_name.unwrap_or_default()
-    ))
-}
-
-impl<T: DefaultedStructure> ::aws_smithy_schema_server::DeserializableStruct for Defaulted<T> {
-    fn deserialize(
-        deserializer: &mut dyn ::aws_smithy_schema::serde::ShapeDeserializer,
-    ) -> ::std::result::Result<Self, ::aws_smithy_schema::serde::SerdeError> {
-        let mut value = T::modelled_defaults();
-        // The members that have no default to fall back on, struck off as the request's own
-        // members arrive; whatever is left is what the request failed to carry.
-        let mut awaited: ::std::vec::Vec<&'static str> =
-            T::MEMBERS_WITHOUT_DEFAULTS.to_vec();
-        deserializer.read_struct(T::schema(), &mut |member, deserializer| {
-            if let Some(name) = member.member_name() {
-                awaited.retain(|awaited| *awaited != name);
-            }
-            // A value that cannot be read names the member it sat in as the error passes
-            // back out, so the trail reads from the operation input inwards — the same
-            // position a generated reader reports.
-            value.read_member(member, deserializer).map_err(|error| {
-                ::aws_smithy_schema_server::within_member(
-                    error,
-                    member.member_name().unwrap_or_default(),
-                )
-            })
-        })?;
-        // The FIRST member still awaited is the one the caller has to add, as the generated
-        // reader reports the first unfilled slot in the shape's own member order.
-        if let Some(member_name) = awaited.first() {
-            return Err(missing_undefaulted_member(member_name));
-        }
-        Ok(Self(value))
-    }
-}
-
-impl<T: ::aws_smithy_schema::serde::SerializableStruct> ::aws_smithy_schema::serde::SerializableStruct
-    for Defaulted<T>
-{
-    fn serialize_members(
-        &self,
-        serializer: &mut dyn ::aws_smithy_schema::serde::ShapeSerializer,
-    ) -> ::std::result::Result<(), ::aws_smithy_schema::serde::SerdeError> {
-        self.0.serialize_members(serializer)
-    }
-}
-
-impl<T> ::std::convert::From<T> for Defaulted<T> {
-    fn from(value: T) -> Self {
-        Self(value)
-    }
-}
-
-impl<T> ::std::ops::Deref for Defaulted<T> {
-    type Target = T;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl<T> ::std::ops::DerefMut for Defaulted<T> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
-    }
-}
-
 #[smithy_macros::smithy(shape = "com.amazonaws.ecs#AccessDeniedException")]
 #[derive(Debug, Clone, Default)]
 pub struct AccessDeniedException {
@@ -207,196 +55,6 @@ pub struct Setting {
     pub principal_arn: Option<String>,
     pub r#type: Option<String>,
 }
-
-/// The details of one task-definition revision, as every task-definition response reports
-/// it: the members `TaskDefinition` declares, in the model's own member order, and
-/// `previousStatus` appended last.
-///
-/// Member set, order and requiredness from
-/// `smithy_query(query="shape", shape="TaskDefinition")`, plus `previousStatus` — the status
-/// the revision held BEFORE the call that answered, which the real service reports on the
-/// responses of the calls that MOVE a revision's status and the on-disk model omits, which is
-/// why the schema and the codec come from `types::unmodelled_member_wire` rather than from
-/// the derive (see that module's note). It is filled in by the call that moved the revision
-/// ([`crate::state::TaskDefinitionRecord::transition_view`]) and absent from every projection
-/// that moved nothing, so a read reports the stored revision exactly as the derive did.
-#[derive(Debug, Clone, Default)]
-pub struct TaskDefinition {
-    pub task_definition_arn: Option<String>,
-    pub container_definitions: Option<Vec<ContainerDefinition>>,
-    pub family: Option<String>,
-    pub task_role_arn: Option<String>,
-    pub execution_role_arn: Option<String>,
-    pub network_mode: Option<String>,
-    pub revision: i32,
-    pub volumes: Option<Vec<Volume>>,
-    pub status: Option<String>,
-    pub requires_attributes: Option<Vec<Attribute>>,
-    pub placement_constraints: Option<Vec<TaskDefinitionPlacementConstraint>>,
-    pub compatibilities: Option<Vec<String>>,
-    pub runtime_platform: Option<RuntimePlatform>,
-    pub requires_compatibilities: Option<Vec<String>>,
-    pub cpu: Option<String>,
-    pub memory: Option<String>,
-    pub inference_accelerators: Option<Vec<InferenceAccelerator>>,
-    pub pid_mode: Option<String>,
-    pub ipc_mode: Option<String>,
-    pub proxy_configuration: Option<ProxyConfiguration>,
-    pub registered_at: Option<::aws_smithy_types::DateTime>,
-    pub deregistered_at: Option<::aws_smithy_types::DateTime>,
-    pub delete_requested_at: Option<::aws_smithy_types::DateTime>,
-    pub registered_by: Option<String>,
-    pub ephemeral_storage: Option<EphemeralStorage>,
-    pub enable_fault_injection: Option<bool>,
-    pub previous_status: Option<String>,
-}
-
-ecs_schema_and_codec!(
-    TaskDefinition,
-    TASK_DEFINITION_SCHEMA,
-    "com.amazonaws.ecs#TaskDefinition",
-    "com.amazonaws.ecs",
-    "TaskDefinition",
-    (
-        M_TASK_DEFINITION_ARN,
-        task_definition_arn,
-        "taskDefinitionArn",
-        0,
-        opt,
-        string
-    ),
-    (
-        M_CONTAINER_DEFINITIONS,
-        container_definitions,
-        "containerDefinitions",
-        1,
-        opt,
-        list_of_struct(ContainerDefinition)
-    ),
-    (M_FAMILY, family, "family", 2, opt, string),
-    (M_TASK_ROLE_ARN, task_role_arn, "taskRoleArn", 3, opt, string),
-    (
-        M_EXECUTION_ROLE_ARN,
-        execution_role_arn,
-        "executionRoleArn",
-        4,
-        opt,
-        string
-    ),
-    (M_NETWORK_MODE, network_mode, "networkMode", 5, opt, string),
-    (M_REVISION, revision, "revision", 6, defaulted, integer),
-    (M_VOLUMES, volumes, "volumes", 7, opt, list_of_struct(Volume)),
-    (M_STATUS, status, "status", 8, opt, string),
-    (
-        M_REQUIRES_ATTRIBUTES,
-        requires_attributes,
-        "requiresAttributes",
-        9,
-        opt,
-        list_of_struct(Attribute)
-    ),
-    (
-        M_PLACEMENT_CONSTRAINTS,
-        placement_constraints,
-        "placementConstraints",
-        10,
-        opt,
-        list_of_struct(TaskDefinitionPlacementConstraint)
-    ),
-    (
-        M_COMPATIBILITIES,
-        compatibilities,
-        "compatibilities",
-        11,
-        opt,
-        list_of_string
-    ),
-    (
-        M_RUNTIME_PLATFORM,
-        runtime_platform,
-        "runtimePlatform",
-        12,
-        opt,
-        struct_of(RuntimePlatform)
-    ),
-    (
-        M_REQUIRES_COMPATIBILITIES,
-        requires_compatibilities,
-        "requiresCompatibilities",
-        13,
-        opt,
-        list_of_string
-    ),
-    (M_CPU, cpu, "cpu", 14, opt, string),
-    (M_MEMORY, memory, "memory", 15, opt, string),
-    (
-        M_INFERENCE_ACCELERATORS,
-        inference_accelerators,
-        "inferenceAccelerators",
-        16,
-        opt,
-        list_of_struct(InferenceAccelerator)
-    ),
-    (M_PID_MODE, pid_mode, "pidMode", 17, opt, string),
-    (M_IPC_MODE, ipc_mode, "ipcMode", 18, opt, string),
-    (
-        M_PROXY_CONFIGURATION,
-        proxy_configuration,
-        "proxyConfiguration",
-        19,
-        opt,
-        struct_of(ProxyConfiguration)
-    ),
-    (
-        M_REGISTERED_AT,
-        registered_at,
-        "registeredAt",
-        20,
-        opt,
-        date_time
-    ),
-    (
-        M_DEREGISTERED_AT,
-        deregistered_at,
-        "deregisteredAt",
-        21,
-        opt,
-        date_time
-    ),
-    (
-        M_DELETE_REQUESTED_AT,
-        delete_requested_at,
-        "deleteRequestedAt",
-        22,
-        opt,
-        date_time
-    ),
-    (M_REGISTERED_BY, registered_by, "registeredBy", 23, opt, string),
-    (
-        M_EPHEMERAL_STORAGE,
-        ephemeral_storage,
-        "ephemeralStorage",
-        24,
-        opt,
-        struct_of(EphemeralStorage)
-    ),
-    (
-        M_ENABLE_FAULT_INJECTION,
-        enable_fault_injection,
-        "enableFaultInjection",
-        25,
-        opt,
-        boolean
-    ),
-    (
-        M_PREVIOUS_STATUS,
-        previous_status,
-        "previousStatus",
-        26,
-        opt,
-        recorded("com.amazonaws.ecs.recorded", string)
-    ),
-);
 
 #[smithy_macros::smithy(shape = "com.amazonaws.ecs#ContainerDefinition")]
 #[derive(Debug, Clone, Default)]
@@ -591,8 +249,23 @@ pub struct SystemControl {
 #[smithy_macros::smithy(shape = "com.amazonaws.ecs#ResourceRequirement")]
 #[derive(Debug, Clone, Default)]
 pub struct ResourceRequirement {
-    pub value: String,
+    pub value: Option<String>,
     pub r#type: String,
+    pub sharing_strategy: Option<SharingStrategy>,
+}
+
+#[smithy_macros::smithy(union_for = "com.amazonaws.ecs#SharingStrategy")]
+#[allow(clippy::large_enum_variant)]
+#[derive(Debug, Clone)]
+pub enum SharingStrategy {
+    nvidiaMps(NvidiaMpsAllocation),
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.ecs#NvidiaMpsAllocation")]
+#[derive(Debug, Clone, Default)]
+pub struct NvidiaMpsAllocation {
+    pub memory: i32,
+    pub max_compute_percent: Option<i32>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.ecs#FirelensConfiguration")]
@@ -715,6 +388,13 @@ pub struct EphemeralStorage {
     pub size_in_gi_b: i32,
 }
 
+#[smithy_macros::smithy(shape = "com.amazonaws.ecs#TrustedExecutionConfiguration")]
+#[derive(Debug, Clone, Default)]
+pub struct TrustedExecutionConfiguration {
+    pub isolation_mode: String,
+    pub attestation_policy: Option<String>,
+}
+
 #[smithy_macros::smithy(shape = "com.amazonaws.ecs#Tag")]
 #[derive(Debug, Clone, Default)]
 pub struct Tag {
@@ -753,53 +433,6 @@ pub struct AutoScalingGroupProvider {
     pub managed_scaling: Option<ManagedScaling>,
     pub managed_termination_protection: Option<String>,
     pub managed_draining: Option<String>,
-}
-
-// `skip_validation = ["targetCapacity"]`: Amazon ECS refuses a target utilization outside
-// the percentage this member takes in its OWN error class and with its own fixed sentence
-// (`crate::state::managed_scaling_target_capacity_violation`, asked by every operation that
-// takes a `managedScaling` block), which the boundary walk cannot express: this service
-// answers every bound the model declares in `InvalidParameterException`, and this one is a
-// `ClientException`. The bound itself is still enforced, against the same 1..100 the model
-// states, before anything is stored.
-#[smithy_macros::smithy(
-    shape = "com.amazonaws.ecs#ManagedScaling",
-    skip_validation = ["targetCapacity"]
-)]
-#[derive(Debug, Clone, Default)]
-pub struct ManagedScaling {
-    pub scaling_approach: Option<String>,
-    pub status: Option<String>,
-    pub target_capacity: Option<i32>,
-    pub minimum_scaling_step_size: Option<i32>,
-    pub maximum_scaling_step_size: Option<i32>,
-    pub instance_warmup_period: Option<i32>,
-}
-
-// `skip_validation = ["monitoring"]`: this member's own documentation publishes the two
-// monitoring categories in lower case ("CloudWatch provides two categories of monitoring:
-// basic monitoring and detailed monitoring. By default, your managed instance is
-// configured for basic monitoring"), and Amazon ECS serves a request that spells the
-// option that way, so the modelled value set cannot be enforced as case-sensitive
-// equality at the boundary. The set is still enforced, by the handler that stores the
-// template (`crate::state::managed_instances_monitoring_option`), which also stores the
-// option in the spelling the set lists.
-#[smithy_macros::smithy(
-    shape = "com.amazonaws.ecs#InstanceLaunchTemplate",
-    skip_validation = ["monitoring"]
-)]
-#[derive(Debug, Clone, Default)]
-pub struct InstanceLaunchTemplate {
-    pub ec2_instance_profile_arn: String,
-    pub network_configuration: ManagedInstancesNetworkConfiguration,
-    pub storage_configuration: Option<ManagedInstancesStorageConfiguration>,
-    pub local_storage_configuration: Option<ManagedInstancesLocalStorageConfiguration>,
-    pub monitoring: Option<String>,
-    pub capacity_option_type: Option<String>,
-    pub instance_metadata_tags_propagation: Option<bool>,
-    pub instance_requirements: Option<InstanceRequirementsRequest>,
-    pub fips_enabled: Option<bool>,
-    pub capacity_reservations: Option<CapacityReservationRequest>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.ecs#ManagedInstancesNetworkConfiguration")]
@@ -1081,6 +714,7 @@ pub struct ContainerInstance {
     pub attachments: Option<Vec<Attachment>>,
     pub tags: Option<Vec<Tag>>,
     pub health_status: Option<ContainerInstanceHealthStatus>,
+    pub gpu_devices: Option<Vec<GpuDevice>>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.ecs#VersionInfo")]
@@ -1117,6 +751,16 @@ pub struct InstanceHealthCheckResult {
     pub status_reason: Option<String>,
     pub last_updated: Option<::aws_smithy_types::DateTime>,
     pub last_status_change: Option<::aws_smithy_types::DateTime>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.ecs#GpuDevice")]
+#[derive(Debug, Clone, Default)]
+pub struct GpuDevice {
+    pub gpu_id: Option<String>,
+    pub sharing_mode: Option<String>,
+    pub total_memory_in_mi_b: Option<i32>,
+    pub remaining_memory_in_mi_b: Option<i32>,
+    pub container_count: Option<i32>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.ecs#AttachmentStateChange")]
@@ -1237,6 +881,13 @@ pub struct DaemonLinuxParameters {
 pub struct DaemonVolume {
     pub name: Option<String>,
     pub host: Option<HostVolumeProperties>,
+    pub log_driver_volume_configuration: Option<LogDriverVolumeConfiguration>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.ecs#LogDriverVolumeConfiguration")]
+#[derive(Debug, Clone, Default)]
+pub struct LogDriverVolumeConfiguration {
+    pub driver: String,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.ecs#GatewayNotFoundException")]
@@ -1289,170 +940,16 @@ pub struct GatewayTestTrafficHeader {
 #[smithy_macros::smithy(shape = "com.amazonaws.ecs#DeploymentConfiguration")]
 #[derive(Debug, Clone, Default)]
 pub struct DeploymentConfiguration {
-    pub deployment_circuit_breaker: Option<Defaulted<DeploymentCircuitBreaker>>,
+    pub deployment_circuit_breaker: Option<DeploymentCircuitBreaker>,
     pub maximum_percent: Option<i32>,
     pub minimum_healthy_percent: Option<i32>,
-    pub alarms: Option<Defaulted<DeploymentAlarms>>,
+    pub alarms: Option<DeploymentAlarms>,
     pub strategy: Option<String>,
     pub bake_time_in_minutes: Option<i32>,
     pub lifecycle_hooks: Option<Vec<DeploymentLifecycleHook>>,
     pub linear_configuration: Option<LinearConfiguration>,
     pub canary_configuration: Option<CanaryConfiguration>,
-    pub early_success_criteria: Option<Defaulted<DeploymentEarlySuccessCriteria>>,
-}
-
-#[smithy_macros::smithy(shape = "com.amazonaws.ecs#DeploymentCircuitBreaker")]
-#[derive(Debug, Clone, Default)]
-pub struct DeploymentCircuitBreaker {
-    pub enable: bool,
-    pub rollback: bool,
-    pub reset_on_healthy_task: Option<bool>,
-    pub threshold_configuration: Option<Defaulted<ThresholdConfiguration>>,
-}
-
-impl DefaultedStructure for DeploymentCircuitBreaker {
-    /// Every member of this shape either carries a `@default` (`enable`, `rollback`) or is
-    /// optional, so a request may carry none of them.
-    const MEMBERS_WITHOUT_DEFAULTS: &'static [&'static str] = &[];
-
-    fn schema() -> &'static ::aws_smithy_schema::Schema {
-        &Self::SCHEMA
-    }
-
-    /// `enable` and `rollback` are `@default: false`, so a breaker a request says nothing
-    /// about neither trips a deployment nor rolls one back; the two members that are not
-    /// defaulted are absent until a request carries them.
-    fn modelled_defaults() -> Self {
-        Self {
-            enable: false,
-            rollback: false,
-            reset_on_healthy_task: None,
-            threshold_configuration: None,
-        }
-    }
-
-    fn read_member(
-        &mut self,
-        member: &::aws_smithy_schema::Schema,
-        deserializer: &mut dyn ::aws_smithy_schema::serde::ShapeDeserializer,
-    ) -> ::std::result::Result<(), ::aws_smithy_schema::serde::SerdeError> {
-        match member.member_name() {
-            Some("enable") => self.enable = deserializer.read_boolean(member)?,
-            Some("rollback") => self.rollback = deserializer.read_boolean(member)?,
-            Some("resetOnHealthyTask") => {
-                self.reset_on_healthy_task = Some(deserializer.read_boolean(member)?);
-            }
-            Some("thresholdConfiguration") => {
-                self.threshold_configuration = Some(read_defaulted(deserializer)?);
-            }
-            other => {
-                return ::std::result::Result::Err(unplaced_member(
-                    "DeploymentCircuitBreaker",
-                    other,
-                ))
-            }
-        }
-        Ok(())
-    }
-}
-
-#[smithy_macros::smithy(shape = "com.amazonaws.ecs#ThresholdConfiguration")]
-#[derive(Debug, Clone, Default)]
-pub struct ThresholdConfiguration {
-    pub r#type: String,
-    pub value: i32,
-}
-
-impl DefaultedStructure for ThresholdConfiguration {
-    /// `type` carries no `@default`, so a threshold configuration a request supplies has to
-    /// name it: "Determines how Amazon ECS uses `value` to calculate the failure threshold",
-    /// which no default fills in.
-    const MEMBERS_WITHOUT_DEFAULTS: &'static [&'static str] = &["type"];
-
-    fn schema() -> &'static ::aws_smithy_schema::Schema {
-        &Self::SCHEMA
-    }
-
-    /// `value` is `@default: 0`. `type` has no default and reading refuses a request that
-    /// omits it, so the empty string it starts at never reaches a stored configuration.
-    fn modelled_defaults() -> Self {
-        Self {
-            r#type: String::new(),
-            value: 0,
-        }
-    }
-
-    fn read_member(
-        &mut self,
-        member: &::aws_smithy_schema::Schema,
-        deserializer: &mut dyn ::aws_smithy_schema::serde::ShapeDeserializer,
-    ) -> ::std::result::Result<(), ::aws_smithy_schema::serde::SerdeError> {
-        match member.member_name() {
-            Some("type") => self.r#type = deserializer.read_string(member)?,
-            Some("value") => self.value = deserializer.read_integer(member)?,
-            other => {
-                return ::std::result::Result::Err(unplaced_member(
-                    "ThresholdConfiguration",
-                    other,
-                ))
-            }
-        }
-        Ok(())
-    }
-}
-
-#[smithy_macros::smithy(shape = "com.amazonaws.ecs#DeploymentAlarms")]
-#[derive(Debug, Clone, Default)]
-pub struct DeploymentAlarms {
-    pub alarm_names: Vec<String>,
-    pub rollback: bool,
-    pub enable: bool,
-}
-
-impl DefaultedStructure for DeploymentAlarms {
-    /// `alarmNames` carries no `@default` — "One or more CloudWatch alarm names" is what the
-    /// alarms WATCH, and no default fills that in — so alarms a request supplies have to
-    /// name the list, even an empty one.
-    const MEMBERS_WITHOUT_DEFAULTS: &'static [&'static str] = &["alarmNames"];
-
-    fn schema() -> &'static ::aws_smithy_schema::Schema {
-        &Self::SCHEMA
-    }
-
-    /// `rollback` and `enable` are `@default: false`, so alarms a request says nothing
-    /// about watch nothing and roll nothing back. `alarmNames` has no default and reading
-    /// refuses a request that omits it, so the empty list it starts at never reaches a
-    /// stored configuration.
-    fn modelled_defaults() -> Self {
-        Self {
-            alarm_names: Vec::new(),
-            rollback: false,
-            enable: false,
-        }
-    }
-
-    fn read_member(
-        &mut self,
-        member: &::aws_smithy_schema::Schema,
-        deserializer: &mut dyn ::aws_smithy_schema::serde::ShapeDeserializer,
-    ) -> ::std::result::Result<(), ::aws_smithy_schema::serde::SerdeError> {
-        match member.member_name() {
-            Some("alarmNames") => {
-                let mut names = Vec::new();
-                deserializer.read_list(member, &mut |element| {
-                    names.push(element.read_string(member)?);
-                    Ok(())
-                })?;
-                self.alarm_names = names;
-            }
-            Some("rollback") => self.rollback = deserializer.read_boolean(member)?,
-            Some("enable") => self.enable = deserializer.read_boolean(member)?,
-            other => {
-                return ::std::result::Result::Err(unplaced_member("DeploymentAlarms", other))
-            }
-        }
-        Ok(())
-    }
+    pub early_success_criteria: Option<DeploymentEarlySuccessCriteria>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.ecs#DeploymentLifecycleHook")]
@@ -1485,57 +982,6 @@ pub struct LinearConfiguration {
 pub struct CanaryConfiguration {
     pub canary_percent: Option<f64>,
     pub canary_bake_time_in_minutes: Option<i32>,
-}
-
-#[smithy_macros::smithy(shape = "com.amazonaws.ecs#DeploymentEarlySuccessCriteria")]
-#[derive(Debug, Clone, Default)]
-pub struct DeploymentEarlySuccessCriteria {
-    pub enable: bool,
-    pub healthy_percent: Option<i32>,
-    pub source_service_revision_cleanup: Option<String>,
-}
-
-impl DefaultedStructure for DeploymentEarlySuccessCriteria {
-    /// `enable` carries a `@default` and the other two members are optional, so a request
-    /// may carry none of them.
-    const MEMBERS_WITHOUT_DEFAULTS: &'static [&'static str] = &[];
-
-    fn schema() -> &'static ::aws_smithy_schema::Schema {
-        &Self::SCHEMA
-    }
-
-    /// `enable` is `@default: false`: "The default value is `false`", so criteria a request
-    /// says nothing about end no deployment early. Neither other member is defaulted.
-    fn modelled_defaults() -> Self {
-        Self {
-            enable: false,
-            healthy_percent: None,
-            source_service_revision_cleanup: None,
-        }
-    }
-
-    fn read_member(
-        &mut self,
-        member: &::aws_smithy_schema::Schema,
-        deserializer: &mut dyn ::aws_smithy_schema::serde::ShapeDeserializer,
-    ) -> ::std::result::Result<(), ::aws_smithy_schema::serde::SerdeError> {
-        match member.member_name() {
-            Some("enable") => self.enable = deserializer.read_boolean(member)?,
-            Some("healthyPercent") => {
-                self.healthy_percent = Some(deserializer.read_integer(member)?);
-            }
-            Some("sourceServiceRevisionCleanup") => {
-                self.source_service_revision_cleanup = Some(deserializer.read_string(member)?);
-            }
-            other => {
-                return ::std::result::Result::Err(unplaced_member(
-                    "DeploymentEarlySuccessCriteria",
-                    other,
-                ))
-            }
-        }
-        Ok(())
-    }
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.ecs#TaskSet")]
@@ -1887,6 +1333,7 @@ pub struct GatewayConnector {
     pub port_name: String,
     pub health_check: Option<GatewayConnectorHealthCheck>,
     pub filters: Option<GatewayConnectorFilters>,
+    pub deregistration_delay: Option<GatewayConnectorDeregistrationDelay>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.ecs#GatewayConnectorHealthCheck")]
@@ -1915,6 +1362,12 @@ pub struct GatewayConnectorFilters {
     pub access_types: Option<Vec<String>>,
 }
 
+#[smithy_macros::smithy(shape = "com.amazonaws.ecs#GatewayConnectorDeregistrationDelay")]
+#[derive(Debug, Clone, Default)]
+pub struct GatewayConnectorDeregistrationDelay {
+    pub timeout_seconds: Option<i32>,
+}
+
 #[smithy_macros::smithy(shape = "com.amazonaws.ecs#MonitoringConfiguration")]
 #[derive(Debug, Clone, Default)]
 pub struct MonitoringConfiguration {
@@ -1926,81 +1379,6 @@ pub struct MonitoringConfiguration {
 pub struct MetricConfiguration {
     pub metric_names: Vec<String>,
     pub resolution_seconds: i32,
-}
-
-#[smithy_macros::smithy(shape = "com.amazonaws.ecs#Service")]
-#[derive(Debug, Clone, Default)]
-pub struct Service {
-    pub service_arn: Option<String>,
-    pub service_name: Option<String>,
-    pub cluster_arn: Option<String>,
-    pub load_balancers: Option<Vec<LoadBalancer>>,
-    pub service_registries: Option<Vec<ServiceRegistry>>,
-    pub status: Option<String>,
-    pub desired_count: i32,
-    pub running_count: i32,
-    pub pending_count: i32,
-    pub launch_type: Option<String>,
-    pub capacity_provider_strategy: Option<Vec<CapacityProviderStrategyItem>>,
-    pub platform_version: Option<String>,
-    pub platform_family: Option<String>,
-    pub task_definition: Option<String>,
-    pub deployment_configuration: Option<DeploymentConfiguration>,
-    pub task_sets: Option<Vec<TaskSet>>,
-    pub deployments: Option<Vec<Deployment>>,
-    pub role_arn: Option<String>,
-    pub events: Option<Vec<ServiceEvent>>,
-    pub created_at: Option<::aws_smithy_types::DateTime>,
-    pub current_service_deployment: Option<String>,
-    pub current_service_revisions: Option<Vec<ServiceCurrentRevisionSummary>>,
-    pub placement_constraints: Option<Vec<PlacementConstraint>>,
-    pub placement_strategy: Option<Vec<PlacementStrategy>>,
-    pub network_configuration: Option<NetworkConfiguration>,
-    pub health_check_grace_period_seconds: Option<i32>,
-    pub scheduling_strategy: Option<String>,
-    pub deployment_controller: Option<DeploymentController>,
-    pub tags: Option<Vec<Tag>>,
-    pub created_by: Option<String>,
-    pub enable_ecs_managed_tags: bool,
-    pub propagate_tags: Option<String>,
-    pub enable_execute_command: bool,
-    pub availability_zone_rebalancing: Option<String>,
-    pub resource_management_type: Option<String>,
-    pub version: i64,
-    pub run_status: Option<String>,
-    pub extend_deployment_time_period: i32,
-}
-
-#[smithy_macros::smithy(shape = "com.amazonaws.ecs#Deployment")]
-#[derive(Debug, Clone, Default)]
-pub struct Deployment {
-    pub id: Option<String>,
-    pub scale: Option<Scale>,
-    pub stability_status: Option<String>,
-    pub healthy_task_count: i32,
-    pub failed_launch_task_count: i32,
-    pub replaced_task_count: i32,
-    pub total_failed_tasks: i32,
-    pub status: Option<String>,
-    pub task_definition: Option<String>,
-    pub desired_count: i32,
-    pub pending_count: i32,
-    pub running_count: i32,
-    pub failed_tasks: i32,
-    pub created_at: Option<::aws_smithy_types::DateTime>,
-    pub updated_at: Option<::aws_smithy_types::DateTime>,
-    pub capacity_provider_strategy: Option<Vec<CapacityProviderStrategyItem>>,
-    pub launch_type: Option<String>,
-    pub platform_version: Option<String>,
-    pub platform_family: Option<String>,
-    pub network_configuration: Option<NetworkConfiguration>,
-    pub rollout_state: Option<String>,
-    pub rollout_state_reason: Option<String>,
-    pub service_connect_configuration: Option<ServiceConnectConfiguration>,
-    pub service_connect_resources: Option<Vec<ServiceConnectServiceResource>>,
-    pub volume_configurations: Option<Vec<ServiceVolumeConfiguration>>,
-    pub fargate_ephemeral_storage: Option<DeploymentEphemeralStorage>,
-    pub vpc_lattice_configurations: Option<Vec<VpcLatticeConfiguration>>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.ecs#ServiceConnectServiceResource")]
@@ -2034,273 +1412,6 @@ pub struct ConflictException {
     pub message: Option<String>,
 }
 
-/// One task, as every task-returning operation reports it: the members `Task` declares, in
-/// the model's own member order, with `provisionedCpu` and `provisionedMemory` appended
-/// last.
-///
-/// Member set, order and requiredness from `smithy_query(query="shape", shape="Task")`, plus
-/// those two — the CPU and memory the capacity Amazon ECS provisioned for the task carries,
-/// which the real service reports beside the task's own `cpu`/`memory` and the on-disk model
-/// omits. That is why the schema and the codec come from `types::unmodelled_member_wire`
-/// rather than from the derive (see that module's note); they are filled in from the task's
-/// resolved size ([`crate::state::TaskRecord::view`]) and absent for a task whose capacity
-/// Amazon ECS does not provision, so every modelled member reaches the wire exactly as the
-/// derive wrote it.
-#[derive(Debug, Clone, Default)]
-pub struct Task {
-    pub attachments: Option<Vec<Attachment>>,
-    pub attributes: Option<Vec<Attribute>>,
-    pub availability_zone: Option<String>,
-    pub capacity_provider_name: Option<String>,
-    pub cluster_arn: Option<String>,
-    pub connectivity: Option<String>,
-    pub connectivity_at: Option<::aws_smithy_types::DateTime>,
-    pub container_instance_arn: Option<String>,
-    pub containers: Option<Vec<Container>>,
-    pub cpu: Option<String>,
-    pub created_at: Option<::aws_smithy_types::DateTime>,
-    pub desired_status: Option<String>,
-    pub enable_execute_command: bool,
-    pub execution_stopped_at: Option<::aws_smithy_types::DateTime>,
-    pub group: Option<String>,
-    pub health_status: Option<String>,
-    pub inference_accelerators: Option<Vec<InferenceAccelerator>>,
-    pub last_status: Option<String>,
-    pub launch_type: Option<String>,
-    pub memory: Option<String>,
-    pub overrides: Option<TaskOverride>,
-    pub platform_version: Option<String>,
-    pub platform_family: Option<String>,
-    pub pull_started_at: Option<::aws_smithy_types::DateTime>,
-    pub pull_stopped_at: Option<::aws_smithy_types::DateTime>,
-    pub started_at: Option<::aws_smithy_types::DateTime>,
-    pub started_by: Option<String>,
-    pub stop_code: Option<String>,
-    pub stopped_at: Option<::aws_smithy_types::DateTime>,
-    pub stopped_reason: Option<String>,
-    pub stopping_at: Option<::aws_smithy_types::DateTime>,
-    pub tags: Option<Vec<Tag>>,
-    pub task_arn: Option<String>,
-    pub task_definition_arn: Option<String>,
-    pub version: i64,
-    pub ephemeral_storage: Option<EphemeralStorage>,
-    pub fargate_ephemeral_storage: Option<TaskEphemeralStorage>,
-    /// The CPU units the capacity Amazon ECS provisioned for this task carries, as the task
-    /// was provisioned with them, and `None` for a task whose capacity Amazon ECS does not
-    /// provision.
-    pub provisioned_cpu: Option<String>,
-    /// The memory, in MiB, that same capacity carries, reported the same way.
-    pub provisioned_memory: Option<String>,
-}
-
-ecs_schema_and_codec!(
-    Task,
-    TASK_SCHEMA,
-    "com.amazonaws.ecs#Task",
-    "com.amazonaws.ecs",
-    "Task",
-    (
-        M_ATTACHMENTS,
-        attachments,
-        "attachments",
-        0,
-        opt,
-        list_of_struct(Attachment)
-    ),
-    (
-        M_ATTRIBUTES,
-        attributes,
-        "attributes",
-        1,
-        opt,
-        list_of_struct(Attribute)
-    ),
-    (
-        M_AVAILABILITY_ZONE,
-        availability_zone,
-        "availabilityZone",
-        2,
-        opt,
-        string
-    ),
-    (
-        M_CAPACITY_PROVIDER_NAME,
-        capacity_provider_name,
-        "capacityProviderName",
-        3,
-        opt,
-        string
-    ),
-    (M_CLUSTER_ARN, cluster_arn, "clusterArn", 4, opt, string),
-    (M_CONNECTIVITY, connectivity, "connectivity", 5, opt, string),
-    (
-        M_CONNECTIVITY_AT,
-        connectivity_at,
-        "connectivityAt",
-        6,
-        opt,
-        date_time
-    ),
-    (
-        M_CONTAINER_INSTANCE_ARN,
-        container_instance_arn,
-        "containerInstanceArn",
-        7,
-        opt,
-        string
-    ),
-    (
-        M_CONTAINERS,
-        containers,
-        "containers",
-        8,
-        opt,
-        list_of_struct(Container)
-    ),
-    (M_CPU, cpu, "cpu", 9, opt, string),
-    (M_CREATED_AT, created_at, "createdAt", 10, opt, date_time),
-    (
-        M_DESIRED_STATUS,
-        desired_status,
-        "desiredStatus",
-        11,
-        opt,
-        string
-    ),
-    (
-        M_ENABLE_EXECUTE_COMMAND,
-        enable_execute_command,
-        "enableExecuteCommand",
-        12,
-        defaulted,
-        boolean
-    ),
-    (
-        M_EXECUTION_STOPPED_AT,
-        execution_stopped_at,
-        "executionStoppedAt",
-        13,
-        opt,
-        date_time
-    ),
-    (M_GROUP, group, "group", 14, opt, string),
-    (
-        M_HEALTH_STATUS,
-        health_status,
-        "healthStatus",
-        15,
-        opt,
-        string
-    ),
-    (
-        M_INFERENCE_ACCELERATORS,
-        inference_accelerators,
-        "inferenceAccelerators",
-        16,
-        opt,
-        list_of_struct(InferenceAccelerator)
-    ),
-    (M_LAST_STATUS, last_status, "lastStatus", 17, opt, string),
-    (M_LAUNCH_TYPE, launch_type, "launchType", 18, opt, string),
-    (M_MEMORY, memory, "memory", 19, opt, string),
-    (
-        M_OVERRIDES,
-        overrides,
-        "overrides",
-        20,
-        opt,
-        struct_of(TaskOverride)
-    ),
-    (
-        M_PLATFORM_VERSION,
-        platform_version,
-        "platformVersion",
-        21,
-        opt,
-        string
-    ),
-    (
-        M_PLATFORM_FAMILY,
-        platform_family,
-        "platformFamily",
-        22,
-        opt,
-        string
-    ),
-    (
-        M_PULL_STARTED_AT,
-        pull_started_at,
-        "pullStartedAt",
-        23,
-        opt,
-        date_time
-    ),
-    (
-        M_PULL_STOPPED_AT,
-        pull_stopped_at,
-        "pullStoppedAt",
-        24,
-        opt,
-        date_time
-    ),
-    (M_STARTED_AT, started_at, "startedAt", 25, opt, date_time),
-    (M_STARTED_BY, started_by, "startedBy", 26, opt, string),
-    (M_STOP_CODE, stop_code, "stopCode", 27, opt, string),
-    (M_STOPPED_AT, stopped_at, "stoppedAt", 28, opt, date_time),
-    (
-        M_STOPPED_REASON,
-        stopped_reason,
-        "stoppedReason",
-        29,
-        opt,
-        string
-    ),
-    (M_STOPPING_AT, stopping_at, "stoppingAt", 30, opt, date_time),
-    (M_TAGS, tags, "tags", 31, opt, list_of_struct(Tag)),
-    (M_TASK_ARN, task_arn, "taskArn", 32, opt, string),
-    (
-        M_TASK_DEFINITION_ARN,
-        task_definition_arn,
-        "taskDefinitionArn",
-        33,
-        opt,
-        string
-    ),
-    (M_VERSION, version, "version", 34, defaulted, long),
-    (
-        M_EPHEMERAL_STORAGE,
-        ephemeral_storage,
-        "ephemeralStorage",
-        35,
-        opt,
-        struct_of(EphemeralStorage)
-    ),
-    (
-        M_FARGATE_EPHEMERAL_STORAGE,
-        fargate_ephemeral_storage,
-        "fargateEphemeralStorage",
-        36,
-        opt,
-        struct_of(TaskEphemeralStorage)
-    ),
-    (
-        M_PROVISIONED_CPU,
-        provisioned_cpu,
-        "provisionedCpu",
-        37,
-        opt,
-        recorded("com.amazonaws.ecs.recorded", string)
-    ),
-    (
-        M_PROVISIONED_MEMORY,
-        provisioned_memory,
-        "provisionedMemory",
-        38,
-        opt,
-        recorded("com.amazonaws.ecs.recorded", string)
-    ),
-);
-
 #[smithy_macros::smithy(shape = "com.amazonaws.ecs#Container")]
 #[derive(Debug, Clone, Default)]
 pub struct Container {
@@ -2322,6 +1433,7 @@ pub struct Container {
     pub memory_reservation: Option<String>,
     pub gpu_ids: Option<Vec<String>>,
     pub neuron_device_ids: Option<Vec<String>>,
+    pub gpu_sharing_strategy: Option<SharingStrategy>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.ecs#NetworkInterface")]
@@ -2380,6 +1492,13 @@ pub struct TaskEphemeralStorage {
     pub kms_key_id: Option<String>,
 }
 
+#[smithy_macros::smithy(shape = "com.amazonaws.ecs#TrustedExecutionSummary")]
+#[derive(Debug, Clone, Default)]
+pub struct TrustedExecutionSummary {
+    pub isolation_mode: String,
+    pub attestation_policy_status: Option<String>,
+}
+
 #[smithy_macros::smithy(shape = "com.amazonaws.ecs#ProtectedTask")]
 #[derive(Debug, Clone, Default)]
 pub struct ProtectedTask {
@@ -2423,7 +1542,7 @@ pub const ACCELERATOR_MANUFACTURER_VALUES: &[&str] = &["amazon-web-services", "a
 
 
 /// The values `AcceleratorName` accepts on the wire.
-pub const ACCELERATOR_NAME_VALUES: &[&str] = &["a100", "a10g", "h100", "inferentia", "k520", "k80", "m60", "radeon-pro-v520", "t4", "t4g", "v100", "vu9p"];
+pub const ACCELERATOR_NAME_VALUES: &[&str] = &["a100", "a10g", "h100", "inferentia", "k520", "k80", "l4", "l40s", "m60", "radeon-pro-v520", "t4", "t4g", "v100", "vu9p"];
 
 
 /// The values `AcceleratorType` accepts on the wire.
@@ -2444,6 +1563,10 @@ pub const APPLICATION_PROTOCOL_VALUES: &[&str] = &["grpc", "http", "http2"];
 
 /// The values `AssignPublicIp` accepts on the wire.
 pub const ASSIGN_PUBLIC_IP_VALUES: &[&str] = &["DISABLED", "ENABLED"];
+
+
+/// The values `AttestationPolicyStatus` accepts on the wire.
+pub const ATTESTATION_POLICY_STATUS_VALUES: &[&str] = &["CONFIGURED"];
 
 
 /// The values `AutoRepairActionsStatus` accepts on the wire.
@@ -2666,6 +1789,10 @@ pub const GATEWAY_ROUTE_STATUS_VALUES: &[&str] = &["ACTIVE", "CREATE_FAILED", "C
 pub const GATEWAY_STATUS_VALUES: &[&str] = &["ACTIVE", "DELETED", "UPDATE_COMPLETE", "UPDATE_FAILED", "UPDATE_IN_PROGRESS"];
 
 
+/// The values `GpuSharingMode` accepts on the wire.
+pub const GPU_SHARING_MODE_VALUES: &[&str] = &["DEDICATED", "IDLE", "NVIDIA_MPS"];
+
+
 /// The values `HealthStatus` accepts on the wire.
 pub const HEALTH_STATUS_VALUES: &[&str] = &["HEALTHY", "UNHEALTHY", "UNKNOWN"];
 
@@ -2684,6 +1811,10 @@ pub const INSTANCE_HEALTH_CHECK_TYPE_VALUES: &[&str] = &["ACCELERATED_COMPUTE", 
 
 /// The values `IpcMode` accepts on the wire.
 pub const IPC_MODE_VALUES: &[&str] = &["host", "none", "task"];
+
+
+/// The values `IsolationMode` accepts on the wire.
+pub const ISOLATION_MODE_VALUES: &[&str] = &["CONFIDENTIAL_SANDBOX", "ISOLATED_SANDBOX", "SHARED"];
 
 
 /// The values `LaunchType` accepts on the wire.

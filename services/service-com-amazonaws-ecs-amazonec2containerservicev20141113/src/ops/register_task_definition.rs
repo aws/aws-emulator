@@ -761,6 +761,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             ephemeral_storage: input.ephemeral_storage.clone(),
             runtime_platform: input.runtime_platform.clone(),
             enable_fault_injection: input.enable_fault_injection,
+            // "You set this configuration when you register a task definition": the
+            // isolation mode and attestation policy the registration asked for, stored as
+            // it was asked for so every later read of the revision reports it.
+            trusted_execution_configuration: input.trusted_execution_configuration.clone(),
             tags: input.tags.clone().unwrap_or_default(),
             // "The principal that registered the task definition": resolved on the
             // registering call and stored with the revision.

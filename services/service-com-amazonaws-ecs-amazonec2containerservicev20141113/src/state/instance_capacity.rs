@@ -352,6 +352,7 @@ mod tests {
             ephemeral_storage: None,
             runtime_platform: None,
             enable_fault_injection: None,
+            trusted_execution_configuration: None,
             tags: Vec::new(),
             registered_by: "arn:aws:iam::000000000000:root".to_string(),
             registered_at: reported_instant(::std::time::UNIX_EPOCH),

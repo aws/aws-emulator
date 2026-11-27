@@ -125,10 +125,11 @@ pub fn updated_auto_scaling_group_provider(
 /// `infrastructureRoleArn` and `instanceLaunchTemplate` are required members of the update,
 /// so both are written; within the launch template every member the update names replaces
 /// the stored one and every member it leaves out keeps it, which is what "the updated launch
-/// template configuration" means for a template the provider already has. The two members
-/// the update has NO member for — the capacity option its instances are launched under and
-/// whether they run FIPS-validated modules — are carried over for the same reason the Auto
-/// Scaling group is: an update cannot change what it cannot name.
+/// template configuration" means for a template the provider already has. The members the
+/// update has NO member for — the capacity option its instances are launched under, whether
+/// they run FIPS-validated modules and whether they have Nitro Sandbox enabled — are carried
+/// over for the same reason the Auto Scaling group is: an update cannot change what it cannot
+/// name.
 ///
 /// `monitoring` is taken already resolved to the spelling the modelled value set lists
 /// ([`managed_instances_monitoring_option`]), so the stored template reports a value inside
@@ -173,6 +174,7 @@ pub fn updated_managed_instances_provider(
                 .capacity_reservations
                 .clone()
                 .or(template.capacity_reservations),
+            nitro_enclaves_enabled: template.nitro_enclaves_enabled,
         }),
         propagate_tags: update
             .propagate_tags

@@ -129,7 +129,7 @@ use crate::ops::types::{
     DaemonDeployment, DaemonDeploymentAlarms, DaemonDeploymentCapacityProvider,
     DaemonDeploymentConfiguration, DaemonDeploymentRevisionDetail, DaemonDeploymentSummary,
     DaemonDetail, DaemonRevision, DaemonRevisionDetail, DaemonSummary,
-    DaemonTaskDefinition, DaemonTaskDefinitionSummary, DaemonVolume, Defaulted, Deployment,
+    DaemonTaskDefinition, DaemonTaskDefinitionSummary, DaemonVolume, Deployment,
     DeploymentCircuitBreaker, DeploymentConfiguration, DeploymentController,
     DeploymentLifecycleHookDetail,
     ECSExpressGatewayService, EphemeralStorage, ExpressGatewayContainer,
@@ -150,7 +150,8 @@ use crate::ops::types::{
     ServiceVolumeConfiguration, Setting, Tag, Task, TaskDefinition,
     TaskDefinitionPlacementConstraint, TaskEphemeralStorage, TaskManagedEBSVolumeConfiguration,
     TaskOverride, TaskSet, TaskVolumeConfiguration,
-    ThresholdConfiguration, UpdatedExpressGatewayService, VersionInfo, Volume,
+    ThresholdConfiguration, TrustedExecutionConfiguration, TrustedExecutionSummary,
+    UpdatedExpressGatewayService, VersionInfo, Volume,
     VpcLatticeConfiguration,
     CLUSTER_SETTING_NAME_VALUES,
 };
@@ -1217,6 +1218,19 @@ pub const AGENT_UPDATE_IN_PROGRESS_MESSAGE: &str =
 
 /// `TaskDefinition$status` for a registered revision.
 pub const TASK_DEFINITION_ACTIVE: &str = "ACTIVE";
+
+/// `TrustedExecutionConfiguration$isolationMode` for a task that "runs in its own Nitro
+/// Sandbox ... with cryptographic attestation" — the one isolation mode an attestation
+/// policy belongs to ("This parameter is required when `isolationMode` is
+/// `CONFIDENTIAL_SANDBOX`"), and so the one a task reports an attestation-policy status for.
+/// One of the `IsolationMode` values ([`ISOLATION_MODE_VALUES`]).
+pub const ISOLATION_MODE_CONFIDENTIAL_SANDBOX: &str = "CONFIDENTIAL_SANDBOX";
+
+/// `TrustedExecutionSummary$attestationPolicyStatus` for a task whose revision carries an
+/// attestation policy: the only `AttestationPolicyStatus` value
+/// ([`ATTESTATION_POLICY_STATUS_VALUES`]), which states that "an attestation policy is
+/// configured for the task".
+pub const ATTESTATION_POLICY_CONFIGURED: &str = "CONFIGURED";
 
 /// `TaskDefinition$status` for a revision that has been deregistered — the
 /// `DeregisterTaskDefinition` doc: "Upon deregistration, the task definition is marked
@@ -3878,6 +3892,10 @@ impl ContainerInstanceRecord {
                 None
             },
             health_status: None,
+            // "This field is present only for container instances that support GPU
+            // sharing": nothing here shares a GPU between containers, so a registered
+            // instance reports no GPU state rather than an empty list.
+            gpu_devices: None,
         }
     }
 
@@ -4134,6 +4152,15 @@ pub struct TaskRecord {
     pub containers: Vec<ContainerRecord>,
     pub cpu: Option<String>,
     pub memory: Option<String>,
+    /// The trusted execution configuration of the REVISION this task runs, copied onto the
+    /// task when it was placed, and `None` for a task of a revision that set none.
+    ///
+    /// `Task$trustedExecutionSummary` is "a read-only view of the configuration that was set
+    /// on the task definition", so the summary a task reports is read off this
+    /// ([`TaskRecord::trusted_execution_summary`]). Kept on the task for the reason
+    /// [`TaskRecord::execution_role_arn`] is: it is what THIS task was launched with, and a
+    /// later registration of another revision does not change it.
+    pub trusted_execution_configuration: Option<TrustedExecutionConfiguration>,
     /// `Task$overrides`: the overrides this task RUNS UNDER, as the placement resolved them
     /// — one `containerOverrides` entry per container of the revision it runs, whether or
     /// not the request overrode anything of that container ([`resolved_task_overrides`]).
@@ -4427,8 +4454,33 @@ impl TaskRecord {
             version: self.version,
             provisioned_cpu,
             provisioned_memory,
+            trusted_execution_summary: self.trusted_execution_summary(),
             ..Task::default()
         }
+    }
+
+    /// `Task$trustedExecutionSummary`: "a read-only view of the configuration that was set
+    /// on the task definition", for a task of a revision that set one.
+    ///
+    /// `isolationMode` "mirrors the `isolationMode` that was set in the task definition's
+    /// `TrustedExecutionConfiguration`", so it is that mode and nothing else.
+    /// `attestationPolicyStatus` is "present only for tasks that use the
+    /// `CONFIDENTIAL_SANDBOX` isolation mode", and its one value states that "an attestation
+    /// policy is configured for the task" — so it is reported for such a task whose revision
+    /// carries the policy ("This parameter is required when `isolationMode` is
+    /// `CONFIDENTIAL_SANDBOX`") and left out for every other task.
+    ///
+    /// "This summary never includes the attestation policy itself": the policy envelope the
+    /// registration supplied is reported only through the task definition.
+    fn trusted_execution_summary(&self) -> Option<TrustedExecutionSummary> {
+        let configuration = self.trusted_execution_configuration.as_ref()?;
+        Some(TrustedExecutionSummary {
+            isolation_mode: configuration.isolation_mode.clone(),
+            attestation_policy_status: (configuration.isolation_mode
+                == ISOLATION_MODE_CONFIDENTIAL_SANDBOX
+                && configuration.attestation_policy.is_some())
+            .then(|| ATTESTATION_POLICY_CONFIGURED.to_string()),
+        })
     }
 
     /// Whether this task still occupies its cluster: anything that has not reached

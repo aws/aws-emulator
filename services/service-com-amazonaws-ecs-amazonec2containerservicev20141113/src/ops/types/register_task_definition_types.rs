@@ -32,6 +32,7 @@ pub struct RegisterTaskDefinitionInput {
     pub ephemeral_storage: Option<EphemeralStorage>,
     pub runtime_platform: Option<RuntimePlatform>,
     pub enable_fault_injection: Option<bool>,
+    pub trusted_execution_configuration: Option<TrustedExecutionConfiguration>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.ecs#RegisterTaskDefinitionResponse")]

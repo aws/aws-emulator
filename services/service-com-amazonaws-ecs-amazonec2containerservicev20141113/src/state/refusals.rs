@@ -1466,21 +1466,21 @@ pub fn merged_deployment_configuration(
 /// that did supply a threshold keeps every part of it, the `value` the model's own `@default`
 /// fills in included.
 pub(super) fn defaulted_deployment_circuit_breaker(
-    requested: Option<Defaulted<DeploymentCircuitBreaker>>,
-) -> Defaulted<DeploymentCircuitBreaker> {
-    let Defaulted(mut breaker) = requested.unwrap_or_default();
+    requested: Option<DeploymentCircuitBreaker>,
+) -> DeploymentCircuitBreaker {
+    let mut breaker = requested.unwrap_or_default();
     breaker.reset_on_healthy_task = Some(
         breaker
             .reset_on_healthy_task
             .unwrap_or(CIRCUIT_BREAKER_RESETS_ON_HEALTHY_TASK),
     );
     breaker.threshold_configuration = Some(breaker.threshold_configuration.unwrap_or_else(|| {
-        Defaulted(ThresholdConfiguration {
+        ThresholdConfiguration {
             r#type: THRESHOLD_BOUNDED_PERCENT.to_string(),
             value: THRESHOLD_DEFAULT_VALUE,
-        })
+        }
     }));
-    Defaulted(breaker)
+    breaker
 }
 
 /// The status a failure-detection mechanism of a rollout reports.
@@ -1751,7 +1751,7 @@ pub(super) fn deployment_circuit_breaker_view(
 /// and a maximum of `200`". A breaker that configured no threshold takes the documented
 /// default, [`THRESHOLD_BOUNDED_PERCENT`] with [`THRESHOLD_DEFAULT_VALUE`].
 pub(super) fn circuit_breaker_threshold(
-    breaker: Option<&Defaulted<DeploymentCircuitBreaker>>,
+    breaker: Option<&DeploymentCircuitBreaker>,
     desired_count: i32,
 ) -> i32 {
     let configuration = breaker.and_then(|breaker| breaker.threshold_configuration.as_ref());

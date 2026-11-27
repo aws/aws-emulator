@@ -14,9 +14,9 @@
 //! here named after an operation would make that operation's own module name
 //! ambiguous inside `ops` (`E0659`).
 
-// The schema and codec macros a structure needs when the wire carries a member the
-// on-disk model does not declare — see that module's own note. `#[macro_use]`, and
-// declared FIRST, so the macros are in the textual scope of every `*_types` module below.
+// Where a member the wire carries that the on-disk model does not declare is declared — see
+// that module's own note. `#[macro_use]`, and declared FIRST, so anything it declares is in
+// the textual scope of every `*_types` module below.
 #[macro_use]
 pub mod unmodelled_member_wire;
 
@@ -40,6 +40,7 @@ pub mod delete_gateway_types;
 pub mod delete_service_types;
 pub mod delete_task_definitions_types;
 pub mod delete_task_set_types;
+pub mod deployment_configuration_types;
 pub mod deregister_container_instance_types;
 pub mod deregister_task_definition_types;
 pub mod describe_capacity_providers_types;
@@ -63,6 +64,7 @@ pub mod disassociate_gateway_from_cluster_types;
 pub mod discover_poll_endpoint_types;
 pub mod execute_command_types;
 pub mod get_task_protection_types;
+pub mod instance_launch_template_types;
 pub mod list_account_settings_types;
 pub mod list_attributes_types;
 pub mod list_clusters_types;
@@ -80,6 +82,7 @@ pub mod list_tags_for_resource_types;
 pub mod list_task_definition_families_types;
 pub mod list_task_definitions_types;
 pub mod list_tasks_types;
+pub mod managed_scaling_types;
 pub mod put_account_setting_default_types;
 pub mod put_account_setting_types;
 pub mod put_attributes_types;
@@ -88,6 +91,7 @@ pub mod register_container_instance_types;
 pub mod register_daemon_task_definition_types;
 pub mod register_task_definition_types;
 pub mod run_task_types;
+pub mod service_report_types;
 pub mod shared_types;
 pub mod start_task_types;
 pub mod stop_service_deployment_types;
@@ -96,6 +100,8 @@ pub mod submit_attachment_state_changes_types;
 pub mod submit_container_state_change_types;
 pub mod submit_task_state_change_types;
 pub mod tag_resource_types;
+pub mod task_definition_report_types;
+pub mod task_report_types;
 pub mod untag_resource_types;
 pub mod update_capacity_provider_types;
 pub mod update_cluster_settings_types;
@@ -151,6 +157,8 @@ pub use delete_task_definitions_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use delete_task_set_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use deployment_configuration_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use deregister_container_instance_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use deregister_task_definition_types::*;
@@ -197,6 +205,8 @@ pub use execute_command_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use get_task_protection_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use instance_launch_template_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use list_account_settings_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use list_attributes_types::*;
@@ -231,6 +241,8 @@ pub use list_task_definitions_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use list_tasks_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use managed_scaling_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use put_account_setting_default_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use put_account_setting_types::*;
@@ -247,6 +259,8 @@ pub use register_task_definition_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use run_task_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use service_report_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use shared_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use start_task_types::*;
@@ -262,6 +276,10 @@ pub use submit_container_state_change_types::*;
 pub use submit_task_state_change_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use tag_resource_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use task_definition_report_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use task_report_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use untag_resource_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]

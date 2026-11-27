@@ -226,7 +226,8 @@ mod tests {
         ContainerDefinition {
             resource_requirements: Some(vec![ResourceRequirement {
                 r#type: kind.to_string(),
-                value: count.to_string(),
+                value: Some(count.to_string()),
+                sharing_strategy: None,
             }]),
             ..plain("app")
         }

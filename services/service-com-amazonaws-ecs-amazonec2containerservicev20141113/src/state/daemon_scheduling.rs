@@ -1332,6 +1332,9 @@ impl ComAmazonawsEcsAmazonec2containerservicev20141113State {
             containers,
             cpu: definition.cpu.clone(),
             memory: definition.memory.clone(),
+            // A daemon revision (`DaemonTaskDefinition`) carries no trusted execution
+            // configuration at all, so a daemon's task was launched with none.
+            trusted_execution_configuration: None,
             // A daemon's placement overrides nothing of the revision it runs, and names
             // each of that revision's containers ([`resolved_task_overrides`]).
             overrides: Some(resolved_task_overrides(
