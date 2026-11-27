@@ -427,7 +427,13 @@ async fn a_declared_container_image_reaches_amazon_ecs_as_the_declaration_resolv
         held, expected,
         "case {case:?}: expected Amazon ECS to report the image {expected:?}, got {held:?}"
     );
-    assert_registry_authority(case, &held, ACCOUNT);
+    // What the AUTHORITY of that address is, is Amazon ECR's to decide and not this rule's:
+    // `Repository$repositoryUri` is the endpoint that registry answers a push and a pull at,
+    // which this emulator announces as the address it is really served at rather than the
+    // host AWS publishes (the ECR crate's `state::registry_address`), so the declaration
+    // that READ it is pinned by the equality above — it reaches Amazon ECS as the address
+    // Amazon ECR announced, whatever that address is. The registry-host layout is asserted
+    // on the rows above, whose declarations WRITE a reference in AWS's own spelling.
 }
 
 /// The same declaration in the other template spelling: a YAML `!Sub` over the two

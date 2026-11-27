@@ -74,13 +74,28 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
     }
 
     fn can_handle(&self, parts: &http::request::Parts) -> bool {
-        // Claim a request whose resolved route key is this service's signing
-        // name. Edit this for anything the model does not express — a signing
-        // name shared by several services, or access-key-id-based routing.
-        match smithy_server_runtime::resolve_route_key(parts) {
-            Some(key) => key == self.entry.identity().signing_name(),
-            None => false,
-        }
+        // This service signs as `elasticloadbalancing` — the SigV4 name it SHARES with
+        // both Elastic Load Balancing models (Classic and v2), each serving its own
+        // endpoint (`elb-proxy` here). The router's routing key comes from the SigV4
+        // credential scope first, so all of them resolve to `elasticloadbalancing` and
+        // matching on the signing name ALONE makes this service claim their traffic too —
+        // which the router answers `500 AmbiguousService`, for every Elastic Load
+        // Balancing request (the claim table is
+        // `core/router/tests/all/elb_classic_and_v2_signing_name_routing.rs`).
+        //
+        // So the claim is narrowed to this service's own modelled wire surface, by the one
+        // rule `service-common` states for every service under a shared signing name. This
+        // model is `rpcv2Cbor`, an RPC protocol: it posts every operation to
+        // `/service/<Service>/operation/<Operation>` and names the target service in that
+        // path, so `claims_request` claims a request only when the service that path NAMES
+        // is this one — while the shared key's awsQuery traffic (`POST /` with an `Action`
+        // form field) stays the Elastic Load Balancing front door's.
+        service_common::claims_request(
+            parts,
+            self.entry.identity().signing_name(),
+            crate::ROUTE_PATH_SEGMENTS,
+            Some(self.entry.identity().shape_id()),
+        )
     }
 
     fn override_operation(

@@ -7,6 +7,8 @@ publish = false
 build = "build.rs"
 
 [dependencies]
+# The shared request-claim rule for a SigV4 signing name several services share.
+service-common = { path = "../common" }
 engine = { workspace = true }
 smithy-macros = { workspace = true }
 aws-smithy-schema = { workspace = true }
