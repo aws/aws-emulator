@@ -247,7 +247,13 @@ pub struct RegistryRecord {
     pub record_version: String,
     pub status: String,
     pub descriptors: Descriptors,
+    /// The metadata the record itself carries, whatever the owning registry declares about
+    /// it: what a `customMetadata.{key}` search filter is evaluated against.
     pub custom_metadata: Option<Document>,
+    /// Whether the registry that owns this record declares a custom-metadata schema —
+    /// decided from the owning registry when the record is projected ([`owner`]), because
+    /// it is a property of the registry rather than of the record.
+    pub custom_metadata_schema_configured: bool,
     pub created_at: DateTime,
     pub updated_at: DateTime,
 }
@@ -261,6 +267,21 @@ impl RegistryRecord {
     /// The descriptor entry keys present on this record.
     pub fn descriptor_types(&self) -> Vec<String> {
         descriptor_types(&self.descriptors)
+    }
+
+    /// The custom metadata a discovery response PUBLISHES for this record.
+    ///
+    /// `RegistryRecordSummary$customMetadata` "is only present if the registry has a custom
+    /// metadata schema configured", so the member is written only for a record whose owning
+    /// registry declares one: a registry that declares no schema states nothing about the
+    /// fields its records may carry, and its records' metadata is not part of the discovery
+    /// surface however much of it they hold. What the record stores is untouched — it is
+    /// still what a metadata filter is evaluated against and what the control plane's own
+    /// reads report.
+    pub fn published_custom_metadata(&self) -> Option<&Document> {
+        self.custom_metadata
+            .as_ref()
+            .filter(|_| self.custom_metadata_schema_configured)
     }
 
     /// The full `RegistryRecordSummary` — what `BatchGetDiscoverableRegistryRecord`
@@ -280,7 +301,7 @@ impl RegistryRecord {
             status: self.status.clone(),
             created_at: self.created_at,
             updated_at: self.updated_at,
-            custom_metadata: self.custom_metadata.clone(),
+            custom_metadata: self.published_custom_metadata().cloned(),
         }
     }
 

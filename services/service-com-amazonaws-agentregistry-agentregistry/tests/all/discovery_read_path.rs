@@ -22,8 +22,8 @@ use serde_json::{json, Value};
 use service_com_amazonaws_agentregistry_agentregistry::ops::types::VALIDATION_EXCEPTION_REASON_VALUES;
 use service_com_amazonaws_agentregistry_agentregistry::EmulatedService;
 use service_com_amazonaws_agentregistrycontrol_agentregistrycontrol::ops::types::{
-    A2aAgentCardDescriptor, AgentSkillsDefinitionDescriptor, Descriptors, HttpDescriptor,
-    McpServerDescriptor,
+    A2aAgentCardDescriptor, AgentSkillsDefinitionDescriptor, CustomMetadataSchemaConfiguration,
+    Descriptors, HttpDescriptor, McpServerDescriptor, RecordTypeSchemaOverride,
 };
 use service_com_amazonaws_agentregistrycontrol_agentregistrycontrol::state as owner;
 use smithy_server_runtime::MultiServiceRouter;
@@ -184,6 +184,36 @@ pub(crate) fn seed_record(
         .insert(record.record_id.clone(), record);
 }
 
+/// Give `registry_id` the `customMetadataSchemaConfiguration` `configuration` in the store
+/// that OWNS it, as `CreateRegistry` and `UpdateRegistry` store one.
+///
+/// A registry's configuration is what decides whether a discovery response carries its
+/// records' `customMetadata` at all — the member "is only present if the registry has a
+/// custom metadata schema configured" — so a registry whose records' metadata a case reads
+/// back declares one, and a registry no case configures declares none, which is what a
+/// create that omits the member leaves.
+pub(crate) fn seed_custom_metadata_schema(
+    engine: &Arc<engine::InMemoryEngine>,
+    registry_id: &str,
+    configuration: CustomMetadataSchemaConfiguration,
+) {
+    let state = engine.state::<owner::ComAmazonawsAgentregistrycontrolAgentregistrycontrolState>();
+    let mut state = state.lock();
+    let registry = state.registries.get_mut(registry_id).unwrap_or_else(|| {
+        panic!("registry {registry_id} must hold a record before its schema is configured")
+    });
+    registry.custom_metadata_schema_configuration = Some(configuration);
+}
+
+/// A configuration whose `defaultSchema` is `schema`, the common attributes every record
+/// type of the registry may carry.
+pub(crate) fn default_schema(schema: &str) -> CustomMetadataSchemaConfiguration {
+    CustomMetadataSchemaConfiguration {
+        default_schema: Some(schema.to_string()),
+        record_type_schema_overrides: None,
+    }
+}
+
 /// The Region every seeded ARN is scoped to, and the one every call below signs for.
 pub(crate) const REGION: &str = "us-east-1";
 
@@ -302,6 +332,19 @@ fn seed(engine: &Arc<engine::InMemoryEngine>) {
             "1.0",
             "REJECTED",
             created_at,
+        ),
+    );
+
+    // [`REGISTRY`] declares the custom metadata fields its records carry, which is what
+    // makes their `customMetadata` part of the discovery surface at all; the other seeded
+    // registries declare no schema, and their records carry no metadata.
+    seed_custom_metadata_schema(
+        engine,
+        REGISTRY,
+        default_schema(
+            "{\"type\":\"object\",\"properties\":{\
+               \"environment\":{\"type\":\"string\"},\
+               \"requiresApproval\":{\"type\":\"boolean\"}}}",
         ),
     );
 
@@ -1519,6 +1562,258 @@ async fn reading_does_not_change_what_a_later_caller_sees() {
         seen.windows(2).all(|pair| pair[0] == pair[1]),
         "a read must not change what a later caller sees, got {seen:?}"
     );
+}
+
+/// One row of the custom-metadata presence table: what the owning registry declares about
+/// custom metadata, what the record stores, and the member a discovery response then carries.
+struct MetadataRow {
+    case: &'static str,
+    /// The registry this row's record lives in, satisfying `RegistryIdentifier`.
+    registry_id: &'static str,
+    /// The record's `recordType` — what a per-record-type schema override applies to.
+    record_type: &'static str,
+    /// The registry's `customMetadataSchemaConfiguration`, or `None` for a registry that
+    /// declares no custom metadata schema at all.
+    configuration: Option<CustomMetadataSchemaConfiguration>,
+    /// The metadata the record itself stores.
+    stored: Option<Document>,
+    /// The `customMetadata` a discovery response carries for it, or `None` for a response
+    /// that carries no such member.
+    published: Option<Value>,
+    /// A `customMetadata.{key}` filter field and the value the record stores under it, for a
+    /// row whose record carries metadata a filter can name.
+    filter: Option<(&'static str, Value)>,
+}
+
+/// The record id every row seeds, one per registry.
+const METADATA_RECORD: &str = "metadatarec1";
+
+/// The rows the two metadata-presence suites share: a registry declaring the common
+/// attributes, one declaring a single record type's fields and no common ones, two declaring
+/// nothing, and a declaring registry whose record attaches no metadata or an empty document.
+fn metadata_rows() -> Vec<MetadataRow> {
+    // The schemas are `CustomMetadataSchemaDefinition`s — "A JSON Schema" — naming the
+    // fields the records below carry.
+    let common = default_schema(
+        "{\"type\":\"object\",\"properties\":{\
+           \"environment\":{\"type\":\"string\"},\
+           \"requiresApproval\":{\"type\":\"boolean\"}}}",
+    );
+    vec![
+        MetadataRow {
+            case: "a registry declaring the common attributes, metadata of both value types",
+            registry_id: "schemadefault1",
+            record_type: "MCP",
+            configuration: Some(common.clone()),
+            stored: Some(document_object(&[
+                ("environment", Document::String("production".to_string())),
+                ("requiresApproval", Document::Bool(false)),
+            ])),
+            published: Some(json!({ "environment": "production", "requiresApproval": false })),
+            filter: Some(("customMetadata.environment", json!("production"))),
+        },
+        MetadataRow {
+            case: "a registry declaring one record type's fields and no common ones",
+            registry_id: "schemaoverride",
+            record_type: "AGENT",
+            configuration: Some(CustomMetadataSchemaConfiguration {
+                default_schema: None,
+                record_type_schema_overrides: Some(vec![RecordTypeSchemaOverride {
+                    record_type: "AGENT".to_string(),
+                    schema: "{\"type\":\"object\",\"properties\":{\"tier\":{\"type\":\"string\"}}}"
+                        .to_string(),
+                }]),
+            }),
+            stored: Some(document_object(&[(
+                "tier",
+                Document::String("gold".to_string()),
+            )])),
+            published: Some(json!({ "tier": "gold" })),
+            filter: Some(("customMetadata.tier", json!("gold"))),
+        },
+        MetadataRow {
+            case: "a registry declaring no schema, over a record that stores metadata",
+            registry_id: "schemalessmeta",
+            record_type: "MCP",
+            configuration: None,
+            stored: Some(document_object(&[
+                ("environment", Document::String("production".to_string())),
+                ("requiresApproval", Document::Bool(true)),
+            ])),
+            published: None,
+            filter: Some(("customMetadata.environment", json!("production"))),
+        },
+        MetadataRow {
+            case: "a registry declaring no schema, over a record that stores none",
+            registry_id: "schemalessbare",
+            record_type: "CUSTOM",
+            configuration: None,
+            stored: None,
+            published: None,
+            filter: None,
+        },
+        MetadataRow {
+            case: "a declaring registry whose record attaches no metadata",
+            registry_id: "schemanometa01",
+            record_type: "MCP",
+            configuration: Some(common.clone()),
+            stored: None,
+            published: None,
+            filter: None,
+        },
+        MetadataRow {
+            case: "a declaring registry whose record attaches an empty document",
+            registry_id: "schemaemptymet",
+            record_type: "MCP",
+            configuration: Some(common),
+            stored: Some(document_object(&[])),
+            published: Some(json!({})),
+            filter: None,
+        },
+    ]
+}
+
+/// A router over a store holding one record per row of [`metadata_rows`], each in its own
+/// registry so a row's registry declares what that row states and nothing else.
+fn metadata_router(rows: &[MetadataRow]) -> MultiServiceRouter {
+    let engine: Arc<engine::InMemoryEngine> = Arc::new(engine::InMemoryEngine::new());
+    for row in rows {
+        let mut record = Seeded::new(
+            METADATA_RECORD,
+            "metadata-record",
+            row.record_type,
+            "1.0.0",
+            "APPROVED",
+            DateTime::from_secs(CREATED_AT_SECS),
+        );
+        if let Some(stored) = row.stored.clone() {
+            record = record.with_custom_metadata(stored);
+        }
+        seed_record(&engine, row.registry_id, record);
+        if let Some(configuration) = row.configuration.clone() {
+            seed_custom_metadata_schema(&engine, row.registry_id, configuration);
+        }
+    }
+    let mut router = MultiServiceRouter::new();
+    router.set_request_authentication(false);
+    router.register_service(EmulatedService::new(Arc::clone(&engine)));
+    router
+}
+
+/// The single `registryRecords` entry of a response, which every row's read answers with.
+fn only_summary(case: &str, body: &Value) -> Value {
+    let records = body["registryRecords"]
+        .as_array()
+        .unwrap_or_else(|| panic!("case {case:?}: registryRecords must be a list, got {body}"));
+    assert_eq!(
+        records.len(),
+        1,
+        "case {case:?}: expected exactly one record, got {body}"
+    );
+    records[0].clone()
+}
+
+/// Assert `summary` carries the `customMetadata` the row expects: the stated document, or no
+/// such member at all.
+fn assert_published_metadata(case: &str, summary: &Value, published: Option<&Value>) {
+    match published {
+        Some(expected) => assert_eq!(
+            summary.get("customMetadata"),
+            Some(expected),
+            "case {case:?}: expected customMetadata {expected}, got {summary}"
+        ),
+        None => assert_eq!(
+            summary.get("customMetadata"),
+            None,
+            "case {case:?}: expected no customMetadata member, got {summary}"
+        ),
+    }
+}
+
+/// `RegistryRecordSummary$customMetadata` "is only present if the registry has a custom
+/// metadata schema configured", so a record's metadata reaches the discovery surface only
+/// through a registry that declares a custom metadata schema — whatever metadata the record
+/// itself stores — and both reads that serve the summary answer the same way.
+#[tokio::test]
+async fn custom_metadata_is_published_only_where_the_owning_registry_declares_a_schema() {
+    let rows = metadata_rows();
+    let router = metadata_router(&rows);
+    for row in &rows {
+        let case = row.case;
+        let (status, batch) = post(
+            &router,
+            "/discoverable-records-batch",
+            &json!({ "entries": [{
+                "registryId": row.registry_id,
+                "recordIds": [METADATA_RECORD],
+            }] }),
+        )
+        .await;
+        assert_eq!(
+            status, 200,
+            "case {case:?}: BatchGet expected 200, got {status}: {batch}"
+        );
+        let from_batch = only_summary(case, &batch);
+        assert_published_metadata(case, &from_batch, row.published.as_ref());
+
+        let (status, search) = post(
+            &router,
+            "/discoverable-records-search",
+            &json!({
+                "searchQuery": "",
+                "registryIds": [row.registry_id],
+                "maxResults": 10,
+            }),
+        )
+        .await;
+        assert_eq!(
+            status, 200,
+            "case {case:?}: Search expected 200, got {status}: {search}"
+        );
+        let from_search = only_summary(case, &search);
+        assert_eq!(
+            from_search, from_batch,
+            "case {case:?}: a record renders identically in Search and BatchGet, \
+             got {from_search} vs {from_batch}"
+        );
+    }
+}
+
+/// The `filters` member names `customMetadata.{key}` fields of the record, so a filter is
+/// evaluated against the metadata the record STORES; what the registry's schema
+/// configuration decides is whether the answer carries that metadata back.
+#[tokio::test]
+async fn a_metadata_filter_selects_on_the_stored_metadata_whatever_the_registry_declares() {
+    let rows = metadata_rows();
+    let router = metadata_router(&rows);
+    for row in &rows {
+        let Some((field, value)) = row.filter.clone() else {
+            continue;
+        };
+        let case = row.case;
+        let (status, body) = post(
+            &router,
+            "/discoverable-records-search",
+            &json!({
+                "searchQuery": "",
+                "registryIds": [row.registry_id],
+                "maxResults": 10,
+                "filters": { field: { "$eq": value } },
+            }),
+        )
+        .await;
+        assert_eq!(
+            status, 200,
+            "case {case:?}: expected 200, got {status}: {body}"
+        );
+        let found = record_ids(case, &body);
+        assert_eq!(
+            found,
+            vec![METADATA_RECORD.to_string()],
+            "case {case:?}: {field} $eq {value} must select the record storing it, got {found:?}"
+        );
+        assert_published_metadata(case, &only_summary(case, &body), row.published.as_ref());
+    }
 }
 
 /// A `searchQuery` is a natural-language phrase, so a record matches when every term

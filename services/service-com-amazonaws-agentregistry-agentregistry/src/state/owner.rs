@@ -114,13 +114,24 @@ pub fn resolve<Eng: Send + Sync + 'static, Refusal: RegistryResolution>(
 /// read may report is the reads' own rule ([`RegistryRecord::is_discoverable`]) and not a
 /// property of the store.
 fn discoverable(held: &control::Registry) -> Registry {
+    // Whether this registry declares a custom-metadata schema is the presence condition for
+    // `RegistryRecordSummary$customMetadata`, and it is the REGISTRY's property, so it is read
+    // here — once per registry, from the registry in hand — and carried onto every record it
+    // owns ([`super::RegistryRecord::published_custom_metadata`]).
+    let custom_metadata_schema_configured =
+        held.custom_metadata_schema_configuration.is_some();
     Registry {
         registry_id: held.registry_id.clone(),
         registry_arn: held.registry_arn.clone(),
         records: held
             .records
             .iter()
-            .map(|(record_id, held)| (record_id.clone(), record(held)))
+            .map(|(record_id, held)| {
+                (
+                    record_id.clone(),
+                    record(held, custom_metadata_schema_configured),
+                )
+            })
             .collect(),
     }
 }
@@ -136,7 +147,14 @@ fn discoverable(held: &control::Registry) -> Registry {
 /// record off this surface is what withdraws it. A record with no published revision is
 /// projected as it stands, and its own status is what keeps it off the surface
 /// ([`super::RegistryRecord::is_discoverable`]).
-fn record(held: &control::RegistryRecord) -> RegistryRecord {
+///
+/// `custom_metadata_schema_configured` is the owning registry's answer to whether it declares
+/// a custom-metadata schema, which is what decides whether a discovery response carries this
+/// record's metadata at all ([`super::RegistryRecord::published_custom_metadata`]).
+fn record(
+    held: &control::RegistryRecord,
+    custom_metadata_schema_configured: bool,
+) -> RegistryRecord {
     let published = held.approved_revision.as_ref();
     RegistryRecord {
         record_id: held.record_id.clone(),
@@ -169,6 +187,7 @@ fn record(held: &control::RegistryRecord) -> RegistryRecord {
         custom_metadata: published
             .map_or(&held.custom_metadata, |revision| &revision.custom_metadata)
             .clone(),
+        custom_metadata_schema_configured,
         created_at: held.created_at,
         updated_at: published.map_or(held.updated_at, |revision| revision.updated_at),
     }
