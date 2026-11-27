@@ -39,15 +39,10 @@ fn environment(privileged: bool) -> Value {
     })
 }
 
-/// A buildspec whose install phase runs `bootstrap` and whose build phase then publishes the
-/// marker a reader can only see when the phase before it ran to its end.
+/// A buildspec whose install phase runs the one command `bootstrap`, which is the one-command
+/// case of [`waiting_buildspec`].
 fn buildspec(bootstrap: &str) -> String {
-    let quoted = bootstrap.replace('\\', "\\\\").replace('"', "\\\"");
-    format!(
-        "version: 0.2\nenv:\n  exported-variables:\n    - STAGE\nphases:\n  install:\n    \
-         commands:\n      - \"{quoted}\"\n      - \"export STAGE=installed\"\n  build:\n    \
-         commands:\n      - \"export STAGE=built\"\n"
-    )
+    waiting_buildspec(&[bootstrap])
 }
 
 /// The value a settled build reports for the exported variable `name`, or an empty string.
@@ -60,6 +55,123 @@ fn exported(build: &Value, name: &str) -> String {
         .find(|variable| variable["name"] == json!(name))
         .and_then(|variable| variable["value"].as_str().map(str::to_string))
         .unwrap_or_default()
+}
+
+/// A buildspec whose install phase runs `bootstrap`, one command per line, and whose build
+/// phase then publishes the marker a reader can only see when the phase before it ran to its
+/// end.
+fn waiting_buildspec(bootstrap: &[&str]) -> String {
+    let commands: String = bootstrap
+        .iter()
+        .map(|command| {
+            let quoted = command.replace('\\', "\\\\").replace('"', "\\\"");
+            format!("      - \"{quoted}\"\n")
+        })
+        .collect();
+    format!(
+        "version: 0.2\nenv:\n  exported-variables:\n    - STAGE\nphases:\n  install:\n    \
+         commands:\n{commands}      - \"export STAGE=installed\"\n  build:\n    \
+         commands:\n      - \"export STAGE=built\"\n"
+    )
+}
+
+/// RULE: the daemon a privileged build environment runs ANSWERS the command that asks it about
+/// itself, which is what the documented bootstrap WAITS on before it builds anything — so that
+/// wait exits zero there and the phase continues, and the same command in an environment that
+/// may run no daemon exits non-zero and fails the phase.
+#[tokio::test]
+async fn the_daemon_a_privileged_environment_runs_answers_the_wait_for_it() {
+    /// One row: the case, whether the environment is privileged, the install commands, the
+    /// build's terminal status and the stage its commands got as far as.
+    type Row = (
+        &'static str,
+        bool,
+        &'static [&'static str],
+        &'static str,
+        &'static str,
+    );
+
+    let rows: Vec<Row> = vec![
+        (
+            // The form AWS documents for a container build: the daemon started in the
+            // background, and then the wait that polls it until it answers.
+            "the documented bootstrap and the wait that polls the daemon",
+            true,
+            &[
+                "nohup dockerd --storage-driver=overlay2 > /tmp/dockerd.log 2>&1 &",
+                "timeout 15 sh -c \"until docker info; do sleep 1; done\"",
+            ],
+            "SUCCEEDED",
+            "built",
+        ),
+        (
+            "the daemon asked about itself directly",
+            true,
+            &["dockerd &", "docker info"],
+            "SUCCEEDED",
+            "built",
+        ),
+        (
+            // No daemon runs in an environment that was not started in privileged mode, so
+            // there is none to answer: the command fails and ends its phase.
+            "the daemon asked about itself where the environment is not privileged",
+            false,
+            &["docker info"],
+            "FAILED",
+            "",
+        ),
+        (
+            // The wait is bounded by the duration it states: a daemon that never answers
+            // leaves it reporting the duration it ran out of rather than succeeding.
+            "the wait where no daemon can answer it",
+            false,
+            &["timeout 15 sh -c \"until docker info; do sleep 1; done\""],
+            "FAILED",
+            "",
+        ),
+        (
+            // The command takes no operand at all, so words after it are no invocation of it.
+            "words that are no invocation of the command",
+            true,
+            &["dockerd &", "docker info --everything-of-it"],
+            "FAILED",
+            "",
+        ),
+    ];
+
+    let router = emulator();
+    for (index, (case, privileged, bootstrap, status, stage)) in rows.iter().enumerate() {
+        let project = format!("daemon-wait-{index}");
+        create_project(
+            &router,
+            &project,
+            json!({
+                "source": {"type": "NO_SOURCE", "buildspec": waiting_buildspec(bootstrap)},
+                "artifacts": {"type": "NO_ARTIFACTS"},
+                "environment": environment(*privileged)["environment"].clone(),
+            }),
+        )
+        .await;
+        let build = settled_build(&router, &project, json!({})).await;
+        assert_eq!(
+            build["buildStatus"].as_str(),
+            Some(*status),
+            "case {case:?}: expected buildStatus {status}, got {build}"
+        );
+        assert_eq!(
+            exported(&build, "STAGE"),
+            *stage,
+            "case {case:?}: expected the commands to reach {stage:?}, got {build}"
+        );
+        if *status == "FAILED" {
+            let install = phase_of(&build, "INSTALL").unwrap_or_default();
+            assert_eq!(
+                install["phaseStatus"].as_str(),
+                Some("FAILED"),
+                "case {case:?}: the phase that ran it must be the failing one, got {install}"
+            );
+        }
+    }
 }
 
 /// RULE: the Docker daemon is a program a build environment runs only in privileged mode, so

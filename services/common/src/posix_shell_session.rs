@@ -733,6 +733,67 @@ const PRIVILEGE_WRAPPER_USER_OPTIONS: &[&str] = &["-u", "--user", "-U", "--other
 /// See [`PRIVILEGE_WRAPPER_USER_OPTIONS`].
 const SUPERUSER: &str = "root";
 
+/// The command that runs another one FOR A WHILE: `timeout` — "start COMMAND, and kill it if
+/// still running after DURATION", whose operands are that duration, "the command to run and
+/// any arguments".
+///
+/// It is a wrapper of the same kind as [`COMMAND_WRAPPERS`] with a duration of its own, so the
+/// command it names IS the command performed ([`ShellSession::run_simple_command`]) — nothing
+/// this session performs waits on anything outside it, and the only time a command here takes
+/// is the time it STATES ([`ShellSession::run_sleep`]). What the duration then decides is
+/// whether that command ran out of it: one that did is reported as this wrapper ended it
+/// ([`TIMED_OUT_STATUS`]) rather than as the command's own answer. A `timeout` naming no
+/// duration, or no utility, runs nothing.
+///
+/// So the duration is measured against the time the commands under it STATED, which is the
+/// only time there is to spend here: a command that states none runs to its own end whatever
+/// the duration says, and is held instead by the session's command budget
+/// ([`Bounds::commands`]) — as is a command that states more than one session may
+/// ([`Bounds::sleep_seconds`]).
+const DURATION_WRAPPER: &str = "timeout";
+
+/// The options of [`DURATION_WRAPPER`] whose VALUE is the next word, so both words are the
+/// wrapper's own rather than the command's (`timeout(1)`: the signal it sends and the further
+/// duration after which it sends `KILL`). The `--option=value` spelling of each is one word and
+/// needs no entry.
+const DURATION_WRAPPER_VALUE_OPTIONS: &[&str] = &["-s", "--signal", "-k", "--kill-after"];
+
+/// The option of [`DURATION_WRAPPER`] that keeps the COMMAND's own answer for a command the
+/// duration ran out on: "--preserve-status: exit with the same status as COMMAND, even when the
+/// command times out".
+const PRESERVE_STATUS_OPTION: &str = "--preserve-status";
+
+/// What [`DURATION_WRAPPER`] answers for a command it ended: "if the command times out, and
+/// --preserve-status is not specified, then exit with status 124" (`timeout(1)`).
+const TIMED_OUT_STATUS: i32 = 124;
+
+/// The SECONDS a duration word states — `None` for a word that states no duration at all, or
+/// one no finite number of seconds can hold.
+///
+/// One reading for both utilities that take one, which spell it the same way: `sleep`'s time
+/// operand and the DURATION of [`DURATION_WRAPPER`] are "a floating point number with an
+/// optional suffix: `s` for seconds (the default), `m` for minutes, `h` for hours or `d` for
+/// days". What is checked is the SCALED value, which is the one answered: a word near the top
+/// of the range states no duration once its suffix is applied to it.
+fn stated_seconds(operand: &str) -> Option<f64> {
+    let (value, unit) = match operand.chars().next_back() {
+        Some(suffix @ ('s' | 'm' | 'h' | 'd')) => (
+            &operand[..operand.len().saturating_sub(suffix.len_utf8())],
+            suffix,
+        ),
+        _ => (operand, 's'),
+    };
+    let stated = value.parse::<f64>().ok()?;
+    let factor = match unit {
+        'm' => 60.0,
+        'h' => 3_600.0,
+        'd' => 86_400.0,
+        _ => 1.0,
+    };
+    let seconds = stated * factor;
+    (seconds.is_finite() && seconds >= 0.0).then_some(seconds)
+}
+
 /// The commands an assignment written before them persists in the session for: POSIX's
 /// special built-in utilities, for which "variable assignments specified with special
 /// built-in utilities remain in effect after the built-in completes". For every other command
@@ -2242,9 +2303,52 @@ impl ShellSession {
         // command name and the rest are its words. One naming no utility at all runs
         // nothing, which is the wrapper's own failure.
         let mut name = name;
+        // The duration a [`DURATION_WRAPPER`] bounds the command by, and whether it was asked
+        // to keep that command's own answer.
+        let mut bounded: Option<::std::time::Duration> = None;
+        let mut preserve_status = false;
         loop {
             match name.as_deref() {
                 Some(wrapper) if COMMAND_WRAPPERS.contains(&wrapper) => {}
+                // The duration wrapper carries OPTIONS and then the DURATION it bounds the
+                // command by ([`DURATION_WRAPPER`]), so those words are its own.
+                Some(DURATION_WRAPPER) => {
+                    while let Some(first) = words.first().cloned() {
+                        if !first.starts_with('-') {
+                            break;
+                        }
+                        words.remove(0);
+                        if first == PRESERVE_STATUS_OPTION {
+                            preserve_status = true;
+                        }
+                        // `--` ends the wrapper's own options: the word after it is the
+                        // duration, whatever it starts with.
+                        if first == "--" {
+                            break;
+                        }
+                        if DURATION_WRAPPER_VALUE_OPTIONS.contains(&first.as_str())
+                            && !words.is_empty()
+                        {
+                            words.remove(0);
+                        }
+                    }
+                    if words.is_empty() {
+                        return self.config.statuses.could_not_run;
+                    }
+                    let stated = words.remove(0);
+                    // A duration this wrapper cannot read, or one no span can hold, is its own
+                    // usage failure: nothing of the command it was to bound is performed.
+                    let Some(limit) = stated_seconds(&stated)
+                        .and_then(|seconds| ::std::time::Duration::try_from_secs_f64(seconds).ok())
+                    else {
+                        return self.config.statuses.could_not_run;
+                    };
+                    // "A duration of 0 disables the associated timeout", so such a wrapper
+                    // bounds the command by nothing at all.
+                    if !limit.is_zero() {
+                        bounded = Some(bounded.map_or(limit, |held| held.min(limit)));
+                    }
+                }
                 // The privilege wrapper carries OPTIONS of its own before the command it
                 // names ([`PRIVILEGE_WRAPPER`]), so those words are dropped here rather than
                 // taken for the command's name or its arguments.
@@ -2306,6 +2410,9 @@ impl ShellSession {
                 ..Capture::default()
             });
         }
+        // What the command took before it ran, so a wrapper that bounds it by a duration can
+        // tell whether it ran out of that duration ([`DURATION_WRAPPER`]).
+        let taken_before = self.slept;
         let status = match name {
             Some(name) => self.run_built_in(&name, &words, &redirections),
             // Nothing but assignments, or a redirection alone: they have been applied, which
@@ -2316,6 +2423,14 @@ impl ShellSession {
                 .last_substitution_status
                 .take()
                 .unwrap_or(self.config.statuses.success),
+        };
+        // A command the wrapper's duration ran out on is one the wrapper ENDED, so it answers
+        // the status that says so rather than what the command itself came to.
+        let status = match bounded {
+            Some(limit) if !preserve_status && self.slept.saturating_sub(taken_before) > limit => {
+                TIMED_OUT_STATUS
+            }
+            _ => status,
         };
         if let Some((path, append)) = redirected {
             // The file a redirection names is written whatever the command answered, the way
@@ -3516,35 +3631,14 @@ impl ShellSession {
             let _ = self.write_stderr("sleep: missing operand\n", redirections);
             return self.config.statuses.failure;
         };
-        // The suffixes the common implementation accepts beside plain seconds.
-        let (value, unit) = match operand.chars().next_back() {
-            Some(suffix @ ('s' | 'm' | 'h' | 'd')) => (
-                &operand[..operand.len().saturating_sub(suffix.len_utf8())],
-                suffix,
-            ),
-            _ => (operand.as_str(), 's'),
-        };
-        let Ok(seconds) = value.parse::<f64>() else {
+        let Some(seconds) = stated_seconds(operand) else {
             let _ = self.write_stderr(
                 &format!("sleep: invalid time interval '{operand}'\n"),
                 redirections,
             );
             return self.config.statuses.failure;
         };
-        if !seconds.is_finite() || seconds < 0.0 {
-            let _ = self.write_stderr(
-                &format!("sleep: invalid time interval '{operand}'\n"),
-                redirections,
-            );
-            return self.config.statuses.failure;
-        }
-        let factor = match unit {
-            'm' => 60.0,
-            'h' => 3_600.0,
-            'd' => 86_400.0,
-            _ => 1.0,
-        };
-        let asked = ::std::time::Duration::try_from_secs_f64(seconds * factor)
+        let asked = ::std::time::Duration::try_from_secs_f64(seconds)
             .unwrap_or(::std::time::Duration::ZERO);
         let ceiling = ::std::time::Duration::from_secs(self.config.bounds.sleep_seconds);
         self.slept = self.slept.saturating_add(asked).min(ceiling);

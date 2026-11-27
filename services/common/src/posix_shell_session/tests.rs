@@ -81,6 +81,121 @@ fn a_wrapper_runs_the_command_it_names() {
     }
 }
 
+/// RULE: a command invoked through the wrapper that bounds how long it may run is that
+/// command — the duration and the wrapper's own options are not the command's words — and a
+/// command that ran out of that duration is reported as the wrapper having ended it.
+#[test]
+fn a_duration_wrapper_runs_the_command_it_names_for_the_duration_it_states() {
+    let statuses = Statuses::default();
+    // (case, the line, the status, the lines it wrote)
+    let rows: &[(&str, &str, i32, &[&str])] = &[
+        (
+            "a duration around a utility",
+            "timeout 5 echo kept",
+            statuses.success,
+            &["kept"],
+        ),
+        (
+            "a duration written with a unit",
+            "timeout 1m echo kept",
+            statuses.success,
+            &["kept"],
+        ),
+        (
+            "a fractional duration",
+            "timeout 0.5 echo kept",
+            statuses.success,
+            &["kept"],
+        ),
+        (
+            "the signal and kill-after options are the wrapper's own words",
+            "timeout -s KILL -k 1 5 echo kept",
+            statuses.success,
+            &["kept"],
+        ),
+        (
+            "a command that stayed inside the duration",
+            "timeout 10 sleep 5",
+            statuses.success,
+            &[],
+        ),
+        (
+            "a command that ran out of the duration",
+            "timeout 1 sleep 5",
+            super::TIMED_OUT_STATUS,
+            &[],
+        ),
+        (
+            // "--preserve-status: exit with the same status as COMMAND, even when the
+            // command times out".
+            "a command that ran out of a duration asked to keep its own answer",
+            "timeout --preserve-status 1 sleep 5",
+            statuses.success,
+            &[],
+        ),
+        (
+            // "A duration of 0 disables the associated timeout."
+            "a duration of zero, which bounds the command by nothing",
+            "timeout 0 sleep 5",
+            statuses.success,
+            &[],
+        ),
+        (
+            "another wrapper around it",
+            "nohup timeout 5 echo kept",
+            statuses.success,
+            &["kept"],
+        ),
+        (
+            "a wrapper around a command this session cannot run",
+            "timeout 5 nothing-of-this-session",
+            statuses.could_not_run,
+            &[],
+        ),
+        (
+            "a wrapper naming no duration at all",
+            "timeout",
+            statuses.could_not_run,
+            &[],
+        ),
+        (
+            "a wrapper naming a duration and no utility",
+            "timeout 5",
+            statuses.could_not_run,
+            &[],
+        ),
+        (
+            "a wrapper whose duration states none",
+            "timeout later echo kept",
+            statuses.could_not_run,
+            &[],
+        ),
+        (
+            // A number no span of seconds can hold once its suffix is applied to it.
+            "a wrapper whose duration no span can hold",
+            "timeout 1e308d echo kept",
+            statuses.could_not_run,
+            &[],
+        ),
+    ];
+    for (case, line, status, written) in rows {
+        // The rows that state a duration SPEND one, and `sleep` is a utility a session with a
+        // tree of its own performs ([`super::VOLUME_COMMANDS`]).
+        let mut held = session().with_file_utilities();
+        let answered = held.run(line);
+        assert_eq!(
+            answered, *status,
+            "case {case:?}: expected status {status}, got {answered}"
+        );
+        assert_eq!(
+            held.output(),
+            *written,
+            "case {case:?}: expected {written:?}, got {:?}",
+            held.output()
+        );
+    }
+}
+
 /// RULE: only the catalog's utilities are performed; every other command and every form
 /// this session does not perform answers "could not run" and writes nothing.
 #[test]

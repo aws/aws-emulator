@@ -18,6 +18,10 @@
 //!   ([`super::container_image`]) and tags it, so the image exists in the build's own
 //!   environment and nowhere else yet; a Dockerfile whose `FROM` names an image this
 //!   environment HOLDS composes an image built ON it, carrying that base's own layers;
+//! * `docker info` reports what the daemon serving this build's commands says about itself,
+//!   which is how AWS's own documented container build WAITS for that daemon before it builds
+//!   anything — and a build environment that may run no daemon ([`super::docker_daemon`]) has
+//!   none to report, so the command fails there the way the CLI's own does;
 //! * `docker tag` gives an image another reference, which is what a push then addresses;
 //! * `docker pull` DOWNLOADS the image its reference names out of that registry — the
 //!   manifest the repository holds and every blob it names, through the registry's own data
@@ -61,6 +65,19 @@ const ECR_HOST_INFIX: &str = ".dkr.ecr.";
 
 /// See [`ECR_HOST_INFIX`].
 const ECR_HOST_SUFFIX: &str = ".amazonaws.com";
+
+/// The command that asks the daemon about itself: "docker info: display system-wide
+/// information". It takes no operand, and its one option (`--format`) decides the FORM of what
+/// it writes, which this program performs nothing of.
+const INFO_COMMAND: &str = "info";
+
+/// What the CLI reports when there is no daemon serving it, in the CLI's own wording — which
+/// is what a build environment that may run none answers ([`super::docker_daemon`]).
+///
+/// The CLI names the address it tried in that sentence; this environment's daemon is served in
+/// process and listens nowhere, so there is no address to name.
+const CANNOT_CONNECT_MESSAGE: &str = "Cannot connect to the Docker daemon. Is the docker daemon \
+     running?";
 
 /// The IAM actions a push performs, in the order the push performs them ("Actions defined by
 /// Amazon Elastic Container Registry", IAM Service Authorization Reference, and the pushing
@@ -120,6 +137,8 @@ enum Requested {
         /// The image being pulled.
         reference: String,
     },
+    /// `info`: what the daemon serving these commands says about itself.
+    Info,
 }
 
 /// What the words of a `docker` command line ask for.
@@ -130,6 +149,11 @@ enum Requested {
 fn requested(arguments: &[String]) -> Option<Requested> {
     let mut words = arguments.iter().map(String::as_str);
     let command = words.next()?;
+    if command == INFO_COMMAND {
+        // The command takes nothing at all, so a line carrying any further word is one this
+        // program performs nothing of ([`INFO_COMMAND`]).
+        return words.next().is_none().then_some(Requested::Info);
+    }
     let mut operands: Vec<&str> = Vec::new();
     let mut tags: Vec<String> = Vec::new();
     let mut dockerfile: Option<String> = None;
@@ -265,6 +289,7 @@ pub(super) fn performed(
         Requested::Tag { source, target } => tagged(tools, &source, &target),
         Requested::Push { reference } => pushed(tools, &reference),
         Requested::Pull { reference } => pulled(tools, &reference),
+        Requested::Info => information(tools),
     })
 }
 
@@ -295,6 +320,28 @@ fn logged_in(tools: &BuildTools, registry: &str, presented: &str) -> ProgramOutc
         .logins
         .insert(registry_host(registry).to_string(), presented.to_string());
     answered(PROGRAM_SUCCEEDED, vec!["Login Succeeded".to_string()])
+}
+
+/// `docker info`: what the daemon serving this build's commands says about itself.
+///
+/// Whether there IS such a daemon is what the build environment's `privilegedMode` decides —
+/// that member "enables running the Docker daemon inside a Docker container" — so a build
+/// environment that was not started in that mode answers the CLI's own cannot-connect failure,
+/// exactly as the daemon's own program refuses to start there ([`super::docker_daemon`]). That
+/// is what makes this command the readiness probe AWS's documented container buildspec waits on
+/// before it builds anything.
+///
+/// What is reported is what this environment KNOWS about itself and nothing else: it runs no
+/// container, and the images it holds are the ones its own commands composed or pulled.
+fn information(tools: &BuildTools) -> ProgramOutcome {
+    if !tools.privileged {
+        return tools.refused(DOCKER_PROGRAM, CANNOT_CONNECT_MESSAGE, DOCKER_FAILED);
+    }
+    let images = tools.state().images.len();
+    answered(
+        PROGRAM_SUCCEEDED,
+        vec!["Containers: 0".to_string(), format!("Images: {images}")],
+    )
 }
 
 /// `docker build`: compose the image the Dockerfile and the context name, ON the base that
@@ -897,7 +944,7 @@ mod tests {
         }
     }
 
-    /// RULE: only the five commands this environment performs are performed, in the forms
+    /// RULE: only the commands this environment performs are performed, in the forms
     /// they take.
     ///
     /// The rows differ along what the rule generalises over: which command is named, how its
@@ -1045,6 +1092,23 @@ mod tests {
             (
                 "a pull carrying an option this program does not take",
                 vec!["pull", "--all-tags", "registry.example/app"],
+                None,
+            ),
+            (
+                "the command that asks the daemon about itself",
+                vec!["info"],
+                Some(Requested::Info),
+            ),
+            (
+                // It takes no operand, so a word after it is no invocation of it.
+                "that command carrying a word of its own",
+                vec!["info", "everything"],
+                None,
+            ),
+            (
+                // `--format` decides the FORM of what it writes, which is not performed.
+                "that command asked for a form of its own",
+                vec!["info", "--format", "{{.ServerVersion}}"],
                 None,
             ),
             ("another command of the CLI", vec!["images"], None),
