@@ -452,13 +452,13 @@ async fn an_account_list_key_reports_the_account_it_names() {
         // Not an account-list key: the last segment is not a 12-digit id.
         ("CREDIT_SHARING", "credit-sharing", None),
         ("BILLING_ALERTS", "alerts/00000000000", None),
-        // A 12-digit id that is in no family this emulator holds: neither member
-        // is reported, so the two never disagree.
-        (
-            "BILLING_ALERTS",
-            "alerts/999999999999",
-            None,
-        ),
+        // A non-sharing feature's account-list key: the trailing account is a
+        // member of the family, so it is reported exactly as a sharing
+        // feature's is. An account-list key naming an account OUTSIDE the
+        // family is refused rather than stored, whichever feature carries it
+        // (`tests/all/account_list_preference_keys.rs`), so no stored
+        // account-list key reports an absent account.
+        ("BILLING_ALERTS", "alerts/000000000000", Some(ACCOUNT_ID)),
     ];
     for (feature, key, expected_account) in rows {
         let (status, body) = update(&router, feature, &[(key, "ENABLED")]).await;

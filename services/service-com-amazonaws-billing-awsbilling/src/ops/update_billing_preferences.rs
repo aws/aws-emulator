@@ -9,11 +9,14 @@
 //! (`state::feature_access`) is refused 403 `AccessDeniedException` before any of
 //! that validation runs.
 //!
-//! A key that NAMES a resource is resolved against the store that holds it: an
-//! account-list key's account against the consolidated billing family, and a
+//! A key that NAMES a resource is resolved against the store that holds it,
+//! whichever feature the key is set under: an account-list key's trailing
+//! account against the consolidated billing family, and a
 //! `credit/{creditId}/{option}` key's credit against `state::credits`. A key
 //! naming a resource the family does not hold is refused 403
-//! `AccessDeniedException` and stores nothing.
+//! `AccessDeniedException` and stores nothing. (Who may set a key — the
+//! management-account rule — is scoped to sharing keys; which account a key may
+//! NAME is scoped to the key's shape.)
 //!
 //! ## Shape of an operation
 //!
@@ -290,23 +293,32 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         })?;
         let mut state = state.lock();
 
-        // A sharing preference is scoped to the caller's consolidated billing
-        // family: "Sharing keys ... may only be set by the management account of
-        // a consolidated billing family", and a family's management account
-        // speaks only for the accounts in that family. The one documented
-        // exception, `credit/{creditId}/status`, is not a sharing key, so a
-        // member account may set it.
+        // Two separate decisions, each with its own scope.
+        //
+        // WHO may set the key is scoped to sharing keys: "Sharing keys ... may
+        // only be set by the management account of a consolidated billing
+        // family". The one documented exception,
+        // `credit/{creditId}/status`, is not a sharing key, so a member account
+        // may set it.
+        //
+        // WHICH account the key may name is scoped to the key's SHAPE, not to
+        // the feature: an account-list key names an account, and
+        // `BillingPreferenceSummary$accountId` is "Populated for account-list
+        // keys" beside the `accountName` it is "populated together with", which
+        // only an account of the family has. So the trailing account of every
+        // account-list key, under any feature, is resolved against the family —
+        // the family's management account speaks only for the accounts in that
+        // family — and a key naming an account outside it is refused.
         let caller = crate::state::caller_account_id();
         for preference in &input.billing_preferences_per_key {
-            if !crate::state::is_sharing_key(feature, &preference.key) {
-                continue;
-            }
             // The caller is the payer account of its own consolidated billing
             // family (`state::billing_family_management_account_id`), so this
             // branch does not fire for the emulator's own identity; it is the
             // modelled rule, and the refusal that does fire is the
             // family-membership check below.
-            if !state.is_billing_family_management_account(caller) {
+            if crate::state::is_sharing_key(feature, &preference.key)
+                && !state.is_billing_family_management_account(caller)
+            {
                 return Err(access_denied(format!(
                     "Account {caller} is not the management account of a consolidated billing \
                      family, so it cannot set the sharing preference {}",
