@@ -21,8 +21,8 @@
 //!   reported; a filter naming any other member is refused as a value the `filters` parameter
 //!   does not admit, and one that left out the member it selects on or the values it admits is
 //!   reported as the missing parameter it is;
-//! * one page carries at most `maxResults` entries, and at most the modelled maximum when the
-//!   request names none; a `nextToken` is answered only while entries remain, and the token is
+//! * one page carries at most `maxResults` entries, and at most the documented default when
+//!   the request names none; a `nextToken` is answered only while entries remain, and the token is
 //!   issued FOR that one listing, so a token of another pipeline's listing is refused;
 //! * a pipeline this Region holds none of is reported missing, as the required resource it is.
 //!
@@ -523,8 +523,8 @@ async fn a_page_carries_at_most_the_size_the_request_asked_for() {
     ];
 
     // The page sizes a row asks for: below the listing's size, at it, past it, and the
-    // modelled maximum (`maxResults` range 1..25).
-    for page_size in [1_u32, 2, 3, 4, 25] {
+    // modelled maximum (`maxResults` range 1..100).
+    for page_size in [1_u32, 2, 3, 4, 100] {
         let case = format!("pages of {page_size}");
         let mut walked: Vec<String> = Vec::new();
         let mut token: Option<String> = None;

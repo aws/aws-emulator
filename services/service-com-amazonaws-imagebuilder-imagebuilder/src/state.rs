@@ -435,29 +435,24 @@ pub const OWNERSHIP_AMAZON: &str = "Amazon";
 /// "Use the following filters to streamline results: name, parentImage, platform."
 pub const IMAGE_RECIPE_FILTER_NAMES: &[&str] = &["name", "parentImage", "platform"];
 
-/// The most items one `ListImageRecipes` page carries when the request names no
-/// `maxResults`: the modelled `maxResults` range's own maximum (1..25).
-pub const MAX_IMAGE_RECIPES_PER_PAGE: usize = 25;
+/// The most items one page of any of this service's listings carries when the request names
+/// no `maxResults`, from that member's own documentation, which every paginated listing of
+/// this service words identically: "If you don't specify a value, Image Builder returns up
+/// to 25 items."
+pub const DEFAULT_LIST_PAGE_SIZE: usize = 25;
+
+/// The largest page any of this service's listings answers with: the modelled `maxResults`
+/// range's own maximum, which every one of them shares (`RestrictedInteger`, `range
+/// 1..100`), stated by the member's documentation as "The largest page size that you can
+/// request is 100 items."
+///
+/// A request naming a page size past that range is refused by the centralized walk before a
+/// handler runs, so this is the bound the page a handler builds is held to.
+pub const MAX_LIST_PAGE_SIZE: usize = 100;
 
 /// The filter names `ListInfrastructureConfigurations` accepts, from the `filters`
 /// member's own documentation: "You can filter on name to streamline results."
 pub const INFRASTRUCTURE_CONFIGURATION_FILTER_NAMES: &[&str] = &["name"];
-
-/// The most items one `ListInfrastructureConfigurations` page carries when the request
-/// names no `maxResults`: the modelled `maxResults` range's own maximum (1..25).
-pub const MAX_INFRASTRUCTURE_CONFIGURATIONS_PER_PAGE: usize = 25;
-
-/// The most items one `ListWaitingWorkflowSteps` page carries when the request names no
-/// `maxResults`: the modelled `maxResults` range's own maximum (1..25).
-pub const MAX_WAITING_WORKFLOW_STEPS_PER_PAGE: usize = 25;
-
-/// The most items one `ListImagePackages` page carries when the request names no
-/// `maxResults`: the modelled `maxResults` range's own maximum (1..25).
-pub const MAX_IMAGE_PACKAGES_PER_PAGE: usize = 25;
-
-/// The most items one `ListImageBuildVersions` page carries when the request names no
-/// `maxResults`: the modelled `maxResults` range's own maximum (1..25).
-pub const MAX_IMAGE_BUILD_VERSIONS_PER_PAGE: usize = 25;
 
 /// The filter names an image listing accepts, from the `filters` member's own list, which
 /// `ListImages` and `ListImageBuildVersions` state identically: "Use the following filters
@@ -488,10 +483,6 @@ pub const COMPONENT_FILTER_NAMES: &[&str] = &[
 /// with the version filter" (the modelled `byName` member of `ListComponents`,
 /// `ListImages` and `ListWorkflows` alike).
 pub const VERSION_FILTER_NAME: &str = "version";
-
-/// The most items one `ListComponents` page carries when the request names no
-/// `maxResults`: the modelled `maxResults` range's own maximum (1..25).
-pub const MAX_COMPONENTS_PER_PAGE: usize = 25;
 
 /// The most tags one resource carries.
 ///

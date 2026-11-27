@@ -6,7 +6,7 @@
 //! `ListImagePipelines` is one of this service's paginated, filtered listings, so it needs
 //! the same three facts every other one of them does: which operation a page token belongs
 //! to ([`LIST_IMAGE_PIPELINES_OPERATION`]), how large one page may be
-//! ([`MAX_IMAGE_PIPELINES_PER_PAGE`]), and which of its own members the listing filters on
+//! ([`super::MAX_LIST_PAGE_SIZE`]), and which of its own members the listing filters on
 //! ([`IMAGE_PIPELINE_FILTER_NAMES`]) \u2014 a filter naming any other member is refused rather
 //! than ignored, which is what keeps a listing from answering with pipelines the caller did
 //! not ask for.
@@ -18,11 +18,6 @@ use super::ImagePipelineRecord;
 /// The operation a pipeline listing's page token is issued for. See
 /// [`super::LIST_IMAGE_RECIPES_OPERATION`].
 pub const LIST_IMAGE_PIPELINES_OPERATION: &str = "ListImagePipelines";
-
-/// The most pipelines one page of a listing carries: the modelled `maxResults` maximum
-/// (`smithy_query(query="operation",operation="ListImagePipelines")` reports
-/// `range 1..25`), which is also what a request naming no page size gets.
-pub const MAX_IMAGE_PIPELINES_PER_PAGE: usize = 25;
 
 /// The members `ListImagePipelines` filters on, as its own `filters` member documents them
 /// (`smithy_query(query="doc",shape="ListImagePipelinesRequest",member="filters")`: "Use

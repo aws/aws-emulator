@@ -13,7 +13,8 @@
 //!   step the store holds for the calling Region is reported, in the step-execution-id order
 //!   the index holds them in, whatever order they were filed in, and a step whose build
 //!   version this Region does not hold is reported by no Region;
-//! * `maxResults` bounds the page at 1..25 and a page that does not exhaust the set answers a
+//! * `maxResults` bounds the page at 1..100, with the documented default of 25 entries when
+//!   the request names none, and a page that does not exhaust the set answers a
 //!   `nextToken` that continues THAT listing alone — a token this store did not issue, or one
 //!   issued for another Region's endpoint, is refused as the value of the parameter it
 //!   arrived in rather than read as a position;
@@ -48,11 +49,16 @@ const REGION: &str = "us-west-2";
 /// Region's resources.
 const OTHER_REGION: &str = "eu-west-1";
 
-/// The most steps one page carries, and the largest page size a request may ask for: the
-/// modelled `maxResults` range's own maximum
-/// (`smithy_query(query="operation",operation="ListWaitingWorkflowSteps")` reports `maxResults`
-/// range 1..25).
-const MAX_STEPS_PER_PAGE: usize = 25;
+/// The largest page size a request may ask for: the modelled `maxResults` range's own
+/// maximum (`smithy_query(query="operation",operation="ListWaitingWorkflowSteps")` reports
+/// `maxResults` range 1..100, and the member documents "The largest page size that you can
+/// request is 100 items").
+const MAX_STEPS_PER_PAGE: usize = 100;
+
+/// The most steps one page carries when the request asks for no page size, from the same
+/// member's documentation: "If you don't specify a value, Image Builder returns up to 25
+/// items."
+const DEFAULT_STEPS_PER_PAGE: usize = 25;
 
 /// The smallest page size a request may ask for: that same range's minimum.
 const MIN_STEPS_PER_PAGE: usize = 1;
@@ -254,8 +260,11 @@ async fn every_paused_step_of_the_calling_region_is_listed_one_page_at_a_time() 
         ("no step paused", 0),
         ("one step paused", 1),
         ("a few steps paused", 3),
-        ("one step more than a page carries", MAX_STEPS_PER_PAGE + 1),
-        ("two pages of steps", MAX_STEPS_PER_PAGE * 2),
+        (
+            "one step more than a default page carries",
+            DEFAULT_STEPS_PER_PAGE + 1,
+        ),
+        ("two default pages of steps", DEFAULT_STEPS_PER_PAGE * 2),
     ];
 
     for (case, count) in rows {
@@ -269,7 +278,7 @@ async fn every_paused_step_of_the_calling_region_is_listed_one_page_at_a_time() 
         }
         let expected: Vec<String> = (1..=count).map(step_execution_id).collect();
 
-        // With no page size the answer carries at most the modelled maximum, and a token
+        // With no page size the answer carries at most the documented default, and a token
         // only while a step it did not carry remains.
         let (status, listed) = list_waiting(&router, REGION, None, None).await;
         assert_eq!(
@@ -277,14 +286,18 @@ async fn every_paused_step_of_the_calling_region_is_listed_one_page_at_a_time() 
             "case {case:?}: expected HTTP 200, got {status} with {listed}"
         );
         let first_page = page_step_ids(case, &listed);
-        let head: Vec<String> = expected.iter().take(MAX_STEPS_PER_PAGE).cloned().collect();
+        let head: Vec<String> = expected
+            .iter()
+            .take(DEFAULT_STEPS_PER_PAGE)
+            .cloned()
+            .collect();
         assert_eq!(
             first_page, head,
             "case {case:?}: expected {head:?}, got {first_page:?}"
         );
         assert_eq!(
             page_token(&listed).is_some(),
-            expected.len() > MAX_STEPS_PER_PAGE,
+            expected.len() > DEFAULT_STEPS_PER_PAGE,
             "case {case:?}: expected a nextToken only with steps left over, got {listed}"
         );
 
@@ -299,7 +312,13 @@ async fn every_paused_step_of_the_calling_region_is_listed_one_page_at_a_time() 
 
         // Every page size the model admits, walked to the end: the pages together are the
         // whole waiting set, in order, and none is longer than the size asked for.
-        for page_size in [MIN_STEPS_PER_PAGE, 2, 7, MAX_STEPS_PER_PAGE] {
+        for page_size in [
+            MIN_STEPS_PER_PAGE,
+            2,
+            7,
+            DEFAULT_STEPS_PER_PAGE,
+            MAX_STEPS_PER_PAGE,
+        ] {
             let mut walked: Vec<String> = Vec::new();
             let mut token: Option<String> = None;
             let mut pages = 0_usize;

@@ -33,7 +33,8 @@ const ACCOUNT: &str = "000000000000";
 const BUILD_DOCUMENT: &str = "name: HelloWorld\nschemaVersion: 1.0\nphases:\n  - name: build\n    steps:\n      - name: Greet\n        action: ExecuteBash\n        inputs:\n          commands:\n            - echo hello\n";
 
 /// The greatest number of entries one page carries when the request names no
-/// `maxResults`, from the modelled `maxResults` range (`RestrictedInteger`, range 1..25).
+/// `maxResults`, from that member's documentation: "If you don't specify a value, Image
+/// Builder returns up to 25 items."
 const MAX_PAGE: usize = 25;
 
 /// One emulator with an empty store, mounted exactly as the router mounts it.

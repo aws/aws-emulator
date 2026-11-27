@@ -477,11 +477,6 @@ pub fn workflow_store_full_message() -> String {
 /// [`super::LIST_IMAGE_RECIPES_OPERATION`].
 pub const LIST_WORKFLOWS_OPERATION: &str = "ListWorkflows";
 
-/// The most workflow entries one page of a listing carries: the modelled `maxResults`
-/// maximum (`smithy_query(query="operation",operation="ListWorkflows")` reports
-/// `range 1..25`), which is also what a request naming no page size gets.
-pub const MAX_WORKFLOWS_PER_PAGE: usize = 25;
-
 /// The members `ListWorkflows` filters on, as its own `filters` member documents them
 /// (`smithy_query(query="doc",shape="ListWorkflowsRequest",member="filters")`: "You can
 /// filter on name, version, description, and type").

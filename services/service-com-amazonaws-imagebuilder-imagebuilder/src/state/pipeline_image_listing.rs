@@ -7,7 +7,7 @@
 //! listing of ONE pipeline: it needs the same facts every other paginated listing of this
 //! service does — which operation a page token belongs to
 //! ([`LIST_IMAGE_PIPELINE_IMAGES_OPERATION`]), how large one page may be
-//! ([`MAX_IMAGE_PIPELINE_IMAGES_PER_PAGE`]), which members it filters on
+//! ([`super::MAX_LIST_PAGE_SIZE`]), which members it filters on
 //! ([`PIPELINE_IMAGE_FILTER_NAMES`]) and which listing a token was issued for
 //! ([`pipeline_image_query_fingerprint`]).
 //!
@@ -24,11 +24,6 @@ use super::{ComAmazonawsImagebuilderImagebuilderState, ImageBuildVersionRecord};
 /// The operation a pipeline-image listing's page token is issued for. See
 /// [`super::LIST_IMAGE_RECIPES_OPERATION`].
 pub const LIST_IMAGE_PIPELINE_IMAGES_OPERATION: &str = "ListImagePipelineImages";
-
-/// The most entries one page of a pipeline's image listing carries: the modelled `maxResults`
-/// maximum (`smithy_query(query="operation",operation="ListImagePipelineImages")` reports
-/// `range 1..25`), which is also what a request naming no page size gets.
-pub const MAX_IMAGE_PIPELINE_IMAGES_PER_PAGE: usize = 25;
 
 /// The filter names `ListImagePipelineImages` accepts, from its own `filters` member's list
 /// (`smithy_query(query="doc",shape="ListImagePipelineImagesRequest",member="filters")`: "Use

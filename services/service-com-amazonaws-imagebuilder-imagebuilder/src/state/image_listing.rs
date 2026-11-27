@@ -4,7 +4,7 @@
 //!
 //! `ListImages` is one of this service's paginated, filtered listings, so it needs the same
 //! facts every other one of them does: which operation a page token belongs to
-//! ([`LIST_IMAGES_OPERATION`]), how large one page may be ([`MAX_IMAGES_PER_PAGE`]), which
+//! ([`LIST_IMAGES_OPERATION`]), how large one page may be ([`super::MAX_LIST_PAGE_SIZE`]), which
 //! members the listing filters on ([`super::IMAGE_FILTER_NAMES`]) and which listing a token
 //! was issued for ([`image_query_fingerprint`]).
 //!
@@ -30,11 +30,6 @@ use super::{
 /// The operation an image listing's page token is issued for. See
 /// [`super::LIST_IMAGE_RECIPES_OPERATION`].
 pub const LIST_IMAGES_OPERATION: &str = "ListImages";
-
-/// The most entries one page of an image listing carries: the modelled `maxResults` maximum
-/// (`smithy_query(query="operation",operation="ListImages")` reports `range 1..25`), which
-/// is also what a request naming no page size gets.
-pub const MAX_IMAGES_PER_PAGE: usize = 25;
 
 /// The filter names `ListImages`' own refusal STATES, in the order it states them.
 ///

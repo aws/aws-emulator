@@ -314,7 +314,7 @@ contents — read that shape in the model above when you need its own members.
 
 - **Route:** `POST /ListComponentBuildVersions -> 200`
 - **Traits:** @paginated(inputToken=nextToken, outputToken=nextToken, items=componentSummaryList)
-- **Input:** `componentVersionArn` (string, pattern ^arn:aws[^:]*:imagebuilder:[^:]+:(?:[0-9]{12}|aws(?:-[a-z-]+)?|third-party):component/[a-z0-9-_]+/[0-9]+\.[0-9]+\.[0-9]+ …), `maxResults` (integer, range 1..25), `nextToken` (string, len 1..65535)
+- **Input:** `componentVersionArn` (string, pattern ^arn:aws[^:]*:imagebuilder:[^:]+:(?:[0-9]{12}|aws(?:-[a-z-]+)?|third-party):component/[a-z0-9-_]+/[0-9]+\.[0-9]+\.[0-9]+ …), `maxResults` (integer, range 1..100), `nextToken` (string, len 1..65535)
 - **Output:** `requestId` (string, len 1..1024), `componentSummaryList` (list<ComponentSummary>), `nextToken` (string, len 1..65535)
 - **Errors:** `CallRateLimitExceededException (HTTP 429)`, `ClientException (HTTP 400)`, `ForbiddenException (HTTP 403)`, `InvalidPaginationTokenException (HTTP 400)`, `InvalidRequestException (HTTP 400)`, `ServiceException (HTTP 500)`, `ServiceUnavailableException (HTTP 503)`
 
@@ -322,7 +322,7 @@ contents — read that shape in the model above when you need its own members.
 
 - **Route:** `POST /ListComponents -> 200`
 - **Traits:** @paginated(inputToken=nextToken, outputToken=nextToken, items=componentVersionList)
-- **Input:** `owner` (Ownership, one of: AWSMarketplace | Amazon | Self | Shared | ThirdParty), `filters` (list<Filter>, len 1..10), `byName` (boolean, default false, required), `maxResults` (integer, range 1..25), `nextToken` (string, len 1..65535)
+- **Input:** `owner` (Ownership, one of: AWSMarketplace | Amazon | Self | Shared | ThirdParty), `filters` (list<Filter>, len 1..10), `byName` (boolean, default false, required), `maxResults` (integer, range 1..100), `nextToken` (string, len 1..65535)
 - **Output:** `requestId` (string, len 1..1024), `componentVersionList` (list<ComponentVersion>), `nextToken` (string, len 1..65535)
 - **Errors:** `CallRateLimitExceededException (HTTP 429)`, `ClientException (HTTP 400)`, `ForbiddenException (HTTP 403)`, `InvalidPaginationTokenException (HTTP 400)`, `InvalidRequestException (HTTP 400)`, `ServiceException (HTTP 500)`, `ServiceUnavailableException (HTTP 503)`
 
@@ -330,7 +330,7 @@ contents — read that shape in the model above when you need its own members.
 
 - **Route:** `POST /ListContainerRecipes -> 200`
 - **Traits:** @paginated(inputToken=nextToken, outputToken=nextToken, items=containerRecipeSummaryList)
-- **Input:** `owner` (Ownership, one of: AWSMarketplace | Amazon | Self | Shared | ThirdParty), `filters` (list<Filter>, len 1..10), `maxResults` (integer, range 1..25), `nextToken` (string, len 1..65535)
+- **Input:** `owner` (Ownership, one of: AWSMarketplace | Amazon | Self | Shared | ThirdParty), `filters` (list<Filter>, len 1..10), `maxResults` (integer, range 1..100), `nextToken` (string, len 1..65535)
 - **Output:** `requestId` (string, len 1..1024), `containerRecipeSummaryList` (list<ContainerRecipeSummary>), `nextToken` (string, len 1..1024)
 - **Errors:** `CallRateLimitExceededException (HTTP 429)`, `ClientException (HTTP 400)`, `ForbiddenException (HTTP 403)`, `InvalidPaginationTokenException (HTTP 400)`, `InvalidRequestException (HTTP 400)`, `ServiceException (HTTP 500)`, `ServiceUnavailableException (HTTP 503)`
 
@@ -338,7 +338,7 @@ contents — read that shape in the model above when you need its own members.
 
 - **Route:** `POST /ListDistributionConfigurations -> 200`
 - **Traits:** @paginated(inputToken=nextToken, outputToken=nextToken, items=distributionConfigurationSummaryList)
-- **Input:** `filters` (list<Filter>, len 1..10), `maxResults` (integer, range 1..25), `nextToken` (string, len 1..65535)
+- **Input:** `filters` (list<Filter>, len 1..10), `maxResults` (integer, range 1..100), `nextToken` (string, len 1..65535)
 - **Output:** `requestId` (string, len 1..1024), `distributionConfigurationSummaryList` (list<DistributionConfigurationSummary>), `nextToken` (string, len 1..65535)
 - **Errors:** `CallRateLimitExceededException (HTTP 429)`, `ClientException (HTTP 400)`, `ForbiddenException (HTTP 403)`, `InvalidPaginationTokenException (HTTP 400)`, `InvalidRequestException (HTTP 400)`, `ServiceException (HTTP 500)`, `ServiceUnavailableException (HTTP 503)`
 
@@ -346,7 +346,7 @@ contents — read that shape in the model above when you need its own members.
 
 - **Route:** `POST /ListImageBuildVersions -> 200`
 - **Traits:** @paginated(inputToken=nextToken, outputToken=nextToken, items=imageSummaryList)
-- **Input:** `imageVersionArn` (string, pattern ^arn:aws[^:]*:imagebuilder:[^:]+:(?:[0-9]{12}|aws(?:-[a-z-]+)?):image/[a-z0-9-_]+/[0-9]+\.[0-9]+\.[0-9]+$), `filters` (list<Filter>, len 1..10), `maxResults` (integer, range 1..25), `nextToken` (string, len 1..65535)
+- **Input:** `imageVersionArn` (string, pattern ^arn:aws[^:]*:imagebuilder:[^:]+:(?:[0-9]{12}|aws(?:-[a-z-]+)?):image/[a-z0-9-_]+/[0-9]+\.[0-9]+\.[0-9]+$), `filters` (list<Filter>, len 1..10), `maxResults` (integer, range 1..100), `nextToken` (string, len 1..65535)
 - **Output:** `requestId` (string, len 1..1024), `imageSummaryList` (list<ImageSummary>), `nextToken` (string, len 1..65535)
 - **Errors:** `CallRateLimitExceededException (HTTP 429)`, `ClientException (HTTP 400)`, `ForbiddenException (HTTP 403)`, `InvalidPaginationTokenException (HTTP 400)`, `InvalidRequestException (HTTP 400)`, `ServiceException (HTTP 500)`, `ServiceUnavailableException (HTTP 503)`
 
@@ -354,7 +354,7 @@ contents — read that shape in the model above when you need its own members.
 
 - **Route:** `POST /ListImagePackages -> 200`
 - **Traits:** @paginated(inputToken=nextToken, outputToken=nextToken, items=imagePackageList)
-- **Input:** `imageBuildVersionArn` (string, pattern ^arn:aws[^:]*:imagebuilder:[^:]+:(?:[0-9]{12}|aws(?:-[a-z-]+)?):image/[a-z0-9-_]+/[0-9]+\.[0-9]+\.[0-9]+/[0-9]+$, required), `maxResults` (integer, range 1..25), `nextToken` (string, len 1..65535)
+- **Input:** `imageBuildVersionArn` (string, pattern ^arn:aws[^:]*:imagebuilder:[^:]+:(?:[0-9]{12}|aws(?:-[a-z-]+)?):image/[a-z0-9-_]+/[0-9]+\.[0-9]+\.[0-9]+/[0-9]+$, required), `maxResults` (integer, range 1..100), `nextToken` (string, len 1..65535)
 - **Output:** `requestId` (string, len 1..1024), `imagePackageList` (list<ImagePackage>), `nextToken` (string, len 1..65535)
 - **Errors:** `CallRateLimitExceededException (HTTP 429)`, `ClientException (HTTP 400)`, `ForbiddenException (HTTP 403)`, `InvalidPaginationTokenException (HTTP 400)`, `InvalidRequestException (HTTP 400)`, `ResourceNotFoundException (HTTP 404)`, `ServiceException (HTTP 500)`, `ServiceUnavailableException (HTTP 503)`
 
@@ -362,7 +362,7 @@ contents — read that shape in the model above when you need its own members.
 
 - **Route:** `POST /ListImagePipelineImages -> 200`
 - **Traits:** @paginated(inputToken=nextToken, outputToken=nextToken, items=imageSummaryList)
-- **Input:** `imagePipelineArn` (string, pattern ^arn:aws[^:]*:imagebuilder:[^:]+:(?:[0-9]{12}|aws):image-pipeline/[a-z0-9-_]+$, required), `filters` (list<Filter>, len 1..10), `maxResults` (integer, range 1..25), `nextToken` (string, len 1..65535)
+- **Input:** `imagePipelineArn` (string, pattern ^arn:aws[^:]*:imagebuilder:[^:]+:(?:[0-9]{12}|aws):image-pipeline/[a-z0-9-_]+$, required), `filters` (list<Filter>, len 1..10), `maxResults` (integer, range 1..100), `nextToken` (string, len 1..65535)
 - **Output:** `requestId` (string, len 1..1024), `imageSummaryList` (list<ImageSummary>), `nextToken` (string, len 1..65535)
 - **Errors:** `CallRateLimitExceededException (HTTP 429)`, `ClientException (HTTP 400)`, `ForbiddenException (HTTP 403)`, `InvalidPaginationTokenException (HTTP 400)`, `InvalidRequestException (HTTP 400)`, `ResourceNotFoundException (HTTP 404)`, `ServiceException (HTTP 500)`, `ServiceUnavailableException (HTTP 503)`
 
@@ -370,7 +370,7 @@ contents — read that shape in the model above when you need its own members.
 
 - **Route:** `POST /ListImagePipelines -> 200`
 - **Traits:** @paginated(inputToken=nextToken, outputToken=nextToken, items=imagePipelineList)
-- **Input:** `filters` (list<Filter>, len 1..10), `maxResults` (integer, range 1..25), `nextToken` (string, len 1..65535)
+- **Input:** `filters` (list<Filter>, len 1..10), `maxResults` (integer, range 1..100), `nextToken` (string, len 1..65535)
 - **Output:** `requestId` (string, len 1..1024), `imagePipelineList` (list<ImagePipeline>), `nextToken` (string, len 1..65535)
 - **Errors:** `CallRateLimitExceededException (HTTP 429)`, `ClientException (HTTP 400)`, `ForbiddenException (HTTP 403)`, `InvalidPaginationTokenException (HTTP 400)`, `InvalidRequestException (HTTP 400)`, `ServiceException (HTTP 500)`, `ServiceUnavailableException (HTTP 503)`
 
@@ -378,7 +378,7 @@ contents — read that shape in the model above when you need its own members.
 
 - **Route:** `POST /ListImageRecipes -> 200`
 - **Traits:** @paginated(inputToken=nextToken, outputToken=nextToken, items=imageRecipeSummaryList)
-- **Input:** `owner` (Ownership, one of: AWSMarketplace | Amazon | Self | Shared | ThirdParty), `filters` (list<Filter>, len 1..10), `maxResults` (integer, range 1..25), `nextToken` (string, len 1..65535)
+- **Input:** `owner` (Ownership, one of: AWSMarketplace | Amazon | Self | Shared | ThirdParty), `filters` (list<Filter>, len 1..10), `maxResults` (integer, range 1..100), `nextToken` (string, len 1..65535)
 - **Output:** `requestId` (string, len 1..1024), `imageRecipeSummaryList` (list<ImageRecipeSummary>), `nextToken` (string, len 1..65535)
 - **Errors:** `CallRateLimitExceededException (HTTP 429)`, `ClientException (HTTP 400)`, `ForbiddenException (HTTP 403)`, `InvalidPaginationTokenException (HTTP 400)`, `InvalidRequestException (HTTP 400)`, `ServiceException (HTTP 500)`, `ServiceUnavailableException (HTTP 503)`
 
@@ -386,7 +386,7 @@ contents — read that shape in the model above when you need its own members.
 
 - **Route:** `POST /ListImages -> 200`
 - **Traits:** @paginated(inputToken=nextToken, outputToken=nextToken, items=imageVersionList)
-- **Input:** `owner` (Ownership, one of: AWSMarketplace | Amazon | Self | Shared | ThirdParty), `filters` (list<Filter>, len 1..10), `byName` (boolean, default false, required), `maxResults` (integer, range 1..25), `nextToken` (string, len 1..65535), `includeDeprecated` (boolean)
+- **Input:** `owner` (Ownership, one of: AWSMarketplace | Amazon | Self | Shared | ThirdParty), `filters` (list<Filter>, len 1..10), `byName` (boolean, default false, required), `maxResults` (integer, range 1..100), `nextToken` (string, len 1..65535), `includeDeprecated` (boolean)
 - **Output:** `requestId` (string, len 1..1024), `imageVersionList` (list<ImageVersion>), `nextToken` (string, len 1..65535)
 - **Errors:** `CallRateLimitExceededException (HTTP 429)`, `ClientException (HTTP 400)`, `ForbiddenException (HTTP 403)`, `InvalidPaginationTokenException (HTTP 400)`, `InvalidRequestException (HTTP 400)`, `ServiceException (HTTP 500)`, `ServiceUnavailableException (HTTP 503)`
 
@@ -402,15 +402,15 @@ contents — read that shape in the model above when you need its own members.
 
 - **Route:** `POST /ListImageScanFindings -> 200`
 - **Traits:** @paginated(inputToken=nextToken, outputToken=nextToken, items=findings)
-- **Input:** `filters` (list<ImageScanFindingsFilter>, len 1..1), `maxResults` (integer, range 1..25), `nextToken` (string, len 1..65535)
-- **Output:** `requestId` (string, len 1..1024), `findings` (list<ImageScanFinding>, len 0..25), `nextToken` (string, len 1..65535)
+- **Input:** `filters` (list<ImageScanFindingsFilter>, len 1..1), `maxResults` (integer, range 1..100), `nextToken` (string, len 1..65535)
+- **Output:** `requestId` (string, len 1..1024), `findings` (list<ImageScanFinding>), `nextToken` (string, len 1..65535)
 - **Errors:** `CallRateLimitExceededException (HTTP 429)`, `ClientException (HTTP 400)`, `ForbiddenException (HTTP 403)`, `InvalidPaginationTokenException (HTTP 400)`, `InvalidRequestException (HTTP 400)`, `ServiceException (HTTP 500)`, `ServiceUnavailableException (HTTP 503)`
 
 ## ListInfrastructureConfigurations
 
 - **Route:** `POST /ListInfrastructureConfigurations -> 200`
 - **Traits:** @paginated(inputToken=nextToken, outputToken=nextToken, items=infrastructureConfigurationSummaryList)
-- **Input:** `filters` (list<Filter>, len 1..10), `maxResults` (integer, range 1..25), `nextToken` (string, len 1..65535)
+- **Input:** `filters` (list<Filter>, len 1..10), `maxResults` (integer, range 1..100), `nextToken` (string, len 1..65535)
 - **Output:** `requestId` (string, len 1..1024), `infrastructureConfigurationSummaryList` (list<InfrastructureConfigurationSummary>), `nextToken` (string, len 1..65535)
 - **Errors:** `CallRateLimitExceededException (HTTP 429)`, `ClientException (HTTP 400)`, `ForbiddenException (HTTP 403)`, `InvalidPaginationTokenException (HTTP 400)`, `InvalidRequestException (HTTP 400)`, `ServiceException (HTTP 500)`, `ServiceUnavailableException (HTTP 503)`
 
@@ -418,7 +418,7 @@ contents — read that shape in the model above when you need its own members.
 
 - **Route:** `POST /ListLifecycleExecutionResources -> 200`
 - **Traits:** @paginated(inputToken=nextToken, outputToken=nextToken, items=resources)
-- **Input:** `lifecycleExecutionId` (string, pattern ^lce-[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$, required), `parentResourceId` (string, len 1..1024), `maxResults` (integer, range 1..25), `nextToken` (string, len 1..65535)
+- **Input:** `lifecycleExecutionId` (string, pattern ^lce-[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$, required), `parentResourceId` (string, len 1..1024), `maxResults` (integer, range 1..100), `nextToken` (string, len 1..65535)
 - **Output:** `lifecycleExecutionId` (string, pattern ^lce-[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$), `lifecycleExecutionState` (LifecycleExecutionState), `resources` (list<LifecycleExecutionResource>), `nextToken` (string, len 1..65535)
 - **Errors:** `CallRateLimitExceededException (HTTP 429)`, `ClientException (HTTP 400)`, `ForbiddenException (HTTP 403)`, `InvalidPaginationTokenException (HTTP 400)`, `InvalidRequestException (HTTP 400)`, `ServiceException (HTTP 500)`, `ServiceUnavailableException (HTTP 503)`
 
@@ -426,7 +426,7 @@ contents — read that shape in the model above when you need its own members.
 
 - **Route:** `POST /ListLifecycleExecutions -> 200`
 - **Traits:** @paginated(inputToken=nextToken, outputToken=nextToken, items=lifecycleExecutions)
-- **Input:** `maxResults` (integer, range 1..25), `nextToken` (string, len 1..65535), `resourceArn` (string, pattern ^arn:aws[^:]*:imagebuilder:[^:]+:(?:[0-9]{12}|aws(?:-[a-z-]+)?|third-party):(?:image-recipe|container-recipe|infrastruct …, required)
+- **Input:** `maxResults` (integer, range 1..100), `nextToken` (string, len 1..65535), `resourceArn` (string, pattern ^arn:aws[^:]*:imagebuilder:[^:]+:(?:[0-9]{12}|aws(?:-[a-z-]+)?|third-party):(?:image-recipe|container-recipe|infrastruct …, required)
 - **Output:** `lifecycleExecutions` (list<LifecycleExecution>), `nextToken` (string, len 1..65535)
 - **Errors:** `CallRateLimitExceededException (HTTP 429)`, `ClientException (HTTP 400)`, `ForbiddenException (HTTP 403)`, `InvalidPaginationTokenException (HTTP 400)`, `InvalidRequestException (HTTP 400)`, `ServiceException (HTTP 500)`, `ServiceUnavailableException (HTTP 503)`
 
@@ -434,7 +434,7 @@ contents — read that shape in the model above when you need its own members.
 
 - **Route:** `POST /ListLifecyclePolicies -> 200`
 - **Traits:** @paginated(inputToken=nextToken, outputToken=nextToken, items=lifecyclePolicySummaryList)
-- **Input:** `filters` (list<Filter>, len 1..10), `maxResults` (integer, range 1..25), `nextToken` (string, len 1..65535)
+- **Input:** `filters` (list<Filter>, len 1..10), `maxResults` (integer, range 1..100), `nextToken` (string, len 1..65535)
 - **Output:** `lifecyclePolicySummaryList` (list<LifecyclePolicySummary>), `nextToken` (string, len 1..65535)
 - **Errors:** `CallRateLimitExceededException (HTTP 429)`, `ClientException (HTTP 400)`, `ForbiddenException (HTTP 403)`, `InvalidPaginationTokenException (HTTP 400)`, `InvalidRequestException (HTTP 400)`, `ServiceException (HTTP 500)`, `ServiceUnavailableException (HTTP 503)`
 
@@ -449,7 +449,7 @@ contents — read that shape in the model above when you need its own members.
 
 - **Route:** `POST /ListWaitingWorkflowSteps -> 200`
 - **Traits:** @paginated(inputToken=nextToken, outputToken=nextToken, items=steps)
-- **Input:** `maxResults` (integer, range 1..25), `nextToken` (string, len 1..65535)
+- **Input:** `maxResults` (integer, range 1..100), `nextToken` (string, len 1..65535)
 - **Output:** `steps` (list<WorkflowStepExecution>), `nextToken` (string, len 1..65535)
 - **Errors:** `CallRateLimitExceededException (HTTP 429)`, `ClientException (HTTP 400)`, `ForbiddenException (HTTP 403)`, `InvalidPaginationTokenException (HTTP 400)`, `InvalidRequestException (HTTP 400)`, `ServiceException (HTTP 500)`, `ServiceUnavailableException (HTTP 503)`
 
@@ -457,7 +457,7 @@ contents — read that shape in the model above when you need its own members.
 
 - **Route:** `POST /ListWorkflowBuildVersions -> 200`
 - **Traits:** @paginated(inputToken=nextToken, outputToken=nextToken, items=workflowSummaryList)
-- **Input:** `workflowVersionArn` (string, pattern ^arn:aws(?:-[a-z]+)*:imagebuilder:[a-z]{2,}(?:-[a-z]+)+-[0-9]+:(?:[0-9]{12}|aws(?:-[a-z-]+)?):workflow/(build|test|distr …), `maxResults` (integer, range 1..25), `nextToken` (string, len 1..65535)
+- **Input:** `workflowVersionArn` (string, pattern ^arn:aws(?:-[a-z]+)*:imagebuilder:[a-z]{2,}(?:-[a-z]+)+-[0-9]+:(?:[0-9]{12}|aws(?:-[a-z-]+)?):workflow/(build|test|distr …), `maxResults` (integer, range 1..100), `nextToken` (string, len 1..65535)
 - **Output:** `workflowSummaryList` (list<WorkflowSummary>), `nextToken` (string, len 1..65535)
 - **Errors:** `CallRateLimitExceededException (HTTP 429)`, `ClientException (HTTP 400)`, `ForbiddenException (HTTP 403)`, `InvalidPaginationTokenException (HTTP 400)`, `InvalidRequestException (HTTP 400)`, `ServiceException (HTTP 500)`, `ServiceUnavailableException (HTTP 503)`
 
@@ -465,7 +465,7 @@ contents — read that shape in the model above when you need its own members.
 
 - **Route:** `POST /ListWorkflowExecutions -> 200`
 - **Traits:** @paginated(inputToken=nextToken, outputToken=nextToken, items=workflowExecutions)
-- **Input:** `maxResults` (integer, range 1..25), `nextToken` (string, len 1..65535), `imageBuildVersionArn` (string, pattern ^arn:aws[^:]*:imagebuilder:[^:]+:(?:[0-9]{12}|aws(?:-[a-z-]+)?):image/[a-z0-9-_]+/[0-9]+\.[0-9]+\.[0-9]+/[0-9]+$, required)
+- **Input:** `maxResults` (integer, range 1..100), `nextToken` (string, len 1..65535), `imageBuildVersionArn` (string, pattern ^arn:aws[^:]*:imagebuilder:[^:]+:(?:[0-9]{12}|aws(?:-[a-z-]+)?):image/[a-z0-9-_]+/[0-9]+\.[0-9]+\.[0-9]+/[0-9]+$, required)
 - **Output:** `requestId` (string, len 1..1024), `workflowExecutions` (list<WorkflowExecutionMetadata>), `imageBuildVersionArn` (string, pattern ^arn:aws[^:]*:imagebuilder:[^:]+:(?:[0-9]{12}|aws(?:-[a-z-]+)?):image/[a-z0-9-_]+/[0-9]+\.[0-9]+\.[0-9]+/[0-9]+$), `message` (string, len 0..500), `nextToken` (string, len 1..65535)
 - **Errors:** `CallRateLimitExceededException (HTTP 429)`, `ClientException (HTTP 400)`, `ForbiddenException (HTTP 403)`, `InvalidPaginationTokenException (HTTP 400)`, `InvalidRequestException (HTTP 400)`, `ServiceException (HTTP 500)`, `ServiceUnavailableException (HTTP 503)`
 
@@ -473,7 +473,7 @@ contents — read that shape in the model above when you need its own members.
 
 - **Route:** `POST /ListWorkflows -> 200`
 - **Traits:** @paginated(inputToken=nextToken, outputToken=nextToken, items=workflowVersionList)
-- **Input:** `owner` (Ownership, one of: AWSMarketplace | Amazon | Self | Shared | ThirdParty), `filters` (list<Filter>, len 1..10), `byName` (boolean, default false, required), `maxResults` (integer, range 1..25), `nextToken` (string, len 1..65535)
+- **Input:** `owner` (Ownership, one of: AWSMarketplace | Amazon | Self | Shared | ThirdParty), `filters` (list<Filter>, len 1..10), `byName` (boolean, default false, required), `maxResults` (integer, range 1..100), `nextToken` (string, len 1..65535)
 - **Output:** `workflowVersionList` (list<WorkflowVersion>), `nextToken` (string, len 1..65535)
 - **Errors:** `CallRateLimitExceededException (HTTP 429)`, `ClientException (HTTP 400)`, `ForbiddenException (HTTP 403)`, `InvalidPaginationTokenException (HTTP 400)`, `InvalidRequestException (HTTP 400)`, `ServiceException (HTTP 500)`, `ServiceUnavailableException (HTTP 503)`
 
@@ -481,7 +481,7 @@ contents — read that shape in the model above when you need its own members.
 
 - **Route:** `POST /ListWorkflowStepExecutions -> 200`
 - **Traits:** @paginated(inputToken=nextToken, outputToken=nextToken, items=steps)
-- **Input:** `maxResults` (integer, range 1..25), `nextToken` (string, len 1..65535), `workflowExecutionId` (string, pattern ^wf-[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$, required)
+- **Input:** `maxResults` (integer, range 1..100), `nextToken` (string, len 1..65535), `workflowExecutionId` (string, pattern ^wf-[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$, required)
 - **Output:** `requestId` (string, len 1..1024), `steps` (list<WorkflowStepMetadata>), `workflowBuildVersionArn` (string, len 0..1024, pattern ^arn:aws(?:-[a-z]+)*:imagebuilder:[a-z]{2,}(?:-[a-z]+)+-[0-9]+:(?:[0-9]{12}|aws(?:-[a-z-]+)?):workflow/(build|test|distr …), `workflowExecutionId` (string, pattern ^wf-[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$), `imageBuildVersionArn` (string, pattern ^arn:aws[^:]*:imagebuilder:[^:]+:(?:[0-9]{12}|aws(?:-[a-z-]+)?):image/[a-z0-9-_]+/[0-9]+\.[0-9]+\.[0-9]+/[0-9]+$), `message` (string, len 0..500), `nextToken` (string, len 1..65535)
 - **Errors:** `CallRateLimitExceededException (HTTP 429)`, `ClientException (HTTP 400)`, `ForbiddenException (HTTP 403)`, `InvalidPaginationTokenException (HTTP 400)`, `InvalidRequestException (HTTP 400)`, `ServiceException (HTTP 500)`, `ServiceUnavailableException (HTTP 503)`
 

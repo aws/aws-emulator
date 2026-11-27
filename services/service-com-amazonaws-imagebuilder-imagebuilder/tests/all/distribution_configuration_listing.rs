@@ -44,11 +44,11 @@ const INVALID_PARAMETER_VALUE: &str = "InvalidParameterValueException";
 
 /// The smallest page the modelled `maxResults` admits
 /// (`smithy_query(query="operation",operation="ListDistributionConfigurations")` reports
-/// `range 1..25`).
+/// `range 1..100`).
 const MIN_PAGE_SIZE: i64 = 1;
 
-/// The largest page the modelled `maxResults` admits (same `range 1..25`).
-const MAX_PAGE_SIZE: i64 = 25;
+/// The largest page the modelled `maxResults` admits (same `range 1..100`).
+const MAX_PAGE_SIZE: i64 = 100;
 
 /// One emulator with an empty store, mounted exactly as the router mounts it.
 fn emulator() -> MultiServiceRouter {

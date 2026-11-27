@@ -232,7 +232,7 @@ async fn a_value_the_model_does_not_admit_is_refused_as_that_parameters_value() 
     // The modelled requirements each row's value breaks, from
     // `smithy_query(query="shape",shape="VersionNumber,Ownership,Platform,ImageTestsConfiguration,AmiNameString,RestrictedInteger,EbsInstanceBlockDeviceSpecification")`:
     // the version pattern, the two enumerated sets, the test-timeout range 60..1440, the AMI
-    // name pattern, the page-size range 1..25 and the volume-size range 1..16000.
+    // name pattern, the page-size range 1..100 and the volume-size range 1..16000.
     let version_pattern = r"^[0-9]+\.[0-9]+\.[0-9]+$";
     let ami_name_pattern = r"^[-_A-Za-z0-9{][-_A-Za-z0-9\s:{}\.]+[-_A-Za-z0-9}]$";
     let rows: Vec<RefusalRow> = vec![
@@ -283,9 +283,9 @@ async fn a_value_the_model_does_not_admit_is_refused_as_that_parameters_value() 
             "a page size above the modelled maximum",
             "POST",
             "/ListComponents".to_string(),
-            Some(json!({"maxResults": 26})),
+            Some(json!({"maxResults": 101})),
             "maxResults",
-            "maxResults must be smaller than or equal to 25".to_string(),
+            "maxResults must be smaller than or equal to 100".to_string(),
         ),
         (
             "a page size below the modelled minimum",

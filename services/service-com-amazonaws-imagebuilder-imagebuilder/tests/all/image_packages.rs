@@ -40,11 +40,16 @@ const REGION: &str = "us-west-2";
 /// Region's resources.
 const OTHER_REGION: &str = "eu-west-1";
 
-/// The most packages one page carries, and the largest page size a request may ask for:
-/// the modelled `maxResults` range's own maximum
-/// (`smithy_query(query="operation",operation="ListImagePackages")` reports
-/// `maxResults` range 1..25).
-const MAX_PACKAGES_PER_PAGE: usize = 25;
+/// The largest page size a request may ask for: the modelled `maxResults` range's own
+/// maximum (`smithy_query(query="operation",operation="ListImagePackages")` reports
+/// `maxResults` range 1..100, and the member documents "The largest page size that you can
+/// request is 100 items").
+const MAX_PACKAGES_PER_PAGE: usize = 100;
+
+/// The most packages one page carries when the request asks for no page size, from the same
+/// member's documentation: "If you don't specify a value, Image Builder returns up to 25
+/// items."
+const DEFAULT_PACKAGES_PER_PAGE: usize = 25;
 
 /// The smallest page size a request may ask for: that same range's minimum.
 const MIN_PACKAGES_PER_PAGE: usize = 1;
@@ -321,7 +326,7 @@ async fn a_read_reports_the_inventory_the_build_version_holds_one_page_at_a_time
         );
         let expected = reported_order(packages);
 
-        // With no page size the answer carries the modelled maximum, and a token only
+        // With no page size the answer carries the documented default, and a token only
         // while a package it did not carry remains.
         let (status, listed) = list_packages_page(&router, REGION, &arn, None, None).await;
         assert_eq!(
@@ -329,15 +334,18 @@ async fn a_read_reports_the_inventory_the_build_version_holds_one_page_at_a_time
             "case {case:?}: expected HTTP 200, got {status} with {listed}"
         );
         let first_page = page_packages(case, &listed);
-        let head: Vec<(String, String)> =
-            expected.iter().take(MAX_PACKAGES_PER_PAGE).cloned().collect();
+        let head: Vec<(String, String)> = expected
+            .iter()
+            .take(DEFAULT_PACKAGES_PER_PAGE)
+            .cloned()
+            .collect();
         assert_eq!(
             first_page, head,
             "case {case:?}: expected {head:?}, got {first_page:?}"
         );
         assert_eq!(
             page_token(&listed).is_some(),
-            expected.len() > MAX_PACKAGES_PER_PAGE,
+            expected.len() > DEFAULT_PACKAGES_PER_PAGE,
             "case {case:?}: expected a nextToken only with packages left over, got {listed}"
         );
         let request_id = member(case, &listed, "requestId")
@@ -360,7 +368,13 @@ async fn a_read_reports_the_inventory_the_build_version_holds_one_page_at_a_time
 
         // Every page size the model admits, walked to the end: the pages together are the
         // whole inventory, in order, and none is longer than the size asked for.
-        for page_size in [MIN_PACKAGES_PER_PAGE, 2, 7, MAX_PACKAGES_PER_PAGE] {
+        for page_size in [
+            MIN_PACKAGES_PER_PAGE,
+            2,
+            7,
+            DEFAULT_PACKAGES_PER_PAGE,
+            MAX_PACKAGES_PER_PAGE,
+        ] {
             let mut walked: Vec<(String, String)> = Vec::new();
             let mut token: Option<String> = None;
             let mut pages = 0_usize;
@@ -776,7 +790,7 @@ async fn one_build_version_keeps_at_most_the_bounded_inventory() {
     let entries = page_packages("an over-stuffed inventory", &listed);
     let head: Vec<(String, String)> = submitted
         .iter()
-        .take(MAX_PACKAGES_PER_PAGE)
+        .take(DEFAULT_PACKAGES_PER_PAGE)
         .cloned()
         .collect();
     assert_eq!(

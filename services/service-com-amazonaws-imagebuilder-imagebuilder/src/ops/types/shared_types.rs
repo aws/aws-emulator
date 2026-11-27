@@ -250,6 +250,8 @@ pub struct ImageTestsConfiguration {
 pub struct ImageScanningConfiguration {
     pub image_scanning_enabled: Option<bool>,
     pub ecr_configuration: Option<EcrConfiguration>,
+    pub image_scanning_types: Option<Vec<String>>,
+    pub scan_result_condition: Option<ScanResultCondition>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.imagebuilder#EcrConfiguration")]
@@ -257,6 +259,13 @@ pub struct ImageScanningConfiguration {
 pub struct EcrConfiguration {
     pub repository_name: Option<String>,
     pub container_tags: Option<Vec<String>>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.imagebuilder#ScanResultCondition")]
+#[derive(Debug, Clone, Default)]
+pub struct ScanResultCondition {
+    pub maximum_severity_label: String,
+    pub fix_available: Option<bool>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.imagebuilder#WorkflowConfiguration")]
@@ -764,6 +773,10 @@ pub const IMAGE_CONFIGURATION_STEP_VALUES: &[&str] = &["ASSOCIATE_LICENSES", "EX
 pub const IMAGE_SCAN_STATUS_VALUES: &[&str] = &["ABANDONED", "COLLECTING", "COMPLETED", "FAILED", "PENDING", "SCANNING", "TIMED_OUT"];
 
 
+/// The values `ImageScanningType` accepts on the wire.
+pub const IMAGE_SCANNING_TYPE_VALUES: &[&str] = &["ON_DEMAND_AMI_CVE", "TEST_INSTANCE_CVE"];
+
+
 /// The values `ImageSource` accepts on the wire.
 pub const IMAGE_SOURCE_VALUES: &[&str] = &["AMAZON_MANAGED", "AWS_MARKETPLACE", "CUSTOM", "IMPORTED"];
 
@@ -810,6 +823,10 @@ pub const LIFECYCLE_POLICY_TIME_UNIT_VALUES: &[&str] = &["DAYS", "MONTHS", "WEEK
 
 /// The values `MarketplaceResourceType` accepts on the wire.
 pub const MARKETPLACE_RESOURCE_TYPE_VALUES: &[&str] = &["COMPONENT_ARTIFACT", "COMPONENT_DATA"];
+
+
+/// The values `MaximumSeverityLabel` accepts on the wire.
+pub const MAXIMUM_SEVERITY_LABEL_VALUES: &[&str] = &["HIGH", "INFORMATIONAL", "LOW", "MEDIUM"];
 
 
 /// The values `OnWorkflowFailure` accepts on the wire.

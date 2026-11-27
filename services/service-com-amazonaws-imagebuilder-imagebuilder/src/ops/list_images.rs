@@ -21,7 +21,8 @@
 //! * `includeDeprecated` "specifies whether to include deprecated Amazon-managed images in
 //!   the results. Deprecated images that you own are always returned" — no image this
 //!   service reports carries a deprecation time, so its default leaves out none of them;
-//! * `maxResults` bounds the page at 1..25, and a page that does not exhaust the listing
+//! * `maxResults` bounds the page at 1..100, with the documented default of 25 entries when
+//!   the request names none, and a page that does not exhaust the listing
 //!   answers with a `nextToken` that continues it — a token this operation did not issue for
 //!   this listing carries no page position here and is refused rather than read as "start
 //!   from the beginning".
@@ -210,7 +211,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The `Ownership` enum, the `maxResults` 1..25 range, the filter list's 1..10 bound
+        // The `Ownership` enum, the `maxResults` 1..100 range, the filter list's 1..10 bound
         // and the token's length have all been refused past by the centralized walk before
         // this body runs.
         let state = crate::state::service_state(&*self.engine).ok_or_else(|| {
@@ -302,13 +303,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             },
         };
 
-        // A page carries at most `maxResults` entries, and at most the modelled maximum when
-        // the request names none.
+        // A page carries at most `maxResults` entries, held to the modelled maximum, and at
+        // most the documented default when the request names no page size.
         let page_size = input
             .max_results
             .and_then(|requested| usize::try_from(requested).ok())
-            .unwrap_or(crate::state::MAX_IMAGES_PER_PAGE)
-            .clamp(1, crate::state::MAX_IMAGES_PER_PAGE);
+            .unwrap_or(crate::state::DEFAULT_LIST_PAGE_SIZE)
+            .clamp(1, crate::state::MAX_LIST_PAGE_SIZE);
 
         // Whose images the request asked for: "by default, only your account's images are
         // returned".

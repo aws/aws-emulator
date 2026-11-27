@@ -58,12 +58,12 @@ const ACCOUNT: &str = "000000000000";
 const WILDCARD_VERSION: &str = "x.x.x";
 
 /// The smallest page size a request may ask for: the modelled `maxResults` range's minimum
-/// (`smithy_query(query="operation",operation="ListImages")` reports `range 1..25`).
+/// (`smithy_query(query="operation",operation="ListImages")` reports `range 1..100`).
 const MIN_RESULTS_PER_PAGE: usize = 1;
 
-/// The largest page size a request may ask for: that same range's maximum, which is also
-/// what a request naming no page size gets.
-const MAX_RESULTS_PER_PAGE: usize = 25;
+/// The largest page size a request may ask for: that same range's maximum, which the member
+/// documents as "The largest page size that you can request is 100 items."
+const MAX_RESULTS_PER_PAGE: usize = 100;
 
 /// Why a token this listing did not issue is refused — the one sentence this service states
 /// a refused parameter value in, about the member the token arrived in.

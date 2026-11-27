@@ -187,7 +187,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The `Ownership` enum, the `maxResults` 1..25 range, the filter list's 1..10
+        // The `Ownership` enum, the `maxResults` 1..100 range, the filter list's 1..10
         // bound and the token's length have all been refused past by the centralized walk
         // before this body runs.
         let state = crate::state::service_state(&*self.engine).ok_or_else(|| {
@@ -291,13 +291,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             });
         }
 
-        // A page carries at most `maxResults` entries, and at most the modelled maximum
-        // when the request names none.
+        // A page carries at most `maxResults` entries, held to the modelled maximum, and at
+        // most the documented default when the request names no page size.
         let page_size = input
             .max_results
             .and_then(|requested| usize::try_from(requested).ok())
-            .unwrap_or(crate::state::MAX_COMPONENTS_PER_PAGE)
-            .clamp(1, crate::state::MAX_COMPONENTS_PER_PAGE);
+            .unwrap_or(crate::state::DEFAULT_LIST_PAGE_SIZE)
+            .clamp(1, crate::state::MAX_LIST_PAGE_SIZE);
 
         // A pure read: the guard is taken, this page is copied out as modelled entries,
         // and nothing is written.

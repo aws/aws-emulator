@@ -14,7 +14,8 @@
 //!   recorded is empty, not missing;
 //! * `imageBuildVersionArn` "must be a full build version ARN", which the modelled pattern
 //!   already enforces, and names ONE build — so the lookup is exact;
-//! * `maxResults` bounds the page at 1..25, and a page that does not exhaust the inventory
+//! * `maxResults` bounds the page at 1..100, with the documented default of 25 entries when
+//!   the request names none, and a page that does not exhaust the inventory
 //!   answers with a `nextToken` that continues it — a token this operation did not issue
 //!   for this build version's listing is `InvalidPaginationTokenException`.
 //!
@@ -194,7 +195,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The ARN's pattern, the `maxResults` 1..25 range and the token's length have all
+        // The ARN's pattern, the `maxResults` 1..100 range and the token's length have all
         // been refused past by the centralized walk before this body runs.
         let state = crate::state::service_state(&*self.engine).ok_or_else(|| {
             ListImagePackagesErrorModeled::ServiceException(ServiceException {
@@ -233,13 +234,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             },
         };
 
-        // A page carries at most `maxResults` entries, and at most the modelled maximum
-        // when the request names none.
+        // A page carries at most `maxResults` entries, held to the modelled maximum, and at
+        // most the documented default when the request names no page size.
         let page_size = input
             .max_results
             .and_then(|requested| usize::try_from(requested).ok())
-            .unwrap_or(crate::state::MAX_IMAGE_PACKAGES_PER_PAGE)
-            .clamp(1, crate::state::MAX_IMAGE_PACKAGES_PER_PAGE);
+            .unwrap_or(crate::state::DEFAULT_LIST_PAGE_SIZE)
+            .clamp(1, crate::state::MAX_LIST_PAGE_SIZE);
 
         // A pure read: the guard is taken, this page of the stored inventory is copied out
         // as modelled packages, and nothing is written. The inventory is keyed by package

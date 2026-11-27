@@ -49,9 +49,13 @@ const EMPTY_OWNERSHIPS: &[&str] = &["Self", "Shared", "ThirdParty", "AWSMarketpl
 /// platform type version").
 const FILTER_MEMBERS: &[&str] = &["name", "osVersion", "platform", "type", "version"];
 
+/// The largest page size the modelled `maxResults` admits, which the member documents as
+/// "The largest page size that you can request is 100 items."
+const MAX_PAGE_SIZE: usize = 100;
+
 /// The published bounds of `maxResults`
-/// (`smithy_query(query="operation",operation="ListImages")` reports `range 1..25`).
-const PAGE_SIZE_BOUNDS: &[usize] = &[1, 25];
+/// (`smithy_query(query="operation",operation="ListImages")` reports `range 1..100`).
+const PAGE_SIZE_BOUNDS: &[usize] = &[1, MAX_PAGE_SIZE];
 
 /// One emulator with an empty store, mounted exactly as the router mounts it, beside the
 /// shared engine an image build path would file its records in.
@@ -258,7 +262,7 @@ fn rows() -> Vec<(String, &'static str, Query)> {
             Query {
                 owner: Some("Self"),
                 filters: vec![(member, vec!["no-image-of-this-account-matches"])],
-                max_results: Some(25),
+                max_results: Some(MAX_PAGE_SIZE),
                 ..Query::default()
             },
         ));

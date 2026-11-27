@@ -464,13 +464,13 @@ async fn every_failure_answers_the_modelled_error_and_names_the_request_it_answe
             uri: "/ListImagePackages".to_string(),
             body: Some(json!({
                 "imageBuildVersionArn": absent_image.clone(),
-                "maxResults": 26,
+                "maxResults": 101,
             })),
             status: 400,
             code: INVALID_PARAMETER_VALUE,
             message: Some(refusal_message(
                 "maxResults",
-                "maxResults must be smaller than or equal to 25",
+                "maxResults must be smaller than or equal to 100",
             )),
         },
         // A member the shape REQUIRES and the request omits is refused about the request as

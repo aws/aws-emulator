@@ -6,7 +6,7 @@
 //! `ListDistributionConfigurations` is one of this service's paginated, filtered listings,
 //! so it needs the same facts every other one of them does: which operation a page token
 //! belongs to ([`LIST_DISTRIBUTION_CONFIGURATIONS_OPERATION`]), how large one page may be
-//! ([`MAX_DISTRIBUTION_CONFIGURATIONS_PER_PAGE`]), which of its own members the listing
+//! ([`super::MAX_LIST_PAGE_SIZE`]), which of its own members the listing
 //! filters on ([`DISTRIBUTION_CONFIGURATION_FILTER_NAMES`]) — a filter naming any other
 //! member is refused rather than ignored, which is what keeps a listing from answering with
 //! configurations the caller did not ask for — and what one listed entry carries
@@ -19,11 +19,6 @@ use super::{reported_tags, DistributionConfigurationRecord};
 /// The operation a distribution-configuration listing's page token is issued for. See
 /// [`super::LIST_IMAGE_RECIPES_OPERATION`].
 pub const LIST_DISTRIBUTION_CONFIGURATIONS_OPERATION: &str = "ListDistributionConfigurations";
-
-/// The most configurations one page of a listing carries: the modelled `maxResults` maximum
-/// (`smithy_query(query="operation",operation="ListDistributionConfigurations")` reports
-/// `range 1..25`), which is also what a request naming no page size gets.
-pub const MAX_DISTRIBUTION_CONFIGURATIONS_PER_PAGE: usize = 25;
 
 /// The members `ListDistributionConfigurations` filters on, as its own `filters` member
 /// documents them
