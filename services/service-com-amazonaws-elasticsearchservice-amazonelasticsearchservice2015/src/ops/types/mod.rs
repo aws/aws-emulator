@@ -61,6 +61,7 @@ pub mod remove_tags_types;
 pub mod revoke_vpc_endpoint_access_types;
 pub mod shared_types;
 pub mod start_elasticsearch_service_software_update_types;
+pub mod update_clone_types;
 pub mod update_elasticsearch_domain_config_types;
 pub mod update_package_types;
 pub mod update_vpc_endpoint_types;
@@ -160,6 +161,8 @@ pub use revoke_vpc_endpoint_access_types::*;
 pub use shared_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use start_elasticsearch_service_software_update_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use update_clone_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use update_elasticsearch_domain_config_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]

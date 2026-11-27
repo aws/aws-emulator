@@ -1,15 +1,15 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op DescribeDomainChangeProgress
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `DescribeDomainChangeProgress`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
+//! Reports the progress of one configuration change of a domain — the change
+//! `UpgradeElasticsearchDomain` or `UpdateClone` recorded, named by the `ChangeId` that
+//! call handed back, or the most recent one when the request names none.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`DescribeDomainChangeProgress::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! Everything it answers is COMPUTED from that stored change (`crate::state::DomainChange`)
+//! and, for a change of a cloned blue/green upgrade, from the upgrade's own record: the
+//! status, which properties are still pending, and the clone's traffic split and
+//! retention period. Reporting a change therefore writes nothing, and two reads of a
+//! settled change agree.
 //!
 //! ## Shape of an operation
 //!
@@ -151,18 +151,78 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `DescribeDomainChangeProgress` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(DescribeDomainChangeProgressErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("DescribeDomainChangeProgress"))
+        let Some(state) = crate::state::service_state(&*self.engine) else {
+            return Err(
+                DescribeDomainChangeProgressErrorModeled::InternalException(InternalException {
+                    message: Some("the Elasticsearch domain store is unavailable".to_string()),
+                })
+                .into(),
+            );
+        };
+
+        let now = ::std::time::SystemTime::now();
+        let region = crate::state::request_region(&ctx.parts().headers);
+        let store = state.lock();
+        let held = store
+            .domains
+            .get(&crate::state::domain_key(&region, &input.domain_name));
+        let Some(domain) = held else {
+            drop(store);
+            // A domain is ONE resource published through two API versions
+            // ([`crate::state::opensearch_surface`]), so a name this store holds nothing
+            // under is resolved there before the call reports the domain as missing. A
+            // domain of that surface has no change recorded HERE, which is reported as
+            // the same "no configuration change" answer a domain of this store with none
+            // gets — not as a domain that does not exist.
+            if crate::state::opensearch_surface::domain_engine_version(
+                &*self.engine,
+                &region,
+                &input.domain_name,
+                now,
+            )
+            .is_some()
+            {
+                return Ok(DescribeDomainChangeProgressOutput {
+                    change_progress_status: None,
+                });
+            }
+            // The resource named is not there: HTTP 404
+            // (`crate::scaffolded::RESOURCE_NOT_FOUND_STATUS`), not the
+            // `@httpError(409)` the model annotates on the shape.
+            return Err(crate::scaffolded::Scaffolded::not_found(
+                DescribeDomainChangeProgressErrorModeled::ResourceNotFoundException(
+                    ResourceNotFoundException {
+                        message: Some(format!("Domain not found: {}", input.domain_name)),
+                    },
+                ),
+            ));
+        };
+
+        // `ChangeId` "is an optional parameter. If omitted, the service returns
+        // information about the most recent configuration change." A change id the
+        // domain recorded nothing under names no change at all.
+        let change = match input.change_id.as_deref() {
+            Some(change_id) => match domain.change(change_id) {
+                Some(change) => Some(change),
+                None => {
+                    let message = format!("Change not found: {change_id}");
+                    return Err(crate::scaffolded::Scaffolded::not_found(
+                        DescribeDomainChangeProgressErrorModeled::ResourceNotFoundException(
+                            ResourceNotFoundException {
+                                message: Some(message),
+                            },
+                        ),
+                    ));
+                }
+            },
+            None => domain.latest_change(),
+        };
+
+        Ok(DescribeDomainChangeProgressOutput {
+            // A domain nothing has changed has no progress to report, and the member is
+            // not required: no change is invented for it.
+            change_progress_status: change
+                .map(|change| domain.change_progress_status(change, now)),
+        })
     }
 }

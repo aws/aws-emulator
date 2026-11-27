@@ -210,7 +210,7 @@ async fn the_largest_enumerated_set_is_listed_bucket_by_bucket() {
     /// set read back is checked for membership and not only for order.
     const DECLARED: [&str; 3] = [
         "m3.medium.elasticsearch",
-        "t3.small.elasticsearch",
+        "r5.large.elasticsearch",
         "ultrawarm1.large.elasticsearch",
     ];
 

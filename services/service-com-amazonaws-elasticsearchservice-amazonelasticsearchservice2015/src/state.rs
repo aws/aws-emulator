@@ -55,6 +55,11 @@ pub use request_constraints::*;
 mod search_indexes;
 pub use search_indexes::*;
 
+/// The version upgrade of one domain — the in-place one and the cloned blue/green
+/// one `UpdateClone` drives — and the configuration changes a domain records.
+mod domain_upgrade;
+pub use domain_upgrade::*;
+
 /// The domains the 2021-01-01 OpenSearch surface of this same service holds: one resource
 /// published through two API versions, so this surface's reads resolve a domain there as
 /// well as in this store.
@@ -718,11 +723,18 @@ pub struct Domain {
     pub domain_id: String,
     pub domain_name: String,
     pub arn: String,
-    /// One of `ENGINE_TYPE_VALUES`, derived at create time from the version.
-    pub engine_type: String,
     pub created: bool,
     pub deleted: bool,
-    pub upgrade_processing: bool,
+    /// The domain's version upgrade — the one in flight, or the last one it ran.
+    ///
+    /// It is what decides the release the domain RUNS ([`Domain::running_version`]) and
+    /// whether an upgrade is still processing, neither of which a read has to write:
+    /// both follow from the instants the record stores.
+    pub upgrade: Option<DomainUpgrade>,
+    /// The configuration changes this domain recorded, oldest first and bounded by
+    /// [`MAX_RECORDED_CHANGES`] — what a caller tracks by the `ChangeId` a call
+    /// handed it.
+    pub changes: Vec<DomainChange>,
     pub endpoint: Option<String>,
     /// The `host[:port]` of the emulator endpoint this domain was created
     /// through ([`emulator_endpoint_authority`]) — the address its data plane is
@@ -767,23 +779,17 @@ impl Domain {
         tags: Vec<Tag>,
         now: SystemTime,
     ) -> Self {
-        let engine_type = engine_type_of(
-            config
-                .elasticsearch_version
-                .as_ref()
-                .map(|record| record.value.as_str()),
-        );
         Self {
             domain_id: domain_id(&domain_name),
             arn: domain_arn(region, &domain_name),
             endpoint: Some(domain_endpoint(&domain_name, region, seq)),
             published_at,
             indexes: BTreeMap::new(),
-            engine_type: engine_type.to_string(),
             domain_name,
             created: true,
             deleted: false,
-            upgrade_processing: false,
+            upgrade: None,
+            changes: Vec::new(),
             config,
             tags,
             created_at: now,
@@ -845,10 +851,17 @@ impl Domain {
     }
 
     /// This domain's entry in `ListDomainNames`.
-    pub fn domain_info(&self) -> DomainInfo {
+    ///
+    /// `EngineType` follows the release the domain RUNS
+    /// ([`Self::running_version`]), so a domain an upgrade has carried onto the
+    /// OpenSearch line reports that engine from the instant the upgrade lands — the
+    /// same reading the other API surface's domains are listed by.
+    pub fn domain_info(&self, now: SystemTime) -> DomainInfo {
         DomainInfo {
             domain_name: Some(self.domain_name.clone()),
-            engine_type: Some(self.engine_type.clone()),
+            engine_type: Some(
+                engine_type_of(self.running_version(now).as_deref()).to_string(),
+            ),
         }
     }
 
@@ -865,11 +878,8 @@ impl Domain {
             // Only a VPC domain reports per-subnet endpoints, and those are EC2-derived.
             endpoints: None,
             processing: Some(self.processing(now)),
-            upgrade_processing: Some(self.upgrade_processing),
-            elasticsearch_version: config
-                .elasticsearch_version
-                .as_ref()
-                .map(|record| record.value.clone()),
+            upgrade_processing: Some(self.upgrade_processing(now)),
+            elasticsearch_version: self.running_version(now),
             elasticsearch_cluster_config: config.cluster_config.value.clone(),
             ebs_options: config.ebs_options.as_ref().map(|r| r.value.clone()),
             access_policies: config.access_policies.as_ref().map(|r| r.value.clone()),
@@ -915,9 +925,12 @@ impl Domain {
                     error_message: None,
                 }
             }),
-            // Set by CancelDomainConfigChange / DescribeDomainChangeProgress, both
-            // still scaffolded.
-            change_progress_details: None,
+            // The domain's most recent configuration change, computed from the record
+            // that change wrote (`Domain::changes`). A domain nothing has changed
+            // through a change-tracking operation has none to report.
+            change_progress_details: self
+                .latest_change()
+                .map(|change| self.change_progress_details(change, now)),
             domain_processing_status: Some(self.processing_status(now).to_string()),
             modifying_properties: None,
             deployment_strategy_options: config
@@ -940,7 +953,11 @@ impl Domain {
         ElasticsearchDomainConfig {
             elasticsearch_version: config.elasticsearch_version.as_ref().map(|r| {
                 ElasticsearchVersionStatus {
-                    options: r.value.clone(),
+                    // The release the domain RUNS, which an upgrade moves without the
+                    // config record being rewritten.
+                    options: self
+                        .running_version(now)
+                        .unwrap_or_else(|| r.value.clone()),
                     status: r.status(now),
                 }
             }),
@@ -1014,7 +1031,9 @@ impl Domain {
                     pending_deletion: Some(false),
                 }),
             }),
-            change_progress_details: None,
+            change_progress_details: self
+                .latest_change()
+                .map(|change| self.change_progress_details(change, now)),
             modifying_properties: None,
             deployment_strategy_options: config.deployment_strategy_options.as_ref().map(|r| {
                 DeploymentStrategyOptionsStatus {
@@ -1518,6 +1537,9 @@ pub struct ComAmazonawsElasticsearchserviceAmazonelasticsearchservice2015State {
     /// the same order twice, which is what lets a pagination token name a place
     /// in the set.
     pub package_associations: BTreeMap<(String, String, String), DomainPackage>,
+    /// Monotonic counter feeding [`Self::mint_change_id`], so two configuration
+    /// changes of this process never share a `ChangeId`.
+    pub change_seq: u64,
 }
 
 impl ComAmazonawsElasticsearchserviceAmazonelasticsearchservice2015State {
@@ -1525,6 +1547,13 @@ impl ComAmazonawsElasticsearchserviceAmazonelasticsearchservice2015State {
     pub fn next_seq(&mut self) -> u64 {
         self.next_id_seq += 1;
         self.next_id_seq
+    }
+
+    /// Hand out the `ChangeId` of the next configuration change recorded, so two
+    /// changes never share one. See [`change_id`].
+    pub fn mint_change_id(&mut self) -> String {
+        self.change_seq = self.change_seq.wrapping_add(1);
+        change_id(self.change_seq)
     }
 
     /// How many domains the account already holds in `region` — the count the

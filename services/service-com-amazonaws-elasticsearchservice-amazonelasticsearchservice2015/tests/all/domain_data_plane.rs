@@ -148,7 +148,7 @@ impl Emulator {
                 "DomainName": name,
                 "ElasticsearchVersion": VERSION,
                 "ElasticsearchClusterConfig": {
-                    "InstanceType": "t3.small.elasticsearch",
+                    "InstanceType": "t2.small.elasticsearch",
                     "InstanceCount": 1
                 },
                 "EBSOptions": { "EBSEnabled": true, "VolumeType": "gp2", "VolumeSize": 10 }

@@ -36,7 +36,7 @@ const REGION: &str = "us-west-2";
 async fn create(router: &MultiServiceRouter, name: &str, version: Option<&str>) -> Answer {
     let mut body = json!({
         "DomainName": name,
-        "ElasticsearchClusterConfig": {"InstanceType": "t3.small.elasticsearch", "InstanceCount": 1}
+        "ElasticsearchClusterConfig": {"InstanceType": "t2.small.elasticsearch", "InstanceCount": 1}
     });
     if let Some(version) = version {
         body["ElasticsearchVersion"] = json!(version);
@@ -580,7 +580,7 @@ async fn an_unknown_domain_is_refused() {
         Some(&json!({
             "DomainName": elsewhere,
             "ElasticsearchVersion": "7.10",
-            "ElasticsearchClusterConfig": {"InstanceType": "t3.small.elasticsearch", "InstanceCount": 1}
+            "ElasticsearchClusterConfig": {"InstanceType": "t2.small.elasticsearch", "InstanceCount": 1}
         })),
     )
     .await;

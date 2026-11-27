@@ -1,15 +1,21 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op UpgradeElasticsearchDomain
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `UpgradeElasticsearchDomain`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
+//! Starts a version upgrade of a domain, or checks whether one is eligible.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`UpgradeElasticsearchDomain::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! The upgrade runs one of two deployment strategies, and `crate::state::DomainUpgrade`
+//! holds both: the default, in-place one, where the domain moves onto the target release
+//! when the clock makes the change due, and `ClonedBlueGreen`, where the service stands
+//! a cloned cluster up on the target release beside the primary one and the caller then
+//! drives it with `UpdateClone`.
+//!
+//! What the upgrade may move the domain ONTO is the service's own upgrade matrix
+//! ([`crate::state::compatible_target_versions`]) — the same one
+//! `GetCompatibleElasticsearchVersions` publishes — so a target that operation does not
+//! offer for the domain's current release is refused here rather than silently applied.
+//!
+//! An eligibility check (`PerformCheckOnly`) WRITES NOTHING: "This will not actually
+//! perform the Upgrade."
 //!
 //! ## Shape of an operation
 //!
@@ -169,18 +175,194 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `UpgradeElasticsearchDomain` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(UpgradeElasticsearchDomainErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("UpgradeElasticsearchDomain"))
+        let Some(state) = crate::state::service_state(&*self.engine) else {
+            return Err(UpgradeElasticsearchDomainErrorModeled::InternalException(
+                InternalException {
+                    message: Some("the Elasticsearch domain store is unavailable".to_string()),
+                },
+            )
+            .into());
+        };
+
+        // THE INPUT CONSTRAINTS FIRST, before any resource is resolved: a request
+        // carrying a value the service does not accept is refused by naming that
+        // member, never reported as a resource that does not exist.
+        let cloned_blue_green = input.deployment_strategy_options.as_ref().is_some_and(|options| {
+            options.deployment_strategy == crate::state::DEPLOYMENT_STRATEGY_CLONED_BLUE_GREEN
+        });
+        let retention_in_hours = match requested_retention(input.deployment_strategy_options.as_ref())
+        {
+            Ok(hours) => hours,
+            Err(message) => {
+                return Err(
+                    UpgradeElasticsearchDomainErrorModeled::ValidationException(
+                        ValidationException {
+                            message: Some(message),
+                        },
+                    )
+                    .into(),
+                )
+            }
+        };
+
+        let now = ::std::time::SystemTime::now();
+        let region = crate::state::request_region(&ctx.parts().headers);
+        let key = crate::state::domain_key(&region, &input.domain_name);
+        let mut store = state.lock();
+        // The change's id is minted before the domain is taken, so one borrow of the
+        // record carries the whole change. A request this then refuses consumes an id:
+        // a `ChangeId` is opaque and the counter is the store's own, so a gap in it is
+        // observable nowhere.
+        let change_id = store.mint_change_id();
+        let Some(domain) = store.domains.get_mut(&key) else {
+            // The resource named is not there: HTTP 404
+            // (`crate::scaffolded::RESOURCE_NOT_FOUND_STATUS`), not the
+            // `@httpError(409)` the model annotates on the shape.
+            return Err(crate::scaffolded::Scaffolded::not_found(
+                UpgradeElasticsearchDomainErrorModeled::ResourceNotFoundException(
+                    ResourceNotFoundException {
+                        message: Some(format!("Domain not found: {}", input.domain_name)),
+                    },
+                ),
+            ));
+        };
+
+        // THE UPGRADE PATH: the target has to be one the service offers for the release
+        // the domain is RUNNING, which is the matrix
+        // `GetCompatibleElasticsearchVersions` publishes for it. A domain whose record
+        // names no release has no source version to compute a path from, so there is no
+        // path to check it against.
+        let source_version = domain.running_version(now);
+        if let Some(source) = source_version.as_deref() {
+            let targets = crate::state::compatible_target_versions(source);
+            if !targets.contains(&input.target_version) {
+                return Err(
+                    UpgradeElasticsearchDomainErrorModeled::ValidationException(
+                        ValidationException {
+                            message: Some(format!(
+                                "Domain {domain} cannot be upgraded from {source} to \
+                                 {target}. Compatible target versions are [{offered}]",
+                                domain = input.domain_name,
+                                target = input.target_version,
+                                offered = targets.join(", ")
+                            )),
+                        },
+                    )
+                    .into(),
+                );
+            }
+        }
+
+        // An eligibility check performs no upgrade, so it records no change and writes
+        // nothing: the request is answered as it stands.
+        if input.perform_check_only == Some(true) {
+            return Ok(UpgradeElasticsearchDomainOutput {
+                domain_name: Some(input.domain_name),
+                target_version: Some(input.target_version),
+                perform_check_only: input.perform_check_only,
+                deployment_strategy_options: input.deployment_strategy_options,
+                // No change was made, so there is no change for a caller to track.
+                change_progress_details: None,
+            });
+        }
+
+        // One upgrade at a time: the domain is already moving onto a release, and a
+        // second upgrade would have no defined source version.
+        if domain.upgrade_processing(now) {
+            return Err(
+                UpgradeElasticsearchDomainErrorModeled::ValidationException(
+                    ValidationException {
+                        message: Some(format!(
+                            "An upgrade is already in progress on domain {}",
+                            input.domain_name
+                        )),
+                    },
+                )
+                .into(),
+            );
+        }
+
+        // The upgrade carries the release the domain was running when it was asked for,
+        // so a domain upgraded again keeps reporting its LAST upgrade's release until
+        // this one lands, and keeps it for good if this one never does.
+        let upgrade = if cloned_blue_green {
+            crate::state::DomainUpgrade::cloned_blue_green(
+                source_version,
+                input.target_version.clone(),
+                change_id.clone(),
+                retention_in_hours,
+                now,
+            )
+        } else {
+            crate::state::DomainUpgrade::in_place(
+                source_version,
+                input.target_version.clone(),
+                change_id.clone(),
+                now,
+            )
+        };
+        domain.upgrade = Some(upgrade);
+        // The domain is undergoing a change — an in-place move onto the target release,
+        // or the cloned cluster being stood up — so it provisions for the same span
+        // every other change of this surface does. The config version is NOT bumped:
+        // an upgrade changes no configuration OPTION, so no option's provenance moves.
+        domain.last_updated = now;
+        domain.active_at = crate::state::active_deadline(now);
+        let change = crate::state::DomainChange {
+            change_id: change_id.clone(),
+            started_at: now,
+            due_at: crate::state::active_deadline(now),
+            properties: vec![crate::state::VERSION_PROPERTY.to_string()],
+            clone_change: cloned_blue_green,
+            starts_clone_upgrade: cloned_blue_green,
+        };
+        domain.record_change(change);
+        let change_progress_details = domain
+            .change(&change_id)
+            .map(|change| domain.change_progress_details(change, now));
+
+        Ok(UpgradeElasticsearchDomainOutput {
+            domain_name: Some(input.domain_name),
+            target_version: Some(input.target_version),
+            perform_check_only: input.perform_check_only,
+            deployment_strategy_options: input.deployment_strategy_options,
+            change_progress_details,
+        })
+    }
+}
+
+/// The retention period a cloned blue/green upgrade is started with, in hours, or the
+/// message refusing the retention options it was asked for.
+///
+/// `ClonedBlueGreenOptions$RetentionOptions` states both rules this checks: "When you
+/// start the upgrade, only `RetentionInHours` is accepted", and the minimum of one hour
+/// `RetentionOptions$RetentionInHours` publishes. An upgrade that names no retention
+/// options keeps nothing after cutover, which is `None`.
+fn requested_retention(
+    options: Option<&DeploymentStrategyOverrideOptions>,
+) -> Result<Option<i32>, String> {
+    let Some(retention) = options.and_then(|options| {
+        options
+            .cloned_blue_green_options
+            .as_ref()
+            .and_then(|cloned| cloned.retention_options.as_ref())
+    }) else {
+        return Ok(None);
+    };
+    match retention {
+        RetentionOptions::RetentionInHours(hours) if *hours < crate::state::MIN_RETENTION_HOURS => {
+            Err(format!(
+                "DeploymentStrategyOptions.ClonedBlueGreenOptions.RetentionOptions.\
+                 RetentionInHours value {hours} failed to satisfy constraint: the minimum \
+                 retention period is {minimum} hour",
+                minimum = crate::state::MIN_RETENTION_HOURS
+            ))
+        }
+        RetentionOptions::RetentionInHours(hours) => Ok(Some(*hours)),
+        RetentionOptions::RetentionAction(_) => Err(
+            "DeploymentStrategyOptions.ClonedBlueGreenOptions.RetentionOptions accepts only \
+             RetentionInHours when an upgrade is started"
+                .to_string(),
+        ),
     }
 }

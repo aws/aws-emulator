@@ -43,26 +43,20 @@ async fn describe(router: &MultiServiceRouter, name: &str) -> Answer {
 
 /// One member of `ESPartitionInstanceType` per family the enum declares — the
 /// smallest size of each, so every row is a type a caller would really ask for.
-/// `t3.small.elasticsearch` is one row of this set, not the rule.
-const ONE_PER_FAMILY: [&str; 19] = [
+/// `t2.small.elasticsearch` is one row of this set, not the rule.
+const ONE_PER_FAMILY: [&str; 13] = [
     "c4.large.elasticsearch",
     "c5.large.elasticsearch",
-    "c6g.large.elasticsearch",
     "d2.xlarge.elasticsearch",
     "i2.xlarge.elasticsearch",
     "i3.large.elasticsearch",
     "m3.medium.elasticsearch",
     "m4.large.elasticsearch",
     "m5.large.elasticsearch",
-    "m6g.large.elasticsearch",
     "r3.large.elasticsearch",
     "r4.large.elasticsearch",
     "r5.large.elasticsearch",
-    "r6g.large.elasticsearch",
-    "r6gd.large.elasticsearch",
-    "t2.small.elasticsearch",
-    "t3.small.elasticsearch",
-    "t4g.small.elasticsearch",
+    "t2.micro.elasticsearch",
     "ultrawarm1.medium.elasticsearch",
 ];
 
@@ -118,7 +112,7 @@ async fn every_modelled_instance_type_is_accepted_and_persisted() {
 /// there too: a member of it is accepted and persisted.
 #[tokio::test]
 async fn the_dedicated_master_type_takes_the_same_instance_types() {
-    for (index, instance_type) in ["t3.medium.elasticsearch", "c6g.large.elasticsearch"]
+    for (index, instance_type) in ["m3.medium.elasticsearch", "c5.large.elasticsearch"]
         .iter()
         .enumerate()
     {
@@ -130,7 +124,7 @@ async fn the_dedicated_master_type_takes_the_same_instance_types() {
                 "DomainName": name,
                 "ElasticsearchVersion": "7.10",
                 "ElasticsearchClusterConfig": {
-                    "InstanceType": "t3.small.elasticsearch",
+                    "InstanceType": "t2.small.elasticsearch",
                     "InstanceCount": 2,
                     "DedicatedMasterEnabled": true,
                     "DedicatedMasterType": instance_type,
@@ -163,11 +157,12 @@ async fn the_dedicated_master_type_takes_the_same_instance_types() {
 #[tokio::test]
 async fn an_instance_type_outside_the_enum_is_refused_and_stores_nothing() {
     for (case, instance_type) in [
-        ("no service suffix", "t3.small"),
-        ("another engine's suffix", "t3.small.search"),
+        ("no service suffix", "t2.small"),
+        ("another engine's suffix", "t2.small.search"),
         ("a family the enum has no member for", "m7g.large.elasticsearch"),
-        ("a case-shifted member", "T3.small.elasticsearch"),
-        ("a size the t3 family has no member for", "t3.24xlarge.elasticsearch"),
+        ("a case-shifted member", "T2.small.elasticsearch"),
+        ("a size the t2 family has no member for", "t2.24xlarge.elasticsearch"),
+        ("a family the model no longer declares", "t3.small.elasticsearch"),
     ] {
         let router = router();
         let name = "rejected-domain";

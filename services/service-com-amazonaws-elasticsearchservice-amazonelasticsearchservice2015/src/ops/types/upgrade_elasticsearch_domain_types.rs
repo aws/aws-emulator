@@ -17,6 +17,20 @@ pub struct UpgradeElasticsearchDomainInput {
     pub domain_name: String,
     pub target_version: String,
     pub perform_check_only: Option<bool>,
+    pub deployment_strategy_options: Option<DeploymentStrategyOverrideOptions>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.elasticsearchservice#DeploymentStrategyOverrideOptions")]
+#[derive(Debug, Clone, Default)]
+pub struct DeploymentStrategyOverrideOptions {
+    pub deployment_strategy: String,
+    pub cloned_blue_green_options: Option<ClonedBlueGreenOptions>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.elasticsearchservice#ClonedBlueGreenOptions")]
+#[derive(Debug, Clone, Default)]
+pub struct ClonedBlueGreenOptions {
+    pub retention_options: Option<RetentionOptions>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.elasticsearchservice#UpgradeElasticsearchDomainResponse")]
@@ -25,6 +39,7 @@ pub struct UpgradeElasticsearchDomainOutput {
     pub domain_name: Option<String>,
     pub target_version: Option<String>,
     pub perform_check_only: Option<bool>,
+    pub deployment_strategy_options: Option<DeploymentStrategyOverrideOptions>,
     pub change_progress_details: Option<ChangeProgressDetails>,
 }
 

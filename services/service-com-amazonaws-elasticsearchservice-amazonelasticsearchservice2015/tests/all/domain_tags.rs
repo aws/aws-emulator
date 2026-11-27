@@ -42,7 +42,7 @@ async fn domain_arn(router: &MultiServiceRouter, name: &str, tags: &[(&str, &str
     let body = json!({
         "DomainName": name,
         "ElasticsearchVersion": "7.10",
-        "ElasticsearchClusterConfig": {"InstanceType": "t3.small.elasticsearch", "InstanceCount": 1},
+        "ElasticsearchClusterConfig": {"InstanceType": "t2.small.elasticsearch", "InstanceCount": 1},
         "EBSOptions": {"EBSEnabled": true, "VolumeType": "gp2", "VolumeSize": 10},
         "TagList": tag_list(tags)
     });

@@ -73,11 +73,12 @@ use std::sync::Arc;
 /// domain of this service published, and what they are answered out of the indexes and
 /// documents that domain holds.
 ///
-/// `can_handle` claims such a request ([`domain_rest::claims_parts`]) and the two serving
-/// seams answer it: [`Service::override_operation`] for one PRESENTING a SigV4 credential,
-/// so the router verifies that credential before anything is served, and
-/// [`Service::override_routing_error`] for one presenting none, which the router reaches
-/// before authentication.
+/// `can_handle` claims such a request ([`domain_rest::claims_parts`]) and
+/// [`Service::override_operation`] serves it — only for one PRESENTING a SigV4
+/// credential, so the router verifies that credential before anything is served. One
+/// presenting none reaches [`Service::override_routing_error`], before the router
+/// authenticates anything, and is refused there ([`domain_rest::unauthenticated`])
+/// rather than served.
 pub mod domain_rest;
 
 /// Wire one `crate::ops::<module>::<Operation>` per line into `table`, each wrapped in
@@ -119,9 +120,9 @@ pub struct EmulatedService<Eng: Send + Sync + 'static> {
     /// The SAME shared engine the generated entry threads into every operation.
     ///
     /// Held here because a DOMAIN's own traffic ([`domain_rest`]) is claimed by
-    /// `can_handle` and served from `override_operation` / `override_routing_error`, none
-    /// of which is an operation with a `self.engine` of its own: all of them must read the
-    /// one store the control-plane operations write, not a second copy.
+    /// `can_handle` and answered from `override_operation` / `override_routing_error`,
+    /// none of which is an operation with a `self.engine` of its own: all of them must
+    /// read the one store the control-plane operations write, not a second copy.
     engine: Arc<Eng>,
     /// The domain REST data plane as an [`ErasedOperation`], so the router verifies the
     /// SigV4 credential a signed data-plane request carries before anything is served.
@@ -141,15 +142,15 @@ pub struct EmulatedService<Eng: Send + Sync + 'static> {
 /// SigV4 is the only scheme this service's model declares, and it is the one a client
 /// signs a request to a domain's endpoint with, so a data-plane request arrives either
 /// signed — which this names so the router's own authenticator verifies it — or unsigned,
-/// which the routing-error seam answers without the router authenticating anything.
+/// which the routing-error seam refuses without serving anything.
 const DATA_PLANE_AUTH_SCHEMES: &[&str] = &[::emulator_server::aws_credentials::SIGV4_SCHEME];
 
-/// The domain REST data plane for a request that PRESENTS a SigV4 credential.
+/// The domain REST data plane for a request that PRESENTS a SigV4 credential — the ONLY
+/// path this plane is served from.
 ///
 /// It holds the SAME shared engine the generated entry threads into every operation, and
-/// serves the request through exactly the function the routing-error seam uses
-/// ([`domain_rest::serve`]), so the credentialed and the anonymous path cannot diverge in
-/// what they serve — only in whether a signature was verified on the way in.
+/// its non-empty [`ErasedOperation::auth_schemes`] is what makes the router verify that
+/// credential before [`domain_rest::serve`] is reached.
 struct CredentialedDataPlane<Eng> {
     engine: Arc<Eng>,
 }
@@ -245,6 +246,7 @@ impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
             remove_tags::RemoveTags,
             revoke_vpc_endpoint_access::RevokeVpcEndpointAccess,
             start_elasticsearch_service_software_update::StartElasticsearchServiceSoftwareUpdate,
+            update_clone::UpdateClone,
             update_elasticsearch_domain_config::UpdateElasticsearchDomainConfig,
             update_package::UpdatePackage,
             update_vpc_endpoint::UpdateVpcEndpoint,
@@ -392,8 +394,8 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
         // A data-plane request that PRESENTS a SigV4 credential is named as an operation,
         // so the router verifies that credential's signature before anything is served —
         // the router authenticates only what it names an operation for. One carrying no
-        // credential is left unnamed on purpose: it is answered by
-        // `override_routing_error` below, which the router reaches before authentication.
+        // credential is left unnamed on purpose: it reaches `override_routing_error`
+        // below, before the router authenticates anything, and is REFUSED there.
         if domain_rest::claims_request(&*self.engine, req)
             && domain_rest::carries_sigv4_credential(req)
         {
@@ -439,11 +441,12 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
         // word that routing failure in your own envelope instead.
         //
         // A DATA-PLANE request carrying no AWS credential arrives here, before the router
-        // authenticates anything, and is answered by the plane that claimed it: the
-        // cluster's own envelope, out of the same serving function the credentialed path
-        // uses.
+        // authenticates anything. It is NOT served: this plane answers index reads and
+        // WRITES, and a request the router never named an operation for had no signature
+        // verified, so the caller it authenticates as is nobody. It is refused with the
+        // plane's own 403, out of the module that owns that wording.
         if domain_rest::claims_request(&*self.engine, req) {
-            return Some(domain_rest::serve(&*self.engine, req));
+            return Some(domain_rest::unauthenticated(req));
         }
         None
     }

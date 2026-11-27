@@ -52,7 +52,7 @@ async fn create_domain(router: &MultiServiceRouter, name: &str) -> Answer {
             "DomainName": name,
             "ElasticsearchVersion": "7.10",
             "ElasticsearchClusterConfig": {
-                "InstanceType": "t3.small.elasticsearch",
+                "InstanceType": "t2.small.elasticsearch",
                 "InstanceCount": 1
             },
             "EBSOptions": {"EBSEnabled": true, "VolumeType": "gp2", "VolumeSize": 10}
@@ -187,7 +187,7 @@ async fn an_associate_on_a_domain_that_is_still_provisioning_is_refused_and_writ
                 &format!("/2015-01-01/es/domain/{domain_name}/config"),
                 Some(&json!({
                     "ElasticsearchClusterConfig": {
-                        "InstanceType": "t3.small.elasticsearch",
+                        "InstanceType": "t2.small.elasticsearch",
                         "InstanceCount": 2
                     }
                 })),

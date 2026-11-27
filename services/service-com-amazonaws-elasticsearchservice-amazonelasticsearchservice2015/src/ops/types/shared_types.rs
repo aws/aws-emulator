@@ -458,6 +458,13 @@ pub struct VpcEndpointSummary {
     pub status: Option<String>,
 }
 
+#[smithy_macros::smithy(shape = "com.amazonaws.elasticsearchservice#TrafficPercents")]
+#[derive(Debug, Clone, Default)]
+pub struct TrafficPercents {
+    pub primary_read_traffic_percent: i32,
+    pub clone_read_traffic_percent: i32,
+}
+
 #[smithy_macros::smithy(shape = "com.amazonaws.elasticsearchservice#ElasticsearchDomainConfig")]
 #[derive(Debug, Clone, Default)]
 pub struct ElasticsearchDomainConfig {
@@ -658,6 +665,14 @@ pub struct RecurringCharge {
     pub recurring_charge_frequency: Option<String>,
 }
 
+#[smithy_macros::smithy(union_for = "com.amazonaws.elasticsearchservice#RetentionOptions")]
+#[allow(clippy::large_enum_variant)]
+#[derive(Debug, Clone)]
+pub enum RetentionOptions {
+    RetentionInHours(i32),
+    RetentionAction(String),
+}
+
 /// The values `AutoTuneDesiredState` accepts on the wire.
 pub const AUTO_TUNE_DESIRED_STATE_VALUES: &[&str] = &["DISABLED", "ENABLED"];
 
@@ -670,8 +685,20 @@ pub const AUTO_TUNE_STATE_VALUES: &[&str] = &["DISABLED", "DISABLED_AND_ROLLBACK
 pub const AUTO_TUNE_TYPE_VALUES: &[&str] = &["SCHEDULED_ACTION"];
 
 
+/// The values `ClonedBlueGreenScheduledActionType` accepts on the wire.
+pub const CLONED_BLUE_GREEN_SCHEDULED_ACTION_TYPE_VALUES: &[&str] = &["AutomaticCutoverToPrimaryCluster", "DeletePrimaryCluster"];
+
+
 /// The values `ConfigChangeStatus` accepts on the wire.
 pub const CONFIG_CHANGE_STATUS_VALUES: &[&str] = &["ApplyingChanges", "Cancelled", "Completed", "Initializing", "Pending", "PendingUserInput", "Validating", "ValidationFailed"];
+
+
+/// The values `CutoverStatus` accepts on the wire.
+pub const CUTOVER_STATUS_VALUES: &[&str] = &["Completed", "Failed", "InProgress"];
+
+
+/// The values `CutoverTarget` accepts on the wire.
+pub const CUTOVER_TARGET_VALUES: &[&str] = &["ClonedCluster", "PrimaryCluster"];
 
 
 /// The values `DeploymentStatus` accepts on the wire.
@@ -680,6 +707,10 @@ pub const DEPLOYMENT_STATUS_VALUES: &[&str] = &["COMPLETED", "ELIGIBLE", "IN_PRO
 
 /// The values `DeploymentStrategy` accepts on the wire.
 pub const DEPLOYMENT_STRATEGY_VALUES: &[&str] = &["CapacityOptimized", "Default"];
+
+
+/// The values `DeploymentStrategyOverride` accepts on the wire.
+pub const DEPLOYMENT_STRATEGY_OVERRIDE_VALUES: &[&str] = &["ClonedBlueGreen"];
 
 
 /// The values `DescribePackagesFilterName` accepts on the wire.
@@ -703,7 +734,7 @@ pub const DOMAIN_USE_CASE_VALUES: &[&str] = &["MIXED", "OBSERVABILITY", "SEARCH"
 
 
 /// The values `ESPartitionInstanceType` accepts on the wire.
-pub const E_S_PARTITION_INSTANCE_TYPE_VALUES: &[&str] = &["c4.2xlarge.elasticsearch", "c4.4xlarge.elasticsearch", "c4.8xlarge.elasticsearch", "c4.large.elasticsearch", "c4.xlarge.elasticsearch", "c5.18xlarge.elasticsearch", "c5.2xlarge.elasticsearch", "c5.4xlarge.elasticsearch", "c5.9xlarge.elasticsearch", "c5.large.elasticsearch", "c5.xlarge.elasticsearch", "c6g.12xlarge.elasticsearch", "c6g.2xlarge.elasticsearch", "c6g.4xlarge.elasticsearch", "c6g.8xlarge.elasticsearch", "c6g.large.elasticsearch", "c6g.xlarge.elasticsearch", "d2.2xlarge.elasticsearch", "d2.4xlarge.elasticsearch", "d2.8xlarge.elasticsearch", "d2.xlarge.elasticsearch", "i2.2xlarge.elasticsearch", "i2.xlarge.elasticsearch", "i3.16xlarge.elasticsearch", "i3.2xlarge.elasticsearch", "i3.4xlarge.elasticsearch", "i3.8xlarge.elasticsearch", "i3.large.elasticsearch", "i3.xlarge.elasticsearch", "m3.2xlarge.elasticsearch", "m3.large.elasticsearch", "m3.medium.elasticsearch", "m3.xlarge.elasticsearch", "m4.10xlarge.elasticsearch", "m4.2xlarge.elasticsearch", "m4.4xlarge.elasticsearch", "m4.large.elasticsearch", "m4.xlarge.elasticsearch", "m5.12xlarge.elasticsearch", "m5.24xlarge.elasticsearch", "m5.2xlarge.elasticsearch", "m5.4xlarge.elasticsearch", "m5.large.elasticsearch", "m5.xlarge.elasticsearch", "m6g.12xlarge.elasticsearch", "m6g.2xlarge.elasticsearch", "m6g.4xlarge.elasticsearch", "m6g.8xlarge.elasticsearch", "m6g.large.elasticsearch", "m6g.xlarge.elasticsearch", "r3.2xlarge.elasticsearch", "r3.4xlarge.elasticsearch", "r3.8xlarge.elasticsearch", "r3.large.elasticsearch", "r3.xlarge.elasticsearch", "r4.16xlarge.elasticsearch", "r4.2xlarge.elasticsearch", "r4.4xlarge.elasticsearch", "r4.8xlarge.elasticsearch", "r4.large.elasticsearch", "r4.xlarge.elasticsearch", "r5.12xlarge.elasticsearch", "r5.24xlarge.elasticsearch", "r5.2xlarge.elasticsearch", "r5.4xlarge.elasticsearch", "r5.large.elasticsearch", "r5.xlarge.elasticsearch", "r6g.12xlarge.elasticsearch", "r6g.2xlarge.elasticsearch", "r6g.4xlarge.elasticsearch", "r6g.8xlarge.elasticsearch", "r6g.large.elasticsearch", "r6g.xlarge.elasticsearch", "r6gd.12xlarge.elasticsearch", "r6gd.16xlarge.elasticsearch", "r6gd.2xlarge.elasticsearch", "r6gd.4xlarge.elasticsearch", "r6gd.8xlarge.elasticsearch", "r6gd.large.elasticsearch", "r6gd.xlarge.elasticsearch", "t2.medium.elasticsearch", "t2.micro.elasticsearch", "t2.small.elasticsearch", "t3.2xlarge.elasticsearch", "t3.large.elasticsearch", "t3.medium.elasticsearch", "t3.micro.elasticsearch", "t3.nano.elasticsearch", "t3.small.elasticsearch", "t3.xlarge.elasticsearch", "t4g.medium.elasticsearch", "t4g.small.elasticsearch", "ultrawarm1.large.elasticsearch", "ultrawarm1.medium.elasticsearch", "ultrawarm1.xlarge.elasticsearch"];
+pub const E_S_PARTITION_INSTANCE_TYPE_VALUES: &[&str] = &["c4.2xlarge.elasticsearch", "c4.4xlarge.elasticsearch", "c4.8xlarge.elasticsearch", "c4.large.elasticsearch", "c4.xlarge.elasticsearch", "c5.18xlarge.elasticsearch", "c5.2xlarge.elasticsearch", "c5.4xlarge.elasticsearch", "c5.9xlarge.elasticsearch", "c5.large.elasticsearch", "c5.xlarge.elasticsearch", "d2.2xlarge.elasticsearch", "d2.4xlarge.elasticsearch", "d2.8xlarge.elasticsearch", "d2.xlarge.elasticsearch", "i2.2xlarge.elasticsearch", "i2.xlarge.elasticsearch", "i3.16xlarge.elasticsearch", "i3.2xlarge.elasticsearch", "i3.4xlarge.elasticsearch", "i3.8xlarge.elasticsearch", "i3.large.elasticsearch", "i3.xlarge.elasticsearch", "m3.2xlarge.elasticsearch", "m3.large.elasticsearch", "m3.medium.elasticsearch", "m3.xlarge.elasticsearch", "m4.10xlarge.elasticsearch", "m4.2xlarge.elasticsearch", "m4.4xlarge.elasticsearch", "m4.large.elasticsearch", "m4.xlarge.elasticsearch", "m5.12xlarge.elasticsearch", "m5.2xlarge.elasticsearch", "m5.4xlarge.elasticsearch", "m5.large.elasticsearch", "m5.xlarge.elasticsearch", "r3.2xlarge.elasticsearch", "r3.4xlarge.elasticsearch", "r3.8xlarge.elasticsearch", "r3.large.elasticsearch", "r3.xlarge.elasticsearch", "r4.16xlarge.elasticsearch", "r4.2xlarge.elasticsearch", "r4.4xlarge.elasticsearch", "r4.8xlarge.elasticsearch", "r4.large.elasticsearch", "r4.xlarge.elasticsearch", "r5.12xlarge.elasticsearch", "r5.2xlarge.elasticsearch", "r5.4xlarge.elasticsearch", "r5.large.elasticsearch", "r5.xlarge.elasticsearch", "t2.medium.elasticsearch", "t2.micro.elasticsearch", "t2.small.elasticsearch", "ultrawarm1.large.elasticsearch", "ultrawarm1.medium.elasticsearch"];
 
 
 /// The values `ESWarmPartitionInstanceType` accepts on the wire.
@@ -762,6 +793,10 @@ pub const PROPERTY_VALUE_TYPE_VALUES: &[&str] = &["PLAIN_TEXT", "STRINGIFIED_JSO
 pub const RESERVED_ELASTICSEARCH_INSTANCE_PAYMENT_OPTION_VALUES: &[&str] = &["ALL_UPFRONT", "NO_UPFRONT", "PARTIAL_UPFRONT"];
 
 
+/// The values `RetentionAction` accepts on the wire.
+pub const RETENTION_ACTION_VALUES: &[&str] = &["DeletePrimaryCluster", "RollbackToPrimaryCluster"];
+
+
 /// The values `RollbackOnDisable` accepts on the wire.
 pub const ROLLBACK_ON_DISABLE_VALUES: &[&str] = &["DEFAULT_ROLLBACK", "NO_ROLLBACK"];
 
@@ -780,6 +815,14 @@ pub const T_L_S_SECURITY_POLICY_VALUES: &[&str] = &["Policy-Min-TLS-1-0-2019-07"
 
 /// The values `TimeUnit` accepts on the wire.
 pub const TIME_UNIT_VALUES: &[&str] = &["HOURS"];
+
+
+/// The values `TrafficSplitStatus` accepts on the wire.
+pub const TRAFFIC_SPLIT_STATUS_VALUES: &[&str] = &["Completed", "Failed", "InProgress"];
+
+
+/// The values `TrafficStrategy` accepts on the wire.
+pub const TRAFFIC_STRATEGY_VALUES: &[&str] = &["ShiftReadTrafficPercent"];
 
 
 /// The values `UpgradeStatus` accepts on the wire.

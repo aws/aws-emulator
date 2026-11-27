@@ -142,10 +142,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         };
 
         let region = crate::state::request_region(&ctx.parts().headers);
+        let now = ::std::time::SystemTime::now();
         let store = state.lock();
         let mut domain_names: Vec<DomainInfo> = store
             .domains_in(&region)
-            .map(crate::state::Domain::domain_info)
+            .map(|domain| domain.domain_info(now))
             .collect();
         // A domain is ONE resource published through two API versions, so this listing
         // reports the domains of BOTH surfaces ([`crate::state::opensearch_surface`]): a

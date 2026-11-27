@@ -21,8 +21,9 @@
 //! claim ([`claims_parts`], read by `Service::can_handle`) and the serving
 //! ([`serve`], reached from `Service::override_operation` for a request carrying
 //! a SigV4 credential — so the router verifies that credential before anything
-//! is served — and from `Service::override_routing_error` for one carrying
-//! none).
+//! is served). A claimed request that carries NO credential is never served: it
+//! authenticates as nobody, which no domain admits, so it is refused with this
+//! plane's own 403 ([`unauthenticated`]).
 //!
 //! # What a request addresses
 //!
@@ -74,10 +75,11 @@
 //! an order, an aggregation or a narrowed `_source` and was answered without them
 //! would be answered a different question from the one it asked.
 //!
-//! A request reaching the serving seams has had its SigV4 signature verified by
-//! the router, which is what authenticates a data-plane request here; the
-//! domain's own `AccessPolicies` document is stored and reported by the control
-//! plane and is not evaluated.
+//! A request reaching the serving seam has had its SigV4 signature verified by
+//! the router, which is what authenticates a data-plane request here; one that
+//! presents no credential is refused before anything is read or written
+//! ([`unauthenticated`]). The domain's own `AccessPolicies` document is stored and
+//! reported by the control plane and is not evaluated.
 
 use std::time::SystemTime;
 
@@ -511,6 +513,38 @@ impl Request<'_> {
     }
 }
 
+/// The IAM action a data-plane request asks for, as AWS names the actions of this
+/// plane: `es:ESHttp<Method>` over the request's HTTP method (`es:ESHttpGet`,
+/// `es:ESHttpPut`, …), which is what a refusal of an unauthorized caller names.
+fn es_http_action(method: &str) -> String {
+    let mut spelled = String::with_capacity(method.len());
+    for (at, letter) in method.chars().enumerate() {
+        if at == 0 {
+            spelled.extend(letter.to_uppercase());
+        } else {
+            spelled.extend(letter.to_lowercase());
+        }
+    }
+    format!("es:ESHttp{spelled}")
+}
+
+/// The refusal a request to a domain's endpoint that presents NO credential is
+/// answered with: HTTP 403, naming the caller the request authenticated as — nobody —
+/// and the action it asked for ([`es_http_action`]).
+///
+/// A domain's data plane is reached by a caller the request authenticates; one that
+/// presents no credential authenticates as nobody, and no domain of this emulator
+/// admits that caller, so the request is refused rather than served. This is the one
+/// answer this plane gives without resolving a domain: it is about the caller, not about
+/// what was asked for, so it is decided before anything is read or written.
+pub fn unauthenticated(req: &RtRequest) -> RtResponse {
+    let action = es_http_action(&req.method().to_ascii_uppercase());
+    rendered(
+        403,
+        &json!({ "Message": format!("User: anonymous is not authorized to perform: {action}") }),
+    )
+}
+
 /// Answer a request this plane claimed, out of the records the control plane
 /// holds.
 pub fn serve<Eng: Send + Sync + 'static>(engine: &Eng, req: &RtRequest) -> RtResponse {
@@ -703,17 +737,18 @@ fn cluster_name(domain: &Domain) -> String {
     format!("{}:{}", ::engine::emulator_account_id(), domain.domain_name)
 }
 
-/// The distribution and the version NUMBER the domain's stored
-/// `ElasticsearchVersion` names: `None` for an Elasticsearch domain, whose
-/// version is the bare `X.Y`, and the engine's own name for a domain whose
-/// version names the OpenSearch lineage (`OpenSearch_X.Y`, `OS_X.Y`). The patch
-/// level the stored string omits is reported as 0.
+/// The distribution and the version NUMBER the release the domain RUNS names:
+/// `None` for an Elasticsearch domain, whose version is the bare `X.Y`, and the
+/// engine's own name for a domain whose version names the OpenSearch lineage
+/// (`OpenSearch_X.Y`, `OS_X.Y`). The patch level the stored string omits is
+/// reported as 0.
+///
+/// The release is the one the domain runs NOW ([`Domain::running_version`]), so a
+/// domain an upgrade has carried onto another engine serves the release it was
+/// carried onto.
 fn engine_release(domain: &Domain) -> (Option<String>, String) {
-    let stored = domain
-        .config
-        .elasticsearch_version
-        .as_ref()
-        .map_or("", |record| record.value.as_str());
+    let running = domain.running_version(::std::time::SystemTime::now());
+    let stored = running.as_deref().unwrap_or_default();
     let version = stored.split_once('_').map_or(stored, |(_, rest)| rest);
     let number = if version.is_empty() {
         String::new()
