@@ -208,6 +208,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 let held = record.versions.get(&version)?;
                 Some(record.version_detail(ctx, held))
             })
+            // A version LAMBDA itself publishes into every Region
+            // (`crate::state::published_layers`) is addressed by the ARN AWS advertises for
+            // it, which is the member this operation reads, so this read answers for it as
+            // it does for a version the store holds.
+            .or_else(|| {
+                crate::state::published_layer_detail(ctx, &named_region, &name, version)
+            })
             .ok_or_else(no_such_layer_version)?;
         Ok(layer_version(detail))
     }

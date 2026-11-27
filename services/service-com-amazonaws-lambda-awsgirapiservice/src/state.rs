@@ -4849,6 +4849,11 @@ pub fn resolve_layer_version_ref<'a>(
 pub mod layer_store;
 pub use layer_store::*;
 
+/// The layer versions LAMBDA ITSELF publishes into every Region, and the public parameter
+/// names each is advertised under; see the module's own header.
+pub mod published_layers;
+pub use published_layers::*;
+
 #[cfg(test)]
 mod tests;
 

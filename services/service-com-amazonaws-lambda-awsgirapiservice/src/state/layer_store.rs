@@ -323,7 +323,10 @@ pub fn same_layer_versions_message(first: &str, second: &str) -> String {
 /// A layer Lambda itself provides belongs to no account and to no Region, so it is taken as
 /// named: this emulator holds no archive for it and therefore reports the `CodeSize`
 /// member's own default for it, exactly as it does for a deployment package whose bytes it
-/// does not hold.
+/// does not hold. A layer version Lambda PUBLISHES into every Region
+/// ([`super::published_layers`]) is resolved against that catalog when the store holds no
+/// layer of the name, so a function mounts it by the ARN AWS advertises for it without the
+/// account having published a layer of its own.
 pub fn resolve_function_layers(
     store: &ComAmazonawsLambdaAwsgirapiserviceState,
     region: &str,
@@ -371,11 +374,17 @@ pub fn resolve_function_layers(
             }),
             LayerVersionReference::Published { name, version, .. } => {
                 // Region-scoped: the Region was settled above, so a name this Region holds
-                // no layer under is a version that does not exist here.
-                let published = store
+                // no layer under is a version that does not exist here — unless LAMBDA
+                // itself publishes that version into every Region
+                // ([`super::published_layers`]), which every account mounts by the ARN AWS
+                // advertises for it rather than by publishing one of its own.
+                let Some(published) = store
                     .layer(region, &name)
                     .and_then(|layer| Some((layer, layer.versions.get(&version)?)))
-                    .ok_or_else(|| format!("Layer version {arn} does not exist."))?;
+                else {
+                    return super::published_function_layer(region, &name, version)
+                        .ok_or_else(|| format!("Layer version {arn} does not exist."));
+                };
                 // The ARN and both sizes come out of the stored version, so nothing of the
                 // request is echoed back as a resolved layer.
                 Ok(FunctionLayer {

@@ -8,17 +8,20 @@
 //! and never stored by this service: it is AWS's own published data, and a read resolves it
 //! against whatever this emulator holds of that data rather than against the store.
 //!
-//! What it holds of it today is two catalogues, read as one. The Global Infrastructure
+//! What it holds of it today is three catalogues, read as one. The Global Infrastructure
 //! reference data AWS publishes in every Region ([`super::global_infrastructure`]) — the
 //! Regions, their long names, partitions and endpoint domains — is the same at every
-//! endpoint and is held here. Beside it is what the services that publish an image publish
-//! about it: every public Systems Manager parameter name of this endpoint, and the value it
-//! resolves to (`ComAmazonawsEc2Amazonec2State::public_ssm_parameter_values`) — the ONE
-//! place this emulator records what such a parameter resolves to, so Parameter Store and the
-//! service that publishes it cannot disagree about it and an id a read reports is an AMI the
-//! account can really launch, describe or hand to a service that provisions compute from
-//! one. An alias whose image was deregistered resolves to nothing, exactly as the describe
-//! reports none.
+//! endpoint and is held here. Beside it is what the services that publish a RESOURCE publish
+//! about it, each read from the service that publishes it rather than restated here: every
+//! public Systems Manager parameter name of this endpoint, and the value it resolves to
+//! (`ComAmazonawsEc2Amazonec2State::public_ssm_parameter_values` for the images AWS
+//! publishes, `published_layer_parameters` for the layer versions AWS Lambda publishes) —
+//! the ONE place this emulator records what such a parameter resolves to, so Parameter Store
+//! and the service that publishes it cannot disagree about it and the identifier a read
+//! reports names a resource that service really serves: an AMI the account can launch,
+//! describe or hand to a service that provisions compute from one, and a layer version a
+//! function can mount. An alias whose image was deregistered resolves to nothing, exactly as
+//! the describe reports none.
 //!
 //! Nothing here writes: the catalog is projected from EC2's image state on each read, so a
 //! read of it changes nothing a later caller sees and the values it reports are the values
@@ -28,6 +31,7 @@ use std::collections::BTreeMap;
 use std::time::SystemTime;
 
 use ::service_com_amazonaws_ec2_amazonec2::state as ec2;
+use ::service_com_amazonaws_lambda_awsgirapiservice::state as lambda;
 
 use super::{
     canonical_name, ParameterRecord, ParameterVersionRecord, DEFAULT_DATA_TYPE, TIER_STANDARD,
@@ -228,10 +232,12 @@ pub fn invalid_namespace_message(path: &str) -> String {
 /// Every parameter AWS publishes at this endpoint, in ascending canonical-name order — the
 /// order a hierarchy read's resume cursor is total in.
 ///
-/// Two catalogues, read as one: the Global Infrastructure reference data AWS publishes in
+/// Three catalogues, read as one: the Global Infrastructure reference data AWS publishes in
 /// every Region ([`super::global_infrastructure`]), which is the same at every endpoint and
-/// is held here, and the names the services that publish an image publish about it, which
-/// are projected from that service's own image state.
+/// is held here, the names the services that publish an image publish about it, which are
+/// projected from that service's own image state, and the names AWS Lambda publishes the ARN
+/// of a layer version of its own under, projected from that service's own published-layer
+/// catalog.
 pub fn published_records<Eng: Send + Sync + 'static>(
     engine: &Eng,
     region: &str,
@@ -267,8 +273,17 @@ pub fn published_records<Eng: Send + Sync + 'static>(
                 }),
         );
     }
-    // One ascending order over both catalogues, which is what makes a hierarchy read's
-    // resume cursor total: no name can be in both, since neither publishes in the other's
+    // The layer versions AWS Lambda publishes into every Region, each advertised under the
+    // public name a client resolves its ARN by: the value is read from that service's own
+    // catalog, so the ARN this read reports is the one that service's own reads answer for
+    // and a function's `Layers` accepts.
+    records.extend(
+        lambda::published_layer_parameters(region)
+            .into_iter()
+            .map(|(name, value)| published_record(region, &name, &value, lambda::PUBLISHED_AT)),
+    );
+    // One ascending order over every catalogue, which is what makes a hierarchy read's
+    // resume cursor total: no name can be in two of them, since none publishes in another's
     // hierarchy.
     records.sort_by(|left, right| canonical_name(&left.name).cmp(canonical_name(&right.name)));
     records
