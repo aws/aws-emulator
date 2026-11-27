@@ -93,10 +93,10 @@
 //! (`CreateTargetGroup$UnhealthyThresholdCount`) and its healthy counterpart — which
 //! [`super::target_health::TargetProbe`] folds the observations into, and a registration whose
 //! checks have failed without reaching that threshold is still `initial`. Those checks come
-//! one `HealthCheckIntervalSeconds` apart, the cadence the caller configured
-//! ([`super::target_health::health_check_interval`]), so a verdict is never reached sooner
-//! than the threshold times that interval; a pass that looks at a registration between two of
-//! its checks keeps what it saw and counts toward no verdict.
+//! one `HealthCheckIntervalSeconds` apart, the cadence the caller configured, except where that
+//! cadence would hold the verdict back longer than the span this emulator keeps a verdict
+//! observable in ([`super::target_health::health_check_interval`]); a pass that looks at a
+//! registration between two of its checks keeps what it saw and counts toward no verdict.
 //!
 //! # The clock the series is published on
 //!
@@ -204,8 +204,9 @@ const RUN_UP_PERIODS: u32 = 5;
 /// with the present.
 ///
 /// The emulator's own span, and the publish schedule's alone: how often a registration is
-/// CHECKED is the target group's own `HealthCheckIntervalSeconds`
-/// ([`super::target_health::health_check_interval`]), which this never shortens — a series
+/// CHECKED is the target group's own `HealthCheckIntervalSeconds`, held inside the span a
+/// verdict stays observable in ([`super::target_health::health_check_interval`]), which this
+/// never shortens — a series
 /// that catches up faster than the checks run reports the same verdict in several of its
 /// datapoints, which is what a series of a metric published more often than its subject
 /// changes reports.

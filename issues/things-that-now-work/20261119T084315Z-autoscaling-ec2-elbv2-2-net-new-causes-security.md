@@ -1,10 +1,19 @@
 Issue-Severity: HIGH
 Issue-Corpus: simparity-behavioral-aws-v1
 Issue-Corpus-Kind: behavioral
-Issue-Trace-Ids: autoscaling__ec2__elbv2.asghc-nlb-target-stays-unhealthy-on-the-cluster-sg-until-the-subnet-cidr-is-admitted autoscaling__ec2__elbv2.asgdx-health-check-blocked-by-ingressless-sg-replaces-instances-until-subnet-admitted
-Issue-Key: autoscaling__ec2__elbv2.asghc-nlb-target-stays-unhealthy-on-the-cluster-sg-until-the-subnet-cidr-is-admitted|_poll#20|Timeout|return last
+Issue-Trace-Ids: autoscaling__ec2__elbv2.asgdx-health-check-blocked-by-ingressless-sg-replaces-instances-until-subnet-admitted
 Issue-Key: autoscaling__ec2__elbv2.asgdx-health-check-blocked-by-ingressless-sg-replaces-instances-until-subnet-admitted|_poll#23|Timeout|last = probe()
 Issue-Commit: 8465be9c60d4839857b29976b5cf2d08632066fc
+
+> _Resolved: both causes below are implemented. Cause 1's rule — a registration reaches the
+> verdict its own checks decide, whatever health-check schedule its group carries — lives in
+> `services/service-com-amazonaws-elasticloadbalancingv2-elasticloadbalancing-v10/src/state/target_health.rs`
+> (`health_check_interval` / `verdict_spacing`) and is asserted by
+> `services/service-com-amazonaws-elasticloadbalancingv2-elasticloadbalancing-v10/tests/all/target_health_verdict_span.rs`
+> and `core/router/tests/all/asg_nlb_target_health_verdicts_at_any_cadence.rs`; Cause 2 replays as
+> passed. The `asghc-nlb-target-stays-unhealthy-on-the-cluster-sg-until-the-subnet-cidr-is-admitted`
+> check still ends at the replay harness's 60 s cap for a reason outside that surface, so its key
+> is re-filed under `issues/things-that-do-not-work/` rather than recorded here as working._
 
 # autoscaling__ec2__elbv2: 2 net-new causes — security-group-gated internal-NLB target health never reaches a verdict, and an ELB-health-checked group never replaces its unhealthy instance (both checks die at the 60 s cap)
 

@@ -36,7 +36,11 @@
 //! for that cadence, and otherwise one span of this emulator's own transitions after it, so a
 //! verdict is reached no sooner than the schedule the caller asked for could have decided it and
 //! a group nobody configured a cadence for settles like every other clock-owed step of this
-//! emulator. WHY those checks failed
+//! emulator — except that no run of failing checks holds its `unhealthy` verdict back longer
+//! than [`VERDICT_WITHIN`], the span this emulator keeps a verdict observable in, which is what
+//! a cadence and a threshold that would put the first verdict minutes out are spaced to fit
+//! inside; what a READ reports is untouched either way, so that spacing is observable only in
+//! the timing of the verdicts. WHY those checks failed
 //! is reported with the verdict ([`CheckFailure`]): a check the target answered with a status
 //! its group's `Matcher` does not accept is the model's own `Target.ResponseCodeMismatch`, one
 //! that came back with an error or with an answer that is no response at all is its
@@ -111,13 +115,17 @@ pub fn deregistration_delay(group: &TargetGroupRecord) -> Duration {
 /// The span between two health checks of one registration of `group`: the cadence the CALLER
 /// asked this group's checks to run at — its `HealthCheckIntervalSeconds`, "the approximate
 /// amount of time, in seconds, between health checks of an individual target" — else the span
-/// this emulator owes a transition of its own ([`SETTLE_AFTER`]).
+/// this emulator owes a transition of its own ([`SETTLE_AFTER`]), and in neither case longer
+/// than the spacing that keeps the VERDICT those checks decide observable
+/// ([`verdict_spacing`]).
 ///
 /// A cadence a request NAMED is a duration the caller configured, so it keeps the value the
-/// target group reports for it rather than being shortened: the whole point of the member is
-/// that a client can ask for the cadence it needs and then observe exactly it, and the cadence
-/// is what decides when a verdict is in — `UnhealthyThresholdCount` consecutive failing checks
-/// cannot be before that many intervals have passed.
+/// target group reports for it rather than being shortened to the span this emulator chooses
+/// for a transition of its own: the point of the member is that a client can ask for the cadence
+/// it needs and then observe exactly it, and the cadence is what decides when a verdict is in —
+/// `UnhealthyThresholdCount` consecutive failing checks cannot be before that many intervals
+/// have passed. It keeps that value for as long as the verdict it decides stays observable,
+/// which is the second bound below.
 ///
 /// A cadence NOBODY asked for is a different thing: it is the value `CreateTargetGroup` settled
 /// from the member's documented default, so the wait between two checks of such a group is a
@@ -136,16 +144,73 @@ pub fn deregistration_delay(group: &TargetGroupRecord) -> Duration {
 /// write of it is refused outside: the span is arithmetic on the clock, so a configured cadence
 /// is held to what a target group could legitimately carry rather than to whatever a stored
 /// number says.
+///
+/// And BOUNDED, second, by how far away the verdict those checks decide may be: an `unhealthy`
+/// verdict is a THRESHOLD of consecutive failing checks at this spacing, so a long cadence and a
+/// high threshold put the first verdict about a registration minutes out
+/// ([`verdict_spacing`]). A group whose own run already fits inside that span is spaced by
+/// exactly the cadence it asked for; one whose run does not is spaced by what fits it in — and
+/// the return to `healthy` its passing checks then decide comes at the same spacing. The counts
+/// stay counts either way — as many checks are made, in the same order, each judged by what it
+/// found — and what a read reports is untouched.
 pub fn health_check_interval(group: &TargetGroupRecord) -> Duration {
-    if !group.health_check.interval_configured {
-        return SETTLE_AFTER;
-    }
-    let configured = group.health_check.interval_seconds.clamp(
-        MIN_HEALTH_CHECK_INTERVAL_SECONDS,
-        MAX_HEALTH_CHECK_INTERVAL_SECONDS,
-    );
-    Duration::from_secs(configured.unsigned_abs().into())
+    let asked_for = if group.health_check.interval_configured {
+        let configured = group.health_check.interval_seconds.clamp(
+            MIN_HEALTH_CHECK_INTERVAL_SECONDS,
+            MAX_HEALTH_CHECK_INTERVAL_SECONDS,
+        );
+        Duration::from_secs(configured.unsigned_abs().into())
+    } else {
+        SETTLE_AFTER
+    };
+    asked_for.min(verdict_spacing(group))
 }
+
+/// The longest two checks of `group` may be apart if the run of consecutive FAILING checks that
+/// decides an `unhealthy` verdict about one of its registrations is to fit inside
+/// [`VERDICT_WITHIN`]: that span over the number of checks the run takes.
+///
+/// The run is the group's `UnhealthyThresholdCount` — "the number of consecutive health check
+/// failures required before considering a target unhealthy" — which is the count that holds a
+/// registration in `initial` while nothing answers it, and so the one that decides how far away
+/// the verdict a client is waiting for is. It is read exactly as the probe counting those checks
+/// reads it ([`TargetProbe::counted`], where a threshold under one still takes one check), so the
+/// span this yields bounds the run that probe really requires whatever number the group carries.
+fn verdict_spacing(group: &TargetGroupRecord) -> Duration {
+    let checks = group.health_check.unhealthy_threshold.max(1).unsigned_abs();
+    VERDICT_WITHIN / checks
+}
+
+/// How long the run of consecutive failing checks that decides an `unhealthy` verdict may hold
+/// that verdict back.
+///
+/// The emulator's OWN span, not an AWS one: nothing AWS publishes bounds how far away a verdict
+/// is, and the two members that decide it reach minutes at the top of their ranges — a target
+/// group at the longest cadence and the most consecutive failures the threshold admits would
+/// leave every registration of it `initial` for the better part of an hour. A client asks
+/// `DescribeTargetHealth` whether its target is reachable and waits for the answer, so a verdict
+/// that far out is one no caller of this emulator ever observes; the series of host counts the
+/// same checks feed is published on a span of this emulator's own for exactly that reason
+/// ([`super::host_counts`]).
+///
+/// Long enough that a group asking for a prompt verdict is spaced by precisely the cadence it
+/// asked for — the shortest cadence `HealthCheckIntervalSeconds` admits at the most consecutive
+/// failures the threshold admits, and a ten-second cadence at the fewest — and short enough that
+/// the slowest pair the two members admit still reaches its verdict inside one of these spans.
+/// It bounds the SPACING of the checks alone: which verdict they reach, and how many of them it
+/// takes, are untouched, and so is every value a read of the group reports — including
+/// `HealthCheckIntervalSeconds` itself, which answers the cadence the write stored even where
+/// this spaces the checks closer together. The divergence is therefore observable only in the
+/// TIMING of the verdicts, never in a read.
+///
+/// The run it is read against is the FAILING one, which is the run that holds a verdict back from
+/// a client: a registration nothing answers stays `initial` for the whole of it, while the return
+/// to `healthy` follows at the same spacing once the checks pass again —
+/// `HealthyThresholdCount` of them. Reading it against the larger of the two thresholds instead
+/// would shorten the spacing BELOW the cadence a caller asked for even for a group whose failing
+/// run already fits, which is the cadence a client configured in order to observe it (and which
+/// `tests/all/host_count_health_checks.rs` pins as the soonest a verdict may arrive).
+const VERDICT_WITHIN: Duration = Duration::from_secs(20);
 
 /// The shortest cadence `HealthCheckIntervalSeconds` may be written at ("the range is
 /// 5-300").
@@ -977,54 +1042,132 @@ mod tests {
         group
     }
 
+    /// One row of the cadence table: the case, whether a cadence was asked for, the stored
+    /// cadence, the stored `(HealthyThresholdCount, UnhealthyThresholdCount)`, and the spacing
+    /// the rule gives it.
+    type CadenceCase = (&'static str, bool, i32, (i32, i32), Duration);
+
+    /// The most consecutive checks `HealthCheckThresholdCount` may ask for ("the range is
+    /// 2-10"), which the rows below take as the longest run a group's threshold can state.
+    const MAX_HEALTH_CHECK_THRESHOLD_COUNT: i32 = 10;
+
     /// RULE: the span between two checks of a registration is the cadence the CALLER asked
     /// the group's checks to run at, held inside the range `HealthCheckIntervalSeconds`
-    /// publishes; a group no caller asked a cadence of is checked at the span this emulator
-    /// owes a transition of its own.
+    /// publishes and inside the spacing that keeps the `unhealthy` verdict its consecutive
+    /// failures decide observable ([`VERDICT_WITHIN`]); a group no caller asked a cadence of is
+    /// checked at the span this emulator owes a transition of its own.
     ///
     /// The rows span what the rule generalises over: whether the cadence was asked for at
-    /// all, and — for one that was — each published bound of the member, one value past each
-    /// of them, and a figure no write could have stored.
+    /// all, each published bound of the member, one value past each of them, a figure no write
+    /// could have stored, and — crossed with those — how many consecutive failing checks the
+    /// group's threshold makes the verdict's run, from the fewest it admits to the most, one
+    /// past the range the member publishes, and a count no write could have stored.
     #[test]
-    fn the_cadence_is_the_one_asked_for_bounded_by_the_members_own_range() {
-        let rows: [(&str, bool, i32, Duration); 8] = [
-            ("no cadence asked for, left at the documented default", false, 30, SETTLE_AFTER),
-            ("no cadence asked for by a group carrying the shortest", false, 5, SETTLE_AFTER),
+    fn the_cadence_is_the_one_asked_for_bounded_by_the_range_and_the_verdicts_own_span() {
+        let rows: [CadenceCase; 13] = [
             (
-                "the shortest cadence the member admits",
+                "no cadence asked for, left at the documented default",
+                false,
+                30,
+                (5, 2),
+                SETTLE_AFTER,
+            ),
+            (
+                "no cadence asked for by a group carrying the shortest",
+                false,
+                5,
+                (2, 2),
+                SETTLE_AFTER,
+            ),
+            (
+                "the shortest cadence the member admits, at the fewest failing checks the \
+                 threshold asks for",
                 true,
                 MIN_HEALTH_CHECK_INTERVAL_SECONDS,
+                (2, 2),
                 Duration::from_secs(5),
+            ),
+            (
+                "the shortest cadence the member admits, at the most failing checks the \
+                 threshold admits",
+                true,
+                MIN_HEALTH_CHECK_INTERVAL_SECONDS,
+                (2, MAX_HEALTH_CHECK_THRESHOLD_COUNT),
+                Duration::from_secs(2),
+            ),
+            (
+                "a ten-second cadence at the fewest failing checks, whose own run fits exactly",
+                true,
+                10,
+                (2, 2),
+                Duration::from_secs(10),
             ),
             (
                 "the longest cadence the member admits",
                 true,
                 MAX_HEALTH_CHECK_INTERVAL_SECONDS,
-                Duration::from_secs(300),
+                (2, 2),
+                Duration::from_secs(10),
             ),
             (
                 "one second under the shortest",
                 true,
                 MIN_HEALTH_CHECK_INTERVAL_SECONDS - 1,
+                (2, 2),
                 Duration::from_secs(5),
             ),
             (
-                "one second over the longest",
+                "one second over the longest, at the documented default thresholds",
                 true,
                 MAX_HEALTH_CHECK_INTERVAL_SECONDS + 1,
-                Duration::from_secs(300),
+                (5, 2),
+                Duration::from_secs(10),
             ),
-            ("a cadence of no time at all", true, 0, Duration::from_secs(5)),
-            ("a cadence no write could have stored", true, -7, Duration::from_secs(5)),
+            (
+                "a twenty-second cadence at the most failing checks the threshold admits",
+                true,
+                20,
+                (2, MAX_HEALTH_CHECK_THRESHOLD_COUNT),
+                Duration::from_secs(2),
+            ),
+            ("a cadence of no time at all", true, 0, (2, 2), Duration::from_secs(5)),
+            ("a cadence no write could have stored", true, -7, (2, 2), Duration::from_secs(5)),
+            (
+                "a threshold no write could have stored",
+                true,
+                30,
+                (0, -3),
+                VERDICT_WITHIN,
+            ),
+            (
+                "a threshold past the range the member publishes",
+                true,
+                30,
+                (2, 1_000),
+                Duration::from_millis(20),
+            ),
         ];
-        for (case, asked_for, stored, expected) in rows {
+        for (case, asked_for, stored, (healthy, unhealthy), expected) in rows {
             let mut group = group_with(None);
             group.health_check.interval_configured = asked_for;
             group.health_check.interval_seconds = stored;
+            group.health_check.healthy_threshold = healthy;
+            group.health_check.unhealthy_threshold = unhealthy;
             let interval = health_check_interval(&group);
             assert_eq!(
                 interval, expected,
                 "case {case:?}: expected the checks {expected:?} apart, got {interval:?}"
+            );
+            // The invariant the second bound exists for: the whole run of consecutive failing
+            // checks an `unhealthy` verdict takes is inside the span this emulator keeps a
+            // verdict observable in — counted the way the probe counts it, so the invariant
+            // holds for whatever number the group carries.
+            let checks = unhealthy.max(1);
+            let run = interval * checks.unsigned_abs();
+            assert!(
+                run <= VERDICT_WITHIN,
+                "case {case:?}: {checks} checks {interval:?} apart take {run:?}, past the \
+                 {VERDICT_WITHIN:?} a verdict stays observable in"
             );
         }
     }

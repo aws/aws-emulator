@@ -5,9 +5,10 @@
 //!
 //! RULE: **a health check of a registration comes due one `HealthCheckIntervalSeconds` after the
 //! last where the REQUEST asked for that cadence — the duration a caller configured keeps its
-//! value — and one span of this emulator's own clock-owed transitions after the last where the
-//! request asked for none, because then the wait between two checks is a span this emulator
-//! chose rather than one a client asked to observe. The verdict itself stays a number of CHECKS
+//! value for as long as the verdict it decides stays observable — and one span of this emulator's
+//! own clock-owed transitions after the last where the request asked for none, because then the
+//! wait between two checks is a span this emulator chose rather than one a client asked to
+//! observe. The verdict itself stays a number of CHECKS
 //! away, the counts the two thresholds carry, and what a READ reports is untouched: a group
 //! created with no health-check members answers the documented defaults for every one of them.
 //! So every target group reaches the verdicts its checks find — `unhealthy` with
@@ -373,7 +374,8 @@ async fn a_target_group_reaches_its_verdicts_whatever_cadence_the_request_asked_
             // The checked path is one the container serves, so the first check of the
             // registration finds it passing and the verdict is `healthy` — the cadence spaces
             // the checks that FOLLOW one, so even the longest of them does not hold off the
-            // first finding.
+            // first finding (and a cadence that would hold a verdict back past the span one
+            // stays observable in is spaced to fit inside it).
             let healthy = reaching(&router, row, "the checked path served", group, HEALTHY, None)
                 .await;
             assert_eq!(
