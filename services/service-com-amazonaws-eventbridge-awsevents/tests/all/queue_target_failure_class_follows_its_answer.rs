@@ -8,8 +8,8 @@
 //!
 //! The RULE asserted here: a dead letter's two attributes come from one failed
 //! delivery — the `ERROR_MESSAGE` is the refusal the target's own service answered, in
-//! full, and the `ERROR_CODE` is EventBridge's classification of WHY that delivery
-//! failed. For a queue target the send is authorized by the queue's own resource policy
+//! full, and the `ERROR_CODE` is the class that answer's own error CODE belongs to.
+//! For a queue target the send is authorized by the queue's own resource policy
 //! alone ("for Lambda functions,
 //! Amazon SNS topics and Amazon SQS queues, EventBridge relies on resource-based
 //! policies", `PutTargets`), and Amazon SQS models no authorization failure on
@@ -20,10 +20,9 @@
 //! `QueueDoesNotExist`, HTTP 400 under `AWS.SimpleQueueService.NonExistentQueue`
 //! (`smithy_query(query="shape", shape="QueueDoesNotExist",
 //! model_path="services/service-com-amazonaws-sqs-amazonsqs/smithy-model/com-amazonaws-sqs-amazonsqs.json")`),
-//! each under its own sentence. One code, two classes: the withheld send is the
-//! PERMISSION class because a document decided it, and the queue that is not there is
-//! the RESOURCE class — so the class is not read off the answer's code, and the SENTENCE
-//! inside the answer is what tells the two apart.
+//! each under its own sentence. ONE code, so ONE class — the RESOURCE one that code
+//! belongs to — while the SENTENCE inside the answer is what tells the two situations
+//! apart, and neither attribute is read off the other.
 //!
 //! The table spans that rule rather than one case: its rows differ along the FORM a
 //! refusal takes (no document at all, an explicit `Deny`, a grant scoped by
@@ -43,7 +42,7 @@
 
 use serde_json::{json, Value};
 use service_com_amazonaws_eventbridge_awsevents::state::{
-    rule_arn, DEFAULT_EVENT_BUS_NAME, NO_PERMISSIONS, NO_RESOURCE, SERVICE_PRINCIPAL,
+    rule_arn, DEFAULT_EVENT_BUS_NAME, NO_RESOURCE, SERVICE_PRINCIPAL,
 };
 
 use crate::target_dispatch::{
@@ -220,7 +219,7 @@ async fn given_target(
 }
 
 /// Every form a failed delivery to a queue target takes reports the answer that
-/// service gave, with the class of WHY the delivery failed beside it.
+/// service gave, with the class of that answer's own code beside it.
 #[tokio::test]
 async fn a_dead_letters_class_and_message_come_from_one_answer() {
     let rows = [
@@ -229,42 +228,42 @@ async fn a_dead_letters_class_and_message_come_from_one_answer() {
             setup: Setup::Queue(None),
             code: QUEUE_NOT_DISCLOSED_CODE,
             sentence: QUEUE_NOT_DISCLOSED_SENTENCE,
-            class: NO_PERMISSIONS,
+            class: NO_RESOURCE,
         },
         Row {
             case: "a queue whose policy denies the send beside granting it",
             setup: Setup::Queue(Some(denying)),
             code: QUEUE_NOT_DISCLOSED_CODE,
             sentence: QUEUE_NOT_DISCLOSED_SENTENCE,
-            class: NO_PERMISSIONS,
+            class: NO_RESOURCE,
         },
         Row {
             case: "a queue whose grant is scoped by aws:SourceArn to another rule",
             setup: Setup::Queue(Some(granting_another_rule)),
             code: QUEUE_NOT_DISCLOSED_CODE,
             sentence: QUEUE_NOT_DISCLOSED_SENTENCE,
-            class: NO_PERMISSIONS,
+            class: NO_RESOURCE,
         },
         Row {
             case: "a queue whose grant is scoped by aws:SourceAccount to another account",
             setup: Setup::Queue(Some(granting_another_account)),
             code: QUEUE_NOT_DISCLOSED_CODE,
             sentence: QUEUE_NOT_DISCLOSED_SENTENCE,
-            class: NO_PERMISSIONS,
+            class: NO_RESOURCE,
         },
         Row {
             case: "a queue granting this service another action",
             setup: Setup::Queue(Some(granting_another_action)),
             code: QUEUE_NOT_DISCLOSED_CODE,
             sentence: QUEUE_NOT_DISCLOSED_SENTENCE,
-            class: NO_PERMISSIONS,
+            class: NO_RESOURCE,
         },
         Row {
             case: "a queue granting the send to another service principal",
             setup: Setup::Queue(Some(granting_another_principal)),
             code: QUEUE_NOT_DISCLOSED_CODE,
             sentence: QUEUE_NOT_DISCLOSED_SENTENCE,
-            class: NO_PERMISSIONS,
+            class: NO_RESOURCE,
         },
         Row {
             case: "a queue ARN no queue was created for",
@@ -327,9 +326,9 @@ async fn a_dead_letters_class_and_message_come_from_one_answer() {
                  {reported:?}"
             );
         }
-        // The class is EventBridge's own reading of why the delivery failed, and the
-        // answer beside it is the target service's: a withheld send and a queue that is
-        // not there come back under ONE code, so the class cannot have been read off it.
+        // The class is the one this service's single classifier puts that answer's own
+        // code in, so a withheld send and a queue that is not there \u2014 one code, two
+        // sentences \u2014 come back under the same class and are told apart by the sentence.
         let class = attribute(message, ERROR_CODE_ATTRIBUTE);
         assert!(
             !reported.contains(KEY_ACCESS_DENIED),

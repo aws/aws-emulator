@@ -470,7 +470,7 @@ pub(super) const LOGS_ACCESS_DENIED_STATUS: u16 = 400;
 /// as a topic's and a function's do.
 ///
 /// The request id is MINTED there, for the reason
-/// [`crate::state::queue_access_refusal`] gives.
+/// [`super::answered_refusal`] gives.
 pub(super) fn log_group_write_refusal(stream_arn: &str, action: &str) -> (String, String) {
     super::answered_refusal(
         &::service_common::iam_authorization::not_authorized_by_resource_policy(

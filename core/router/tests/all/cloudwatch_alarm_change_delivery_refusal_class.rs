@@ -79,9 +79,12 @@ const TARGET_ARN_ATTRIBUTE: &str = "TARGET_ARN";
 const ERROR_CODE_ATTRIBUTE: &str = "ERROR_CODE";
 const ERROR_MESSAGE_ATTRIBUTE: &str = "ERROR_MESSAGE";
 
-/// The class EventBridge reports for a delivery a document in force over the target withheld —
-/// stated here in the test rather than read from any implementation.
+/// The classes EventBridge reports for a refused delivery — stated here in the test rather than
+/// read from any implementation. Which one a delivery the target's service ANSWERED lands in is
+/// the class of that answer's own error code: the permission one for an authorization code, the
+/// resource one for a not-found code.
 const NO_PERMISSIONS: &str = "NO_PERMISSIONS";
+const NO_RESOURCE: &str = "NO_RESOURCE";
 
 /// The name Amazon SQS's own error metadata carries, and the answer it gives a sender no document
 /// in force over the queue permitted: its not-found class, under fixed text in its entirety —
@@ -103,9 +106,9 @@ const DATA_KEY_ACTION: &str = "kms:GenerateDataKey";
 /// WHICH codes a queue target's service answers a withheld send under, stated here in the test:
 /// the two answers above — the not-found code it gives a sender it has not authorized, because it
 /// does not disclose such a queue, and the authorization code it relays for the key an encrypted
-/// queue is encrypted under. Both are deliveries a document withheld, so both are the PERMISSION
-/// class whichever of the codes the answer carries; a code outside this list is a refusal no
-/// service of a queue delivery answers.
+/// queue is encrypted under. The class beside the answer is the one THAT code belongs to, so the
+/// first is the resource class and the second the permission one; a code outside this list is a
+/// refusal no service of a queue delivery answers.
 const WITHHELD_SEND_CODES: [&str; 3] = [
     QUEUE_NOT_DISCLOSED_CODE,
     "QueueDoesNotExist",
@@ -697,9 +700,9 @@ struct Row {
 }
 
 /// RULE: a configuration change CloudWatch publishes that a queue target will not take is
-/// dead-lettered under the class of WHY the delivery failed — the permission class for every send
-/// a document in force over the queue withheld, whether that service answers it under its
-/// not-found code without disclosing the queue or relays the key's own authorization refusal —
+/// dead-lettered under the class of the answer that service gave — the resource class for a send
+/// it answers under its not-found code without disclosing the queue, and the permission class
+/// where it relays the key's own authorization refusal —
 /// while the same event still reaches a healthy
 /// sibling rule's queue and the destination repaired afterwards takes the next change.
 #[tokio::test]
@@ -718,7 +721,7 @@ async fn an_alarm_change_a_queue_target_withholds_is_classed_by_that_services_an
             },
             encrypted: false,
             answer: Answer::QueueNotDisclosed,
-            class: NO_PERMISSIONS,
+            class: NO_RESOURCE,
         },
         Row {
             case: "a document denying the send outright beside a grant of it",
@@ -730,14 +733,14 @@ async fn an_alarm_change_a_queue_target_withholds_is_classed_by_that_services_an
             },
             encrypted: false,
             answer: Answer::QueueNotDisclosed,
-            class: NO_PERMISSIONS,
+            class: NO_RESOURCE,
         },
         Row {
             case: "a queue carrying no document at all",
             policy: |_, _, _| None,
             encrypted: false,
             answer: Answer::QueueNotDisclosed,
-            class: NO_PERMISSIONS,
+            class: NO_RESOURCE,
         },
         Row {
             case: "a grant of the send to another service principal",
@@ -752,7 +755,7 @@ async fn an_alarm_change_a_queue_target_withholds_is_classed_by_that_services_an
             },
             encrypted: false,
             answer: Answer::QueueNotDisclosed,
-            class: NO_PERMISSIONS,
+            class: NO_RESOURCE,
         },
         Row {
             case: "a grant of the send scoped by aws:SourceArn to another rule",
@@ -767,7 +770,7 @@ async fn an_alarm_change_a_queue_target_withholds_is_classed_by_that_services_an
             },
             encrypted: false,
             answer: Answer::QueueNotDisclosed,
-            class: NO_PERMISSIONS,
+            class: NO_RESOURCE,
         },
         Row {
             case: "a grant of another action of the same service",
@@ -782,7 +785,7 @@ async fn an_alarm_change_a_queue_target_withholds_is_classed_by_that_services_an
             },
             encrypted: false,
             answer: Answer::QueueNotDisclosed,
-            class: NO_PERMISSIONS,
+            class: NO_RESOURCE,
         },
         Row {
             case: "a queue granting the send, encrypted under a key admitting nobody",

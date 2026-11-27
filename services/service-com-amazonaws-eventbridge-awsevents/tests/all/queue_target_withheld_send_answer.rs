@@ -10,8 +10,8 @@
 //! The RULE asserted here: what EventBridge reports for a failed delivery is the
 //! answer the TARGET's service gave it — the sentence that service worded, inside
 //! the metadata block naming that service, the status and the error code it answered
-//! with — beside the `ERROR_CODE` that classifies WHY the delivery failed. Amazon SQS
-//! models no
+//! with — beside the `ERROR_CODE` naming the class that answer's own code belongs to.
+//! Amazon SQS models no
 //! authorization failure on `SendMessage` at all
 //! (`smithy_query(query="operation", operation="SendMessage",
 //! model_path="services/service-com-amazonaws-sqs-amazonsqs/smithy-model/com-amazonaws-sqs-amazonsqs.json")`),
@@ -21,9 +21,8 @@
 //! under the fixed sentence "The specified queue does not exist or you do not have
 //! access to it.", which names neither the principal, nor the action, nor the queue.
 //! A queue that is NOT THERE is answered under that same code with that service's
-//! OTHER sentence ("The specified queue does not exist."). One code, two reasons: the
-//! withheld send is the PERMISSION class and the absent queue the RESOURCE class, and
-//! what tells the two answers apart is the SENTENCE each carries.
+//! OTHER sentence ("The specified queue does not exist."). One code, so one class — the
+//! RESOURCE one — and what tells the two answers apart is the SENTENCE each carries.
 //!
 //! The first table spans the class rather than the one case the defect was found on:
 //! its rows differ along the FORM the withholding takes (no document at all, a
@@ -49,7 +48,7 @@
 
 use serde_json::{json, Value};
 use service_com_amazonaws_eventbridge_awsevents::state::{
-    rule_arn, DEFAULT_EVENT_BUS_NAME, NO_PERMISSIONS, NO_RESOURCE, SERVICE_PRINCIPAL,
+    rule_arn, DEFAULT_EVENT_BUS_NAME, NO_RESOURCE, SERVICE_PRINCIPAL,
 };
 
 use crate::target_dispatch::{
@@ -193,13 +192,11 @@ impl Answer {
         }
     }
 
-    /// The class EventBridge dead-letters that delivery under: a send a document in
-    /// force over the queue withheld is the permission class, and a queue that is not
-    /// there the resource one.
+    /// The class EventBridge dead-letters that delivery under: the class of the code
+    /// that service answered with, which is its not-found one for both.
     fn class(self) -> &'static str {
         match self {
-            Self::Withheld => NO_PERMISSIONS,
-            Self::Absent => NO_RESOURCE,
+            Self::Withheld | Self::Absent => NO_RESOURCE,
         }
     }
 }

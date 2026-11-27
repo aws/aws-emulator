@@ -24,8 +24,8 @@
 //! it will not let the caller write to — so the answer is its not-found code at HTTP
 //! 400 (`AWS.SimpleQueueService.NonExistentQueue`) under the fixed sentence that states
 //! the absence and the want of access without saying which holds, and the condition
-//! beside it is why the delivery failed, which is the permission one
-//! (`NO_PERMISSIONS`).
+//! beside it is the class that answer's own code belongs to, which is the resource one
+//! (`NO_RESOURCE`).
 //!
 //! The first test spans a TABLE whose rows differ along what the queue's document
 //! states: whether there is one at all, which principal it names, which action and
@@ -45,7 +45,7 @@
 use serde_json::{json, Value};
 use service_com_amazonaws_eventbridge_awsevents::state::{
     rule_arn, DEFAULT_EVENT_BUS_NAME, FAILED_INVOCATIONS_METRIC, INVOCATIONS_METRIC,
-    NO_PERMISSIONS,
+    NO_RESOURCE,
     SERVICE_PRINCIPAL,
 };
 
@@ -445,9 +445,9 @@ async fn a_withheld_delivery_is_dead_lettered_only_where_that_queue_allows_it() 
                 .as_str()
                 .unwrap_or_default();
             assert_eq!(
-                code, NO_PERMISSIONS,
-                "case {case:?}: expected the dead letter to name the condition the delivery \
-                 failed at, got {message:?}"
+                code, NO_RESOURCE,
+                "case {case:?}: expected the dead letter to name the class of the answer that \
+                 service gave, got {message:?}"
             );
             // The sentence is the one Amazon SQS answers a caller whose send the
             // queue's documents did not permit, as the refused delivery read it: that

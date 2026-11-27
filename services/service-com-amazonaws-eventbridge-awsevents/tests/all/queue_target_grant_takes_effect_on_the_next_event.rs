@@ -20,7 +20,7 @@
 //! shape="QueueDoesNotExist", model_path=...)`), carrying the fixed sentence that states the
 //! absence and the want of access without saying which holds — so the dead letter carries that
 //! answer verbatim in `ERROR_MESSAGE`, with only the id of the ONE refused call varying, and
-//! beside it the class of why the delivery failed, the permission one (`NO_PERMISSIONS`).
+//! beside it the class that answer's own code belongs to, the resource one (`NO_RESOURCE`).
 //! Nothing of the refused send appears in that answer: not the queue, not the principal, not
 //! the action, and no authorization status or code that service does not answer on this call.
 //! A grant written onto the SAME queue afterwards then makes the NEXT matching event deliver
@@ -50,7 +50,7 @@
 
 use serde_json::{json, Value};
 use service_com_amazonaws_eventbridge_awsevents::state::{
-    rule_arn, DEFAULT_EVENT_BUS_NAME, NO_PERMISSIONS, SERVICE_PRINCIPAL,
+    rule_arn, DEFAULT_EVENT_BUS_NAME, NO_RESOURCE, SERVICE_PRINCIPAL,
 };
 
 use crate::target_dispatch::{
@@ -347,8 +347,8 @@ async fn a_queue_grant_written_after_a_withheld_delivery_admits_the_next_event()
         );
         let class = attribute(&parked[0], ERROR_CODE_ATTRIBUTE);
         assert_eq!(
-            class, NO_PERMISSIONS,
-            "case {case:?}: expected the dead-letter {ERROR_CODE_ATTRIBUTE} {NO_PERMISSIONS:?}, \
+            class, NO_RESOURCE,
+            "case {case:?}: expected the dead-letter {ERROR_CODE_ATTRIBUTE} {NO_RESOURCE:?}, \
              got {class:?} in {:?}",
             parked[0]
         );

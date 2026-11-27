@@ -7,26 +7,28 @@
 //! read where a consumer of a dead-letter queue reads it: off the message attributes of
 //! the dead letter the target's `DeadLetterConfig` queue received.
 //!
-//! The RULE asserted here bounds that class: a dead letter's `ERROR_CODE` is
-//! EventBridge's classification of WHY the delivery failed, so the permission class is
-//! the class of every delivery a document in force over the target withheld — Amazon SNS
-//! refusing a publish its topic's document does not permit
+//! The RULE asserted here bounds that class: a delivery the target's own service ANSWERED
+//! is classified by the class that answer's error CODE belongs to, and a delivery THIS
+//! service refused without a call being made carries the class of the step that refused
+//! it. So the permission class covers an answer given under an authorization code — Amazon
+//! SNS refusing a publish its topic's document does not permit
 //! (`AuthorizationErrorException`, `awsQueryError` code `AuthorizationError`,
 //! `smithy_query(query="shape", shape="AuthorizationErrorException",
-//! model_path="services/service-com-amazonaws-sns-amazonsimplenotificationservice/smithy-model/com-amazonaws-sns-amazonsimplenotificationservice.json")`),
-//! the identity policies in force on a role EventBridge invokes a target AS, and a queue
-//! whose own `Policy` withheld the send. The queue is the row that shows the class is not
-//! read off the answering service's error CODE: Amazon SQS models no authorization
-//! failure on `SendMessage` at all
+//! model_path="services/service-com-amazonaws-sns-amazonsimplenotificationservice/smithy-model/com-amazonaws-sns-amazonsimplenotificationservice.json")`)
+//! — and the identity policies in force on a role EventBridge invokes a target AS, which
+//! is this service's own verdict for want of a permission.
+//!
+//! What the class does NOT cover is either of the two other things a refused delivery can
+//! be. A role this service cannot assume at all is `FAILED_TO_ASSUME_ROLE`, the step that
+//! failed, asserted here as the contrast that keeps the permission class from swallowing
+//! every failed delivery. And a send a queue's own `Policy` withheld is the RESOURCE class,
+//! because that is the class of the answer Amazon SQS gave it: that service models no
+//! authorization failure on `SendMessage` at all
 //! (`smithy_query(query="operation", operation="SendMessage",
 //! model_path="services/service-com-amazonaws-sqs-amazonsqs/smithy-model/com-amazonaws-sqs-amazonsqs.json")`)
-//! because it does not disclose a queue it will not let the caller write to, so the
-//! answer the dead letter's `ERROR_MESSAGE` carries comes back under that service's own
-//! not-found code while the class beside it still names the permission.
-//!
-//! What the class does NOT cover is a failure no document decided: a role this service
-//! cannot assume at all is `FAILED_TO_ASSUME_ROLE`, asserted here as the contrast that
-//! keeps the permission class from swallowing every failed delivery.
+//! because it does not disclose a queue it will not let the caller write to, so the answer
+//! the dead letter's `ERROR_MESSAGE` carries comes back under that service's own not-found
+//! code and the class beside it is read off that same code.
 //!
 //! The rows therefore differ along the SERVICE that answered and along WHAT it was
 //! asked (a publish its topic's document withholds, an execution the invoking role's
@@ -42,7 +44,7 @@
 
 use serde_json::{json, Value};
 use service_com_amazonaws_eventbridge_awsevents::state::{
-    FAILED_TO_ASSUME_ROLE, NO_PERMISSIONS, SERVICE_PRINCIPAL,
+    FAILED_TO_ASSUME_ROLE, NO_PERMISSIONS, NO_RESOURCE, SERVICE_PRINCIPAL,
 };
 
 use crate::target_dispatch::{
@@ -82,7 +84,7 @@ enum Refused {
     /// so the delivery failed before any call was made.
     RoleThisServiceCannotAssume,
     /// An Amazon SQS queue carrying no policy, which that service answers without
-    /// disclosing the queue — still a document withholding the send.
+    /// disclosing the queue — an answer given under its not-found code.
     QueueGrantingNothing,
 }
 
@@ -167,11 +169,10 @@ async fn given_refused_target(
     }
 }
 
-/// The permission class is the class of every delivery a document in force over the
-/// target withheld — the services that ANSWER an authorization refusal, a role whose own
-/// policies withhold the call, and the send a queue's own document withheld, which that
-/// service answers without disclosing the queue — while a role this service cannot assume
-/// at all is its own class.
+/// The permission class is the class of an answer given under an AUTHORIZATION code and of
+/// this service's own verdict that a role's policies withhold the call — while a role this
+/// service cannot assume at all is its own class, and a send answered under Amazon SQS's
+/// not-found code is the resource class.
 #[tokio::test]
 async fn the_permission_class_is_the_class_of_a_withheld_delivery() {
     let rows = [
@@ -196,7 +197,7 @@ async fn the_permission_class_is_the_class_of_a_withheld_delivery() {
         Row {
             case: "a queue carrying no policy at all",
             refused: Refused::QueueGrantingNothing,
-            class: NO_PERMISSIONS,
+            class: NO_RESOURCE,
             states: Some(QUEUE_NOT_DISCLOSED_CODE),
         },
     ];

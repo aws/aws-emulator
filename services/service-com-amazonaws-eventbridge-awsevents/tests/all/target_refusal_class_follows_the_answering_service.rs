@@ -8,34 +8,35 @@
 //! letter the target's `DeadLetterConfig` queue received.
 //!
 //! The RULE asserted here: "for Lambda functions, Amazon SNS topics and Amazon SQS
-//! queues, EventBridge relies on resource-based policies" (`PutTargets`), and a delivery
-//! those documents withheld is dead-lettered under the PERMISSION class whatever code
-//! the target's own service words its refusal under — while the ANSWER beside the class
-//! is that service's own, and the two services do not word it the same way:
+//! queues, EventBridge relies on resource-based policies" (`PutTargets`), and the class a
+//! delivery those documents withheld is dead-lettered under is the one the ANSWER that
+//! target's own service gave belongs to — the class of that answer's error code, never a
+//! verdict this service reaches about why the call was refused. The two services do not
+//! word the refusal the same way, and so do not land in the same class:
 //!
 //! * Amazon SQS models no authorization failure on `SendMessage` at all
 //!   (`smithy_query(query="operation", operation="SendMessage",
 //!   model_path="services/service-com-amazonaws-sqs-amazonsqs/smithy-model/com-amazonaws-sqs-amazonsqs.json")`):
 //!   it does not disclose a queue it will not let the caller write to, so a send the
 //!   queue's own document does not permit is answered `QueueDoesNotExist` (HTTP 400,
-//!   `awsQueryError` code `AWS.SimpleQueueService.NonExistentQueue`) — the same code
-//!   that service answers for a queue that is not THERE, under its own sentence for
-//!   each of the two. The sentence is what tells them apart: the withheld send is the
-//!   PERMISSION class, and the queue that is not there the RESOURCE class;
+//!   `awsQueryError` code `AWS.SimpleQueueService.NonExistentQueue`) — the same NOT-FOUND
+//!   code that service answers for a queue that is not THERE, under its own sentence for
+//!   each of the two. So both are the RESOURCE class, and the SENTENCE is what tells them
+//!   apart;
 //! * Amazon SNS answers a publish its topic's policy does not permit with
 //!   `AuthorizationErrorException` (HTTP 403, `awsQueryError` code
 //!   `AuthorizationError`,
 //!   `smithy_query(query="shape", shape="AuthorizationErrorException",
 //!   model_path="services/service-com-amazonaws-sns-amazonsimplenotificationservice/smithy-model/com-amazonaws-sns-amazonsimplenotificationservice.json")`)
-//!   — an authorization refusal, and the same PERMISSION class.
+//!   — an authorization refusal, and so the PERMISSION class.
 //!
 //! The table's rows therefore differ along the target's SERVICE, along the FORM the
 //! withholding takes (no document at all, an explicit `Deny` beside a grant, the
 //! document that service generates for the resource's owner) and along whether the
 //! target is there at all, each row stating both the class and what the message must
-//! name of that service's answer — so a class collapsed for every failed delivery, or one
-//! that cannot tell a withheld delivery from an absent target, fails here. A control row
-//! whose queue DOES grant the
+//! name of that service's answer — so a class collapsed for every failed delivery, and
+//! one read off this service's own guess at the reason rather than off the answer, both
+//! fail here. A control row whose queue DOES grant the
 //! send receives the event and parks no dead letter, so no row passes because nothing
 //! was delivered anywhere.
 //!
@@ -206,20 +207,22 @@ async fn given_target(
     }
 }
 
-/// The class a withheld delivery is dead-lettered under is the PERMISSION one whatever
-/// code the TARGET's service answered with, and an absent target is the RESOURCE class.
+/// The class a withheld delivery is dead-lettered under is the class of the CODE the
+/// TARGET's own service answered with: the resource one for the not-found code Amazon SQS
+/// answers a send it will not disclose the queue for, the permission one for the
+/// authorization code Amazon SNS answers a publish its topic withheld.
 #[tokio::test]
-async fn a_withheld_deliverys_class_is_the_permission_one_whatever_the_service_answered() {
+async fn a_withheld_deliverys_class_is_the_one_the_answering_services_code_belongs_to() {
     let rows = [
         Row {
             case: "a queue carrying no policy at all",
             setup: Setup::Queue(None),
-            expected: Some((QUEUE_NOT_DISCLOSED_SENTENCE, NO_PERMISSIONS)),
+            expected: Some((QUEUE_NOT_DISCLOSED_SENTENCE, NO_RESOURCE)),
         },
         Row {
             case: "a queue whose policy denies the send beside granting it",
             setup: Setup::Queue(Some(queue_denying)),
-            expected: Some((QUEUE_NOT_DISCLOSED_SENTENCE, NO_PERMISSIONS)),
+            expected: Some((QUEUE_NOT_DISCLOSED_SENTENCE, NO_RESOURCE)),
         },
         Row {
             case: "a queue ARN no queue was created for",

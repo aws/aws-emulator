@@ -7,14 +7,16 @@
 //! off the dead letter the target's `DeadLetterConfig` queue received.
 //!
 //! The RULE asserted here: the `ERROR_CODE` EventBridge stamps on a dead-lettered
-//! event is the service's OWN classification of why the delivery failed, never the
-//! target service's error code. A delivery no document in force over the target
-//! authorized is `NO_PERMISSIONS` — a role whose policies withhold the call (the class
+//! event is a CLASS of failure rather than the target service's own error code — and
+//! for a delivery that service ANSWERED it is the class that answer's code belongs to.
+//! So `NO_PERMISSIONS` is the class of a refusal for want of a permission this service
+//! decided itself (a role whose policies withhold the call, the class
 //! `tests/all/dead_letter_error_code.rs` spans over the two steps of a role-governed
-//! handover), and a queue whose own document withheld the send, which Amazon SQS
-//! answers under its not-found code because it does not disclose a queue it will not
-//! let the caller write to; a target the delivery could not address at all is
-//! `NO_RESOURCE`; a failure of any other kind is
+//! handover) and of an answer given under an authorization code; `NO_RESOURCE` is the
+//! class of every answer given under a target service's NOT-FOUND code — a target the
+//! delivery could not address at all, and a queue whose own document withheld the send,
+//! which Amazon SQS answers under that same not-found code because it does not disclose
+//! a queue it will not let the caller write to; a failure of any other kind is
 //! `UNKNOWN`. The
 //! target service's own answer is what the `ERROR_MESSAGE` beside it carries, in
 //! full, so nothing of the refusal is lost by classifying it.
@@ -27,12 +29,11 @@
 //! The table spans the class rather than one case: the rows differ along WHICH
 //! classification the failure falls in, along the target's SERVICE (a queue, a
 //! state machine), and along the FORM the failure takes within one class — a queue
-//! granting nothing and one refused by a policy scoped to another rule being
-//! deliveries a document withheld, a queue that was never created and one deleted
-//! after the target was written being targets that are not there, while a queue
-//! refusing one parameter
+//! granting nothing, one refused by a policy scoped to another rule, one that was never
+//! created and one deleted after the target was written all being answered under that
+//! service's not-found code, while a queue refusing one parameter
 //! of the send is a third class on the same service and a state machine whose role
-//! withholds the call is the permission one again.
+//! withholds the call is the permission one.
 //!
 //! The harness (the router with EventBridge, Amazon SQS, Step Functions, IAM and
 //! CloudWatch on one engine, and the queue, role and rule fixtures) is
@@ -257,7 +258,8 @@ async fn given_target(
 }
 
 /// The dead-letter `ERROR_CODE` names the class of failure in EventBridge's own
-/// terms, over a table of failures spanning three target services and every class.
+/// terms — for an answered refusal, the class that answer's own code belongs to — over a
+/// table of failures spanning three target services and every class.
 #[tokio::test]
 async fn the_dead_letter_condition_classifies_why_the_delivery_failed() {
     let rows = [
@@ -269,12 +271,12 @@ async fn the_dead_letter_condition_classifies_why_the_delivery_failed() {
         Row {
             case: "a queue whose policy grants this service nothing",
             target: Target::QueueGrantingNothing,
-            condition: Some(NO_PERMISSIONS),
+            condition: Some(NO_RESOURCE),
         },
         Row {
             case: "a queue whose policy is scoped by aws:SourceArn to another rule",
             target: Target::QueueGrantingAnotherRule,
-            condition: Some(NO_PERMISSIONS),
+            condition: Some(NO_RESOURCE),
         },
         Row {
             case: "a queue ARN no queue was created for",

@@ -75,11 +75,11 @@ const TARGET_ARN_ATTRIBUTE: &str = "TARGET_ARN";
 const ERROR_CODE_ATTRIBUTE: &str = "ERROR_CODE";
 const ERROR_MESSAGE_ATTRIBUTE: &str = "ERROR_MESSAGE";
 
-/// The classes a dead letter carries for the two ways a queue target refuses a delivery: a
-/// send a document in force over the queue withheld is the permission class, and a queue that
-/// is not there at all the resource one. Stated
+/// The class a dead letter carries for a delivery a queue target's own service answered: the
+/// class of that answer's error code, which for both a send the queue's documents withheld
+/// and a queue that is not there at all is Amazon SQS's not-found code, so both are the
+/// resource one. Stated
 /// here rather than imported for the same reason the source and detail-type above are.
-const NO_PERMISSIONS: &str = "NO_PERMISSIONS";
 const NO_RESOURCE: &str = "NO_RESOURCE";
 
 /// The EC2 API version an ec2Query body carries.
@@ -490,14 +490,10 @@ impl Wiring {
                     "case {case:?}: the dead letter names the rule {}, got {letter}",
                     self.rule_arn
                 );
-                // The class states WHY this target's delivery failed: the queue that granted
-                // this service nothing withheld the send, while the ARN no queue was created
-                // for could not be addressed at all.
-                let expected_class = if target_arn.ends_with("ec2-state-never-created") {
-                    NO_RESOURCE
-                } else {
-                    NO_PERMISSIONS
-                };
+                // The class is the one the answer that service gave belongs to: both the queue
+                // that granted this service nothing and the ARN no queue was created for are
+                // answered under its not-found code, which is the resource class.
+                let expected_class = NO_RESOURCE;
                 assert_eq!(
                     attribute(letter, ERROR_CODE_ATTRIBUTE),
                     expected_class,

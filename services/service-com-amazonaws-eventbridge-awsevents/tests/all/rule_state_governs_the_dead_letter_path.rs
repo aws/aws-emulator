@@ -28,7 +28,7 @@
 
 use serde_json::{json, Value};
 use service_com_amazonaws_eventbridge_awsevents::state::{
-    DEFAULT_RULE_STATE, NO_PERMISSIONS, RULE_STATE_DISABLED, RULE_STATE_ENABLED,
+    DEFAULT_RULE_STATE, NO_RESOURCE, RULE_STATE_DISABLED, RULE_STATE_ENABLED,
 };
 
 use crate::target_dispatch::{
@@ -322,9 +322,9 @@ async fn a_rule_that_is_not_enabled_neither_delivers_nor_dead_letters() {
                 );
                 assert_eq!(
                     attribute(message, ERROR_CODE_ATTRIBUTE),
-                    NO_PERMISSIONS,
-                    "case {case:?} (granted {granted}): expected the class of a send the queue's \
-                     own document withheld, got {message:?}"
+                    NO_RESOURCE,
+                    "case {case:?} (granted {granted}): expected the class of the answer that \
+                     service gave a send the queue's own document withheld, got {message:?}"
                 );
                 let reported = attribute(message, ERROR_MESSAGE_ATTRIBUTE);
                 let head = withheld_send_answer();

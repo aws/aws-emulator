@@ -12,9 +12,10 @@
 //! `DeadLetterConfig` names ("the ARN of the SQS queue specified as the target for
 //! the dead-letter queue", `DeadLetterConfig$Arn`), under the ARN of the rule whose
 //! handover failed, the ARN of the target that refused it and the CONDITION of the
-//! refusal — EventBridge's own classification of why the delivery failed, which is
-//! `NO_PERMISSIONS` for every handover a document in force over the target withheld,
-//! whatever code that service worded its answer under — and counts one datapoint on THAT
+//! refusal — the class the CODE the answering service used belongs to, which is
+//! `NO_PERMISSIONS` where that service answered an authorization code and
+//! `NO_RESOURCE` where it answered its not-found one, as Amazon SQS does for a queue
+//! it will not disclose to the sender — and counts one datapoint on THAT
 //! rule's `InvocationsSentToDlq`; while a
 //! sibling rule whose target accepted the same event counts
 //! `SuccessfulInvocationAttempts` and carries no sent-to-DLQ datapoint at all —
@@ -48,7 +49,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use serde_json::{json, Value};
 use service_com_amazonaws_eventbridge_awsevents::state::{
     DEFAULT_EVENT_BUS_NAME, EVENT_BUS_NAME_DIMENSION, INVOCATIONS_SENT_TO_DLQ_METRIC,
-    METRIC_NAMESPACE, NO_PERMISSIONS, RULE_NAME_DIMENSION, SERVICE_PRINCIPAL,
+    METRIC_NAMESPACE, NO_PERMISSIONS, NO_RESOURCE, RULE_NAME_DIMENSION, SERVICE_PRINCIPAL,
     SUCCESSFUL_INVOCATION_ATTEMPTS_METRIC,
 };
 use service_com_amazonaws_lambda_awsgirapiservice::state::STATE_ACTIVE;
@@ -644,10 +645,10 @@ enum Refused {
 
 /// One row: what refuses the failing rule's handover, which bus the two rules live
 /// on, how many matching events the round publishes, and the CONDITION the parked
-/// copy carries — EventBridge's own classification of why the delivery failed, which
-/// is `NO_PERMISSIONS` for every handover a document in force over the target
-/// withheld, whether that service answers an authorization refusal or, as Amazon SQS
-/// does for a queue it will not disclose to the sender, its own not-found code.
+/// copy carries — the class the CODE the answering service used belongs to, which is
+/// `NO_PERMISSIONS` where that service answered an authorization refusal and
+/// `NO_RESOURCE` where it answered its own not-found code, as Amazon SQS does for a
+/// queue it will not disclose to the sender.
 struct Row {
     case: &'static str,
     refused: Refused,
@@ -677,7 +678,7 @@ fn rows() -> Vec<Row> {
             refused: Refused::QueueWithNoPolicy,
             bus: DEFAULT_EVENT_BUS_NAME,
             events: 3,
-            condition: NO_PERMISSIONS,
+            condition: NO_RESOURCE,
         },
     ]
 }
