@@ -23,6 +23,11 @@
 //! The `arns` filter names resources, so each entry is resolved first: one
 //! outside the caller's account is an `AccessDeniedException` (403) and one this
 //! account stores no view under is a `ValidationException` (400).
+//! That account boundary holds for the whole sequence this read walks, not only
+//! for the entries a request names: every view reported is one of the caller's
+//! own account, so a record the store holds under an ARN of another account is
+//! listed by no request — the same record an ARN-addressed read refuses to say
+//! anything about.
 //! The `sourceAccountId` filter selects views by the accounts owning the billing
 //! views they draw from, so a view that draws from none — the account's default
 //! view — is selected by no value of it.
@@ -552,6 +557,17 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // `billing_views` is a BTreeMap keyed by ARN, so this walk is in ARN
         // order and the page boundary is stable.
         for view in state.billing_views.values() {
+            // This read reports the caller's own billing views: the account
+            // boundary is the same one every ARN-addressed read of a view
+            // decides (`state::is_caller_account_view`), so a record the store
+            // holds under an ARN of ANOTHER account is no part of the sequence
+            // this walk is over — it is not reported, not counted towards a
+            // page, and never a cut point. Scoping the sequence, rather than
+            // the projection, is also what keeps the page boundary of a walk
+            // the same whichever page a caller resumes on.
+            if !crate::state::is_caller_account_view(view) {
+                continue;
+            }
             if resume_after
                 .as_deref()
                 .is_some_and(|after| view.arn.as_str() <= after)

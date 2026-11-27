@@ -347,13 +347,17 @@ fn resolve_view<'state>(
             )
         })?,
         // Every account has a PRIMARY billing view, so its absence is not a
-        // caller's mistake but a store this emulator cannot answer from.
+        // caller's mistake but a store this emulator cannot answer from. The
+        // candidates are the caller's OWN views, decided the way every
+        // ARN-addressed read decides the account boundary
+        // (`state::is_caller_account_view`), so a record stored under an ARN of
+        // another account is no candidate here either.
         None => state
             .billing_views
             .values()
             .find(|view| {
                 view.billing_view_type == crate::state::BILLING_VIEW_TYPE_PRIMARY
-                    && view.owner_account_id == crate::state::caller_account_id()
+                    && crate::state::is_caller_account_view(view)
             })
             .ok_or_else(|| unavailable("the caller's PRIMARY billing view is unavailable"))?,
     };

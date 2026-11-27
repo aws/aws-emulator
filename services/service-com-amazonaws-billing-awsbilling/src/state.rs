@@ -1520,6 +1520,18 @@ pub fn is_caller_account_arn(arn: &str) -> bool {
     arn_account_id(arn) == Some(caller_account_id())
 }
 
+/// Whether `view` is a billing view of the caller's own account.
+///
+/// The account a view belongs to is the one its ARN names, decided by
+/// [`is_caller_account_arn`] — the same decision every operation that identifies
+/// a view by ARN makes. A read that ENUMERATES views instead of naming one
+/// applies this to each candidate, so the views it reports are exactly the views
+/// an ARN-addressed read of this service resolves, and a record of another
+/// account is no more observable through a listing than through an ARN.
+pub fn is_caller_account_view(view: &BillingView) -> bool {
+    is_caller_account_arn(&view.arn)
+}
+
 /// The `AccessDeniedException` payload for an ARN outside the caller's
 /// account: the account boundary is enforced before any existence lookup, so
 /// the refusal is built from the caller's identity and the requested ARN and
