@@ -9,6 +9,14 @@
 //! and the page cursor behind the `NextToken` it returns — and that cursor is minted once
 //! per position, so two identical requests answer identically.
 //!
+//! ## The `ListFilter`
+//!
+//! A request may carry a `ListFilter`, whose `CategoriesAttributeFilter` is evaluated
+//! against the tags on the rule each matched category names (`CategoryDetails.RuleId`),
+//! so a caller sees only the categories the tags on their rules admit. See
+//! [`admitted_categories`] for the conditions and [`visible_segment`] for what a
+//! restricted segment looks like.
+//!
 //! ## The stages ahead of this handler
 //!
 //! Three decisions are taken before this handler runs, in `crate::service::front_door`: the
@@ -69,6 +77,10 @@
 //!   contact.
 //! * `InstanceId` (InstanceId, len 1..256, pattern \S) **required** — The identifier of the
 //!   Amazon Connect instance.
+//! * `ListFilter` (RealTimeContactAnalysisSegmentsFilter) — A filter that limits the category
+//!   segments returned by the operation. When provided, use `CategoriesAttributeFilter` to
+//!   return only the category segments whose rules have tags that match the filter. This
+//!   enforces tag-based access control on the categories that the caller can view.
 //! * `MaxResults` (MaxResults, range 1..100) — The maximum number of results to return per
 //!   page.
 //! * `NextToken` (NextToken, len 1..131070, pattern \S) — The token for the next set of
@@ -154,6 +166,196 @@ fn not_found() -> ResourceNotFoundException {
     }
 }
 
+// ---------------------------------------------------------------------------
+// The `ListFilter`: which categories a caller may view
+// ---------------------------------------------------------------------------
+
+/// The `TagComparisonType` that holds when the rule carries the condition's tag with the
+/// condition's value. One of the two values the model declares for that enum
+/// (`smithy_query(query="shape",shape="TagComparisonType")`), and the comparison a
+/// condition that names none states.
+const COMPARISON_EQUALS: &str = "EQUALS";
+
+/// The `TagComparisonType` that holds when it does not: the negation of
+/// [`COMPARISON_EQUALS`], so a rule that carries the tag with another value — and a rule
+/// that does not carry the tag at all — meets it.
+const COMPARISON_NOT_EQUALS: &str = "NOT_EQUALS";
+
+/// The message the service answers a `CategoriesAttributeFilter` that does not name
+/// exactly one of its three conditions with.
+///
+/// The modelled shape doc states the rule this sentence refuses against: "Provide exactly
+/// one of `OrConditions`, `AndCondition`, or `TagCondition`."
+/// (`smithy_query(query="doc",shape="CategoriesAttributeFilter")`). Nothing of the request
+/// is interpolated into it: the finding is about which members were provided, which the
+/// sentence already names.
+const ONE_CONDITION_MESSAGE: &str = "Exactly one of OrConditions, AndCondition, or \
+     TagCondition must be provided in CategoriesAttributeFilter.";
+
+/// The one condition a `CategoriesAttributeFilter` names, borrowed from the request.
+///
+/// Reading the filter into this enum is what makes "exactly one of the three" a decision
+/// taken once per request: every evaluation below is handed a condition that IS present,
+/// so no path has to answer for a filter carrying none or several.
+enum Condition<'filter> {
+    /// `OrConditions`: met when at least one of the conditions in the list is met.
+    Or(&'filter [CategoriesAttributeAndCondition]),
+    /// `AndCondition`: met when every tag condition it carries is met.
+    And(&'filter CategoriesAttributeAndCondition),
+    /// `TagCondition`: met when that single tag condition is met.
+    Tag(&'filter TagCondition),
+}
+
+/// The condition `filter` names, or the modelled `InvalidRequestException` for a filter
+/// that names none of the three or more than one of them.
+fn condition_of(
+    filter: &CategoriesAttributeFilter,
+) -> Result<Condition<'_>, InvalidRequestException> {
+    let named = [
+        filter.or_conditions.as_deref().map(Condition::Or),
+        filter.and_condition.as_ref().map(Condition::And),
+        filter.tag_condition.as_ref().map(Condition::Tag),
+    ];
+    let mut named = named.into_iter().flatten();
+    // Exactly one: a first condition and no second one.
+    match (named.next(), named.next()) {
+        (Some(condition), None) => Ok(condition),
+        _ => Err(InvalidRequestException {
+            message: Some(ONE_CONDITION_MESSAGE.to_string()),
+        }),
+    }
+}
+
+/// Whether the rule carrying `tags` meets `condition`.
+///
+/// `tags` is `None` for a category that names no rule, and for one naming a rule this
+/// instance holds no tags for: a rule with no tags meets no `EQUALS` condition and every
+/// `NOT_EQUALS` one, which is what the comparisons below say about an absent tag.
+fn condition_met(condition: &Condition<'_>, tags: Option<&crate::state::RuleTags>) -> bool {
+    match condition {
+        // OR over the list, so an empty list is met by nothing.
+        Condition::Or(or_conditions) => or_conditions
+            .iter()
+            .any(|and_condition| and_condition_met(and_condition, tags)),
+        Condition::And(and_condition) => and_condition_met(and_condition, tags),
+        Condition::Tag(tag_condition) => tag_condition_met(tag_condition, tags),
+    }
+}
+
+/// Whether the rule carrying `tags` meets every tag condition of `and_condition` — so a
+/// condition that carries no tag condition at all restricts nothing.
+fn and_condition_met(
+    and_condition: &CategoriesAttributeAndCondition,
+    tags: Option<&crate::state::RuleTags>,
+) -> bool {
+    and_condition
+        .tag_conditions
+        .as_deref()
+        .unwrap_or_default()
+        .iter()
+        .all(|tag_condition| tag_condition_met(tag_condition, tags))
+}
+
+/// Whether the rule carrying `tags` meets one tag condition: the rule's value for the
+/// condition's `TagKey` compared with its `TagValue` under its `ComparisonType`.
+fn tag_condition_met(
+    tag_condition: &TagCondition,
+    tags: Option<&crate::state::RuleTags>,
+) -> bool {
+    let key = tag_condition.tag_key.as_deref().unwrap_or_default();
+    let value = tag_condition.tag_value.as_deref().unwrap_or_default();
+    let equals = tags
+        .and_then(|tags| tags.get(key))
+        .is_some_and(|stored| stored == value);
+    match tag_condition
+        .comparison_type
+        .as_deref()
+        .unwrap_or(COMPARISON_EQUALS)
+    {
+        COMPARISON_NOT_EQUALS => !equals,
+        // `EQUALS`. No other value reaches here: the member targets an enum, so the
+        // constraint walk ahead of this handler refuses anything the model does not
+        // declare.
+        _ => equals,
+    }
+}
+
+/// How a matched category's rule is resolved to the tags the filter is evaluated
+/// against: the rules of the ONE instance the request named, read from stored state.
+///
+/// A rule identifier is unique within an instance, so the instance is part of the
+/// lookup: a rule of another instance that happens to share the identifier is not this
+/// category's rule and its tags do not decide what this caller may view.
+struct Rules<'state> {
+    state: &'state crate::state::ComAmazonawsConnectcontactlensAmazonconnectcontactlensState,
+    instance_id: &'state str,
+}
+
+impl Rules<'_> {
+    /// The tags on the rule one matched category names, or `None` for a category that
+    /// names no rule and for one naming a rule this instance holds no tags for.
+    fn tags_of(&self, details: Option<&CategoryDetails>) -> Option<&crate::state::RuleTags> {
+        let rule_id = details?.rule_id.as_deref()?;
+        self.state.rule_tags(self.instance_id, rule_id)
+    }
+}
+
+/// `categories` as this request may view it: the matched categories whose rule meets
+/// `condition`, and the details of those same categories.
+fn admitted_categories(
+    categories: &Categories,
+    condition: &Condition<'_>,
+    rules: &Rules<'_>,
+) -> Categories {
+    let admits = |details: Option<&CategoryDetails>| {
+        condition_met(condition, rules.tags_of(details))
+    };
+    Categories {
+        matched_categories: categories
+            .matched_categories
+            .iter()
+            .filter(|name| admits(categories.matched_details.get(*name)))
+            .cloned()
+            .collect(),
+        matched_details: categories
+            .matched_details
+            .iter()
+            .filter(|(_, details)| admits(Some(details)))
+            .map(|(name, details)| (name.clone(), details.clone()))
+            .collect(),
+    }
+}
+
+/// The segment as this request may view it, or `None` for one the filter leaves nothing
+/// of.
+///
+/// A segment that carries no `Categories` is about no category, so a category filter
+/// leaves it as stored. One that does carries only the categories `condition` admits; a
+/// category segment the filter admits nothing of is not returned at all, unless the
+/// segment also carries an analysis the filter says nothing about (a transcript, a
+/// post-contact summary, extracted information), which stays.
+fn visible_segment(
+    segment: &RealtimeContactAnalysisSegment,
+    condition: &Condition<'_>,
+    rules: &Rules<'_>,
+) -> Option<RealtimeContactAnalysisSegment> {
+    let Some(categories) = segment.categories.as_ref() else {
+        return Some(segment.clone());
+    };
+    let admitted = admitted_categories(categories, condition, rules);
+    let nothing_admitted =
+        admitted.matched_categories.is_empty() && admitted.matched_details.is_empty();
+    let visible = RealtimeContactAnalysisSegment {
+        categories: (!nothing_admitted).then_some(admitted),
+        ..segment.clone()
+    };
+    let empty = visible.categories.is_none()
+        && visible.transcript.is_none()
+        && visible.post_contact_summary.is_none()
+        && visible.extracted_information.is_none();
+    (!empty).then_some(visible)
+}
+
 /// The `ListRealtimeContactAnalysisSegments` operation.
 ///
 /// Owns the shared engine (the constructor seam) and implements
@@ -194,6 +396,21 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // identity is judged ahead of this handler (see the module docs), so nothing of the
         // request's metadata is read here.
         let _ = ctx;
+
+        // The ONE reading of the request's filter, taken before any stored state is
+        // read: a `CategoriesAttributeFilter` names exactly one condition, so a filter
+        // naming none or several is refused here rather than at each segment. A request
+        // with no filter — and one whose filter carries no `CategoriesAttributeFilter` —
+        // restricts nothing.
+        let condition = input
+            .list_filter
+            .as_ref()
+            .and_then(|filter| filter.categories_attribute_filter.as_ref())
+            .map(condition_of)
+            .transpose()
+            .map_err(|invalid| {
+                ListRealtimeContactAnalysisSegmentsErrorModeled::InvalidRequestException(invalid)
+            })?;
 
         let state = crate::state::service_state(&*self.engine).ok_or_else(|| {
             ListRealtimeContactAnalysisSegmentsErrorModeled::InternalServiceException(
@@ -256,10 +473,35 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .unwrap_or(crate::state::MAX_PAGE_SIZE)
             .clamp(1, crate::state::MAX_PAGE_SIZE) as usize;
         let start = start.min(total);
-        let end = start.saturating_add(page_size).min(total);
 
-        // Byte-for-byte what was stored, in stored (chronological) order.
-        let segments = session.segments[start..end].to_vec();
+        // The page: the stored segments from the cursor on, in stored (chronological)
+        // order and byte-for-byte what was stored, each one as this request may view it,
+        // until the page is full. A position is consumed whether or not the filter leaves
+        // anything of the segment there, so the cursor stays an index into the STORED
+        // list: a filtered read pages over the same positions an unfiltered one does, and
+        // no segment is handed out twice or skipped.
+        // How a matched category's rule is resolved while this page is built: the rules
+        // of the instance the request named.
+        let rules = Rules {
+            state: &state,
+            instance_id: &input.instance_id,
+        };
+        let mut segments: Vec<RealtimeContactAnalysisSegment> = Vec::new();
+        let mut end = start;
+        for segment in &session.segments[start..] {
+            if segments.len() >= page_size {
+                break;
+            }
+            end += 1;
+            match condition.as_ref() {
+                None => segments.push(segment.clone()),
+                Some(condition) => {
+                    if let Some(visible) = visible_segment(segment, condition, &rules) {
+                        segments.push(visible);
+                    }
+                }
+            }
+        }
 
         // Per the modeled `NextToken` doc: a token is returned when more segments are
         // stored now, AND when the session is drained but analysis is still running

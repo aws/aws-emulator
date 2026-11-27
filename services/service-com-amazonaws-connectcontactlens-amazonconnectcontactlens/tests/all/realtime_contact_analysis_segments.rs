@@ -168,6 +168,7 @@ fn transcript_segment(index: usize) -> RealtimeContactAnalysisSegment {
             end_offset_millis: begin + 900,
             sentiment: None,
             issues_detected: None,
+            language_code: None,
         }),
         ..Default::default()
     }
@@ -398,6 +399,7 @@ async fn stored_segments_round_trip_in_their_modeled_shape() {
                 end_offset_millis: 1_200,
                 sentiment: None,
                 issues_detected: None,
+                language_code: None,
             }),
             ..Default::default()
         },
@@ -426,6 +428,7 @@ async fn stored_segments_round_trip_in_their_modeled_shape() {
                     end_offset_millis: 2_500,
                     sentiment: Some((*sentiment).to_string()),
                     issues_detected: None,
+                    language_code: None,
                 }),
                 ..Default::default()
             },
@@ -468,6 +471,7 @@ async fn stored_segments_round_trip_in_their_modeled_shape() {
                         },
                     },
                 ]),
+                language_code: None,
             }),
             ..Default::default()
         },
@@ -501,6 +505,7 @@ async fn stored_segments_round_trip_in_their_modeled_shape() {
                                 begin_offset_millis: 1_000,
                                 end_offset_millis: 2_000,
                             }],
+                            rule_id: None,
                         },
                     ),
                     (
@@ -516,6 +521,7 @@ async fn stored_segments_round_trip_in_their_modeled_shape() {
                                     end_offset_millis: 7_500,
                                 },
                             ],
+                            rule_id: None,
                         },
                     ),
                 ]
@@ -629,6 +635,79 @@ async fn stored_segments_round_trip_in_their_modeled_shape() {
         ));
     }
 
+    // `LanguageCode` is a plain string (len 1..256, pattern \S) rather than an enum
+    // (`smithy_query(query="shape",shape="Transcript")`), so these rows span the
+    // published length bounds beside the code the member's own doc names.
+    let longest_language_code = "l".repeat(256);
+    for (index, language_code) in ["en-US", "es-ES", "x", longest_language_code.as_str()]
+        .into_iter()
+        .enumerate()
+    {
+        cases.push((
+            format!("transcript with language code {language_code:?}"),
+            RealtimeContactAnalysisSegment {
+                transcript: Some(Transcript {
+                    id: format!("seg-lang-{index}"),
+                    participant_id: "p-5".to_string(),
+                    participant_role: "CUSTOMER".to_string(),
+                    content: "where is my order".to_string(),
+                    begin_offset_millis: 10_000,
+                    end_offset_millis: 10_500,
+                    sentiment: None,
+                    issues_detected: None,
+                    language_code: Some(language_code.to_string()),
+                }),
+                ..Default::default()
+            },
+            json!({
+                "Transcript": {
+                    "Id": format!("seg-lang-{index}"),
+                    "ParticipantId": "p-5",
+                    "ParticipantRole": "CUSTOMER",
+                    "Content": "where is my order",
+                    "BeginOffsetMillis": 10_000,
+                    "EndOffsetMillis": 10_500,
+                    "LanguageCode": language_code,
+                }
+            }),
+        ));
+    }
+
+    cases.push((
+        "category details naming the rule that created the match".to_string(),
+        RealtimeContactAnalysisSegment {
+            categories: Some(Categories {
+                matched_categories: vec!["Cancellation".to_string()],
+                matched_details: [(
+                    "Cancellation".to_string(),
+                    CategoryDetails {
+                        points_of_interest: vec![PointOfInterest {
+                            begin_offset_millis: 11_000,
+                            end_offset_millis: 11_800,
+                        }],
+                        rule_id: Some("2f3c4d5e-6f70-4812-9a3b-4c5d6e7f8091".to_string()),
+                    },
+                )]
+                .into_iter()
+                .collect(),
+            }),
+            ..Default::default()
+        },
+        json!({
+            "Categories": {
+                "MatchedCategories": ["Cancellation"],
+                "MatchedDetails": {
+                    "Cancellation": {
+                        "PointsOfInterest": [
+                            { "BeginOffsetMillis": 11_000, "EndOffsetMillis": 11_800 }
+                        ],
+                        "RuleId": "2f3c4d5e-6f70-4812-9a3b-4c5d6e7f8091",
+                    }
+                },
+            }
+        }),
+    ));
+
     cases.push((
         "transcript and categories in one segment".to_string(),
         RealtimeContactAnalysisSegment {
@@ -641,6 +720,7 @@ async fn stored_segments_round_trip_in_their_modeled_shape() {
                 end_offset_millis: 9_900,
                 sentiment: Some("NEUTRAL".to_string()),
                 issues_detected: None,
+                language_code: None,
             }),
             categories: Some(Categories {
                 matched_categories: vec!["Escalation".to_string()],
@@ -651,6 +731,7 @@ async fn stored_segments_round_trip_in_their_modeled_shape() {
                             begin_offset_millis: 9_000,
                             end_offset_millis: 9_900,
                         }],
+                        rule_id: None,
                     },
                 )]
                 .into_iter()
@@ -1112,4 +1193,586 @@ async fn segments_appended_after_a_read_appear_on_the_next_call() {
         "case \"after completion\": a completed, drained session must omit NextToken, got {:?}",
         third.body
     );
+}
+
+// ---------------------------------------------------------------------------
+// The `ListFilter`: which categories a caller may view
+// ---------------------------------------------------------------------------
+
+/// The rules whose matches the seeded category segments carry. A rule identifier is
+/// `len 1..256, pattern ^\S+$`
+/// (`smithy_query(query="shape",shape="CategoryDetails")`), so these are legal
+/// identifiers; what matters to a filter is the TAGS each one carries.
+const RULE_PUBLIC: &str = "rule-public";
+const RULE_PRIVATE: &str = "rule-private";
+/// A rule no tags were ever registered for: a rule with no tags, which is the same
+/// absence as a category naming no rule at all.
+const RULE_UNTAGGED: &str = "rule-untagged";
+
+/// The message the service answers a `CategoriesAttributeFilter` that does not name
+/// exactly one of its three conditions with. Pinned here as a literal, not read from the
+/// crate, so a handler that starts interpolating the request into it fails this test.
+const ONE_CONDITION_MESSAGE: &str = "Exactly one of OrConditions, AndCondition, or \
+     TagCondition must be provided in CategoriesAttributeFilter.";
+
+/// The seeding path for a rule's tags: Amazon Connect owns the rules, so the tags on one
+/// are registered on the shared engine the way its producing side would register them.
+fn seed_rule_tags(
+    engine: &Arc<engine::InMemoryEngine>,
+    instance: &str,
+    rule_id: &str,
+    tags: &[(&str, &str)],
+) {
+    service_state(&**engine)
+        .expect("the in-memory engine must expose this service's state")
+        .lock()
+        .put_rule_tags(
+            instance,
+            rule_id,
+            tags.iter()
+                .map(|(key, value)| ((*key).to_string(), (*value).to_string())),
+        );
+}
+
+/// A category segment: one matched category, created by `rule_id` where it names a rule.
+fn category_segment(name: &str, rule_id: Option<&str>) -> RealtimeContactAnalysisSegment {
+    RealtimeContactAnalysisSegment {
+        categories: Some(Categories {
+            matched_categories: vec![name.to_string()],
+            matched_details: [(
+                name.to_string(),
+                CategoryDetails {
+                    points_of_interest: vec![PointOfInterest {
+                        begin_offset_millis: 1_000,
+                        end_offset_millis: 2_000,
+                    }],
+                    rule_id: rule_id.map(str::to_string),
+                },
+            )]
+            .into_iter()
+            .collect(),
+        }),
+        ..Default::default()
+    }
+}
+
+/// What one returned segment is, for an assertion over a whole page: its transcript's
+/// identifier and the matched categories it carries, so a page is compared as a sequence
+/// of identities rather than of whole bodies.
+fn identity(segment: &Value) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(id) = segment["Transcript"]["Id"].as_str() {
+        parts.push(format!("transcript:{id}"));
+    }
+    if let Some(names) = segment["Categories"]["MatchedCategories"].as_array() {
+        let names: Vec<&str> = names.iter().filter_map(Value::as_str).collect();
+        parts.push(format!("categories:[{}]", names.join(",")));
+    }
+    parts.join("+")
+}
+
+/// The identities of every segment one reply returned, in the order it returned them.
+fn identities(reply: &Reply) -> Vec<String> {
+    reply.segments().iter().map(identity).collect()
+}
+
+/// A request carrying `ListFilter`.
+fn filtered_request(instance: &str, contact: &str, max_results: Option<i32>, filter: &Value) -> Value {
+    let mut body = request(instance, contact, max_results, None);
+    body["ListFilter"] = filter.clone();
+    body
+}
+
+/// A session whose segments are one category per rule — tagged public, tagged private,
+/// one naming a rule with no tags, one naming no rule — plus a transcript segment, which
+/// is about no category at all.
+fn seed_tagged_session(engine: &Arc<engine::InMemoryEngine>, instance: &str) {
+    seed_rule_tags(
+        engine,
+        instance,
+        RULE_PUBLIC,
+        &[("Visibility", "PUBLIC"), ("Team", "SALES")],
+    );
+    seed_rule_tags(
+        engine,
+        instance,
+        RULE_PRIVATE,
+        &[("Visibility", "PRIVATE"), ("Team", "SUPPORT")],
+    );
+    seed(
+        engine,
+        AnalysisSession::new(instance, CONTACT)
+            .with_segments([
+                category_segment("Cancellation", Some(RULE_PUBLIC)),
+                category_segment("Escalation", Some(RULE_PRIVATE)),
+                category_segment("Compliance", Some(RULE_UNTAGGED)),
+                category_segment("Legacy", None),
+                transcript_segment(0),
+            ])
+            .completed(true),
+    );
+}
+
+/// A category is returned only when the tags on the rule that created it meet the one
+/// condition the request's `CategoriesAttributeFilter` names; a segment about no category
+/// is returned whatever the filter says.
+///
+/// The rows vary what the rule generalises over: which of the three conditions the filter
+/// names, the comparison type (`EQUALS`, `NOT_EQUALS`, and a condition naming none), how
+/// many tag conditions one condition carries (none, one, several), and whether the rule
+/// carries the tag, carries it with another value, carries no tags, or does not exist.
+#[tokio::test]
+async fn a_list_filter_admits_only_the_categories_its_rule_tags_meet() {
+    let public = "categories:[Cancellation]";
+    let private = "categories:[Escalation]";
+    let untagged = "categories:[Compliance]";
+    let no_rule = "categories:[Legacy]";
+    let transcript = "transcript:t-0";
+
+    let rows: [(&str, Option<Value>, Vec<&str>); 13] = [
+        ("no filter at all", None, vec![public, private, untagged, no_rule, transcript]),
+        (
+            "a filter naming no categories attribute filter",
+            Some(json!({})),
+            vec![public, private, untagged, no_rule, transcript],
+        ),
+        (
+            "one tag condition the public rule carries",
+            Some(json!({ "CategoriesAttributeFilter": { "TagCondition": {
+                "TagKey": "Visibility", "TagValue": "PUBLIC", "ComparisonType": "EQUALS"
+            } } })),
+            vec![public, transcript],
+        ),
+        (
+            "one tag condition with no comparison type",
+            Some(json!({ "CategoriesAttributeFilter": { "TagCondition": {
+                "TagKey": "Visibility", "TagValue": "PRIVATE"
+            } } })),
+            vec![private, transcript],
+        ),
+        (
+            "one NOT_EQUALS tag condition",
+            Some(json!({ "CategoriesAttributeFilter": { "TagCondition": {
+                "TagKey": "Visibility", "TagValue": "PUBLIC", "ComparisonType": "NOT_EQUALS"
+            } } })),
+            vec![private, untagged, no_rule, transcript],
+        ),
+        (
+            "one tag condition on a tag key no rule carries",
+            Some(json!({ "CategoriesAttributeFilter": { "TagCondition": {
+                "TagKey": "Department", "TagValue": "SALES", "ComparisonType": "EQUALS"
+            } } })),
+            vec![transcript],
+        ),
+        (
+            "one tag condition on a value no rule carries for that key",
+            Some(json!({ "CategoriesAttributeFilter": { "TagCondition": {
+                "TagKey": "Team", "TagValue": "BILLING", "ComparisonType": "EQUALS"
+            } } })),
+            vec![transcript],
+        ),
+        (
+            "an and condition every tag of the public rule meets",
+            Some(json!({ "CategoriesAttributeFilter": { "AndCondition": { "TagConditions": [
+                { "TagKey": "Visibility", "TagValue": "PUBLIC", "ComparisonType": "EQUALS" },
+                { "TagKey": "Team", "TagValue": "SALES", "ComparisonType": "EQUALS" }
+            ] } } })),
+            vec![public, transcript],
+        ),
+        (
+            "an and condition no single rule meets",
+            Some(json!({ "CategoriesAttributeFilter": { "AndCondition": { "TagConditions": [
+                { "TagKey": "Visibility", "TagValue": "PUBLIC", "ComparisonType": "EQUALS" },
+                { "TagKey": "Team", "TagValue": "SUPPORT", "ComparisonType": "EQUALS" }
+            ] } } })),
+            vec![transcript],
+        ),
+        (
+            "an and condition carrying no tag condition",
+            Some(json!({ "CategoriesAttributeFilter": {
+                "AndCondition": { "TagConditions": [] }
+            } })),
+            vec![public, private, untagged, no_rule, transcript],
+        ),
+        (
+            "or conditions one of which is met",
+            Some(json!({ "CategoriesAttributeFilter": { "OrConditions": [
+                { "TagConditions": [
+                    { "TagKey": "Visibility", "TagValue": "PUBLIC", "ComparisonType": "EQUALS" }
+                ] },
+                { "TagConditions": [
+                    { "TagKey": "Team", "TagValue": "SUPPORT", "ComparisonType": "EQUALS" }
+                ] }
+            ] } })),
+            vec![public, private, transcript],
+        ),
+        (
+            "or conditions none of which is met",
+            Some(json!({ "CategoriesAttributeFilter": { "OrConditions": [
+                { "TagConditions": [
+                    { "TagKey": "Visibility", "TagValue": "SECRET", "ComparisonType": "EQUALS" }
+                ] }
+            ] } })),
+            vec![transcript],
+        ),
+        (
+            "an empty list of or conditions",
+            Some(json!({ "CategoriesAttributeFilter": { "OrConditions": [] } })),
+            vec![transcript],
+        ),
+    ];
+
+    for (case, filter, expected) in rows {
+        let engine = build_engine();
+        let router = build_router(&engine);
+        seed_tagged_session(&engine, INSTANCE);
+
+        let body = match &filter {
+            None => request(INSTANCE, CONTACT, None, None),
+            Some(filter) => filtered_request(INSTANCE, CONTACT, None, filter),
+        };
+        let reply = list(&router, &body).await;
+        assert_eq!(
+            reply.status, 200,
+            "case {case:?}: expected HTTP 200, got {} {:?}",
+            reply.status, reply.body
+        );
+        let returned = identities(&reply);
+        assert_eq!(
+            returned, expected,
+            "case {case:?}: expected {expected:?}, got {returned:?}"
+        );
+    }
+}
+
+/// A category segment carrying several matched categories comes back carrying only the
+/// ones the filter admits — the matched names and their details together — and one
+/// carrying no admitted category is not returned at all.
+#[tokio::test]
+async fn a_filter_prunes_the_categories_of_one_segment() {
+    let engine = build_engine();
+    let router = build_router(&engine);
+    seed_rule_tags(&engine, INSTANCE, RULE_PUBLIC, &[("Visibility", "PUBLIC")]);
+    seed_rule_tags(&engine, INSTANCE, RULE_PRIVATE, &[("Visibility", "PRIVATE")]);
+
+    let mixed = RealtimeContactAnalysisSegment {
+        categories: Some(Categories {
+            matched_categories: vec!["Cancellation".to_string(), "Escalation".to_string()],
+            matched_details: [
+                (
+                    "Cancellation".to_string(),
+                    CategoryDetails {
+                        points_of_interest: vec![PointOfInterest {
+                            begin_offset_millis: 1_000,
+                            end_offset_millis: 2_000,
+                        }],
+                        rule_id: Some(RULE_PUBLIC.to_string()),
+                    },
+                ),
+                (
+                    "Escalation".to_string(),
+                    CategoryDetails {
+                        points_of_interest: vec![PointOfInterest {
+                            begin_offset_millis: 3_000,
+                            end_offset_millis: 4_000,
+                        }],
+                        rule_id: Some(RULE_PRIVATE.to_string()),
+                    },
+                ),
+            ]
+            .into_iter()
+            .collect(),
+        }),
+        ..Default::default()
+    };
+    // A segment whose only matched category the filter hides, and which carries nothing
+    // else: the filter leaves nothing of it.
+    let hidden = category_segment("Escalation", Some(RULE_PRIVATE));
+    seed(
+        &engine,
+        AnalysisSession::new(INSTANCE, CONTACT)
+            .with_segments([mixed, hidden])
+            .completed(true),
+    );
+
+    let filter = json!({ "CategoriesAttributeFilter": { "TagCondition": {
+        "TagKey": "Visibility", "TagValue": "PUBLIC", "ComparisonType": "EQUALS"
+    } } });
+    let reply = list(&router, &filtered_request(INSTANCE, CONTACT, None, &filter)).await;
+    assert_eq!(
+        reply.status, 200,
+        "case \"pruned segment\": expected HTTP 200, got {} {:?}",
+        reply.status, reply.body
+    );
+    assert_eq!(
+        reply.segments(),
+        vec![json!({
+            "Categories": {
+                "MatchedCategories": ["Cancellation"],
+                "MatchedDetails": {
+                    "Cancellation": {
+                        "PointsOfInterest": [
+                            { "BeginOffsetMillis": 1_000, "EndOffsetMillis": 2_000 }
+                        ],
+                        "RuleId": RULE_PUBLIC,
+                    }
+                },
+            }
+        })],
+        "case \"pruned segment\": expected only the admitted category, got {:?}",
+        reply.segments()
+    );
+}
+
+/// A filter is about categories, so it leaves the rest of a segment alone: a segment that
+/// also carries a transcript keeps it even when every category of that segment is hidden.
+#[tokio::test]
+async fn a_filter_leaves_everything_but_the_categories_of_a_segment() {
+    let engine = build_engine();
+    let router = build_router(&engine);
+    seed_rule_tags(&engine, INSTANCE, RULE_PRIVATE, &[("Visibility", "PRIVATE")]);
+
+    let mut combined = transcript_segment(7);
+    combined.categories = category_segment("Escalation", Some(RULE_PRIVATE)).categories;
+    seed(
+        &engine,
+        AnalysisSession::new(INSTANCE, CONTACT)
+            .with_segments([combined])
+            .completed(true),
+    );
+
+    let filter = json!({ "CategoriesAttributeFilter": { "TagCondition": {
+        "TagKey": "Visibility", "TagValue": "PUBLIC", "ComparisonType": "EQUALS"
+    } } });
+    let reply = list(&router, &filtered_request(INSTANCE, CONTACT, None, &filter)).await;
+    let returned = identities(&reply);
+    assert_eq!(
+        returned,
+        vec!["transcript:t-7".to_string()],
+        "case \"hidden category beside a transcript\": expected the transcript alone, got \
+         {returned:?} in {:?}",
+        reply.body
+    );
+}
+
+/// A rule identifier is resolved within the instance the request names: the same
+/// identifier tagged differently in another instance decides nothing for this one.
+#[tokio::test]
+async fn rule_tags_are_resolved_within_the_requested_instance() {
+    let engine = build_engine();
+    let router = build_router(&engine);
+    // ONE rule identifier, tagged `PUBLIC` in one instance and `PRIVATE` in the other.
+    seed_rule_tags(&engine, INSTANCE, RULE_PUBLIC, &[("Visibility", "PUBLIC")]);
+    seed_rule_tags(
+        &engine,
+        OTHER_INSTANCE,
+        RULE_PUBLIC,
+        &[("Visibility", "PRIVATE")],
+    );
+    for instance in [INSTANCE, OTHER_INSTANCE] {
+        seed(
+            &engine,
+            AnalysisSession::new(instance, CONTACT)
+                .with_segments([category_segment("Cancellation", Some(RULE_PUBLIC))])
+                .completed(true),
+        );
+    }
+
+    let filter = json!({ "CategoriesAttributeFilter": { "TagCondition": {
+        "TagKey": "Visibility", "TagValue": "PUBLIC", "ComparisonType": "EQUALS"
+    } } });
+    for (case, instance, expected) in [
+        ("the instance that tagged the rule PUBLIC", INSTANCE, vec!["categories:[Cancellation]"]),
+        ("the instance that tagged it PRIVATE", OTHER_INSTANCE, Vec::new()),
+    ] {
+        let reply = list(&router, &filtered_request(instance, CONTACT, None, &filter)).await;
+        let returned = identities(&reply);
+        assert_eq!(
+            returned, expected,
+            "case {case:?}: expected {expected:?}, got {returned:?}"
+        );
+    }
+}
+
+/// Paging a filtered read hands out every admitted segment exactly once, in stored order,
+/// with no page larger than the effective limit — and the stored segments a filter hides
+/// are still there for the next caller, whose own filter decides afresh.
+#[tokio::test]
+async fn a_filtered_read_pages_over_the_admitted_segments_and_changes_nothing() {
+    const COUNT: usize = 10;
+    for max_results in [Some(1), Some(2), Some(3), Some(MAX_PAGE_SIZE), None] {
+        let case = format!("max_results={max_results:?}");
+        let engine = build_engine();
+        let router = build_router(&engine);
+        seed_rule_tags(&engine, INSTANCE, RULE_PUBLIC, &[("Visibility", "PUBLIC")]);
+        seed_rule_tags(&engine, INSTANCE, RULE_PRIVATE, &[("Visibility", "PRIVATE")]);
+        seed(
+            &engine,
+            AnalysisSession::new(INSTANCE, CONTACT)
+                .with_segments((0..COUNT).map(|index| {
+                    let rule = if index.is_multiple_of(2) {
+                        RULE_PUBLIC
+                    } else {
+                        RULE_PRIVATE
+                    };
+                    category_segment(&format!("Category-{index}"), Some(rule))
+                }))
+                .completed(true),
+        );
+
+        let filter = json!({ "CategoriesAttributeFilter": { "TagCondition": {
+            "TagKey": "Visibility", "TagValue": "PUBLIC", "ComparisonType": "EQUALS"
+        } } });
+        let page_limit = usize::try_from(max_results.unwrap_or(MAX_PAGE_SIZE))
+            .expect("the page limit is positive");
+
+        let mut seen: Vec<String> = Vec::new();
+        let mut token: Option<String> = None;
+        for page in 0..=COUNT {
+            let mut body = filtered_request(INSTANCE, CONTACT, max_results, &filter);
+            if let Some(token) = &token {
+                body["NextToken"] = json!(token);
+            }
+            let reply = list(&router, &body).await;
+            assert_eq!(
+                reply.status, 200,
+                "case {case}: page {page} expected HTTP 200, got {} {:?}",
+                reply.status, reply.body
+            );
+            let returned = identities(&reply);
+            assert!(
+                returned.len() <= page_limit,
+                "case {case}: page {page} expected at most {page_limit} segments, got \
+                 {returned:?}"
+            );
+            seen.extend(returned);
+            token = reply.next_token();
+            if token.is_none() {
+                break;
+            }
+        }
+        assert_eq!(
+            token, None,
+            "case {case}: a completed, drained session must omit NextToken, got {token:?}"
+        );
+        let expected: Vec<String> = (0..COUNT)
+            .filter(|index| index.is_multiple_of(2))
+            .map(|index| format!("categories:[Category-{index}]"))
+            .collect();
+        assert_eq!(
+            seen, expected,
+            "case {case}: expected every admitted segment exactly once, got {seen:?}"
+        );
+
+        // The read changed nothing: an unfiltered caller still sees every stored segment.
+        let unfiltered = list(&router, &request(INSTANCE, CONTACT, None, None)).await;
+        let all: Vec<String> = (0..COUNT)
+            .map(|index| format!("categories:[Category-{index}]"))
+            .collect();
+        assert_eq!(
+            identities(&unfiltered),
+            all,
+            "case {case}: a filtered read must not drop a stored segment, got {:?}",
+            unfiltered.body
+        );
+    }
+}
+
+/// A `CategoriesAttributeFilter` names exactly one of `OrConditions`, `AndCondition` and
+/// `TagCondition` (its modelled doc), so one naming none of them, or several, is
+/// `InvalidRequestException` (HTTP 400) — and the refusal carries the service's fixed
+/// sentence.
+#[tokio::test]
+async fn a_filter_that_does_not_name_exactly_one_condition_is_refused() {
+    let tag_condition = json!({ "TagKey": "Visibility", "TagValue": "PUBLIC" });
+    let and_condition = json!({ "TagConditions": [tag_condition.clone()] });
+    let rows: [(&str, Value, u16); 7] = [
+        ("no condition at all", json!({}), 400),
+        (
+            "a tag condition and an and condition",
+            json!({ "TagCondition": tag_condition, "AndCondition": and_condition }),
+            400,
+        ),
+        (
+            "or conditions and a tag condition",
+            json!({ "OrConditions": [and_condition], "TagCondition": tag_condition }),
+            400,
+        ),
+        (
+            "or conditions and an and condition",
+            json!({ "OrConditions": [and_condition], "AndCondition": and_condition }),
+            400,
+        ),
+        (
+            "all three conditions",
+            json!({
+                "OrConditions": [and_condition],
+                "AndCondition": and_condition,
+                "TagCondition": tag_condition,
+            }),
+            400,
+        ),
+        // The control rows: exactly one condition is served, whichever one it is.
+        ("one tag condition", json!({ "TagCondition": tag_condition }), 200),
+        ("one and condition", json!({ "AndCondition": and_condition }), 200),
+    ];
+
+    for (case, categories_filter, expected) in rows {
+        let engine = build_engine();
+        let router = build_router(&engine);
+        seed_tagged_session(&engine, INSTANCE);
+
+        let filter = json!({ "CategoriesAttributeFilter": categories_filter });
+        let reply = list(&router, &filtered_request(INSTANCE, CONTACT, None, &filter)).await;
+        assert_eq!(
+            reply.status, expected,
+            "case {case:?}: expected HTTP {expected}, got {} {:?}",
+            reply.status, reply.body
+        );
+        if expected != 400 {
+            continue;
+        }
+        assert_eq!(
+            reply.error_type.as_deref(),
+            Some("InvalidRequestException"),
+            "case {case:?}: expected InvalidRequestException, got {:?}",
+            reply.error_type
+        );
+        assert_eq!(
+            reply.message().as_deref(),
+            Some(ONE_CONDITION_MESSAGE),
+            "case {case:?}: expected the fixed message {ONE_CONDITION_MESSAGE:?}, got {:?}",
+            reply.message()
+        );
+        assert!(
+            reply.body.get("Segments").is_none(),
+            "case {case:?}: the error body must carry no output member, got {:?}",
+            reply.body
+        );
+    }
+}
+
+/// A filter is read before any stored state is: a request whose filter names no condition
+/// is refused HTTP 400 whether or not the contact it names has an analysis session, so the
+/// refusal says nothing about stored state.
+#[tokio::test]
+async fn a_refused_filter_is_refused_before_the_session_is_looked_up() {
+    let engine = build_engine();
+    let router = build_router(&engine);
+    seed_tagged_session(&engine, INSTANCE);
+
+    let filter = json!({ "CategoriesAttributeFilter": {} });
+    for (case, contact) in [
+        ("a contact with a session", CONTACT),
+        ("a contact with none", "0b1c2d3e-4f50-4617-8829-9a0b1c2d3e4f"),
+    ] {
+        let reply = list(&router, &filtered_request(INSTANCE, contact, None, &filter)).await;
+        assert_eq!(
+            (reply.status, reply.message().as_deref()),
+            (400, Some(ONE_CONDITION_MESSAGE)),
+            "case {case:?}: expected the filter refusal, got {} {:?}",
+            reply.status,
+            reply.body
+        );
+    }
 }

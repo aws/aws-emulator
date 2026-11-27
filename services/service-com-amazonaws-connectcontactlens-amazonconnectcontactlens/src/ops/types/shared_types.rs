@@ -27,3 +27,7 @@ pub const POST_CONTACT_SUMMARY_STATUS_VALUES: &[&str] = &["COMPLETED", "FAILED"]
 pub const SENTIMENT_VALUE_VALUES: &[&str] = &["NEGATIVE", "NEUTRAL", "POSITIVE"];
 
 
+/// The values `TagComparisonType` accepts on the wire.
+pub const TAG_COMPARISON_TYPE_VALUES: &[&str] = &["EQUALS", "NOT_EQUALS"];
+
+

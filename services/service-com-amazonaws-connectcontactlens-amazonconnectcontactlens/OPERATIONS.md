@@ -27,6 +27,6 @@ contents — read that shape in the model above when you need its own members.
 
 - **Route:** `POST /realtime-contact-analysis/analysis-segments -> 200`
 - **Traits:** @paginated(inputToken=NextToken, outputToken=NextToken, items=?)
-- **Input:** `InstanceId` (string, len 1..256, pattern \S, required), `ContactId` (string, len 1..256, pattern \S, required), `MaxResults` (integer, range 1..100), `NextToken` (string, len 1..131070, pattern \S)
+- **Input:** `InstanceId` (string, len 1..256, pattern \S, required), `ContactId` (string, len 1..256, pattern \S, required), `MaxResults` (integer, range 1..100), `NextToken` (string, len 1..131070, pattern \S), `ListFilter` (RealTimeContactAnalysisSegmentsFilter)
 - **Output:** `Segments` (list<RealtimeContactAnalysisSegment>, len 0..100, required), `NextToken` (string, len 1..131070, pattern \S)
 - **Errors:** `AccessDeniedException (HTTP 403)`, `InternalServiceException (HTTP 500)`, `InvalidRequestException (HTTP 400)`, `ResourceNotFoundException (HTTP 404)`, `ThrottlingException (HTTP 429)`

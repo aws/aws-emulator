@@ -8,7 +8,8 @@
 //! lifecycle therefore lives here, as an in-process seeding API on the state struct
 //! ([`ComAmazonawsConnectcontactlensAmazonconnectcontactlensState::put_session`],
 //! [`ComAmazonawsConnectcontactlensAmazonconnectcontactlensState::append_segments`],
-//! [`ComAmazonawsConnectcontactlensAmazonconnectcontactlensState::complete_session`])
+//! [`ComAmazonawsConnectcontactlensAmazonconnectcontactlensState::complete_session`],
+//! [`ComAmazonawsConnectcontactlensAmazonconnectcontactlensState::put_rule_tags`])
 //! which the producing side — a test today, the Amazon Connect emulator's contact flow
 //! later — drives through the one shared engine. The operation handler never writes a
 //! segment; the only state change it makes is materialising the 24-hour expiry the
@@ -107,6 +108,17 @@ impl AnalysisSession {
     }
 }
 
+/// The tags assigned to one Amazon Connect rule, keyed by tag key.
+///
+/// A matched category names the rule that created it (`CategoryDetails.RuleId`), and a
+/// request's `ListFilter` is evaluated against THESE tags — so the tags are what decides
+/// which categories a caller may view.
+pub type RuleTags = HashMap<String, String>;
+
+/// A rule is identified by the instance it belongs to and its own identifier; a rule
+/// identifier is unique within one Amazon Connect instance, not across instances.
+pub type RuleKey = (String, String);
+
 /// Where an opaque `NextToken` resumes: the session it belongs to, and the index of the
 /// first segment the next page returns.
 ///
@@ -129,6 +141,10 @@ pub struct ComAmazonawsConnectcontactlensAmazonconnectcontactlensState {
     /// Live page cursors, keyed by the opaque `NextToken` handed to the client. This is
     /// what makes a token validatable: resolution is a lookup, never a parse.
     cursors: HashMap<String, Cursor>,
+    /// The tags on the Amazon Connect rules whose matches appear in the stored segments,
+    /// keyed by `(InstanceId, RuleId)`. Rules outlive the contacts they match on, so they
+    /// are held here rather than inside a session and are NOT dropped when one expires.
+    rule_tags: HashMap<RuleKey, RuleTags>,
     /// Index of `cursors` by the position the cursor resumes at, so asking twice for
     /// the token of one position hands back the SAME token instead of minting a second
     /// one. Without it, listing is not idempotent: two identical requests would answer
@@ -184,6 +200,31 @@ impl ComAmazonawsConnectcontactlensAmazonconnectcontactlensState {
     /// [`Self::purge_expired`] first, so one instant decides both expiry and the read.
     pub fn session(&self, key: &SessionKey) -> Option<&AnalysisSession> {
         self.sessions.get(key)
+    }
+
+    /// SEEDING HOOK — register (or replace) the tags on one Amazon Connect rule, the
+    /// rule a matched category names through `CategoryDetails.RuleId`.
+    ///
+    /// Returns the tags it replaced, if any. Rules are a resource of the Amazon Connect
+    /// instance rather than of a contact, so this is independent of any session.
+    pub fn put_rule_tags(
+        &mut self,
+        instance_id: impl Into<String>,
+        rule_id: impl Into<String>,
+        tags: impl IntoIterator<Item = (String, String)>,
+    ) -> Option<RuleTags> {
+        self.rule_tags.insert(
+            (instance_id.into(), rule_id.into()),
+            tags.into_iter().collect(),
+        )
+    }
+
+    /// The tags on one rule of one instance, or `None` when no rule of that instance is
+    /// known by that identifier — which is also the answer for a matched category that
+    /// names no rule at all.
+    pub fn rule_tags(&self, instance_id: &str, rule_id: &str) -> Option<&RuleTags> {
+        self.rule_tags
+            .get(&(instance_id.to_string(), rule_id.to_string()))
     }
 
     /// Drop a session and every cursor minted against it.

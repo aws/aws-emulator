@@ -18,6 +18,35 @@ pub struct ListRealtimeContactAnalysisSegmentsInput {
     pub contact_id: String,
     pub max_results: Option<i32>,
     pub next_token: Option<String>,
+    pub list_filter: Option<RealTimeContactAnalysisSegmentsFilter>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.connectcontactlens#RealTimeContactAnalysisSegmentsFilter")]
+#[derive(Debug, Clone, Default)]
+pub struct RealTimeContactAnalysisSegmentsFilter {
+    pub categories_attribute_filter: Option<CategoriesAttributeFilter>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.connectcontactlens#CategoriesAttributeFilter")]
+#[derive(Debug, Clone, Default)]
+pub struct CategoriesAttributeFilter {
+    pub or_conditions: Option<Vec<CategoriesAttributeAndCondition>>,
+    pub and_condition: Option<CategoriesAttributeAndCondition>,
+    pub tag_condition: Option<TagCondition>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.connectcontactlens#CategoriesAttributeAndCondition")]
+#[derive(Debug, Clone, Default)]
+pub struct CategoriesAttributeAndCondition {
+    pub tag_conditions: Option<Vec<TagCondition>>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.connectcontactlens#TagCondition")]
+#[derive(Debug, Clone, Default)]
+pub struct TagCondition {
+    pub tag_key: Option<String>,
+    pub tag_value: Option<String>,
+    pub comparison_type: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.connectcontactlens#ListRealtimeContactAnalysisSegmentsResponse")]
@@ -47,6 +76,7 @@ pub struct Transcript {
     pub end_offset_millis: i32,
     pub sentiment: Option<String>,
     pub issues_detected: Option<Vec<IssueDetected>>,
+    pub language_code: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.connectcontactlens#IssueDetected")]
@@ -73,6 +103,7 @@ pub struct Categories {
 #[derive(Debug, Clone, Default)]
 pub struct CategoryDetails {
     pub points_of_interest: Vec<PointOfInterest>,
+    pub rule_id: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.connectcontactlens#PointOfInterest")]
