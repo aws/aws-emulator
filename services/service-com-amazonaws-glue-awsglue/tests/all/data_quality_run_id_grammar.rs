@@ -25,9 +25,6 @@
 //! CONSTRAINT clause, which the request walk cannot state for this expression and the
 //! operation therefore states itself — and the suite below pins that clause too, naming the
 //! element it fired on.
-//!
-//! `CancelDataQualityRulesetEvaluationRun` is not among the operations below: it is still a
-//! scaffold with its own open issue, so it has no answer of its own to assert.
 
 use std::sync::Arc;
 
@@ -190,12 +187,14 @@ fn malformed_ids() -> Vec<(&'static str, String)> {
     ]
 }
 
-/// The operations that address ONE data quality run by id, over both kinds of run: the two
-/// reads of a rule recommendation run and the read of a ruleset evaluation run.
+/// The operations that address ONE data quality run by id, over both kinds of run: the read
+/// and the cancel of a rule recommendation run, and the read and the cancel of a ruleset
+/// evaluation run.
 const SINGLE_RUN_READS: &[&str] = &[
     "GetDataQualityRuleRecommendationRun",
     "CancelDataQualityRuleRecommendationRun",
     "GetDataQualityRulesetEvaluationRun",
+    "CancelDataQualityRulesetEvaluationRun",
 ];
 
 // ---------------------------------------------------------------------------

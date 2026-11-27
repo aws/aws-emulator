@@ -1073,10 +1073,66 @@ impl DataQualityRulesetEvaluationRunEntry {
         self.settles_at.is_some_and(|due| due <= now)
     }
 
+    /// Whether this run has finished, by [`TERMINAL_DATA_QUALITY_RUN_STATES`].
+    pub fn is_terminal(&self) -> bool {
+        TERMINAL_DATA_QUALITY_RUN_STATES.contains(&self.status.as_str())
+    }
+
+    /// Whether a cancel has asked this run to stop, so what it settles into is that stop
+    /// rather than anything its data sources hold.
+    pub fn is_stopping(&self) -> bool {
+        self.status == DATA_QUALITY_RUN_STATE_STOPPING
+    }
+
     /// How long the run consumed resources, in whole seconds: `ExecutionTime`, "the amount
     /// of time (in seconds) that the run consumed resources".
     pub fn execution_time_seconds(&self) -> i32 {
         data_quality_run_execution_time_seconds(self.started_on, self.completed_on)
+    }
+
+    /// Ask this run to stop, as `CancelDataQualityRulesetEvaluationRun` does, and answer
+    /// whether it was still in flight.
+    ///
+    /// A run in flight moves into [`DATA_QUALITY_RUN_STATE_STOPPING`] and the clock owes it
+    /// [`DATA_QUALITY_RUN_STATE_STOPPED`] one span later
+    /// ([`DATA_QUALITY_RULESET_EVALUATION_RUN_SETTLES_AFTER`]), so the stop is observable
+    /// while it drains — exactly as a rule recommendation run's cancel moves that run
+    /// ([`DataQualityRuleRecommendationRunEntry::cancel`]). A run that has already reached a
+    /// terminal status is left exactly as it is.
+    pub fn cancel(&mut self, now: SystemTime) -> bool {
+        if self.is_terminal() {
+            return false;
+        }
+        self.status = DATA_QUALITY_RUN_STATE_STOPPING.to_string();
+        self.last_modified_on = now;
+        self.settles_at = Some(
+            now.checked_add(DATA_QUALITY_RULESET_EVALUATION_RUN_SETTLES_AFTER)
+                .unwrap_or(now),
+        );
+        true
+    }
+
+    /// Settle a run a cancel asked to stop, once the stop the clock owed it is due: it
+    /// finishes [`DATA_QUALITY_RUN_STATE_STOPPED`], having evaluated nothing further, so its
+    /// data sources are never consulted and it publishes no result at all.
+    pub fn settle_stop_if_due(&mut self, now: SystemTime) {
+        if !self.is_due(now) || self.close_at_due_instant().is_none() {
+            return;
+        }
+        self.status = DATA_QUALITY_RUN_STATE_STOPPED.to_string();
+    }
+
+    /// Close this run at the DUE instant the clock set for it, and answer that instant;
+    /// `None` when the clock owed it nothing, in which case nothing is written.
+    ///
+    /// The instants recorded are that DUE instant rather than the instant somebody read the
+    /// run, so two reads of a settled run report the same run.
+    fn close_at_due_instant(&mut self) -> Option<SystemTime> {
+        let due = self.settles_at?;
+        self.settles_at = None;
+        self.completed_on = Some(due);
+        self.last_modified_on = due;
+        Some(due)
     }
 
     /// Whether this run satisfies every criterion `filter` names.
@@ -1196,15 +1252,14 @@ impl DataQualityRulesetEvaluationRunEntry {
     /// evaluated nothing ([`DataQualityEvaluationOutcome::Failed`]), carrying that reason.
     ///
     /// The instants recorded are the DUE instant rather than the instant somebody read the
-    /// run, so two reads of a settled run report the same run.
+    /// run, so two reads of a settled run report the same run. A run a cancel asked to stop
+    /// settles through [`Self::settle_stop_if_due`] instead, which consults no data source
+    /// and publishes no result.
     #[must_use]
     pub fn settle(&mut self, miss: Option<String>) -> Vec<DataQualityResultEntry> {
-        let Some(due) = self.settles_at else {
+        let Some(due) = self.close_at_due_instant() else {
             return Vec::new();
         };
-        self.settles_at = None;
-        self.completed_on = Some(due);
-        self.last_modified_on = due;
         // A data source the catalog no longer holds is reported ahead of what the evaluation
         // answered: the run covers a table that is not there any more.
         let failure = miss.or_else(|| match &self.evaluation {

@@ -1,15 +1,23 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op CancelDataQualityRulesetEvaluationRun
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `CancelDataQualityRulesetEvaluationRun`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`CancelDataQualityRulesetEvaluationRun::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! Cancels the ruleset evaluation run `StartDataQualityRulesetEvaluationRun` recorded under
+//! this `RunId`: a run still in flight is moved into `STOPPING`, and the clock owes it
+//! `STOPPED` one span later
+//! ([`crate::state::DATA_QUALITY_RULESET_EVALUATION_RUN_SETTLES_AFTER`]), so the cancel is
+//! observable while the run is draining and the stopped run publishes no data quality
+//! result. A run that has already reached a terminal status is left exactly as it is: this
+//! operation models no state error, and the run the caller asked to stop has already
+//! stopped.
+//!
+//! A `RunId` that is no data quality run id — one outside the `@pattern` its member declares,
+//! or one without the grammar every run id this service mints carries
+//! ([`crate::state::DATA_QUALITY_RUN_ID_PREFIX`]) — is a MALFORMED request rather than a
+//! miss, so it is refused with this operation's modelled `InvalidInputException` before the
+//! store is read at all, exactly as the rule recommendation run's cancel refuses one
+//! ([`crate::ops::cancel_data_quality_rule_recommendation_run`]); an id OF that grammar this
+//! account holds no run under is the modelled `EntityNotFoundException`.
 //!
 //! ## Shape of an operation
 //!
@@ -66,6 +74,10 @@
 
 #[allow(unused_imports)]
 use super::types::*;
+
+/// The member path a constraint clause names `RunId` by: the member as the wire spells it,
+/// lower-camel-cased, which is how the boundary validator's own clauses read.
+const RUN_ID_MEMBER_PATH: &str = "runId";
 
 // `#[operation_error]` below expands to an invocation of the LOCAL declarative
 // `smithy!` macro, which this line is what emits into the module. Without it the
@@ -138,18 +150,84 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `CancelDataQualityRulesetEvaluationRun` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(CancelDataQualityRulesetEvaluationRunErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("CancelDataQualityRulesetEvaluationRun"))
+        let _ = ctx;
+        // A malformed address is refused BEFORE anything is read, in the operation's own
+        // modelled `InvalidInputException`: a `RunId` outside the `@pattern` its member
+        // declares, or one that is no data quality run id at all, names no run that could
+        // ever exist — so answering "no such run" would tell the caller the request was
+        // well-formed, and nothing of the store is touched.
+        if let Some(message) =
+            crate::service::hash_string_pattern_refusal(RUN_ID_MEMBER_PATH, &input.run_id)
+        {
+            return Err(
+                CancelDataQualityRulesetEvaluationRunErrorModeled::InvalidInputException(
+                    InvalidInputException {
+                        message: Some(message),
+                        from_federation_source: None,
+                    },
+                )
+                .into(),
+            );
+        }
+        if !crate::state::is_data_quality_run_id(&input.run_id) {
+            return Err(
+                CancelDataQualityRulesetEvaluationRunErrorModeled::InvalidInputException(
+                    InvalidInputException {
+                        message: Some(crate::state::messages::invalid_data_quality_run_id()),
+                        from_federation_source: None,
+                    },
+                )
+                .into(),
+            );
+        }
+
+        let Some(state) = crate::state::service_state(&*self.engine) else {
+            // This operation models no store fault of its own, so an unreachable store is
+            // reported as its timeout error, the way the catalog's other handlers report it.
+            return Err(
+                CancelDataQualityRulesetEvaluationRunErrorModeled::OperationTimeoutException(
+                    OperationTimeoutException {
+                        message: Some("the Glue Data Catalog store is unavailable".into()),
+                    },
+                )
+                .into(),
+            );
+        };
+
+        let now = ::std::time::SystemTime::now();
+        let mut store = state.lock();
+        // Everything the clock already owed the stored runs is materialised first, so a run
+        // the clock has already finished is not moved into `STOPPING` afterwards.
+        store.settle_due_data_quality_ruleset_evaluation_runs(now);
+
+        // `RunId` is `@required` with `length 1..255`, so an absent or over-long one is
+        // refused at the boundary, and its grammar was applied above: reaching here, the
+        // only question is whether this account holds a run under that id.
+        let Some(run) = store.data_quality_ruleset_evaluation_run_mut(&input.run_id) else {
+            return Err(
+                CancelDataQualityRulesetEvaluationRunErrorModeled::EntityNotFoundException(
+                    EntityNotFoundException {
+                        message: Some(
+                            crate::state::messages::data_quality_ruleset_evaluation_run_not_found(
+                                &input.run_id,
+                            ),
+                        ),
+                        from_federation_source: None,
+                    },
+                )
+                .into(),
+            );
+        };
+        let stopping = run.cancel(now);
+        ::tracing::info!(
+            operation = "CancelDataQualityRulesetEvaluationRun",
+            run = %input.run_id,
+            stopping,
+            "cancelled a Glue data quality ruleset evaluation run"
+        );
+
+        // The response carries no member: what the caller reads back is the run's status,
+        // through `GetDataQualityRulesetEvaluationRun`.
+        Ok(CancelDataQualityRulesetEvaluationRunOutput {})
     }
 }

@@ -1894,6 +1894,13 @@ impl ComAmazonawsGlueAwsglueState {
     /// the results it produced name the profile they were measured alongside, and the model
     /// over the datapoints starts training from the instant the run finished.
     pub fn settle_due_data_quality_ruleset_evaluation_runs(&mut self, now: SystemTime) {
+        // A run a cancel asked to stop settles as that stop, whatever its data sources hold,
+        // so those are settled first and read no catalog and publish no result at all.
+        for run in &mut self.data_quality_ruleset_evaluation_runs {
+            if run.is_stopping() {
+                run.settle_stop_if_due(now);
+            }
+        }
         let misses: Vec<(usize, Option<String>)> = self
             .data_quality_ruleset_evaluation_runs
             .iter()
@@ -1953,6 +1960,17 @@ impl ComAmazonawsGlueAwsglueState {
     ) -> Option<&DataQualityRulesetEvaluationRunEntry> {
         self.data_quality_ruleset_evaluation_runs
             .iter()
+            .find(|run| run.id == id)
+    }
+
+    /// The stored data quality ruleset evaluation run with this id, mutably: what a cancel
+    /// moves.
+    pub fn data_quality_ruleset_evaluation_run_mut(
+        &mut self,
+        id: &str,
+    ) -> Option<&mut DataQualityRulesetEvaluationRunEntry> {
+        self.data_quality_ruleset_evaluation_runs
+            .iter_mut()
             .find(|run| run.id == id)
     }
 
