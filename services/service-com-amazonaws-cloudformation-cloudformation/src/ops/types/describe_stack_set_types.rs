@@ -44,5 +44,6 @@ pub struct StackSet {
     pub organizational_unit_ids: Option<Vec<String>>,
     pub managed_execution: Option<ManagedExecution>,
     pub regions: Option<Vec<String>>,
+    pub stack_set_output_bucket_path: Option<String>,
 }
 

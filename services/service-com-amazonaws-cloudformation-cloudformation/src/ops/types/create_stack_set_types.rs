@@ -29,6 +29,9 @@ pub struct CreateStackSetInput {
     pub call_as: Option<String>,
     pub client_request_token: Option<String>,
     pub managed_execution: Option<ManagedExecution>,
+    pub execution_role_template_body: Option<String>,
+    pub execution_role_template_url: Option<String>,
+    pub stack_set_output_bucket: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.cloudformation#CreateStackSetOutput")]

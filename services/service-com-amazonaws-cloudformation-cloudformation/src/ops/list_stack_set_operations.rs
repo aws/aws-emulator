@@ -84,16 +84,20 @@
 
 #[allow(unused_imports)]
 use super::types::*;
-use crate::state::stack_sets::{preferences_view, StoredStackSetOperation};
+use crate::state::stack_sets::{preferences_view, StoredStackSet, StoredStackSetOperation};
 
 /// One stored operation as the modelled `StackSetOperationSummary`.
 ///
-/// Every member is read off the operation record, so this read cannot disagree with the
-/// record about an operation's id, action, status, instants or preferences. A member the
-/// record does not carry — the end instant of an operation that has not ended, a status with
-/// no reason, the details of one the service holds no counts for, the preferences of one
-/// whose request named none — is absent rather than reported empty.
-fn stack_set_operation_summary(stored: &StoredStackSetOperation) -> StackSetOperationSummary {
+/// Every member is read off the operation record and the stack set that holds it, so this
+/// read cannot disagree with the record about an operation's id, action, status, instants,
+/// progress or preferences. A member the record does not carry — the end instant of an
+/// operation that has not ended, a status with no reason, the details of one the service holds
+/// no counts for, the preferences of one whose request named none — is absent rather than
+/// reported empty.
+fn stack_set_operation_summary(
+    stack_set: &StoredStackSet,
+    stored: &StoredStackSetOperation,
+) -> StackSetOperationSummary {
     StackSetOperationSummary {
         operation_id: Some(stored.operation_id.clone()),
         action: Some(stored.action.clone()),
@@ -101,11 +105,11 @@ fn stack_set_operation_summary(stored: &StoredStackSetOperation) -> StackSetOper
         creation_timestamp: Some(crate::state::timestamp(stored.creation)),
         end_timestamp: stored.end.map(crate::state::timestamp),
         status_reason: stored.status_reason.clone(),
-        status_details: stored.failed_stack_instances_count.map(|failed| {
-            StackSetOperationStatusDetails {
-                failed_stack_instances_count: Some(failed),
-            }
-        }),
+        // The same progress `DescribeStackSetOperation` reports, counted off the same results
+        // ([`crate::state::stack_set_progress`]), so the listing and the detailed read cannot
+        // disagree about how far an operation has got. What the summary leaves out is the
+        // per-Region detail, which "is returned only by DescribeStackSetOperation".
+        status_details: crate::state::stack_set_progress::status_details(stack_set, stored),
         operation_preferences: stored.preferences.as_ref().map(preferences_view),
     }
 }
@@ -219,7 +223,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // answer from one that does not exist.
         let summaries: Vec<StackSetOperationSummary> = stack_set
             .operations_newest_first()
-            .map(stack_set_operation_summary)
+            .map(|operation| stack_set_operation_summary(stack_set, operation))
             .collect();
 
         // `@paginated(inputToken: NextToken, outputToken: NextToken, items: Summaries,

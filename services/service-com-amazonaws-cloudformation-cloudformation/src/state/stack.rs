@@ -27,6 +27,17 @@ mod deletion_view;
 pub struct StoredStack {
     pub stack_id: String,
     pub stack_name: String,
+    /// `Stack$AliasName`: the alias assigned to this stack, or `None` for one no alias was
+    /// set on.
+    ///
+    /// An alias is "an alternative name for a stack that can be used in place of the stack
+    /// name in any CloudFormation API call that accepts the StackName parameter", so it is
+    /// held beside the name it stands in for and resolved with it
+    /// ([`super::aliases`]): every operation that addresses a stack goes through
+    /// [`ComAmazonawsCloudformationCloudformationState::resolve`], so an alias addresses the
+    /// stack wherever a name does. "Each stack can have at most one alias", which is why this
+    /// is one value rather than a set.
+    pub alias: Option<String>,
     /// The Region the stack lives in: the one the call that created it was signed for.
     /// Every identifier the stack's resources carry is Regional, so this is what the
     /// template's `AWS::Region` pseudo parameter and every minted ARN resolve to.
@@ -351,6 +362,9 @@ impl StoredStack {
         Self {
             stack_id,
             stack_name,
+            // An alias is assigned by `SetAlias` after the stack exists, never by the call
+            // that creates it: a new stack carries none.
+            alias: None,
             region: DEFAULT_REGION.to_string(),
             template_description: template_body.as_deref().and_then(template::description),
             processed_template,

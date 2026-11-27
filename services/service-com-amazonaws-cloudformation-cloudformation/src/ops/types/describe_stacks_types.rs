@@ -55,6 +55,7 @@ pub struct Stack {
     pub deletion_mode: Option<String>,
     pub detailed_status: Option<String>,
     pub last_operations: Option<Vec<OperationEntry>>,
+    pub alias_name: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.cloudformation#Output")]

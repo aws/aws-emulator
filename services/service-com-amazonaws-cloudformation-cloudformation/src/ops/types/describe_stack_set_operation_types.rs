@@ -42,5 +42,32 @@ pub struct StackSetOperation {
     pub stack_set_drift_detection_details: Option<StackSetDriftDetectionDetails>,
     pub status_reason: Option<String>,
     pub status_details: Option<StackSetOperationStatusDetails>,
+    pub regional_status_details: Option<std::collections::HashMap<String, RegionalStatusDetail>>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.cloudformation#RegionalStatusDetail")]
+#[derive(Debug, Clone, Default)]
+pub struct RegionalStatusDetail {
+    pub stages: Option<RegionalStages>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.cloudformation#RegionalStages")]
+#[derive(Debug, Clone, Default)]
+pub struct RegionalStages {
+    pub regional_stack_instances_deployment: Option<RegionalStackInstancesDeployment>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.cloudformation#RegionalStackInstancesDeployment")]
+#[derive(Debug, Clone, Default)]
+pub struct RegionalStackInstancesDeployment {
+    pub status: Option<String>,
+    pub succeeded_stack_instances_count: Option<i32>,
+    pub failed_stack_instances_count: Option<i32>,
+    pub completed_stack_instances_count: Option<i32>,
+    pub pending_stack_instances_count: Option<i32>,
+    pub cancelled_stack_instances_count: Option<i32>,
+    pub skipped_stack_instances_count: Option<i32>,
+    pub total_stack_instances_count: Option<i32>,
+    pub percentage_completed: Option<f64>,
 }
 

@@ -38,7 +38,9 @@ resource scans, refactors, imports/exports) is still scaffolded and answers HTTP
 service-com-amazonaws-cloudformation-cloudformation/
 ├── build.rs              # calls emulator_core_build_support::generate(...)
 ├── smithy-model/
-│   └── com-amazonaws-cloudformation-cloudformation.json      # the Smithy model — drives routing + wire shapes
+│   ├── com-amazonaws-cloudformation-cloudformation.json      # the Smithy model — drives routing + wire shapes
+│   ├── local-additions.json  # overlay model for the elements AWS answers with that the snapshot lacks
+│   └── LOCAL-ADDITIONS.md    # what is in that overlay, and why
 ├── OPERATIONS.md         # every operation's contract, re-rendered from the model
 ├── tests/
 │   └── state_roundtrip.rs  # compiled example of the state API

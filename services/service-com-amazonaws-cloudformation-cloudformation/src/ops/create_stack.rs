@@ -329,6 +329,19 @@ fn name_in_use(
     region: &str,
     input: &CreateStackInput,
 ) -> Option<Result<CreateStackOutput, CreateStackError>> {
+    // An ALIAS is "an alternative name for a stack that can be used in place of the stack
+    // name in any CloudFormation API call that accepts the StackName parameter", so a
+    // Region's stack names and its active aliases are one namespace
+    // ([`crate::state::aliases`]): a create asking for a name an alias already resolves is
+    // refused for the taken name, since otherwise one name would address two stacks.
+    if store.stack_with_alias(region, &input.stack_name).is_some() {
+        return Some(Err(CreateStackErrorModeled::AlreadyExistsException(
+            AlreadyExistsException {
+                message: Some(format!("Stack [{}] already exists", input.stack_name)),
+            },
+        )
+        .into()));
+    }
     let live = store
         .live_stacks(region)
         .find(|live| live.stack_name == input.stack_name)?;

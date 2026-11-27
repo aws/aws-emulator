@@ -90,7 +90,9 @@ pub mod publish_type_types;
 pub mod record_handler_progress_types;
 pub mod register_publisher_types;
 pub mod register_type_types;
+pub mod remove_alias_types;
 pub mod rollback_stack_types;
+pub mod set_alias_types;
 pub mod set_stack_policy_types;
 pub mod set_type_configuration_types;
 pub mod set_type_default_version_types;
@@ -259,7 +261,11 @@ pub use register_publisher_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use register_type_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use remove_alias_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use rollback_stack_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use set_alias_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use set_stack_policy_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]

@@ -120,11 +120,17 @@ fn stack_set_operation(
                 ..drift_detection_details(stack_set)
             }),
         status_reason: stored.status_reason.clone(),
-        status_details: stored.failed_stack_instances_count.map(|failed| {
-            StackSetOperationStatusDetails {
-                failed_stack_instances_count: Some(failed),
-            }
-        }),
+        // The operation's own progress — its stages, the targets it resolved and the counts
+        // over them — computed off the results this store holds for it
+        // ([`crate::state::stack_set_progress`]), so this read and
+        // `ListStackSetOperationResults` cannot disagree about what the operation did.
+        status_details: crate::state::stack_set_progress::status_details(stack_set, stored),
+        // "The progress detail for each Region of the operation, keyed by Region… This field
+        // is returned only by DescribeStackSetOperation. It is not included in the
+        // ListStackSetOperations summary", which is why the summary read builds none.
+        regional_status_details: crate::state::stack_set_progress::regional_status_details(
+            stack_set, stored,
+        ),
     }
 }
 

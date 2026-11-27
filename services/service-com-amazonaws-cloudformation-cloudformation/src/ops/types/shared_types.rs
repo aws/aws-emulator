@@ -309,7 +309,41 @@ pub struct StackSetDriftDetectionDetails {
 #[smithy_macros::smithy(shape = "com.amazonaws.cloudformation#StackSetOperationStatusDetails")]
 #[derive(Debug, Clone, Default)]
 pub struct StackSetOperationStatusDetails {
+    pub stages: Option<Stages>,
+    pub total_accounts_count: Option<i32>,
+    pub total_stack_instances_count: Option<i32>,
     pub failed_stack_instances_count: Option<i32>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.cloudformation#Stages")]
+#[derive(Debug, Clone, Default)]
+pub struct Stages {
+    pub role_provisioning: Option<RoleProvisioning>,
+    pub stack_instances_deployment: Option<StackInstancesDeployment>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.cloudformation#RoleProvisioning")]
+#[derive(Debug, Clone, Default)]
+pub struct RoleProvisioning {
+    pub status: Option<String>,
+    pub succeeded_accounts_count: Option<i32>,
+    pub failed_accounts_count: Option<i32>,
+    pub completed_accounts_count: Option<i32>,
+    pub pending_accounts_count: Option<i32>,
+    pub percentage_completed: Option<f64>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.cloudformation#StackInstancesDeployment")]
+#[derive(Debug, Clone, Default)]
+pub struct StackInstancesDeployment {
+    pub status: Option<String>,
+    pub succeeded_stack_instances_count: Option<i32>,
+    pub failed_stack_instances_count: Option<i32>,
+    pub completed_stack_instances_count: Option<i32>,
+    pub pending_stack_instances_count: Option<i32>,
+    pub cancelled_stack_instances_count: Option<i32>,
+    pub skipped_stack_instances_count: Option<i32>,
+    pub percentage_completed: Option<f64>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.cloudformation#HookResultNotFoundException")]
@@ -642,6 +676,10 @@ pub const STACK_SET_STATUS_VALUES: &[&str] = &["ACTIVE", "DELETED"];
 
 /// The values `StackStatus` accepts on the wire.
 pub const STACK_STATUS_VALUES: &[&str] = &["CREATE_COMPLETE", "CREATE_FAILED", "CREATE_IN_PROGRESS", "DELETE_COMPLETE", "DELETE_FAILED", "DELETE_IN_PROGRESS", "IMPORT_COMPLETE", "IMPORT_IN_PROGRESS", "IMPORT_ROLLBACK_COMPLETE", "IMPORT_ROLLBACK_FAILED", "IMPORT_ROLLBACK_IN_PROGRESS", "REVIEW_IN_PROGRESS", "ROLLBACK_COMPLETE", "ROLLBACK_FAILED", "ROLLBACK_IN_PROGRESS", "UPDATE_COMPLETE", "UPDATE_COMPLETE_CLEANUP_IN_PROGRESS", "UPDATE_FAILED", "UPDATE_IN_PROGRESS", "UPDATE_ROLLBACK_COMPLETE", "UPDATE_ROLLBACK_COMPLETE_CLEANUP_IN_PROGRESS", "UPDATE_ROLLBACK_FAILED", "UPDATE_ROLLBACK_IN_PROGRESS"];
+
+
+/// The values `StageStatus` accepts on the wire.
+pub const STAGE_STATUS_VALUES: &[&str] = &["FAILED", "IN_PROGRESS", "NOT_APPLICABLE", "NOT_STARTED", "PARTIAL_SUCCESS", "PENDING", "SUCCEEDED"];
 
 
 /// The values `TemplateFormat` accepts on the wire.

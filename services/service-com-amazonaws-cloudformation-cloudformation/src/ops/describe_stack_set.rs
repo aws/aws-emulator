@@ -116,6 +116,12 @@ fn stack_set_view(stored: &StoredStackSet) -> StackSet {
             active: Some(stored.managed_execution_active),
         }),
         regions: crate::state::non_empty(stored.deployed_regions()),
+        // "The Amazon S3 bucket path where CloudFormation stores the execution role stack
+        // template body. CloudFormation uses this bucket only when you specify a custom
+        // execution role template." No stack set in this store carries such a template —
+        // nothing here stores one, and nothing writes an object for it — so there is no path
+        // to report and the member is absent, rather than naming a location holding nothing.
+        stack_set_output_bucket_path: None,
     }
 }
 

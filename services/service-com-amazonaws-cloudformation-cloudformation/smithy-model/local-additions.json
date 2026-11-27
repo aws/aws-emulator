@@ -1,0 +1,248 @@
+{
+  "smithy": "2.0",
+  "shapes": {
+    "com.amazonaws.cloudformation#DescribeResourceScanOutput": {
+      "type": "structure",
+      "members": {
+        "ResourceScanId": { "target": "com.amazonaws.cloudformation#ResourceScanId" },
+        "Status": { "target": "com.amazonaws.cloudformation#ResourceScanStatus" },
+        "StatusReason": { "target": "com.amazonaws.cloudformation#ResourceScanStatusReason" },
+        "StartTime": { "target": "com.amazonaws.cloudformation#Timestamp" },
+        "EndTime": { "target": "com.amazonaws.cloudformation#Timestamp" },
+        "PercentageCompleted": { "target": "com.amazonaws.cloudformation#PercentageCompleted" },
+        "ResourceTypes": { "target": "com.amazonaws.cloudformation#ResourceTypes" },
+        "ResourcesScanned": { "target": "com.amazonaws.cloudformation#ResourcesScanned" },
+        "ResourcesRead": { "target": "com.amazonaws.cloudformation#ResourcesRead" },
+        "ScanFilters": { "target": "com.amazonaws.cloudformation#ScanFilters" },
+        "ResourceTypeSummaries": { "target": "com.amazonaws.cloudformation#ResourceTypeSummaries" }
+      }
+    },
+    "com.amazonaws.cloudformation#ResourceTypeSummaries": {
+      "type": "list",
+      "member": { "target": "com.amazonaws.cloudformation#ResourceTypeSummary" }
+    },
+    "com.amazonaws.cloudformation#ResourceTypeSummary": {
+      "type": "structure",
+      "members": {
+        "ResourceType": { "target": "com.amazonaws.cloudformation#ResourceType" },
+        "ResourcesScanned": { "target": "com.amazonaws.cloudformation#ResourcesScanned" }
+      }
+    },
+    "com.amazonaws.cloudformation#DescribeTypeOutput": {
+      "type": "structure",
+      "members": {
+        "Arn": { "target": "com.amazonaws.cloudformation#TypeArn" },
+        "Type": { "target": "com.amazonaws.cloudformation#RegistryType" },
+        "TypeName": { "target": "com.amazonaws.cloudformation#TypeName" },
+        "DefaultVersionId": { "target": "com.amazonaws.cloudformation#TypeVersionId" },
+        "IsDefaultVersion": { "target": "com.amazonaws.cloudformation#IsDefaultVersion" },
+        "TypeTestsStatus": { "target": "com.amazonaws.cloudformation#TypeTestsStatus" },
+        "TypeTestsStatusDescription": { "target": "com.amazonaws.cloudformation#TypeTestsStatusDescription" },
+        "Description": { "target": "com.amazonaws.cloudformation#Description" },
+        "Schema": { "target": "com.amazonaws.cloudformation#TypeSchema" },
+        "ProvisioningType": { "target": "com.amazonaws.cloudformation#ProvisioningType" },
+        "DeprecatedStatus": { "target": "com.amazonaws.cloudformation#DeprecatedStatus" },
+        "LoggingConfig": { "target": "com.amazonaws.cloudformation#LoggingConfig" },
+        "RequiredActivatedTypes": { "target": "com.amazonaws.cloudformation#RequiredActivatedTypes" },
+        "ExecutionRoleArn": { "target": "com.amazonaws.cloudformation#RoleARN2" },
+        "Visibility": { "target": "com.amazonaws.cloudformation#Visibility" },
+        "SourceUrl": { "target": "com.amazonaws.cloudformation#OptionalSecureUrl" },
+        "DocumentationUrl": { "target": "com.amazonaws.cloudformation#OptionalSecureUrl" },
+        "LastUpdated": { "target": "com.amazonaws.cloudformation#Timestamp" },
+        "TimeCreated": { "target": "com.amazonaws.cloudformation#Timestamp" },
+        "ConfigurationSchema": { "target": "com.amazonaws.cloudformation#ConfigurationSchema" },
+        "PublisherId": { "target": "com.amazonaws.cloudformation#PublisherId" },
+        "OriginalTypeName": { "target": "com.amazonaws.cloudformation#TypeName" },
+        "OriginalTypeArn": { "target": "com.amazonaws.cloudformation#TypeArn" },
+        "PublicVersionNumber": { "target": "com.amazonaws.cloudformation#PublicVersionNumber" },
+        "LatestPublicVersion": { "target": "com.amazonaws.cloudformation#PublicVersionNumber" },
+        "IsActivated": { "target": "com.amazonaws.cloudformation#IsActivated" },
+        "AutoUpdate": { "target": "com.amazonaws.cloudformation#AutoUpdate" },
+        "SchemaHandlerPermissions": { "target": "com.amazonaws.cloudformation#SchemaHandlerPermissions" }
+      }
+    },
+    "com.amazonaws.cloudformation#SchemaHandlerPermissions": {
+      "type": "list",
+      "member": { "target": "smithy.api#String" }
+    },
+    "com.amazonaws.cloudformation#ResourceScanId": {
+      "type": "string"
+    },
+    "com.amazonaws.cloudformation#ResourceScanStatus": {
+      "type": "enum",
+      "members": {
+        "IN_PROGRESS": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "IN_PROGRESS" } },
+        "FAILED": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "FAILED" } },
+        "COMPLETE": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "COMPLETE" } },
+        "EXPIRED": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "EXPIRED" } }
+      }
+    },
+    "com.amazonaws.cloudformation#ResourceScanStatusReason": {
+      "type": "string"
+    },
+    "com.amazonaws.cloudformation#Timestamp": {
+      "type": "timestamp"
+    },
+    "com.amazonaws.cloudformation#PercentageCompleted": {
+      "type": "double"
+    },
+    "com.amazonaws.cloudformation#ResourceTypes": {
+      "type": "list",
+      "member": { "target": "com.amazonaws.cloudformation#ResourceType" }
+    },
+    "com.amazonaws.cloudformation#ResourceType": {
+      "type": "string",
+      "traits": {
+        "smithy.api#length": { "min": 1, "max": 256 }
+      }
+    },
+    "com.amazonaws.cloudformation#ResourcesScanned": {
+      "type": "integer"
+    },
+    "com.amazonaws.cloudformation#ResourcesRead": {
+      "type": "integer"
+    },
+    "com.amazonaws.cloudformation#ScanFilters": {
+      "type": "list",
+      "member": { "target": "com.amazonaws.cloudformation#ScanFilter" },
+      "traits": {
+        "smithy.api#length": { "min": 1, "max": 1 }
+      }
+    },
+    "com.amazonaws.cloudformation#ScanFilter": {
+      "type": "structure"
+    },
+    "com.amazonaws.cloudformation#TypeArn": {
+      "type": "string",
+      "traits": {
+        "smithy.api#length": { "min": 0, "max": 1024 },
+        "smithy.api#pattern": "^arn:aws[A-Za-z0-9-]{0,64}:cloudformation:[A-Za-z0-9-]{1,64}:([0-9]{12})?:type/.+$"
+      }
+    },
+    "com.amazonaws.cloudformation#RegistryType": {
+      "type": "enum",
+      "members": {
+        "RESOURCE": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "RESOURCE" } },
+        "MODULE": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "MODULE" } },
+        "HOOK": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "HOOK" } }
+      }
+    },
+    "com.amazonaws.cloudformation#TypeName": {
+      "type": "string",
+      "traits": {
+        "smithy.api#length": { "min": 10, "max": 204 },
+        "smithy.api#pattern": "^[A-Za-z0-9]{2,64}::[A-Za-z0-9]{2,64}::[A-Za-z0-9]{2,64}(::MODULE){0,1}$"
+      }
+    },
+    "com.amazonaws.cloudformation#TypeVersionId": {
+      "type": "string",
+      "traits": {
+        "smithy.api#length": { "min": 1, "max": 128 },
+        "smithy.api#pattern": "^[A-Za-z0-9-]+$"
+      }
+    },
+    "com.amazonaws.cloudformation#IsDefaultVersion": {
+      "type": "boolean"
+    },
+    "com.amazonaws.cloudformation#TypeTestsStatus": {
+      "type": "enum",
+      "members": {
+        "PASSED": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "PASSED" } },
+        "FAILED": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "FAILED" } },
+        "IN_PROGRESS": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "IN_PROGRESS" } },
+        "NOT_TESTED": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "NOT_TESTED" } }
+      }
+    },
+    "com.amazonaws.cloudformation#TypeTestsStatusDescription": {
+      "type": "string",
+      "traits": {
+        "smithy.api#length": { "min": 1, "max": 1024 },
+        "smithy.api#pattern": "^[\\s\\S]+$"
+      }
+    },
+    "com.amazonaws.cloudformation#Description": {
+      "type": "string",
+      "traits": {
+        "smithy.api#length": { "min": 1, "max": 1024 }
+      }
+    },
+    "com.amazonaws.cloudformation#TypeSchema": {
+      "type": "string",
+      "traits": {
+        "smithy.api#length": { "min": 1, "max": 16777216 }
+      }
+    },
+    "com.amazonaws.cloudformation#ProvisioningType": {
+      "type": "enum",
+      "members": {
+        "NON_PROVISIONABLE": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "NON_PROVISIONABLE" } },
+        "IMMUTABLE": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "IMMUTABLE" } },
+        "FULLY_MUTABLE": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "FULLY_MUTABLE" } }
+      }
+    },
+    "com.amazonaws.cloudformation#DeprecatedStatus": {
+      "type": "enum",
+      "members": {
+        "LIVE": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "LIVE" } },
+        "DEPRECATED": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "DEPRECATED" } }
+      }
+    },
+    "com.amazonaws.cloudformation#LoggingConfig": {
+      "type": "structure"
+    },
+    "com.amazonaws.cloudformation#RequiredActivatedTypes": {
+      "type": "list",
+      "member": { "target": "com.amazonaws.cloudformation#RequiredActivatedType" }
+    },
+    "com.amazonaws.cloudformation#RequiredActivatedType": {
+      "type": "structure"
+    },
+    "com.amazonaws.cloudformation#RoleARN2": {
+      "type": "string",
+      "traits": {
+        "smithy.api#length": { "min": 1, "max": 256 },
+        "smithy.api#pattern": "^arn:.+:iam::[0-9]{12}:role/.+$"
+      }
+    },
+    "com.amazonaws.cloudformation#Visibility": {
+      "type": "enum",
+      "members": {
+        "PUBLIC": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "PUBLIC" } },
+        "PRIVATE": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "PRIVATE" } }
+      }
+    },
+    "com.amazonaws.cloudformation#OptionalSecureUrl": {
+      "type": "string",
+      "traits": {
+        "smithy.api#length": { "min": 0, "max": 4096 }
+      }
+    },
+    "com.amazonaws.cloudformation#ConfigurationSchema": {
+      "type": "string",
+      "traits": {
+        "smithy.api#length": { "min": 1, "max": 60000 },
+        "smithy.api#pattern": "^[\\s\\S]+$"
+      }
+    },
+    "com.amazonaws.cloudformation#PublisherId": {
+      "type": "string",
+      "traits": {
+        "smithy.api#length": { "min": 1, "max": 40 },
+        "smithy.api#pattern": "^[0-9a-zA-Z]{12,40}$"
+      }
+    },
+    "com.amazonaws.cloudformation#PublicVersionNumber": {
+      "type": "string",
+      "traits": {
+        "smithy.api#length": { "min": 5 },
+        "smithy.api#pattern": "^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(.*)$"
+      }
+    },
+    "com.amazonaws.cloudformation#IsActivated": {
+      "type": "boolean"
+    },
+    "com.amazonaws.cloudformation#AutoUpdate": {
+      "type": "boolean"
+    }
+  }
+}

@@ -155,6 +155,11 @@ fn stack_view(nesting: &crate::state::Nesting, stored: &StoredStack) -> Stack {
         deletion_mode: stored.deletion_mode.clone(),
         detailed_status: None,
         last_operations: crate::state::last_operation_views(stored.last_operation()),
+        // "The alias assigned to the stack, if one has been set": the alternative name
+        // `SetAlias` put on this stack, absent for a stack no alias was set on
+        // ([`crate::state::aliases`]). It is the same value a caller may address the stack
+        // by, so this read and the lookup cannot disagree about which name reaches it.
+        alias_name: stored.alias.clone(),
     }
 }
 

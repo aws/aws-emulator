@@ -497,6 +497,10 @@ pub mod organizations_access;
 /// `UpdateStackSet` and `UpdateStackInstances` share.
 pub mod stack_set_rollout;
 
+/// The PROGRESS one stack-set operation reports — its stages, the targets it resolved and how
+/// far each Region has got ([`stack_set_progress`]).
+pub mod stack_set_progress;
+
 /// The one EXPLANATION a stack instance reports for the stack it deploys having failed
 /// ([`stack_set_instance_stacks`]).
 pub mod stack_set_instance_stacks;
@@ -536,6 +540,10 @@ pub mod timeline;
 /// The STACK EVENT NOTIFICATIONS a stack's `NotificationARNs` owe: the Amazon SNS message
 /// published for every `StackEvent` of a stack that names topics.
 pub mod stack_notifications;
+
+/// Stack ALIASES: the alternative name `SetAlias` puts on a stack and `RemoveAlias` takes
+/// off it, resolved wherever a stack name is ([`aliases`]).
+pub mod aliases;
 
 /// The constraints a stack IDENTIFIER a request names is held to, checked before any lookup
 /// ([`stack_identifier`]).
@@ -3848,6 +3856,19 @@ impl ComAmazonawsCloudformationCloudformationState {
             .or_else(|| {
                 self.stacks.iter().position(|stack| {
                     stack.region == region && stack.stack_name == name_or_id && stack.is_live()
+                })
+            })
+            .or_else(|| {
+                // "An alias is an alternative name for a stack that can be used in place of
+                // the stack name in any CloudFormation API call that accepts the StackName
+                // parameter", and "both the original stack name and the alias resolve to the
+                // same stack": the alias is resolved HERE, in the one lookup every such call
+                // goes through, so no operation can tell the two names apart. Like a name, it
+                // addresses a LIVE stack ([`aliases`]).
+                self.stacks.iter().position(|stack| {
+                    stack.region == region
+                        && stack.alias.as_deref() == Some(name_or_id)
+                        && stack.is_live()
                 })
             })
     }

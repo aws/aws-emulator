@@ -33,6 +33,10 @@ pub struct UpdateStackSetInput {
     pub regions: Option<Vec<String>>,
     pub call_as: Option<String>,
     pub managed_execution: Option<ManagedExecution>,
+    pub execution_role_template_body: Option<String>,
+    pub execution_role_template_url: Option<String>,
+    pub use_admin_execution_role: Option<bool>,
+    pub stack_set_output_bucket: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.cloudformation#UpdateStackSetOutput")]
