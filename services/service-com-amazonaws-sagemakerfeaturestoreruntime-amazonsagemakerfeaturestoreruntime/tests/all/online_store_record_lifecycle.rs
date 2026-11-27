@@ -14,7 +14,11 @@ use serde_json::{json, Value};
 use service_common::feature_store_groups::{FeatureGroupDirectory, FeatureGroupRecord};
 use smithy_server_runtime::{http, MultiServiceRouter};
 
-use service_com_amazonaws_sagemakerfeaturestoreruntime_amazonsagemakerfeaturestoreruntime::EmulatedService;
+use service_com_amazonaws_sagemakerfeaturestoreruntime_amazonsagemakerfeaturestoreruntime::state::StoredRecord;
+use service_com_amazonaws_sagemakerfeaturestoreruntime_amazonsagemakerfeaturestoreruntime::{
+    ComAmazonawsSagemakerfeaturestoreruntimeAmazonsagemakerfeaturestoreruntimeState as OnlineStore,
+    EmulatedService,
+};
 
 /// A booted emulator holding this service only.
 struct Emulator {
@@ -125,6 +129,20 @@ impl Emulator {
 
     async fn batch_get_record(&self, body: Value) -> (u16, Value) {
         self.send("POST", "/BatchGetRecord", Some(body)).await
+    }
+
+    /// The record `identifier` names in `group`'s online store, read through the store's
+    /// OWN API ([`OnlineStore`]) rather than off the wire.
+    ///
+    /// A soft-deleted record is served by no operation of this data plane — `GetRecord`
+    /// and `BatchGetRecord` withhold it and `ListRecords` reports only its identifier — so
+    /// the FEATURE VALUES a tombstone keeps are read here, from the same store the handlers
+    /// write. That this IS that store is shown by every other assertion in this suite, each
+    /// of which goes through the front door.
+    fn stored_record(&self, group: &str, identifier: &str) -> Option<StoredRecord> {
+        let state = self.engine.state::<OnlineStore>();
+        let mut store = state.lock();
+        store.group_mut(group)?.record(identifier).cloned()
     }
 }
 
@@ -2151,6 +2169,280 @@ async fn get_record_answers_expires_at_for_every_projection_of_a_record_that_exi
             record.is_null() && expires_at.is_null(),
             "case {case:?}: expected an empty result, got Record {record:?} and \
              ExpiresAt {expires_at:?}"
+        );
+    }
+}
+
+/// One row of the tombstone-feature table: the two names a feature group fixes, the record
+/// one `PutRecord` writes into it, and the `EventTime` the `SoftDelete` states.
+struct TombstoneCase {
+    case: &'static str,
+    /// The feature group the row writes to, created with the two names below.
+    group: &'static str,
+    identifier_feature: &'static str,
+    event_time_feature: &'static str,
+    /// The record as posted, in order: one feature name and its scalar value each. The
+    /// record's identifier is the value posted for `identifier_feature`.
+    features: &'static [(&'static str, &'static str)],
+    /// A collection-typed feature the record also carries, when it carries one.
+    list_feature: Option<(&'static str, &'static [&'static str])>,
+    /// The query the deletion adds for `DeletionMode`: empty is the defaulted
+    /// `SoftDelete`.
+    mode: &'static str,
+    /// The `EventTime` the deletion states — same as, or after, the record's, so the
+    /// deletion occurs.
+    delete_event_time: &'static str,
+}
+
+#[tokio::test]
+async fn a_soft_delete_keeps_the_record_identifier_features_value_and_times_only_a_distinct_event_time_feature(
+) {
+    // The class the rule spans: which of a feature group's two fixed feature names the
+    // tombstone's values come from. The rows differ in the two names and whether they are
+    // ONE name, in the event-time format (ISO-8601 and epoch seconds), in the order the
+    // record posts its features, in how many other features there are to drop (including a
+    // collection-typed one), and in whether the deletion states its mode.
+    let cases: Vec<TombstoneCase> = vec![
+        TombstoneCase {
+            case: "distinct names, a feature to drop",
+            group: "tombdistinct",
+            identifier_feature: "customer_id",
+            event_time_feature: "event_time",
+            features: &[
+                ("customer_id", "C1"),
+                ("event_time", "2024-01-01T00:00:00Z"),
+                ("city", "Seattle"),
+            ],
+            list_feature: None,
+            mode: "",
+            delete_event_time: "2024-01-02T00:00:00Z",
+        },
+        TombstoneCase {
+            case: "distinct names, event time posted first, epoch seconds",
+            group: "tombordered",
+            identifier_feature: "recordid",
+            event_time_feature: "ts",
+            features: &[("ts", "1704067200"), ("recordid", "R-7"), ("score", "-0.5")],
+            list_feature: None,
+            mode: "&DeletionMode=SoftDelete",
+            delete_event_time: "1704153600",
+        },
+        TombstoneCase {
+            case: "distinct names, a collection feature to drop",
+            group: "tomblist",
+            identifier_feature: "customer_id",
+            event_time_feature: "event_time",
+            features: &[
+                ("customer_id", "C2"),
+                ("event_time", "2024-02-01T00:00:00Z"),
+            ],
+            list_feature: Some(("tags", &["a", "b", "c"])),
+            mode: "",
+            delete_event_time: "2024-02-02T00:00:00Z",
+        },
+        TombstoneCase {
+            case: "distinct names, nothing to drop, deleted at the record's own event time",
+            group: "tombonlytwo",
+            identifier_feature: "customer_id",
+            event_time_feature: "event_time",
+            features: &[
+                ("customer_id", "C9"),
+                ("event_time", "2024-03-01T00:00:00Z"),
+            ],
+            list_feature: None,
+            mode: "",
+            delete_event_time: "2024-03-01T00:00:00Z",
+        },
+        TombstoneCase {
+            case: "the identifier feature IS the event-time feature",
+            group: "tombcollided",
+            identifier_feature: "event_time",
+            event_time_feature: "event_time",
+            features: &[("event_time", "2024-01-01T00:00:00Z")],
+            list_feature: None,
+            mode: "",
+            delete_event_time: "2024-01-02T00:00:00Z",
+        },
+        TombstoneCase {
+            case: "the identifier feature IS the event-time feature, with features to drop",
+            group: "tombcollidedextra",
+            identifier_feature: "ts",
+            event_time_feature: "ts",
+            features: &[("ts", "1704067200"), ("city", "Seattle")],
+            list_feature: Some(("tags", &["x"])),
+            mode: "&DeletionMode=SoftDelete",
+            delete_event_time: "1704153600",
+        },
+    ];
+
+    for TombstoneCase {
+        case,
+        group,
+        identifier_feature,
+        event_time_feature,
+        features,
+        list_feature,
+        mode,
+        delete_event_time,
+    } in &cases
+    {
+        let emulator = Emulator::new();
+        emulator.create_feature_group(group, identifier_feature, event_time_feature, true);
+
+        let identifier = features
+            .iter()
+            .find(|(name, _)| name == identifier_feature)
+            .map(|(_, value)| *value)
+            .expect("every row posts the group's record-identifier feature");
+
+        let mut posted: Vec<Value> = features
+            .iter()
+            .map(|(name, value)| feature(name, value))
+            .collect();
+        if let Some((name, values)) = list_feature {
+            posted.push(json!({ "FeatureName": name, "ValueAsStringList": values }));
+        }
+        let posted_names: Vec<String> = posted
+            .iter()
+            .map(|value| value["FeatureName"].as_str().unwrap_or_default().to_owned())
+            .collect();
+
+        let (status, body) = emulator
+            .put_record(group, json!({ "Record": posted.clone() }))
+            .await;
+        assert_eq!(
+            status, 200,
+            "case {case:?}: expected PutRecord 200, got {status} ({body})"
+        );
+
+        // The record is served with every value it was written with, before the deletion
+        // touches any of them.
+        let (status, body) = emulator
+            .get_record(
+                group,
+                &format!("RecordIdentifierValueAsString={identifier}"),
+            )
+            .await;
+        assert_eq!(
+            status, 200,
+            "case {case:?}: expected GetRecord 200, got {status} ({body})"
+        );
+        let served: Vec<String> = record_pairs(&body)
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect();
+        assert_eq!(
+            served, posted_names,
+            "case {case:?}: expected the written record to be served as {posted_names:?}, \
+             got {served:?}"
+        );
+
+        let (status, body) = emulator
+            .delete_record(
+                group,
+                &format!(
+                    "RecordIdentifierValueAsString={identifier}&EventTime={delete_event_time}{mode}"
+                ),
+            )
+            .await;
+        assert_eq!(
+            status, 200,
+            "case {case:?}: expected DeleteRecord 200, got {status} ({body})"
+        );
+
+        let stored = emulator
+            .stored_record(group, identifier)
+            .unwrap_or_else(|| panic!("case {case:?}: expected the SoftDelete to leave a tombstone"));
+        assert!(
+            stored.soft_deleted,
+            "case {case:?}: expected a soft-deleted record, got {stored:?}"
+        );
+        assert_eq!(
+            stored.identifier, *identifier,
+            "case {case:?}: expected the tombstone to stay keyed under {identifier:?}, got {:?}",
+            stored.identifier
+        );
+        assert_eq!(
+            stored.event_time.as_deref(),
+            Some(*delete_event_time),
+            "case {case:?}: expected the tombstone's EventTime to be the deletion's, got {:?}",
+            stored.event_time
+        );
+
+        // The rule, read off the group's own two names: the record-identifier feature
+        // carries the record's identifier, an event-time feature that is a DIFFERENT
+        // feature carries the deletion's `EventTime`, and every other feature value is
+        // dropped. Compared as a set, since the tombstone keeps the record's own order.
+        let mut expected: Vec<(String, Option<String>)> = vec![(
+            (*identifier_feature).to_owned(),
+            Some((*identifier).to_owned()),
+        )];
+        if event_time_feature != identifier_feature {
+            expected.push((
+                (*event_time_feature).to_owned(),
+                Some((*delete_event_time).to_owned()),
+            ));
+        }
+        expected.sort();
+        let mut actual: Vec<(String, Option<String>)> = stored
+            .features
+            .iter()
+            .map(|value| (value.feature_name.clone(), value.value_as_string.clone()))
+            .collect();
+        actual.sort();
+        assert_eq!(
+            actual, expected,
+            "case {case:?}: expected the tombstone to carry {expected:?}, got {actual:?}"
+        );
+        for value in &stored.features {
+            assert!(
+                value.value_as_string_list.is_none(),
+                "case {case:?}: expected no collection value on the tombstone's {:?}, got {:?}",
+                value.feature_name,
+                value.value_as_string_list
+            );
+        }
+
+        // The invariant the whole store is keyed by: a record's identifier and the value of
+        // its record-identifier feature are one value.
+        let in_record = stored
+            .features
+            .iter()
+            .find(|value| value.feature_name == *identifier_feature)
+            .and_then(|value| value.value_as_string.clone());
+        assert_eq!(
+            in_record.as_deref(),
+            Some(stored.identifier.as_str()),
+            "case {case:?}: expected the record-identifier feature to carry the record's \
+             identifier {:?}, got {in_record:?}",
+            stored.identifier
+        );
+
+        // Off the wire: the tombstone is served by no read, and it is listed — under the
+        // identifier it was written with — only to a caller asking for soft-deleted records.
+        let (status, body) = emulator
+            .get_record(
+                group,
+                &format!("RecordIdentifierValueAsString={identifier}"),
+            )
+            .await;
+        assert_eq!(
+            status, 200,
+            "case {case:?}: expected GetRecord 200 after the delete, got {status} ({body})"
+        );
+        let record = body.get("Record").cloned().unwrap_or(Value::Null);
+        assert!(
+            record.is_null(),
+            "case {case:?}: expected no Record after the delete, got {record:?}"
+        );
+        let (_, body) = emulator
+            .list_records(group, json!({ "IncludeSoftDeletedRecords": true }))
+            .await;
+        let listed = body["RecordIdentifiers"].clone();
+        assert_eq!(
+            listed,
+            json!([identifier]),
+            "case {case:?}: expected the tombstone listed as {identifier:?}, got {listed:?}"
         );
     }
 }

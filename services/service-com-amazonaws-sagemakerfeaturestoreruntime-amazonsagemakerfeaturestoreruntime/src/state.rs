@@ -249,7 +249,12 @@ impl FeatureGroupStore {
     /// The two features the tombstone KEEPS are the group's own
     /// `RecordIdentifierFeatureName` and `EventTimeFeatureName`, which the caller reads
     /// from the group's definition ([`resolve_group`]) and passes in: this store holds no
-    /// definition of its own, and a group that resolves always has both names.
+    /// definition of its own, and a group that resolves always has both names. Those two
+    /// names can be ONE name, and the feature they then both denote keeps the record's
+    /// IDENTIFIER: the tombstone is "a record with the same RecordIdentifer as the
+    /// original", and the value of a record's record-identifier feature IS that identifier
+    /// ([`StoredRecord::identifier`]) — the same reading the offline marker of this very
+    /// deletion makes of such a group ([`offline_store::OfflineRecord::delete_marker`]).
     ///
     /// The record's time-to-live is not one of those "other feature values": the duration
     /// the record was written under ([`StoredRecord::ttl_secs`]) stays with it, and
@@ -274,10 +279,18 @@ impl FeatureGroupStore {
             identifier_feature == feature.feature_name
                 || event_time_feature == feature.feature_name
         });
-        for feature in &mut record.features {
-            if event_time_feature == feature.feature_name {
-                feature.value_as_string = Some(event_time.to_owned());
-                feature.value_as_string_list = None;
+        // The event-time feature takes the deletion's `EventTime`; the record-identifier
+        // feature is left alone, because its value is the identifier of the record the
+        // tombstone stands for — the one this store holds and reports it under. A group
+        // whose identifier feature IS its event-time feature has ONE feature standing for
+        // both, and nothing may re-write it, or the record would state an identifier other
+        // than its own.
+        if event_time_feature != identifier_feature {
+            for feature in &mut record.features {
+                if event_time_feature == feature.feature_name {
+                    feature.value_as_string = Some(event_time.to_owned());
+                    feature.value_as_string_list = None;
+                }
             }
         }
         let expires_at_secs = record.expires_at_secs;
