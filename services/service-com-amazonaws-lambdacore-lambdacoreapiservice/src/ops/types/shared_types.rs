@@ -11,35 +11,22 @@ use super::*;
 
 smithy_macros::smithy_model!("smithy-model/com-amazonaws-lambdacore-lambdacoreapiservice.json");
 
-#[smithy_macros::smithy(union_for = "com.amazonaws.lambdacore#NetworkConnectorConfiguration")]
-#[allow(clippy::large_enum_variant)]
-// `PartialEq` is what lets `UpdateNetworkConnector` tell a configuration change
-// from the no-op update the model documents ("a no-op update returns the current
-// version number").
-#[derive(Debug, Clone, PartialEq)]
-pub enum NetworkConnectorConfiguration {
-    VpcEgressConfiguration(NetworkConnectorVpcEgressConfiguration),
-}
-
-#[smithy_macros::smithy(shape = "com.amazonaws.lambdacore#NetworkConnectorVpcEgressConfiguration")]
+// `PartialEq` beyond the scaffold's derive list: the runtime operations the model declares
+// `@idempotent` tell a RETRY of a create apart from a second request that asks for something
+// else under the same name by comparing what each asked for, and the release lifecycle is one
+// of the members a request carries.
+#[smithy_macros::smithy(shape = "com.amazonaws.lambdacore#RuntimeReleaseLifecycle")]
 #[derive(Debug, Clone, Default, PartialEq)]
-pub struct NetworkConnectorVpcEgressConfiguration {
-    pub subnet_ids: Option<Vec<String>>,
-    pub security_group_ids: Option<Vec<String>>,
-    pub network_protocol: Option<String>,
-    pub associated_compute_resource_types: Option<Vec<String>>,
+pub struct RuntimeReleaseLifecycle {
+    pub release_state: Option<String>,
+    pub deprecation_date: Option<String>,
+    pub function_create_block_date: Option<String>,
+    pub function_update_block_date: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.lambdacore#InvalidParameterValueException")]
 #[derive(Debug, Clone, Default)]
 pub struct InvalidParameterValueException {
-    pub r#type: Option<String>,
-    pub message: Option<String>,
-}
-
-#[smithy_macros::smithy(shape = "com.amazonaws.lambdacore#NetworkConnectorLimitExceededException")]
-#[derive(Debug, Clone, Default)]
-pub struct NetworkConnectorLimitExceededException {
     pub r#type: Option<String>,
     pub message: Option<String>,
 }
@@ -54,6 +41,13 @@ pub struct ResourceConflictException {
 #[smithy_macros::smithy(shape = "com.amazonaws.lambdacore#ServiceException")]
 #[derive(Debug, Clone, Default)]
 pub struct ServiceException {
+    pub r#type: Option<String>,
+    pub message: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.lambdacore#ServiceQuotaExceededException")]
+#[derive(Debug, Clone, Default)]
+pub struct ServiceQuotaExceededException {
     pub r#type: Option<String>,
     pub message: Option<String>,
 }
@@ -74,8 +68,70 @@ pub struct ResourceNotFoundException {
     pub message: Option<String>,
 }
 
+#[smithy_macros::smithy(shape = "com.amazonaws.lambdacore#Compatibility")]
+#[derive(Debug, Clone, Default)]
+pub struct Compatibility {
+    pub integration_models: Option<Vec<String>>,
+    pub architectures: Option<Vec<String>>,
+    pub managed_instances: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.lambdacore#Platform")]
+#[derive(Debug, Clone, Default)]
+pub struct Platform {
+    pub architecture: String,
+    pub os: String,
+    pub digest: String,
+}
+
+// `PartialEq` beyond the scaffold's derive list: `UpdateNetworkConnector` appends a new
+// immutable version only when the configuration it was handed DIFFERS from the one in force,
+// and a replayed `ClientToken` is a retry only when it asks for the same configuration
+// (`crate::state::TokenFingerprint`).
+#[smithy_macros::smithy(union_for = "com.amazonaws.lambdacore#NetworkConnectorConfiguration")]
+#[allow(clippy::large_enum_variant)]
+#[derive(Debug, Clone, PartialEq)]
+pub enum NetworkConnectorConfiguration {
+    VpcEgressConfiguration(NetworkConnectorVpcEgressConfiguration),
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.lambdacore#NetworkConnectorVpcEgressConfiguration")]
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct NetworkConnectorVpcEgressConfiguration {
+    pub subnet_ids: Option<Vec<String>>,
+    pub security_group_ids: Option<Vec<String>>,
+    pub network_protocol: Option<String>,
+    pub associated_compute_resource_types: Option<Vec<String>>,
+    pub elastic_ip_configuration: Option<ElasticIpConfiguration>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.lambdacore#ElasticIpConfiguration")]
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ElasticIpConfiguration {
+    pub r#type: String,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.lambdacore#NetworkConnectorLimitExceededException")]
+#[derive(Debug, Clone, Default)]
+pub struct NetworkConnectorLimitExceededException {
+    pub r#type: Option<String>,
+    pub message: Option<String>,
+}
+
+/// The values `CompatibilityPolicy` accepts on the wire.
+pub const COMPATIBILITY_POLICY_VALUES: &[&str] = &["NotSupported", "Supported"];
+
+
 /// The values `ComputeResourceType` accepts on the wire.
 pub const COMPUTE_RESOURCE_TYPE_VALUES: &[&str] = &["MicroVm", "WebFunction"];
+
+
+/// The values `ElasticIpType` accepts on the wire.
+pub const ELASTIC_IP_TYPE_VALUES: &[&str] = &["None", "ServiceManaged"];
+
+
+/// The values `IntegrationModel` accepts on the wire.
+pub const INTEGRATION_MODEL_VALUES: &[&str] = &["RuntimeAPI"];
 
 
 /// The values `NetworkConnectorLastUpdateStatus` accepts on the wire.
@@ -83,7 +139,7 @@ pub const NETWORK_CONNECTOR_LAST_UPDATE_STATUS_VALUES: &[&str] = &["Failed", "In
 
 
 /// The values `NetworkConnectorLastUpdateStatusReasonCode` accepts on the wire.
-pub const NETWORK_CONNECTOR_LAST_UPDATE_STATUS_REASON_CODE_VALUES: &[&str] = &["DisallowedByVpcEncryptionControl", "Ec2RequestLimitExceeded", "InsufficientRolePermissions", "InternalError", "InvalidSecurityGroup", "InvalidSubnet", "SecurityGroupsPerInterfaceLimitExceeded", "SubnetOutOfIPAddresses"];
+pub const NETWORK_CONNECTOR_LAST_UPDATE_STATUS_REASON_CODE_VALUES: &[&str] = &["DisallowedByVpcEncryptionControl", "Ec2RequestLimitExceeded", "InsufficientRolePermissions", "InternalError", "InternetGatewayNotAttached", "InvalidSecurityGroup", "InvalidSubnet", "SecurityGroupsPerInterfaceLimitExceeded", "SubnetOutOfIPAddresses"];
 
 
 /// The values `NetworkConnectorState` accepts on the wire.
@@ -91,7 +147,7 @@ pub const NETWORK_CONNECTOR_STATE_VALUES: &[&str] = &["ACTIVE", "DELETE_FAILED",
 
 
 /// The values `NetworkConnectorStateReasonCode` accepts on the wire.
-pub const NETWORK_CONNECTOR_STATE_REASON_CODE_VALUES: &[&str] = &["DisallowedByVpcEncryptionControl", "Ec2RequestLimitExceeded", "InsufficientRolePermissions", "InternalError", "InvalidSecurityGroup", "InvalidSubnet", "SecurityGroupsPerInterfaceLimitExceeded", "SubnetOutOfIPAddresses"];
+pub const NETWORK_CONNECTOR_STATE_REASON_CODE_VALUES: &[&str] = &["DisallowedByVpcEncryptionControl", "Ec2RequestLimitExceeded", "InsufficientRolePermissions", "InternalError", "InternetGatewayNotAttached", "InvalidSecurityGroup", "InvalidSubnet", "SecurityGroupsPerInterfaceLimitExceeded", "SubnetOutOfIPAddresses"];
 
 
 /// The values `NetworkConnectorType` accepts on the wire.
@@ -100,6 +156,26 @@ pub const NETWORK_CONNECTOR_TYPE_VALUES: &[&str] = &["VPC_EGRESS"];
 
 /// The values `NetworkProtocol` accepts on the wire.
 pub const NETWORK_PROTOCOL_VALUES: &[&str] = &["DualStack", "IPv4"];
+
+
+/// The values `RuntimeAliasState` accepts on the wire.
+pub const RUNTIME_ALIAS_STATE_VALUES: &[&str] = &["ACTIVE", "CREATING", "DELETING", "PENDING_DELETION", "UPDATING"];
+
+
+/// The values `RuntimeArchitecture` accepts on the wire.
+pub const RUNTIME_ARCHITECTURE_VALUES: &[&str] = &["arm64", "x86_64"];
+
+
+/// The values `RuntimeReleaseState` accepts on the wire.
+pub const RUNTIME_RELEASE_STATE_VALUES: &[&str] = &["DEPRECATED", "GA", "PREVIEW"];
+
+
+/// The values `RuntimeState` accepts on the wire.
+pub const RUNTIME_STATE_VALUES: &[&str] = &["ACTIVE", "DELETING", "FAILED", "PENDING_DELETION"];
+
+
+/// The values `RuntimeVersionState` accepts on the wire.
+pub const RUNTIME_VERSION_STATE_VALUES: &[&str] = &["ACTIVE", "CREATING", "DELETING", "FAILED", "PENDING_DELETION"];
 
 
 /// The values `ThrottleReason` accepts on the wire.

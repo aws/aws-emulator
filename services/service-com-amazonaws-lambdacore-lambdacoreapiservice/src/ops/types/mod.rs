@@ -14,33 +14,82 @@
 //! here named after an operation would make that operation's own module name
 //! ambiguous inside `ops` (`E0659`).
 
-// The schema/codec macros every structure with a `@timestampFormat("date-time")` member
-// uses, because the vendored codegen drops that trait. Hand-added, not generated; see the
-// module's own note. `#[macro_use]`, and declared FIRST, so the macros are in the textual
-// scope of every `*_types` module below.
+// The schema/serializer macros every structure carrying a `@timestampFormat("date-time")`
+// member uses, because the vendored codegen does not carry that trait onto the member
+// schemas it emits. Hand-added, not generated; see the module's own note.
+// `#[macro_use]`, and declared FIRST, so the macros are in the textual scope of every
+// `*_types` module below.
 #[macro_use]
 pub mod date_time_wire;
 
 pub mod create_network_connector_types;
+pub mod create_runtime_alias_types;
+pub mod create_runtime_types;
+pub mod create_runtime_version_types;
 pub mod delete_network_connector_types;
+pub mod delete_runtime_alias_types;
+pub mod delete_runtime_types;
+pub mod delete_runtime_version_types;
 pub mod get_network_connector_types;
+pub mod get_runtime_alias_types;
+pub mod get_runtime_types;
+pub mod get_runtime_version_types;
 pub mod list_network_connector_versions_types;
 pub mod list_network_connectors_types;
+pub mod list_runtime_aliases_types;
+pub mod list_runtime_versions_types;
+pub mod list_runtimes_types;
+pub mod restore_runtime_types;
 pub mod shared_types;
 pub mod update_network_connector_types;
+pub mod update_runtime_alias_types;
+pub mod update_runtime_types;
+pub mod update_runtime_version_types;
 
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use create_network_connector_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use create_runtime_alias_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use create_runtime_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use create_runtime_version_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use delete_network_connector_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use delete_runtime_alias_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use delete_runtime_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use delete_runtime_version_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use get_network_connector_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use get_runtime_alias_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use get_runtime_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use get_runtime_version_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use list_network_connector_versions_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use list_network_connectors_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use list_runtime_aliases_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use list_runtime_versions_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use list_runtimes_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use restore_runtime_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use shared_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use update_network_connector_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use update_runtime_alias_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use update_runtime_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use update_runtime_version_types::*;
 

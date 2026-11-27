@@ -24,9 +24,10 @@
 //! claims can be served by a path that records nothing.
 //!
 //! The `eventName` is the operation's own modelled name, which is the shared wrapper's
-//! default: this model binds every operation under ONE API-date segment and CloudTrail
-//! publishes a call of it under the operation name alone, unlike the Lambda control plane
-//! whose published names carry the API date of each operation's own REST binding.
+//! default: this model binds every operation under an API-date segment per resource family
+//! and CloudTrail publishes a call of it under the operation name alone, unlike the Lambda
+//! control plane whose published names carry the API date of each operation's own REST
+//! binding.
 //!
 //! A call this emulator has not implemented answers 501 and is NOT recorded: the wrapper
 //! drops it, because event history is the record of the calls an account's APIs actually
@@ -56,20 +57,36 @@ pub const SENSITIVE_MEMBERS: &[&str] = &[];
 /// Every operation of this service and the read/write class of its calls.
 ///
 /// The CLASS is the operation's own semantics, which is what the event's `readOnly` carries
-/// and what a trail's `ReadWriteType` narrows a trail's management events by: `Reporting`
-/// for the operations the model declares `@readonly` — `GetNetworkConnector`,
-/// `ListNetworkConnectors` and `ListNetworkConnectorVersions`, which report state and change
-/// none of it — and `Mutating` for the three that create, update or delete a connector.
+/// and what a trail's `ReadWriteType` narrows a trail's management events by: `Reporting` for
+/// the operations the model declares `@readonly` — the `Get…` and `List…` calls, which report
+/// state and change none of it — and `Mutating` for every one that creates, updates, deletes
+/// or restores a resource.
 ///
 /// Public, so this crate's own tests read the catalog the routing table is built from rather
 /// than a second copy of it.
 pub const MANAGEMENT_EVENT_OPERATIONS: &[(&str, CallKind)] = &[
     ("CreateNetworkConnector", CallKind::Mutating),
+    ("CreateRuntime", CallKind::Mutating),
+    ("CreateRuntimeAlias", CallKind::Mutating),
+    ("CreateRuntimeVersion", CallKind::Mutating),
     ("DeleteNetworkConnector", CallKind::Mutating),
+    ("DeleteRuntime", CallKind::Mutating),
+    ("DeleteRuntimeAlias", CallKind::Mutating),
+    ("DeleteRuntimeVersion", CallKind::Mutating),
     ("GetNetworkConnector", CallKind::Reporting),
+    ("GetRuntime", CallKind::Reporting),
+    ("GetRuntimeAlias", CallKind::Reporting),
+    ("GetRuntimeVersion", CallKind::Reporting),
     ("ListNetworkConnectorVersions", CallKind::Reporting),
     ("ListNetworkConnectors", CallKind::Reporting),
+    ("ListRuntimeAliases", CallKind::Reporting),
+    ("ListRuntimeVersions", CallKind::Reporting),
+    ("ListRuntimes", CallKind::Reporting),
+    ("RestoreRuntime", CallKind::Mutating),
     ("UpdateNetworkConnector", CallKind::Mutating),
+    ("UpdateRuntime", CallKind::Mutating),
+    ("UpdateRuntimeAlias", CallKind::Mutating),
+    ("UpdateRuntimeVersion", CallKind::Mutating),
 ];
 
 /// The read/write class CloudTrail records the calls of `operation` as a management event
@@ -196,9 +213,10 @@ mod tests {
     /// `@readonly`, and as a write otherwise; a name this service does not serve has no
     /// class at all.
     ///
-    /// The rows span both halves of the rule over the whole surface — the three `@readonly`
-    /// operations and the three writes (a create, an update and a delete) — rather than the
-    /// one create that motivated it, plus a name this model does not bind.
+    /// The rows span both halves of the rule over BOTH resource families this service holds
+    /// — the connector's reads and writes, and the runtime tree's reads, creates, updates,
+    /// deletes and its restore — rather than the one create that motivated it, plus a name
+    /// this model does not bind.
     #[test]
     fn a_readonly_operation_is_recorded_as_a_read_and_every_other_as_a_write() {
         let rows = [
@@ -210,6 +228,30 @@ mod tests {
             (
                 "the list over one connector's versions",
                 "ListNetworkConnectorVersions",
+                Some(CallKind::Reporting),
+            ),
+            ("the runtime create", "CreateRuntime", Some(CallKind::Mutating)),
+            ("the runtime update", "UpdateRuntime", Some(CallKind::Mutating)),
+            ("the runtime delete", "DeleteRuntime", Some(CallKind::Mutating)),
+            ("the restore", "RestoreRuntime", Some(CallKind::Mutating)),
+            ("the runtime version create", "CreateRuntimeVersion", Some(CallKind::Mutating)),
+            ("the runtime version update", "UpdateRuntimeVersion", Some(CallKind::Mutating)),
+            ("the runtime version delete", "DeleteRuntimeVersion", Some(CallKind::Mutating)),
+            ("the runtime alias create", "CreateRuntimeAlias", Some(CallKind::Mutating)),
+            ("the runtime alias update", "UpdateRuntimeAlias", Some(CallKind::Mutating)),
+            ("the runtime alias delete", "DeleteRuntimeAlias", Some(CallKind::Mutating)),
+            ("the read of one runtime", "GetRuntime", Some(CallKind::Reporting)),
+            ("the read of one version", "GetRuntimeVersion", Some(CallKind::Reporting)),
+            ("the read of one alias", "GetRuntimeAlias", Some(CallKind::Reporting)),
+            ("the list over the account's runtimes", "ListRuntimes", Some(CallKind::Reporting)),
+            (
+                "the list over one runtime's versions",
+                "ListRuntimeVersions",
+                Some(CallKind::Reporting),
+            ),
+            (
+                "the list over one runtime's aliases",
+                "ListRuntimeAliases",
                 Some(CallKind::Reporting),
             ),
             ("a name this service does not serve", "PublishLayerVersion", None),

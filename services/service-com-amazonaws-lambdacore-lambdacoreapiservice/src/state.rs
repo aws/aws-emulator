@@ -2,7 +2,7 @@
 
 //! Engine state for the com-amazonaws-lambdacore-lambdacoreapiservice service.
 //!
-//! The network connector is this service's only resource:
+//! This service holds two resource families. The network connector is the first:
 //! `CreateNetworkConnector` mints one, `GetNetworkConnector` /
 //! `ListNetworkConnectors` / `ListNetworkConnectorVersions` report it,
 //! `UpdateNetworkConnector` appends a version to it and
@@ -10,12 +10,17 @@
 //! The records below are the ONE copy of a connector every one of those
 //! handlers reads and writes, plus the two projections the model asks for
 //! (`NetworkConnectorSummary` and `NetworkConnectorVersionSummary`).
+//!
+//! The second is the customer-managed RUNTIME and the versions and aliases it
+//! parents, which lives in [`runtime`] — one copy of that tree, reached through
+//! the same store.
 
 use std::collections::{BTreeMap, HashMap};
 use std::time::{Duration, SystemTime};
 
 pub mod identifier;
 pub mod network;
+pub mod runtime;
 
 use crate::ops::types::{
     InvalidParameterValueException, NetworkConnectorConfiguration, NetworkConnectorSummary,
@@ -454,6 +459,10 @@ pub const ARN_RESOURCE_INFIX: &str = ":network-connector:";
 /// ([`ComAmazonawsLambdacoreLambdacoreapiserviceState::mint_connector_id`]).
 pub const CONNECTOR_ID_PREFIX: &str = "nc-";
 
+/// The prefix of every runtime `Id` this service assigns
+/// ([`ComAmazonawsLambdacoreLambdacoreapiserviceState::mint_runtime_id`]).
+pub const RUNTIME_ID_PREFIX: &str = "rt-";
+
 /// How many hex digits that prefix is followed by.
 const CONNECTOR_ID_DIGITS: usize = 16;
 
@@ -496,6 +505,13 @@ pub struct ComAmazonawsLambdacoreLambdacoreapiserviceState {
     /// The counter that orders remembered client tokens, so the oldest can be
     /// identified for eviction.
     pub token_seq: u64,
+    /// Every customer-managed runtime, keyed by name — `RuntimeName` is unique within the
+    /// account and Region. A `BTreeMap` is what gives `ListRuntimes` the stable total order
+    /// its `NextToken` indexes into, and each runtime holds its own versions and aliases in
+    /// maps of the same kind.
+    pub runtimes: BTreeMap<String, runtime::Runtime>,
+    /// The counter runtime ids are minted from.
+    pub runtime_id_seq: u64,
 }
 
 /// What an already-seen `ClientToken` produced: the connector it named and the
@@ -562,6 +578,57 @@ impl ComAmazonawsLambdacoreLambdacoreapiserviceState {
         }
         for name in forgotten {
             self.forget(&name);
+        }
+        self.settle_runtimes(now);
+    }
+
+    /// The same for the runtime tree: every runtime, version and alias is reported as of
+    /// `now`, so the transitions the clock already owes them — a create finishing, a
+    /// scheduled deletion coming due, a deletion completing — are materialised first.
+    ///
+    /// A runtime whose deletion has completed is forgotten, and with it the versions and
+    /// aliases it parented: the name is free for a new runtime from then on, and every
+    /// identifier that named it names nothing.
+    pub fn settle_runtimes(&mut self, now: SystemTime) {
+        let forgotten: Vec<String> = self
+            .runtimes
+            .iter_mut()
+            .filter_map(|(name, runtime)| runtime.settle(now).then(|| name.clone()))
+            .collect();
+        for name in forgotten {
+            self.runtimes.remove(&name);
+        }
+    }
+
+    /// The runtime a `RuntimeIdentifier` names, with every change the clock owes the tree
+    /// below it already materialised.
+    ///
+    /// Answers `None` when the store holds no live runtime for it, which includes one whose
+    /// deletion completed before this call: the identifier names no runtime of this account
+    /// and Region from then on, which every operation answers
+    /// `ResourceNotFoundException` for.
+    pub fn settled_runtime_mut(
+        &mut self,
+        identifier: &str,
+        now: SystemTime,
+    ) -> Option<&mut runtime::Runtime> {
+        self.settle_runtimes(now);
+        self.runtimes.get_mut(runtime::runtime_name_of(identifier))
+    }
+
+    /// Mint an unused runtime id.
+    ///
+    /// `Id` is "the unique identifier of the runtime" and the model gives it no pattern, so
+    /// the shape is the emulator's, built the way this service already mints a connector id
+    /// ([`Self::mint_connector_id`]): a per-resource prefix and 16 hex digits, which hold
+    /// the whole counter. The loop skips an id already taken.
+    pub fn mint_runtime_id(&mut self) -> String {
+        loop {
+            self.runtime_id_seq = self.runtime_id_seq.wrapping_add(1);
+            let id = format!("{RUNTIME_ID_PREFIX}{:016x}", self.runtime_id_seq);
+            if self.runtimes.values().all(|held| held.id != id) {
+                return id;
+            }
         }
     }
 

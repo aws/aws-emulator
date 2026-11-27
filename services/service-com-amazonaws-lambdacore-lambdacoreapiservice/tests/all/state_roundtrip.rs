@@ -10,6 +10,15 @@
 //! COMPILES — and hands that request a private store that is dropped when it returns.
 //! The write looks like it succeeded and the next call sees nothing.
 
+// And the other resource family's own round trip through that one shared store: the
+// customer-managed runtime tree, in a suite file of its own. It is declared HERE, as a child
+// module with an explicit `#[path]`, rather than as a sibling `tests/all/runtime_tree.rs`,
+// because a sibling suite needs a `mod` line in this crate's hand-written `tests/all.rs` and
+// that file is not editable. This file is itself reached by a `#[path]`, so a child module's
+// own path is stated rather than inferred.
+#[path = "state_roundtrip/runtime_tree.rs"]
+mod runtime_tree;
+
 use std::sync::Arc;
 
 /// A probe type owned by this test. `state::<T>()` is keyed by TYPE, so a test can use

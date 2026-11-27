@@ -134,23 +134,38 @@ impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
         // history where CloudTrail's `LookupEvents` reads it (see [`management_events`]) —
         // one code path for all of them, rather than a recorder per handler.
         let mut stated = management_events::recording_table(&engine);
-        // EVERY modelled operation (the six this model binds, one per file in `src/ops/`),
-        // because both rules are the service's and not one operation's: an operation whose
-        // input declares no constraint simply never has a violation to state, which the
-        // wrapper reads off that operation's own input schema, and every control-plane call
-        // of an account is a management event. An operation added later is added here as
-        // well, or it answers a refusal in the framework's wording rather than this
-        // service's and its calls are served unrecorded; `tests` below fails when one is
-        // missing.
+        // EVERY modelled operation (one per file in `src/ops/`), because both rules are the
+        // service's and not one operation's: an operation whose input declares no constraint
+        // simply never has a violation to state, which the wrapper reads off that
+        // operation's own input schema, and every control-plane call of an account is a
+        // management event. An operation added later is added here as well, or it answers a
+        // refusal in the framework's wording rather than this service's and its calls are
+        // served unrecorded; `tests` below fails when one is missing.
         wrap_operations!(
             stated,
             engine,
             create_network_connector::CreateNetworkConnector,
+            create_runtime::CreateRuntime,
+            create_runtime_alias::CreateRuntimeAlias,
+            create_runtime_version::CreateRuntimeVersion,
             delete_network_connector::DeleteNetworkConnector,
+            delete_runtime::DeleteRuntime,
+            delete_runtime_alias::DeleteRuntimeAlias,
+            delete_runtime_version::DeleteRuntimeVersion,
             get_network_connector::GetNetworkConnector,
+            get_runtime::GetRuntime,
+            get_runtime_alias::GetRuntimeAlias,
+            get_runtime_version::GetRuntimeVersion,
             list_network_connector_versions::ListNetworkConnectorVersions,
             list_network_connectors::ListNetworkConnectors,
+            list_runtime_aliases::ListRuntimeAliases,
+            list_runtime_versions::ListRuntimeVersions,
+            list_runtimes::ListRuntimes,
+            restore_runtime::RestoreRuntime,
             update_network_connector::UpdateNetworkConnector,
+            update_runtime::UpdateRuntime,
+            update_runtime_alias::UpdateRuntimeAlias,
+            update_runtime_version::UpdateRuntimeVersion,
         );
         Self {
             entry: crate::ServiceDefinition::new(engine),
@@ -260,9 +275,9 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
         // `service-common` states for a shared signing name: this model is `restJson1`
         // (a REST protocol, so the `rpc_service_shape_id` argument is `None`), and a
         // REST service's own surface is the modelled URI path space its generated
-        // `ROUTE_PATH_SEGMENTS` publishes — here the single API-date segment
-        // `2026-04-04` every network-connector operation binds, which no peer model
-        // binds.
+        // `ROUTE_PATH_SEGMENTS` publishes — here the API-date segments its two resource
+        // families bind (`2026-04-04` for the network connectors, `2026-10-01` for the
+        // customer-managed runtimes), neither of which any peer model binds.
         service_common::claims_request(
             parts,
             self.entry.identity().signing_name(),
@@ -379,8 +394,8 @@ mod tests {
             .collect();
         assert_eq!(
             operations.len(),
-            6,
-            "case the model's surface: expected this service's 6 operations, got \
+            22,
+            "case the model's surface: expected this service's 22 operations, got \
              {operations:?}"
         );
 
