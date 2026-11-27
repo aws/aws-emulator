@@ -231,14 +231,18 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // The resource the PATH addresses is resolved BEFORE this operation's own judgement
         // of the body: a connector belongs TO a payment manager, this route carries that
         // manager's id, and an id this account holds no manager under names nothing to
-        // create a connector on, whatever the body carries.
+        // create a connector on, whatever the body carries. This route addresses the
+        // manager's connector COLLECTION and carries no connector id, so the manager is
+        // the resource reported missing, in the labelled form this surface names it by.
         if !store
             .payment_managers
             .contains_key(&input.payment_manager_id)
         {
             return Err(
                 CreatePaymentConnectorErrorModeled::ResourceNotFoundException(
-                    crate::state::payment_manager_not_found(&input.payment_manager_id),
+                    crate::state::connector_parent_payment_manager_not_found(
+                        &input.payment_manager_id,
+                    ),
                 )
                 .into(),
             );
@@ -312,7 +316,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .get(&input.payment_manager_id)
             .ok_or_else(|| {
                 CreatePaymentConnectorErrorModeled::ResourceNotFoundException(
-                    crate::state::payment_manager_not_found(&input.payment_manager_id),
+                    crate::state::connector_parent_payment_manager_not_found(
+                        &input.payment_manager_id,
+                    ),
                 )
             })?;
 

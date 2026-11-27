@@ -14,9 +14,10 @@ use crate::ops::types::{
     CreatePaymentManagerOutput, GetPaymentManagerOutput, UpdatePaymentManagerOutput,
 };
 
-/// The modelled not-found error for a payment manager this account does not hold:
-/// the resource, then the id the request's path carried ("Payment manager not found:
-/// <paymentManagerId>").
+/// The modelled not-found error for a payment manager this account does not hold,
+/// as the routes that address the manager RESOURCE itself
+/// (`/payments/managers/{paymentManagerId}`) report it: the resource, then the id
+/// the request's path carried ("Payment manager not found: <paymentManagerId>").
 ///
 /// The payments plane words a missing resource this way rather than in the
 /// "<Resource> with ID <id> does not exist" sentence the browser plane uses
@@ -26,9 +27,12 @@ use crate::ops::types::{
 /// the request. The model states no message text, so the wording is the recorded
 /// one.
 ///
-/// Shared by every operation that resolves a manager rather than written per
-/// operation, so one payment manager cannot be reported missing in two different
-/// sentences by two operations.
+/// Shared by every operation that resolves a manager BY that route rather than
+/// written per operation, so one payment manager cannot be reported missing in two
+/// different sentences by two operations. A route that addresses something the
+/// manager holds reports the resource IT addresses instead
+/// ([`payment_connector_not_found`],
+/// [`connector_parent_payment_manager_not_found`]).
 pub fn payment_manager_not_found(payment_manager_id: &str) -> ResourceNotFoundException {
     ResourceNotFoundException {
         message: Some(format!("Payment manager not found: {payment_manager_id}")),

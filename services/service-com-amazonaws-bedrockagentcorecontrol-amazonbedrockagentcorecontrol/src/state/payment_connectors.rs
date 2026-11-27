@@ -86,8 +86,17 @@ pub const PAYMENT_CONNECTOR_SETTLE_DELAY: Duration = super::PAYMENT_MANAGER_SETT
 /// memory without bound.
 pub const MAX_CONNECTORS_PER_PAYMENT_MANAGER: usize = 1_000;
 
-/// The modelled not-found error for a payment connector the manager in the
-/// request's path does not hold: the resource, then the id that path carried.
+/// The modelled not-found error for a payment connector nothing resolves: the
+/// resource, then the `paymentConnectorId` the request's path carried.
+///
+/// Every route that addresses ONE connector
+/// (`/payments/managers/{paymentManagerId}/connectors/{paymentConnectorId}`)
+/// reports THIS error, whether the gap is the connector or the manager that
+/// would hold it: the connector is the resource the operation was asked to act
+/// on, so it is the one reported missing and the id reported is the connector's
+/// — the parent's own refusal
+/// ([`connector_parent_payment_manager_not_found`]) belongs to the route that
+/// addresses the manager's connector collection.
 ///
 /// The payments plane words a missing resource this way — the text around the
 /// identifier is fixed and the identifier itself is the caller's own value, taken
@@ -98,6 +107,30 @@ pub fn payment_connector_not_found(payment_connector_id: &str) -> ResourceNotFou
     ResourceNotFoundException {
         message: Some(format!(
             "Payment connector not found: {payment_connector_id}"
+        )),
+    }
+}
+
+/// The modelled not-found error reported for the PARENT payment manager by the
+/// route that addresses a manager's payment connector COLLECTION
+/// (`/payments/managers/{paymentManagerId}/connectors`): the resource, then the
+/// id that path carried under the `managerId=` label.
+///
+/// A route addressing the collection acts on the manager itself — there is no
+/// connector id in it to report — and this surface words that identifier as the
+/// labelled key/value pair its sibling payment-manager refusals carry
+/// ([`super::payment_manager_update_conflict`]'s `managerId=`), not as the bare
+/// id a route addressing the manager resource itself reports
+/// ([`super::payment_manager_not_found`]). The text around the identifier is
+/// fixed and the identifier is the caller's own value, taken verbatim from the
+/// request path. The model states no message text, so the wording is the
+/// recorded one.
+pub fn connector_parent_payment_manager_not_found(
+    payment_manager_id: &str,
+) -> ResourceNotFoundException {
+    ResourceNotFoundException {
+        message: Some(format!(
+            "Payment manager not found: managerId={payment_manager_id}"
         )),
     }
 }

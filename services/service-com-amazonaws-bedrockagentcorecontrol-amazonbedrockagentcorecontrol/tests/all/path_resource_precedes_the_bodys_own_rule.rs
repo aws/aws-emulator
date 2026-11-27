@@ -145,9 +145,11 @@ fn memory_absent(operation: &str, memory_id: &str) -> String {
     )
 }
 
-/// The sentence the payments plane answers a manager it does not hold with.
+/// The sentence the payments plane answers a manager it does not hold with on the route
+/// that addresses that manager's connector COLLECTION: the identifier under the
+/// `managerId=` label this surface names its parent manager by.
 fn payment_manager_absent(payment_manager_id: &str) -> String {
-    format!("Payment manager not found: {payment_manager_id}")
+    format!("Payment manager not found: managerId={payment_manager_id}")
 }
 
 /// The sentence this control plane answers an UPDATE of a runtime it does not hold with.

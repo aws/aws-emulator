@@ -681,7 +681,7 @@ async fn a_refused_update_changes_nothing() {
             json!({"description": "never applied"}),
             404,
             "ResourceNotFoundException",
-            format!("Payment manager not found: {absent_manager}"),
+            format!("Payment connector not found: {connector_id}"),
         ),
         (
             "a connector this manager does not hold",

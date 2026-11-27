@@ -230,19 +230,20 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         }
 
         // "Updates an existing payment connector", addressed by the two ids its path
-        // carries: a manager this account holds none under, or a connector that manager
-        // does not hold, is the modelled 404 rather than a connector an update minted.
-        let manager = store
+        // carries. This route addresses ONE connector, so the connector is the resource
+        // this operation is asked to update and the one reported missing: neither a
+        // manager this account holds none under nor a connector that manager does not
+        // hold resolves to a connector, so both are the modelled 404 naming the
+        // paymentConnectorId the caller asked for, rather than a connector an update
+        // minted.
+        let connector = store
             .payment_managers
             .get(&input.payment_manager_id)
-            .ok_or_else(|| {
-                UpdatePaymentConnectorErrorModeled::ResourceNotFoundException(
-                    crate::state::payment_manager_not_found(&input.payment_manager_id),
-                )
-            })?;
-        let connector = manager
-            .payment_connectors
-            .get(&input.payment_connector_id)
+            .and_then(|manager| {
+                manager
+                    .payment_connectors
+                    .get(&input.payment_connector_id)
+            })
             .ok_or_else(|| {
                 UpdatePaymentConnectorErrorModeled::ResourceNotFoundException(
                     crate::state::payment_connector_not_found(&input.payment_connector_id),

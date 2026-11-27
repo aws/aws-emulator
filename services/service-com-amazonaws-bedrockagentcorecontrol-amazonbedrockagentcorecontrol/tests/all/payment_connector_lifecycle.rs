@@ -771,7 +771,7 @@ async fn a_create_that_cannot_name_a_credential_provider_is_refused() {
             }),
             404,
             "ResourceNotFoundException",
-            format!("Payment manager not found: {ABSENT_MANAGER_ID}"),
+            format!("Payment manager not found: managerId={ABSENT_MANAGER_ID}"),
         ),
     ];
 
@@ -818,8 +818,9 @@ async fn a_create_that_cannot_name_a_credential_provider_is_refused() {
     );
 }
 
-/// RULE: a read names the resource that is missing — the manager when the account holds
-/// none under that id, the connector when the manager holds none under its id.
+/// RULE: a read of one connector names the resource it was asked to read — the connector,
+/// by the `paymentConnectorId` the path carried — whether the gap is the connector or the
+/// manager that would hold it.
 #[tokio::test]
 async fn a_read_of_a_connector_nothing_holds_is_the_modelled_not_found() {
     let emulator = Emulator::new();
@@ -840,7 +841,7 @@ async fn a_read_of_a_connector_nothing_holds_is_the_modelled_not_found() {
             "a manager id this account holds nothing under",
             absent_manager,
             absent_connector,
-            format!("Payment manager not found: {absent_manager}"),
+            format!("Payment connector not found: {absent_connector}"),
         ),
     ];
 

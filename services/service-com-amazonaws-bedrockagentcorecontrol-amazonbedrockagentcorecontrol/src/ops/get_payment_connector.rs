@@ -200,17 +200,20 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         // A READ: the record is reported as it stands, and the status it reports is the
         // one the clock already made due, which no read performs.
-        let manager = store
+        //
+        // This route addresses ONE connector, so the connector is the resource this
+        // operation is asked to read and the one reported missing: a manager this
+        // account holds none under holds no connector under the id the path carries
+        // either, so the two gaps are one answer naming the paymentConnectorId the
+        // caller asked for rather than its parent.
+        let connector = store
             .payment_managers
             .get(&input.payment_manager_id)
-            .ok_or_else(|| {
-                GetPaymentConnectorErrorModeled::ResourceNotFoundException(
-                    crate::state::payment_manager_not_found(&input.payment_manager_id),
-                )
-            })?;
-        let connector = manager
-            .payment_connectors
-            .get(&input.payment_connector_id)
+            .and_then(|manager| {
+                manager
+                    .payment_connectors
+                    .get(&input.payment_connector_id)
+            })
             .ok_or_else(|| {
                 GetPaymentConnectorErrorModeled::ResourceNotFoundException(
                     crate::state::payment_connector_not_found(&input.payment_connector_id),
