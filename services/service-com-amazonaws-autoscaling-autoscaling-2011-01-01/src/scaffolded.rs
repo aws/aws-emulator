@@ -240,6 +240,38 @@ pub static UNSUPPORTED_OPERATION_SCHEMA: Schema = Schema::new_struct(
     &[&UNSUPPORTED_OPERATION_MESSAGE],
 );
 
+/// The `message` member of the synthetic `InvalidQueryParameter` error shape.
+static INVALID_QUERY_PARAMETER_MESSAGE: Schema = Schema::new_member(
+    ShapeId::from_static(
+        "smithy.framework#InvalidQueryParameter$message",
+        "smithy.framework",
+        "message",
+    ),
+    ShapeType::String,
+    "message",
+    0,
+)
+.with_xml_name("Message");
+
+/// Schema for the synthetic `InvalidQueryParameter` error shape.
+///
+/// In the `smithy.framework` namespace for the same reason as `NotImplemented`: the shape is
+/// not in any service's model, so it must not collide with a modeled one. It exists because
+/// `InvalidQueryParameter` — not the generic `ValidationError` — is the error code Amazon EC2
+/// Auto Scaling answers a request whose ARGUMENTS are well-formed but whose value a
+/// REFERENCED resource carries cannot satisfy the request, and the error code is what a
+/// client branches on. It is a CLIENT fault (HTTP 400), so the query envelope reports it as
+/// `<Type>Sender</Type>`.
+pub static INVALID_QUERY_PARAMETER_SCHEMA: Schema = Schema::new_struct(
+    ShapeId::from_static(
+        "smithy.framework#InvalidQueryParameter",
+        "smithy.framework",
+        "InvalidQueryParameter",
+    ),
+    ShapeType::Structure,
+    &[&INVALID_QUERY_PARAMETER_MESSAGE],
+);
+
 /// The `message` member of the synthetic `AccessDenied` error shape.
 static ACCESS_DENIED_MESSAGE: Schema = Schema::new_member(
     ShapeId::from_static(
@@ -301,6 +333,11 @@ pub enum Scaffolded<E> {
     /// carries. The payload is the same single `message` member as the refusals
     /// above.
     UnsupportedOperation(ValidationException),
+    /// The request was refused with HTTP 400 and the error code `InvalidQueryParameter` —
+    /// the code this service answers a request whose members are each well-formed but whose
+    /// launch source cannot serve the group it would configure. The payload is the same
+    /// single `message` member as the refusals above; only the wire code differs.
+    InvalidQueryParameter(ValidationException),
     /// The caller may not perform the action the request named, with HTTP 403 and the error
     /// code `AccessDenied`. Not a bad request: the request is one the service would serve
     /// for a caller the IAM policies in force permit. The payload is the same single
@@ -345,6 +382,17 @@ impl<E> Scaffolded<E> {
         Self::ValidationError(ValidationException::new(message))
     }
 
+    /// Refuse the request with HTTP 400 `InvalidQueryParameter`.
+    ///
+    /// For a request whose arguments are each acceptable on their own but whose combination
+    /// with the state a referenced resource carries is not — the launch template a
+    /// non-mixed-instances group would launch from naming no instance type. Say what the
+    /// referenced resource has to carry, because the caller has to change that resource or
+    /// the shape of the group, not the spelling of this argument.
+    pub fn invalid_query_parameter(message: impl Into<String>) -> Self {
+        Self::InvalidQueryParameter(ValidationException::new(message))
+    }
+
     /// Refuse the operation outright with HTTP 400 `UnsupportedOperation`.
     ///
     /// For an operation Amazon EC2 Auto Scaling still models but no longer serves
@@ -374,6 +422,7 @@ impl<E: std::fmt::Display> std::fmt::Display for Scaffolded<E> {
             Self::ValidationException(e) => write!(f, "{e}"),
             Self::ValidationError(e) => write!(f, "{e}"),
             Self::UnsupportedOperation(e) => write!(f, "{e}"),
+            Self::InvalidQueryParameter(e) => write!(f, "{e}"),
             Self::AccessDenied(e) => write!(f, "{e}"),
         }
     }
@@ -389,6 +438,7 @@ impl<E: std::error::Error + 'static> std::error::Error for Scaffolded<E> {
             Self::ValidationException(e) => e.source(),
             Self::ValidationError(e) => e.source(),
             Self::UnsupportedOperation(e) => e.source(),
+            Self::InvalidQueryParameter(e) => e.source(),
             Self::AccessDenied(e) => e.source(),
         }
     }
@@ -406,6 +456,7 @@ impl<E: OperationError> OperationError for Scaffolded<E> {
             Self::ValidationException(e) => e,
             Self::ValidationError(e) => e,
             Self::UnsupportedOperation(e) => e,
+            Self::InvalidQueryParameter(e) => e,
             Self::AccessDenied(e) => e,
         }
     }
@@ -417,6 +468,7 @@ impl<E: OperationError> OperationError for Scaffolded<E> {
             Self::ValidationException(_) => &VALIDATION_EXCEPTION_SCHEMA,
             Self::ValidationError(_) => &VALIDATION_ERROR_SCHEMA,
             Self::UnsupportedOperation(_) => &UNSUPPORTED_OPERATION_SCHEMA,
+            Self::InvalidQueryParameter(_) => &INVALID_QUERY_PARAMETER_SCHEMA,
             Self::AccessDenied(_) => &ACCESS_DENIED_SCHEMA,
         }
     }
@@ -432,6 +484,7 @@ impl<E: OperationError> OperationError for Scaffolded<E> {
             Self::ValidationException(_) => "ValidationException",
             Self::ValidationError(_) => "ValidationError",
             Self::UnsupportedOperation(_) => "UnsupportedOperation",
+            Self::InvalidQueryParameter(_) => "InvalidQueryParameter",
             Self::AccessDenied(_) => "AccessDenied",
         }
     }
@@ -447,6 +500,7 @@ impl<E: OperationError> OperationError for Scaffolded<E> {
             Self::ValidationException(_) => 400,
             Self::ValidationError(_) => 400,
             Self::UnsupportedOperation(_) => 400,
+            Self::InvalidQueryParameter(_) => 400,
             Self::AccessDenied(_) => 403,
         }
     }
@@ -464,6 +518,7 @@ impl<E: OperationError> OperationError for Scaffolded<E> {
             Self::ValidationException(_) => None,
             Self::ValidationError(_) => None,
             Self::UnsupportedOperation(_) => None,
+            Self::InvalidQueryParameter(_) => None,
             // Same reason again: the synthetic shape carries no `awsQueryError` trait, so the
             // `<Code>AccessDenied</Code>` comes from `shape_name`.
             Self::AccessDenied(_) => None,

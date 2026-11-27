@@ -236,6 +236,63 @@ async fn group_instance_ids(router: &MultiServiceRouter, name: &str) -> Vec<Stri
     tag_values(&body, "InstanceId")
 }
 
+/// How long a poll below waits for the condition it looks for, and how often it looks
+/// again.
+///
+/// The deadline is generous — what a row waits for is a chain of this service's own spans,
+/// one per replacement the rollback owes — and nothing here is asserted about how long
+/// anything took: the test waits for the CONDITION, and the deadline only stops a hang.
+const DEADLINE: Duration = Duration::from_secs(300);
+const LOOK_AGAIN: Duration = Duration::from_millis(25);
+
+/// Look at the group's newest refresh until it reports `wanted`, and answer it then.
+///
+/// The spans a rollback owes come due on the clock, so the condition is LOOKED FOR rather
+/// than waited out: a row is as quick as the service is, and a slow host only means more
+/// looks.
+async fn settled_refresh(
+    router: &MultiServiceRouter,
+    name: &str,
+    wanted: &str,
+    case: &str,
+) -> ReportedRefresh {
+    let deadline = std::time::Instant::now() + DEADLINE;
+    loop {
+        let reported = newest_refresh(router, name).await;
+        if reported.status == wanted {
+            return reported;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "case {case:?}: the refresh of {name} never reached {wanted}, last read \
+             {reported:?}"
+        );
+        tokio::time::sleep(LOOK_AGAIN).await;
+    }
+}
+
+/// Look at the group until it reports `capacity` instances, so a row reads the instances it
+/// started from rather than a group still placing them.
+async fn placed_instance_ids(
+    router: &MultiServiceRouter,
+    name: &str,
+    capacity: usize,
+    case: &str,
+) -> Vec<String> {
+    let deadline = std::time::Instant::now() + DEADLINE;
+    loop {
+        let placed = group_instance_ids(router, name).await;
+        if placed.len() == capacity {
+            return placed;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "case {case:?}: {name} never placed its {capacity} instance(s), holds {placed:?}"
+        );
+        tokio::time::sleep(LOOK_AGAIN).await;
+    }
+}
+
 /// The launch template name one group reports.
 async fn group_launch_template(router: &MultiServiceRouter, name: &str) -> String {
     let (status, body) = query(
@@ -263,37 +320,68 @@ struct Row {
 
 /// Every row: the rollback acts on the refresh in progress, replaces back what it had
 /// done and leaves the group on the configuration it started from.
-#[tokio::test]
-async fn rolling_back_a_refresh_replaces_its_replacements_back() {
-    let rows = [
-        Row {
-            case: "a group holding no instance: the refresh replaced nothing to put back",
-            capacity: 0,
-            spans_before_rollback: 0,
-        },
-        Row {
-            case: "one instance, rolled back before any replacement came due",
-            capacity: 1,
-            spans_before_rollback: 0,
-        },
-        Row {
-            case: "two instances, rolled back once a replacement had been made",
-            capacity: 2,
-            spans_before_rollback: 1,
-        },
-        Row {
-            case: "four instances, rolled back part way through",
-            capacity: 4,
-            spans_before_rollback: 2,
-        },
-        Row {
-            case: "three instances, rolled back straight away",
-            capacity: 3,
-            spans_before_rollback: 0,
-        },
-    ];
+///
+/// ONE ROW PER TEST, each on its own emulator, so the rows run beside one another rather
+/// than one after the other: a row waits for the replacements its own capacity owes, and a
+/// single test holding every row's waits end to end is the slowest thing in this crate.
+const ROWS: &[Row] = &[
+    Row {
+        case: "a group holding no instance: the refresh replaced nothing to put back",
+        capacity: 0,
+        spans_before_rollback: 0,
+    },
+    Row {
+        case: "one instance, rolled back before any replacement came due",
+        capacity: 1,
+        spans_before_rollback: 0,
+    },
+    Row {
+        case: "two instances, rolled back once a replacement had been made",
+        capacity: 2,
+        spans_before_rollback: 1,
+    },
+    Row {
+        case: "four instances, rolled back part way through",
+        capacity: 4,
+        spans_before_rollback: 2,
+    },
+    Row {
+        case: "three instances, rolled back straight away",
+        capacity: 3,
+        spans_before_rollback: 0,
+    },
+];
 
-    for (index, row) in rows.iter().enumerate() {
+#[tokio::test]
+async fn rolling_back_a_refresh_of_an_empty_group_replaces_nothing_back() {
+    rolling_back_replaces_its_replacements_back(0).await;
+}
+
+#[tokio::test]
+async fn rolling_back_a_refresh_before_a_replacement_came_due_replaces_nothing_back() {
+    rolling_back_replaces_its_replacements_back(1).await;
+}
+
+#[tokio::test]
+async fn rolling_back_a_refresh_after_a_replacement_replaces_it_back() {
+    rolling_back_replaces_its_replacements_back(2).await;
+}
+
+#[tokio::test]
+async fn rolling_back_a_refresh_part_way_through_replaces_its_replacements_back() {
+    rolling_back_replaces_its_replacements_back(3).await;
+}
+
+#[tokio::test]
+async fn rolling_back_a_refresh_straight_away_replaces_nothing_back() {
+    rolling_back_replaces_its_replacements_back(4).await;
+}
+
+/// Drive [`ROWS`]`[index]`: start a refresh, roll it back, and assert the rollback put back
+/// every replacement the refresh had made and left the group where it started.
+async fn rolling_back_replaces_its_replacements_back(index: usize) {
+    let row = &ROWS[index];
+    {
         // One emulator per row: each row is its own account, so the ids of one row never
         // explain another's.
         let router = router_with(new_engine());
@@ -306,7 +394,13 @@ async fn rolling_back_a_refresh_replaces_its_replacements_back() {
             Some(PINNED_VERSION),
         )
         .await;
-        let before = group_instance_ids(&router, &name).await;
+        let before = placed_instance_ids(
+            &router,
+            &name,
+            usize::try_from(row.capacity).expect("a capacity is a count"),
+            row.case,
+        )
+        .await;
         let started = start_refresh(&router, &name, true).await;
         if row.spans_before_rollback > 0 {
             tokio::time::sleep(one_span() * row.spans_before_rollback).await;
@@ -437,10 +531,9 @@ async fn rolling_back_a_refresh_replaces_its_replacements_back() {
 
         // Once every replacement the rollback owed has come due, it has succeeded and
         // nothing of the refresh's progress is left. Each replacement the rollback makes
-        // takes as many of its steps as one of the refresh's own.
-        let replacements = u32::try_from(row.capacity).expect("a capacity is a count");
-        past_spans(replacements * autoscaling::state::STEPS_PER_REPLACEMENT + 3).await;
-        let rolled_back = newest_refresh(&router, &name).await;
+        // takes as many of its steps as one of the refresh's own, so the rollback is LOOKED
+        // FOR until it reports that status rather than waited out for a fixed time.
+        let rolled_back = settled_refresh(&router, &name, "RollbackSuccessful", row.case).await;
         assert_eq!(
             rolled_back.status, "RollbackSuccessful",
             "case {:?}: expected the rollback to have succeeded, got {rolled_back:?}",
@@ -835,6 +928,13 @@ async fn create_launch_template(router: &MultiServiceRouter, name: &str, image_i
         &[
             p("LaunchTemplateName", name),
             p("LaunchTemplateData.ImageId", image_id),
+            // A group that is not a mixed instances group takes the type its instances are
+            // launched as from the version it launches from, so every template these groups
+            // launch from states one.
+            p(
+                "LaunchTemplateData.InstanceType",
+                crate::support::SEEDED_INSTANCE_TYPE,
+            ),
         ],
     )
     .await;

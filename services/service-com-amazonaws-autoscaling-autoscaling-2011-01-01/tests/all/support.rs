@@ -78,8 +78,16 @@ const SUITE_LAUNCH_TEMPLATES: &[&str] = &[
 /// template a suite here creates a group from states this one.
 pub const SEEDED_IMAGE_ID: &str = "ami-0123456789abcdef0";
 
-/// The launch parameters a template this harness seeds carries: the image its instances run,
-/// and nothing else.
+/// The instance type the launch templates of this harness state.
+///
+/// An instance of a group is launched as one instance TYPE, and a group that is not configured
+/// as a mixed instances group takes it from the launch-template version it launches from, so
+/// every template a suite here creates a group from states this one. Any type is a valid
+/// `InstanceType` string; which types exist is not what these suites are about.
+pub const SEEDED_INSTANCE_TYPE: &str = "t3.micro";
+
+/// The launch parameters a template this harness seeds carries: the image its instances run
+/// and the instance type they run as, and nothing else.
 ///
 /// THE ONE COPY for every suite here that writes a launch-template version through Amazon EC2's
 /// own writer, so a seeded version is one a group can be configured against. A suite that cares
@@ -87,6 +95,7 @@ pub const SEEDED_IMAGE_ID: &str = "ami-0123456789abcdef0";
 pub fn seeded_launch_template_data() -> ec2_service::ops::types::RequestLaunchTemplateData {
     ec2_service::ops::types::RequestLaunchTemplateData {
         image_id: Some(SEEDED_IMAGE_ID.to_string()),
+        instance_type: Some(SEEDED_INSTANCE_TYPE.to_string()),
         ..Default::default()
     }
 }
@@ -381,7 +390,7 @@ pub async fn create_launch_template(router: &MultiServiceRouter, name: &str) -> 
         &[
             p("LaunchTemplateName", name),
             p("LaunchTemplateData.ImageId", SEEDED_IMAGE_ID),
-            p("LaunchTemplateData.InstanceType", "t3.micro"),
+            p("LaunchTemplateData.InstanceType", SEEDED_INSTANCE_TYPE),
         ],
     )
     .await;

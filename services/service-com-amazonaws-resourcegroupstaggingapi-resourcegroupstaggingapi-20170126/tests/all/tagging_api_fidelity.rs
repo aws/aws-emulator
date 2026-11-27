@@ -58,7 +58,9 @@ const CAPACITY_LAUNCH_TEMPLATE: &str = "tagging-capacity";
 ///
 /// It states the image its instances run, because a group is refused a launch-template version
 /// no instance could be launched from: "An AMI ID is required to launch an instance"
-/// (`smithy_query(query="doc",shape="RunInstancesRequest",member="ImageId")`).
+/// (`smithy_query(query="doc",shape="RunInstancesRequest",member="ImageId")`), and the instance
+/// type they run as, because a group that is not configured as a mixed instances group takes
+/// that type from the version it launches from.
 fn seed_capacity_launch_template(engine: &Arc<engine::InMemoryEngine>) {
     let ec2 = service_com_amazonaws_ec2_amazonec2::state::service_state(&**engine)
         .expect("the shared engine carries the Amazon EC2 store");
@@ -72,6 +74,7 @@ fn seed_capacity_launch_template(engine: &Arc<engine::InMemoryEngine>) {
             operator: None,
             data: service_com_amazonaws_ec2_amazonec2::ops::types::RequestLaunchTemplateData {
                 image_id: Some(CAPACITY_IMAGE_ID.to_string()),
+                instance_type: Some(CAPACITY_INSTANCE_TYPE.to_string()),
                 ..Default::default()
             },
             version_description: None,
@@ -83,6 +86,10 @@ fn seed_capacity_launch_template(engine: &Arc<engine::InMemoryEngine>) {
 /// AMI id in: the group this suite creates holds no instance, so what matters is that its
 /// template states an image at all.
 const CAPACITY_IMAGE_ID: &str = "ami-0123456789abcdef0";
+
+/// The instance type those instances would run as: the group this suite creates holds no
+/// instance, so what matters is that its template states a type at all.
+const CAPACITY_INSTANCE_TYPE: &str = "t3.micro";
 
 /// A router carrying the tagging API and the owning services it resolves ARNs
 /// against, all over ONE engine — exactly the arrangement `core/router` builds.

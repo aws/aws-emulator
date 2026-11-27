@@ -742,6 +742,21 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         ) {
             return Err(refusal);
         }
+        // And the instance TYPE those launch parameters launch has to be stated somewhere the
+        // group carries it: a group that is not configured as a mixed instances group takes it
+        // from the version it launches from, so a request pointing one at a version stating
+        // none is refused before the group's name is weighed — the group it asked for is not
+        // created, so a retry of the same request is refused the same way
+        // ([`crate::state::group_configuration::launch_template_instance_type_error`]).
+        if let Some(refusal) =
+            crate::state::group_configuration::launch_template_instance_type_error(
+                &*self.engine,
+                input.launch_template.as_ref(),
+                input.mixed_instances_policy.as_ref(),
+            )
+        {
+            return Err(refusal);
+        }
 
         // The launch template a group launches from carries the IAM instance profile its
         // instances run under. That is a reference to another service's resource, which

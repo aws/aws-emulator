@@ -689,6 +689,105 @@ async fn a_group_launches_only_from_a_launch_template_version_the_account_holds(
     }
 }
 
+/// RULE: a `Version` is one of the two words that float on a version in force or a NUMBER, so
+/// a word that is neither names no version at all and is refused with this service's own
+/// sentence listing the forms a version may take — a different verdict from a version that
+/// reads as one and names none the template holds, which names that version and the template.
+///
+/// The rows span what the rule generalises over: the case of the two words (which name the
+/// version only as written), a word of neither spelling, an empty-looking word and a numeric
+/// value with a unit on it; the two served rows beside them are the two words themselves, so a
+/// rule that refused too much could not pass either. Each is driven through the create and the
+/// update, the two writers of a group's launch source.
+#[tokio::test]
+async fn a_version_that_names_no_version_at_all_is_refused_for_its_form() {
+    // The sentence is spelled out here rather than imported, so a wrong constant in the
+    // implementation cannot make this pass. Entirely fixed text: it lists the forms and
+    // carries no part of the request.
+    const UNREADABLE_VERSION: &str = "Invalid launch template version: either '$Default', \
+                                      '$Latest', or a numeric version are allowed.";
+    // (case, the Version the request states, whether it names a version)
+    let rows: &[(&str, &str, bool)] = &[
+        ("the latest-version word in lower case", "$latest", false),
+        ("the default-version word in lower case", "$default", false),
+        ("a word of neither spelling", "newest", false),
+        ("a version with a unit on the number", "1v", false),
+        ("the word that floats on the latest version", "$Latest", true),
+        ("the word that floats on the default version", "$Default", true),
+    ];
+
+    for (index, (case, version, names_a_version)) in rows.iter().enumerate() {
+        let (router, _engine) = emulator();
+        let name = format!("asg-version-word-{index}");
+        let mut params = base_create(&name);
+        params.push(p("LaunchTemplate.Version", *version));
+        let (status, body) = query(&router, "CreateAutoScalingGroup", &borrowed(&params)).await;
+
+        // The same word through the UPDATE, which resolves the launch source the same way: the
+        // group it repoints launches from the template the account holds.
+        let standing = format!("{name}-standing");
+        let (standing_status, standing_body) =
+            query(&router, "CreateAutoScalingGroup", &borrowed(&base_create(&standing))).await;
+        assert_eq!(
+            standing_status, 200,
+            "case {case:?}: the group the update drives must be created, got \
+             {standing_status}: {standing_body}"
+        );
+        let (update_status, update_body) = query(
+            &router,
+            "UpdateAutoScalingGroup",
+            &[
+                ("AutoScalingGroupName", standing.as_str()),
+                ("LaunchTemplate.LaunchTemplateName", TEMPLATE),
+                ("LaunchTemplate.Version", version),
+            ],
+        )
+        .await;
+
+        if *names_a_version {
+            assert_eq!(
+                status, 200,
+                "case {case:?}: a word that names a version must be accepted, got {status}: \
+                 {body}"
+            );
+            assert_eq!(
+                update_status, 200,
+                "case {case:?}: the update must be served too, got {update_status}: \
+                 {update_body}"
+            );
+            assert!(
+                group_exists(&router, &name).await,
+                "case {case:?}: the accepted create must leave a group"
+            );
+            continue;
+        }
+        for (operation, status, body) in [
+            ("CreateAutoScalingGroup", status, &body),
+            ("UpdateAutoScalingGroup", update_status, &update_body),
+        ] {
+            assert_eq!(
+                status, 400,
+                "case {case:?}/{operation}: expected HTTP 400, got {status}: {body}"
+            );
+            assert_eq!(
+                tag_value(body, "Code"),
+                "ValidationError",
+                "case {case:?}/{operation}: expected ValidationError, got {body}"
+            );
+            assert_eq!(
+                message(body),
+                UNREADABLE_VERSION,
+                "case {case:?}/{operation}: expected the sentence for a version that names \
+                 none, got {body}"
+            );
+        }
+        assert!(
+            !group_exists(&router, &name).await,
+            "case {case:?}: the refused create must leave no group"
+        );
+    }
+}
+
 /// RULE: the same version resolution guards an UPDATE, and a refused update leaves the group
 /// on the launch-template version it was already running.
 #[tokio::test]

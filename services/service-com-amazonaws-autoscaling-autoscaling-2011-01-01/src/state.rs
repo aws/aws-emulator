@@ -4489,6 +4489,16 @@ pub fn absent_group_message_as_group_not_found(name: &str) -> String {
     format!("Group {name} not found")
 }
 
+/// That same sentence CLOSED with a full stop — the form `GetPredictiveScalingForecast`
+/// serves.
+///
+/// Built on the sentence above rather than written out again, because the two differ in
+/// nothing but the punctuation each operation's own refusal ends with: the name is the only
+/// variable part of either.
+pub fn absent_group_message_as_group_not_found_sentence(name: &str) -> String {
+    format!("{}.", absent_group_message_as_group_not_found(name))
+}
+
 /// The absent-group refusal whose detail field the operation leaves unfilled, so it
 /// travels as the literal token `null`: the whole message is fixed text and no part of
 /// the request appears in it. Its subject is the GROUP the request named, which is why the

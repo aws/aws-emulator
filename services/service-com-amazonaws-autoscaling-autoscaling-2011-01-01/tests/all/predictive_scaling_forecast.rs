@@ -560,11 +560,7 @@ async fn a_policy_of_another_type_has_no_forecast() {
         get_forecast(&router, "forecast-absent", "step-policy", start, end).await;
     assert_eq!(
         (status, code.as_str(), message.as_str()),
-        (
-            400,
-            "ValidationError",
-            "AutoScalingGroup name not found - AutoScalingGroup forecast-absent not found"
-        ),
+        (400, "ValidationError", "Group forecast-absent not found."),
         "case \"absent group\": got {status} {code:?} {message:?} with {body}"
     );
 }

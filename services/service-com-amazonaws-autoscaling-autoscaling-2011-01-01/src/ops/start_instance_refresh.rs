@@ -271,6 +271,20 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             {
                 return Err(refusal);
             }
+            // And the instance TYPE the replaced instances are launched as has to be stated
+            // somewhere the desired configuration carries it, exactly as it must when a group
+            // is created or updated: a refresh cannot move the group's instances onto a
+            // version stating no type unless the configuration it states is a mixed instances
+            // one ([`crate::state::group_configuration::launch_template_instance_type_error`]).
+            if let Some(refusal) =
+                crate::state::group_configuration::launch_template_instance_type_error(
+                    &*self.engine,
+                    desired.launch_template.as_ref(),
+                    desired.mixed_instances_policy.as_ref(),
+                )
+            {
+                return Err(refusal);
+            }
             if let Some(refusal) = crate::state::group_configuration::duplicate_override_error(
                 desired.mixed_instances_policy.as_ref(),
             ) {

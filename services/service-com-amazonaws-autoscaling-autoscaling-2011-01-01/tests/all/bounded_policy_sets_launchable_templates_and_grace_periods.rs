@@ -647,6 +647,130 @@ async fn a_launch_template_version_that_states_no_image_is_refused() {
     }
 }
 
+/// Create one launch template over Amazon EC2's own wire, naming the image and the instance
+/// type given — the launch parameters a version has to state for an instance to be launched
+/// from it.
+async fn create_typed_template(
+    router: &MultiServiceRouter,
+    case: &str,
+    name: &str,
+    image_id: &str,
+    instance_type: &str,
+) {
+    let (status, body) = ec2_query(
+        router,
+        "CreateLaunchTemplate",
+        &[
+            p("LaunchTemplateName", name),
+            p("LaunchTemplateData.ImageId", image_id),
+            p("LaunchTemplateData.InstanceType", instance_type),
+        ],
+    )
+    .await;
+    assert_eq!(
+        status, 200,
+        "case {case:?}: CreateLaunchTemplate for {name} expected 200, got {status}: {body}"
+    );
+}
+
+/// RULE: an instance is only ever placed as an instance type the service that owns them
+/// PUBLISHES, so a group pointed at a launch-template version naming a type that does not
+/// exist could hold no capacity and the request is refused — this service's own preamble for a
+/// launch source it cannot use, followed by that service's own sentence for the value. A
+/// refused request leaves the group on the version it was already running.
+///
+/// The rows span what the rule generalises over: WHICH request configures the group (the
+/// create, the update) and the FORM of the type that does not exist (a published family at a
+/// size it does not offer, a family nothing publishes), beside a published type that is served
+/// — so a rule refusing too much could not pass either.
+#[tokio::test]
+async fn a_launch_template_version_naming_an_instance_type_that_does_not_exist_is_refused() {
+    // (case, the instance type the template states, whether it names a published type)
+    let rows: &[(&str, &str, bool)] = &[
+        ("a published family at a size it does not offer", "t3.bogus", false),
+        ("a family nothing publishes at all", "zz9.plural", false),
+        ("a published instance type", INSTANCE_TYPE, true),
+    ];
+
+    for (index, (case, instance_type, published)) in rows.iter().enumerate() {
+        let (router, _engine) = emulator();
+        let image_id = published_image_id(&router, case).await;
+        create_template(&router, case, COMPLETE_TEMPLATE, Some(&image_id)).await;
+        let template = format!("instance-type-rule-template-{index}");
+        create_typed_template(&router, case, &template, &image_id, instance_type).await;
+
+        let group = format!("instance-type-rule-group-{index}");
+        create_empty_group(&router, case, &group, COMPLETE_TEMPLATE).await;
+        let created_name = format!("{group}-created");
+
+        // The same version through both writers of a group's launch source.
+        let create = vec![
+            p("AutoScalingGroupName", created_name.as_str()),
+            p("MinSize", "0"),
+            p("MaxSize", "1"),
+            p("DesiredCapacity", "0"),
+            p("AvailabilityZones.member.1", first_zone()),
+            p("LaunchTemplate.LaunchTemplateName", template.as_str()),
+        ];
+        let (create_status, create_body) =
+            query(&router, "CreateAutoScalingGroup", &borrowed(&create)).await;
+        let update = vec![
+            p("AutoScalingGroupName", group.as_str()),
+            p("LaunchTemplate.LaunchTemplateName", template.as_str()),
+        ];
+        let (update_status, update_body) =
+            query(&router, "UpdateAutoScalingGroup", &borrowed(&update)).await;
+
+        if *published {
+            assert_eq!(
+                create_status, 200,
+                "case {case:?}: a published type must be accepted by the create, got \
+                 {create_status}: {create_body}"
+            );
+            assert_eq!(
+                update_status, 200,
+                "case {case:?}: a published type must be accepted by the update, got \
+                 {update_status}: {update_body}"
+            );
+            assert!(
+                group_exists(&router, &created_name).await,
+                "case {case:?}: the accepted create must leave a group"
+            );
+            continue;
+        }
+        // The sentence is written out here rather than taken from the implementation: this
+        // service's own preamble for a launch source it cannot use, then the owning service's
+        // sentence for the value, whose one variable part is the type the template stated.
+        let expected = format!(
+            "You must use a valid fully-formed launch template. Invalid value \
+             '{instance_type}' for InstanceType."
+        );
+        for (action, status, body) in [
+            ("CreateAutoScalingGroup", create_status, &create_body),
+            ("UpdateAutoScalingGroup", update_status, &update_body),
+        ] {
+            assert_eq!(
+                status, 400,
+                "case {case:?}/{action}: expected HTTP 400, got {status}: {body}"
+            );
+            assert_eq!(
+                tag_value(body, "Code"),
+                VALIDATION_ERROR,
+                "case {case:?}/{action}: expected {VALIDATION_ERROR}, got {body}"
+            );
+            let answered = xml_unescape(&tag_value(body, "Message"));
+            assert_eq!(
+                answered, expected,
+                "case {case:?}/{action}: expected {expected:?}, got {answered:?}"
+            );
+        }
+        assert!(
+            !group_exists(&router, &created_name).await,
+            "case {case:?}: the refused create must leave no group"
+        );
+    }
+}
+
 /// The `(LaunchTemplateId, Version)` pair the group `name` reports.
 async fn reported_template(router: &MultiServiceRouter, name: &str) -> (String, String) {
     let (status, body) = query(

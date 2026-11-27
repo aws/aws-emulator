@@ -6,13 +6,13 @@
 //! MESSAGE is all a client has to tell them apart by.
 //!
 //! RULE: a create resolves the launch template the request names before it weighs the group's
-//! name against the names already taken, and an id the service that owns launch templates
-//! cannot read as one of its own — a value outside the form its mint issues, whatever a client
-//! reads into it — is reported as a MALFORMED launch template id (`ValidationError`,
-//! `Malformed launch template Id: <id>`) rather than as a template that does not exist. Only
-//! an id that mint did issue is looked up: the template it names is launched from, or reported
-//! absent once a client has deleted it, and only a reference that resolves lets the taken name
-//! answer `AlreadyExists`.
+//! name against the names already taken, and an id in the LONG form the service that owns
+//! launch templates decodes — an obfuscated identifier, not free text — whose identifier its
+//! mint never issued is reported as a MALFORMED launch template id (`ValidationError`,
+//! `Malformed launch template Id: <id>`) rather than as a template that does not exist. A
+//! value outside that form carries no identifier to decode, so it is looked up like any other
+//! reference and reported as a template that does not exist; and only a reference that
+//! RESOLVES lets the taken name answer `AlreadyExists`.
 //!
 //! That ordering is what a client that provisions by "create and interpret the refusal"
 //! branches on: `AlreadyExists` means "the group is already there, adopt it", while the
@@ -22,9 +22,9 @@
 //! template that "does not exist" tells the client a template was deleted when none ever
 //! existed.
 //!
-//! The rows span what the rule generalises over: the FORM of the unreadable id (the all-zero
-//! placeholder, a long-form value above the mint's counter, a leading digit it never writes,
-//! the short form, uppercase digits, a digit count outside both published forms, a
+//! The rows span what the rule generalises over: the FORM of the id that resolves to nothing
+//! (a long-form value above the mint's counter, a leading digit it never writes, the all-zero
+//! placeholder, the short form, uppercase digits, a digit count outside both published forms, a
 //! non-hexadecimal suffix, another resource kind's prefix), whether the name the request states
 //! is taken at all, and — in the second test — what the mint really did with the id it is
 //! handed (issued and then deleted, issued and still held).
@@ -62,47 +62,56 @@ const DELETED_TEMPLATE_NAME: &str = "asg-template-id-screen-deleted";
 const VALIDATION_ERROR: &str = "ValidationError";
 const ALREADY_EXISTS: &str = "AlreadyExists";
 
-/// The id FORMS the service that owns launch templates cannot have issued, each paired with
-/// the case it stands for.
+/// The id FORMS that resolve to no launch template, each paired with the case it stands for
+/// and with whether the owning service reports it MALFORMED rather than absent.
 ///
 /// SOURCE: an Amazon EC2 resource id is `<prefix>-<suffix>` with 8 or 17 LOWERCASE hexadecimal
 /// digits, as that service's own published id patterns read
 /// (`smithy_query(query="shape",shape="LaunchTemplateId")` is a bare string, while the kinds
-/// whose pattern the model does publish read `^vpc-([0-9a-f]{8}|[0-9a-f]{17})$`); a launch
-/// template id is handed out in the LONG form, from a counter that starts at one, so the
-/// all-zero placeholder and every value above that counter name no launch template at all.
-const UNREADABLE_IDS: &[(&str, &str)] = &[
-    (
-        "the all-zero placeholder, which a mint counting from one cannot produce",
-        "lt-00000000000000000",
-    ),
+/// whose pattern the model does publish read `^vpc-([0-9a-f]{8}|[0-9a-f]{17})$`); the LONG form
+/// is an obfuscated identifier the service decodes before it resolves anything, so a long-form
+/// value above the counter its mint counts from one is an identifier it never issued, while a
+/// value in any other form carries no identifier to decode and is simply looked up.
+const UNRESOLVABLE_IDS: &[(&str, &str, bool)] = &[
     (
         "a long-form id far above every value the mint can reach",
         "lt-0123456789abcdef0",
+        true,
     ),
     (
         "a long-form id whose leading digit the mint never writes",
         "lt-f0000000000000001",
+        true,
+    ),
+    (
+        "the all-zero placeholder, which carries no identifier at all",
+        "lt-00000000000000000",
+        false,
     ),
     (
         "a short-form id, a form the mint never writes for a template",
         "lt-0fedcba9",
+        false,
     ),
     (
         "a long-form id spelt in uppercase hexadecimal",
         "lt-0123456789ABCDEF0",
+        false,
     ),
     (
         "an id one digit short of the long form",
         "lt-0123456789abcdef",
+        false,
     ),
     (
         "an id whose suffix is not hexadecimal at all",
         "lt-zzzzzzzzzzzzzzzzz",
+        false,
     ),
     (
         "an id carrying another resource kind's prefix",
         "sg-00000000000000001",
+        false,
     ),
 ];
 
@@ -242,13 +251,17 @@ fn already_exists_message(name: &str) -> String {
 }
 
 #[tokio::test]
-async fn an_id_the_mint_never_issued_is_reported_malformed_before_the_name_is_weighed() {
+async fn an_id_that_resolves_to_nothing_is_reported_before_the_name_is_weighed() {
     let seeded = seeded().await;
-    for (at, (case, id)) in UNREADABLE_IDS.iter().enumerate() {
+    for (at, (case, id, malformed)) in UNRESOLVABLE_IDS.iter().enumerate() {
         // The sentence is written out here rather than taken from the implementation — the
-        // fixed text AWS words for an unreadable launch template id, and the one variable part
-        // is the id the request stated, copied back verbatim.
-        let expected = format!("Malformed launch template Id: {id}");
+        // fixed text AWS words for each verdict, and the one variable part is the id the
+        // request stated, copied back verbatim.
+        let expected = if *malformed {
+            format!("Malformed launch template Id: {id}")
+        } else {
+            format!("The specified launch template, with template ID {id}, does not exist.")
+        };
 
         // Under the name the account has ALREADY taken: the reference is resolved first, so
         // this is the sentence the duplicate name never gets to answer.

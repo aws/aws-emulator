@@ -10,9 +10,13 @@
 //! `MixedInstancesPolicy` carries such a specification ("one or more launch templates and the
 //! instance types (overrides) that are used to launch EC2 instances",
 //! `MixedInstancesPolicy$LaunchTemplate`) — a request that leaves that pair of members out
-//! names no template to launch from and is refused `ValidationError` with
-//! `Valid requests must contain either launchTemplateId or LaunchTemplateName`, leaving the
-//! account exactly as it was.
+//! names no template to launch from and is refused `ValidationError`, leaving the account
+//! exactly as it was. Which SENTENCE it is refused with says which MEMBER the caller left out:
+//! a policy carrying no `LaunchTemplate` at all is told to add one to the policy, while a
+//! launch template that names no template — a specification carrying neither half, or a
+//! policy's launch template naming one in neither of the places it may — is told which pair of
+//! members to state
+//! (`Valid requests must contain either launchTemplateId or LaunchTemplateName`).
 //!
 //! The rows differ along what the rule generalises over: WHERE the specification sits (the
 //! group's own `LaunchTemplate`, the launch template of a `MixedInstancesPolicy`, and the one
@@ -65,17 +69,24 @@ const OVERRIDE_TYPE: &str = "t3.micro";
 const NAMES_NO_TEMPLATE: &str =
     "Valid requests must contain either launchTemplateId or LaunchTemplateName";
 
+/// The sentence it refuses a `MixedInstancesPolicy` carrying no `LaunchTemplate` member at all
+/// with — a different verdict, because the caller left out the policy's launch template rather
+/// than the halves that name a template inside one. Spelled out here for the same reason.
+const POLICY_NAMES_NO_TEMPLATE: &str =
+    "A launch template is required when configuring an Auto Scaling group with a mixed \
+     instances policy. Add a launch template to the mixed instances policy and try again.";
+
 /// One row of a table whose request is built per case: the case, the launch-source members
-/// the request carries, and whether it is served.
-type SourceRow = (&'static str, Vec<(String, String)>, bool);
+/// the request carries, and the sentence it is refused with — empty where it is served.
+type SourceRow = (&'static str, Vec<(String, String)>, &'static str);
 
 /// One row: the case, the launch-source members the request carries beside the group's size
-/// and placement, and whether the request is served.
+/// and placement, and the sentence the request is refused with — empty where it is served.
 struct Row {
     case: &'static str,
     /// Built per row, because the served rows name the id Amazon EC2 minted.
     source: fn(&Minted) -> Vec<(String, String)>,
-    served: bool,
+    refusal: &'static str,
 }
 
 /// What Amazon EC2 assigned the templates this suite creates: the values a row naming a
@@ -132,7 +143,7 @@ const ROWS: &[Row] = &[
     Row {
         case: "the group's own specification states nothing but its version",
         source: |_| vec![p("LaunchTemplate.Version", "1")],
-        served: false,
+        refusal: NAMES_NO_TEMPLATE,
     },
     Row {
         case: "a mixed instances policy whose launch template carries only overrides",
@@ -142,7 +153,7 @@ const ROWS: &[Row] = &[
                 OVERRIDE_TYPE,
             )]
         },
-        served: false,
+        refusal: NAMES_NO_TEMPLATE,
     },
     Row {
         case: "a mixed instances policy carrying nothing but its instances distribution",
@@ -152,7 +163,7 @@ const ROWS: &[Row] = &[
                 "lowest-price",
             )]
         },
-        served: false,
+        refusal: POLICY_NAMES_NO_TEMPLATE,
     },
     Row {
         case: "a mixed instances policy whose specification states nothing but its version",
@@ -168,7 +179,7 @@ const ROWS: &[Row] = &[
                 ),
             ]
         },
-        served: false,
+        refusal: NAMES_NO_TEMPLATE,
     },
     Row {
         case: "an override's own specification states nothing but its version",
@@ -190,12 +201,12 @@ const ROWS: &[Row] = &[
                 ),
             ]
         },
-        served: false,
+        refusal: NAMES_NO_TEMPLATE,
     },
     Row {
         case: "the group's own specification names the template by name",
         source: |_| vec![p("LaunchTemplate.LaunchTemplateName", TEMPLATE)],
-        served: true,
+        refusal: "",
     },
     Row {
         case: "the group's own specification names the template by the id Amazon EC2 minted",
@@ -205,7 +216,7 @@ const ROWS: &[Row] = &[
                 p("LaunchTemplate.Version", "1"),
             ]
         },
-        served: true,
+        refusal: "",
     },
     Row {
         case: "a mixed instances policy whose specification names the template by id",
@@ -222,7 +233,7 @@ const ROWS: &[Row] = &[
                 ),
             ]
         },
-        served: true,
+        refusal: "",
     },
 ];
 
@@ -238,7 +249,7 @@ async fn a_create_names_the_launch_template_it_launches_from() {
         params.extend((row.source)(&minted));
         let (status, body) = query(&router, "CreateAutoScalingGroup", &borrowed(&params)).await;
 
-        if row.served {
+        if row.refusal.is_empty() {
             assert_eq!(
                 status, 200,
                 "case {:?}: expected the create to be served, got {status}: {body}",
@@ -273,8 +284,8 @@ async fn a_create_names_the_launch_template_it_launches_from() {
         );
         assert_eq!(
             message(&body),
-            NAMES_NO_TEMPLATE,
-            "case {:?}: expected AWS's sentence for a launch source naming no template",
+            row.refusal,
+            "case {:?}: expected AWS's sentence for what the launch source left out",
             row.case
         );
         let described = describe(&router, &name).await;
@@ -297,12 +308,12 @@ async fn an_update_names_the_launch_template_it_repoints_the_group_at() {
     let (status, body) = query(&router, "CreateAutoScalingGroup", &borrowed(&params)).await;
     assert_eq!(status, 200, "the group must be created, got {status}: {body}");
 
-    // (case, the launch-source members the update carries, whether it is served)
+    // (case, the launch-source members the update carries, the sentence it is refused with)
     let rows: Vec<SourceRow> = vec![
         (
             "a specification stating nothing but its version",
             vec![p("LaunchTemplate.Version", "1")],
-            false,
+            NAMES_NO_TEMPLATE,
         ),
         (
             "a mixed instances policy whose launch template carries only overrides",
@@ -310,7 +321,15 @@ async fn an_update_names_the_launch_template_it_repoints_the_group_at() {
                 "MixedInstancesPolicy.LaunchTemplate.Overrides.member.1.InstanceType",
                 OVERRIDE_TYPE,
             )],
-            false,
+            NAMES_NO_TEMPLATE,
+        ),
+        (
+            "a mixed instances policy carrying nothing but its instances distribution",
+            vec![p(
+                "MixedInstancesPolicy.InstancesDistribution.SpotAllocationStrategy",
+                "lowest-price",
+            )],
+            POLICY_NAMES_NO_TEMPLATE,
         ),
         (
             "a specification naming the other template by id",
@@ -318,16 +337,16 @@ async fn an_update_names_the_launch_template_it_repoints_the_group_at() {
                 "LaunchTemplate.LaunchTemplateId",
                 minted.other_template_id.clone(),
             )],
-            true,
+            "",
         ),
     ];
 
-    for (case, source, served) in rows {
+    for (case, source, refusal) in rows {
         let mut params = vec![p("AutoScalingGroupName", group)];
         params.extend(source);
         let (status, body) = query(&router, "UpdateAutoScalingGroup", &borrowed(&params)).await;
         let described = describe(&router, group).await;
-        if served {
+        if refusal.is_empty() {
             assert_eq!(
                 status, 200,
                 "case {case:?}: expected the update to be served, got {status}: {body}"
@@ -346,8 +365,8 @@ async fn an_update_names_the_launch_template_it_repoints_the_group_at() {
         );
         assert_eq!(
             message(&body),
-            NAMES_NO_TEMPLATE,
-            "case {case:?}: expected AWS's sentence for a launch source naming no template"
+            refusal,
+            "case {case:?}: expected AWS's sentence for what the launch source left out"
         );
         assert_eq!(
             tag_value(&described, "LaunchTemplateName"),
@@ -370,12 +389,31 @@ async fn a_refresh_names_the_launch_template_it_moves_instances_onto() {
     let (status, body) = query(&router, "CreateAutoScalingGroup", &borrowed(&params)).await;
     assert_eq!(status, 200, "the group must be created, got {status}: {body}");
 
-    // (case, the desired configuration's launch-source members, whether the refresh starts)
+    // (case, the desired configuration's launch-source members, the sentence it is refused
+    // with)
     let rows: Vec<SourceRow> = vec![
         (
             "a desired configuration stating nothing but its version",
             vec![p("DesiredConfiguration.LaunchTemplate.Version", "1")],
-            false,
+            NAMES_NO_TEMPLATE,
+        ),
+        (
+            "a desired configuration whose policy carries only overrides",
+            vec![p(
+                "DesiredConfiguration.MixedInstancesPolicy.LaunchTemplate.Overrides.member.1.\
+                 InstanceType",
+                OVERRIDE_TYPE,
+            )],
+            NAMES_NO_TEMPLATE,
+        ),
+        (
+            "a desired configuration whose policy carries nothing but its distribution",
+            vec![p(
+                "DesiredConfiguration.MixedInstancesPolicy.InstancesDistribution.\
+                 SpotAllocationStrategy",
+                "lowest-price",
+            )],
+            POLICY_NAMES_NO_TEMPLATE,
         ),
         (
             "a desired configuration naming the other template by id",
@@ -383,15 +421,15 @@ async fn a_refresh_names_the_launch_template_it_moves_instances_onto() {
                 "DesiredConfiguration.LaunchTemplate.LaunchTemplateId",
                 minted.other_template_id.clone(),
             )],
-            true,
+            "",
         ),
     ];
 
-    for (case, source, starts) in rows {
+    for (case, source, refusal) in rows {
         let mut params = vec![p("AutoScalingGroupName", group)];
         params.extend(source);
         let (status, body) = query(&router, "StartInstanceRefresh", &borrowed(&params)).await;
-        if starts {
+        if refusal.is_empty() {
             assert_eq!(
                 status, 200,
                 "case {case:?}: expected the refresh to start, got {status}: {body}"
@@ -408,8 +446,8 @@ async fn a_refresh_names_the_launch_template_it_moves_instances_onto() {
         );
         assert_eq!(
             message(&body),
-            NAMES_NO_TEMPLATE,
-            "case {case:?}: expected AWS's sentence for a launch source naming no template"
+            refusal,
+            "case {case:?}: expected AWS's sentence for what the launch source left out"
         );
     }
 }

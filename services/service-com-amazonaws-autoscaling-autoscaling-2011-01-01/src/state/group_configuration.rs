@@ -243,6 +243,19 @@ pub fn launch_source_error<E>(
 pub const LAUNCH_TEMPLATE_IDENTITY_MESSAGE: &str =
     "Valid requests must contain either launchTemplateId or LaunchTemplateName";
 
+/// What it answers a `MixedInstancesPolicy` that carries no `LaunchTemplate` AT ALL.
+///
+/// A distinct verdict from [`LAUNCH_TEMPLATE_IDENTITY_MESSAGE`], because the caller left out a
+/// different MEMBER: a policy carrying no `LaunchTemplate` names nothing the halves of a
+/// specification could be weighed on — "one or more launch templates and the instance types
+/// (overrides) that are used to launch EC2 instances" (`MixedInstancesPolicy$LaunchTemplate`)
+/// is what such a group launches from — while a policy that carries one and names no template
+/// in it is told which pair of members to state. Fixed text: it states the requirement and the
+/// change the caller has to make, and names nothing of the request.
+pub const MIXED_INSTANCES_POLICY_TEMPLATE_MESSAGE: &str =
+    "A launch template is required when configuring an Auto Scaling group with a mixed instances \
+     policy. Add a launch template to the mixed instances policy and try again.";
+
 /// The refusal for a launch source that does not name the launch template it launches from,
 /// or `None` when it names one everywhere it has to.
 ///
@@ -251,22 +264,32 @@ pub const LAUNCH_TEMPLATE_IDENTITY_MESSAGE: &str =
 /// to resolve, and the caller is told to name one rather than told that a template it never
 /// named does not exist.
 ///
-/// Two ways a launch source names none, both answered the one sentence, because the caller
-/// left out the same pair of members either way:
+/// Three ways a launch source names none, in the order the members nest, and the first two
+/// are their own verdict because the caller left out a different member:
 ///
-/// * a specification it carries states neither half — the group's own `LaunchTemplate`, the
-///   launch template of its `MixedInstancesPolicy` and the one each override of that policy
-///   may name ([`super::ec2_instances::specifications`]) are all read, the rule being a fact
-///   about the SHAPE and holding wherever a request carries one;
-/// * a `MixedInstancesPolicy` carries no specification AT ALL — "one or more launch templates
-///   and the instance types (overrides) that are used to launch EC2 instances"
-///   (`MixedInstancesPolicy$LaunchTemplate`) is what such a group launches from, so a policy
-///   naming a template in neither place names none. ONE of the places is enough: a policy
-///   whose overrides name the template they launch their type from has named it.
+/// * a `MixedInstancesPolicy` carries no `LaunchTemplate` member at all, so there is no launch
+///   template in the policy to weigh and the caller is told to add one
+///   ([`MIXED_INSTANCES_POLICY_TEMPLATE_MESSAGE`]). Read FIRST, for that reason;
+/// * that member is there and names a template in NEITHER of the places it may carry one — its
+///   own `LaunchTemplateSpecification` and the one each override may name
+///   ([`super::ec2_instances::specifications`]) — so the pair of members that states the
+///   template is what is missing ([`LAUNCH_TEMPLATE_IDENTITY_MESSAGE`]). ONE of the places is
+///   enough: a policy whose overrides name the template they launch their type from has named
+///   it;
+/// * a specification the launch source carries states neither half — the group's own
+///   `LaunchTemplate`, the launch template of its `MixedInstancesPolicy` and the one each
+///   override of that policy may name are all read, the rule being a fact about the SHAPE and
+///   holding wherever a request carries one — and that is the same pair of members, so it is
+///   the same sentence.
 pub fn launch_template_identity_error<E>(
     launch_template: Option<&LaunchTemplateSpecification>,
     mixed_instances_policy: Option<&MixedInstancesPolicy>,
 ) -> Option<Scaffolded<E>> {
+    if mixed_instances_policy.is_some_and(|policy| policy.launch_template.is_none()) {
+        return Some(Scaffolded::validation_error(
+            MIXED_INSTANCES_POLICY_TEMPLATE_MESSAGE,
+        ));
+    }
     let policy_names_no_template = mixed_instances_policy.is_some_and(|policy| {
         super::ec2_instances::specifications(None, Some(policy)).is_empty()
     });
@@ -347,6 +370,12 @@ pub fn unlaunchable_launch_template_error<Eng: Send + Sync + 'static, E>(
 /// * it states none of the launch parameters a launch REQUIRES
 ///   ([`REQUIRED_LAUNCH_PARAMETER_IMAGE`]) — a version carrying no image has nothing for an
 ///   instance to run, and a value present but empty names no image either;
+/// * it names an instance TYPE that does not exist — no instance is ever placed as a type the
+///   service that owns them does not publish ([`ec2::instance_type_is_modelled`]), so a group
+///   pointed at such a version could hold no capacity, and the detail is that service's own
+///   sentence for the value ([`ec2::instance_type_refusal_message`]). A version naming NO type
+///   is a different verdict ([`launch_template_instance_type_error`]), because a mixed
+///   instances group states the types elsewhere;
 /// * it asks for the ASSIGNMENT of a public address on a launch of more than one interface —
 ///   `Some(true)` is what asks for the assignment, the reading Amazon EC2's own launch path
 ///   takes of the same member.
@@ -362,6 +391,16 @@ fn unlaunchable_launch_parameters(
             REQUIRED_LAUNCH_PARAMETER_IMAGE,
         ));
     }
+    if let Some(instance_type) = data
+        .instance_type
+        .as_deref()
+        .map(str::trim)
+        .filter(|instance_type| !instance_type.is_empty())
+    {
+        if !ec2::instance_type_is_modelled(instance_type) {
+            return Some(ec2::instance_type_refusal_message(instance_type));
+        }
+    }
     let interfaces = data.network_interfaces.as_deref().unwrap_or_default();
     (interfaces.len() > 1
         && interfaces
@@ -369,6 +408,103 @@ fn unlaunchable_launch_parameters(
             .any(|interface| interface.associate_public_ip_address == Some(true)))
     .then(|| PUBLIC_ADDRESS_WITH_MULTIPLE_INTERFACES.to_string())
 }
+
+/// What Amazon EC2 Auto Scaling answers a group whose launch-template version names no
+/// instance type while the group is not a mixed instances group.
+///
+/// Entirely fixed text: it states the rule, the condition the rule holds under and the change
+/// the caller has to make, and names neither the group nor the template — the launch parameter
+/// that is missing is the only variable the sentence could carry, and it names that parameter
+/// by its member name rather than by a value of the request.
+pub const LAUNCH_TEMPLATE_INSTANCE_TYPE_MESSAGE: &str =
+    "An instance type does not exist in the specified launch template. An instance type must be \
+     defined in the launch template while the Auto Scaling group is not configured as a mixed \
+     instances group. Use a different launch template that contains the InstanceType parameter, \
+     and try again.";
+
+/// The refusal for a launch source whose launch-template version states NO instance type while
+/// the group it would configure is not a mixed instances group, or `None` when the instance
+/// types the group launches are stated somewhere the group carries them.
+///
+/// An instance of a group is launched as one instance TYPE, and a group has exactly two places
+/// to state it: the launch-template version it launches from (`InstanceType` of that version's
+/// launch parameters) and the overrides of a mixed instances policy, which are "the instance
+/// types (overrides) that are used to launch EC2 instances"
+/// (`MixedInstancesPolicy$LaunchTemplate`) — so a group that is not configured as a mixed
+/// instances group has to take the type from its template, and one pointed at a version
+/// stating none could launch nothing. The refusal is the service's own
+/// `InvalidQueryParameter` rather than the generic client-error code, because what the request
+/// got wrong is not one of its own arguments but the contents of the launch template they
+/// reference ([`Scaffolded::invalid_query_parameter`]).
+///
+/// Asked of every specification the launch source carries, for the reason
+/// [`launch_template_identity_error`] reads them all, and asked AFTER
+/// [`unlaunchable_launch_template_error`]: a version stating none of the launch parameters a
+/// launch requires at all is reported for those parameters.
+///
+/// `None` covers a version the account does not hold — a reference that resolves to nothing is
+/// [`unresolvable_launch_template_error`]'s refusal, and is read first — and an engine carrying
+/// no Amazon EC2 store: a refusal has to be grounded in launch parameters the account's Amazon
+/// EC2 state answered with, never assumed.
+pub fn launch_template_instance_type_error<Eng: Send + Sync + 'static, E>(
+    engine: &Eng,
+    launch_template: Option<&LaunchTemplateSpecification>,
+    mixed_instances_policy: Option<&MixedInstancesPolicy>,
+) -> Option<Scaffolded<E>> {
+    if policy_states_instance_types(mixed_instances_policy) {
+        return None;
+    }
+    super::ec2_instances::specifications(launch_template, mixed_instances_policy)
+        .into_iter()
+        .filter_map(|specification| {
+            super::ec2_instances::launch_template_data(engine, specification)
+        })
+        .any(|data| {
+            data.instance_type
+                .as_deref()
+                .is_none_or(|instance_type| instance_type.trim().is_empty())
+        })
+        .then(|| Scaffolded::invalid_query_parameter(LAUNCH_TEMPLATE_INSTANCE_TYPE_MESSAGE))
+}
+
+/// Whether a launch source is configured as a MIXED INSTANCES group: one whose policy states
+/// the instance types its capacity is spread over, so the template it launches from does not
+/// have to state one.
+///
+/// A policy states them through its overrides — "the instance types (overrides) that are used
+/// to launch EC2 instances" — each override naming either the type outright
+/// (`LaunchTemplateOverrides$InstanceType`) or the attributes the service selects types by
+/// instead (`$InstanceRequirements`: "Amazon EC2 Auto Scaling will select instance types with
+/// the provided requirements"). A policy carrying no override states no type, so a group
+/// configured with one is not spared the rule.
+fn policy_states_instance_types(mixed_instances_policy: Option<&MixedInstancesPolicy>) -> bool {
+    mixed_instances_policy
+        .and_then(|policy| policy.launch_template.as_ref())
+        .and_then(|template| template.overrides.as_ref())
+        .into_iter()
+        .flatten()
+        .any(|entry| {
+            entry
+                .instance_type
+                .as_deref()
+                .is_some_and(|instance_type| !instance_type.trim().is_empty())
+                || entry.instance_requirements.is_some()
+        })
+}
+
+/// What Amazon EC2 Auto Scaling answers a launch source whose `Version` is a word that names
+/// no version at all.
+///
+/// "Valid values are `$Latest`, `$Default`, and numbers"
+/// (`smithy_query(query="shape",shape="LaunchTemplateSpecification",member="Version")`): a
+/// version is one of the two aliases or a number, so a word that is neither names nothing the
+/// template could be resolved at. Entirely fixed text — it lists the forms a version may take
+/// and carries no part of the request, and it is this service's own wording rather than the
+/// sentence the service that owns launch templates answers a caller of ITS OWN with, because
+/// the request refused here configures a GROUP.
+pub const UNREADABLE_LAUNCH_TEMPLATE_VERSION_MESSAGE: &str =
+    "Invalid launch template version: either '$Default', '$Latest', or a numeric version are \
+     allowed.";
 
 /// The refusal for a launch source naming a launch template — or a VERSION of one — the
 /// account does not hold, or `None` when every reference it names resolves.
@@ -542,6 +678,18 @@ impl TemplateReference {
             .version
             .as_deref()
             .unwrap_or(ec2::LAUNCH_TEMPLATE_VERSION_DEFAULT);
+        // WHICH version a word names is a rule about the word
+        // ([`ec2::launch_template_version_request`], the one reading of that member in the
+        // tree), and Amazon EC2 Auto Scaling words a word it cannot read ITSELF: the caller
+        // configuring a GROUP is told which forms a version may take
+        // ([`UNREADABLE_LAUNCH_TEMPLATE_VERSION_MESSAGE`]), not what Amazon EC2 answers a
+        // caller of its own. A word that reads as a version and names none the template holds
+        // is a different verdict, and stays Amazon EC2's own sentence for it.
+        if ec2::launch_template_version_request::<()>(version).is_err() {
+            return Some(UnresolvedReference::Version(
+                UNREADABLE_LAUNCH_TEMPLATE_VERSION_MESSAGE.to_string(),
+            ));
+        }
         match ec2::resolve_launch_template_version::<()>(record, version) {
             Ok(_) => None,
             Err(Ec2Refusal::ServiceError(refusal)) => {
@@ -589,21 +737,26 @@ impl TemplateIdentity {
     }
 
     /// Amazon EC2's own sentence for the id half of this identity where that service cannot
-    /// READ it, or `None` for an identity it can read — every name, and every id that
-    /// service's mint could have issued.
+    /// READ it, or `None` for an identity it can read — every name, and every id it resolves
+    /// by looking it up.
     ///
-    /// A launch template id is a value Amazon EC2 ITSELF issued
-    /// ([`ec2::ComAmazonawsEc2Amazonec2State::id_was_issued`]), so one no issue of the kind
-    /// could have produced names no launch template at all and that service refuses it as
-    /// unreadable BEFORE any lookup — ahead of the template an ISSUED id names and may since
-    /// have been deleted. Amazon EC2 Auto Scaling resolves a group's reference through that
-    /// service, so a caller naming such an id is told what Amazon EC2 tells a caller naming
-    /// it there ([`ec2::malformed_launch_template_id_message`]) rather than that a template
-    /// of that id does not exist. A NAME has no shape to be wrong, so nothing is screened
-    /// for the name half.
+    /// Amazon EC2's LONG id form is an obfuscated identifier that service decodes before it
+    /// resolves anything ([`ec2::ComAmazonawsEc2Amazonec2State::long_form_id_was_never_issued`],
+    /// where that clause and its reasoning live), so a value in that form whose identifier its
+    /// mint never issued names no launch template at all and is refused as unreadable BEFORE
+    /// any lookup — ahead of the template an issued id names and may since have been deleted.
+    /// Amazon EC2 Auto Scaling resolves a group's reference through that service, so a caller
+    /// naming such an id is told what Amazon EC2 tells a caller naming it there
+    /// ([`ec2::malformed_launch_template_id_message`]) rather than that a template of that id
+    /// does not exist.
+    ///
+    /// A value OUTSIDE that form carries no identifier to decode, so it is not unreadable: it
+    /// is looked up like any other reference and reported as a template that does not exist —
+    /// the recorded answer for an id too short to be one. A NAME has no shape to be wrong
+    /// either, so nothing is screened for the name half.
     fn unreadable(&self, store: &ec2::ComAmazonawsEc2Amazonec2State) -> Option<String> {
         match self {
-            Self::Id(id) if !store.id_was_issued(ec2::LAUNCH_TEMPLATE_ID_PREFIX, id) => {
+            Self::Id(id) if store.long_form_id_was_never_issued(id) => {
                 Some(ec2::malformed_launch_template_id_message(id))
             }
             Self::Id(_) | Self::Name(_) => None,

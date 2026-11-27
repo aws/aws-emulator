@@ -542,6 +542,28 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             })
         };
         let (held_subnets, held_template, held_policy) = held.unwrap_or_default();
+        // The instance TYPE the group's instances are launched as has to be stated somewhere
+        // the group carries it, exactly as it must when the group is created. Asked of a
+        // request that REPLACES the launch source, against the configuration the update leaves
+        // the group with — a member the request omits keeps the value the group already has —
+        // so an update that only replaces the launch template of a group whose mixed instances
+        // policy states the types is served, while one that leaves the group taking its type
+        // from a version stating none is refused and the group is left exactly as it was
+        // ([`crate::state::group_configuration::launch_template_instance_type_error`]).
+        if input.launch_template.is_some() || input.mixed_instances_policy.is_some() {
+            if let Some(refusal) =
+                crate::state::group_configuration::launch_template_instance_type_error(
+                    &*self.engine,
+                    input.launch_template.as_ref().or(held_template.as_ref()),
+                    input
+                        .mixed_instances_policy
+                        .as_ref()
+                        .or(held_policy.as_ref()),
+                )
+            {
+                return Err(refusal);
+            }
+        }
         // The group's subnets and the security groups its launch template names must sit in
         // ONE VPC, exactly as they must when the group is created: an instance of the group
         // is placed in one of those subnets, so a group of another VPC could never be

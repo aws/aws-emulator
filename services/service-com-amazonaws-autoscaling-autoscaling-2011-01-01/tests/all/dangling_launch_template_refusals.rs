@@ -441,38 +441,49 @@ async fn a_reference_that_resolves_to_no_template_is_refused_by_the_half_it_stat
     }
 }
 
-/// The id FORMS Amazon EC2's mint never produces, from that service's own screen of a launch
-/// template id ([`ec2::ComAmazonawsEc2Amazonec2State::id_was_issued`], which holds an id to
-/// the long printed form, to a value at or below the mint's counter and off the all-zero
-/// placeholder): each names no launch template, whatever a client reads into it.
-const UNREADABLE_IDS: &[(&str, &str)] = &[
+/// The id FORMS that resolve to no launch template, each paired with whether Amazon EC2
+/// reports it MALFORMED rather than absent: that service's LONG id form is an obfuscated
+/// identifier it decodes before it resolves anything
+/// ([`ec2::ComAmazonawsEc2Amazonec2State::long_form_id_was_never_issued`], where that clause
+/// lives), so a long-form value above its mint's counter is an identifier it never issued,
+/// while a value in any other form carries no identifier to decode and is looked up like any
+/// other reference.
+const UNRESOLVABLE_IDS: &[(&str, &str, bool)] = &[
     (
         "a long-form id far above every value the mint can reach",
         "lt-0123456789abcdef0",
+        true,
     ),
-    ("a short-form id, a form the mint never writes", "lt-0fedcba9"),
     (
-        "the all-zero placeholder, which a mint counting from one cannot produce",
-        "lt-00000000000000000",
+        "a short-form id, a form the mint never writes",
+        "lt-0fedcba9",
+        false,
     ),
-    ("an id that is not hexadecimal", "lt-zzzzzzzzzzzzzzzzz"),
+    (
+        "the all-zero placeholder, which carries no identifier at all",
+        "lt-00000000000000000",
+        false,
+    ),
+    ("an id that is not hexadecimal", "lt-zzzzzzzzzzzzzzzzz", false),
     (
         "an id carrying another resource kind's prefix",
         "sg-00000000000000001",
+        false,
     ),
 ];
 
-/// RULE: a `LaunchTemplateId` Amazon EC2's mint never issued is reported as that service
-/// reports it — `Malformed launch template Id: <id>` — by every request that configures a
-/// group against it, while an id it DID issue is resolved: the template it names is launched
-/// from, or reported as not existing once it has been deleted.
+/// RULE: a `LaunchTemplateId` in the long form Amazon EC2 decodes whose identifier its mint
+/// never issued is reported as that service reports it — `Malformed launch template Id: <id>`
+/// — by every request that configures a group against it, while an id outside that form, and
+/// one the mint DID issue, is looked up: the template it names is launched from, or reported
+/// as not existing when the account holds none under it.
 ///
 /// The rows differ along the FORM of the id (its printed length, its digits, its prefix and
 /// the all-zero placeholder) and along what the mint did with it (never issued, issued and
 /// deleted, issued and held), and each is driven through both requests that configure a
 /// group — so what the rule pins is the screen, not one value.
 #[tokio::test]
-async fn an_id_the_mint_never_issued_is_reported_as_amazon_ec2_reports_it() {
+async fn an_id_that_resolves_to_nothing_is_reported_as_amazon_ec2_reports_it() {
     let (router, _engine) = emulator();
     let case = "the mint screen";
     let held_id = create_template(&router, case, HELD_TEMPLATE_NAME).await;
@@ -481,13 +492,19 @@ async fn an_id_the_mint_never_issued_is_reported_as_amazon_ec2_reports_it() {
     create_group(&router, case).await;
 
     // (case, the id, the sentence it earns, or `None` where the create must be served)
-    let mut rows: Vec<(String, String, Option<String>)> = UNREADABLE_IDS
+    let mut rows: Vec<(String, String, Option<String>)> = UNRESOLVABLE_IDS
         .iter()
-        .map(|(case, id)| {
+        .map(|(case, id, malformed)| {
             (
                 (*case).to_string(),
                 (*id).to_string(),
-                Some(format!("Malformed launch template Id: {id}")),
+                Some(if *malformed {
+                    format!("Malformed launch template Id: {id}")
+                } else {
+                    format!(
+                        "The specified launch template, with template ID {id}, does not exist."
+                    )
+                }),
             )
         })
         .collect();

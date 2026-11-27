@@ -197,14 +197,6 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let now = ::std::time::SystemTime::now();
         let start_time = crate::state::from_date_time(input.start_time);
         let end_time = crate::state::from_date_time(input.end_time);
-        // The span the request asks for, taken against the rules its own two members state
-        // ([`crate::state::predictive_forecast::time_range_refusal`]) BEFORE the store is
-        // locked and before a single observation is read: a forecast is one value per hour of
-        // that span, so how long it is decides how much work this read is and it is a fact of
-        // the REQUEST — like every other per-call bound of this service.
-        if let Some(refusal) = forecast::time_range_refusal(start_time, end_time, now) {
-            return Err(crate::scaffolded::Scaffolded::validation_error(refusal));
-        }
 
         // What the forecast is computed FROM is read out under the store's lock and the lock
         // is then released: the policy and the group's own bounds are all it needs, so no
@@ -214,7 +206,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             state.materialize_due(&*self.engine, now);
 
             // A scaling policy belongs to a group, so the group is resolved first: a request
-            // naming no stored group is refused for the group whatever policy it names.
+            // naming no stored group is refused for the group whatever policy it names, and
+            // whatever span its own two time members ask for — the reference a request names
+            // is resolved before the values it carries are weighed, so a caller that named a
+            // group this account does not hold is told about the group rather than sent to
+            // correct timestamps.
             let Some(group) = state.groups.get(&group_name) else {
                 crate::state::audit(
                     ctx.parts(),
@@ -223,9 +219,17 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     "refused: no such group",
                 );
                 return Err(crate::scaffolded::Scaffolded::validation_error(
-                    crate::state::absent_group_message(&group_name),
+                    crate::state::absent_group_message_as_group_not_found_sentence(&group_name),
                 ));
             };
+            // The span the request asks for, taken against the rules its own two members state
+            // ([`crate::state::predictive_forecast::time_range_refusal`]) before a single
+            // observation is read: a forecast is one value per hour of that span, so how long
+            // it is decides how much work this read is and it is a fact of the REQUEST — like
+            // every other per-call bound of this service.
+            if let Some(refusal) = forecast::time_range_refusal(start_time, end_time, now) {
+                return Err(crate::scaffolded::Scaffolded::validation_error(refusal));
+            }
             let bounds = forecast::GroupCapacityBounds::of(group);
             let key = crate::state::PolicyKey {
                 auto_scaling_group_name: group_name.clone(),
