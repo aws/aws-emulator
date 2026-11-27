@@ -12,10 +12,10 @@
 //!   broke, while a member that was ABSENT is still stated `Value null` — the one thing the
 //!   value half reports about a value nobody sent — and a list is stated as the list it is.
 //!   The envelope and the requirements themselves stay the ones every AWS service states.
-//! * How many campaign ids one batch state read may name is the SERVICE's cap: a batch up
-//!   to it is processed, one answer per requested id, and only a batch past it is refused —
-//!   with the list the caller submitted stated as the value of the member that broke the
-//!   cap.
+//! * How many campaign ids one batch state read may name is the `@length` its model
+//!   declares: a batch up to that maximum is processed, one answer per requested id, and
+//!   only a batch past it is refused — with the list the caller submitted stated as the
+//!   value of the member that broke it.
 //! * A bound the real service does NOT apply is not applied here either: a dialer config's
 //!   `bandwidthAllocation` is accepted whatever value it carries — above the modelled
 //!   maximum included — and the value is stored and reported back as sent, while every
@@ -44,12 +44,12 @@ const INSTANCE: &str = "constraint-instance";
 
 /// The most campaign ids one batch state read may name.
 ///
-/// The cap the SERVICE enforces, written out here rather than read back out of the
-/// implementation so this suite pins it: AWS processes a batch of up to this many
-/// well-formed ids structurally and refuses only one past it, which is why this service's
-/// model declares `GetCampaignStateBatchRequest$campaignIds` with a length minimum of one
-/// and no maximum.
-const MAX_BATCH: usize = 500;
+/// `GetCampaignStateBatchRequest$campaignIds`' published `@length` maximum, whose minimum
+/// is one entry (`smithy_query(query="operation", operation="GetCampaignStateBatch")`),
+/// written out here rather than read back out of the implementation so this suite pins it:
+/// a batch of up to this many ids is processed structurally, every id answered on its own,
+/// and only one past it is refused.
+const MAX_BATCH: usize = 25;
 
 /// `CampaignName`'s published length maximum (`@length(min 1, max 127)`).
 const MAX_NAME: usize = 127;
@@ -420,14 +420,14 @@ fn unknown_ids(count: usize) -> Vec<String> {
 }
 
 #[tokio::test]
-async fn a_batch_up_to_the_services_cap_is_processed_and_only_one_past_it_is_refused() {
+async fn a_batch_up_to_the_modelled_maximum_is_processed_and_only_one_past_it_is_refused() {
     let router = router();
     let known = a_campaign(&router, "known").await;
 
     // Rows differ along HOW MANY ids the batch names, spanning the sizes a caller can
-    // send inside the cap: one, the maximum the published model used to admit, one past
-    // that, a size in between, and the cap itself.
-    let sizes = [1, 25, 26, 100, MAX_BATCH];
+    // send inside the maximum: one, a handful, one short of the maximum, and the maximum
+    // itself.
+    let sizes = [1, 2, MAX_BATCH - 1, MAX_BATCH];
     for size in sizes {
         let case = format!("a batch of {size} ids");
         // The stored campaign is asked for first, so every row carries one id that
@@ -444,7 +444,7 @@ async fn a_batch_up_to_the_services_cap_is_processed_and_only_one_past_it_is_ref
         .await;
         assert_eq!(
             answer.status, 200,
-            "case {case:?}: a batch inside the cap is processed, got {} {}",
+            "case {case:?}: a batch inside the modelled maximum is processed, got {} {}",
             answer.status, answer.body
         );
         let successful = answer.body["successfulRequests"]
@@ -477,11 +477,11 @@ async fn a_batch_up_to_the_services_cap_is_processed_and_only_one_past_it_is_ref
         );
     }
 
-    // One id past the cap is refused, and the clause states the list the caller submitted
-    // as the value of the member that broke it. The rows differ along how long that list
-    // renders: ids of a handful of characters, and ids at `CampaignId`'s own length
-    // maximum of 256 — the longest batch an attempt at the cap can be, which the clause
-    // still quotes in full.
+    // One id past the maximum is refused, and the clause states the list the caller
+    // submitted as the value of the member that broke it. The rows differ along how long
+    // that list renders: ids of a handful of characters, and ids at `CampaignId`'s own
+    // length maximum of 256 — the longest batch an attempt at the maximum can be, which the
+    // clause still quotes in full.
     let refusal_rows: Vec<(String, Vec<String>)> = vec![
         (
             format!("a batch of {} short ids", MAX_BATCH + 1),
@@ -506,7 +506,7 @@ async fn a_batch_up_to_the_services_cap_is_processed_and_only_one_past_it_is_ref
         .await;
         assert_eq!(
             refused.status, 400,
-            "case {case:?}: expected HTTP 400 one id past the cap, got {} {}",
+            "case {case:?}: expected HTTP 400 one id past the modelled maximum, got {} {}",
             refused.status, refused.body
         );
         assert!(

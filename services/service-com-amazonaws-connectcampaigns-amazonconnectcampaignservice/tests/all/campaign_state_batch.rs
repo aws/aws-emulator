@@ -6,10 +6,9 @@
 //! OWN — an id the store holds goes to `successfulRequests` carrying the run state the
 //! last start/pause/stop left it in, an id it does not hold goes to `failedRequests`
 //! carrying the `ResourceNotFound` failure code, and the whole call is refused (HTTP 400
-//! `ValidationException`) only when the request breaks `campaignIds`' own bounds — its
-//! modelled minimum of one entry, and the service's own cap on how many ids one batch may
-//! name. Reporting state changes nothing, so the same batch asked twice, and the single-id
-//! read beside it, answer alike.
+//! `ValidationException`) only when the request breaks `campaignIds`' own modelled bounds —
+//! its `@length` minimum of one entry and its maximum of 25. Reporting state changes
+//! nothing, so the same batch asked twice, and the single-id read beside it, answer alike.
 //!
 //! Each rule is asserted over a table whose rows differ along what it generalises over —
 //! how many ids are asked for, how many of them resolve, which run state each resolved
@@ -36,12 +35,12 @@ const INSTANCE: &str = "batch-instance";
 /// rather than reading it back out of the implementation.
 const RESOURCE_NOT_FOUND: &str = "ResourceNotFound";
 
-/// The largest batch `campaignIds` admits: the cap the SERVICE enforces, since the
-/// modelled `@length` on that member states a minimum of one entry and no maximum
+/// The largest batch `campaignIds` admits: the `@length` maximum the model declares on
+/// that member, whose minimum is one entry
 /// (`smithy_query(query="operation", operation="GetCampaignStateBatch")`). Written out
 /// here rather than read back out of the implementation, so this suite pins it; the sizes
 /// around it are `input_constraint_refusals.rs`'s own table.
-const MAX_BATCH: usize = 500;
+const MAX_BATCH: usize = 25;
 
 /// The sentence a request refused for ONE broken input constraint is answered with: the
 /// envelope around a clause naming the value half the class states, the member it sits
@@ -346,7 +345,7 @@ async fn every_requested_id_is_answered_once_in_the_order_it_was_asked_for() {
 
     // Rows differ along the COUNT and the ORDER of the ids asked for, including the same
     // id twice (each occurrence is its own requested entry) and the largest batch the
-    // modelled bound admits.
+    // modelled maximum admits.
     let rows: Vec<(&str, Vec<String>)> = vec![
         ("one resolved id", vec![first.clone()]),
         ("one unresolved id", vec![absent.clone()]),
@@ -367,7 +366,7 @@ async fn every_requested_id_is_answered_once_in_the_order_it_was_asked_for() {
             vec![absent.clone(), absent.clone()],
         ),
         (
-            "the largest batch the cap admits",
+            "the largest batch the modelled maximum admits",
             (0..MAX_BATCH)
                 .map(|index| match index % 3 {
                     0 => first.clone(),
@@ -436,10 +435,10 @@ async fn a_batch_outside_the_bounds_of_campaign_ids_is_refused_as_a_bad_request(
     let router = router();
     let known = a_campaign(&router, "known").await;
 
-    // `campaignIds` is required and carries a `@length` minimum of one entry, so the three
+    // `campaignIds` is required and carries a `@length` of one to 25 entries, so the three
     // ways a batch can break the contract are refused as bad requests rather than answered
     // with an empty pair of lists: no list at all, an empty list, and one id past the
-    // service's cap. Each row carries the sentence that class is refused with — the one
+    // modelled maximum. Each row carries the sentence that class is refused with — the one
     // envelope, with the value half each class states.
     let rows: Vec<(&str, Value, String)> = vec![
         (
@@ -457,9 +456,9 @@ async fn a_batch_outside_the_bounds_of_campaign_ids_is_refused_as_a_bad_request(
         ),
         (
             // The oversize clause states the list the caller submitted as the value of the
-            // member that broke the cap: a list has a rendering of its own, which is the
-            // half a scalar member's clause drops.
-            "one id past the cap",
+            // member that broke the maximum: a list has a rendering of its own, which is
+            // the half a scalar member's clause drops.
+            "one id past the modelled maximum",
             json!({"campaignIds": oversize_ids()}),
             envelope(
                 &format!("Value '[{}]' at 'campaignIds'", oversize_ids().join(", ")),

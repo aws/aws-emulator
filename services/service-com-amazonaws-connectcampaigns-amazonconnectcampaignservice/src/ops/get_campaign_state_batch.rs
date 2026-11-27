@@ -8,10 +8,9 @@
 //! for that failure in words naming that id — a per-id outcome, so one absent id does not
 //! refuse the whole batch.
 //!
-//! How MANY ids one call may name is the service's own cap
-//! (`crate::state::CAMPAIGN_IDS_PER_BATCH`), applied here rather than at the boundary:
-//! the refusal states the list the caller submitted, which only this layer holds. The
-//! model's `@length` minimum of one is still the boundary validator's.
+//! How MANY ids one call may name is the `@length` the model declares on `campaignIds`,
+//! so a batch outside it never reaches this handler: the boundary validator refuses it,
+//! worded as `crate::service` words a constraint refusal.
 //!
 //! ## Shape of an operation
 //!
@@ -55,10 +54,10 @@
 //!
 //! ## Input
 //!
-//! * `campaignIds` (CampaignIdList, len 1..) **required** — List of CampaignId. Each
+//! * `campaignIds` (CampaignIdList, len 1..25) **required** — List of CampaignId. Each
 //!   entry is a `CampaignId` (len 0..256, pattern ^[\S]*$), and the boundary validator
-//!   applies those entry constraints and the list's own minimum before `handle` runs; the
-//!   list's MAXIMUM is the service's cap and is applied by `handle` itself.
+//!   applies those entry constraints and the list's own length bounds before `handle`
+//!   runs.
 //!
 //! ## Output
 //!
@@ -175,24 +174,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         })?;
 
         // A batch read is per-id: the only thing that can refuse the whole call is
-        // `campaignIds` itself. Its `@length` minimum of one (and every entry's own
-        // `CampaignId` constraints) is applied by the boundary validator before this runs,
-        // so reaching here means the request carries at least one well-formed id; the
-        // MAXIMUM is the service's own cap ([`crate::state::CAMPAIGN_IDS_PER_BATCH`]) and
-        // is applied here, where the submitted ids are at hand to state in the refusal.
-        // Nothing is read until the batch is one this service accepts.
-        if input.campaign_ids.len() > crate::state::CAMPAIGN_IDS_PER_BATCH {
-            return Err(GetCampaignStateBatchErrorModeled::ValidationException(
-                ValidationException {
-                    message: crate::state::campaign_ids_over_cap_message(&input.campaign_ids),
-                    x_amz_error_type: None,
-                },
-            )
-            .into());
-        }
-
-        // Each id is then answered on its own — resolved or not — in the order it was
-        // asked for, so a caller can line the answers up with what it sent.
+        // `campaignIds` itself, and its whole `@length` — the minimum of one and the
+        // maximum the model declares — is applied by the boundary validator before this
+        // runs, together with every entry's own `CampaignId` constraints. So reaching here
+        // means the request carries a batch this service admits, and each id is answered on
+        // its own — resolved or not — in the order it was asked for, so a caller can line
+        // the answers up with what it sent.
         let guard = state.lock();
         let mut successful_requests = Vec::new();
         let mut failed_requests = Vec::new();

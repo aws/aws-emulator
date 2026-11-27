@@ -214,9 +214,9 @@ const TAGS_MEMBER: &str = "tags";
 /// [`MAX_TAGS_PER_RESOURCE`] tags, stating how many that would be.
 ///
 /// The envelope, the member path and the requirement come from the framework's own
-/// constraint renderer — exactly as [`campaign_ids_over_cap_message`] takes them — so a
-/// ceiling this service enforces is stated as one the model declares, and the value half
-/// is the map's own entry count rather than anything the caller sent.
+/// constraint renderer, so a ceiling this service enforces is stated as one the model
+/// declares, and the value half is the map's own entry count rather than anything the
+/// caller sent.
 pub fn tags_over_cap_message(count: usize) -> String {
     let violation = ::aws_smithy_schema_server::Violation {
         path: ::aws_smithy_schema_server::constraints::path::member(TAGS_MEMBER),
@@ -1708,62 +1708,6 @@ pub fn campaign_not_found_message(id: &str) -> String {
 /// operations share.
 pub fn campaign_absent_message(id: &str) -> String {
     format!("Campaign: {id} doesn't exist")
-}
-
-/// The member one batch state read names its campaign ids in, as the clause below spells
-/// it: the Smithy member name, lowerCamel-ed by the framework's own path spelling.
-const CAMPAIGN_IDS_MEMBER: &str = "campaignIds";
-
-/// The most campaign ids one batch state read may name.
-///
-/// The cap the SERVICE enforces, which is why it lives here and not in the model: a batch
-/// of up to this many well-formed ids is PROCESSED — every id answered on its own,
-/// resolved or not — and only a batch past it is refused. This service's Smithy model
-/// therefore declares `GetCampaignStateBatchRequest$campaignIds` with a `@length` minimum
-/// of one and no maximum, so the boundary validator still refuses the empty list while
-/// the cap is applied by the handler, which is the only layer that holds the submitted
-/// ids and can state them in the refusal ([`campaign_ids_over_cap_message`]).
-pub const CAMPAIGN_IDS_PER_BATCH: usize = 500;
-
-/// The longest `CampaignId` this service's model admits (`@length(min 0, max 256)`), which
-/// the boundary validator applies to every entry of a batch before the handler runs.
-const CAMPAIGN_ID_MAX_LENGTH: usize = 256;
-
-/// How long a rendering of a submitted batch one clause quotes in FULL.
-///
-/// A MODEL constant, not a request-sized one: the longest list a batch one id past
-/// [`CAMPAIGN_IDS_PER_BATCH`] can render as, every id at [`CAMPAIGN_ID_MAX_LENGTH`] and
-/// separated by `, ` inside the brackets. So the refusal quotes in full every batch that is
-/// an attempt at the cap — which is what AWS's own clause states — and a batch many times
-/// larger than the cap is quoted as the shared module elides any value, rather than turning
-/// a request into a response sized by it.
-const MAX_QUOTED_CAMPAIGN_IDS: usize =
-    (CAMPAIGN_IDS_PER_BATCH + 1) * (CAMPAIGN_ID_MAX_LENGTH + ", ".len()) + "[]".len();
-
-/// What this service answers when one batch state read names more campaign ids than
-/// [`CAMPAIGN_IDS_PER_BATCH`].
-///
-/// The envelope, the member path and the requirement come from the framework's own
-/// constraint renderer, so a cap the service enforces is stated exactly as one the model
-/// declares. The value half is the list the caller submitted, rendered the way a list
-/// renders ([`service_common::validation::rendered_list`]) and held to
-/// [`MAX_QUOTED_CAMPAIGN_IDS`] by the same elision the shared module applies to any value
-/// ([`service_common::validation::quoted_echo_up_to`]).
-pub fn campaign_ids_over_cap_message(campaign_ids: &[String]) -> String {
-    let elements: Vec<&str> = campaign_ids.iter().map(String::as_str).collect();
-    let submitted = ::service_common::validation::rendered_list(&elements);
-    let violation = ::aws_smithy_schema_server::Violation {
-        path: ::aws_smithy_schema_server::constraints::path::member(CAMPAIGN_IDS_MEMBER),
-        kind: ::aws_smithy_schema_server::ViolationKind::MaxLength(CAMPAIGN_IDS_PER_BATCH as i64),
-        value: Some(
-            ::service_common::validation::quoted_echo_up_to(&submitted, MAX_QUOTED_CAMPAIGN_IDS)
-                .into_owned(),
-        ),
-        sensitive: false,
-    };
-    // One violation always renders an envelope; the fallback keeps this infallible rather
-    // than answering a refusal with no sentence at all.
-    ::aws_smithy_schema_server::envelope(&[violation]).unwrap_or_default()
 }
 
 /// Why the Amazon Connect instance a request names is not a campaign target, as

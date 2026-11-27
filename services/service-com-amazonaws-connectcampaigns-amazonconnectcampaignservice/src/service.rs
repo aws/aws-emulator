@@ -22,7 +22,11 @@
 //!   services, or routing that keys on the access-key id.
 //! - `override_operation` — serve a request the model's routing key cannot name
 //!   correctly. The default returns `None`, so every request resolves through the
-//!   generated routing table. Return `Some(op)` to route one yourself.
+//!   generated routing table. Return `Some(op)` to route one yourself. EDITED HERE: every
+//!   routed request is served through the media-type wrapper below, and an operation whose
+//!   input declares a COLLECTION member through one more wrapper in front of it, so a
+//!   clause about such a member quotes the collection the request carried
+//!   ([`submitted_collection`]).
 //! - `override_refusal` — how this service words a request the framework refused
 //!   before any handler ran. It delegates to the shared AWS renderer
 //!   ([`service_common::validation_message::aws_validation_refusal_withholding`]), so a
@@ -73,40 +77,43 @@
 //! the authentication refusal, which the router renders through
 //! `definition().refusal_response(..)` before this service is asked anything.
 
+mod submitted_collection;
+
+use crate::ops::get_campaign_state_batch::GetCampaignStateBatch;
+use crate::ops::put_dial_request_batch::PutDialRequestBatch;
+use crate::ops::untag_resource::UntagResource;
 use service_common::response_media_type::{ResponseMediaType, ResponseMediaTypeOperation};
-use smithy_server_runtime::{
-    http, ErasedOperation, Refusal, Refused, Service, Violation, ViolationKind,
-};
+use service_common::validation::SubmittedEcho;
+use smithy_server_runtime::{http, ErasedOperation, Refusal, Refused, Service, Violation};
 use std::collections::HashSet;
 use std::sync::Arc;
 
-/// How this service renders the value of a LIST member whose `@length` a request broke:
-/// the elements it submitted, bracketed, which is the value a list has. The EMPTY list is
-/// the one such value a structural refusal determines on its own, because a refusal
-/// carries a collection's element COUNT and no elements, and zero elements render as this
-/// and nothing else.
-const EMPTY_LIST_VALUE: &str = "[]";
-
-/// Whether `violation` is the framework's clause about a LIST member the request EMPTIED —
-/// a `@length` broken by a collection the walk rendered as zero items.
+/// Every violation of one refusal as this service states it, paired with the paths whose
+/// clause QUOTES a value: the collection members whose value half was restored to the
+/// collection the caller submitted.
 ///
-/// The element count is read back out of the framework's own rendering through
-/// [`service_common::validation_message::list_item_count`], so this service and any other
-/// that words a list's length refusal read one rendering the same way. A LIST only: a
-/// map's own rendering counts ENTRIES, not items, so `list_item_count` does not read it and
-/// an empty map keeps the valueless clause. That is deliberate — `[]` is the rendering of a
-/// list, and nothing here invents the rendering of another collection kind.
-fn empties_a_list(violation: &Violation) -> bool {
-    matches!(
-        violation.kind,
-        ViolationKind::MinLength(_) | ViolationKind::MaxLength(_)
-    ) && violation.value.as_deref().is_some_and(|stored| {
-        service_common::validation_message::list_item_count(stored) == Some(0)
-    })
+/// `restorations` hands each violation as it will be stated beside the value half the
+/// framework's own walk wrote for it, so a clause that now carries the submitted collection
+/// is told from one that still carries the walk's summary of it by that comparison alone —
+/// which is what keeps the two layers that restore a collection ([`stated_refusal`] and
+/// [`submitted_collection`]) wording one refusal the same way.
+fn restated<I>(restorations: I) -> (Vec<Violation>, HashSet<String>)
+where
+    I: IntoIterator<Item = (Violation, Option<String>)>,
+{
+    let mut stated: Vec<Violation> = Vec::new();
+    let mut quoted: HashSet<String> = HashSet::new();
+    for (violation, written_by_the_walk) in restorations {
+        if violation.value != written_by_the_walk {
+            quoted.insert(violation.path.clone());
+        }
+        stated.push(violation);
+    }
+    (stated, quoted)
 }
 
-/// `refusal` stated the way this service states a constraint refusal, or `None` for a
-/// refusal that is not one.
+/// `violations` stated the way this service states a constraint refusal, with the clauses
+/// at `quoted` keeping the value half they carry and every other one losing it.
 ///
 /// The envelope, the member paths and every requirement are the shared AWS renderer's
 /// ([`service_common::validation_message::aws_validation_refusal_withholding`]), so a
@@ -119,34 +126,74 @@ fn empties_a_list(violation: &Violation) -> bool {
 /// clause names the member and the requirement and nothing else. A member that was ABSENT
 /// keeps the framework's `Value null`, which is the one thing that half reports about a
 /// value nobody sent, and a collection the refusal carries only a COUNT of has that count
-/// dropped too, since a count is not a value a caller sent — except for the one such value
-/// a structural refusal determines, the empty list, which is restated as the list it is
-/// (see [`empties_a_list`]).
+/// dropped too, since a count is not a value a caller sent.
+fn stated(violations: Vec<Violation>, quoted: &HashSet<String>) -> Option<Refused> {
+    // The member paths whose clause states no value at all: every one the framework wrote
+    // a value half for that is not the collection the caller submitted.
+    let withheld: HashSet<String> = violations
+        .iter()
+        .filter(|violation| !quoted.contains(&violation.path))
+        .filter(|violation| violation.value.is_some() || violation.sensitive)
+        .map(|violation| violation.path.clone())
+        .collect();
+    service_common::validation_message::aws_validation_refusal_withholding(
+        &Refusal::Invalid(violations),
+        |path| withheld.contains(path),
+    )
+}
+
+/// `refusal` stated the way this service states a constraint refusal, or `None` for a
+/// refusal that is not one.
+///
+/// The wording is [`stated`]'s. The one collection this layer can quote is the EMPTY one:
+/// it is handed the violations and not the request they were found in, so the only
+/// collection a clause here can state is the one the walk's own summary determines
+/// completely ([`service_common::validation_message::quoting_an_empty_submitted_collection`],
+/// the shared rule for that layer). A request served through [`submitted_collection`] has
+/// its collections restored from the request itself before this is reached.
 fn stated_refusal(refusal: &Refusal) -> Option<Refused> {
     let Refusal::Invalid(violations) = refusal else {
         return None;
     };
-    let mut stated: Vec<Violation> = Vec::with_capacity(violations.len());
-    // The member paths whose clause states no value at all: every one the framework wrote
-    // a value half for that is not the collection the caller submitted.
-    let mut withheld: HashSet<String> = HashSet::new();
-    for violation in violations {
-        if empties_a_list(violation) {
-            stated.push(Violation {
-                value: Some(EMPTY_LIST_VALUE.to_string()),
-                ..violation.clone()
-            });
-            continue;
-        }
-        if violation.value.is_some() || violation.sensitive {
-            withheld.insert(violation.path.clone());
-        }
-        stated.push(violation.clone());
+    let (violations, quoted) = restated(violations.iter().map(|violation| {
+        let written_by_the_walk = violation.value.clone();
+        (
+            service_common::validation_message::quoting_an_empty_submitted_collection(
+                violation.clone(),
+            ),
+            written_by_the_walk,
+        )
+    }));
+    stated(violations, &quoted)
+}
+
+/// `refusing` stated with every COLLECTION clause quoting the collection the caller
+/// submitted, and the violations the answer is rendered from — or `None` when no clause of
+/// this refusal states one, which leaves the request to the walk behind
+/// [`submitted_collection`].
+///
+/// The wording is [`stated_refusal`]'s, so which layer refused a request is not something
+/// a caller can tell; what this entry point adds is the VALUE half of a clause about a
+/// collection, restored from the echo the request itself was read for by the one shared rule
+/// for it ([`service_common::validation_message::quoting_the_submitted_collection`]).
+fn stated_refusal_quoting_collections(
+    refusing: &[(Violation, SubmittedEcho)],
+) -> Option<(Vec<Violation>, Refused)> {
+    let (violations, quoted) = restated(refusing.iter().map(|(violation, echo)| {
+        let written_by_the_walk = violation.value.clone();
+        (
+            service_common::validation_message::quoting_the_submitted_collection(
+                violation.clone(),
+                echo.clone(),
+            ),
+            written_by_the_walk,
+        )
+    }));
+    if quoted.is_empty() {
+        return None;
     }
-    service_common::validation_message::aws_validation_refusal_withholding(
-        &Refusal::Invalid(stated),
-        |path| withheld.contains(path),
-    )
+    let refused = stated(violations.clone(), &quoted)?;
+    Some((violations, refused))
 }
 
 /// The media type the `restJson1` protocol trait this service's model declares implies,
@@ -231,20 +278,57 @@ pub struct EmulatedService<Eng: Send + Sync + 'static> {
     /// field, built once, because [`Service::override_operation`] hands back a borrow
     /// of it.
     media_type: ResponseMediaTypeOperation,
+    /// The operations whose input declares a COLLECTION member a caller can take outside
+    /// its modelled bounds, each served through the wrapper that quotes the collection the
+    /// request carried in the clause about it ([`submitted_collection`]). Held in fields for
+    /// the same reason [`Self::media_type`] is, and each delegating to that same wrapper for
+    /// every request it words no refusal for.
+    campaign_ids: CollectionStated<GetCampaignStateBatch<Eng>>,
+    dial_requests: CollectionStated<PutDialRequestBatch<Eng>>,
+    tag_keys: CollectionStated<UntagResource<Eng>>,
 }
+
+/// One operation served through the collection-quoting wrapper, as the fields above hold it.
+type CollectionStated<O> = submitted_collection::StatingTheSubmittedCollection<O>;
 
 impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
     /// Build this service from the shared engine. The engine is threaded into the
     /// generated [`ServiceDefinition`], which constructs each operation from it; the
     /// operation's behaviour lives in that operation's own `impl Operation`.
     pub fn new(engine: Arc<Eng>) -> Self {
-        Self {
-            entry: crate::ServiceDefinition::new(engine),
-            media_type: ResponseMediaTypeOperation::announcing(
+        let announced = || {
+            ResponseMediaTypeOperation::announcing(
                 RESPONSE_MEDIA_TYPE,
                 announced_by_the_modelled_front_door,
-            ),
+            )
+        };
+        Self {
+            entry: crate::ServiceDefinition::new(engine),
+            media_type: announced(),
+            campaign_ids: CollectionStated::new(announced()),
+            dial_requests: CollectionStated::new(announced()),
+            tag_keys: CollectionStated::new(announced()),
         }
+    }
+
+    /// The wrapper that words a refusal of the operation `routing_key` names by quoting the
+    /// collection the request carried, or `None` for an operation whose input declares no
+    /// collection member a caller can take outside its bounds.
+    ///
+    /// Keyed on each operation's own modelled name
+    /// ([`submitted_collection::StatingTheSubmittedCollection::serves`]), so the mounting is
+    /// the model's and not a path this file spells.
+    fn stating_the_submitted_collection(&self, routing_key: &str) -> Option<&dyn ErasedOperation> {
+        if self.campaign_ids.serves(routing_key) {
+            return Some(&self.campaign_ids);
+        }
+        if self.dial_requests.serves(routing_key) {
+            return Some(&self.dial_requests);
+        }
+        if self.tag_keys.serves(routing_key) {
+            return Some(&self.tag_keys);
+        }
+        None
     }
 }
 
@@ -297,8 +381,18 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
         // operation is declined here, so the framework answers it as the unroutable
         // request it is — through `override_routing_error` below, which re-announces that
         // answer too.
-        service_common::response_media_type::routes(&self.entry, req)
-            .then_some(&self.media_type as _)
+        //
+        // An operation whose input declares a COLLECTION member is served through one more
+        // wrapper in front of that one ([`submitted_collection`]), so a clause about such a
+        // member quotes the collection the request carried — which takes the request, and
+        // this is the last seam that still holds it. It delegates to the media-type wrapper
+        // for every request it words no refusal for, so the announcing above is unchanged.
+        if !service_common::response_media_type::routes(&self.entry, req) {
+            return None;
+        }
+        submitted_collection::routing_key(&self.entry, req)
+            .and_then(|key| self.stating_the_submitted_collection(key))
+            .or(Some(&self.media_type as _))
     }
 
     fn override_routing_error(
