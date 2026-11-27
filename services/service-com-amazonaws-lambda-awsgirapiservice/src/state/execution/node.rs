@@ -971,6 +971,10 @@ fn call_answer(answered: &Result<Answer, Refusal>) -> String {
         "status": answer.status,
         "body": answer.body,
         "errorType": answer.error_type,
+        // The LEGACY error code a query-compatible service names beside the modelled shape,
+        // which is the code a client of such a service reports for a refusal its own model
+        // declares no shape for ([`super::aws_api::Answer::query_error_code`]).
+        "queryErrorCode": answer.query_error_code,
         "requestId": answer.request_id,
         "errorMembers": answer.error_members,
         "streams": answer.streams,

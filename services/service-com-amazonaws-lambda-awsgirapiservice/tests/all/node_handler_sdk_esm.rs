@@ -12,17 +12,21 @@
 //! package's own `package.json` subpath — with nothing in the deployment package, and an ES
 //! module's `import { … } from` of one binds the names that package exports: its client, a
 //! command class per operation the service binds, and an error class per error shape it
-//! declares. A refusal is thrown as an instance of the class the service's own error shape
-//! names, which is the name a v3 client surfaces (the modelled Smithy name of the answer's
-//! `__type`), with the answer's HTTP status in `$metadata`. A specifier the runtime cannot
-//! resolve at all fails the initialization phase as `Runtime.ImportModuleError`.
+//! declares. A refusal whose answer names a shape that model DECLARES is thrown as an instance
+//! of the class that shape names, under the modelled Smithy name of the answer's `__type`; one
+//! naming a shape it declares none for has no class to be thrown as, so it arrives as the
+//! service's own base exception under the code the answer reported — for Amazon SQS, whose
+//! refusals carry the legacy query vocabulary beside the modelled shape, the legacy code of the
+//! answer's own `x-amzn-query-error` header. Either way the answer's HTTP status is in
+//! `$metadata`. A specifier the runtime cannot resolve at all fails the initialization phase as
+//! `Runtime.ImportModuleError`.
 //!
 //! The rows differ along what the rule generalises over: which operation is called, whether
-//! the service serves or refuses it, which error shape the refusal names, which package of
-//! the SDK is imported, and which form an unresolvable specifier takes. No row states an
-//! error code or a status of its own: for every refusal the handler's report is compared with
-//! what the SAME request answers on the wire, so the names a JS consumer sees are the
-//! emulated service's own.
+//! the service serves or refuses it, which error shape the refusal names, whether the service's
+//! model declares a class for it, which package of the SDK is imported, and which form an
+//! unresolvable specifier takes. No row states an error code or a status of its own: for every
+//! refusal the handler's report is compared with what the SAME request answers on the wire, so
+//! the names a JS consumer sees are the emulated service's own.
 
 use std::io::Write as _;
 use std::sync::Arc;
@@ -85,6 +89,18 @@ async fn aws_json(
     target: &str,
     body: &Value,
 ) -> (u16, Value) {
+    let (status, _headers, parsed) = aws_json_answer(router, service, target, body).await;
+    (status, parsed)
+}
+
+/// The same call, with the answer's HEADERS as well: a query-compatible service names the
+/// legacy error code of a refusal in one of them.
+async fn aws_json_answer(
+    router: &MultiServiceRouter,
+    service: &str,
+    target: &str,
+    body: &Value,
+) -> (u16, http::HeaderMap, Value) {
     let request = http::Request::builder()
         .method("POST")
         .uri("/")
@@ -101,7 +117,7 @@ async fn aws_json(
     } else {
         serde_json::from_slice(&body).unwrap_or(Value::Null)
     };
-    (parts.status.as_u16(), parsed)
+    (parts.status.as_u16(), parts.headers, parsed)
 }
 
 /// One Amazon SQS call that must answer 200.
@@ -296,6 +312,11 @@ struct Probe {
     operation: &'static str,
     /// Whether the service must refuse it.
     refused: bool,
+    /// Whether the shape the refusal names is one Amazon SQS's own model DECLARES — so the
+    /// package exports a class for it and a v3 client throws that class — or one it declares
+    /// none for, which a client has only the base exception for. `None` for a row the service
+    /// SERVES, which names no error shape at all.
+    modelled: Option<bool>,
 }
 
 /// The probes, one per thing the rule generalises over: a read refused for a queue that is
@@ -307,39 +328,52 @@ fn probes() -> Vec<Probe> {
             case: "GetQueueUrl on a name no queue has",
             operation: "GetQueueUrl",
             refused: true,
+            // `QueueDoesNotExist` is one of `GetQueueUrl`'s own errors
+            // (`smithy_query(query="operation", operation="GetQueueUrl")`).
+            modelled: Some(true),
         },
         Probe {
             case: "ReceiveMessage on a URL no queue has",
             operation: "ReceiveMessage",
             refused: true,
+            modelled: Some(true),
         },
         Probe {
             case: "GetQueueAttributes on a URL no queue has",
             operation: "GetQueueAttributes",
             refused: true,
+            modelled: Some(true),
         },
         Probe {
             // `DelaySeconds` is `@range(min: 0, max: 900)`
             // (`smithy_query(query="operation", operation="SendMessage")`), so 901 is a value
-            // the service refuses whatever queue it names.
+            // the service refuses whatever queue it names. The refusal it answers names no
+            // shape that model declares — `SendMessage`'s errors are `InvalidAddress`,
+            // `InvalidMessageContents`, `InvalidSecurity`, the `Kms*` family,
+            // `QueueDoesNotExist`, `RequestThrottled` and `UnsupportedOperation`, and none of
+            // them is it — so a v3 client has no class for it.
             case: "SendMessage with a DelaySeconds past the range the model allows",
             operation: "SendMessage",
             refused: true,
+            modelled: Some(false),
         },
         Probe {
             case: "GetQueueUrl on the queue's own name",
             operation: "GetQueueUrl",
             refused: false,
+            modelled: None,
         },
         Probe {
             case: "SendMessage to the queue",
             operation: "SendMessage",
             refused: false,
+            modelled: None,
         },
         Probe {
             case: "GetQueueAttributes on the queue",
             operation: "GetQueueAttributes",
             refused: false,
+            modelled: None,
         },
     ]
 }
@@ -373,16 +407,17 @@ fn input(case: &str, queue_url: &str, queue_name: &str) -> Value {
 }
 
 /// The error shape and status the SAME request answers with on the wire, which is what the
-/// handler's report is compared against: the shape of the answer's `__type` (`<namespace>#<shape>`),
+/// handler's report is compared against: the shape of the answer's `__type`
+/// (`<namespace>#<shape>`), the LEGACY code it names in `x-amzn-query-error` (`<code>;<fault>`),
 /// its message, and the HTTP status.
 async fn refusal_on_the_wire(
     router: &MultiServiceRouter,
     case: &str,
     operation: &str,
     body: &Value,
-) -> (String, String, u16) {
-    let (status, answered) =
-        aws_json(router, "sqs", &format!("AmazonSQS.{operation}"), body).await;
+) -> (String, String, String, u16) {
+    let (status, headers, answered) =
+        aws_json_answer(router, "sqs", &format!("AmazonSQS.{operation}"), body).await;
     assert!(
         status >= 400,
         "case {case:?}: this probe is a refusal, so the same request must be refused on the \
@@ -396,12 +431,21 @@ async fn refusal_on_the_wire(
         .next_back()
         .unwrap_or_default()
         .to_string();
+    let legacy = headers
+        .get("x-amzn-query-error")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .split(';')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_string();
     let message = answered["message"]
         .as_str()
         .or_else(|| answered["Message"].as_str())
         .unwrap_or_default()
         .to_string();
-    (shape, message, status)
+    (shape, legacy, message, status)
 }
 
 /// The bundled client, imported by name from an ES module, calls the service and reports its
@@ -488,19 +532,32 @@ async fn an_es_module_handler_imports_the_bundled_sdk_and_reads_the_services_own
             continue;
         }
         let body = input(case, &queue_url, queue_name);
-        let (shape, message, status) =
+        let (shape, legacy, message, status) =
             refusal_on_the_wire(&router, case, probe.operation, &body).await;
+        // WHICH vocabulary a JS consumer reads the refusal under: the modelled shape when the
+        // service's model declares a class for it, and otherwise — having no class to throw —
+        // the legacy code the answer's own header carried, on the package's base exception.
+        let (expected_name, expected_class) = if probe.modelled == Some(true) {
+            (shape.clone(), shape.clone())
+        } else {
+            assert!(
+                !legacy.is_empty(),
+                "case {case:?}: this service answers the legacy code of every refusal in \
+                 x-amzn-query-error, got none beside the shape {shape:?}"
+            );
+            (legacy.clone(), "SQSServiceException".to_string())
+        };
         assert_eq!(
             reported["name"],
-            json!(shape),
-            "case {case:?}: expected the modelled shape name the answer carries ({shape}), got \
-             {reported}"
+            json!(expected_name),
+            "case {case:?}: expected the code a v3 consumer reports for the answer's shape \
+             ({shape}) to be {expected_name}, got {reported}"
         );
         assert_eq!(
             reported["ctor"],
-            json!(shape),
-            "case {case:?}: expected the refusal to be an instance of the class that shape \
-             names, got {reported}"
+            json!(expected_class),
+            "case {case:?}: expected the refusal to be an instance of {expected_class}, got \
+             {reported}"
         );
         assert_eq!(
             reported["message"],

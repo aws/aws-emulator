@@ -38,8 +38,12 @@
 //! * A refusal is thrown as an instance of the error class the service's own model names for
 //!   it, with the `$metadata` the answer carried — the shape a v3 client throws — so a
 //!   handler that catches one by its class or by its name reads the emulated service's own
-//!   answer. The MEMBERS that error shape declares stand on the thrown error beside its
-//!   message, because an error shape is a structure like any other: a handler reads
+//!   answer. A refusal naming a shape that model declares NO class for is thrown as the
+//!   service's own base exception, under the code the answer reported; for a service whose
+//!   refusals carry the legacy query vocabulary beside the modelled shape, that code is the
+//!   legacy one its answer's own header named, which is the vocabulary a consumer of such a
+//!   service matches on. The MEMBERS that error shape declares stand on the thrown error
+//!   beside its message, because an error shape is a structure like any other: a handler reads
 //!   `error.CancellationReasons`, or whichever members its model gives that class, the way it
 //!   reads a command's own output.
 //! * The names a package exports are the ones the SDK's own package for that service
@@ -349,6 +353,22 @@ function statusClass(named) {
     return held === undefined ? named : held;
 }
 
+// The shape one of a refusal's carriers names: an error shape travels as `<shape>` or as
+// `<namespace>#<shape>`, and the name a client reports is the shape's own. A carrier the
+// answer did not fill names nothing.
+function shapeNamed(carried) {
+    return carried === undefined || carried === null
+        ? ''
+        : String(carried).split('#').pop().split(':')[0].trim();
+}
+
+// Whether this package has a CLASS for `name`: the error shapes the called service's own model
+// declares are the classes the SDK's package for it exports ([`exports`]), and a refusal naming
+// one of them is the one a v3 client throws a modelled class for.
+function declaresError(name) {
+    return name !== '' && ERRORS.indexOf(name) >= 0;
+}
+
 // The error a v3 client throws for a service's refusal: an instance of the class the error
 // shape names, its message, and the metadata of the answer that carried them.
 function serviceError(answered) {
@@ -358,32 +378,49 @@ function serviceError(answered) {
     } catch (error) {
         document = {};
     }
-    // A v3 client reports the MODELED name — the error shape the answer's own document names
-    // in `__type` — and falls back to the error type of the response's header for an error
-    // the document names none for, which is what an unmodeled refusal is. The legacy query
-    // code a query-compatible service answers beside the shape is NOT what this client
-    // reports: its error classes are the model's shapes, which is what
-    // `instanceof QueueDoesNotExist` answers for.
-    var code = document.__type === undefined || document.__type === null
-        ? (answered.errorType === null || answered.errorType === undefined
-            ? '__SERVICE_EXCEPTION__'
-            : answered.errorType)
-        : document.__type;
-    // An error shape travels as `<shape>` or `<namespace>#<shape>`; the name a client
-    // reports is the shape's own.
-    var named = String(code).split('#').pop().split(':')[0];
+    // WHICH error the refusal is: the shape the answer's own document names in `__type`, else
+    // the one the answer's error-type header named, else — for an answer carrying no document
+    // at all — the class its status stands for.
+    var named = shapeNamed(document.__type);
+    if (named === '') {
+        named = shapeNamed(answered.errorType);
+    }
+    var shape = statusClass(named);
+    // A refusal of a QUERY-COMPATIBLE service carries TWO error vocabularies: the modern
+    // Smithy shape in the document and the LEGACY code in the answer's own header. This
+    // client's error classes are the called model's shapes, so a refusal naming one of them is
+    // thrown as that class under that name — which is what `instanceof QueueDoesNotExist`
+    // answers for. A refusal naming a shape the model declares NO class for has none to throw:
+    // such a refusal is the base exception, under the legacy code the header carried, which is
+    // the vocabulary a consumer of a query-compatible service matches on.
+    var legacy = typeof answered.queryErrorCode === 'string' ? answered.queryErrorCode.trim() : '';
     var message = document.message === undefined
         ? (document.Message === undefined ? '' : document.Message)
         : document.message;
-    var Thrown = errorClass(statusClass(named));
-    var error = new Thrown({
+    var options = {
         message: message,
         $metadata: {
             httpStatusCode: answered.status,
             requestId: answered.requestId === undefined ? undefined : answered.requestId
         },
         $fault: answered.status >= 500 ? 'server' : 'client'
-    });
+    };
+    var error;
+    if (declaresError(shape)) {
+        // The class the shape names, which carries that shape as its own name — so a handler
+        // reads one name off the error and off its class.
+        error = new (errorClass(shape))(options);
+    } else {
+        // No class of this package names this refusal, so the base exception carries the code
+        // the answer REPORTED: the legacy one where the answer carried it, else the shape its
+        // own document named. An answer naming neither leaves the base exception's own name.
+        error = new ServiceException(options);
+        if (legacy !== '') {
+            error.name = legacy;
+        } else if (shape !== '') {
+            error.name = shape;
+        }
+    }
     // The MEMBERS the refusal's own error shape declares stand on the error a v3 client throws:
     // an error shape is a structure like any other, so a handler reads
     // `error.CancellationReasons` — or whichever members its model gives that class — the way it
