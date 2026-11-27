@@ -241,16 +241,17 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         // A `BlockToken` is what NAMES the block to read, and the request already carries
         // the `SnapshotId` and `BlockIndex` the token was minted for, so the token is
-        // resolved against the stored block at that index: a token this service never
-        // minted, one minted for another block, and one whose block was superseded or
-        // released all alike fail to name a block, and all are the one refusal — an
-        // invalid block token. There is no side table of live tokens to keep in step, and
-        // no second refusal for "the index holds nothing": without a token that names it,
-        // a block index is not something the caller can be told about.
-        let resolved = snapshot
-            .blocks
-            .get(&input.block_index)
-            .filter(|entry| entry.block_token == input.block_token);
+        // resolved against the stored block at that index AND against the instant the
+        // service reported it expires at (`ExpiryTime`, "The time when the `BlockToken`
+        // expires", which every listing of this snapshot reports off the same record):
+        // a token this service never minted, one minted for another block, one whose
+        // block was superseded or released, and one presented at or after its expiry all
+        // alike fail to name a block ([`crate::state::Snapshot::resolve_block_token`]),
+        // and all are the one refusal — an invalid block token. There is no side table of
+        // live tokens to keep in step, and no second refusal for "the index holds
+        // nothing": without a token that names it, a block index is not something the
+        // caller can be told about.
+        let resolved = snapshot.resolve_block_token(input.block_index, &input.block_token, now);
         let Some(entry) = resolved else {
             return Err(validation(
                 "INVALID_BLOCK_TOKEN",

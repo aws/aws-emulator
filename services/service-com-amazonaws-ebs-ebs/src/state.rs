@@ -450,6 +450,41 @@ impl Snapshot {
         self.expiry_time = expiry_from_timeout(now, self.timeout_minutes);
     }
 
+    /// Whether a `BlockToken` this snapshot hands out still resolves at `now`.
+    ///
+    /// `ListSnapshotBlocksResponse$ExpiryTime` is "The time when the `BlockToken` expires"
+    /// (the same member and the same sentence on `ListChangedBlocksResponse`), and the
+    /// instant both listings report for this snapshot is [`Self::expiry_time`] — so that
+    /// instant is when the tokens stop being valid, and a token presented at or after it
+    /// names no block any more.
+    fn block_tokens_valid_at(&self, now: SystemTime) -> bool {
+        now < self.expiry_time
+    }
+
+    /// The block `block_token` names at `block_index` of this snapshot, as of `now`, or
+    /// `None` when the token names no block.
+    ///
+    /// A token names a block only while it is the token stored on the entry at the index
+    /// the request carries AND the instant it expires at has not arrived
+    /// ([`Self::block_tokens_valid_at`]): a token this service never minted, one minted
+    /// for another block, one whose block was superseded or released, and one presented
+    /// past its expiry all alike resolve nothing. Expiry is checked HERE, beside the
+    /// comparison with the stored entry, so every reader of a token applies the whole
+    /// rule rather than half of it.
+    pub fn resolve_block_token(
+        &self,
+        block_index: i32,
+        block_token: &str,
+        now: SystemTime,
+    ) -> Option<&BlockEntry> {
+        if !self.block_tokens_valid_at(now) {
+            return None;
+        }
+        self.blocks
+            .get(&block_index)
+            .filter(|entry| entry.block_token == block_token)
+    }
+
     /// Whether this snapshot holds NO block, at any index: there is no content in it to
     /// read or to compare.
     ///
