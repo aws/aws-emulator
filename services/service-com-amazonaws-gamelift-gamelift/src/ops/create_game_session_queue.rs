@@ -86,6 +86,11 @@
 //!   allowed to place new game sessions. Locations are specified in the form of Amazon Web
 //!   Services Region codes, such as us-west-2. If this parameter is not set, game sessions
 //!   can be placed in any queue location.
+//! * `LogConfiguration` (GameSessionQueueLogConfiguration) — An optional configuration that
+//!   delivers game session placement insight logs to one or more destinations of your choice.
+//!   Use these logs to diagnose why a game session placement is FULFILLED, CANCELLED,
+//!   TIMED_OUT, or FAILED, which locations were evaluated, and the latency and cost factors
+//!   that influenced each decision.
 //! * `Name` (GameSessionQueueName, len 1..128, pattern ^[a-zA-Z0-9-]+$) **required** — A
 //!   descriptive label that is associated with game session queue. Queue names must be unique
 //!   within each Region.
@@ -232,6 +237,19 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         ) {
             return Err(invalid(message));
         }
+        // The log configuration the request supplies is the whole set of destinations the
+        // new queue delivers its placement insight logs to, and is held to the same rules
+        // the set an update composes is.
+        let log_delivery_destinations = input
+            .log_configuration
+            .as_ref()
+            .map(|configuration| configuration.delivery_destinations.clone())
+            .unwrap_or_default();
+        if let Some(message) =
+            crate::state::log_delivery_destination_refusal(&log_delivery_destinations)
+        {
+            return Err(invalid(message));
+        }
 
         // "If you don't specify a request timeout, the queue uses a default value."
         let timeout_in_seconds = input
@@ -286,6 +304,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             priority_configuration: input.priority_configuration.clone(),
             custom_event_data: input.custom_event_data.clone(),
             notification_target: input.notification_target.clone(),
+            log_delivery_destinations,
             tags: input.tags.clone().unwrap_or_default(),
             creation_time: now,
             region,

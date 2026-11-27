@@ -527,6 +527,19 @@ pub struct PriorityConfiguration {
     pub location_order: Option<Vec<String>>,
 }
 
+#[smithy_macros::smithy(shape = "com.amazonaws.gamelift#GameSessionQueueLogConfiguration")]
+#[derive(Debug, Clone, Default)]
+pub struct GameSessionQueueLogConfiguration {
+    pub delivery_destinations: Vec<LogDeliveryDestination>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.gamelift#LogDeliveryDestination")]
+#[derive(Debug, Clone, Default)]
+pub struct LogDeliveryDestination {
+    pub log_destination: String,
+    pub destination_arn: Option<String>,
+}
+
 #[smithy_macros::smithy(shape = "com.amazonaws.gamelift#GameSessionQueue")]
 #[derive(Debug, Clone, Default)]
 pub struct GameSessionQueue {
@@ -539,6 +552,7 @@ pub struct GameSessionQueue {
     pub priority_configuration: Option<PriorityConfiguration>,
     pub custom_event_data: Option<String>,
     pub notification_target: Option<String>,
+    pub log_configuration: Option<GameSessionQueueLogConfiguration>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.gamelift#LocationModel")]
@@ -1042,6 +1056,10 @@ pub const LOCATION_FILTER_VALUES: &[&str] = &["AWS", "CUSTOM"];
 
 /// The values `LocationUpdateStatus` accepts on the wire.
 pub const LOCATION_UPDATE_STATUS_VALUES: &[&str] = &["PENDING_UPDATE"];
+
+
+/// The values `LogDeliveryDestinationType` accepts on the wire.
+pub const LOG_DELIVERY_DESTINATION_TYPE_VALUES: &[&str] = &["CLOUDWATCH", "FIREHOSE", "S3"];
 
 
 /// The values `LogDestination` accepts on the wire.

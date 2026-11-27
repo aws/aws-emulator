@@ -22,6 +22,8 @@ pub struct UpdateGameSessionQueueInput {
     pub priority_configuration: Option<PriorityConfiguration>,
     pub custom_event_data: Option<String>,
     pub notification_target: Option<String>,
+    pub add_log_delivery_destinations: Option<Vec<LogDeliveryDestination>>,
+    pub remove_log_delivery_destinations: Option<Vec<LogDeliveryDestination>>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.gamelift#UpdateGameSessionQueueOutput")]

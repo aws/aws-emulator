@@ -86,7 +86,7 @@ contents — read that shape in the model above when you need its own members.
 
 ## CreateGameSessionQueue
 
-- **Input:** `Name` (string, len 1..128, pattern ^[a-zA-Z0-9-]+$, required), `TimeoutInSeconds` (integer, range 0..), `PlayerLatencyPolicies` (list<PlayerLatencyPolicy>), `Destinations` (list<GameSessionQueueDestination>), `FilterConfiguration` (FilterConfiguration), `PriorityConfiguration` (PriorityConfiguration), `CustomEventData` (string, len 0..256, pattern ^[\s\S]*$), `NotificationTarget` (string, len 0..300, pattern ^[a-zA-Z0-9:_-]*(\.fifo)?$), `Tags` (list<Tag>, len 0..200)
+- **Input:** `Name` (string, len 1..128, pattern ^[a-zA-Z0-9-]+$, required), `TimeoutInSeconds` (integer, range 0..), `PlayerLatencyPolicies` (list<PlayerLatencyPolicy>), `Destinations` (list<GameSessionQueueDestination>), `FilterConfiguration` (FilterConfiguration), `PriorityConfiguration` (PriorityConfiguration), `CustomEventData` (string, len 0..256, pattern ^[\s\S]*$), `NotificationTarget` (string, len 0..300, pattern ^[a-zA-Z0-9:_-]*(\.fifo)?$), `Tags` (list<Tag>, len 0..200), `LogConfiguration` (GameSessionQueueLogConfiguration)
 - **Output:** `GameSessionQueue` (GameSessionQueue)
 - **Errors:** `InternalServiceException (HTTP 500)`, `InvalidRequestException (HTTP 400)`, `LimitExceededException (HTTP 400)`, `NotFoundException (HTTP 400)`, `TaggingFailedException (HTTP 400)`, `UnauthorizedException (HTTP 400)`
 
@@ -743,7 +743,7 @@ contents — read that shape in the model above when you need its own members.
 
 ## UpdateGameSessionQueue
 
-- **Input:** `Name` (string, len 1..256, pattern ^([a-zA-Z0-9-]+|arn:.*:gamesessionqueue\/[a-zA-Z0-9-]+)$, required), `TimeoutInSeconds` (integer, range 0..), `PlayerLatencyPolicies` (list<PlayerLatencyPolicy>), `Destinations` (list<GameSessionQueueDestination>), `FilterConfiguration` (FilterConfiguration), `PriorityConfiguration` (PriorityConfiguration), `CustomEventData` (string, len 0..256, pattern ^[\s\S]*$), `NotificationTarget` (string, len 0..300, pattern ^[a-zA-Z0-9:_-]*(\.fifo)?$)
+- **Input:** `Name` (string, len 1..256, pattern ^([a-zA-Z0-9-]+|arn:.*:gamesessionqueue\/[a-zA-Z0-9-]+)$, required), `TimeoutInSeconds` (integer, range 0..), `PlayerLatencyPolicies` (list<PlayerLatencyPolicy>), `Destinations` (list<GameSessionQueueDestination>), `FilterConfiguration` (FilterConfiguration), `PriorityConfiguration` (PriorityConfiguration), `CustomEventData` (string, len 0..256, pattern ^[\s\S]*$), `NotificationTarget` (string, len 0..300, pattern ^[a-zA-Z0-9:_-]*(\.fifo)?$), `AddLogDeliveryDestinations` (list<LogDeliveryDestination>, len 1..3), `RemoveLogDeliveryDestinations` (list<LogDeliveryDestination>, len 1..3)
 - **Output:** `GameSessionQueue` (GameSessionQueue)
 - **Errors:** `InternalServiceException (HTTP 500)`, `InvalidRequestException (HTTP 400)`, `NotFoundException (HTTP 400)`, `UnauthorizedException (HTTP 400)`
 

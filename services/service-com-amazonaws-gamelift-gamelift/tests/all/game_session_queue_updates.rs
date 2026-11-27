@@ -12,7 +12,8 @@
 use serde_json::{json, Value};
 
 use super::game_session_queues::{
-    describe_queues, destinations, latency_policies, queue_arn, MAX_TIMEOUT, MIN_TIMEOUT,
+    describe_queues, destinations, every_log_destination, latency_policies, log_destination,
+    queue_arn, LOG_DESTINATION_TYPES, MAX_LOG_DESTINATIONS, MAX_TIMEOUT, MIN_TIMEOUT,
     PRIORITY_TYPES,
 };
 use super::hosting_loop::GameLift;
@@ -404,6 +405,268 @@ async fn a_missing_queue_is_reported_with_the_identifier_the_request_named() {
             ),
             "case {identifier:?}: the refusal must name the identifier the request supplied, \
              got {status} {message:?}"
+        );
+    }
+}
+
+/// Create a queue named `name` from [`base_request`], delivering its placement insight
+/// logs to `carried`, and answer the record the create reported.
+async fn create_queue_logging_to(gamelift: &GameLift, name: &str, carried: &[Value]) -> Value {
+    let mut request = base_request();
+    request["Name"] = json!(name);
+    if !carried.is_empty() {
+        request["LogConfiguration"] = json!({"DeliveryDestinations": carried});
+    }
+    let created = gamelift.ok("CreateGameSessionQueue", request).await;
+    created["GameSessionQueue"].clone()
+}
+
+/// An update COMPOSES the queue's log configuration: the destinations it adds join the
+/// ones the queue already delivers to, the ones it removes are dropped, and a queue left
+/// delivering nowhere reports no configuration at all.
+///
+/// The rows differ along what the rule generalises over: whether the queue already
+/// delivers anywhere, how many destinations the request adds or removes, which modelled
+/// destination type each one is, whether the destination names the resource itself, and
+/// whether the request adds, removes, or does both at once.
+#[tokio::test]
+async fn an_update_composes_the_log_configuration_from_what_it_adds_and_removes() {
+    struct Case {
+        label: &'static str,
+        /// The destinations the queue is created delivering to.
+        carried: Value,
+        /// The update, without its `Name`.
+        update: Value,
+        /// The destinations the queue must deliver to afterwards; an empty list is a
+        /// queue that must report no log configuration at all.
+        expected: Value,
+    }
+
+    let cloudwatch = log_destination(LOG_DESTINATION_TYPES[0], None);
+    let bucket = log_destination(LOG_DESTINATION_TYPES[1], Some("placement-logs"));
+    let stream = log_destination(LOG_DESTINATION_TYPES[2], Some("stream/placements"));
+
+    let cases = vec![
+        Case {
+            label: "adding one destination to a queue that delivers nowhere",
+            carried: json!([]),
+            update: json!({"AddLogDeliveryDestinations": [cloudwatch]}),
+            expected: json!([cloudwatch]),
+        },
+        Case {
+            label: "adding every modelled destination type at once",
+            carried: json!([]),
+            update: json!({"AddLogDeliveryDestinations": every_log_destination()}),
+            expected: every_log_destination(),
+        },
+        Case {
+            label: "adding a second destination beside the one carried",
+            carried: json!([cloudwatch]),
+            update: json!({"AddLogDeliveryDestinations": [bucket]}),
+            expected: json!([cloudwatch, bucket]),
+        },
+        Case {
+            label: "adding the destination the queue already delivers to",
+            carried: json!([cloudwatch]),
+            update: json!({"AddLogDeliveryDestinations": [cloudwatch]}),
+            expected: json!([cloudwatch]),
+        },
+        Case {
+            label: "filling the configuration to the bound by adding two",
+            carried: json!([cloudwatch]),
+            update: json!({"AddLogDeliveryDestinations": [bucket, stream]}),
+            expected: json!([cloudwatch, bucket, stream]),
+        },
+        Case {
+            label: "removing the one destination carried, which leaves no configuration",
+            carried: json!([cloudwatch]),
+            update: json!({"RemoveLogDeliveryDestinations": [cloudwatch]}),
+            expected: json!([]),
+        },
+        Case {
+            label: "removing one of the destinations carried",
+            carried: json!([cloudwatch, bucket]),
+            update: json!({"RemoveLogDeliveryDestinations": [cloudwatch]}),
+            expected: json!([bucket]),
+        },
+        Case {
+            label: "removing every destination carried",
+            carried: every_log_destination(),
+            update: json!({"RemoveLogDeliveryDestinations": every_log_destination()}),
+            expected: json!([]),
+        },
+        Case {
+            label: "removing a destination the queue does not deliver to",
+            carried: json!([cloudwatch]),
+            update: json!({"RemoveLogDeliveryDestinations": [stream]}),
+            expected: json!([cloudwatch]),
+        },
+        Case {
+            label: "removing one destination and adding another in one request",
+            carried: json!([cloudwatch]),
+            update: json!({
+                "RemoveLogDeliveryDestinations": [cloudwatch],
+                "AddLogDeliveryDestinations": [stream],
+            }),
+            expected: json!([stream]),
+        },
+        Case {
+            label: "a destination both removed and added, which stays",
+            carried: json!([cloudwatch]),
+            update: json!({
+                "RemoveLogDeliveryDestinations": [cloudwatch],
+                "AddLogDeliveryDestinations": [cloudwatch],
+            }),
+            expected: json!([cloudwatch]),
+        },
+        Case {
+            label: "an update that names neither list, leaving the configuration as stored",
+            carried: json!([bucket]),
+            update: json!({"TimeoutInSeconds": MIN_TIMEOUT}),
+            expected: json!([bucket]),
+        },
+    ];
+
+    let gamelift = GameLift::new();
+    for (index, case) in cases.iter().enumerate() {
+        let label = case.label;
+        let name = format!("log-row-{index}");
+        let carried = case
+            .carried
+            .as_array()
+            .expect("the carried destinations are a JSON list")
+            .clone();
+        let stored = create_queue_logging_to(&gamelift, &name, &carried).await;
+
+        let expected_destinations = case
+            .expected
+            .as_array()
+            .expect("the expected destinations are a JSON list");
+        assert!(
+            expected_destinations.len() <= MAX_LOG_DESTINATIONS,
+            "case {label:?}: the row expects {} destinations, past the bound of \
+             {MAX_LOG_DESTINATIONS}",
+            expected_destinations.len()
+        );
+        let changes = if expected_destinations.is_empty() {
+            json!({"LogConfiguration": null})
+        } else {
+            json!({"LogConfiguration": {"DeliveryDestinations": case.expected.clone()}})
+        };
+        let mut expected = with_changes(&stored, &changes);
+        if let Some(timeout) = case.update["TimeoutInSeconds"].as_i64() {
+            expected["TimeoutInSeconds"] = json!(timeout);
+        }
+
+        let mut request = case.update.clone();
+        request["Name"] = json!(&name);
+        let updated = gamelift.ok("UpdateGameSessionQueue", request.clone()).await;
+        assert_eq!(
+            updated["GameSessionQueue"], expected,
+            "case {label:?}: the update must report the composed configuration, got {}",
+            updated["GameSessionQueue"]
+        );
+
+        // The describe path serves the SAME stored record, so the composition persisted.
+        let described = describe_queues(&gamelift, json!({"Names": [&name]})).await;
+        assert_eq!(
+            described,
+            json!([expected.clone()]),
+            "case {label:?}: the describe must report the composed configuration, got {described}"
+        );
+
+        // Applying the same request again composes the same configuration: adding a
+        // destination the queue already delivers to, and removing one it does not, both
+        // leave the configuration as it is.
+        let repeated = gamelift.ok("UpdateGameSessionQueue", request).await;
+        assert_eq!(
+            repeated["GameSessionQueue"], expected,
+            "case {label:?}: repeating the update must report the same configuration, got {}",
+            repeated["GameSessionQueue"]
+        );
+    }
+}
+
+/// An update whose composed log configuration breaks a documented rule is refused with
+/// the modelled client error, and the queue keeps delivering exactly where it did.
+#[tokio::test]
+async fn an_update_whose_log_configuration_is_refused_changes_nothing() {
+    struct Case {
+        label: &'static str,
+        /// The destinations the queue is created delivering to.
+        carried: Value,
+        /// The update, without its `Name`.
+        update: Value,
+    }
+
+    let cloudwatch = log_destination(LOG_DESTINATION_TYPES[0], None);
+
+    let cases = [
+        Case {
+            label: "one destination past the bound on the configuration",
+            carried: every_log_destination(),
+            update: json!({
+                "AddLogDeliveryDestinations": [
+                    log_destination(LOG_DESTINATION_TYPES[1], Some("one-too-many")),
+                ],
+            }),
+        },
+        Case {
+            label: "adding a destination of the type that must name its resource, naming none",
+            carried: json!([cloudwatch]),
+            update: json!({
+                "AddLogDeliveryDestinations": [log_destination(LOG_DESTINATION_TYPES[2], None)],
+            }),
+        },
+        Case {
+            label: "adding two destinations that deliver to the same resource",
+            carried: json!([]),
+            update: json!({
+                "AddLogDeliveryDestinations": [
+                    log_destination(LOG_DESTINATION_TYPES[0], Some("shared")),
+                    log_destination(LOG_DESTINATION_TYPES[1], Some("shared")),
+                ],
+            }),
+        },
+        Case {
+            label: "adding one past the bound while removing a destination it does not carry",
+            carried: every_log_destination(),
+            update: json!({
+                "RemoveLogDeliveryDestinations": [
+                    log_destination(LOG_DESTINATION_TYPES[1], Some("never-carried")),
+                ],
+                "AddLogDeliveryDestinations": [
+                    log_destination(LOG_DESTINATION_TYPES[1], Some("one-too-many")),
+                ],
+            }),
+        },
+    ];
+
+    let gamelift = GameLift::new();
+    for (index, case) in cases.iter().enumerate() {
+        let label = case.label;
+        let name = format!("refused-log-row-{index}");
+        let carried = case
+            .carried
+            .as_array()
+            .expect("the carried destinations are a JSON list")
+            .clone();
+        let stored = create_queue_logging_to(&gamelift, &name, &carried).await;
+
+        let mut request = case.update.clone();
+        request["Name"] = json!(&name);
+        let (status, code) = gamelift.err("UpdateGameSessionQueue", request).await;
+        assert_eq!(
+            (status, code.as_str()),
+            (400, "InvalidRequestException"),
+            "case {label:?}: the update must be refused, got {status} {code}"
+        );
+
+        let described = describe_queues(&gamelift, json!({"Names": [&name]})).await;
+        assert_eq!(
+            described,
+            json!([stored.clone()]),
+            "case {label:?}: a refused update must leave the queue as it was, got {described}"
         );
     }
 }

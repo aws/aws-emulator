@@ -23,11 +23,12 @@ pub use managed_locations::*;
 use crate::ops::types::{
     Alias, AnywhereConfiguration, Build, CertificateConfiguration, Compute, DesiredPlayerSession,
     FilterConfiguration, FleetAttributes, GameProperty, GameSession, GameSessionPlacement,
-    GameSessionQueue, GameSessionQueueDestination, IpPermission, LocationModel, LocationState,
-    MatchmakingConfiguration, MatchmakingRuleSet, MatchmakingTicket, PlacedPlayerSession, Player,
-    PlayerGatewayConfiguration, PlayerLatency, PlayerLatencyPolicy, PlayerSession,
-    PriorityConfiguration, PriorityConfigurationOverride, ResourceCreationLimitPolicy,
-    RoutingStrategy, RuntimeConfiguration, S3Location, Script, Tag, VpcPeeringAuthorization,
+    GameSessionQueue, GameSessionQueueDestination, GameSessionQueueLogConfiguration, IpPermission,
+    LocationModel, LocationState, LogDeliveryDestination, MatchmakingConfiguration,
+    MatchmakingRuleSet, MatchmakingTicket, PlacedPlayerSession, Player, PlayerGatewayConfiguration,
+    PlayerLatency, PlayerLatencyPolicy, PlayerSession, PriorityConfiguration,
+    PriorityConfigurationOverride, ResourceCreationLimitPolicy, RoutingStrategy,
+    RuntimeConfiguration, S3Location, Script, Tag, VpcPeeringAuthorization,
 };
 
 /// `ComputeType` values the model declares (`smithy_query shape=ComputeType`).
@@ -299,6 +300,16 @@ pub const MAX_QUEUE_DESTINATIONS: usize = MAX_FLEETS_PER_ACCOUNT;
 /// same reason as [`MAX_QUEUE_DESTINATIONS`]: it bounds what one request can make a
 /// stored record occupy.
 pub const MAX_QUEUE_PLAYER_LATENCY_POLICIES: usize = 10;
+
+/// How many log delivery destinations one game session queue's log configuration holds.
+///
+/// `GameSessionQueueLogConfiguration$DeliveryDestinations` carries both the modelled
+/// length `1..3` and the same sentence in its doc: "You can specify up to 3
+/// destinations." A modelled length refuses one oversized LIST before a handler runs,
+/// while `UpdateGameSessionQueue` ADDS destinations to the ones a stored queue already
+/// carries — a total no single list length bounds — so the bound is enforced here as
+/// well.
+pub const MAX_QUEUE_LOG_DELIVERY_DESTINATIONS: usize = 3;
 
 /// The bounds a game session queue's `TimeoutInSeconds` must lie within.
 ///
@@ -1369,6 +1380,12 @@ pub struct GameSessionQueueRecord {
     pub priority_configuration: Option<PriorityConfiguration>,
     pub custom_event_data: Option<String>,
     pub notification_target: Option<String>,
+    /// The destinations that receive the queue's game session placement insight logs,
+    /// held flat rather than as the modelled `GameSessionQueueLogConfiguration`: that
+    /// structure's `DeliveryDestinations` is a required member bounded below at one
+    /// entry, so a queue that delivers to no destination carries no configuration at all,
+    /// and `UpdateGameSessionQueue` adds to and removes from this one sequence.
+    pub log_delivery_destinations: Vec<LogDeliveryDestination>,
     /// The labels assigned to the queue resource. `GameSessionQueue` has no `Tags`
     /// member — tags are read back through `ListTagsForResource` — so they are held on
     /// the record and reported by no projection of it yet.
@@ -1385,6 +1402,11 @@ impl GameSessionQueueRecord {
     /// none, since "a queue can't make placements without at least one destination" is a
     /// property of an empty list, not of an absent one — while the two optional
     /// configuration structures are reported only when the queue carries them.
+    ///
+    /// `LogConfiguration` is reported the same way, and a queue that delivers its
+    /// placement insight logs nowhere reports none:
+    /// `GameSessionQueueLogConfiguration$DeliveryDestinations` is a required member
+    /// bounded below at one entry, so a configuration always names a destination.
     pub fn to_modelled(&self) -> GameSessionQueue {
         GameSessionQueue {
             name: Some(self.name.clone()),
@@ -1396,6 +1418,11 @@ impl GameSessionQueueRecord {
             priority_configuration: self.priority_configuration.clone(),
             custom_event_data: self.custom_event_data.clone(),
             notification_target: self.notification_target.clone(),
+            log_configuration: (!self.log_delivery_destinations.is_empty()).then(|| {
+                GameSessionQueueLogConfiguration {
+                    delivery_destinations: self.log_delivery_destinations.clone(),
+                }
+            }),
         }
     }
 }
@@ -1510,6 +1537,109 @@ fn first_duplicate(entries: Option<&[String]>) -> Option<String> {
         .iter()
         .find(|entry| !seen.insert((*entry).clone()))
         .cloned()
+}
+
+/// The `LogDeliveryDestinationType` whose destination must name the resource it delivers
+/// to: `LogDeliveryDestination$DestinationArn`'s doc — "This value is required for
+/// `FIREHOSE` destinations. For `CLOUDWATCH` and `S3`, you can omit this value."
+pub const LOG_DELIVERY_DESTINATION_TYPE_FIREHOSE: &str = "FIREHOSE";
+
+/// The refusal the log delivery destinations a game session queue would carry earn, or
+/// `None` when every one of them is a destination the service accepts.
+///
+/// `CreateGameSessionQueue` configures the whole set at once and `UpdateGameSessionQueue`
+/// composes it from the set the stored queue already carries
+/// ([`applied_log_delivery_destinations`]), so the rules over it — and the sentence each
+/// refusal answers with — live here rather than once per operation: `destinations` is in
+/// both cases the set the queue would deliver to if the request were served.
+pub fn log_delivery_destination_refusal(destinations: &[LogDeliveryDestination]) -> Option<String> {
+    // "You can specify up to 3 destinations." The modelled length bounds ONE list at
+    // three entries; this bounds the set an update composes from the destinations a
+    // stored queue carries and the ones the request adds, which no list length can.
+    if destinations.len() > MAX_QUEUE_LOG_DELIVERY_DESTINATIONS {
+        return Some(format!(
+            "LogConfiguration.DeliveryDestinations lists {} destinations; a queue may deliver \
+             logs to at most {MAX_QUEUE_LOG_DELIVERY_DESTINATIONS} destinations.",
+            destinations.len()
+        ));
+    }
+
+    // `LogDeliveryDestination$DestinationArn`: "This value is required for FIREHOSE
+    // destinations." The `LogDeliveryDestinationType` enum itself is refused by the
+    // boundary walk before a handler runs; which type requires the ARN is the service's
+    // own rule, enforced here.
+    if destinations.iter().any(|destination| {
+        destination.log_destination == LOG_DELIVERY_DESTINATION_TYPE_FIREHOSE
+            && destination.destination_arn.is_none()
+    }) {
+        return Some(format!(
+            "LogConfiguration.DeliveryDestinations must contain a DestinationArn for a \
+             {LOG_DELIVERY_DESTINATION_TYPE_FIREHOSE} destination."
+        ));
+    }
+
+    // `GameSessionQueueLogConfiguration$DeliveryDestinations`: "Each destination must have
+    // a unique ARN."
+    let arns: Vec<String> = destinations
+        .iter()
+        .filter_map(|destination| destination.destination_arn.clone())
+        .collect();
+    if let Some(duplicate) = first_duplicate(Some(&arns)) {
+        return Some(format!(
+            "LogConfiguration.DeliveryDestinations lists each destination ARN once; {duplicate} \
+             is listed more than once."
+        ));
+    }
+    None
+}
+
+/// Which destination of a queue's log configuration a request names: the `DestinationArn`
+/// it carries, since "each destination must have a unique ARN", and otherwise the type of
+/// resource the logs are delivered to — "for `CLOUDWATCH` and `S3`, you can omit this
+/// value", and a configuration that names no ARN names one resource of that type.
+fn log_delivery_destination_identity(destination: &LogDeliveryDestination) -> (&str, &str) {
+    match destination.destination_arn.as_deref() {
+        Some(arn) => ("", arn),
+        None => (destination.log_destination.as_str(), ""),
+    }
+}
+
+/// The log delivery destinations a game session queue carries after an update that adds
+/// destinations, removes them, or both.
+///
+/// `UpdateGameSessionQueue$AddLogDeliveryDestinations` and `$RemoveLogDeliveryDestinations`
+/// name destinations to add to and to remove from "the queue's log configuration", so the
+/// configuration is COMPOSED rather than replaced: the destinations the request removes
+/// are dropped, the ones it adds that the queue does not already carry are appended in
+/// the order the request lists them, and the rest keeps the order and the form the queue
+/// was configured with. A destination named in both lists stays in the configuration,
+/// since a request that adds it asks for a configuration that carries it.
+pub fn applied_log_delivery_destinations(
+    carried: &[LogDeliveryDestination],
+    add: Option<&[LogDeliveryDestination]>,
+    remove: Option<&[LogDeliveryDestination]>,
+) -> Vec<LogDeliveryDestination> {
+    let removed: HashSet<(&str, &str)> = remove
+        .unwrap_or_default()
+        .iter()
+        .map(log_delivery_destination_identity)
+        .collect();
+    let mut composed: Vec<LogDeliveryDestination> = carried
+        .iter()
+        .filter(|destination| !removed.contains(&log_delivery_destination_identity(destination)))
+        .cloned()
+        .collect();
+    for destination in add.unwrap_or_default() {
+        let identity = log_delivery_destination_identity(destination);
+        if composed
+            .iter()
+            .any(|held| log_delivery_destination_identity(held) == identity)
+        {
+            continue;
+        }
+        composed.push(destination.clone());
+    }
+    composed
 }
 
 /// What the service answers when no alias is stored under the `AliasIdOrArn` an operation

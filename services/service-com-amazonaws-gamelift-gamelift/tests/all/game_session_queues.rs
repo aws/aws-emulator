@@ -25,6 +25,47 @@ pub(crate) const MAX_TIMEOUT: i64 = 600;
 /// example.
 pub(crate) const PRIORITY_TYPES: [&str; 4] = ["LATENCY", "COST", "DESTINATION", "LOCATION"];
 
+/// Every `LogDeliveryDestinationType` the model declares (`smithy_query
+/// shape=LogDeliveryDestinationType`), so the log-destination rows below are drawn from
+/// the modelled catalog rather than from one example. `FIREHOSE` is the one that must
+/// name the resource it delivers to
+/// (`smithy_query doc shape=LogDeliveryDestination member=DestinationArn`: "This value is
+/// required for FIREHOSE destinations. For CLOUDWATCH and S3, you can omit this value").
+pub(crate) const LOG_DESTINATION_TYPES: [&str; 3] = ["CLOUDWATCH", "S3", "FIREHOSE"];
+
+/// How many destinations one queue's log configuration may deliver to, read from the
+/// constant the handlers enforce — the modelled length of
+/// `GameSessionQueueLogConfiguration$DeliveryDestinations` and its doc: "You can specify
+/// up to 3 destinations."
+pub(crate) const MAX_LOG_DESTINATIONS: usize =
+    service_com_amazonaws_gamelift_gamelift::state::MAX_QUEUE_LOG_DELIVERY_DESTINATIONS;
+
+/// A log delivery destination of type `log_destination`, delivering to the resource
+/// `arn_suffix` names when one is given and to a resource of its own type when none is.
+pub(crate) fn log_destination(log_destination: &str, arn_suffix: Option<&str>) -> Value {
+    match arn_suffix {
+        Some(suffix) => json!({
+            "LogDestination": log_destination,
+            "DestinationArn": format!("arn:aws:logs:us-west-2:123456789012:{suffix}"),
+        }),
+        None => json!({"LogDestination": log_destination}),
+    }
+}
+
+/// One destination of every modelled type ([`LOG_DESTINATION_TYPES`]), which is also the
+/// most destinations one queue's log configuration may hold
+/// ([`MAX_LOG_DESTINATIONS`]) — the `FIREHOSE` one naming its delivery stream, as that
+/// type requires, and the other two leaving the resource to the service.
+pub(crate) fn every_log_destination() -> Value {
+    json!(LOG_DESTINATION_TYPES
+        .iter()
+        .map(|destination_type| {
+            let arn_suffix = (*destination_type == "FIREHOSE").then_some("stream/placements");
+            log_destination(destination_type, arn_suffix)
+        })
+        .collect::<Vec<_>>())
+}
+
 /// The ARN a queue named `name` is assigned:
 /// `arn:aws:gamelift:<region>:<account>:gamesessionqueue/<queue name>`.
 pub(crate) fn queue_arn(name: &str) -> String {
@@ -228,8 +269,55 @@ async fn a_created_queue_is_reported_as_stored_by_create_and_by_describe() {
                 "CustomEventData": "queue-event-data",
             }),
         },
+        Case {
+            label: "one log destination the service resolves the resource for",
+            request: json!({
+                "LogConfiguration": {
+                    "DeliveryDestinations": [log_destination(LOG_DESTINATION_TYPES[0], None)],
+                },
+            }),
+            expected: json!({
+                "TimeoutInSeconds": MAX_TIMEOUT,
+                "Destinations": [],
+                "PlayerLatencyPolicies": [],
+                "LogConfiguration": {
+                    "DeliveryDestinations": [log_destination(LOG_DESTINATION_TYPES[0], None)],
+                },
+            }),
+        },
+        Case {
+            label: "one log destination naming the resource it delivers to",
+            request: json!({
+                "LogConfiguration": {
+                    "DeliveryDestinations": [
+                        log_destination(LOG_DESTINATION_TYPES[1], Some("one-bucket")),
+                    ],
+                },
+            }),
+            expected: json!({
+                "TimeoutInSeconds": MAX_TIMEOUT,
+                "Destinations": [],
+                "PlayerLatencyPolicies": [],
+                "LogConfiguration": {
+                    "DeliveryDestinations": [
+                        log_destination(LOG_DESTINATION_TYPES[1], Some("one-bucket")),
+                    ],
+                },
+            }),
+        },
+        Case {
+            label: "every modelled log destination type, at the bound on the configuration",
+            request: json!({
+                "LogConfiguration": {"DeliveryDestinations": every_log_destination()},
+            }),
+            expected: json!({
+                "TimeoutInSeconds": MAX_TIMEOUT,
+                "Destinations": [],
+                "PlayerLatencyPolicies": [],
+                "LogConfiguration": {"DeliveryDestinations": every_log_destination()},
+            }),
+        },
     ];
-
     let gamelift = GameLift::new();
     for (index, case) in cases.iter().enumerate() {
         let label = case.label;
@@ -347,6 +435,29 @@ async fn a_create_that_breaks_a_documented_rule_is_refused() {
             request: json!({
                 "Name": "too-many-policies",
                 "PlayerLatencyPolicies": latency_policies(MAX_LATENCY_POLICIES + 1),
+            }),
+            code: "InvalidRequestException",
+        },
+        Case {
+            label: "a log destination of the type that must name its resource, naming none",
+            request: json!({
+                "Name": "firehose-without-arn",
+                "LogConfiguration": {
+                    "DeliveryDestinations": [log_destination("FIREHOSE", None)],
+                },
+            }),
+            code: "InvalidRequestException",
+        },
+        Case {
+            label: "two log destinations delivering to the same resource",
+            request: json!({
+                "Name": "repeated-destination-arn",
+                "LogConfiguration": {
+                    "DeliveryDestinations": [
+                        log_destination(LOG_DESTINATION_TYPES[0], Some("shared")),
+                        log_destination(LOG_DESTINATION_TYPES[1], Some("shared")),
+                    ],
+                },
             }),
             code: "InvalidRequestException",
         },

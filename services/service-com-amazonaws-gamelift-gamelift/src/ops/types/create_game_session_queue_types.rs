@@ -23,6 +23,7 @@ pub struct CreateGameSessionQueueInput {
     pub custom_event_data: Option<String>,
     pub notification_target: Option<String>,
     pub tags: Option<Vec<Tag>>,
+    pub log_configuration: Option<GameSessionQueueLogConfiguration>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.gamelift#CreateGameSessionQueueOutput")]

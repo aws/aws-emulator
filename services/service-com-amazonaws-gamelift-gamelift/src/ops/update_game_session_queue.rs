@@ -52,6 +52,8 @@
 //!
 //! ## Input
 //!
+//! * `AddLogDeliveryDestinations` (LogDeliveryDestinationList, len 1..3) — Log delivery
+//!   destinations to add to the queue's log configuration (LogConfiguration).
 //! * `CustomEventData` (QueueCustomEventData, len 0..256, pattern ^[\s\S]*$) — Information to
 //!   be added to all events that are related to this game session queue.
 //! * `Destinations` (GameSessionQueueDestinationList) — A list of fleets and/or fleet aliases
@@ -80,6 +82,8 @@
 //!   replaces the FleetIQ default prioritization process. Priority types that are not
 //!   explicitly named will be automatically applied at the end of the prioritization process.
 //!   To remove an existing priority configuration, pass in an empty set.
+//! * `RemoveLogDeliveryDestinations` (LogDeliveryDestinationList, len 1..3) — Log delivery
+//!   destinations to remove from the queue's log configuration (LogConfiguration).
 //! * `TimeoutInSeconds` (WholeNumber, range 0..) — The maximum time, in seconds, that a new
 //!   game session placement request remains in the queue. When a request exceeds this time,
 //!   the game session placement changes to a TIMED_OUT status. The minimum value is 10 and
@@ -196,6 +200,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         ) {
             return Err(invalid(message));
         }
+        // The destinations the request ADDS are themselves a set of log delivery
+        // destinations the queue would carry, so they are held to the queue's
+        // log-destination rules as supplied — before any state is locked — and the set
+        // they compose with the stored configuration is held to them again below.
+        if let Some(added) = input.add_log_delivery_destinations.as_deref() {
+            if let Some(message) = crate::state::log_delivery_destination_refusal(added) {
+                return Err(invalid(message));
+            }
+        }
 
         let Some(state) = crate::state::service_state(&*self.engine) else {
             return Err(UpdateGameSessionQueueErrorModeled::InternalServiceException(
@@ -231,6 +244,27 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         // The settings the request supplies are what the queue carries afterwards, and
         // the ones it omits keep the values the stored queue already has.
+        //
+        // The log configuration is the one setting a request does not supply whole: it
+        // names destinations to ADD to and to REMOVE from the configuration the queue
+        // carries, so the COMPOSED set is what the queue would deliver to — and it is held
+        // to the queue's log-destination rules BEFORE anything is written, so an update
+        // refused over it leaves the stored queue exactly as it was.
+        let composed_log_destinations = (input.add_log_delivery_destinations.is_some()
+            || input.remove_log_delivery_destinations.is_some())
+        .then(|| {
+            crate::state::applied_log_delivery_destinations(
+                &queue.log_delivery_destinations,
+                input.add_log_delivery_destinations.as_deref(),
+                input.remove_log_delivery_destinations.as_deref(),
+            )
+        });
+        if let Some(composed) = composed_log_destinations.as_deref() {
+            if let Some(message) = crate::state::log_delivery_destination_refusal(composed) {
+                return Err(invalid(message));
+            }
+        }
+
         if let Some(timeout_in_seconds) = input.timeout_in_seconds {
             queue.timeout_in_seconds = timeout_in_seconds;
         }
@@ -264,6 +298,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         }
         if let Some(notification_target) = input.notification_target {
             queue.notification_target = Some(notification_target);
+        }
+        if let Some(composed) = composed_log_destinations {
+            queue.log_delivery_destinations = composed;
         }
 
         // Report the STORED record, so this response and every later describe of the same
