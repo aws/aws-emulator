@@ -157,6 +157,7 @@ members = [
     "services/service-com-amazonaws-elasticloadbalancing-elasticloadbalancing-v7",
     "services/service-com-amazonaws-elasticloadbalancingv2-elasticloadbalancing-v10",
     "services/service-com-amazonaws-elasticsearchservice-amazonelasticsearchservice2015",
+    "services/service-com-amazonaws-elbproxy-elbproxy",
     "services/service-com-amazonaws-elementalinference-elementalinference",
     "services/service-com-amazonaws-emr-elasticmapreduce",
     "services/service-com-amazonaws-emrcontainers-awschicagowebservice",
@@ -632,6 +633,7 @@ service-com-amazonaws-elasticbeanstalk-awselasticbeanstalkservice = { path = "se
 service-com-amazonaws-elasticloadbalancing-elasticloadbalancing-v7 = { path = "services/service-com-amazonaws-elasticloadbalancing-elasticloadbalancing-v7" }
 service-com-amazonaws-elasticloadbalancingv2-elasticloadbalancing-v10 = { path = "services/service-com-amazonaws-elasticloadbalancingv2-elasticloadbalancing-v10" }
 service-com-amazonaws-elasticsearchservice-amazonelasticsearchservice2015 = { path = "services/service-com-amazonaws-elasticsearchservice-amazonelasticsearchservice2015" }
+service-com-amazonaws-elbproxy-elbproxy = { path = "services/service-com-amazonaws-elbproxy-elbproxy" }
 service-com-amazonaws-elementalinference-elementalinference = { path = "services/service-com-amazonaws-elementalinference-elementalinference" }
 service-com-amazonaws-emr-elasticmapreduce = { path = "services/service-com-amazonaws-emr-elasticmapreduce" }
 service-com-amazonaws-emrcontainers-awschicagowebservice = { path = "services/service-com-amazonaws-emrcontainers-awschicagowebservice" }

@@ -629,6 +629,10 @@
       "spec_url": "https://raw.githubusercontent.com/aws/api-models-aws/refs/heads/main/models/elasticsearch-service/service/2015-01-01/elasticsearch-service-2015-01-01.json"
     },
     {
+      "shape_id": "com.amazonaws.elbproxy#ELBProxy",
+      "spec_url": "https://raw.githubusercontent.com/aws/api-models-aws/d504436b2739873d202b10a26bdecb620fa1e4f0/models/elb-proxy/service/2026-11-20/elb-proxy-2026-11-20.json"
+    },
+    {
       "shape_id": "com.amazonaws.elementalinference#ElementalInference",
       "spec_url": "https://raw.githubusercontent.com/aws/api-models-aws/refs/heads/main/models/elementalinference/service/2018-11-14/elementalinference-2018-11-14.json"
     },

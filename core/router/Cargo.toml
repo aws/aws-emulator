@@ -168,6 +168,7 @@ service-com-amazonaws-elasticbeanstalk-awselasticbeanstalkservice = { workspace 
 service-com-amazonaws-elasticloadbalancing-elasticloadbalancing-v7 = { workspace = true }
 service-com-amazonaws-elasticloadbalancingv2-elasticloadbalancing-v10 = { workspace = true }
 service-com-amazonaws-elasticsearchservice-amazonelasticsearchservice2015 = { workspace = true }
+service-com-amazonaws-elbproxy-elbproxy = { workspace = true }
 service-com-amazonaws-elementalinference-elementalinference = { workspace = true }
 service-com-amazonaws-emr-elasticmapreduce = { workspace = true }
 service-com-amazonaws-emrcontainers-awschicagowebservice = { workspace = true }
