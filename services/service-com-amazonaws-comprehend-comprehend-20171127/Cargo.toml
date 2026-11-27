@@ -74,6 +74,12 @@ stop-words = "0.8"
 emulator-core-build-support = { workspace = true }
 
 [dev-dependencies]
+# Reads an ANSWERED CBOR map back whatever members it carries, which the
+# schema-driven codec cannot: a suite asserting what a failure on the `rpcv2Cbor`
+# route states has to see every member the answer wrote, not only the ones one
+# shape declares. The same CBOR implementation the framework's own codec is built on
+# (`aws-smithy-cbor`), so the tests hold no second one.
+minicbor = { version = "2.3", features = ["alloc"] }
 # Declares one module per `tests/all/<name>.rs` file in the single integration-test
 # target's root, so a new suite is a new file and needs no declaration.
 automod = { workspace = true }

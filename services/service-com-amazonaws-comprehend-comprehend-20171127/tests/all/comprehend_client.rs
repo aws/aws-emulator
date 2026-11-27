@@ -2,10 +2,14 @@
 
 //! The one HTTP client the Comprehend suites drive the service through.
 //!
-//! Every suite goes over the wire the service actually serves — `awsJson1_1`,
-//! `POST /` with `X-Amz-Target: Comprehend_20171127.<OperationName>` — through the
-//! same `MultiServiceRouter` the emulator's front doors dispatch on, so a test
-//! exercises routing, deserialization, constraint validation, the handler and
+//! The model declares TWO protocol traits, `awsJson1_1` and `rpcv2Cbor`
+//! (`smithy_query(query="service_info",model_path="services/service-com-amazonaws-comprehend-comprehend-20171127/smithy-model/com-amazonaws-comprehend-comprehend-20171127.json")`),
+//! so the service answers each request in the protocol that request named. Most
+//! suites go over the JSON route — `POST /` with
+//! `X-Amz-Target: Comprehend_20171127.<OperationName>` ([`Comprehend::call`]) — and
+//! `cbor_wire_route.rs` goes over the CBOR one ([`Comprehend::cbor`]). Both run
+//! through the same `MultiServiceRouter` the emulator's front doors dispatch on, so
+//! a test exercises routing, deserialization, constraint validation, the handler and
 //! serialization end to end.
 
 use std::sync::Arc;
@@ -16,6 +20,41 @@ use smithy_server_runtime::MultiServiceRouter;
 
 /// The `X-Amz-Target` prefix this service routes on (OPERATIONS.md, "Wire protocol").
 const TARGET_PREFIX: &str = "Comprehend_20171127.";
+
+/// The name of the service shape, which is the `{Service}` segment of an `rpcv2Cbor`
+/// request's path (`smithy_query(query="service_info",model_path="services/service-com-amazonaws-comprehend-comprehend-20171127/smithy-model/com-amazonaws-comprehend-comprehend-20171127.json")`).
+const SERVICE_SHAPE: &str = "Comprehend_20171127";
+
+/// The path every `awsJson1_1` call is addressed to.
+pub const JSON_URI: &str = "/";
+
+/// The versioned JSON media type that route's requests and answers carry.
+pub const JSON_CONTENT_TYPE: &str = "application/x-amz-json-1.1";
+
+/// The CBOR media type the `rpcv2Cbor` route's requests and answers carry.
+pub const CBOR_CONTENT_TYPE: &str = "application/cbor";
+
+/// The value of the `smithy-protocol` header the `rpcv2Cbor` specification requires
+/// on every request and answer of that route.
+pub const CBOR_PROTOCOL: &str = "rpc-v2-cbor";
+
+/// How the `rpcv2Cbor` specification frames a request: the CBOR media type, and the
+/// `smithy-protocol` header it requires every request to carry.
+pub const CBOR_FRAMING: &[(&str, &str)] = &[
+    ("content-type", CBOR_CONTENT_TYPE),
+    ("accept", CBOR_CONTENT_TYPE),
+    ("smithy-protocol", CBOR_PROTOCOL),
+];
+
+/// The path an `rpcv2Cbor` call to `operation` is addressed to.
+pub fn cbor_uri(operation: &str) -> String {
+    format!("/service/{SERVICE_SHAPE}/operation/{operation}")
+}
+
+/// The `X-Amz-Target` header value that names `operation` on the `awsJson1_1` route.
+pub fn json_target(operation: &str) -> String {
+    format!("{TARGET_PREFIX}{operation}")
+}
 
 /// The region the test's SigV4 credential scope names. Deliberately not the
 /// emulator's default, so an ARN that carries it proves the region came from the
@@ -90,23 +129,16 @@ impl Comprehend {
     /// Call `operation` with `body`, returning the HTTP status and the parsed JSON
     /// response (`Value::Null` for an empty body).
     pub async fn call(&self, operation: &str, body: &Value) -> (u16, Value) {
-        let request = ::http::Request::builder()
-            .method("POST")
-            .uri("/")
-            .header("content-type", "application/x-amz-json-1.1")
-            .header("x-amz-target", format!("{TARGET_PREFIX}{operation}"))
-            .header(
-                "authorization",
-                format!(
-                    "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20260101/{REGION}/comprehend/\
-                     aws4_request, SignedHeaders=host;x-amz-target, Signature=0123456789abcdef"
-                ),
+        let response = self
+            .framed(
+                JSON_URI,
+                ::bytes::Bytes::from(serde_json::to_vec(body).expect("the request body serializes")),
+                &[
+                    ("content-type", JSON_CONTENT_TYPE),
+                    ("x-amz-target", &json_target(operation)),
+                ],
             )
-            .body(::bytes::Bytes::from(
-                serde_json::to_vec(body).expect("the request body serializes"),
-            ))
-            .expect("a well-formed request");
-        let response = self.router.dispatch(request).await;
+            .await;
         let status = response.status().as_u16();
         let parsed = if response.body().is_empty() {
             Value::Null
@@ -119,6 +151,51 @@ impl Comprehend {
             })
         };
         (status, parsed)
+    }
+
+    /// Call `operation` over the service's `rpcv2Cbor` route, returning the whole
+    /// answer so a suite can read its framing as well as its body.
+    ///
+    /// The model declares `rpcv2Cbor` beside `awsJson1_1`
+    /// (`smithy_query(query="service_info",model_path="services/service-com-amazonaws-comprehend-comprehend-20171127/smithy-model/com-amazonaws-comprehend-comprehend-20171127.json")`),
+    /// so a client may reach every operation at
+    /// `POST /service/{SERVICE_SHAPE}/operation/<OperationName>` with a CBOR body and
+    /// the `smithy-protocol` header that protocol's specification requires. The body
+    /// is bytes rather than a `Value` because CBOR is written through the protocol's
+    /// own codec; see `cbor_wire_route.rs`.
+    pub async fn cbor(
+        &self,
+        operation: &str,
+        body: ::bytes::Bytes,
+    ) -> ::http::Response<::bytes::Bytes> {
+        self.framed(&cbor_uri(operation), body, CBOR_FRAMING).await
+    }
+
+    /// One request to `uri` carrying `headers` beside the credential scope, for a
+    /// suite that varies how a call is FRAMED rather than what it asks for.
+    pub async fn framed(
+        &self,
+        uri: &str,
+        body: ::bytes::Bytes,
+        headers: &[(&str, &str)],
+    ) -> ::http::Response<::bytes::Bytes> {
+        let mut request = ::http::Request::builder().method("POST").uri(uri);
+        for (name, value) in headers {
+            request = request.header(*name, *value);
+        }
+        let request = request
+            // The SigV4 credential scope is what routes the request to this service's
+            // signing name, exactly as it does for its JSON calls.
+            .header(
+                "authorization",
+                format!(
+                    "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20260101/{REGION}/comprehend/\
+                     aws4_request, SignedHeaders=host, Signature=0123456789abcdef"
+                ),
+            )
+            .body(body)
+            .expect("a well-formed request");
+        self.router.dispatch(request).await
     }
 
     /// Send one path-style request to the emulator's S3 front door, returning the

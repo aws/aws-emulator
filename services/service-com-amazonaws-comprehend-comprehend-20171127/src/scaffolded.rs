@@ -180,8 +180,9 @@ impl SerializableStruct for ValidationException {
 /// The status this service's frontend answers a modeled failure with, given the
 /// status that failure's shape declares.
 ///
-/// Comprehend's `awsJson1_1` frontend serializes a CLIENT refusal with HTTP 400 —
-/// the status the shape's `@error: "client"` kind states — whatever more specific
+/// Comprehend's frontend serializes a CLIENT refusal with HTTP 400 — the status the
+/// shape's `@error: "client"` kind states — in each of the protocols the model
+/// declares, `awsJson1_1` and `rpcv2Cbor`, whatever more specific
 /// `@httpError` its shape carries: a refusal the caller can only clear by naming a
 /// different resource (the shapes the model pins at 404 — a resource ARN that names
 /// nothing, a job id that names nothing, a resource that is not available) still

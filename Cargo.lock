@@ -13305,6 +13305,7 @@ dependencies = [
  "hex",
  "http",
  "lingua",
+ "minicbor",
  "regex",
  "rustrict",
  "serde_json",
