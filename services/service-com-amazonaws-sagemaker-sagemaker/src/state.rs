@@ -98,6 +98,12 @@ pub use binary_json::*;
 pub mod pipeline_run;
 pub use pipeline_run::*;
 
+/// The CONDITION slice of a pipeline run: evaluating the conditions a condition step
+/// declares, so the run hands control to the branch they select. See
+/// `state/pipeline_condition.rs`.
+pub mod pipeline_condition;
+pub use pipeline_condition::*;
+
 use crate::ops::types::{
     AdditionalInferenceSpecificationDefinition, AppSpecification, ArtifactSource,
     AsyncInferenceConfig, AutoMLComputeConfig, AutoMLDataSplitConfig, AutoMLJobChannel,
@@ -693,8 +699,9 @@ pub const PIPELINE_EXECUTION_STATUS_EXECUTING: &str = "Executing";
 /// See [`PIPELINE_EXECUTION_STATUS_EXECUTING`].
 pub const PIPELINE_EXECUTION_STATUS_FAILED: &str = "Failed";
 /// See [`PIPELINE_EXECUTION_STATUS_EXECUTING`]: the terminal status of a run every step of
-/// which was performed and succeeded — which, while a callback step is the one kind this
-/// emulator performs, means a run of callback steps whose workers all reported success.
+/// which was performed and succeeded — a run whose condition steps all came to an outcome,
+/// whose callback steps' workers all reported success, and which reached neither a fail step
+/// nor a step kind this emulator has no runtime for.
 pub const PIPELINE_EXECUTION_STATUS_SUCCEEDED: &str = "Succeeded";
 /// See [`PIPELINE_EXECUTION_STATUS_EXECUTING`]: the transient status a run carries from the
 /// `StopPipelineExecution` call until it has stopped — which, while a callback step of it is
@@ -740,10 +747,11 @@ pub const PIPELINE_EXECUTION_ENDS_AFTER: Duration = Duration::from_millis(400);
 /// Why a run that performed none of its steps ends
 /// [`PIPELINE_EXECUTION_STATUS_FAILED`].
 ///
-/// A pipeline's steps are training, processing, transform, Lambda and callback work. Of
-/// those, the callback step's work is one this emulator PERFORMS — the message it owes the
-/// caller's queue (see [`pipeline_run`]) — and the rest need a runtime this emulator does
-/// not have. So a run holding a step of one of those kinds is never reported `Succeeded`:
+/// A pipeline's steps are training, processing, transform, Lambda and callback work, and the
+/// control-flow steps (condition, fail) that decide between them. Of those, the callback
+/// step's work is one this emulator PERFORMS — the message it owes the caller's queue (see
+/// [`pipeline_run`]) — and so are the control-flow steps, whose work is a decision over
+/// values the definition names; the rest need a runtime this emulator does not have. So a run holding a step of one of those kinds is never reported `Succeeded`:
 /// nothing ran that step, and a success status, a job ARN, a step output or a runtime for
 /// work nothing performed would be fabricated. The run instead ends in the modelled failure
 /// state with this reason, which says exactly that, and the steps it performed nothing for
@@ -756,6 +764,16 @@ pub const PIPELINE_EXECUTION_NOT_RUN: &str =
     "The pipeline execution was accepted but no step of it ran: this emulator has no \
      runtime that performs this step's work (training, processing, transform or Lambda), \
      so the execution ended Failed rather than reporting work that did not happen.";
+
+/// What a run reports as its own `FailureReason` when it failed because a step of it
+/// failed.
+///
+/// FIXED text naming neither the step nor what became of it, as SageMaker Pipelines words
+/// this class: the RUN reports that one or more of its steps failed, and each step's own
+/// reason is on that step's execution, which `ListPipelineExecutionSteps` reports. So a
+/// fail step's declared `ErrorMessage` is carried by the step rather than lifted onto the
+/// run. Within the modelled `PipelineExecutionFailureReason` length (0..1300).
+pub const PIPELINE_EXECUTION_STEP_FAILURE: &str = "Step failure: One or multiple steps failed.";
 
 /// The `StepStatus` the steps of an execution in `execution_status` report, or `None`
 /// while that execution has reached no step at all.
@@ -1808,6 +1826,10 @@ pub struct PipelineExecution {
     /// runtime here performs their kind of work — see [`PIPELINE_EXECUTION_NOT_RUN`], which
     /// is the reason such a run ends with.
     pub undispatched_steps: usize,
+    /// The steps this run did NOT reach, because a condition step handed control to its
+    /// other branch: nothing ran them and nothing was to, so they have no step execution in
+    /// this run (see [`PipelineStepDispatch::skipped`]).
+    pub skipped_steps: Vec<String>,
     /// When the clock owes this run its `Stopping` -> `Stopped` move, set by the
     /// `StopPipelineExecution` call that asked for it; `None` for a run nobody stopped.
     pub stops_at: Option<SystemTime>,
@@ -1831,7 +1853,8 @@ impl PipelineExecution {
     /// to perform was dispatched and succeeded, and [`PIPELINE_EXECUTION_STATUS_FAILED`]
     /// otherwise. The failed run's reason is, in order: the run's own
     /// `role_failure_reason`, where the role its steps had to be performed as resolved to
-    /// nothing; the reason a dispatched step failed with; and [`PIPELINE_EXECUTION_NOT_RUN`]
+    /// nothing; [`PIPELINE_EXECUTION_STEP_FAILURE`], where a step it performed failed; and
+    /// [`PIPELINE_EXECUTION_NOT_RUN`]
     /// for a step nothing here performed — see that constant for why such a run cannot end
     /// `Succeeded`. A run the caller stopped ends [`PIPELINE_EXECUTION_STATUS_STOPPED`].
     ///
@@ -1863,7 +1886,12 @@ impl PipelineExecution {
         let reason = self
             .role_failure_reason
             .clone()
-            .or_else(|| failed_step.and_then(|step| step.failure_reason.clone()))
+            // A run that failed because a step of it failed reports the service's own
+            // sentence for that, not the step's reason: the step execution is where a
+            // caller reads why THAT step failed.
+            .or_else(|| {
+                failed_step.map(|_| PIPELINE_EXECUTION_STEP_FAILURE.to_string())
+            })
             .or_else(|| {
                 (self.undispatched_steps > 0).then(|| PIPELINE_EXECUTION_NOT_RUN.to_string())
             });

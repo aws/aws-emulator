@@ -16,6 +16,16 @@
 //!    [`STEP_STATUS_EXECUTING`] — holding the run open — until that token is reported back
 //!    with `SendPipelineExecutionStepSuccess` or `SendPipelineExecutionStepFailure`, which
 //!    is what settles the step and then the run.
+//!
+//!    A CONDITION step and a FAIL step are performed here too, because their work is
+//!    control flow over values the definition names rather than work for a runtime: a
+//!    condition step evaluates its conditions ([`crate::state::pipeline_conditions_hold`])
+//!    and hands control to one of its branches, so it succeeds at once and the steps of the
+//!    branch it did not take are not run at all; a fail step ends the run with the message
+//!    it declares, so it is recorded [`STEP_STATUS_FAILED`] with that message and the run
+//!    fails for it. A condition step whose outcome cannot be established evaluates nothing
+//!    and is counted undispatched, like the kinds below: handing control to a branch on a
+//!    guess would run one half of the caller's pipeline for no reason.
 //! 2. **A step nothing here can perform.** Training, processing, transform, Lambda and the
 //!    rest need a runtime this emulator does not have, so the run does NOT dispatch them:
 //!    they are counted ([`PipelineStepDispatch::undispatched`]) and the clock settles the
@@ -27,7 +37,16 @@
 //! the role's own failure reason.
 
 use super::*;
-use crate::ops::types::OutputParameter;
+use crate::ops::types::{
+    ConditionStepMetadata, FailStepMetadata, OutputParameter, PipelineExecutionStepMetadata,
+};
+
+/// `ConditionOutcome`'s two members (the generated `CONDITION_OUTCOME_VALUES`), which is
+/// what a performed condition step reports as its own metadata: the outcome the conditions
+/// it evaluated came to.
+const CONDITION_OUTCOME_TRUE: &str = "True";
+/// See [`CONDITION_OUTCOME_TRUE`].
+const CONDITION_OUTCOME_FALSE: &str = "False";
 
 /// `StepStatus`'s members a step run of this emulator reports
 /// (`smithy_query(query="shape",shape="StepStatus")` answers `Starting`, `Executing`,
@@ -44,6 +63,20 @@ pub const STEP_STATUS_FAILED: &str = "Failed";
 /// The `Type` a callback step declares in a pipeline definition — the one step kind whose
 /// work is performed HERE, because its work is a message on the caller's own queue.
 pub const PIPELINE_CALLBACK_STEP_TYPE: &str = "Callback";
+
+/// Why a run that reached a fail step declaring no message of its own ended: the step's
+/// whole work is to stop the run, and this one said nothing further about why.
+///
+/// FIXED text carrying nothing from the definition, because a fail step that declares no
+/// `ErrorMessage` gives the service nothing to report. Within the modelled
+/// `PipelineExecutionFailureReason` length (0..1300) and the shorter `FailureReason`
+/// (0..1024) a step execution reports it under.
+#[must_use]
+pub fn fail_step_without_a_message() -> String {
+    "The pipeline execution reached a fail step that declares no error message, so it \
+     ended Failed with none."
+        .to_string()
+}
 
 /// How many characters a `CallbackToken` carries: the model declares it `@length 10..10`
 /// with `@pattern ^[a-zA-Z0-9]+$`
@@ -110,6 +143,12 @@ pub struct PipelineStepRun {
     /// step.
     pub attempt_count: i32,
     pub callback: Option<CallbackGrant>,
+    /// The metadata this step reports for its OWN kind of work, where its kind has any: the
+    /// outcome a condition step came to (`ConditionStepMetadata`) and the message a fail
+    /// step ended the run with (`FailStepMetadata`). A callback step's metadata is built
+    /// from its grant instead ([`CallbackGrant`]), because the output parameters it reports
+    /// only arrive when the worker settles it.
+    pub metadata: Option<PipelineExecutionStepMetadata>,
 }
 
 impl PipelineStepRun {
@@ -150,8 +189,8 @@ impl PipelineStepRun {
 }
 
 /// What a start owes for the steps one run is to perform: the step runs it dispatched, the
-/// messages those dispatches have to deliver, and how many declared steps it dispatched
-/// nothing for.
+/// messages those dispatches have to deliver, how many declared steps it dispatched nothing
+/// for, and the steps it did not reach at all.
 #[derive(Debug, Default)]
 pub struct PipelineStepDispatch {
     pub runs: Vec<PipelineStepRun>,
@@ -160,6 +199,11 @@ pub struct PipelineStepDispatch {
     /// their kind of work. They are what makes the run end `Failed` with
     /// [`crate::state::PIPELINE_EXECUTION_NOT_RUN`].
     pub undispatched: usize,
+    /// The declared steps this run did NOT reach: the steps of a condition step's branch
+    /// the conditions sent control away from, and the steps nested in them. Such a step has
+    /// no step execution in this run — nothing ran it and nothing was to — so it is neither
+    /// performed nor counted undispatched, and the step listing leaves it out.
+    pub skipped: Vec<String>,
 }
 
 impl PipelineStepDispatch {
@@ -172,6 +216,7 @@ impl PipelineStepDispatch {
             runs: Vec::new(),
             deliveries: Vec::new(),
             undispatched: declared,
+            skipped: Vec::new(),
         }
     }
 }
@@ -220,25 +265,113 @@ pub fn callback_queue_address(region: &str, declared: &str) -> Option<String> {
     ))
 }
 
-/// Dispatch the steps `declared` declares, at `now`, for a request addressing `region`.
+/// Dispatch the steps `declared` declares, at `now`, for a request addressing `region`,
+/// with `parameters` the values this run resolved its pipeline's parameters to.
 ///
-/// A callback step whose declared queue addresses a queue of this account
-/// ([`callback_queue_address`]) is dispatched: a token is minted for it, the step run is
-/// recorded `Executing` and the message it owes that queue is rendered. A callback step that
-/// names no such queue is dispatched for nothing — no worker could ever be told, let alone
-/// answer — so its run is recorded FAILED at once with
-/// [`callback_step_names_no_queue`]. Every other kind of step is left undispatched and
-/// counted, because no runtime here performs its work.
+/// The steps are walked in declaration order, which is the order a condition step is
+/// reached before the steps of its branches: a step declared inside a branch runs only when
+/// the condition step it belongs to handed control to that branch, and is otherwise recorded
+/// SKIPPED ([`PipelineStepDispatch::skipped`]) rather than performed or counted.
+///
+/// A reached step is then performed by its kind:
+///
+/// * a CONDITION step evaluates the conditions it declares
+///   ([`crate::state::pipeline_conditions_hold`]) and succeeds at once, having handed control
+///   to the branch they select; one whose outcome cannot be established performs nothing and
+///   is counted undispatched, and the steps of both its branches are left unreached;
+/// * a FAIL step ends the run: it is recorded [`STEP_STATUS_FAILED`] with the message it
+///   declares ([`fail_step_without_a_message`] where it declares none), which is what the
+///   run then fails with;
+/// * a CALLBACK step whose declared queue addresses a queue of this account
+///   ([`callback_queue_address`]) is dispatched: a token is minted for it, the step run is
+///   recorded `Executing` and the message it owes that queue is rendered. A callback step
+///   that names no such queue is dispatched for nothing — no worker could ever be told, let
+///   alone answer — so its run is recorded FAILED at once with
+///   [`callback_step_names_no_queue`];
+/// * every other kind of step is left undispatched and counted, because no runtime here
+///   performs its work.
 #[must_use]
 pub fn dispatch_pipeline_steps(
     declared: &[PipelineStepDeclaration],
+    parameters: &BTreeMap<String, ::serde_json::Value>,
     region: &str,
     now: SystemTime,
 ) -> PipelineStepDispatch {
     let mut dispatch = PipelineStepDispatch::default();
+    // The outcome of every condition step this run REACHED and could evaluate: `None` for
+    // one whose conditions established nothing, so the steps of both its branches are left
+    // unreached rather than skipped by a decision nothing made.
+    let mut outcomes: BTreeMap<&str, Option<bool>> = BTreeMap::new();
     for step in declared {
-        let declared_url = match (step.step_type.as_str(), step.sqs_queue_url.as_deref()) {
-            (PIPELINE_CALLBACK_STEP_TYPE, url) => url.unwrap_or_default(),
+        match reached_branch(step, &outcomes) {
+            BranchReach::Reached => {}
+            BranchReach::NotTaken => {
+                dispatch.skipped.push(step.name.clone());
+                continue;
+            }
+            BranchReach::Undecided => {
+                dispatch.undispatched += 1;
+                continue;
+            }
+        }
+        let declared_url = match step.step_type.as_str() {
+            PIPELINE_CONDITION_STEP_TYPE => {
+                let outcome = step
+                    .conditions
+                    .as_ref()
+                    .and_then(|conditions| pipeline_conditions_hold(conditions, parameters));
+                outcomes.insert(step.name.as_str(), outcome);
+                match outcome {
+                    // The step's work is done: the conditions were evaluated and control
+                    // went to the branch they select, which is the outcome the step reports.
+                    Some(held) => {
+                        let mut run = performed_step(step, now);
+                        run.metadata = Some(PipelineExecutionStepMetadata {
+                            condition: Some(ConditionStepMetadata {
+                                outcome: Some(
+                                    if held {
+                                        CONDITION_OUTCOME_TRUE
+                                    } else {
+                                        CONDITION_OUTCOME_FALSE
+                                    }
+                                    .to_string(),
+                                ),
+                            }),
+                            ..Default::default()
+                        });
+                        run.settle(now, STEP_STATUS_SUCCEEDED, None, None);
+                        dispatch.runs.push(run);
+                    }
+                    None => dispatch.undispatched += 1,
+                }
+                continue;
+            }
+            PIPELINE_FAIL_STEP_TYPE => {
+                let mut run = performed_step(step, now);
+                // "A message that you define and then is processed and rendered by the Fail
+                // step when the error occurs" (`FailStepMetadata$ErrorMessage`): the
+                // message the step declared, which is reported whether or not it declared
+                // one.
+                run.metadata = Some(PipelineExecutionStepMetadata {
+                    fail: Some(FailStepMetadata {
+                        error_message: step.error_message.clone(),
+                    }),
+                    ..Default::default()
+                });
+                run.settle(
+                    now,
+                    STEP_STATUS_FAILED,
+                    Some(
+                        step.error_message
+                            .clone()
+                            .unwrap_or_else(fail_step_without_a_message),
+                    ),
+                    None,
+                );
+                dispatch.runs.push(run);
+                continue;
+            }
+            PIPELINE_CALLBACK_STEP_TYPE => step.sqs_queue_url.as_deref().unwrap_or_default(),
             _ => {
                 dispatch.undispatched += 1;
                 continue;
@@ -246,14 +379,6 @@ pub fn dispatch_pipeline_steps(
         };
         let token = mint_callback_token();
         let mut run = PipelineStepRun {
-            name: step.name.clone(),
-            display_name: step.display_name.clone(),
-            description: step.description.clone(),
-            status: STEP_STATUS_EXECUTING.to_string(),
-            failure_reason: None,
-            start_time: now,
-            end_time: None,
-            attempt_count: 1,
             callback: Some(CallbackGrant {
                 token: token.clone(),
                 // What the STEP declared, which is what `CallbackStepMetadata$SqsQueueUrl`
@@ -262,6 +387,7 @@ pub fn dispatch_pipeline_steps(
                 output_parameters: Vec::new(),
                 settled_by: None,
             }),
+            ..performed_step(step, now)
         };
         match callback_queue_address(region, declared_url) {
             Some(address) => dispatch.deliveries.push(CallbackDelivery {
@@ -279,6 +405,59 @@ pub fn dispatch_pipeline_steps(
         dispatch.runs.push(run);
     }
     dispatch
+}
+
+/// The run of one step this execution PERFORMS, as it stands the instant it was reached:
+/// executing, from `now`, on its first attempt, carrying the names the definition gave it.
+/// A step whose work finishes within the call is then settled on top of this
+/// ([`PipelineStepRun::settle`]).
+fn performed_step(step: &PipelineStepDeclaration, now: SystemTime) -> PipelineStepRun {
+    PipelineStepRun {
+        name: step.name.clone(),
+        display_name: step.display_name.clone(),
+        description: step.description.clone(),
+        status: STEP_STATUS_EXECUTING.to_string(),
+        failure_reason: None,
+        start_time: now,
+        end_time: None,
+        attempt_count: 1,
+        callback: None,
+        metadata: None,
+    }
+}
+
+/// Whether the run reaches `step`, given the outcomes of the condition steps it has already
+/// evaluated.
+#[derive(Debug, PartialEq, Eq)]
+enum BranchReach {
+    /// The step is declared beside the pipeline's own steps, or inside the branch the
+    /// condition step handed control to.
+    Reached,
+    /// The step is inside the branch the condition step sent control AWAY from, so nothing
+    /// was to run it.
+    NotTaken,
+    /// The condition step the step belongs to established no outcome — or was itself not
+    /// reached for that reason — so whether this step was to run is not established either.
+    Undecided,
+}
+
+/// See [`BranchReach`]: resolves one step against the condition steps already evaluated.
+fn reached_branch(
+    step: &PipelineStepDeclaration,
+    outcomes: &BTreeMap<&str, Option<bool>>,
+) -> BranchReach {
+    let Some(branch) = &step.branch else {
+        return BranchReach::Reached;
+    };
+    match outcomes.get(branch.condition_step.as_str()) {
+        Some(Some(outcome)) if *outcome == branch.when_conditions_hold => BranchReach::Reached,
+        Some(Some(_)) => BranchReach::NotTaken,
+        // The condition step established nothing.
+        Some(None) => BranchReach::Undecided,
+        // The condition step was not reached at all: it is itself inside a branch nothing
+        // took, which makes the steps nested in it as unreached as it is.
+        None => BranchReach::NotTaken,
+    }
 }
 
 /// Mint the token a callback step is dispatched with: the first
@@ -498,8 +677,16 @@ mod tests {
             description: None,
             step_type: step_type.to_string(),
             sqs_queue_url: queue.map(str::to_string),
+            conditions: None,
+            error_message: None,
             arguments: Some(::serde_json::json!({ "Marker": name })),
+            branch: None,
         }
+    }
+
+    /// The parameter values a run carries, empty unless a case needs one.
+    fn no_parameters() -> BTreeMap<String, ::serde_json::Value> {
+        BTreeMap::new()
     }
 
     /// RULE: a callback step whose declared queue addresses a queue of this account is
@@ -525,7 +712,7 @@ mod tests {
             declaration("Second", PIPELINE_CALLBACK_STEP_TYPE, Some(&queue("three"))),
         ];
         let now = SystemTime::now();
-        let dispatch = dispatch_pipeline_steps(&declared, "us-east-1", now);
+        let dispatch = dispatch_pipeline_steps(&declared, &no_parameters(), "us-east-1", now);
 
         let recorded: Vec<(&str, &str)> = dispatch
             .runs
@@ -601,6 +788,137 @@ mod tests {
             "case \"every recorded step\": each is dispatched with its own token, got \
              {dispatch:?}"
         );
+    }
+
+    /// RULE: a reached condition step evaluates its conditions and succeeds, a reached fail
+    /// step ends the run with the message it declares, and the steps of the branch a
+    /// condition step sent control away from are SKIPPED — neither performed nor counted —
+    /// whatever the values the run carries decide.
+    #[test]
+    fn a_condition_step_selects_the_branch_its_steps_are_performed_from() {
+        /// A condition step named `name` whose conditions are `conditions`.
+        fn condition(name: &str, conditions: ::serde_json::Value) -> PipelineStepDeclaration {
+            PipelineStepDeclaration {
+                conditions: Some(conditions),
+                ..declaration(name, PIPELINE_CONDITION_STEP_TYPE, None)
+            }
+        }
+        /// A fail step named `name` declaring `error_message`, in `branch` of `parent`.
+        fn fail(
+            name: &str,
+            error_message: Option<&str>,
+            parent: Option<(&str, bool)>,
+        ) -> PipelineStepDeclaration {
+            PipelineStepDeclaration {
+                error_message: error_message.map(str::to_string),
+                branch: parent.map(|(condition_step, when_conditions_hold)| PipelineStepBranch {
+                    condition_step: condition_step.to_string(),
+                    when_conditions_hold,
+                }),
+                ..declaration(name, PIPELINE_FAIL_STEP_TYPE, None)
+            }
+        }
+        let holds = ::serde_json::json!([{ "Type": "Equals", "LeftValue": 1, "RightValue": 1 }]);
+        let fails = ::serde_json::json!([{ "Type": "Equals", "LeftValue": 1, "RightValue": 2 }]);
+        let unknown = ::serde_json::json!([{ "Type": "Matches", "LeftValue": 1, "RightValue": 1 }]);
+
+        // Rows differ along what the conditions decide: the branch holding the fail step is
+        // taken, the other branch is taken, and the outcome is not established at all.
+        /// One case: the steps declared, the step runs expected with their statuses, the
+        /// steps expected skipped, and how many steps nothing performed.
+        type Row = (
+            &'static str,
+            Vec<PipelineStepDeclaration>,
+            Vec<(&'static str, &'static str)>,
+            Vec<&'static str>,
+            usize,
+        );
+        let rows: Vec<Row> = vec![
+            (
+                "the fail branch is taken",
+                vec![
+                    condition("Check", holds.clone()),
+                    fail("Halt", Some("the metric regressed"), Some(("Check", true))),
+                    fail("Other", Some("unreachable"), Some(("Check", false))),
+                ],
+                vec![("Check", STEP_STATUS_SUCCEEDED), ("Halt", STEP_STATUS_FAILED)],
+                vec!["Other"],
+                0,
+            ),
+            (
+                "the other branch is taken",
+                vec![
+                    condition("Check", fails.clone()),
+                    fail("Halt", Some("the metric regressed"), Some(("Check", true))),
+                ],
+                vec![("Check", STEP_STATUS_SUCCEEDED)],
+                vec!["Halt"],
+                0,
+            ),
+            (
+                "the outcome is not established",
+                vec![
+                    condition("Check", unknown.clone()),
+                    fail("Halt", Some("the metric regressed"), Some(("Check", true))),
+                ],
+                Vec::new(),
+                Vec::new(),
+                2,
+            ),
+            (
+                "a fail step declared beside the pipeline's own steps",
+                vec![fail("Halt", None, None)],
+                vec![("Halt", STEP_STATUS_FAILED)],
+                Vec::new(),
+                0,
+            ),
+        ];
+
+        let now = SystemTime::now();
+        for (case, declared, expected_runs, expected_skipped, expected_undispatched) in rows {
+            let dispatch = dispatch_pipeline_steps(&declared, &no_parameters(), "us-east-1", now);
+            let recorded: Vec<(&str, &str)> = dispatch
+                .runs
+                .iter()
+                .map(|run| (run.name.as_str(), run.status.as_str()))
+                .collect();
+            assert_eq!(
+                recorded, expected_runs,
+                "case {case:?}: the steps the run performed, got {dispatch:?}"
+            );
+            assert_eq!(
+                dispatch.skipped,
+                expected_skipped
+                    .iter()
+                    .map(|name| (*name).to_string())
+                    .collect::<Vec<String>>(),
+                "case {case:?}: the steps the branch decision sent control away from, got \
+                 {dispatch:?}"
+            );
+            assert_eq!(
+                dispatch.undispatched, expected_undispatched,
+                "case {case:?}: the steps nothing performed, got {dispatch:?}"
+            );
+            // A fail step reports the message it declared, or the service's own sentence
+            // where it declared none.
+            if let Some(halt) = dispatch.runs.iter().find(|run| run.name == "Halt") {
+                let declared_message = declared
+                    .iter()
+                    .find(|step| step.name == "Halt")
+                    .and_then(|step| step.error_message.clone());
+                assert_eq!(
+                    halt.failure_reason,
+                    Some(declared_message.unwrap_or_else(fail_step_without_a_message)),
+                    "case {case:?}: the fail step reports why it ended the run, got {halt:?}"
+                );
+                assert_eq!(
+                    halt.end_time,
+                    Some(now),
+                    "case {case:?}: a step the run performed within the call stopped \
+                     executing, got {halt:?}"
+                );
+            }
+        }
     }
 
     /// RULE: the address a delivery presents is built from the Region and the

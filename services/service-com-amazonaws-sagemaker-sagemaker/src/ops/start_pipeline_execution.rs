@@ -13,7 +13,11 @@
 //! this call really sends it, records the token it minted on the step and leaves that step
 //! `Executing` until the token is reported back
 //! (`SendPipelineExecutionStepSuccess`/`Failure`), which is what settles the step and then
-//! the run. A step of a kind no runtime here performs is dispatched for nothing: the clock
+//! the run. A condition step and a fail step are performed here too, because their work is
+//! control flow over the values this run resolved its parameters to: the condition step
+//! evaluates its conditions and hands control to one of its branches, so the steps of the
+//! other branch are not run at all, and the fail step ends the run with the message it
+//! declares. A step of a kind no runtime here performs is dispatched for nothing: the clock
 //! owes the run the modelled failure state with [`crate::state::PIPELINE_EXECUTION_NOT_RUN`]
 //! as its reason, rather than a `Succeeded` status for work nothing ran. See
 //! [`crate::state::pipeline_run`].
@@ -534,9 +538,19 @@ fn start_run(
     // A run whose role resolved to NOTHING dispatches none of them — a step is
     // performed AS that role — so it hands no work over to any queue. Either way the
     // dispatch itself counts the steps nothing here performs.
+    //
+    // The values the run resolved its pipeline's parameters to are what a condition step's
+    // conditions are evaluated against, so they are read from the stored definition and
+    // this call's assignments together (`crate::state::pipeline_parameter_values`).
+    let parameter_values = crate::state::pipeline_parameter_values(&definition, &supplied);
     let dispatch = match &role_failure_reason {
         Some(_) => crate::state::PipelineStepDispatch::nothing_dispatched(to_perform.len()),
-        None => crate::state::dispatch_pipeline_steps(&to_perform, &region, now),
+        None => crate::state::dispatch_pipeline_steps(
+            &to_perform,
+            &parameter_values,
+            &region,
+            now,
+        ),
     };
     store.pipeline_executions.insert(
         arn.clone(),
@@ -566,6 +580,7 @@ fn start_run(
             role_failure_reason,
             steps: dispatch.runs,
             undispatched_steps: dispatch.undispatched,
+            skipped_steps: dispatch.skipped,
             // Nobody has asked this run to stop, so the clock owes it no stop.
             stops_at: None,
         },

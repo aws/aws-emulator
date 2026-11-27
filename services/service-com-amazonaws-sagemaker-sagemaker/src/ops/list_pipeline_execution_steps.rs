@@ -19,14 +19,17 @@
 //!   executing, the status it is in, the reason it failed with, that it was attempted once,
 //!   and, for a callback step, the `Metadata.Callback` naming the queue it handed its work
 //!   over through, the token it was dispatched with and the output parameters the worker
-//!   reported back. Such a step is reported while the run is still `Executing`, because it
-//!   really is executing;
+//!   reported back, and for a condition or a fail step the `Metadata.Condition` outcome it
+//!   came to or the `Metadata.Fail` message it ended the run with. Such a step is reported
+//!   while the run is still `Executing`, because it really is executing;
 //! * a step of a kind nothing here performs reports the EXECUTION's status and reason
 //!   ([`crate::state::step_status_of_execution`],
 //!   [`crate::state::PIPELINE_EXECUTION_NOT_RUN`]) and NO `StartTime`, `EndTime`,
 //!   `Metadata`, `AttemptCount` or `CacheHitResult` — no success, no duration, no job ARN
 //!   and no step output for work nothing ran — and is reported only once the run says what
-//!   became of it, so an execution still `Executing` lists none of them.
+//!   became of it, so an execution still `Executing` lists none of them;
+//! * a step the run did not REACH — one in the branch a condition step sent control away
+//!   from — is not reported at all: it has no step execution in this run.
 //!
 //! ## Shape of an operation
 //!
@@ -274,6 +277,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             // broke that invariant has no definition to report steps from either.
             None => Vec::new(),
         };
+        // A step the run did not REACH has no step execution in it: a condition step handed
+        // control to its other branch, so nothing ran that step and nothing was to. It is
+        // left out rather than reported with the run's own status, which would report an
+        // outcome for a step that never ran.
+        steps.retain(|step| !reported.skipped_steps.contains(&step.name));
         // A run still `Executing` has reached no step of a kind it does not perform, so
         // only the steps it dispatched are reported while it runs.
         if step_status.is_none() {
@@ -339,16 +347,21 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                             step_status: Some(run.status.clone()),
                             failure_reason: run.failure_reason.clone(),
                             attempt_count: Some(run.attempt_count),
-                            metadata: run.callback.as_ref().map(|grant| {
-                                PipelineExecutionStepMetadata {
+                            metadata: match run.callback.as_ref() {
+                                Some(grant) => Some(PipelineExecutionStepMetadata {
                                     callback: Some(CallbackStepMetadata {
                                         callback_token: Some(grant.token.clone()),
                                         sqs_queue_url: Some(grant.queue_url.clone()),
                                         output_parameters: Some(grant.output_parameters.clone()),
                                     }),
                                     ..Default::default()
-                                }
-                            }),
+                                }),
+                                // The metadata the step recorded for its own kind of work:
+                                // the outcome a condition step came to, the message a fail
+                                // step ended the run with. A step whose kind reports none
+                                // carries no metadata at all.
+                                None => run.metadata.clone(),
+                            },
                             // No `CacheHitResult`: this run performed the step rather than
                             // reusing another run's result. The same goes for
                             // `SelectiveExecutionResult` and a `ForEach` step's

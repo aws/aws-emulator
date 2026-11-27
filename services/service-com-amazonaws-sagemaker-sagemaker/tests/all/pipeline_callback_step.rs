@@ -30,6 +30,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use serde_json::{json, Value};
+use service_com_amazonaws_sagemaker_sagemaker::state;
 use smithy_server_runtime::MultiServiceRouter;
 
 use super::inference_deployment_lifecycle::{error_code, message, str_field, ACCOUNT};
@@ -501,11 +502,20 @@ async fn a_callback_step_hands_its_work_over_and_waits_for_its_token() {
             "case {case:?}: the run's settled status, got {settled}"
         );
         match row.failure_reason {
-            Some(reason) => assert_eq!(
-                str_field(&settled, "FailureReason"),
-                reason,
-                "case {case:?}: the run reports the worker's own reason, got {settled}"
-            ),
+            Some(reason) => {
+                // The STEP carries the worker's own reason; the RUN reports the service's
+                // one sentence for a run a step failure ended.
+                assert_eq!(
+                    step.get("FailureReason").and_then(Value::as_str),
+                    Some(reason),
+                    "case {case:?}: the step reports the worker's own reason, got {step}"
+                );
+                assert_eq!(
+                    str_field(&settled, "FailureReason"),
+                    state::PIPELINE_EXECUTION_STEP_FAILURE,
+                    "case {case:?}: the run reports that a step of it failed, got {settled}"
+                );
+            }
             None => assert!(
                 settled.get("FailureReason").is_none(),
                 "case {case:?}: a succeeded run reports no failure reason, got {settled}"
@@ -619,8 +629,9 @@ async fn a_callback_token_settles_its_step_exactly_once() {
 
 /// RULE: a run that performs no step hands no work over to any queue — one whose `RoleArn`
 /// resolves to nothing, one whose steps are of a kind this emulator has no runtime for, and
-/// one whose callback step names no queue of this account — and each ends `Failed` with the
-/// reason that says why.
+/// one whose callback step names no queue of this account — and each ends `Failed`: the STEP
+/// carries the reason that says why, and the run carries that same reason unless a step of
+/// it FAILED, which the run reports with the service's own step-failure sentence.
 #[tokio::test]
 async fn a_run_that_performs_no_step_hands_no_work_over() {
     let absent_role = format!("arn:aws:iam::{ACCOUNT}:role/never-created");
@@ -629,11 +640,12 @@ async fn a_run_that_performs_no_step_hands_no_work_over() {
 
     // Rows: the role nothing holds with a callback step to perform, a held role with a step
     // kind nothing here performs, and a callback step naming no queue of this account.
-    let rows: Vec<(&str, String, Value, String, bool)> = vec![
+    let rows: Vec<(&str, String, Value, String, String, bool)> = vec![
         (
             "a role this account holds nothing under",
             absent_role.clone(),
             json!("callback"),
+            format!("Role {absent_role} does not exist."),
             format!("Role {absent_role} does not exist."),
             false,
         ),
@@ -642,6 +654,7 @@ async fn a_run_that_performs_no_step_hands_no_work_over() {
             String::new(),
             json!("training"),
             service_com_amazonaws_sagemaker_sagemaker::state::PIPELINE_EXECUTION_NOT_RUN.to_string(),
+            service_com_amazonaws_sagemaker_sagemaker::state::PIPELINE_EXECUTION_NOT_RUN.to_string(),
             false,
         ),
         (
@@ -649,11 +662,14 @@ async fn a_run_that_performs_no_step_hands_no_work_over() {
             String::new(),
             json!("unaddressable"),
             no_queue,
+            state::PIPELINE_EXECUTION_STEP_FAILURE.to_string(),
             true,
         ),
     ];
 
-    for (index, (case, role, kind, expected_reason, dispatched)) in rows.iter().enumerate() {
+    for (index, (case, role, kind, expected_reason, expected_run_reason, dispatched)) in
+        rows.iter().enumerate()
+    {
         let emulator = Emulator::new();
         let queue_url = emulator.given_queue(&format!("unperformed{index}")).await;
         let role = if role.is_empty() {
@@ -690,7 +706,7 @@ async fn a_run_that_performs_no_step_hands_no_work_over() {
                 str_field(&settled, "PipelineExecutionStatus"),
                 str_field(&settled, "FailureReason")
             ),
-            ("Failed".to_string(), expected_reason.clone()),
+            ("Failed".to_string(), expected_run_reason.clone()),
             "case {case:?}: the run's terminal status and reason, got {settled}"
         );
         let step = sole_step(case, &emulator.steps(&execution).await);

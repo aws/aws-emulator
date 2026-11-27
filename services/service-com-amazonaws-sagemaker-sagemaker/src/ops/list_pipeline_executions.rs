@@ -1,22 +1,14 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op ListPipelineExecutions
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `ListPipelineExecutions`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
-//!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`ListPipelineExecutions::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
-//!
-//! ## Shape of an operation
-//!
-//! Each operation is a struct that owns the shared engine and implements
-//! [`smithy_server_runtime::Operation`]. The framework constructs one per service via
-//! `ListPipelineExecutions::new(engine)` and drives it through the centralized request walk:
-//! deserialize → validate → `handle` → serialize. You write ONLY the `handle` body.
+//! IMPLEMENTED: filters, sorts and pages the executions `StartPipelineExecution` recorded
+//! for ONE stored pipeline, reporting one `PipelineExecutionSummary` per run the request
+//! selects. A pipeline the account does not hold is refused with the modelled
+//! `ResourceNotFound` rather than answered with an empty list. The only write is the
+//! terminal status the CLOCK already owes a run, the same move
+//! `DescribePipelineExecution` materialises, so a listing never changes what a later
+//! caller sees beyond what was already due.
+//! This is the ONLY file to touch for this operation.
 //!
 //! ## Reaching this service's state
 //!
@@ -137,6 +129,19 @@ impl<Eng> ListPipelineExecutions<Eng> {
     }
 }
 
+/// `SortBy`'s member that orders the runs by their own ARN rather than by when they
+/// started. `CreationTime`, this operation's documented default ("The field by which to
+/// sort results. The default is CreatedTime."), is `crate::state::DEFAULT_SORT_BY`, and
+/// `SortOrder`'s default is `crate::state::DEFAULT_SORT_ORDER`, this operation documenting
+/// none of its own.
+///
+/// Which values each member may take is the MODEL's constraint, and the framework refuses a
+/// value outside a modelled enum before this handler runs — in the envelope AWS words a
+/// constraint violation in, over that member's own value set — so nothing is re-checked
+/// here: reaching the body means `SortBy` is one of the two members below and `SortOrder`
+/// one of its own two.
+const SORT_BY_EXECUTION_ARN: &str = "PipelineExecutionArn";
+
 impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_runtime::Operation
     for ListPipelineExecutions<Eng>
 {
@@ -154,18 +159,166 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `ListPipelineExecutions` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(ListPipelineExecutionsErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("ListPipelineExecutions"))
+        let state = crate::state::service_state(&*self.engine)
+            .ok_or_else(|| crate::scaffolded::Scaffolded::validation(crate::state::NO_STATE))?;
+
+        // `SortBy` and `SortOrder` each select one member of their modelled enum; the
+        // framework already refused anything else (see [`SORT_BY_EXECUTION_ARN`]), so what
+        // is left is which member was asked for, each falling back to its documented
+        // default.
+        let sort_by = input
+            .sort_by
+            .as_deref()
+            .unwrap_or(crate::state::DEFAULT_SORT_BY);
+        let sort_order = input
+            .sort_order
+            .as_deref()
+            .unwrap_or(crate::state::DEFAULT_SORT_ORDER);
+        let descending = sort_order == crate::state::ORDER_DESCENDING;
+
+        let after = input.created_after.map(crate::state::timestamp_key);
+        let before = input.created_before.map(crate::state::timestamp_key);
+
+        // The listing is OF one pipeline, and `PipelineName` takes either form of
+        // `PipelineNameOrArn`; the store is keyed by name, so the ARN form is resolved the
+        // way every other `ArnOrName` reader in this service resolves it.
+        let name = crate::state::name_from_arn_or_name(&input.pipeline_name).to_string();
+
+        let now = ::std::time::SystemTime::now();
+        let mut store = state.lock();
+
+        if !store.pipelines.contains_key(&name) {
+            // Never a 200 with an empty list for a pipeline nothing holds: a caller cannot
+            // tell that from a pipeline that exists and has never run. A deleted pipeline
+            // is exactly as unresolvable as one nobody created — `DeletePipeline` removes
+            // the record, and its executions with it.
+            let arn = crate::state::resource_arn(
+                &crate::state::request_region(ctx),
+                crate::state::PIPELINE_ARN_KIND,
+                &name,
+            );
+            return Err(ListPipelineExecutionsErrorModeled::ResourceNotFound(
+                ResourceNotFound {
+                    message: Some(crate::state::does_not_exist(
+                        crate::state::PIPELINE_ENTITY,
+                        &arn,
+                    )),
+                },
+            )
+            .into());
+        }
+
+        // The one write this report may make: each run's own due terminal status, owed at
+        // the stored instant whether or not anybody called — the same move
+        // `DescribePipelineExecution` materialises, so the two readers never disagree about
+        // a run.
+        let mut settled: Vec<String> = Vec::new();
+        // Each record's creation key is computed ONCE, here, and carried beside the record:
+        // the bounds and the sort below both read it rather than converting the stored
+        // instant again on every comparison.
+        let mut matching: Vec<((i64, u32), crate::state::PipelineExecution)> = Vec::new();
+        for execution in store.pipeline_executions.values_mut() {
+            if execution.pipeline_name != name {
+                continue;
+            }
+            if execution.settle_status(now) {
+                settled.push(execution.arn.clone());
+            }
+            // Both bounds are inclusive, so a timestamp copied straight out of a prior
+            // response's `StartTime` still selects that run.
+            let created =
+                crate::state::timestamp_key(crate::state::timestamp(execution.creation_time));
+            let selected = after.is_none_or(|bound| created >= bound)
+                && before.is_none_or(|bound| created <= bound);
+            if selected {
+                matching.push((created, execution.clone()));
+            }
+        }
+        drop(store);
+
+        for arn in &settled {
+            // The transition is a state change, so it leaves the same record a create does
+            // rather than happening unobservably on a read path.
+            crate::state::record_state_change(Self::NAME, arn, ctx);
+        }
+
+        // `SortOrder` reverses the SORT KEY only. The tie-break stays the execution ARN
+        // ascending in both directions, so two runs started in the same instant keep one
+        // order whichever way the page is sorted — and a `NextToken` resolved against a
+        // freshly computed result set lands on the same boundary.
+        matching.sort_by(|(left_created, left), (right_created, right)| {
+            let by_key = if sort_by == SORT_BY_EXECUTION_ARN {
+                left.arn.cmp(&right.arn)
+            } else {
+                // The only other member is `CreationTime`, this operation's default.
+                left_created.cmp(right_created)
+            };
+            let by_key = if descending { by_key.reverse() } else { by_key };
+            by_key.then_with(|| left.arn.cmp(&right.arn))
+        });
+
+        let start = match input.next_token.as_deref() {
+            None => 0,
+            Some(token) => {
+                let resumed_after = crate::state::decode_page_token(token)
+                    .and_then(|arn| {
+                        matching
+                            .iter()
+                            .position(|(_, execution)| execution.arn == arn)
+                    })
+                    .ok_or_else(|| {
+                        // The crate's one wording for a token it cannot resolve, so every
+                        // paginated listing of this service refuses alike.
+                        crate::scaffolded::Scaffolded::validation(crate::state::STALE_PAGE_TOKEN)
+                    })?;
+                resumed_after + 1
+            }
+        };
+
+        // `MaxResults` caps the page, and so does the service's own ceiling: an absent or
+        // larger `MaxResults` still cannot make one call serialise every run of a pipeline.
+        // The token below is emitted whenever anything is left, so a paginating client walks
+        // the full result set exactly once either way.
+        let start = start.min(matching.len());
+        let page_size = input
+            .max_results
+            .map_or(crate::state::MAX_PAGE_SIZE, |max| {
+                max.clamp(1, crate::state::MAX_PAGE_SIZE)
+            })
+            .unsigned_abs() as usize;
+        let end = start.saturating_add(page_size).min(matching.len());
+        let page = &matching[start..end];
+
+        // A token only where a further page exists, so a paginating client stops.
+        let next_token = page
+            .last()
+            .filter(|_| end < matching.len())
+            .map(|(_, last)| crate::state::encode_page_token(&last.arn));
+
+        Ok(ListPipelineExecutionsOutput {
+            // "This list can be empty": a pipeline that has never run reports the list with
+            // no entry, never an absent member a caller would have to read as "unknown".
+            pipeline_execution_summaries: Some(
+                page.iter()
+                    .map(|(_, execution)| PipelineExecutionSummary {
+                        // The ARN the start minted, replayed rather than re-rendered, so a
+                        // summary and `DescribePipelineExecution` report one ARN per run.
+                        pipeline_execution_arn: Some(execution.arn.clone()),
+                        // "The start time of the pipeline execution" — when the start
+                        // recorded the run, which is the instant the reader reports as that
+                        // run's `CreationTime`.
+                        start_time: Some(crate::state::timestamp(execution.creation_time)),
+                        pipeline_execution_status: Some(execution.status.clone()),
+                        pipeline_execution_description: execution.description.clone(),
+                        pipeline_execution_display_name: execution.display_name.clone(),
+                        // "A message generated by SageMaker Pipelines describing why the
+                        // pipeline execution failed", so a run that has not failed carries
+                        // none.
+                        pipeline_execution_failure_reason: execution.failure_reason.clone(),
+                    })
+                    .collect(),
+            ),
+            next_token,
+        })
     }
 }

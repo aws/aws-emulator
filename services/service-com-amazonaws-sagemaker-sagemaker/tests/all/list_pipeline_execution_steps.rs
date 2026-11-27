@@ -14,6 +14,8 @@
 //!   failure reason, and nothing about work nothing performed (no `StartTime`, `EndTime`,
 //!   `Metadata`, `AttemptCount` or `CacheHitResult`);
 //! * a run that has reached no step (one still `Executing`) lists none;
+//! * a condition step is a step the run PERFORMS, so it reports its own `Succeeded` status
+//!   and instants, and only the steps of the branch it hands control to are reported;
 //! * the steps come back in the order they are reached, reversed by `SortOrder`, and
 //!   `MaxResults`/`NextToken` walk that order exactly once whatever the page size;
 //! * a request the store cannot resolve is refused and the listing changes nothing a
@@ -28,12 +30,7 @@ use service_com_amazonaws_sagemaker_sagemaker::state;
 use super::inference_deployment_lifecycle::{error_code, str_field, Emulator, ACCOUNT};
 // The definition and condition-step fixtures live beside the pipeline-lifecycle suite
 // that first needed them, so the shape of a stored definition is written once.
-use super::pipeline_lifecycle::{condition_step, create_body, definition, token};
-
-/// Long enough to pass `state::PIPELINE_EXECUTION_ENDS_AFTER`, read from the constant
-/// itself so the margin cannot drift from the span.
-const PAST_EXECUTION_DUE: Duration =
-    state::PIPELINE_EXECUTION_ENDS_AFTER.saturating_add(Duration::from_millis(400));
+use super::pipeline_lifecycle::{create_body, definition, token};
 
 /// One step as the listing reports it: the name it is addressed by and the optional
 /// display name and description its declaration carries.
@@ -152,26 +149,6 @@ async fn a_listing_reports_the_steps_of_the_run_the_stored_definition_declares()
             json!({}),
         ),
         (
-            "condition-branches-share-the-step-namespace",
-            json!([
-                labelled_step("Prepare", &[], None, None),
-                condition_step(
-                    "Check",
-                    json!([labelled_step("WhenTrue", &["Prepare"], Some("if"), None)]),
-                    json!([labelled_step("WhenFalse", &["Prepare"], None, Some("else"))]),
-                ),
-                labelled_step("After", &["Prepare"], None, None),
-            ]),
-            vec![
-                ("Prepare", None, None),
-                ("Check", None, None),
-                ("WhenTrue", Some("if"), None),
-                ("WhenFalse", None, Some("else")),
-                ("After", None, None),
-            ],
-            json!({}),
-        ),
-        (
             "selective-run-reports-only-the-steps-it-selected",
             json!([
                 labelled_step("Prepare", &[], None, None),
@@ -208,10 +185,11 @@ async fn a_listing_reports_the_steps_of_the_run_the_stored_definition_declares()
         runs.push((case, execution_arn, expected));
     }
 
-    tokio::time::sleep(PAST_EXECUTION_DUE).await;
-
     for (case, execution_arn, expected) in runs {
         let read = json!({ "PipelineExecutionArn": execution_arn });
+        // Wait for the CONDITION — the run left `Executing`, so it says what became of its
+        // steps — rather than for a span.
+        poll_until_terminal(&emulator, &read).await;
         let described = emulator.ok("DescribePipelineExecution", &read).await;
         let run_status = str_field(&described, "PipelineExecutionStatus");
         let run_reason = str_field(&described, "FailureReason");
@@ -315,6 +293,184 @@ async fn a_listing_reports_the_steps_of_the_run_the_stored_definition_declares()
     }
 }
 
+/// RULE: a condition step is a step the run PERFORMS — it evaluates the conditions it
+/// declares, so it reports its own `Succeeded` status and the instants it ran between —
+/// and the steps of the branch it hands control to are the only ones of its branches the
+/// run reaches: the other branch's steps have no step execution in this run, so the
+/// listing leaves them out.
+#[tokio::test]
+async fn a_condition_step_reports_only_the_branch_the_run_reached() {
+    let emulator = Emulator::new();
+
+    /// A condition step named `name` whose single condition compares the pipeline
+    /// parameter `Outcome` with `expected`, branching to `if_steps` or `else_steps`.
+    /// `Equals`/`LeftValue`/`RightValue` are the condition keys SageMaker Pipelines
+    /// publishes (the shape `pipeline_lifecycle::condition_step` writes).
+    fn parameterised_condition(name: &str, expected: &str, if_steps: Value, else_steps: Value) -> Value {
+        json!({
+            "Name": name,
+            "Type": "Condition",
+            "Arguments": {
+                "Conditions": [{
+                    "Type": "Equals",
+                    "LeftValue": { "Get": "Parameters.Outcome" },
+                    "RightValue": expected,
+                }],
+                "IfSteps": if_steps,
+                "ElseSteps": else_steps,
+            },
+        })
+    }
+
+    // Rows differ along which branch the conditions select, so each branch is the taken
+    // one in one row and the untaken one in the other.
+    /// One case: the pipeline (and the `Outcome` value its run assigns), the condition
+    /// outcome that selects, the steps the run reaches and the steps it does not.
+    type Row = (
+        &'static str,
+        &'static str,
+        &'static str,
+        Vec<&'static str>,
+        Vec<&'static str>,
+    );
+    let cases: Vec<Row> = vec![
+        (
+            "the-if-branch-is-taken",
+            "go",
+            "True",
+            vec!["Prepare", "Check", "WhenTrue", "After"],
+            vec!["WhenFalse"],
+        ),
+        (
+            "the-else-branch-is-taken",
+            "stop",
+            "False",
+            vec!["Prepare", "Check", "WhenFalse", "After"],
+            vec!["WhenTrue"],
+        ),
+    ];
+
+    for (case, outcome, expected_outcome, expected, unreached) in cases {
+        let steps = json!([
+            labelled_step("Prepare", &[], None, None),
+            parameterised_condition(
+                "Check",
+                "go",
+                json!([labelled_step("WhenTrue", &["Prepare"], Some("if"), None)]),
+                json!([labelled_step("WhenFalse", &["Prepare"], None, Some("else"))]),
+            ),
+            labelled_step("After", &["Prepare"], None, None),
+        ]);
+        let declaring = json!({
+            "Version": "2020-12-01",
+            "Metadata": {},
+            "Parameters": [{ "Name": "Outcome", "Type": "String", "DefaultValue": "stop" }],
+            "Steps": steps,
+        })
+        .to_string();
+        emulator
+            .ok(
+                "CreatePipeline",
+                &create_body(case, &declaring, &token(case)),
+            )
+            .await;
+        let started = emulator
+            .ok(
+                "StartPipelineExecution",
+                &json!({
+                    "PipelineName": case,
+                    "ClientRequestToken": token(case),
+                    "PipelineParameters": [{ "Name": "Outcome", "Value": outcome }],
+                }),
+            )
+            .await;
+        let read = json!({ "PipelineExecutionArn": str_field(&started, "PipelineExecutionArn") });
+
+        // The condition step was performed by the start itself, so it is reported with its
+        // own outcome while the run is still executing.
+        let running = emulator.ok("ListPipelineExecutionSteps", &read).await;
+        assert_eq!(
+            listed_names(&running),
+            vec!["Check".to_string()],
+            "case {case}: the run reports the step it performed, got {running:?}"
+        );
+        let check = listed(&running)
+            .into_iter()
+            .next()
+            .expect("the condition step");
+        assert_eq!(
+            check.get("StepStatus").and_then(Value::as_str),
+            Some("Succeeded"),
+            "case {case}: a condition step that evaluated its conditions succeeded, got \
+             {check:?}"
+        );
+        for member in ["StartTime", "EndTime", "AttemptCount"] {
+            assert!(
+                check.get(member).is_some(),
+                "case {case}: {member} is reported for the step the run performed, got \
+                 {check:?}"
+            );
+        }
+        // "The outcome of the condition evaluation that was run by this step execution"
+        // (`PipelineExecutionStepMetadata$Condition`), whose two members the model names
+        // `True` and `False`.
+        assert_eq!(
+            check
+                .get("Metadata")
+                .and_then(|metadata| metadata.get("Condition"))
+                .and_then(|condition| condition.get("Outcome"))
+                .and_then(Value::as_str),
+            Some(expected_outcome),
+            "case {case}: the condition step reports the outcome it came to, got {check:?}"
+        );
+
+        poll_until_terminal(&emulator, &read).await;
+        let settled = emulator
+            .ok(
+                "ListPipelineExecutionSteps",
+                &json!({
+                    "PipelineExecutionArn": read["PipelineExecutionArn"].clone(),
+                    "SortOrder": "Ascending",
+                }),
+            )
+            .await;
+        let reported = listed_names(&settled);
+        assert_eq!(
+            reported,
+            expected
+                .iter()
+                .map(|name| (*name).to_string())
+                .collect::<Vec<String>>(),
+            "case {case}: only the steps the run reached are reported, in the order they \
+             are reached, got {settled:?}"
+        );
+        for step in unreached {
+            assert!(
+                !reported.contains(&step.to_string()),
+                "case {case}: {step} is in the branch the run did not take, so it has no \
+                 step execution, got {settled:?}"
+            );
+        }
+    }
+}
+
+/// Poll the run `read` addresses until it leaves `Executing`, waiting for the CONDITION
+/// rather than for a span; panics once a generous deadline passes.
+async fn poll_until_terminal(emulator: &Emulator, read: &Value) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        let described = emulator.ok("DescribePipelineExecution", read).await;
+        if str_field(&described, "PipelineExecutionStatus") != "Executing" {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the run never left Executing, last read {described:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
 /// RULE: `MaxResults` caps one page and `NextToken` resumes exactly after the step the
 /// page stopped at, so following the tokens walks the whole result set once, in the
 /// requested order, whatever the page size — and a token that names no boundary of the
@@ -331,7 +487,12 @@ async fn pagination_walks_every_step_exactly_once() {
         .map(|name| labelled_step(name, &[], None, None))
         .collect();
     let execution_arn = started(&emulator, "paged", json!(steps), &json!({})).await;
-    tokio::time::sleep(PAST_EXECUTION_DUE).await;
+    // Wait for the CONDITION — the run left `Executing` — rather than for a span.
+    poll_until_terminal(
+        &emulator,
+        &json!({ "PipelineExecutionArn": execution_arn.clone() }),
+    )
+    .await;
 
     let mut descending: Vec<String> = names.clone();
     descending.reverse();

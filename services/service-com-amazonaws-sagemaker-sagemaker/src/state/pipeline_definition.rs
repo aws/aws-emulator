@@ -82,7 +82,7 @@ pub fn pipeline_definition_violation(definition: &str) -> Option<String> {
     }
 
     let mut declared = DeclaredSteps::default();
-    if let Some(violation) = collect_pipeline_steps(steps, 1, &mut declared) {
+    if let Some(violation) = collect_pipeline_steps(steps, 1, None, &mut declared) {
         return Some(violation);
     }
     // Resolution and the cycle walk both reach a dependency through `by_name`, so each
@@ -221,6 +221,18 @@ fn too_many_steps(declared: usize) -> String {
 /// `sqs_queue_url`.
 const PIPELINE_STEP_QUEUE_KEY: &str = "SqsQueueUrl";
 
+/// The key a condition step lists the conditions it evaluates under, as the SageMaker
+/// Python SDK's `ConditionStep` serialises its `conditions`.
+const PIPELINE_STEP_CONDITIONS_KEY: &str = "Conditions";
+
+/// The key a fail step carries the message it ends the run with under, as the SageMaker
+/// Python SDK's `FailStep` serialises its `error_message`.
+const PIPELINE_STEP_ERROR_MESSAGE_KEY: &str = "ErrorMessage";
+
+/// The two branch keys a condition step hands control to one of, in the schema's own
+/// order: the steps run when every condition holds, then the steps run when one does not.
+const PIPELINE_CONDITION_BRANCH_KEYS: [&str; 2] = ["IfSteps", "ElseSteps"];
+
 /// `<pipeline arn>/execution/<id>` — the one `PipelineExecutionArn` form this service
 /// mints, and the form the modelled pattern
 /// `^arn:aws[a-z\-]*:sagemaker:[a-z0-9\-]*:[0-9]{12}:pipeline\/.*\/execution\/.*$`
@@ -257,10 +269,15 @@ pub fn pipeline_definition_step_names(definition: &str) -> Vec<String> {
 /// SageMaker Python SDK's `Step` serialises its own `name`, `display_name` and
 /// `description` to. A step that declares neither optional key reports neither member.
 ///
-/// `sqs_queue_url` and `arguments` are what [`crate::state::dispatch_pipeline_steps`]
-/// performs a callback step from; that SDK's `CallbackStep` serialises its queue beside the
-/// step's `Arguments`, as `SqsQueueUrl`, and a definition written with the queue INSIDE the
-/// arguments names the same queue, so both placements are read.
+/// `sqs_queue_url`, `conditions`, `error_message` and `arguments` are what
+/// [`crate::state::dispatch_pipeline_steps`] performs a step from; that SDK's `CallbackStep`
+/// serialises its queue beside the step's `Arguments`, as `SqsQueueUrl`, and a definition
+/// written with the queue INSIDE the arguments names the same queue, so both placements are
+/// read — and the same for a condition step's `Conditions` and a fail step's `ErrorMessage`.
+///
+/// `branch` is the condition step's branch this step is declared in, for a step nested in
+/// one: a branch's steps run only when the condition step hands control to that branch, so
+/// the run needs to know which branch a step belongs to before it performs anything.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PipelineStepDeclaration {
     pub name: String,
@@ -268,7 +285,18 @@ pub struct PipelineStepDeclaration {
     pub description: Option<String>,
     pub step_type: String,
     pub sqs_queue_url: Option<String>,
+    pub conditions: Option<::serde_json::Value>,
+    pub error_message: Option<String>,
     pub arguments: Option<::serde_json::Value>,
+    pub branch: Option<PipelineStepBranch>,
+}
+
+/// The branch of a condition step one nested step is declared in: the step that decides,
+/// and whether this is the branch taken when every one of its conditions holds.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PipelineStepBranch {
+    pub condition_step: String,
+    pub when_conditions_hold: bool,
 }
 
 /// Every step a pipeline definition declares, in declaration order, as the control plane
@@ -282,7 +310,7 @@ pub fn pipeline_definition_step_declarations(definition: &str) -> Vec<PipelineSt
         return Vec::new();
     };
     let mut declared = DeclaredSteps::default();
-    let _ = collect_pipeline_steps(steps, 1, &mut declared);
+    let _ = collect_pipeline_steps(steps, 1, None, &mut declared);
     declared
         .steps
         .iter()
@@ -292,9 +320,47 @@ pub fn pipeline_definition_step_declarations(definition: &str) -> Vec<PipelineSt
             description: step.description.map(str::to_string),
             step_type: step.step_type.to_string(),
             sqs_queue_url: step.sqs_queue_url.map(str::to_string),
+            conditions: step.conditions.cloned(),
+            error_message: step.error_message.map(str::to_string),
             arguments: step.arguments.cloned(),
+            branch: step.branch.map(|(condition_step, when_conditions_hold)| {
+                PipelineStepBranch {
+                    condition_step: condition_step.to_string(),
+                    when_conditions_hold,
+                }
+            }),
         })
         .collect()
+}
+
+/// The default value each parameter a pipeline definition declares carries, keyed by the
+/// parameter's name — the value a run that assigns none uses.
+///
+/// A definition's `Parameters` entries carry `Name`, `Type` and an optional `DefaultValue`
+/// (the keys the SageMaker Python SDK's `ParameterString`/`ParameterInteger` serialise to),
+/// so a parameter declared without one has no default and a run that assigns it nothing
+/// leaves it unresolved. The values are the parsed JSON the definition wrote, so a numeric
+/// default stays a number.
+pub fn pipeline_definition_parameter_defaults(
+    definition: &str,
+) -> BTreeMap<String, ::serde_json::Value> {
+    let Ok(parsed) = ::serde_json::from_str::<::serde_json::Value>(definition) else {
+        return BTreeMap::new();
+    };
+    parsed
+        .get("Parameters")
+        .and_then(::serde_json::Value::as_array)
+        .map(|entries| {
+            entries
+                .iter()
+                .filter_map(|entry| {
+                    let name = entry.get("Name").and_then(::serde_json::Value::as_str)?;
+                    let default = entry.get("DefaultValue")?;
+                    Some((name.to_string(), default.clone()))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Every parameter name a pipeline definition declares, in declaration order.
@@ -350,8 +416,17 @@ struct PipelineStep<'a> {
     /// The Amazon SQS queue a callback step hands its work over through, from the step's
     /// own `SqsQueueUrl` or from the same key inside its `Arguments`.
     sqs_queue_url: Option<&'a str>,
+    /// The conditions a condition step evaluates, read from both placements the same way
+    /// the queue above is.
+    conditions: Option<&'a ::serde_json::Value>,
+    /// The message a fail step ends the run with, read from both placements the same way.
+    error_message: Option<&'a str>,
     /// The step's own `Arguments`, which a performed step hands to the worker.
     arguments: Option<&'a ::serde_json::Value>,
+    /// The condition step's branch this step is declared in, and whether that is the
+    /// branch taken when the conditions hold; `None` for a step declared beside the
+    /// pipeline's own steps rather than inside a branch.
+    branch: Option<(&'a str, bool)>,
 }
 
 /// Every step one definition declares, in declaration order, plus the index that makes
@@ -379,6 +454,7 @@ struct DeclaredSteps<'a> {
 fn collect_pipeline_steps<'a>(
     steps: &'a [::serde_json::Value],
     depth: usize,
+    branch: Option<(&'a str, bool)>,
     out: &mut DeclaredSteps<'a>,
 ) -> Option<String> {
     if depth > PIPELINE_MAX_STEP_DEPTH {
@@ -456,7 +532,15 @@ fn collect_pipeline_steps<'a>(
                 .get(PIPELINE_STEP_QUEUE_KEY)
                 .or_else(|| arguments.and_then(|args| args.get(PIPELINE_STEP_QUEUE_KEY)))
                 .and_then(::serde_json::Value::as_str),
+            conditions: member
+                .get(PIPELINE_STEP_CONDITIONS_KEY)
+                .or_else(|| arguments.and_then(|args| args.get(PIPELINE_STEP_CONDITIONS_KEY))),
+            error_message: member
+                .get(PIPELINE_STEP_ERROR_MESSAGE_KEY)
+                .or_else(|| arguments.and_then(|args| args.get(PIPELINE_STEP_ERROR_MESSAGE_KEY)))
+                .and_then(::serde_json::Value::as_str),
             arguments,
+            branch,
         });
 
         // Only a condition step holds steps of its own, and only under the two branch
@@ -464,17 +548,22 @@ fn collect_pipeline_steps<'a>(
         // so a list that merely happens to be named `Steps` there is NOT walked as
         // pipeline steps.
         if step_type == PIPELINE_CONDITION_STEP_TYPE {
-            for branch in ["IfSteps", "ElseSteps"] {
+            for branch_key in PIPELINE_CONDITION_BRANCH_KEYS {
                 let placements = [
-                    member.get(branch),
-                    member.get("Arguments").and_then(|args| args.get(branch)),
+                    member.get(branch_key),
+                    member.get("Arguments").and_then(|args| args.get(branch_key)),
                 ];
+                // The first branch key is the one taken when every condition holds.
+                let nested_branch =
+                    Some((name, branch_key == PIPELINE_CONDITION_BRANCH_KEYS[0]));
                 for nested in placements
                     .into_iter()
                     .flatten()
                     .filter_map(::serde_json::Value::as_array)
                 {
-                    if let Some(violation) = collect_pipeline_steps(nested, depth + 1, out) {
+                    if let Some(violation) =
+                        collect_pipeline_steps(nested, depth + 1, nested_branch, out)
+                    {
                         return Some(violation);
                     }
                 }
