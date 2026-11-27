@@ -38,16 +38,16 @@
 //!   member widen it, and the members combine.
 //! * `maxResults` / `nextToken` — the catalog is served WHOLE: the recorded
 //!   corpus shows the real service answering with every add-on that matches and
-//!   no `nextToken`, whatever those two members say — it SERVES a `maxResults`
-//!   past the 1..100 bound its own documentation states, and a `nextToken` as
-//!   well, in both cases answering with the whole matching catalog. So neither
-//!   member narrows anything here, nothing is truncated and no token is minted;
-//!   there is no page after the first to resume from. The bound is not declared
-//!   on the shape this operation's input binds either
-//!   (`DescribeAddonVersionsRequestMaxResults` in `smithy-model/`, which no other
-//!   operation binds): declaring it would have the centralized walk refuse,
-//!   before this handler runs, a call the real service answers. It is still what
-//!   the documentation above advises a caller to stay inside.
+//!   no `nextToken`, whatever those two members say. So neither member narrows
+//!   anything here, nothing is truncated and no token is minted; there is no
+//!   page after the first to resume from. `maxResults` is still BOUNDED by the
+//!   model like every other page size of this API — its member targets
+//!   `DescribeAddonVersionsRequestMaxResults`, `@range {min: 1, max: 100}`
+//!   (`smithy_query(query="operation",operation="DescribeAddonVersions")`) — so a
+//!   value outside those bounds is refused by the centralized walk before this
+//!   handler runs, in this API's own page-size sentence
+//!   (`crate::state::max_results_range_message`); a value inside them reaches
+//!   here and is ignored.
 //!
 //! Shared types live in `super::types`; the error channel in `crate::scaffolded`.
 //!

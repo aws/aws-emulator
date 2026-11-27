@@ -216,7 +216,7 @@ contents — read that shape in the model above when you need its own members.
 
 - **Route:** `GET /addons/supported-versions -> 200`
 - **Traits:** @paginated(inputToken=nextToken, outputToken=nextToken, items=addons)
-- **Input:** `kubernetesVersion` (string, @httpQuery(kubernetesVersion)), `maxResults` (integer, @httpQuery(maxResults)), `nextToken` (string, @httpQuery(nextToken)), `addonName` (string, @httpQuery(addonName)), `types` (list<string>, @httpQuery(types)), `publishers` (list<string>, @httpQuery(publishers)), `owners` (list<string>, @httpQuery(owners))
+- **Input:** `kubernetesVersion` (string, @httpQuery(kubernetesVersion)), `maxResults` (integer, range 1..100, @httpQuery(maxResults)), `nextToken` (string, @httpQuery(nextToken)), `addonName` (string, @httpQuery(addonName)), `types` (list<string>, @httpQuery(types)), `publishers` (list<string>, @httpQuery(publishers)), `owners` (list<string>, @httpQuery(owners))
 - **Output:** `addons` (list<AddonInfo>), `nextToken` (string)
 - **Errors:** `InvalidParameterException (HTTP 400)`, `ResourceNotFoundException (HTTP 404)`, `ServerException (HTTP 500)`
 

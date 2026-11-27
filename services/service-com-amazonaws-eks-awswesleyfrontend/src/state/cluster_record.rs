@@ -89,17 +89,31 @@ pub fn reported_vpc_config(
 /// `KubernetesNetworkConfigResponse$elasticLoadBalancing` "indicates the current
 /// configuration of the load balancing capability on your EKS Auto Mode cluster.
 /// For example, if the capability is enabled or disabled" — a capability is
-/// always in one of those two states, so it is always reported, and a cluster
-/// that did not ask for it runs with it disabled.
+/// always in one of those two states, so `enabled` is always reported, and a
+/// cluster that did not ask for it runs with it disabled.
+///
+/// Every OTHER member of the capability's configuration is reported as it was
+/// configured — the value this request names, else the one the cluster already
+/// runs with (`current`, `None` on a create, which has none to change) — and a
+/// capability nothing has configured reports none of them, so a change to one
+/// member leaves the others where the caller put them and nothing is reported
+/// that no caller asked for. `gatewayApi` is the Kubernetes Gateway API
+/// configuration of this capability, which a cluster carries only once a request
+/// names it.
 pub fn reported_elastic_load_balancing(
     requested: Option<&ElasticLoadBalancing>,
+    current: Option<&ElasticLoadBalancing>,
 ) -> ElasticLoadBalancing {
     ElasticLoadBalancing {
         enabled: Some(
             requested
                 .and_then(|load_balancing| load_balancing.enabled)
+                .or_else(|| current.and_then(|load_balancing| load_balancing.enabled))
                 .unwrap_or(false),
         ),
+        gateway_api: requested
+            .and_then(|load_balancing| load_balancing.gateway_api.clone())
+            .or_else(|| current.and_then(|load_balancing| load_balancing.gateway_api.clone())),
     }
 }
 

@@ -695,6 +695,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             ip_family: Some(ip_family),
             elastic_load_balancing: Some(state::reported_elastic_load_balancing(
                 requested_network.elastic_load_balancing.as_ref(),
+                // A cluster being created runs no configuration of its own yet.
+                None,
             )),
         };
 

@@ -364,6 +364,19 @@ pub struct KubernetesNetworkConfigRequest {
 #[derive(Debug, Clone, Default)]
 pub struct ElasticLoadBalancing {
     pub enabled: Option<bool>,
+    pub gateway_api: Option<GatewayApiConfiguration>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.eks#GatewayApiConfiguration")]
+#[derive(Debug, Clone, Default)]
+pub struct GatewayApiConfiguration {
+    pub crds: Option<CrdManagementConfiguration>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.eks#CrdManagementConfiguration")]
+#[derive(Debug, Clone, Default)]
+pub struct CrdManagementConfiguration {
+    pub managed: Option<bool>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.eks#Logging")]
@@ -495,9 +508,14 @@ pub struct HorizontalPodAutoscalerControllerConfigRequest {
     pub horizontal_pod_autoscaler_sync_period: Option<String>,
 }
 
-// `Cluster` is NOT declared here: an Amazon EKS cluster answer carries one member the
-// on-disk model does not declare (`vendedLogs`), which the derive cannot express, so that
-// structure's schema and codec are written out in `types/cluster_wire.rs`.
+// `Cluster` is NOT declared here, although every cluster-lifecycle operation
+// reaches it: Amazon EKS answers with one member beyond the ones this model
+// declares for the shape, so the declaration lives in `super::cluster_wire`,
+// which is hand-written for exactly that reason and carries the model's own
+// member list in the model's order. `types/mod.rs` re-exports it, so
+// `use super::types::*` resolves `Cluster` from here as it does any other shape.
+// Declaring it in both modules would make the name ambiguous (`E0659`) in every
+// module that globs this one.
 
 #[smithy_macros::smithy(shape = "com.amazonaws.eks#VpcConfigResponse")]
 #[derive(Debug, Clone, Default)]

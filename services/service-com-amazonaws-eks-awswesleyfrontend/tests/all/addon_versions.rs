@@ -30,7 +30,8 @@ use std::time::Duration;
 use service_com_amazonaws_eks_awswesleyfrontend::state::{
     self, addon_schema_not_found_message, ADDON_ANY_PLATFORM_VERSION, ADDON_OWNER_AWS,
     ADDON_OWNER_COMMUNITY, ADDON_OWNER_MARKETPLACE, ADDON_PUBLISHER_EKS,
-    ADDON_PUBLISHER_SAGEMAKER, CLUSTER_ACTIVATION_DELAY,
+    ADDON_PUBLISHER_SAGEMAKER, CLUSTER_ACTIVATION_DELAY, MAX_LIST_MAX_RESULTS,
+    MIN_LIST_MAX_RESULTS,
 };
 use smithy_server_runtime::MultiServiceRouter;
 
@@ -696,7 +697,10 @@ async fn filters_narrow_the_listing() {
 
 // ---------------------------------------------------------------------------
 // RULE: the catalog is served WHOLE — every add-on that matches the filters in
-// one answer with no `nextToken`, whatever `maxResults` and `nextToken` say.
+// one answer with no `nextToken`, whatever page inside the modelled bounds the
+// request asks for and whatever `nextToken` it carries; a page size OUTSIDE
+// those bounds is the parameter refusal every listing of this API answers it
+// with.
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
@@ -812,28 +816,49 @@ async fn the_catalog_is_served_whole_whatever_the_page_size() {
         addon_names(&filtered)
     );
 
-    // The real service does not enforce the 1..100 bound its documentation states
-    // for `maxResults`: the recorded corpus has it serving a value past that
-    // maximum, and ignoring it. So every value is accepted and none of them
-    // truncates the answer — the rows span the documented bounds, one past each,
-    // and a value no page size could be.
-    for (case, value) in [
-        ("the documented minimum", "1"),
-        ("the documented maximum", "100"),
-        ("below the documented minimum", "0"),
-        ("above the documented maximum", "101"),
-        ("negative", "-1"),
-    ] {
-        let answer = describe_addon_versions(&router, &format!("maxResults={value}")).await;
+    // `maxResults` is bounded by the model like every other page size of this API
+    // (`DescribeAddonVersionsRequestMaxResults` is `@range {min: 1, max: 100}`), so a
+    // value INSIDE the bounds is served — and served whole, because this listing has
+    // no page after the first — while a value outside them is the bad parameter it is.
+    // The rows are each published bound and one past each, plus a value no page size
+    // could be.
+    for page_size in [MIN_LIST_MAX_RESULTS, 2, MAX_LIST_MAX_RESULTS] {
+        let answer = describe_addon_versions(&router, &format!("maxResults={page_size}")).await;
         assert_eq!(
             answer.status, 200,
-            "case maxResults {case}: expected HTTP 200, got {answer:?}"
+            "case maxResults={page_size}: inside the modelled range expected HTTP 200, got \
+             {answer:?}"
         );
         assert_eq!(
             addon_names(&answer),
             whole,
-            "case maxResults {case}: expected the whole catalog, got {:?}",
+            "case maxResults={page_size}: expected the whole catalog, got {:?}",
             answer.body["addons"]
+        );
+    }
+    for page_size in [
+        MIN_LIST_MAX_RESULTS - 1,
+        MAX_LIST_MAX_RESULTS + 1,
+        -MIN_LIST_MAX_RESULTS,
+    ] {
+        let answer = describe_addon_versions(&router, &format!("maxResults={page_size}")).await;
+        assert_eq!(
+            answer.status, 400,
+            "case maxResults={page_size}: outside the modelled range expected HTTP 400, got \
+             {answer:?}"
+        );
+        let code = error_code(&answer);
+        assert_eq!(
+            code, "InvalidParameterException",
+            "case maxResults={page_size}: expected InvalidParameterException, got {code:?}"
+        );
+        // The sentence the whole service refuses a page size outside those bounds
+        // with: fixed text whose two numbers are the bounds themselves.
+        assert_eq!(
+            answer.message(),
+            state::max_results_range_message(),
+            "case maxResults={page_size}: expected the range sentence, got {:?}",
+            answer.message()
         );
     }
 }

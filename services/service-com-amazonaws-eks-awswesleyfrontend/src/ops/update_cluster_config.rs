@@ -827,9 +827,11 @@ fn requested_change(
         }
         if let Some(load_balancing) = requested.elastic_load_balancing.as_ref() {
             let mut next = record.kubernetes_network_config.clone().unwrap_or_default();
-            next.elastic_load_balancing = Some(state::reported_elastic_load_balancing(Some(
-                load_balancing,
-            )));
+            let current = next.elastic_load_balancing.take();
+            next.elastic_load_balancing = Some(state::reported_elastic_load_balancing(
+                Some(load_balancing),
+                current.as_ref(),
+            ));
             categories.push(UPDATE_TYPE_AUTO_MODE);
             params.push(param(
                 UPDATE_PARAM_KUBERNETES_NETWORK_CONFIG,
@@ -1116,10 +1118,32 @@ fn network_value(network: &KubernetesNetworkConfigRequest) -> String {
     if let Some(load_balancing) = network.elastic_load_balancing.as_ref() {
         entry.insert(
             "elasticLoadBalancing".to_string(),
-            enabled_value(load_balancing.enabled),
+            load_balancing_value(load_balancing),
         );
     }
     ::serde_json::Value::Object(entry).to_string()
+}
+
+/// The JSON for the requested load balancing capability: the `enabled` toggle every
+/// capability carries, plus the Gateway API configuration of this one when the request
+/// names it. A member the request did not carry is not in the value it asked for.
+fn load_balancing_value(load_balancing: &ElasticLoadBalancing) -> ::serde_json::Value {
+    let mut entry = ::serde_json::Map::new();
+    if let Some(enabled) = load_balancing.enabled {
+        entry.insert("enabled".to_string(), ::serde_json::json!(enabled));
+    }
+    if let Some(gateway_api) = load_balancing.gateway_api.as_ref() {
+        let mut gateway = ::serde_json::Map::new();
+        if let Some(crds) = gateway_api.crds.as_ref() {
+            let mut management = ::serde_json::Map::new();
+            if let Some(managed) = crds.managed {
+                management.insert("managed".to_string(), ::serde_json::json!(managed));
+            }
+            gateway.insert("crds".to_string(), ::serde_json::Value::Object(management));
+        }
+        entry.insert("gatewayApi".to_string(), ::serde_json::Value::Object(gateway));
+    }
+    ::serde_json::Value::Object(entry)
 }
 
 /// The JSON for one of the `{ "enabled": <bool> }` capability toggles.

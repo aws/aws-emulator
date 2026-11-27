@@ -35,6 +35,13 @@
 //! compensates for is in `vendor/smithy-macros`, which is read-only from here. Once the
 //! generator takes a recorded member, delete this module and put the derive back on the
 //! structure; `tests/all/cluster_vended_logs.rs` pins the wire form either way.
+//!
+//! AFTER A MODEL REFRESH. This module is hand-written, so an update leaves it alone,
+//! while `shared_types` is rendered from the model and gets the derived `Cluster` back —
+//! which makes the name ambiguous (`E0659`) in every module that globs `types`. So a
+//! refresh is followed by two edits: bring the member list below into agreement with
+//! `smithy_query(query="shape", shape="Cluster")` again, and drop the re-rendered
+//! declaration from `shared_types` so this one is the service's only `Cluster`.
 
 use super::*;
 
