@@ -558,6 +558,28 @@ pub async fn listed_fields(emulator: &Emulator, case: &str, domain_id: &str) -> 
     }
 }
 
+/// `BatchGetCaseRule` over `ids`, as the WHOLE response body.
+///
+/// The one place a suite drives that read, so a suite asserting on a member
+/// beside the two lists — `unprocessedCaseRules` — starts from the same call as
+/// one that only needs `caseRules` and `errors`.
+pub async fn batch_get_case_rules_response(
+    emulator: &Emulator,
+    case: &str,
+    domain_id: &str,
+    ids: &[&str],
+) -> Value {
+    let requested: Vec<Value> = ids.iter().map(|id| json!({ "id": id })).collect();
+    emulator
+        .ok(
+            case,
+            "POST",
+            &format!("/domains/{domain_id}/rules-batch"),
+            json!({ "caseRules": requested }),
+        )
+        .await
+}
+
 /// Create a template requiring `field_ids`, returning its id.
 pub async fn template(
     emulator: &Emulator,

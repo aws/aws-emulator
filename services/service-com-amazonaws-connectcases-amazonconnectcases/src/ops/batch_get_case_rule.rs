@@ -174,6 +174,23 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             );
         }
 
+        // Every identifier is checked for the FORM a case-rule identifier takes
+        // before any of them is looked up: one that is not a case-rule
+        // identifier at all names no rule the service could have minted, so the
+        // whole call is a bad request rather than a batch reporting that
+        // identifier as one this domain holds no rule for. A well-formed
+        // identifier nothing resolves is still reported per item below.
+        if !input
+            .case_rules
+            .iter()
+            .all(|requested| crate::state::case_rule_id_is_well_formed(&requested.id))
+        {
+            return Err(BatchGetCaseRuleErrorModeled::ValidationException(
+                crate::state::invalid_case_rule_ids(),
+            )
+            .into());
+        }
+
         let store = state.lock();
         let domain = store
             .domain(&input.domain_id)
@@ -209,9 +226,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             case_rules,
             errors,
             // Every requested id was either resolved or reported in `errors`, so
-            // none was left unprocessed. The member is optional in the model,
-            // unlike the two above, so nothing is reported for it.
-            unprocessed_case_rules: None,
+            // none was left unprocessed — which is reported as the EMPTY list,
+            // not as an absent member: the member carries the outcome of this
+            // call's own work, so a client that iterates it to find what the
+            // service could not process is handed a collection whatever
+            // happened, exactly as the two lists above are and as
+            // `BatchPutFieldOptions` reports its own per-item list.
+            unprocessed_case_rules: Some(Vec::new()),
         })
     }
 }

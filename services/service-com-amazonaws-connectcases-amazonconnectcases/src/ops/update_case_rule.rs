@@ -1,15 +1,9 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op UpdateCaseRule
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `UpdateCaseRule`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
-//!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`UpdateCaseRule::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! IMPLEMENTED: writes the members the request carries onto the stored case rule in
+//! [`crate::state`], leaving the rest of the record as it was.
+//! It is the ONLY file to touch for this operation.
 //!
 //! ## Shape of an operation
 //!
@@ -159,18 +153,128 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `UpdateCaseRule` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(UpdateCaseRuleErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("UpdateCaseRule"))
+        let Some(state) = crate::state::service_state(&*self.engine) else {
+            return Err(UpdateCaseRuleErrorModeled::InternalServerException(
+                crate::state::state_unavailable(),
+            )
+            .into());
+        };
+        let now = ::std::time::SystemTime::now();
+
+        // Pure input validation, done BEFORE the store lock is taken, exactly as
+        // on the create path: a rule's `required`/`hidden` conditions nest
+        // without a modelled bound on their depth, so the walk is bounded first
+        // and every scan after it is linear in what these ceilings admit.
+        if let Some(rule) = input.rule.as_ref() {
+            if let Some(message) = crate::state::case_rule_conditions_too_complex("rule", rule) {
+                return Err(
+                    UpdateCaseRuleErrorModeled::ValidationException(ValidationException { message })
+                        .into(),
+                );
+            }
+            if let CaseRuleDetails::fieldOptions(options) = rule {
+                if let Some(message) = crate::state::list_too_long(
+                    "rule.fieldOptions.parentChildFieldOptionsMappings",
+                    options.parent_child_field_options_mappings.len(),
+                    crate::state::MAX_PARENT_CHILD_FIELD_OPTIONS_MAPPINGS,
+                ) {
+                    return Err(UpdateCaseRuleErrorModeled::ValidationException(
+                        ValidationException { message },
+                    )
+                    .into());
+                }
+            }
+        }
+        let referenced_fields = input
+            .rule
+            .as_ref()
+            .map(crate::state::case_rule_field_ids)
+            .unwrap_or_default();
+
+        let mut store = state.lock();
+
+        // Both ids are resolved against the store before anything is written: a
+        // rule is scoped to its domain, so an unknown domain and a rule the
+        // named domain holds no LIVE record for are both the modelled 404.
+        let domain = store
+            .domain_mut(&input.domain_id)
+            .map_err(UpdateCaseRuleErrorModeled::ResourceNotFoundException)?;
+        domain
+            .case_rule_mut(&input.case_rule_id)
+            .map_err(UpdateCaseRuleErrorModeled::ResourceNotFoundException)?;
+
+        // A case rule's name identifies the rule to a human within its domain,
+        // so a rename onto a name another LIVE rule already holds is refused —
+        // the same rule the create path applies, and as `UpdateTemplate`
+        // refuses a rename. Renaming a rule to the name it already has is not a
+        // conflict with itself.
+        if let Some(name) = input.name.as_deref() {
+            if domain.case_rules.values().any(|rule| {
+                !rule.deleted && rule.name == name && rule.case_rule_id != input.case_rule_id
+            }) {
+                return Err(UpdateCaseRuleErrorModeled::ConflictException(
+                    crate::state::name_conflict(crate::state::ResourceKind::CaseRule, name),
+                )
+                .into());
+            }
+        }
+
+        // Every field the replacement rule acts upon is resolved against the
+        // domain's own schema BEFORE anything is stored, so a stored rule never
+        // carries a reference that cannot be followed.
+        let unknown =
+            domain.unknown_field_ids(referenced_fields.iter().map(::std::string::String::as_str));
+        if !unknown.is_empty() {
+            return Err(UpdateCaseRuleErrorModeled::ValidationException(
+                // `rule` is the input member the references rode in, which the
+                // refusal attributes them to.
+                crate::state::unknown_fields_in("rule", &unknown),
+            )
+            .into());
+        }
+
+        // Only the members the request carries are written: a member the request
+        // left out asks for no change to it, so the stored value is preserved.
+        let stored = domain
+            .case_rule_mut(&input.case_rule_id)
+            .map_err(UpdateCaseRuleErrorModeled::ResourceNotFoundException)?;
+        let mut changed = false;
+        if let Some(name) = input.name {
+            changed |= stored.name != name;
+            stored.name = name;
+        }
+        if let Some(description) = input.description {
+            changed |= stored.description.as_deref() != Some(description.as_str());
+            stored.description = Some(description);
+        }
+        if let Some(rule) = input.rule {
+            // The rule body is a union the caller composed, so it is stored as
+            // given and the write counts as a change: what it replaces is not
+            // compared member by member.
+            changed = true;
+            stored.rule = rule;
+        }
+        // `lastModifiedTime` is "Timestamp when the resource was created or last
+        // modified", so it moves only when this call modified something.
+        if changed {
+            stored.last_modified_time = now;
+        }
+        drop(store);
+
+        // The audit record for a state-changing call: who asked, what it
+        // touched and what came of it. Never a credential — only the access key
+        // id the caller presented.
+        ::tracing::info!(
+            target: "emulator::audit",
+            operation = Self::NAME,
+            akid = %::emulator_server::extract_akid(&ctx.parts().headers),
+            domain_id = %input.domain_id,
+            case_rule_id = %input.case_rule_id,
+            outcome = if changed { "updated" } else { "unchanged" },
+            "case rule updated"
+        );
+
+        // The documented success: HTTP 200 with an empty body.
+        Ok(UpdateCaseRuleOutput {})
     }
 }

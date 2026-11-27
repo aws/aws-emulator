@@ -1533,15 +1533,8 @@ async fn batch_get_case_rules(
     domain_id: &str,
     ids: &[&str],
 ) -> (Vec<Value>, Vec<Value>) {
-    let requested: Vec<Value> = ids.iter().map(|id| json!({ "id": id })).collect();
-    let response = emulator
-        .ok(
-            case,
-            "POST",
-            &format!("/domains/{domain_id}/rules-batch"),
-            json!({ "caseRules": requested }),
-        )
-        .await;
+    let response =
+        crate::harness::batch_get_case_rules_response(emulator, case, domain_id, ids).await;
     let rules = response
         .get("caseRules")
         .and_then(Value::as_array)
@@ -1812,9 +1805,13 @@ async fn a_batch_read_of_case_rules_is_scoped_to_its_domain_and_reports_each_id(
     // A repeated id is answered once per occurrence, as on `BatchGetField`; an
     // id this domain holds no rule for — including one that exists in ANOTHER
     // domain — is a per-item failure rather than a failure of the whole call.
+    // The unresolvable id is a WELL-FORMED case-rule identifier: one that is not
+    // a case-rule identifier at all is a bad request, which
+    // `case_rule_reads.rs` pins.
+    let unknown = "00000000-0000-4000-8000-000000000000";
     let requested = [
         first.as_str(),
-        "no-such-case-rule",
+        unknown,
         second.as_str(),
         first.as_str(),
         elsewhere.as_str(),
@@ -1846,7 +1843,7 @@ async fn a_batch_read_of_case_rules_is_scoped_to_its_domain_and_reports_each_id(
     assert_eq!(
         failed,
         vec![
-            ("no-such-case-rule", "ResourceNotFound"),
+            (unknown, "ResourceNotFound"),
             (elsewhere.as_str(), "ResourceNotFound"),
         ],
         "case \"a mixed batch\": an id this domain holds no rule for is a per-item \
@@ -2247,7 +2244,10 @@ async fn a_template_references_the_case_rules_of_its_own_domain() {
 /// pages to exhaustion so the answer is every rule of the domain and not only the
 /// first page. `maxResults` and `nextToken` are `@httpQuery` members of this
 /// operation, so both travel in the query string rather than in the body.
-async fn listed_case_rules(
+///
+/// `pub(crate)` so a sibling suite that has to see what the listing enumerates
+/// after a delete reaches this walk rather than growing a second copy of it.
+pub(crate) async fn listed_case_rules(
     emulator: &Emulator,
     case: &str,
     domain_id: &str,

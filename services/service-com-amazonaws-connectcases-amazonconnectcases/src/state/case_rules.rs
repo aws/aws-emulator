@@ -112,6 +112,20 @@ impl Domain {
         self.case_rules.get(case_rule_id)
     }
 
+    /// The LIVE case rule `case_rule_id` names, for writing, or the modelled
+    /// 404 for it. A rule that has been deleted is not one a caller can change,
+    /// exactly as [`Domain::template`] treats a deleted template — the record
+    /// survives for the batch read only ([`Self::case_rule_record`]).
+    pub fn case_rule_mut(
+        &mut self,
+        case_rule_id: &str,
+    ) -> Result<&mut CaseRule, ResourceNotFoundException> {
+        self.case_rules
+            .get_mut(case_rule_id)
+            .filter(|rule| !rule.deleted)
+            .ok_or_else(|| not_found(ResourceKind::CaseRule, case_rule_id))
+    }
+
     /// Every case rule this domain still holds, in creation order and each
     /// paired with the key [`order_key`] builds for it, with the deleted ones
     /// left out: what a listing of case rules reports. A deleted rule is left
@@ -271,6 +285,43 @@ pub fn template_rule_field_ids(rules: &[TemplateRule]) -> Vec<String> {
         .iter()
         .filter_map(|rule| rule.field_id.clone())
         .collect()
+}
+
+/// The sentence the service refuses a BATCH READ of case rules with when the
+/// identifiers it was given are not case-rule identifiers at all. Fixed text,
+/// interpolating nothing: the call is refused as a whole, and the offending
+/// identifiers are deliberately not echoed back.
+pub const INVALID_CASE_RULE_IDS_MESSAGE: &str = "The CaseRuleId(s) provided are not valid";
+
+/// Whether `id` has the FORM of a case-rule identifier: the 8-4-4-4-12
+/// hexadecimal form every identifier this service mints takes ([`new_id`]).
+///
+/// The model constrains `CaseRuleId` by length alone (`1..500`,
+/// `smithy_query(query="shape", shape="CaseRuleId")`), so an identifier of any
+/// other form passes the boundary validator and reaches the handler. Such an
+/// identifier names no rule the service could ever have minted, so it is a bad
+/// REQUEST rather than an identifier the domain happens to hold no rule for —
+/// which is why it is refused ([`invalid_case_rule_ids`]) instead of being
+/// reported per item.
+///
+/// Only the form is checked here, in either hexadecimal case; the lookup that
+/// follows a well-formed identifier is exact, so a well-formed identifier the
+/// domain holds no record for is still reported per item.
+pub fn case_rule_id_is_well_formed(id: &str) -> bool {
+    let groups: Vec<&str> = id.split('-').collect();
+    groups.len() == 5
+        && groups.iter().map(|group| group.len()).eq([8, 4, 4, 4, 12])
+        && groups
+            .iter()
+            .all(|group| group.bytes().all(|byte| byte.is_ascii_hexdigit()))
+}
+
+/// The modelled 400 a batch read of case rules refuses a request whose
+/// identifiers are not well-formed ([`case_rule_id_is_well_formed`]) with.
+pub fn invalid_case_rule_ids() -> ValidationException {
+    ValidationException {
+        message: INVALID_CASE_RULE_IDS_MESSAGE.to_string(),
+    }
 }
 
 /// The modelled 400 for a request whose `member` CONFIGURES a resource with
