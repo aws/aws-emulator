@@ -1039,6 +1039,10 @@ fn restored_vector_indexes(
             arn: crate::state::index_arn(region, table, &index.name),
             transient_status: crate::state::IndexStatus::Creating,
             active_at: now + crate::state::STATUS_TRANSITION,
+            // The restored index is being built from now, so its resources are being
+            // allocated for the restore's own span
+            // ([`crate::state::VectorIndex::in_resource_allocation`]).
+            allocated_at: now + crate::state::STATUS_TRANSITION,
             deleting_at: None,
             reported_counters: crate::state::MeteredCounters::new(now),
             // Restored WITH the table, whatever the SOURCE index was reporting, so it

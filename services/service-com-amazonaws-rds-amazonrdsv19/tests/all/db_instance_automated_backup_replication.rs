@@ -925,19 +925,22 @@ async fn a_source_that_cannot_be_replicated_is_refused() {
         "case {case:?}: the refusal must name the instance the source ARN carries and the \
          Region that ARN points at, got {refused}"
     );
-    // The STOP resolves that same source instance, so it is refused the same not-found fault.
+    // The STOP resolves no source instance at all: what it asks is whether this Region holds a
+    // replication from the instance that ARN names, and an instance that does not exist holds
+    // no more of one than an idle instance does — so the answer is the state fault, worded over
+    // the ARN the request carried.
     let case = "a stop on a source instance that does not exist";
     let refused = expect_error(
         case,
         stop_replication(&router, destination, &missing).await,
-        404,
-        NOT_FOUND,
+        400,
+        INVALID_STATE,
     );
     assert_eq!(
         text(&refused, "Message"),
-        format!("Requested DB Instance {missing_identifier} not found in source region {region}"),
-        "case {case:?}: the refusal must name the instance the source ARN carries and the \
-         Region that ARN points at, got {refused}"
+        format!("DB Instance {missing} is not replicating to the current region."),
+        "case {case:?}: the refusal must name the ARN the request carried and state that \
+         nothing is replicating here, got {refused}"
     );
 
     // A value that is not the ARN of a DB instance at all: a bare identifier, an ARN of

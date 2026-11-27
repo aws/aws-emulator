@@ -358,72 +358,61 @@ async fn an_action_read_against_the_stored_item_reports_its_own_cancellation_rea
 }
 
 /// RULE 1 at the item-size CEILING: WHOSE failure a crossing of the documented 400 KB quota
-/// is follows the bytes the STATEMENT asks for. A statement whose own payload — the key it
-/// addresses plus what its clauses write — cannot fit in an item is unsatisfiable however the
-/// store looks, so the CALL is refused with the sentence the update path words that quota with
-/// and no action is graded. A statement that does fit and crosses the quota only over bytes the
-/// STORED item already held is "an item size becomes too large (larger than 400 KB) [...]
-/// because of changes made by the transaction", one of the circumstances
-/// `TransactionCanceledException` documents, so the transaction is CANCELLED and the reason
-/// list names that action with the same sentence, every blameless action beside it reporting
-/// `None`.
+/// is follows WHICH ceiling the update path held the request to. It weighs an update over the
+/// bytes the item it leaves stores PLUS what the request's own shape costs — the part of the
+/// item its clauses leave alone charged at a floor, the frame each further clause states — so a
+/// request charged anything of its own was held to a ceiling under the quota that no stored
+/// item can lift: crossing it is a fact of the REQUEST, the CALL is refused with the sentence
+/// the update path words that quota with and no action is graded. A request charged nothing of
+/// its own was held to the quota's own count, so a crossing there is "an item size becomes too
+/// large (larger than 400 KB) [...] because of changes made by the transaction", one of the
+/// circumstances `TransactionCanceledException` documents, so the transaction is CANCELLED and
+/// the reason list names that action with the same sentence, every blameless action beside it
+/// reporting `None`.
 ///
-/// The rows differ along what the rule generalises over: HOW the ceiling is crossed (one
-/// oversized value, two clauses that only cross together, a value the update COMPUTES from
-/// what the request carried, and a small value over an item already near the ceiling), and
-/// WHERE the crossing action sits (alone, before an action that would succeed, after one,
-/// beside an action whose condition does not hold) — which is what the reason list reports at
-/// each action's own index once the crossing is the transaction's own doing.
+/// The rows differ along what the rule generalises over: WHAT the request is charged for (two
+/// clauses that only cross together, a clause whose operand is a call), WHERE the crossing
+/// action sits (alone, before an action that would succeed, after one, beside an action whose
+/// condition does not hold) — which is what the reason list reports at each action's own index
+/// once the crossing is the transaction's own doing — and, for the cancelling rows, a small
+/// value over an item already near the quota.
 ///
 /// The other side of the rule is driven beside them: an item a `Put` CARRIES past the ceiling
 /// is too large as SUBMITTED — a fact of the REQUEST, settled before any stored item is read —
 /// so it refuses the CALL with the sentence for an item that was carried and grades no action.
 #[tokio::test]
-async fn an_update_past_the_item_quota_answers_by_what_the_statement_asks_for() {
+async fn an_update_past_the_item_quota_answers_by_which_ceiling_bound_the_request() {
     let router = seeded().await;
 
-    // Past the documented 400 KB item ceiling in one value, and in two clauses that only
-    // cross it together.
-    let oversize = "x".repeat(400 * 1024);
+    // Past the documented 400 KB item ceiling in two clauses that only cross it together, so
+    // the update path charges this request the second clause's own frame beside the item.
     let half = "y".repeat(210 * 1024);
-    // Each row: the case and the actions the transaction carries. Every one of them states a
-    // change no item has room for, so every one REFUSES the call, whatever stands beside it.
-    let asked_for: Vec<(&str, Value)> = vec![
-        (
-            "the oversized action alone",
-            json!([update("SET big = :v", json!({":v": {"S": oversize.clone()}}))]),
-        ),
+    let two_clauses = || {
+        update(
+            "SET one = :a, two = :b",
+            json!({":a": {"S": half.clone()}, ":b": {"S": half.clone()}}),
+        )
+    };
+    // Each row: the case and the actions the transaction carries. Every one of them is charged
+    // a ceiling of the request's own, so every one REFUSES the call, whatever stands beside it.
+    let charged_its_own_ceiling: Vec<(&str, Value)> = vec![
+        ("the oversized action alone", json!([two_clauses()])),
         (
             "the oversized action before one that would succeed",
-            json!([
-                update("SET big = :v", json!({":v": {"S": oversize.clone()}})),
-                put("after-the-ceiling")
-            ]),
+            json!([two_clauses(), put("after-the-ceiling")]),
         ),
         (
             "the oversized action after one that would succeed",
-            json!([
-                put("before-the-ceiling"),
-                update("SET big = :v", json!({":v": {"S": oversize.clone()}}))
-            ]),
+            json!([put("before-the-ceiling"), two_clauses()]),
         ),
         (
             "the oversized action beside a condition that does not hold",
-            json!([
-                failing_check(),
-                update("SET big = :v", json!({":v": {"S": oversize.clone()}}))
-            ]),
+            json!([failing_check(), two_clauses()]),
         ),
         (
-            "two clauses that cross the ceiling together",
-            json!([update(
-                "SET one = :a, two = :b",
-                json!({":a": {"S": half.clone()}, ":b": {"S": half.clone()}})
-            )]),
-        ),
-        (
-            // The value the update COMPUTES crosses the ceiling, and both operands are the
-            // request's own: what the statement asks for cannot fit in an item either.
+            // The clause's operand is a CALL, whose frame the request is charged whatever the
+            // item it leaves holds: the value the update COMPUTES crosses the ceiling, and
+            // both operands are the request's own.
             "a value the update computes past the ceiling from what it carried",
             json!([update(
                 "SET joined = list_append(:a, :b)",
@@ -432,7 +421,7 @@ async fn an_update_past_the_item_quota_answers_by_what_the_statement_asks_for() 
         ),
     ];
 
-    for (case, actions) in asked_for {
+    for (case, actions) in charged_its_own_ceiling {
         let (status, answered) =
             call(&router, "TransactWriteItems", json!({"TransactItems": actions})).await;
         assert_eq!(
@@ -442,8 +431,8 @@ async fn an_update_past_the_item_quota_answers_by_what_the_statement_asks_for() 
                 message(&answered).as_str()
             ),
             (400, "ValidationException", UPDATE_TOO_BIG),
-            "case {case:?}: expected the call refused for what the statement asks for, got \
-             {status} with {answered}"
+            "case {case:?}: expected the call refused for the ceiling the request was held to, \
+             got {status} with {answered}"
         );
         assert!(
             answered.get("CancellationReasons").is_none(),
@@ -511,7 +500,7 @@ async fn an_update_past_the_item_quota_answers_by_what_the_statement_asks_for() 
         "TransactWriteItems",
         json!({"TransactItems": [{"Put": {"TableName": ITEMS, "Item": {
             "pk": {"S": "carried-past-the-ceiling"},
-            "big": {"S": oversize.clone()},
+            "big": {"S": "x".repeat(400 * 1024)},
         }}}]}),
     )
     .await;

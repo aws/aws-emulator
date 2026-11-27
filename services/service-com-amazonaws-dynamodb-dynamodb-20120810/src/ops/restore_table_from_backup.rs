@@ -832,6 +832,10 @@ fn restored_vector_indexes(
                 distance_function: recorded.distance_function.clone().unwrap_or_default(),
                 transient_status: crate::state::IndexStatus::Creating,
                 active_at: now + crate::state::STATUS_TRANSITION,
+                // The index comes into being here, so its resources are being allocated
+                // for the restore's own span
+                // ([`crate::state::VectorIndex::in_resource_allocation`]).
+                allocated_at: now + crate::state::STATUS_TRANSITION,
                 // An index the restore brings into being is new, so nothing is owed its
                 // removal ([`crate::state::VectorIndex::begin_deletion`]).
                 deleting_at: None,

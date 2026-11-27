@@ -1542,6 +1542,10 @@ impl DeclaredVectorIndex<'_> {
             // settles with the table, and one added to a table that already holds items
             // keeps building after the table's own update has settled.
             active_at: backfill.settled_at(now + crate::state::STATUS_TRANSITION),
+            // An index's resources are allocated for the span the table's own update takes,
+            // and only then does the build read what it was given to read
+            // ([`crate::state::VectorIndex::in_resource_allocation`]).
+            allocated_at: now + crate::state::STATUS_TRANSITION,
             // Nobody has asked for this index to be removed, so the clock owes it no
             // removal ([`crate::state::VectorIndex::begin_deletion`]).
             deleting_at: None,

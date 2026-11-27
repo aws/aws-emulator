@@ -76,7 +76,11 @@
 //! already holds to read, so its description reports `Backfilling` for that span
 //! ([`crate::state::IndexBackfill`]) — true while those items are being indexed, false
 //! once they have been, which is also what an index added to an empty table reports from
-//! the start. Either way the change is index lifecycle work, so
+//! the start. A `Delete` of an index that is still being BUILT is held to the phase the
+//! build is in: while its resources are being allocated there is nothing allocated to take
+//! away, so the delete is refused `ResourceInUseException` naming the phase to retry in and
+//! the index keeps building ([`index_build_refusal`]); from the backfill on it is served,
+//! cancelling the build. Either way the change is index lifecycle work, so
 //! the table is left `UPDATING` for the span below like any other — and a call asking for
 //! more than one create or one delete of a vector index exceeds what one `UpdateTable`
 //! carries, which is the control plane's `LimitExceededException`.
@@ -1460,6 +1464,10 @@ const ONLINE_INDEX_ACTIONS_AT_ONCE: usize = 1;
 /// * a DELETE of the very index that is being built CANCELS that build rather than asking
 ///   for a second one, so it is served — cancelling a build is the escape hatch a caller
 ///   that mis-specified an index has, and the index moves to `DELETING` from there;
+/// * except while a VECTOR index is still having its resources allocated, the phase every
+///   build starts in ([`crate::state::VectorIndex::in_resource_allocation`]): there is
+///   nothing allocated to take away yet, so that delete is the in-use refusal naming the
+///   phase to retry in, and the index keeps building;
 /// * everything else asked of a table that is still UPDATING is the plain in-use refusal,
 ///   over the table this request addressed.
 ///
@@ -1479,6 +1487,29 @@ fn index_build_refusal(
         })
         .into()
     };
+    // A vector index whose build is still having its RESOURCES ALLOCATED is not yet a
+    // resource a delete can take away ([`crate::state::VectorIndex::in_resource_allocation`]),
+    // so the delete is refused with the in-use class — "you tried to update a resource that
+    // was already being updated" — and the phase the caller must wait for, before anything
+    // is staged, leaving the index exactly as it was. Once the build is reading the items
+    // the table already held, or has settled, the same delete is served below.
+    for delete in vector_index_updates
+        .iter()
+        .filter_map(|update| update.delete.as_ref())
+    {
+        if stored
+            .vector_indexes
+            .iter()
+            .any(|index| index.name == delete.index_name && index.in_resource_allocation(now))
+        {
+            return Some(in_use(format!(
+                "Attempt to change a resource which is still in use: Index creation is in \
+                 resource allocation phase. Retry deletion during backfilling phase or when \
+                 the index is active. Table: {name} Index: {}",
+                delete.index_name
+            )));
+        }
+    }
     // Every index of this table the clock still owes its build, whichever KIND it is, as
     // the name it answers to. One list, because both the per-table limit and the
     // cancellation below are about an index being BUILT and neither is about its kind.

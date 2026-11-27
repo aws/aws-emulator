@@ -9,10 +9,12 @@
 //!    how many of a table's indexes may be built at once, so it is answered
 //!    `LimitExceededException` — the code a client backs off and retries one index at a
 //!    time on — rather than the in-use code it would abort on;
-//! 2. a `Delete` of the index that is itself being built CANCELS that build: it is served
-//!    whatever phase the build is in — cancelling a build is how a caller undoes an index it
-//!    mis-specified — and the index reports `DELETING` from there, one rule for both kinds
-//!    of index, because the lifecycle belongs to the index and not to the kind;
+//! 2. a `Delete` of the index that is itself being built is held to the PHASE that build is
+//!    in: while a vector index is still having its resources allocated there is nothing
+//!    allocated to take away, so the delete is refused `ResourceInUseException` and the
+//!    index keeps building; from its backfill on — and once it has settled — the delete is
+//!    served, CANCELS the build and reports the index `DELETING` from there, which is how a
+//!    caller undoes an index it mis-specified;
 //! 3. a vector index exists only on an on-demand table, so an `UpdateTable` that would
 //!    leave a table carrying one in the provisioned capacity mode is refused — whether it
 //!    adds the index or switches the mode — while one that removes the last of them in the
@@ -337,13 +339,23 @@ fn gsi_status(description: &Value, index: &str) -> Option<String> {
         })
 }
 
+/// AWS's fixed sentence for a delete asked of a vector index whose creation is still
+/// allocating its resources: fixed text up to `Table:`, then the two names the request
+/// stated.
+fn allocation_phase_message(table: &str, index: &str) -> String {
+    format!(
+        "Attempt to change a resource which is still in use: Index creation is in resource \
+         allocation phase. Retry deletion during backfilling phase or when the index is \
+         active. Table: {table} Index: {index}"
+    )
+}
+
 #[tokio::test]
-async fn deleting_the_index_being_built_is_served_in_the_allocation_phase_too() {
+async fn deleting_a_vector_index_still_allocating_its_resources_is_refused() {
     let router = emulator();
-    // Rows differ in whether the table holds items for the index to read, which decides
-    // only how long the build runs: a delete that arrives straight after the create is
-    // served either way, because cancelling a build is the escape hatch of a caller that
-    // mis-specified the index.
+    // Rows differ in whether the table holds items for the index to read, which decides only
+    // how long the build runs after its resources are allocated: a delete that arrives while
+    // that allocation is still running is refused either way.
     for (case, table, items) in [
         ("an index over pre-existing items", "VectorAllocFilled", 2usize),
         ("an index over no items at all", "VectorAllocEmpty", 0),
@@ -351,19 +363,25 @@ async fn deleting_the_index_being_built_is_served_in_the_allocation_phase_too() 
         on_demand_table(&router, table, items).await;
         ok(&router, "UpdateTable", add_vector_index(table, "vidx-a")).await;
 
-        let answered = ok(&router, "UpdateTable", remove_vector_index(table, "vidx-a")).await;
+        let (status, body) = call(&router, "UpdateTable", remove_vector_index(table, "vidx-a"))
+            .await;
         assert_eq!(
-            vector_index_status(&answered["TableDescription"], "vidx-a").as_deref(),
-            Some("DELETING"),
-            "case {case:?}: the cancelled build must be reported on its way out, got {answered}"
+            (status, error_code(&body).as_str(), message(&body).as_str()),
+            (
+                400,
+                "ResourceInUseException",
+                allocation_phase_message(table, "vidx-a").as_str()
+            ),
+            "case {case:?}: expected the delete refused while the index allocates its \
+             resources, got {status} with {body}"
         );
-        // And the index is gone once the removal the accepted delete owed falls due.
-        describe_when_active(&router, table, table).await;
+
+        // The refused delete wrote nothing: the index is still there, still being built.
         let described = ok(&router, "DescribeTable", json!({"TableName": table})).await;
         assert_eq!(
-            vector_index_status(&described["Table"], "vidx-a"),
-            None,
-            "case {case:?}: the settled table must carry no such index, got {described}"
+            vector_index_status(&described["Table"], "vidx-a").as_deref(),
+            Some("CREATING"),
+            "case {case:?}: the refused delete must leave the index building, got {described}"
         );
     }
 }

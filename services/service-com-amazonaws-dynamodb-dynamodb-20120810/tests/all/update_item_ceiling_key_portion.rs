@@ -26,8 +26,10 @@
 //! service's boundary and not about this suite's arithmetic.
 //!
 //! `TransactWriteItems`' `Update` action is bound by the same ceiling as the standalone
-//! `UpdateItem`, and states the crossing as that action's own cancellation reason, so the
-//! measured boundary is re-asserted through it.
+//! `UpdateItem`, and states the crossing as the CALL's own refusal where the key portion sits
+//! below the floor — the request was then held to a ceiling of its own — and as that action's
+//! cancellation reason where the portion fills the floor and the ceiling is the quota itself,
+//! so the measured boundary is re-asserted through it.
 //!
 //! Source of the ceiling: "Service, Account, and Table Quotas" in the Amazon DynamoDB
 //! Developer Guide ("The maximum item size in DynamoDB is 400 KB"). The floor under the
@@ -180,11 +182,13 @@ async fn the_update_ceiling_is_the_quota_less_what_the_key_portion_is_charged() 
 
 /// RULE: `TransactWriteItems`' `Update` is bound by the standalone `UpdateItem`'s ceiling —
 /// the ceiling is the ITEM's and does not move with the surface the change arrived through —
-/// and the crossing here is the STATEMENT's own ask: each row writes its whole non-key payload
-/// in one clause over the key it addresses, which no stored item can make fit, so the CALL is
-/// refused in the class and the sentence the single-item path states, whether the key portion
-/// fills the charged floor or sits below it. The byte the change stops at is the one
-/// `UpdateItem` stops at, and nothing is applied.
+/// and WHO answers for a crossing follows which ceiling the update path held the request to:
+/// where the key portion sits BELOW the floor it is charged at, the request was held to a
+/// ceiling of its own, below the quota and the same however the store looks, so the CALL is
+/// refused in the class and the sentence the single-item path states; where the key portion
+/// fills that floor the ceiling is the quota's own count, so a crossing is the item having
+/// become too large and the transaction is CANCELLED with that action's reason. The byte the
+/// change stops at is the one `UpdateItem` stops at either way, and nothing is applied.
 #[tokio::test]
 async fn a_transactional_update_shares_the_single_item_ceiling() {
     let router = emulator();
@@ -215,23 +219,46 @@ async fn a_transactional_update_shares_the_single_item_ceiling() {
             transact(&table, shape, largest + 1),
         )
         .await;
-        // The item this action would leave is written by the statement itself over the key it
-        // addresses, so one byte past the charged ceiling is a request the update path cannot
-        // serve however the store looks: the CALL is refused with the single-item path's
-        // sentence and no action is graded for it.
-        assert_eq!(
-            (status, error_code(&body).as_str(), message(&body).as_str()),
-            (400, "ValidationException", UPDATE_TOO_BIG),
-            "case {:?}: expected the call refused one byte past the charged ceiling, got \
-             {status} with {body}",
-            shape.case
-        );
-        assert!(
-            body.get("CancellationReasons").is_none(),
-            "case {:?}: a refused call grades no action, so it reports no reason list, got \
-             {body}",
-            shape.case
-        );
+        if shape.key_bytes() < KEY_PORTION_FLOOR {
+            // The item this action would leave is written by the statement itself over a key
+            // portion the update path charges at its floor, so this request was held to a
+            // ceiling of its own: the CALL is refused with the single-item path's sentence and
+            // no action is graded for it.
+            assert_eq!(
+                (status, error_code(&body).as_str(), message(&body).as_str()),
+                (400, "ValidationException", UPDATE_TOO_BIG),
+                "case {:?}: expected the call refused one byte past the charged ceiling, got \
+                 {status} with {body}",
+                shape.case
+            );
+            assert!(
+                body.get("CancellationReasons").is_none(),
+                "case {:?}: a refused call grades no action, so it reports no reason list, got \
+                 {body}",
+                shape.case
+            );
+        } else {
+            // The key portion fills that floor, so the ceiling this request was held to is the
+            // quota's own count and one byte past it is an item that became too large: THIS
+            // action's failure, which cancels the transaction.
+            assert_eq!(
+                (
+                    status,
+                    error_code(&body).as_str(),
+                    body["CancellationReasons"][0]["Code"].as_str(),
+                    body["CancellationReasons"][0]["Message"].as_str(),
+                ),
+                (
+                    400,
+                    "TransactionCanceledException",
+                    Some("ValidationError"),
+                    Some(UPDATE_TOO_BIG),
+                ),
+                "case {:?}: expected that action's cancellation one byte past the quota, got \
+                 {status} with {body}",
+                shape.case
+            );
+        }
         let stored = stored_length(&router, &table, shape).await;
         assert_eq!(
             stored,

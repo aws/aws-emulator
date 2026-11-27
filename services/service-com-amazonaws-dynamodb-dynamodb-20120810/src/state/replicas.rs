@@ -1077,6 +1077,10 @@ impl Table {
                     reported_counters: MeteredCounters::new(now),
                     transient_status: IndexStatus::Creating,
                     active_at: now + STATUS_TRANSITION,
+                    // Built with the replica's own table from now, so its resources are
+                    // being allocated for that span
+                    // ([`super::VectorIndex::in_resource_allocation`]).
+                    allocated_at: now + STATUS_TRANSITION,
                     deleting_at: None,
                     // Created WITH the replica's own table, by the same rule its secondary
                     // indexes follow ([`super::IndexBackfill`]).

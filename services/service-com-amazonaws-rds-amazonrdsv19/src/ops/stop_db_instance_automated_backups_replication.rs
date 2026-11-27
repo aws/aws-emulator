@@ -10,14 +10,16 @@
 //! reporting them, and the source instance's automated backup stops reporting the replication
 //! ([`crate::state::ReplicatedInstanceBackupRecord`]).
 //!
-//! `SourceDBInstanceArn` names the SOURCE instance, in the Region that ARN carries, and that
-//! instance is resolved before anything else: an ARN naming an instance no Region holds
-//! addresses a resource that does not exist, which is the modelled `DBInstanceNotFoundFault`
-//! (HTTP 404), worded the way every cross-Region source of this service is
-//! ([`crate::state::source_db_instance_not_found_message`]) — the same refusal the START leg
-//! answers for the same ARN. Only once the source is resolved is the REPLICATION into this
-//! Region looked for, and a call that names none — one never enabled, one already stopped, one
-//! made in another Region — is refused the modelled `InvalidDBInstanceStateFault` (HTTP 400).
+//! `SourceDBInstanceArn` names the SOURCE instance, in the Region that ARN carries, and what
+//! this call asks is about the Region it was MADE to: is that instance replicating its
+//! automated backups into THIS Region? So the Region of the call is where the answer is found
+//! and no source instance is looked up: a call that names no replication into this Region —
+//! one never enabled, one already stopped, one made in another Region, one whose ARN names an
+//! instance no Region holds — has nothing to stop, which is the modelled
+//! `InvalidDBInstanceStateFault` (HTTP 400) worded over the ARN the request carried
+//! ([`crate::state::backup_replication_not_to_this_region_message`]). The START leg, which
+//! has to read the source instance's own properties to replicate them, is the leg that
+//! answers `DBInstanceNotFoundFault` for an ARN naming no instance.
 //!
 //! ## Shape of an operation
 //!
@@ -182,42 +184,21 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let mut store = state.lock();
         // The transitions the clock already made due — owed at this instant whether or not
         // anybody called — in BOTH Regions this call reads: the DESTINATION, whose replicated
-        // backups are the state the stop acts on, and the SOURCE Region, where the instance
-        // the ARN names is resolved.
+        // backups are the state the stop acts on, and the SOURCE Region, which the ARN names.
         store.settle_due_transitions(&destination);
         if source.region != destination {
             store.settle_due_transitions(&source.region);
         }
 
-        // The source instance is resolved FIRST, in the Region its own ARN names, exactly as
-        // the START leg resolves it: `SourceDBInstanceArn` is the handle this call is made
-        // with, and an ARN naming an instance that Region does not hold addresses a resource
-        // that does not exist rather than a replication that is not in force — the modelled
-        // `DBInstanceNotFoundFault`, worded the Region-qualified way this service words every
-        // cross-Region source it cannot find.
-        if !store
-            .db_instances
-            .contains_key(&(source.region.clone(), source.identifier.clone()))
-        {
-            return Err(
-                StopDBInstanceAutomatedBackupsReplicationErrorModeled::DBInstanceNotFoundFault(
-                    DBInstanceNotFoundFault {
-                        message: Some(crate::state::source_db_instance_not_found_message(
-                            &input.source_db_instance_arn,
-                            &source.region,
-                        )),
-                    },
-                )
-                .into(),
-            );
-        }
-
-        // What this operation then RESOLVES is the replication into the Region of the call:
-        // the destination's own record carries the source instance's Region and identifier, so
-        // a Region that holds no replication from that instance has none to stop. That is why
-        // a stop of a replication never enabled, one already stopped, or one issued in the
-        // wrong destination Region reads as "nothing to stop" rather than as a missing
-        // instance.
+        // What this operation RESOLVES is the replication into the Region of the call, and
+        // nothing else: the destination's own record carries the source instance's Region and
+        // identifier, so a Region that holds no replication from the instance the ARN names
+        // has none to stop. No source instance is looked up at all — the question is about
+        // THIS Region's replication, which an instance that does not exist has no more of
+        // than one that does — so a stop of a replication never enabled, one already
+        // stopped, one issued in the wrong destination Region, and one naming an instance no
+        // Region holds all read as "nothing to stop": the modelled
+        // `InvalidDBInstanceStateFault`.
         let replicating = store
             .replicated_instance_backup_from(&destination, &source)
             .filter(|backup| backup.is_replicating())

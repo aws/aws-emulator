@@ -118,12 +118,12 @@ pub fn same_region_backup_replication_message(source_arn: &str) -> String {
 /// replicating its automated backups into THIS Region? — has one state it can refuse:
 /// "nothing is replicating here", which is the modelled `InvalidDBInstanceStateFault` ("the
 /// DB instance isn't in a valid state"). It is the answer whether the replication was never
-/// enabled, has already been stopped, or runs into another Region: none of them is a
-/// replication into this Region. An ARN naming an instance that does not exist at all is NOT
-/// one of them — the source instance is resolved before this question is asked, and a source
-/// no Region holds is the Region-qualified `DBInstanceNotFoundFault`
-/// ([`source_db_instance_not_found_message`]). The sentence's one variable part is the
-/// request's `SourceDBInstanceArn`, reproduced whole.
+/// enabled, has already been stopped, runs into another Region, or names an instance no Region
+/// holds at all: none of them is a replication into this Region, and the question is asked of
+/// this Region's own records rather than of the source instance — which is why an ARN naming
+/// nothing is answered here and not with the `DBInstanceNotFoundFault` the START leg, which
+/// has to read that instance, answers ([`source_db_instance_not_found_message`]). The
+/// sentence's one variable part is the request's `SourceDBInstanceArn`, reproduced whole.
 pub fn backup_replication_not_to_this_region_message(source_arn: &str) -> String {
     format!("DB Instance {source_arn} is not replicating to the current region.")
 }

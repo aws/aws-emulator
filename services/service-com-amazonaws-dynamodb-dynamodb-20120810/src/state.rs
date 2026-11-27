@@ -1372,6 +1372,12 @@ pub struct VectorIndex {
     /// Whether this index still has the items its table already held to read, which is
     /// what its description reports as `Backfilling` ([`IndexBackfill`]).
     pub backfill: IndexBackfill,
+    /// When the clock owes the END of this index's RESOURCE-ALLOCATION phase, which is
+    /// where a build starts: an index's resources are allocated first, and only then does
+    /// it read the items the table already held ([`IndexBackfill`]).
+    ///
+    /// What tells the two phases of one build apart ([`Self::in_resource_allocation`]).
+    pub allocated_at: SystemTime,
 }
 
 impl VectorIndex {
@@ -1391,6 +1397,19 @@ impl VectorIndex {
         } else {
             self.transient_status
         }
+    }
+
+    /// Whether this index's creation is still in its RESOURCE-ALLOCATION phase at `now`:
+    /// it is being created, and the clock has not yet made the end of that phase due
+    /// ([`Self::allocated_at`]).
+    ///
+    /// What a caller may do to an index being BUILT follows which of the two phases its
+    /// build is in: the resources are allocated before anything is read, and an index whose
+    /// allocation is still running is not yet a resource a delete can take away — so that
+    /// delete is refused, while an index that has reached its backfill, or settled, is
+    /// deleted.
+    pub fn in_resource_allocation(&self, now: SystemTime) -> bool {
+        self.status(now) == IndexStatus::Creating && now < self.allocated_at
     }
 
     /// Accept this index's DELETE, owing its removal at `due_at`.

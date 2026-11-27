@@ -56,9 +56,11 @@ enum Surface {
     /// The single-item update.
     UpdateItem,
     /// The `Update` action of a transaction, held to the same ceiling as the single-item
-    /// update: it cancels the transaction with that action's reason, in that same sentence,
-    /// where the item the change leaves is past the quota in the bytes it stores, and refuses
-    /// the call where only what the request's own accounting charges crossed the ceiling.
+    /// update: it refuses the call where the update path charges the request a ceiling of its
+    /// own — the part of the item the change leaves alone below the floor it is charged at, a
+    /// further clause — and cancels the transaction with that action's reason, in the same
+    /// sentence, where that ceiling was the quota's own count and the item the change leaves is
+    /// past it.
     TransactWriteItems,
     /// A PartiQL `UPDATE` run on its own.
     ExecuteStatement,
@@ -308,14 +310,22 @@ async fn an_update_tops_out_at_the_floor_bound_item_ceiling() {
                  {key_bytes}-byte key charged as {key_charge}, got {charged}"
             );
 
-            // One byte past it the change is refused, with the item left as it was.
+            // One byte past it the change is refused, with the item left as it was. What the
+            // transactional surface states it as follows whether the update path charged this
+            // request a ceiling of its own, which here is its key portion sitting below the
+            // floor that portion is charged at.
             let answered = call(
                 &router,
                 surface.operation(),
                 surface.request(shape, &key, largest + 1),
             )
             .await;
-            assert_refused(&case, surface, &answered);
+            assert_refused(
+                &case,
+                surface,
+                &answered,
+                surface.charges_the_key_floor() && key_bytes < KEY_PORTION_FLOOR,
+            );
             let stored = stored_length(&router, shape, &key).await;
             assert_eq!(
                 stored,
@@ -370,11 +380,17 @@ fn assert_served(
 
 /// Assert the change one byte past the boundary did not go through, each surface stating it as
 /// that surface does: as the CALL's own refusal with the update path's sentence on the
-/// single-item, standalone PartiQL and PartiQL-TRANSACTIONAL surfaces and on
-/// `TransactWriteItems` — each row's change writes its whole non-key payload itself, so what
-/// crossed the ceiling is what the STATEMENT asks for, which is a fact of the request on every
-/// surface — and as the slot's own error in a batch, which answers 200.
-fn assert_refused(case: &str, surface: Surface, answered: &(u16, Value)) {
+/// single-item and PartiQL surfaces, as the slot's own error in a batch (which answers 200),
+/// and on `TransactWriteItems` by WHICH ceiling the request was held to — the call's refusal
+/// where the update path charges the request a ceiling of its own (`charged_its_own_ceiling`:
+/// here, a key portion below the floor it is charged at), and that action's own cancellation
+/// where the ceiling was the quota's own count and the item the change leaves is past it.
+fn assert_refused(
+    case: &str,
+    surface: Surface,
+    answered: &(u16, Value),
+    charged_its_own_ceiling: bool,
+) {
     let (status, body) = answered;
     if surface == Surface::BatchExecuteStatement {
         assert_eq!(
@@ -386,6 +402,26 @@ fn assert_refused(case: &str, surface: Surface, answered: &(u16, Value)) {
             Some(UPDATE_TOO_BIG),
             "case {case:?}: expected the slot to state the update-path ceiling refusal, got {}",
             body["Responses"][0]
+        );
+        return;
+    }
+    if surface == Surface::TransactWriteItems && !charged_its_own_ceiling {
+        assert_eq!(
+            (
+                *status,
+                message(body).as_str(),
+                body["CancellationReasons"][0]["Code"].as_str(),
+                body["CancellationReasons"][0]["Message"].as_str(),
+            ),
+            (
+                400,
+                "Transaction cancelled, please refer cancellation reasons for specific reasons \
+                 [ValidationError]",
+                Some("ValidationError"),
+                Some(UPDATE_TOO_BIG),
+            ),
+            "case {case:?}: expected that action's cancellation one byte past the quota, got \
+             {status} with {body}"
         );
         return;
     }

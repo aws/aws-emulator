@@ -169,6 +169,28 @@ pub fn update_size_exceeded(table: &Table, item: &Item, shape: &UpdateRequestSha
     update_charged_size(table, item, shape) > MAX_ITEM_SIZE_BYTES
 }
 
+/// Whether the update path charges this REQUEST anything beyond the bytes the item it leaves
+/// STORES: the part of the item its clauses do not address charged at its floor
+/// ([`UNTOUCHED_PORTION_FLOOR_BYTES`]) rather than at the bytes it holds, and the frame each
+/// clause states ([`ParsedUpdate::request_shape_charge`]).
+///
+/// Which is what tells the two ceilings an update is held to apart. Where this is false the
+/// ceiling is the quota's own count over the item, so the only thing a crossing can be is the
+/// item having become too large; where it is true the request is held to a ceiling of its own,
+/// below the quota, that no stored item can lift — which is why a crossing there is a fact of
+/// the REQUEST wherever the request was stated from.
+///
+/// Measured over the part of the item the change does NOT address, which it leaves exactly as
+/// it found it, so the item handed here may be the one the addressed key HELD (or the `Key` map
+/// itself, for a key that holds none) just as well as the one the change leaves: the two carry
+/// the same unaddressed part, and nothing else is read.
+///
+/// A READ of the item it is handed: nothing is stored and nothing is modified.
+pub fn charged_beyond_the_item(item: &Item, shape: &UpdateRequestShape) -> bool {
+    let untouched = shape.untouched_bytes(item);
+    shape.clause_charge() > 0 || shape.untouched_portion_charge(untouched) > untouched
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
