@@ -15,8 +15,9 @@
 //!   collection over its shards;
 //! * the AUTHORIZATION gate: a command outside the handshake is answered for a session that
 //!   has not authenticated with this engine's own `AuthorizationFailed`;
-//! * SHARDING: `shardCollection`, and the rule that every document written to a sharded
-//!   collection carries that collection's shard key ([`super::sharding`]).
+//! * SHARDING: `shardCollection`, and the rules every document written to a sharded collection
+//!   holds to — that it carries that collection's shard key, that an upsert is targeted by it
+//!   and that it is never altered ([`super::sharding`]).
 //!
 //! Every fact a command is judged by is read from the control-plane STORE on each command
 //! rather than captured when the connection was accepted ([`super::ClusterSocket::facts`]), so
@@ -37,6 +38,7 @@ use document_engine::query;
 
 use super::refusal::{self, Refusal};
 use super::session::ClusterSession;
+use super::sharded_writes::Screening;
 use super::sharding;
 use super::{ClusterSocket, EndpointFacts, MONGO_COMPATIBILITY_VERSION};
 
@@ -156,46 +158,72 @@ fn run(
             sharding::shard_collection(&mut volume, &mut keys, command, argument)
         }
         // A write of a sharded collection is judged against that collection's shard key before
-        // any of its documents is stored — the documents an `insert` carries, and the document
-        // an upserting `update` statement would insert where its filter selects none, which are
-        // the two ways a document of a collection comes into being on this wire (the engine's
-        // `findAndModify` is not served at all).
+        // any of it is carried out — the documents an `insert` stores, and the statements an
+        // `update` applies, each entry on its own — and an entry the key refuses is reported as
+        // that entry's write error of a command that otherwise ran ([`super::sharded_writes`]).
         "insert" => {
             let collection = collection_of(argument, name)?;
-            if let Some(Bson::Array(documents)) = command.get("documents") {
-                let keys = socket.storage.lock_shard_keys();
-                sharding::documents_carry_the_shard_key(
-                    &keys,
-                    &format!("{database}.{collection}"),
-                    documents,
-                )?;
+            let Some(Bson::Array(documents)) = command.get("documents") else {
+                // A command carrying no documents array is the shared layer's to refuse.
+                return delegate(socket, session, &facts, database, command);
+            };
+            if !within_the_write_batch(documents) {
+                return delegate(socket, session, &facts, database, command);
             }
-            delegate(socket, session, &facts, database, command)
+            let namespace = format!("{database}.{collection}");
+            let screening = {
+                let keys = socket.storage.lock_shard_keys();
+                Screening::of(documents, ordered(command), |document| {
+                    sharding::document_carries_the_shard_key(&keys, &namespace, document)
+                })
+            };
+            if screening.admits_everything() {
+                return delegate(socket, session, &facts, database, command);
+            }
+            let narrowed = screening.narrowed(command, "documents", documents);
+            let reply = delegate(socket, session, &facts, database, &narrowed)?;
+            Ok(screening.report(reply))
         }
         "update" => {
             let collection = collection_of(argument, name)?;
-            if let Some(Bson::Array(statements)) = command.get("updates") {
-                let namespace = format!("{database}.{collection}");
+            let Some(Bson::Array(statements)) = command.get("updates") else {
+                return delegate(socket, session, &facts, database, command);
+            };
+            if !within_the_write_batch(statements) {
+                return delegate(socket, session, &facts, database, command);
+            }
+            let namespace = format!("{database}.{collection}");
+            // A write the cluster can REPLAY carries a transaction number: that is what a
+            // retryable write and a statement of a multi-statement transaction have, and what
+            // decides whether a statement may move a document between shards.
+            let retryable = command.contains_key("txnNumber");
+            let screening = {
                 let keys = socket.storage.lock_shard_keys();
-                for statement in statements {
+                Screening::of(statements, ordered(command), |statement| {
+                    // A statement that is not a document at all is the shared layer's to
+                    // refuse, as it is for an unsharded collection.
                     let Bson::Document(statement) = statement else {
-                        continue;
+                        return Ok(());
                     };
-                    if !statement.get("upsert").is_some_and(query::truthy) {
-                        continue;
-                    }
                     // The members an update statement carries its filter and its change in
                     // (`q` and `u`), which is what the shared command layer reads them from
                     // too.
-                    sharding::upsert_carries_the_shard_key(
+                    sharding::statement_respects_the_shard_key(
                         &keys,
                         &namespace,
+                        statement.get("upsert").is_some_and(query::truthy),
+                        retryable,
                         &document_member(statement, "q"),
                         &document_member(statement, "u"),
-                    )?;
-                }
+                    )
+                })
+            };
+            if screening.admits_everything() {
+                return delegate(socket, session, &facts, database, command);
             }
-            delegate(socket, session, &facts, database, command)
+            let narrowed = screening.narrowed(command, "updates", statements);
+            let reply = delegate(socket, session, &facts, database, &narrowed)?;
+            Ok(screening.report(reply))
         }
         // A collection that is gone is sharded no longer, and neither is any collection of a
         // database that is gone: the keys are the cluster's record of its own namespaces.
@@ -255,6 +283,23 @@ fn collection_of(argument: &Bson, command_name: &str) -> Result<String, Refusal>
             "{command_name} needs a collection name"
         ))),
     }
+}
+
+/// Whether a write command's entries are carried out in order, which is what decides whether
+/// the entries after a refused one are carried out at all: `ordered` as the command carries it,
+/// and in order for a command that carries no answer, which is the member's own default.
+fn ordered(command: &Document) -> bool {
+    command.get("ordered").is_none_or(query::truthy)
+}
+
+/// Whether a write command carries no more entries than one may — the ceiling the endpoint
+/// publishes as `maxWriteBatchSize` and the shared command layer holds every write to.
+///
+/// A command past it is refused THERE, with the sentence that layer words for it, so a command
+/// a client sized without limit is never screened entry by entry first: what bounds the work
+/// one command drives, and the reply it is answered with, is that one ceiling.
+fn within_the_write_batch(entries: &[Bson]) -> bool {
+    entries.len() <= engine_commands::MAX_WRITE_BATCH_SIZE as usize
 }
 
 /// A document-valued member of a command, and the empty document for a member that is absent

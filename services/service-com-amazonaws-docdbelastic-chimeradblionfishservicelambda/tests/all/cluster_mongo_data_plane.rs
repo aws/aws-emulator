@@ -738,15 +738,18 @@ fn value_at(document: &Document, path: &str) -> Option<Bson> {
     Some(value)
 }
 
-/// RULE: the shard key of a collection on an elastic cluster is exactly one hashed field, and
-/// every document written to a sharded collection carries a value at that key — a write that
-/// does not is refused, and stores nothing.
+/// RULE: a collection of an elastic cluster is CREATED sharded on exactly one hashed field, so
+/// `shardCollection` refuses — as a create that did not happen, in fixed text carrying no part
+/// of the request and no `codeName` — a key that does not name exactly one field and a key whose
+/// one field names an order instead of the hash, and refuses a namespace the cluster already
+/// holds as a collection that already exists.
 ///
-/// The rows of the first table span what the rule generalises over for the KEY: how many fields
-/// it names, and which sharding strategy each names. The second spans the WRITE: a document
-/// carrying the key, one missing it, and one of several missing it.
+/// The rows span what the rule generalises over for the KEY: how many fields it names, which
+/// sharding strategy each names, and the field's own form; and for the NAMESPACE: a collection
+/// a client sharded, re-sharded on the same key and on another, and one an ordinary write
+/// brought into being.
 #[::tokio::test(flavor = "multi_thread")]
-async fn a_shard_key_is_one_hashed_field_and_every_write_carries_it() {
+async fn a_shard_key_is_one_hashed_field_and_a_collection_is_sharded_once() {
     let emulator = Emulator::new();
     let created = emulator
         .create_cluster("shard key rules", "keys-elastic", ADMIN_USER, ADMIN_PASSWORD)
@@ -756,23 +759,45 @@ async fn a_shard_key_is_one_hashed_field_and_every_write_carries_it() {
     session
         .authenticate("shard key rules", SCRAM_SHA_1, ADMIN_USER, ADMIN_PASSWORD)
         .await;
-    let keys: Vec<(&str, Document, bool)> = vec![
-        ("one hashed field", doc! { "tenant": "hashed" }, true),
-        ("an ascending field", doc! { "tenant": 1_i32 }, false),
-        ("a descending field", doc! { "tenant": -1_i32 }, false),
+    // The two sentences an elastic cluster words a shard key it will not create a collection on
+    // with: both FIXED text, carrying nothing of the request.
+    let one_field = "Create collection failed. Must have exactly one Shard Key";
+    let not_hashed = "Create collection failed. Shard Key type must be hashed not range based";
+    let keys: Vec<(&str, Document, Option<&str>)> = vec![
+        ("one hashed field", doc! { "tenant": "hashed" }, None),
+        (
+            "one hashed field named by a path",
+            doc! { "owner.tenant": "hashed" },
+            None,
+        ),
+        (
+            "an ascending field",
+            doc! { "tenant": 1_i32 },
+            Some(not_hashed),
+        ),
+        (
+            "a descending field",
+            doc! { "tenant": -1_i32 },
+            Some(not_hashed),
+        ),
+        (
+            "a strategy spelled otherwise",
+            doc! { "tenant": "HASHED" },
+            Some(not_hashed),
+        ),
         (
             "two hashed fields",
             doc! { "tenant": "hashed", "region": "hashed" },
-            false,
+            Some(one_field),
         ),
         (
             "a hashed field beside a range one",
             doc! { "tenant": "hashed", "region": 1_i32 },
-            false,
+            Some(one_field),
         ),
-        ("no field at all", Document::new(), false),
+        ("no field at all", Document::new(), Some(one_field)),
     ];
-    for (index, (case, key, admitted)) in keys.into_iter().enumerate() {
+    for (index, (case, key, refused)) in keys.into_iter().enumerate() {
         let namespace = format!("shop.keyed{index}");
         let reply = session
             .command(
@@ -781,13 +806,20 @@ async fn a_shard_key_is_one_hashed_field_and_every_write_carries_it() {
                 doc! { "shardCollection": namespace.clone(), "key": key.clone() },
             )
             .await;
-        match admitted {
-            true => assert_eq!(
-                ok(&reply),
-                1.0,
-                "case {case}: expected {key:?} to be admitted as a shard key, got {reply:?}"
-            ),
-            false => {
+        match refused {
+            None => {
+                assert_eq!(
+                    ok(&reply),
+                    1.0,
+                    "case {case}: expected {key:?} to be admitted as a shard key, got {reply:?}"
+                );
+                assert_eq!(
+                    reply.get_str("collectionsharded").ok(),
+                    Some(namespace.as_str()),
+                    "case {case}: expected the reply to name the sharded namespace, got {reply:?}"
+                );
+            }
+            Some(sentence) => {
                 assert_eq!(
                     ok(&reply),
                     0.0,
@@ -800,47 +832,201 @@ async fn a_shard_key_is_one_hashed_field_and_every_write_carries_it() {
                      key code, got {reply:?}"
                 );
                 // The whole sentence, so a change to the wording is a failing test rather than
-                // a silent divergence: the fixed text and the key the request sent.
+                // a silent divergence.
                 assert_eq!(
                     errmsg(&reply),
-                    format!("Shard key {} must be hashed", rendered_key(&key)),
+                    sentence,
                     "case {case}: expected the shard-key refusal's sentence, got {reply:?}"
+                );
+                assert!(
+                    !reply.contains_key("codeName"),
+                    "case {case}: expected the refusal to carry the code alone, got {reply:?}"
+                );
+                // The create did not happen, so the namespace is still one a client can shard:
+                // a refused key leaves no collection behind.
+                let shardable = session
+                    .command(
+                        case,
+                        "admin",
+                        doc! {
+                            "shardCollection": namespace.clone(),
+                            "key": { "tenant": "hashed" },
+                        },
+                    )
+                    .await;
+                assert_eq!(
+                    ok(&shardable),
+                    1.0,
+                    "case {case}: expected {namespace} to be left unsharded by the refusal, got \
+                     {shardable:?}"
                 );
             }
         }
     }
-    // The collection sharded above (`shop.keyed0`, on `tenant`) is what the writes below are
-    // judged against; an unsharded collection of the same cluster is not judged at all.
-    let writes: Vec<(&str, &str, Vec<Document>, Option<i32>)> = vec![
+    // A collection an ordinary write brought into being is as much a collection the cluster
+    // holds as one a client sharded.
+    session
+        .command(
+            "an unsharded write",
+            "shop",
+            doc! { "insert": "carts", "documents": [ doc! { "total": 5_i32 } ] },
+        )
+        .await;
+    let held: Vec<(&str, &str, Document)> = vec![
+        (
+            "a collection sharded on the same key again",
+            "shop.keyed0",
+            doc! { "tenant": "hashed" },
+        ),
+        (
+            "a collection sharded on another key",
+            "shop.keyed0",
+            doc! { "region": "hashed" },
+        ),
+        (
+            "a collection an ordinary write created",
+            "shop.carts",
+            doc! { "tenant": "hashed" },
+        ),
+    ];
+    for (case, namespace, key) in held {
+        let reply = session
+            .command(
+                case,
+                "admin",
+                doc! { "shardCollection": namespace, "key": key },
+            )
+            .await;
+        assert_eq!(
+            ok(&reply),
+            0.0,
+            "case {case}: expected {namespace} to be refused as already held, got {reply:?}"
+        );
+        assert_eq!(
+            code(&reply),
+            48,
+            "case {case}: expected the refusal to carry the exists code, got {reply:?}"
+        );
+        assert_eq!(
+            errmsg(&reply),
+            format!("a collection '{namespace}' already exists"),
+            "case {case}: expected the sentence to name the namespace, got {reply:?}"
+        );
+        assert!(
+            !reply.contains_key("codeName"),
+            "case {case}: expected the refusal to carry the code alone, got {reply:?}"
+        );
+    }
+}
+
+/// One row of the write table: the case, the collection it writes to, the documents it carries,
+/// how many of them are stored, and the index and code of each write error it is answered with.
+type WriteRow = (
+    &'static str,
+    &'static str,
+    Vec<Document>,
+    i32,
+    Vec<(i32, i32)>,
+);
+
+/// One row of the statement table: the case, whether the statement upserts, whether the write
+/// can be replayed, its filter, its change, and the code and sentence it is refused with.
+type StatementRow = (
+    &'static str,
+    bool,
+    bool,
+    Document,
+    Document,
+    Option<(i32, &'static str)>,
+);
+
+/// RULE: every entry of a write of a SHARDED collection is judged against that collection's
+/// shard key — a document carries a value at it, an upserting statement's filter pins it, and no
+/// statement alters it on a document the collection already holds — and an entry refused is
+/// reported as that entry's write error of a command that otherwise ran, with the entries after
+/// it left undone when the write is ordered.
+///
+/// The rows of the first table span the WRITE: a document carrying the key, one missing it, one
+/// of several missing it at either end, and a write to a collection nobody sharded. The second
+/// spans the STATEMENT: where the key value would come from, and each way a change would alter
+/// the key (a modifier, an unset, a whole replacement).
+#[::tokio::test(flavor = "multi_thread")]
+async fn every_entry_of_a_sharded_write_is_judged_against_the_key() {
+    let emulator = Emulator::new();
+    let created = emulator
+        .create_cluster("sharded writes", "writes-elastic", ADMIN_USER, ADMIN_PASSWORD)
+        .await;
+    let endpoint = member("sharded writes", &created, "clusterEndpoint");
+    let mut session = Session::open(&emulator, "sharded writes", &endpoint).await;
+    session
+        .authenticate("sharded writes", SCRAM_SHA_1, ADMIN_USER, ADMIN_PASSWORD)
+        .await;
+    let sharded = session
+        .command(
+            "sharded writes",
+            "admin",
+            doc! { "shardCollection": "shop.keyed", "key": { "tenant": "hashed" } },
+        )
+        .await;
+    assert_eq!(
+        ok(&sharded),
+        1.0,
+        "sharded writes: the collection under test must be sharded, got {sharded:?}"
+    );
+    // `shop.keyed` is sharded on `tenant`; an unsharded collection of the same cluster is not
+    // judged at all. Each row says how many documents the write stores and which entries it is
+    // answered with write errors about.
+    //
+    // The sentences an elastic cluster words these refusals with, each FIXED text carrying no
+    // part of the request.
+    let no_shard_key = "Insert for sharded collection must have shardKey";
+    let not_targetable = "Failed to target upsert by query :: could not extract exact shard key";
+    let not_replayable = "Must run update to shard key field in a multi-statement transaction \
+                          or with retryWrites: true.";
+    let writes: Vec<WriteRow> = vec![
         (
             "a document carrying the shard key",
-            "keyed0",
+            "keyed",
             vec![doc! { "tenant": "acme", "total": 1_i32 }],
-            None,
+            1,
+            vec![],
         ),
         (
             "a document missing the shard key",
-            "keyed0",
+            "keyed",
             vec![doc! { "total": 2_i32 }],
-            Some(61),
+            0,
+            vec![(0, 61)],
         ),
         (
-            "one document of several missing it",
-            "keyed0",
+            "the last document of several missing it",
+            "keyed",
             vec![
                 doc! { "tenant": "globex", "total": 3_i32 },
                 doc! { "total": 4_i32 },
             ],
-            Some(61),
+            1,
+            vec![(1, 61)],
+        ),
+        (
+            "the first document of several missing it",
+            "keyed",
+            vec![
+                doc! { "total": 5_i32 },
+                doc! { "tenant": "initech", "total": 6_i32 },
+            ],
+            0,
+            vec![(0, 61)],
         ),
         (
             "a document with no shard key, in an unsharded collection",
             "carts",
-            vec![doc! { "total": 5_i32 }],
-            None,
+            vec![doc! { "total": 7_i32 }],
+            1,
+            vec![],
         ),
     ];
-    for (case, collection, documents, refused) in writes {
+    for (case, collection, documents, stored, errors) in writes {
         let reply = session
             .command(
                 case,
@@ -848,125 +1034,224 @@ async fn a_shard_key_is_one_hashed_field_and_every_write_carries_it() {
                 doc! { "insert": collection, "documents": documents.clone() },
             )
             .await;
-        match refused {
-            None => assert_eq!(
-                ok(&reply),
-                1.0,
-                "case {case}: expected the write to be stored, got {reply:?}"
-            ),
-            Some(expected) => {
-                assert_eq!(
-                    ok(&reply),
-                    0.0,
-                    "case {case}: expected the write to be refused, got {reply:?}"
-                );
-                assert_eq!(
-                    code(&reply),
-                    expected,
-                    "case {case}: expected the refusal to carry code {expected}, got {reply:?}"
-                );
-            }
-        }
+        // The command itself was served: what the shard key refused is reported per entry, which
+        // is what a driver raises as a bulk-write error rather than as a failed command.
+        assert_eq!(
+            ok(&reply),
+            1.0,
+            "case {case}: expected the write command to be served, got {reply:?}"
+        );
+        assert_eq!(
+            reply.get_i32("n").ok(),
+            Some(stored),
+            "case {case}: expected {stored} of the documents to be stored, got {reply:?}"
+        );
+        assert_eq!(
+            write_errors(&reply),
+            errors,
+            "case {case}: expected write errors {errors:?}, got {reply:?}"
+        );
+        // The sentence a client reads, whole: the elastic wording for a document that belongs
+        // to no shard, with nothing of the request in it.
+        let sentences: Vec<String> = vec![no_shard_key.to_string(); errors.len()];
+        assert_eq!(
+            write_error_sentences(&reply),
+            sentences,
+            "case {case}: expected the write errors to say {no_shard_key:?}, got {reply:?}"
+        );
     }
-    // Nothing a refused write carried was stored: the collection holds only the documents of
-    // the writes that were admitted.
+    // Only the documents of the admitted entries are there — the ones an ordered write left
+    // undone are not — and each of them carries the key the collection is distributed by.
     let found = session
-        .command("after the refusals", "shop", doc! { "find": "keyed0" })
+        .command("after the writes", "shop", doc! { "find": "keyed" })
         .await;
-    let stored = first_batch("after the refusals", &found);
+    let stored = first_batch("after the writes", &found);
     assert_eq!(
         stored.len(),
-        1,
-        "after the refusals: expected only the document of the admitted write to be stored, \
+        2,
+        "after the writes: expected only the documents of the admitted entries to be stored, \
          got {stored:?}"
     );
+    assert!(
+        stored
+            .iter()
+            .all(|document| document.get("tenant").is_some()),
+        "after the writes: expected every stored document to carry the shard key, got {stored:?}"
+    );
 
-    // An UPSERTING statement inserts a document where its filter selects none, so the key rule
-    // holds for what it would insert too. The rows differ in where the key would come from: the
-    // filter, the update, or neither.
-    let upserts: Vec<(&str, Document, Document, Option<i32>)> = vec![
+    // An update statement: an upsert is targeted by the shard key its FILTER pins, and the key
+    // of a document the collection holds moves only on a write the cluster can replay — one
+    // carrying a transaction number, which a retryable write and a transaction statement do.
+    let statements: Vec<StatementRow> = vec![
         (
-            "an upsert whose filter carries the shard key",
+            "an upsert whose filter pins the shard key",
+            true,
+            false,
             doc! { "tenant": "initech" },
-            doc! { "$set": { "total": 6_i32 } },
+            doc! { "$set": { "total": 8_i32 } },
             None,
         ),
         (
-            "an upsert whose update sets the shard key",
-            doc! { "total": 7_i32 },
-            doc! { "$set": { "tenant": "umbrella" } },
+            "an upsert whose filter pins it by an equality operator",
+            true,
+            false,
+            doc! { "tenant": { "$eq": "umbrella" } },
+            doc! { "$set": { "total": 9_i32 } },
             None,
         ),
         (
-            "an upsert that would insert no shard key at all",
-            doc! { "total": 8_i32 },
+            "an upsert whose filter pins no shard key",
+            true,
+            false,
+            doc! { "total": 10_i32 },
             doc! { "$set": { "region": "eu" } },
-            Some(61),
+            Some((61, not_targetable)),
+        ),
+        (
+            "an upsert whose change sets the key its filter does not pin",
+            true,
+            false,
+            doc! { "total": 11_i32 },
+            doc! { "$set": { "tenant": "globex" } },
+            Some((61, not_targetable)),
+        ),
+        (
+            "an upsert whose filter pins the key by a range",
+            true,
+            false,
+            doc! { "tenant": { "$gt": "acme" } },
+            doc! { "$set": { "total": 12_i32 } },
+            Some((61, not_targetable)),
+        ),
+        (
+            "a change of the shard key itself",
+            false,
+            false,
+            doc! { "tenant": "acme" },
+            doc! { "$set": { "tenant": "globex" } },
+            Some((20, not_replayable)),
+        ),
+        (
+            "a change unsetting the shard key",
+            false,
+            false,
+            doc! { "tenant": "acme" },
+            doc! { "$unset": { "tenant": "" } },
+            Some((20, not_replayable)),
+        ),
+        (
+            "a replacement dropping the shard key",
+            false,
+            false,
+            doc! { "tenant": "acme" },
+            doc! { "total": 13_i32 },
+            Some((20, not_replayable)),
+        ),
+        (
+            "a change of another field",
+            false,
+            false,
+            doc! { "tenant": "acme" },
+            doc! { "$set": { "total": 14_i32 } },
+            None,
+        ),
+        (
+            "a change of the shard key on a write the cluster can replay",
+            false,
+            true,
+            doc! { "tenant": "acme" },
+            doc! { "$set": { "tenant": "acme-2" } },
+            None,
         ),
     ];
-    for (case, filter, change, refused) in upserts {
-        let reply = session
-            .command(
-                case,
-                "shop",
-                doc! {
-                    "update": "keyed0",
-                    "updates": [ doc! { "q": filter, "u": change, "upsert": true } ],
-                },
-            )
-            .await;
+    for (case, upsert, retryable, filter, change, refused) in statements {
+        let mut command = doc! {
+            "update": "keyed",
+            "updates": [ doc! { "q": filter, "u": change, "upsert": upsert } ],
+        };
+        if retryable {
+            // What a driver sends a write it may send again under: the session it belongs to and
+            // the number that identifies it within that session.
+            command.insert("txnNumber", 1_i64);
+        }
+        let reply = session.command(case, "shop", command).await;
+        assert_eq!(
+            ok(&reply),
+            1.0,
+            "case {case}: expected the update command to be served, got {reply:?}"
+        );
         match refused {
             None => assert_eq!(
-                ok(&reply),
-                1.0,
-                "case {case}: expected the upsert to be applied, got {reply:?}"
+                write_errors(&reply),
+                Vec::new(),
+                "case {case}: expected the statement to be applied, got {reply:?}"
             ),
-            Some(expected) => {
+            Some((expected, sentence)) => {
                 assert_eq!(
-                    ok(&reply),
-                    0.0,
-                    "case {case}: expected the upsert to be refused, got {reply:?}"
+                    reply.get_i32("n").ok(),
+                    Some(0),
+                    "case {case}: expected the refused statement to match nothing, got {reply:?}"
                 );
                 assert_eq!(
-                    code(&reply),
-                    expected,
-                    "case {case}: expected the refusal to carry code {expected}, got {reply:?}"
+                    write_errors(&reply),
+                    vec![(0, expected)],
+                    "case {case}: expected one write error carrying {expected}, got {reply:?}"
+                );
+                assert_eq!(
+                    write_error_sentences(&reply),
+                    vec![sentence.to_string()],
+                    "case {case}: expected the write error to say {sentence:?}, got {reply:?}"
                 );
             }
         }
     }
-    // The two admitted upserts inserted a document each; the refused one inserted nothing.
+    // The two admitted upserts inserted a document each, the refused statements changed nothing,
+    // and every document still carries the key it was distributed by.
     let found = session
-        .command("after the upserts", "shop", doc! { "find": "keyed0" })
+        .command("after the statements", "shop", doc! { "find": "keyed" })
         .await;
-    let stored = first_batch("after the upserts", &found);
+    let stored = first_batch("after the statements", &found);
     assert_eq!(
         stored.len(),
-        3,
-        "after the upserts: expected only the documents of the admitted writes to be stored, \
+        4,
+        "after the statements: expected only the documents of the admitted writes to be stored, \
          got {stored:?}"
+    );
+    assert!(
+        stored
+            .iter()
+            .all(|document| document.get("tenant").is_some()),
+        "after the statements: expected every stored document to carry the shard key, got \
+         {stored:?}"
     );
 }
 
-/// A shard key rendered the way the engine prints one in a refusal: `{ tenant: "hashed" }`.
-///
-/// Written here rather than taken from the plane, so the suite asserts the sentence a client
-/// reads rather than re-asserting the implementation's own rendering of it.
-fn rendered_key(key: &Document) -> String {
-    let fields: Vec<String> = key
+/// The entries a reply reports write errors about, as the index each is about and its code.
+fn write_errors(reply: &Document) -> Vec<(i32, i32)> {
+    let Ok(errors) = reply.get_array("writeErrors") else {
+        return Vec::new();
+    };
+    errors
         .iter()
-        .map(|(field, value)| {
-            let value = match value {
-                Bson::String(text) => format!("\"{text}\""),
-                Bson::Int32(number) => number.to_string(),
-                Bson::Int64(number) => number.to_string(),
-                Bson::Double(number) => number.to_string(),
-                other => other.to_string(),
-            };
-            format!("{field}: {value}")
+        .filter_map(|error| {
+            let error = error.as_document()?;
+            Some((
+                error.get_i32("index").ok()?,
+                error.get_i32("code").ok().unwrap_or_default(),
+            ))
         })
-        .collect();
-    format!("{{ {} }}", fields.join(", "))
+        .collect()
+}
+
+/// The sentences a reply's write errors carry, in the order it reports them.
+fn write_error_sentences(reply: &Document) -> Vec<String> {
+    let Ok(errors) = reply.get_array("writeErrors") else {
+        return Vec::new();
+    };
+    errors
+        .iter()
+        .filter_map(|error| Some(error.as_document()?.get_str("errmsg").ok()?.to_string()))
+        .collect()
 }
 
 /// RULE: a session reaches a cluster's documents only once it has authenticated as that

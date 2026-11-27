@@ -8,10 +8,13 @@
 //! client, and the sentence is what a person debugging reads.
 //!
 //! An elastic cluster words some of those refusals differently from an Amazon DocumentDB
-//! cluster of instances, and some of them carry no `codeName` at all, so this is the ONE place
-//! an elastic refusal is built. A refusal the shared command layer raised keeps its own code,
-//! name and sentence ([`From<WireFault>`]), because that layer answers for the document engine
-//! and not for this endpoint's own rules.
+//! cluster of instances, and some of them carry no `codeName` at all, so an elastic refusal is
+//! built by this endpoint and never taken from the document engine's own builders. The ones
+//! raised by the command layer itself — the handshake, the authorization gate, a command that
+//! could not be read — are here; the ones that come with a rule of their own are built beside
+//! that rule, with the reading of it ([`super::sharding`]). A refusal the shared command layer
+//! raised keeps its own code, name and sentence ([`From<WireFault>`]), because that layer
+//! answers for the document engine and not for this endpoint's own rules.
 
 use ::bson::Document;
 use ::service_com_amazonaws_docdb_amazonrdsv19::state::cluster_data_plane as document_engine;

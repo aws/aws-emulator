@@ -36,7 +36,8 @@
 //! * [`commands`] — which commands a session may send before it has authenticated, and the
 //!   refusals an elastic cluster words itself;
 //! * [`sharding`] — `shardCollection`, the one shard key an elastic cluster admits, and the
-//!   rule that every write of a sharded collection carries that key;
+//!   rules every write of a sharded collection holds to;
+//! * [`sharded_writes`] — how a write one of those rules refuses is reported;
 //! * [`session`] — what ONE connection holds while it is open.
 //!
 //! Everything else — the message framing, the documents, the query engine, the SCRAM exchange
@@ -50,6 +51,7 @@
 pub mod commands;
 pub mod refusal;
 pub mod session;
+pub mod sharded_writes;
 pub mod sharding;
 
 use std::collections::BTreeMap;
