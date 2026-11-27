@@ -1,0 +1,53 @@
+Issue-Severity: HIGH
+Issue-Corpus: simparity-behavioral-aws-v1
+Issue-Corpus-Kind: behavioral
+Issue-Trace-Ids: iot__lambda.pre-provisioning-hook-denial-rejected iot__lambda.pre-provisioning-hook-denial-rejected-and-an-allowed-device-registers iot__lambda.pre-provisioning-hook-overrides-shape-the-registered-thing iot__lambda.pre-provisioning-hook-sees-register-thing-parameters
+Issue-Key: iot__lambda.pre-provisioning-hook-denial-rejected|run#42|AssertionError|assert (topic.rsplit("/", 1)[-1], refused) == ("rejected", {
+Issue-Key: iot__lambda.pre-provisioning-hook-denial-rejected-and-an-allowed-device-registers|run#33|AssertionError|assert topic == f"{provision}/accepted", f"the allowed device was answered on {topic!r}: {answer!r}"
+Issue-Key: iot__lambda.pre-provisioning-hook-overrides-shape-the-registered-thing|run#44|AssertionError|assert topic == f"{provision}/accepted", f"RegisterThing answered on {topic!r}: {registered!r}"
+Issue-Key: iot__lambda.pre-provisioning-hook-sees-register-thing-parameters|run#46|AssertionError|assert topic.endswith("/accepted"), f"RegisterThing answered on {topic}: {registered!r}"
+Issue-Commit: eef1405ac0806ef267777bba6aefe2b3b0754197
+
+# iot__lambda: the fleet-provisioning pre-provisioning hook has no effect — a hook that denies provisioning still registers the device, and the hook's parameterOverrides never reach the template, so every {Ref} to an override is refused "Cannot resolve reference value"
+
+> _Note: this issue was identified against the code base at commit `eef1405ac0806ef267777bba6aefe2b3b0754197`. If you are an issue fixer working on this, the code base you are currently working in can have drifted, so you might need to trace the issue back to the current code base._
+
+## Operation
+RegisterThing
+
+## Description
+Two independent net-new root causes in the fleet-provisioning pre-provisioning hook path, found by the behavioral suite under the `iot__lambda` service heading. Both must be closed before submitting. No open issue names either: 20261124T191121Z-iot-lambda-testinvokeauthorizer-refuses-every-request-that-carries.md is about TestInvokeAuthorizer, and 20261029T211043Z-iot-lambda-iot-a-cloudformation-custom-resource-that-creates-a.md is about a CFN custom resource.
+
+Cause 1 of 2: a pre-provisioning hook that answers allowProvisioning false does NOT block the registration — RegisterThing is answered on the accepted topic and the thing is created.
+AWS: recorded/documented behavior (the hook contract is documented at https://docs.aws.amazon.com/iot/latest/developerguide/pre-provisioning-hook.html; the Smithy model only carries the template's preProvisioningHook). A provisioning template with a pre-provisioning hook invokes that Lambda with the device's `parameters` (and claimCertificateId, certificateId, templateArn) and proceeds ONLY when the hook's response has allowProvisioning true. When the hook answers allowProvisioning false, the fleet-provisioning request published to $aws/provisioning-templates/<template>/provision/json is answered on that topic's `/rejected` child with the body {"statusCode": 403, "errorCode": "AccessDenied", "errorMessage": "Access Denied"} — all fixed text for this refusal class — and nothing is provisioned: DescribeThing for the refused device's thing name then answers ResourceNotFoundException.
+Emulator: the denied request is answered on the `/accepted` topic with a normal success body ({"thingName": "<the device's name>", "deviceConfiguration": {}}), i.e. the hook's verdict is not consulted (or the hook is not invoked at all) and the thing is registered.
+Why: the pre-provisioning hook is the only admission control on fleet provisioning — with it ignored, any device holding a claim certificate provisions itself regardless of the account's policy, which is a security-relevant divergence, and a client testing its hook's deny path sees it pass when every device is admitted.
+Fix: the fleet-provisioning RegisterThing path must invoke the template's preProvisioningHook, honour allowProvisioning, and refuse with the 403/AccessDenied body on the /rejected topic without creating any resource (services/service-com-amazonaws-iot-awsiotservice/src/ops/register_thing.rs and the $aws/provisioning-templates/<template>/provision/json reserved-topic handler, plus the provisioning-template state that stores the hook).
+Traces: iot__lambda.pre-provisioning-hook-denial-rejected.
+
+Cause 2 of 2: the hook's parameterOverrides are never merged into the template's parameter values, so any {"Ref": "<override name>"} in the template fails to resolve and the whole registration is refused.
+AWS: documented/recorded behavior. A hook that answers {"allowProvisioning": true, "parameterOverrides": {"<Name>": "<value>", ...}} has those overrides added to the parameter values the provisioning template is rendered with, alongside the parameters the device sent. A template declaring those names under "Parameters" and referencing them from its Resources (e.g. an AWS::IoT::Thing whose AttributePayload values are {"Ref": "<override name>"}) renders successfully: the request is answered on the `/accepted` topic and the created thing carries the hook's values as its attributes (and the device's own parameters still resolve as before).
+Emulator: such a request is answered on the `/rejected` topic with {"statusCode": 400, "errorCode": "InvalidRequestException", "errorMessage": "Invalid registration template. Cannot resolve reference value: {Ref=<override name>}"} — the override name is the variable part, taken from the template's unresolved reference. The same refusal is produced for three different templates and three different override names, while references to device-sent parameters in the same templates resolve, so the overrides specifically are absent from the rendering context.
+Why: every template that uses the hook to shape the registered device (the documented purpose of parameterOverrides) is refused outright — no thing, no certificate activation, no attributes — so a fleet whose template depends on hook-supplied values cannot provision at all, and the failure is reported as a template defect rather than as a missing hook result.
+Fix: merge the hook response's parameterOverrides into the parameter map used to render the registration template before resolving {"Ref": ...} / {"Fn::Join": ...} (the same RegisterThing / provisioning reserved-topic path and the template renderer's reference-resolution step).
+Traces: iot__lambda.pre-provisioning-hook-denial-rejected-and-an-allowed-device-registers, iot__lambda.pre-provisioning-hook-overrides-shape-the-registered-thing, iot__lambda.pre-provisioning-hook-sees-register-thing-parameters.
+
+## Evidence
+Replay of suite simparity-behavioral-aws-v1 against the emulator built from this checkout. Expected = real-AWS behavior the check encodes; Actual = the emulator's answer. Generated template/thing names below are one run's values filling the templates described per cause.
+
+1. iot__lambda.pre-provisioning-hook-denial-rejected — a Lambda hook returning {"allowProvisioning": params.get("Site") == "approved"} is attached to the provisioning template; the device publishes a RegisterThing request with parameters {SerialNumber: <s>, Site: "quarantine"}. Expected the `/rejected` topic with {'statusCode': 403, 'errorCode': 'AccessDenied', 'errorMessage': 'Access Denied'} and DescribeThing(<s>) then ResourceNotFoundException; actual the `/accepted` topic with {'thingName': 'sim2real-xsvc-pphdeny-590fd4cb7234', 'deviceConfiguration': {}}. AssertionError at check line 345: "a request the hook did not allow answered on accepted".
+
+2. iot__lambda.pre-provisioning-hook-denial-rejected-and-an-allowed-device-registers — hook returns {"allowProvisioning": True, "parameterOverrides": {"Gate": "passed"}} for an allowed serial; the template declares Parameters {SerialNumber, Gate} and renders the thing's AttributePayload as {"gate": {"Ref": "Gate"}}. Expected the `/accepted` topic; actual '$aws/provisioning-templates/sim2real-xsvc-ppdeny-1295be67cbd2/provision/json/rejected' with {'statusCode': 400, 'errorCode': 'InvalidRequestException', 'errorMessage': 'Invalid registration template. Cannot resolve reference value: {Ref=Gate}'}. AssertionError at check line 369.
+
+3. iot__lambda.pre-provisioning-hook-overrides-shape-the-registered-thing — same shape, override name SeenClaim: actual '.../provision/json/rejected' with errorMessage 'Invalid registration template. Cannot resolve reference value: {Ref=SeenClaim}'. AssertionError at check line 384.
+
+4. iot__lambda.pre-provisioning-hook-sees-register-thing-parameters — hook returns parameterOverrides {HookKeys, HookSerial, HookClaim}; the template declares all three under Parameters and references them from the thing's AttributePayload, with {"Ref": "SerialNumber"} (a device-sent parameter) as the ThingName. Expected the `/accepted` topic and then DescribeThing attributes {hookKeys: 'SerialNumber,Site', hookSerial: <serial reversed>, hookClaim: <claim certificate id>}; actual '$aws/provisioning-templates/sim2real-xsvc-pphtmpl-bc1a841761f7/provision/json/rejected' with errorMessage 'Invalid registration template. Cannot resolve reference value: {Ref=HookKeys}'. AssertionError at check line 334.
+
+## Steps to Reproduce
+1. git clone the repo and build/boot the emulator from this checkout.
+2. Replay suite simparity-behavioral-aws-v1 and observe the four checks named in Traces failing.
+3. Equivalently, by hand:
+   a. Create an IAM role for Lambda and one for IoT provisioning (AWSIoTThingsRegistration statements); CreateFunction with a handler returning {"allowProvisioning": False}; lambda AddPermission for iot.amazonaws.com on the template ARN.
+   b. CreateProvisioningTemplate with that function as preProvisioningHook and a template body declaring Parameters {SerialNumber, Gate} and a Thing resource whose AttributePayload is {"gate": {"Ref": "Gate"}}; CreateProvisioningClaim.
+   c. Connect over MQTT with the claim certificate, subscribe to $aws/provisioning-templates/<template>/provision/json/{accepted,rejected}, publish a request with {certificateOwnershipToken, parameters: {SerialNumber: <s>}} — observe the accepted topic with a success body where AWS answers rejected with 403/AccessDenied/'Access Denied', and DescribeThing(<s>) returning a thing that should not exist.
+   d. Change the hook to {"allowProvisioning": True, "parameterOverrides": {"Gate": "passed"}} and repeat — observe the rejected topic with 400 InvalidRequestException 'Invalid registration template. Cannot resolve reference value: {Ref=Gate}' where AWS registers the thing with attribute gate=passed.
