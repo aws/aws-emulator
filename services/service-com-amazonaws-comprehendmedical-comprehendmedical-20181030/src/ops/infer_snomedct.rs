@@ -108,18 +108,19 @@
 #[allow(unused_imports)]
 use super::types::*;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::OnceLock;
 
 // The generic clinical-text pass, stated once for every ontology-linking operation of
 // this service. See the module docs of `infer_icd10_cm` for why it lives there.
 use crate::ops::infer_icd10_cm::{
-    age_spans, candidate_likelihoods, character_offset, character_starts, concept_words,
-    cue_governs, cue_trait_names, first_family_cues, is_count, lexicon_matches, span_confidence,
-    span_ids, split_leading, subtype_qualifier_tokens, term_confidence, tokenize, words_match,
-    Span, Token, ACUITY_MODIFIERS, ATTRIBUTE_WINDOW_TOKENS, CONCEPT_CANDIDATE_LIMIT,
-    DIRECTION_MODIFIERS, FIRST_ID, QUALITY_MODIFIERS, RELATIONSHIP_DISTANCE_PENALTY, WEIGHT_CUE,
-    WEIGHT_MODIFIER, WEIGHT_PATTERN, WEIGHT_RELATIONSHIP,
+    age_spans, candidate_scores, catalogue_of, character_offset, character_starts,
+    completed_candidates, cue_governs, cue_trait_names, first_family_cues, is_count,
+    lexicon_matches, linked_candidates, span_confidence, span_ids, split_leading,
+    subtype_qualifier_tokens, term_confidence, tokenize, Candidate, Catalogued, Span, Token,
+    ACUITY_MODIFIERS, ATTRIBUTE_WINDOW_TOKENS, DIRECTION_MODIFIERS, FIRST_ID, QUALITY_MODIFIERS,
+    RELATIONSHIP_DISTANCE_PENALTY, WEIGHT_CUE, WEIGHT_MODIFIER, WEIGHT_PATTERN,
+    WEIGHT_RELATIONSHIP,
 };
 
 /// The version of the model THIS operation's analysis came from, which is what the
@@ -2439,108 +2440,53 @@ fn attribute_traits(
 }
 
 /// Every concept this pass's ontology data holds, each code once, in the order the data
-/// declares them, with the words of its own description prepared for comparison.
+/// declares them.
 ///
-/// This is the ontology a stretch of text is SEARCHED against when the data links its
-/// written form to a concept but holds fewer candidates for it than a candidate list
-/// reports: the concepts whose own description names the same thing are the rest of the
-/// list a client disambiguates between.
+/// This is the ontology a stretch of text is completed out of when the data links its
+/// written form to a concept but ranks fewer candidates for it than a candidate list
+/// reports (see [`completed_candidates`]): the concepts whose own description names the
+/// same thing are the rest of the list a client disambiguates between.
 ///
 /// The set is this crate's own static tables, so it is built once per process and no
-/// request can grow it; each description's words are prepared here, once, rather than on
-/// every comparison, so searching it costs one walk of two prepared word lists per concept
-/// and allocates nothing.
-fn inventory() -> &'static [(&'static Concept, Vec<String>)] {
-    static INVENTORY: OnceLock<Vec<(&'static Concept, Vec<String>)>> = OnceLock::new();
-    INVENTORY.get_or_init(|| {
-        let mut seen: HashSet<&'static str> = HashSet::new();
-        TERMS
-            .iter()
-            .flat_map(|term| term.concepts.iter())
-            .chain(
-                ATTRIBUTE_CONCEPTS
-                    .iter()
-                    .flat_map(|(_, concepts)| concepts.iter()),
-            )
-            .filter(|concept| seen.insert(concept.code))
-            .map(|concept| (concept, concept_words(concept.description)))
-            .collect()
+/// request can grow it.
+fn catalogue() -> &'static [Catalogued] {
+    static CATALOGUE: OnceLock<Vec<Catalogued>> = OnceLock::new();
+    CATALOGUE.get_or_init(|| {
+        catalogue_of(
+            TERMS
+                .iter()
+                .flat_map(|term| term.concepts.iter())
+                .chain(
+                    ATTRIBUTE_CONCEPTS
+                        .iter()
+                        .flat_map(|(_, concepts)| concepts.iter()),
+                )
+                .map(|concept| (concept.code, concept.description)),
+        )
     })
 }
 
-/// The candidate list of a stretch of text whose written form the ontology data LINKS to
-/// `own`: those concepts, as the data ranks them, each code once and cut at
-/// [`CONCEPT_CANDIDATE_LIMIT`].
-fn linked_candidates(own: &'static [Concept]) -> Vec<(&'static Concept, bool)> {
-    let mut candidates: Vec<(&'static Concept, bool)> = Vec::with_capacity(CONCEPT_CANDIDATE_LIMIT);
-    for concept in own {
-        if candidates.len() == CONCEPT_CANDIDATE_LIMIT {
-            break;
-        }
-        if candidates
-            .iter()
-            .any(|(placed, _)| placed.code == concept.code)
-        {
-            continue;
-        }
-        candidates.push((concept, true));
-    }
-    candidates
-}
-
-/// The candidate list of an ATTRIBUTE written as `written`, whose written form the
-/// ontology data links to `own`.
+/// The candidate list of the stretch of text written as `written`, whose written form the
+/// ontology data links to `own`: those concepts as the data ranks them, completed out of
+/// the ontology this pass carries.
 ///
-/// A concept list answers what the stretch of text it is reported on could refer to — an
-/// entity's "the SNOMED-CT concepts that the entity could refer to", an attribute's "the
-/// SNOMED-CT concepts specific to an attribute" — and it is the whole product of this
-/// operation, so an attribute reports the same ranked list of candidates to disambiguate
-/// between that an entity does: the concepts its own written form NAMES first, then the
-/// concepts of the ontology whose own description names the same thing, ranked by how well
-/// each one names that form ([`words_match`]) and cut at the shared candidate limit.
-///
-/// An attribute the ontology data links to nothing — a value a test produced, the unit it
-/// was measured in — reports no candidates at all: the search answers with the neighbours
-/// of a form the ontology NAMES, never with a concept for a form it does not hold. Nor is
-/// the ontology searched for a form the data already names a full list for: the search
-/// answers what the links leave unanswered, so it runs over the words of this one written
-/// form, prepared once, and only where the list is short of the candidate limit.
-///
-/// Which is why an ENTITY is linked and not searched ([`linked_candidates`]): a lexicon
-/// entry names a CONDITION, a test or a procedure, and the ontology data ranks for it the
-/// codes a clinician picks between for that mention — the list is authored, so searching
-/// would displace a ranking that is already the answer. An attribute's row names the ONE
-/// qualifier value its written form is, so everything after that first candidate can only
-/// come from the ontology itself. A written form the data ranks fewer candidates for than
-/// a list reports (a medication whose entry names a single ingredient concept, say) is
-/// reported with the list it ranks: which concepts a release holds for a form is the
-/// release's content, not a rule this pass can derive.
-fn attribute_candidates(written: &str, own: &'static [Concept]) -> Vec<(&'static Concept, bool)> {
-    let mut candidates = linked_candidates(own);
-    if candidates.is_empty() || candidates.len() == CONCEPT_CANDIDATE_LIMIT {
-        return candidates;
-    }
-    let words = concept_words(written);
-    let mut neighbours: Vec<(&'static Concept, f32)> = inventory()
-        .iter()
-        .filter(|(concept, _)| {
-            candidates
-                .iter()
-                .all(|(placed, _)| placed.code != concept.code)
-        })
-        .map(|(concept, description)| (*concept, words_match(&words, description)))
-        .filter(|(_, matched)| *matched > 0.0)
-        .collect();
-    // `sort_by` keeps the order the ontology data declares them in, so two concepts whose
-    // descriptions name the written form equally well are ranked as the data ranks them.
-    neighbours.sort_by(|left, right| right.1.total_cmp(&left.1));
-    for (concept, _) in neighbours {
-        if candidates.len() == CONCEPT_CANDIDATE_LIMIT {
-            break;
-        }
-        candidates.push((concept, false));
-    }
-    candidates
+/// One rule for every span this pass links, an entity and one of its attributes alike:
+/// the list each reports answers what THAT stretch of text could refer to — an entity's
+/// "the SNOMED-CT concepts that the entity could refer to", an attribute's "the SNOMED-CT
+/// concepts specific to an attribute" — so each is ranked for its OWN written form and
+/// each is completed the same way ([`completed_candidates`]). An entity whose lexicon
+/// entry names a single concept and an attribute whose row names the one qualifier value
+/// its form is therefore both report the neighbours the ontology can rank for them, rather
+/// than a list one candidate deep.
+fn concept_candidates(written: &str, own: &'static [Concept]) -> Vec<Candidate> {
+    completed_candidates(
+        written,
+        linked_candidates(
+            own.iter()
+                .map(|concept| (concept.code, concept.description)),
+        ),
+        catalogue(),
+    )
 }
 
 /// The SNOMED CT concepts the stretch of text written as `written` could refer to, as the
@@ -2548,22 +2494,14 @@ fn attribute_candidates(written: &str, own: &'static [Concept]) -> Vec<(&'static
 ///
 /// The modelled `SNOMEDCTConcept$Score` reports the likelihood of the match, so each
 /// candidate reports how well its own fully specified name names that written form (see
-/// [`candidate_likelihoods`]) and the list is strictly descending.
-fn concepts(
-    written: &str,
-    candidates: &[(&'static Concept, bool)],
-    score: f32,
-) -> Vec<SNOMEDCTConcept> {
-    let descriptions: Vec<(&str, bool)> = candidates
-        .iter()
-        .map(|(concept, linked)| (concept.description, *linked))
-        .collect();
+/// [`candidate_scores`]) and the list is strictly descending.
+fn concepts(written: &str, candidates: &[Candidate], score: f32) -> Vec<SNOMEDCTConcept> {
     candidates
         .iter()
-        .zip(candidate_likelihoods(score, written, &descriptions))
-        .map(|((concept, _), candidate_score)| SNOMEDCTConcept {
-            code: Some(concept.code.to_string()),
-            description: Some(concept.description.to_string()),
+        .zip(candidate_scores(score, written, candidates))
+        .map(|(candidate, candidate_score)| SNOMEDCTConcept {
+            code: Some(candidate.code.to_string()),
+            description: Some(candidate.description.to_string()),
             score: Some(candidate_score),
         })
         .collect()
@@ -2745,7 +2683,7 @@ pub fn infer_snomedct(text: &str) -> Vec<SNOMEDCTEntity> {
                 // The concepts specific to THIS attribute: the ones its own written form
                 // names in the ontology, then the ontology's neighbours of that form —
                 // never the candidates ranked for the entity it modifies.
-                let candidates = attribute_candidates(part, attribute.concepts);
+                let candidates = concept_candidates(part, attribute.concepts);
                 SNOMEDCTAttribute {
                     category: Some(attribute.category.to_string()),
                     r#type: Some(attribute.attribute_type.to_string()),
@@ -2773,9 +2711,12 @@ pub fn infer_snomedct(text: &str) -> Vec<SNOMEDCTEntity> {
             end_offset: Some(character_offset(&starts, entity.span.end)),
             attributes: Some(attributes),
             traits: Some(traits),
+            // What the ENTITY could refer to: the concepts the ontology data ranks for
+            // its own written form, completed out of the ontology where the data ranks
+            // fewer than a list reports.
             snomedct_concepts: Some(concepts(
                 entity.term.term,
-                &linked_candidates(entity_concepts),
+                &concept_candidates(entity.term.term, entity_concepts),
                 score,
             )),
         });

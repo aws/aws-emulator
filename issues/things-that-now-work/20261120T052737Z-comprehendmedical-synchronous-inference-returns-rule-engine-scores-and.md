@@ -104,3 +104,49 @@ Source evidence: services/service-com-amazonaws-comprehendmedical-comprehendmedi
    c. `aws comprehendmedical infer-rx-norm --text <the note from comprehendmedical-infer-rxnorm-medications>` and observe that the returned entities carry no RxNormConcepts member and different Ids/Scores (step task#1).
    d. `aws comprehendmedical infer-snomedct --text <the note from comprehendmedical-infer-snomedct-concepts>` and observe the missing entities 4-5, the missing attribute-level SNOMEDCTConcepts, the truncated concept lists, the swapped concept codes and the diverging $.ModelVersion / $.SNOMEDCTDetails.VersionDate (step task#1).
 3. Each call returns HTTP 200, so the divergence is only visible by diffing the body against the recorded AWS response.
+
+## Resolution
+
+What the rule behind this report asks for is served; what it asks for beyond a rule is
+recorded here as declined, so a later reader does not read this file as "the four fixtures
+match".
+
+Fixed. EVERY span an ontology-linking operation links now reports as many ranked candidates
+as the ontology this service carries can rank for its own written form — one rule for an
+entity, for one of its attributes and for a medication mention alike — instead of the
+candidates its own lexicon row happened to name. The concepts the ontology data links the
+form to still lead the list, in the order the data ranks them; the completion only ranks
+below them, and reaches only a concept whose own description NAMES that form (more than
+half of the words it is written in), so a row sharing a word every clinical description
+carries ("disease", "chronic", "structure") is no candidate. The completion lives once, in
+the shared clinical-text pass, and all three linking passes run it: `ICD10CMConcepts`,
+`RxNormConcepts`, `SNOMEDCTEntity$SNOMEDCTConcepts` and
+`SNOMEDCTAttribute$SNOMEDCTConcepts`. Pinned by the two new rows-driven tests in
+`tests/all/ontology_candidate_ranking.rs`
+(`a_linked_span_reports_every_candidate_the_ontology_can_rank_for_it`,
+`the_completion_reaches_only_a_concept_that_names_the_span`).
+
+Declined, with the reason each cannot be derived:
+
+* Every `Score` / `RelationshipScore` of the four operations (causes 1-4), `DetectPHI`
+  `$.Entities[*].Score` included — the per-span floats of a trained model. The spans, types,
+  categories, offsets, ids, candidate ordering and list bounds agree; each confidence is read
+  off the evidence that placed the span and how fully its form is written, and each candidate's
+  off how well that candidate's own description names the form. No modelled or documented rule
+  fixes any of these floats, and the replay withholds the recorded ones, so the only way to
+  report them is to fit one recording.
+* The MEMBERSHIP of a candidate list and the entities a recording carries that the emulator
+  does not (`$.Entities[*]`, `ICD10CMConcepts[*].Code`/`.Description`,
+  `SNOMEDCTConcepts[*].Code`/`.Description`, the RxCUIs of a medication) — the content of the
+  CDC ICD-10-CM, NLM RxNorm and SNOMED CT US Edition releases and of AWS's trained entity
+  model. This pass ranks the ontology data it carries; adding a recorded code to a row would
+  be a table entry fitted to one recorded input.
+* An attribute whose written form the ontology data holds no concept for still reports no
+  concept list: the completion answers with the neighbours of a form the ontology NAMES, and
+  inventing a code for a form it does not hold is the one thing a concept list must never do.
+* `$.ModelVersion` and `$.SNOMEDCTDetails.VersionDate` — AWS's internal model release and
+  ontology revision strings, which the replay withholds and no model doc determines.
+  `Edition` "US" and `Language` "en" are the modelled values and agree.
+* The `Id` numbering of `InferRxNorm` — `Entity$Id`/`Attribute$Id` is modelled as "a
+  monotonically increasing id unique within this response rather than a global unique
+  identifier", which 1..n over the spans the response reports satisfies.

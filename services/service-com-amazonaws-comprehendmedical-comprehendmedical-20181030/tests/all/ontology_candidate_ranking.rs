@@ -11,6 +11,11 @@
 //!   candidates for review and tell a confident match from a long-tail one (what each
 //!   score itself answers is pinned by
 //!   `a_candidate_reports_how_well_its_own_description_names_the_span` below);
+//! * every span the pass LINKS — an entity and one of its attributes alike — reports as
+//!   many candidates as the ontology this service carries can rank for its own written
+//!   form, the concepts the data linked leading the list, and the completion reaches only
+//!   a concept that NAMES that form rather than one sharing a word every clinical
+//!   description carries;
 //! * a qualifier written as part of a condition's name carries the qualifier-value
 //!   concept it names in its own right, and not the concepts of the mention it
 //!   qualifies;
@@ -976,6 +981,278 @@ async fn a_linked_candidate_is_reported_whatever_its_description_says() {
              words is still reported, at most at the linked share of the confidence \
              {confidence}, got {reported} in {span}"
         );
+    }
+}
+
+/// One completion row: the operation, the text, the level the span is reported at, the
+/// span as written, the member its candidate list is carried under, the code the ontology
+/// data LINKS that form to, the codes the completion has to reach for it, and how many
+/// candidates the list carries at least.
+type CompletionRow = (
+    &'static str,
+    &'static str,
+    Level,
+    &'static str,
+    &'static str,
+    &'static str,
+    &'static [&'static str],
+    usize,
+);
+
+/// The share of the words `written` is written in that `description` repeats: how much of
+/// the written FORM a candidate's own description names, whatever else it spells out
+/// beside it.
+fn words_covered(written: &str, description: &str) -> f64 {
+    let written = concept_words(written);
+    let description = concept_words(description);
+    if written.is_empty() {
+        return 0.0;
+    }
+    written.intersection(&description).count() as f64 / written.len() as f64
+}
+
+/// Every span an ontology-linking operation LINKS reports as many ranked candidates as the
+/// ontology this service carries can rank for its own written form — one rule for an
+/// entity and for one of its attributes alike — and the concepts the data linked still
+/// lead the list.
+///
+/// A candidate list is what these operations exist to produce ("the concepts that the
+/// entity could refer to, along with a score indicating the likelihood of the match", "the
+/// concepts specific to an attribute"), so a client pages it to disambiguate a mention: a
+/// list cut off at the one concept a lexicon row happens to name leaves it with nothing to
+/// choose between. The rows span all three ontologies, both levels, and families whose
+/// authored list is one, two and three concepts deep, so a handler that reported only the
+/// codes its own row names — or that let the completion displace them from the head of the
+/// list — fails here.
+#[tokio::test]
+async fn a_linked_span_reports_every_candidate_the_ontology_can_rank_for_it() {
+    let router = router();
+    // Sources: the ICD-10-CM tabular list (Centers for Disease Control) and the SNOMED CT
+    // US edition, as this crate's ontology data carries them, plus the RxNorm ingredient
+    // concepts.
+    let rows: &[CompletionRow] = &[
+        (
+            // The authored family names the three congestive forms; the ontology also
+            // holds the acute one, which names two of the three words of the mention.
+            "InferSNOMEDCT",
+            "Assessment: congestive heart failure.",
+            Level::Entity,
+            "congestive heart failure",
+            "SNOMEDCTConcepts",
+            "42343007",
+            &["56675007"],
+            4,
+        ),
+        (
+            // A family of ONE concept: everything after it is the ontology's own.
+            "InferSNOMEDCT",
+            "History of coronary artery disease.",
+            Level::Entity,
+            "coronary artery disease",
+            "SNOMEDCTConcepts",
+            "53741008",
+            &["232717009"],
+            2,
+        ),
+        (
+            // An attribute is completed by the same rule: the qualifier value its own form
+            // names leads, and the disorders that name that form follow.
+            "InferSNOMEDCT",
+            "Patient has type 2 diabetes mellitus.",
+            Level::Attribute,
+            "type 2",
+            "SNOMEDCTConcepts",
+            "258195006",
+            &["44054006"],
+            2,
+        ),
+        (
+            "InferICD10CM",
+            "Assessment: chronic kidney disease.",
+            Level::Entity,
+            "chronic kidney disease",
+            "ICD10CMConcepts",
+            "N18.9",
+            &["E11.22"],
+            3,
+        ),
+        (
+            "InferICD10CM",
+            "Patient had a stroke.",
+            Level::Entity,
+            "stroke",
+            "ICD10CMConcepts",
+            "I63.9",
+            &["I64"],
+            2,
+        ),
+        (
+            // A family the data already ranks several codes for keeps exactly its own
+            // ranking: the completion fills what the links leave unanswered, nothing else.
+            "InferICD10CM",
+            "Known atrial fibrillation.",
+            Level::Entity,
+            "atrial fibrillation",
+            "ICD10CMConcepts",
+            "I48.91",
+            &[],
+            3,
+        ),
+        (
+            "InferRxNorm",
+            "He takes insulin glargine 20 units nightly.",
+            Level::Entity,
+            "insulin glargine",
+            "RxNormConcepts",
+            "274783",
+            &[],
+            2,
+        ),
+    ];
+
+    for (operation, text, level, written, member, leading, completed, least) in rows {
+        let case = format!("{operation} {text:?} {written:?}");
+        let answer = infer(&router, operation, text).await;
+        let span = level_span(&case, &answer, *level, written);
+        let list = candidates(&case, &span, member);
+        assert_ranked_candidates(&case, &span, &list, *least);
+        let codes: Vec<&str> = list
+            .iter()
+            .map(|concept| concept["Code"].as_str().unwrap_or_default())
+            .collect();
+        assert_eq!(
+            codes.first().copied(),
+            Some(*leading),
+            "case {case:?}: the concept the ontology data links the form to leads the list, \
+             got {codes:?}"
+        );
+        let unique: BTreeSet<&str> = codes.iter().copied().collect();
+        assert_eq!(
+            unique.len(),
+            codes.len(),
+            "case {case:?}: every candidate is reported once, got {codes:?}"
+        );
+        for reached in *completed {
+            let rank = codes.iter().position(|code| code == reached);
+            assert!(
+                rank.is_some_and(|rank| rank > 0),
+                "case {case:?}: the ontology holds {reached} for this form, so the completion \
+                 reports it BELOW the linked candidates, got {codes:?}"
+            );
+            let description = list[rank.unwrap_or_default()]["Description"]
+                .as_str()
+                .unwrap_or_default();
+            let covered = words_covered(written, description);
+            assert!(
+                covered > 0.5,
+                "case {case:?}: a completed candidate names the form it is reported on, got \
+                 {description:?} repeating {covered} of the words of {written:?}"
+            );
+        }
+    }
+}
+
+/// One naming-bar row: the operation, the text, the span as written, the member its
+/// candidate list is carried under, how many leading candidates the ontology data LINKS
+/// that form to, and the codes a word-for-word search would have reached — each shares a
+/// word with the form and names none of it.
+type NamingRow = (
+    &'static str,
+    &'static str,
+    &'static str,
+    &'static str,
+    usize,
+    &'static [&'static str],
+);
+
+/// The completion reaches only the concepts that NAME the span: a concept of the ontology
+/// sharing a word every clinical description carries ("disease", "heart", "diabetic") is
+/// no candidate for the mention, and a form the ontology holds no such neighbour of is
+/// reported with the candidates the data links it to and nothing else.
+///
+/// The other side of the rule above: without it a word-for-word search fills every list to
+/// five with whatever row shares a common word, which is a candidate list a client cannot
+/// use. The rows name, per ontology, the concept such a search would have reached and the
+/// list it would have been reached for, plus a brand name whose linked concepts repeat no
+/// word of it at all — the naming bar governs the completion, never a link. A form the
+/// ontology holds no naming neighbour of (SNOMED CT "hyperlipidemia", say) therefore
+/// reports the concepts the data links it to and nothing else.
+#[tokio::test]
+async fn the_completion_reaches_only_a_concept_that_names_the_span() {
+    let router = router();
+    let rows: &[NamingRow] = &[
+        (
+            // "Chronic kidney disease, unspecified" and "Hypertensive heart disease with
+            // heart failure" share only "disease" with this mention.
+            "InferICD10CM",
+            "History of coronary artery disease.",
+            "coronary artery disease",
+            "ICD10CMConcepts",
+            1,
+            &["N18.9", "I11.0"],
+        ),
+        (
+            // "Heart structure (body structure)" shares only "heart".
+            "InferSNOMEDCT",
+            "Assessment: congestive heart failure.",
+            "congestive heart failure",
+            "SNOMEDCTConcepts",
+            3,
+            &["80891009"],
+        ),
+        (
+            // "Diabetic retinopathy associated with type 2 diabetes mellitus (disorder)"
+            // shares only "diabetic".
+            "InferSNOMEDCT",
+            "Admitted with diabetic ketoacidosis.",
+            "diabetic ketoacidosis",
+            "SNOMEDCTConcepts",
+            1,
+            &["422034002"],
+        ),
+        (
+            // A brand name is LINKED to its brand concept and to the ingredient it
+            // delivers, neither of which repeats a word of it: a linked candidate is
+            // reported whatever its own description says, so the naming bar applies to
+            // the completion and to nothing else.
+            "InferRxNorm",
+            "He takes Tylenol 500 mg as needed.",
+            "Tylenol",
+            "RxNormConcepts",
+            2,
+            &[],
+        ),
+    ];
+
+    for (operation, text, written, member, linked, unreachable) in rows {
+        let case = format!("{operation} {text:?} {written:?}");
+        let answer = infer(&router, operation, text).await;
+        let span = level_span(&case, &answer, Level::Entity, written);
+        let list = candidates(&case, &span, member);
+        assert_ranked_candidates(&case, &span, &list, 1);
+        let codes: Vec<&str> = list
+            .iter()
+            .map(|concept| concept["Code"].as_str().unwrap_or_default())
+            .collect();
+        // The leading candidates are the ones the ontology data LINKS the form to, which
+        // it reports whatever their own description says; every candidate after them is
+        // there because it NAMES the form.
+        for concept in list.iter().skip(*linked) {
+            let description = concept["Description"].as_str().unwrap_or_default();
+            let covered = words_covered(written, description);
+            assert!(
+                covered > 0.5,
+                "case {case:?}: {description:?} names {covered} of the words of {written:?}, \
+                 so it is no candidate of it, got {codes:?}"
+            );
+        }
+        for reached in *unreachable {
+            assert!(
+                !codes.contains(reached),
+                "case {case:?}: {reached} shares a word with the form and names none of it, \
+                 so the completion does not reach it, got {codes:?}"
+            );
+        }
     }
 }
 

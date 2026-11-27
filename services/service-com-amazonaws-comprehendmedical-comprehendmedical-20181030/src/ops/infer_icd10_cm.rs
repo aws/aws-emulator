@@ -101,7 +101,7 @@
 #[allow(unused_imports)]
 use super::types::*;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::sync::OnceLock;
 
@@ -202,6 +202,17 @@ pub(crate) const CONCEPT_RANK_MARGIN: f32 = 0.02;
 /// The most ontology candidates one entity reports.
 pub(crate) const CONCEPT_CANDIDATE_LIMIT: usize = 5;
 
+/// The share of a written form's own words a concept of the ontology has to repeat to be
+/// a candidate the form could refer to.
+///
+/// A candidate list answers what the stretch of text it is reported on could refer to, so
+/// a concept reaches it by NAMING that written form: it repeats MORE than this share of
+/// the words the form is written in. A concept that shares only a word the ontology writes
+/// all over it — "disease", "chronic", "structure" — names something else that happens to
+/// be written with one of the same words, and is no candidate for the mention however
+/// close the two look word for word.
+pub(crate) const CONCEPT_SEARCH_COVERAGE: f32 = 0.5;
+
 /// How far from a mention, in tokens, a modifier or a time expression is still read as
 /// belonging to it. A clause boundary stops the search whatever this allows.
 pub(crate) const ATTRIBUTE_WINDOW_TOKENS: usize = 4;
@@ -299,16 +310,11 @@ pub(crate) fn concept_words(text: &str) -> Vec<String> {
     words
 }
 
-/// How well two sets of words, each already prepared by [`concept_words`], name the same
-/// thing, in 0..=1: twice the words they share over the number of words the two carry
-/// together.
+/// How many words two sets of words, each already prepared by [`concept_words`], share.
 ///
 /// Both lists are sorted and carry each word once, so the shared words are counted by
 /// walking the two in step — no allocation, and no scan of one list per word of the other.
-pub(crate) fn words_match(written: &[String], description: &[String]) -> f32 {
-    if written.is_empty() || description.is_empty() {
-        return 0.0;
-    }
+fn shared_words(written: &[String], description: &[String]) -> usize {
     let mut shared = 0usize;
     let mut left = written.iter();
     let mut right = description.iter();
@@ -325,7 +331,28 @@ pub(crate) fn words_match(written: &[String], description: &[String]) -> f32 {
             std::cmp::Ordering::Greater => next_right = right.next(),
         }
     }
-    2.0 * shared as f32 / (written.len() + description.len()) as f32
+    shared
+}
+
+/// How well two sets of words, each already prepared by [`concept_words`], name the same
+/// thing, in 0..=1: twice the words they share over the number of words the two carry
+/// together.
+pub(crate) fn words_match(written: &[String], description: &[String]) -> f32 {
+    if written.is_empty() || description.is_empty() {
+        return 0.0;
+    }
+    2.0 * shared_words(written, description) as f32
+        / (written.len() + description.len()) as f32
+}
+
+/// The share of the words a written form is written in that an ontology description
+/// repeats, in 0..=1 — how much of the FORM the description names, whatever else it
+/// spells out beside it. Both sides are already prepared by [`concept_words`].
+pub(crate) fn words_covered(written: &[String], description: &[String]) -> f32 {
+    if written.is_empty() {
+        return 0.0;
+    }
+    shared_words(written, description) as f32 / written.len() as f32
 }
 
 /// How well the ontology description `description` names the written form `written`, in
@@ -383,6 +410,151 @@ pub(crate) fn candidate_likelihoods(
         ceiling = score * (1.0 - CONCEPT_RANK_MARGIN);
     }
     scores
+}
+
+/// One candidate of a span's concept list: the code and the description the modelled
+/// concept members report, and whether the pass's ontology data LINKS the span's written
+/// form to it — which is what [`candidate_likelihoods`] reads the candidate's own
+/// likelihood against.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Candidate {
+    pub(crate) code: &'static str,
+    pub(crate) description: &'static str,
+    pub(crate) linked: bool,
+}
+
+/// One concept of an ontology this crate carries, as the candidate completion below reads
+/// it: its code, its own description, and the words of that description prepared for
+/// comparison ([`concept_words`]) once per process rather than on every comparison.
+#[derive(Debug)]
+pub(crate) struct Catalogued {
+    code: &'static str,
+    description: &'static str,
+    words: Vec<String>,
+}
+
+impl Catalogued {
+    /// The concept `code` names, as the catalogue of its ontology holds it.
+    pub(crate) fn new(code: &'static str, description: &'static str) -> Self {
+        Self {
+            code,
+            description,
+            words: concept_words(description),
+        }
+    }
+}
+
+/// The catalogue of an ontology this crate carries: every concept of its own data, each
+/// code once, in the order the data declares them.
+///
+/// Stated once for every pass, so the rule for what is in the ontology a span is completed
+/// out of — each code once, the data's own order — cannot drift between the three. A
+/// caller builds it once per process (a `OnceLock`), so a description's words are prepared
+/// once rather than on every comparison and no request can grow the set.
+pub(crate) fn catalogue_of(
+    concepts: impl IntoIterator<Item = (&'static str, &'static str)>,
+) -> Vec<Catalogued> {
+    let mut seen: HashSet<&'static str> = HashSet::new();
+    concepts
+        .into_iter()
+        .filter(|(code, _)| seen.insert(code))
+        .map(|(code, description)| Catalogued::new(code, description))
+        .collect()
+}
+
+/// The candidate list of a span whose written form the pass's ontology data LINKS to
+/// `own`: those concepts, in the order that data ranks them, each code once and cut at
+/// [`CONCEPT_CANDIDATE_LIMIT`].
+pub(crate) fn linked_candidates(
+    own: impl IntoIterator<Item = (&'static str, &'static str)>,
+) -> Vec<Candidate> {
+    let mut candidates: Vec<Candidate> = Vec::with_capacity(CONCEPT_CANDIDATE_LIMIT);
+    for (code, description) in own {
+        if candidates.len() == CONCEPT_CANDIDATE_LIMIT {
+            break;
+        }
+        if candidates.iter().any(|placed| placed.code == code) {
+            continue;
+        }
+        candidates.push(Candidate {
+            code,
+            description,
+            linked: true,
+        });
+    }
+    candidates
+}
+
+/// `candidates`, the concepts the ontology data links the span written as `written` to,
+/// completed up to [`CONCEPT_CANDIDATE_LIMIT`] out of `catalogue` — every concept the
+/// pass's own ontology data holds.
+///
+/// A concept list answers what the stretch of text it is reported on could refer to — an
+/// entity's "the concepts that the entity could refer to", an attribute's "the concepts
+/// specific to an attribute" — and that ranked list is the whole product of an
+/// ontology-linking operation, so EVERY span the pass linked reports the candidates a
+/// client disambiguates between that the ontology can rank for it, whichever span it is:
+/// a list is never cut short by whose list it is.
+///
+/// The authored ranking is never displaced. The completion only ranks BELOW the links the
+/// data carries, and reaches only the concepts whose own description NAMES that written
+/// form — repeating more than [`CONCEPT_SEARCH_COVERAGE`] of its words — the one that
+/// names it most fully first ([`words_match`]). So a completed candidate is a concept of
+/// the ontology the mention could be refined to rather than a row that happens to be
+/// written with one of the same words, and it is reported as the searched candidate it is
+/// ([`CONCEPT_SEARCH_SHARE`]).
+///
+/// A span the data links to NOTHING is completed with nothing: the search answers with
+/// the neighbours of a form the ontology NAMES, never with a concept for a form it does
+/// not hold. Nor is a list the data already ranks the full limit for searched at all:
+/// which concepts a release holds for a form is the release's content, so the completion
+/// only fills what the links leave unanswered.
+pub(crate) fn completed_candidates(
+    written: &str,
+    mut candidates: Vec<Candidate>,
+    catalogue: &'static [Catalogued],
+) -> Vec<Candidate> {
+    if candidates.is_empty() || candidates.len() >= CONCEPT_CANDIDATE_LIMIT {
+        return candidates;
+    }
+    let words = concept_words(written);
+    // A concept that names more than half the words of the form shares at least one of
+    // them, so every neighbour here already reports a likelihood above zero.
+    let mut neighbours: Vec<(&'static Catalogued, f32)> = catalogue
+        .iter()
+        .filter(|concept| candidates.iter().all(|placed| placed.code != concept.code))
+        .filter(|concept| words_covered(&words, &concept.words) > CONCEPT_SEARCH_COVERAGE)
+        .map(|concept| (concept, words_match(&words, &concept.words)))
+        .collect();
+    // `sort_by` keeps the order the ontology data declares them in, so two concepts whose
+    // descriptions name the written form equally well are ranked as the data ranks them.
+    neighbours.sort_by(|left, right| right.1.total_cmp(&left.1));
+    for (concept, _) in neighbours {
+        if candidates.len() == CONCEPT_CANDIDATE_LIMIT {
+            break;
+        }
+        candidates.push(Candidate {
+            code: concept.code,
+            description: concept.description,
+            linked: false,
+        });
+    }
+    candidates
+}
+
+/// The likelihood each candidate of `candidates` reports for a span written as `written`
+/// whose own confidence is `confidence`, in the order the list ranks them — the rule
+/// [`candidate_likelihoods`] states, over the candidates the completion produced.
+pub(crate) fn candidate_scores(
+    confidence: f32,
+    written: &str,
+    candidates: &[Candidate],
+) -> Vec<f32> {
+    let descriptions: Vec<(&str, bool)> = candidates
+        .iter()
+        .map(|candidate| (candidate.description, candidate.linked))
+        .collect();
+    candidate_likelihoods(confidence, written, &descriptions)
 }
 
 /// How many LEADING tokens of the normalized written form `term` are a subtype qualifier
@@ -2031,6 +2203,44 @@ fn modifier_attributes(tokens: &[Token], span: &Span, covered: &mut [bool]) -> V
     attributes
 }
 
+/// Every ICD-10-CM concept this pass's ontology data holds, each code once, in the order
+/// the data declares them.
+///
+/// This is the ontology a condition mention is completed out of when the data ranks fewer
+/// candidates for its written form than a candidate list reports (see
+/// [`completed_candidates`]). The set is this crate's own static table, so it is built
+/// once per process and no request can grow it.
+fn catalogue() -> &'static [Catalogued] {
+    static CATALOGUE: OnceLock<Vec<Catalogued>> = OnceLock::new();
+    CATALOGUE.get_or_init(|| {
+        catalogue_of(
+            CONDITIONS
+                .iter()
+                .flat_map(|condition| condition.concepts.iter())
+                .map(|concept| (concept.code, concept.description)),
+        )
+    })
+}
+
+/// The ICD-10-CM candidates a mention of `condition` could refer to: the codes the data
+/// ranks for its written form, completed out of the ontology this pass carries.
+///
+/// The form the candidates are LINKED BY is the lexicon entry's own written form, the
+/// subtype qualifier included, since that is what tells the subtype's codes from the
+/// unspecified ones even where the qualifier is reported as the entity's own attribute.
+fn condition_candidates(condition: &'static Condition) -> Vec<Candidate> {
+    completed_candidates(
+        condition.term,
+        linked_candidates(
+            condition
+                .concepts
+                .iter()
+                .map(|concept| (concept.code, concept.description)),
+        ),
+        catalogue(),
+    )
+}
+
 /// The ICD-10-CM entities the submitted text carries.
 ///
 /// The answer is a function of `text` alone: the mentions are placed from the text's own
@@ -2221,23 +2431,16 @@ pub fn infer_icd10_cm(text: &str) -> Vec<ICD10CMEntity> {
                     .collect();
                 // The candidates the mention could refer to, as the ontology data ranks
                 // them for the written form they are LINKED BY — the lexicon entry's own
-                // form, qualifier included — and cut at the candidate limit, each
+                // form, qualifier included — completed out of the ontology this pass
+                // carries where the data ranks fewer than a list reports, each candidate
                 // reporting how well its own long description names that form.
-                let candidates: Vec<&Concept> = condition
-                    .concepts
-                    .iter()
-                    .take(CONCEPT_CANDIDATE_LIMIT)
-                    .collect();
-                let linked: Vec<(&str, bool)> = candidates
-                    .iter()
-                    .map(|concept| (concept.description, true))
-                    .collect();
+                let candidates = condition_candidates(condition);
                 let concepts = candidates
                     .iter()
-                    .zip(candidate_likelihoods(score, condition.term, &linked))
-                    .map(|(concept, candidate_score)| ICD10CMConcept {
-                        code: Some(concept.code.to_string()),
-                        description: Some(concept.description.to_string()),
+                    .zip(candidate_scores(score, condition.term, &candidates))
+                    .map(|(candidate, candidate_score)| ICD10CMConcept {
+                        code: Some(candidate.code.to_string()),
+                        description: Some(candidate.description.to_string()),
                         score: Some(candidate_score),
                     })
                     .collect();

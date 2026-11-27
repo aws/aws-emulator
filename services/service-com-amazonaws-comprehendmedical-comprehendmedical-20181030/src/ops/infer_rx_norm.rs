@@ -106,10 +106,11 @@ use std::sync::OnceLock;
 // The generic clinical-text pass, stated once for every ontology-linking operation of
 // this service. See the module docs of `infer_icd10_cm` for why it lives there.
 use crate::ops::infer_icd10_cm::{
-    candidate_likelihoods, character_offset, character_starts, cue_governs, cue_trait_names,
-    first_family_cues, is_count, lexicon_matches, span_confidence, span_ids, term_confidence,
-    tokenize, Span, Token, CONCEPT_CANDIDATE_LIMIT, FIRST_ID, RELATIONSHIP_DISTANCE_PENALTY,
-    WEIGHT_CUE, WEIGHT_MODIFIER, WEIGHT_PATTERN, WEIGHT_RELATIONSHIP,
+    candidate_scores, catalogue_of, character_offset, character_starts, completed_candidates,
+    cue_governs, cue_trait_names, first_family_cues, is_count, lexicon_matches, linked_candidates,
+    span_confidence, span_ids, term_confidence, tokenize, Candidate, Catalogued, Span, Token,
+    FIRST_ID, RELATIONSHIP_DISTANCE_PENALTY, WEIGHT_CUE, WEIGHT_MODIFIER, WEIGHT_PATTERN,
+    WEIGHT_RELATIONSHIP,
 };
 // Two more rules of that pass that the SNOMED CT operation states: the distance between
 // two spans, and the cue vocabulary behind the `PAST_HISTORY` trait that both ontologies'
@@ -888,28 +889,50 @@ fn modelled_trait_names(
         .collect()
 }
 
-/// The RxNorm concepts the lexicon entry written as `written` is linked to, in the order
-/// the entry ranks them.
+/// Every RxNorm concept this pass's ontology data holds, each code once, in the order the
+/// data declares them.
 ///
-/// The modelled `RxNormConcept$Score` reports the likelihood of the match, so each
-/// candidate reports how well its own RxNorm name names the written form of the mention
-/// (see [`candidate_likelihoods`]) and the list is strictly descending.
-fn concepts(
+/// This is the ontology a medication mention is completed out of when the data ranks fewer
+/// candidates for its written form than a candidate list reports (see
+/// [`completed_candidates`]). The set is this crate's own static table, so it is built
+/// once per process and no request can grow it.
+fn catalogue() -> &'static [Catalogued] {
+    static CATALOGUE: OnceLock<Vec<Catalogued>> = OnceLock::new();
+    CATALOGUE.get_or_init(|| {
+        catalogue_of(
+            MEDICATIONS
+                .iter()
+                .flat_map(|medication| medication.concepts.iter().copied()),
+        )
+    })
+}
+
+/// The RxNorm candidates a mention written as `written` could refer to: the concepts the
+/// lexicon entry ranks for it, completed out of the ontology this pass carries.
+///
+/// The same rule every span this service links reports its candidates by (see
+/// [`completed_candidates`]), so a medication whose entry names a single concept is still
+/// reported with the candidates the ontology can rank for its written form.
+fn medication_candidates(
     written: &str,
     entry: &'static [(&'static str, &'static str)],
-    score: f32,
-) -> Vec<RxNormConcept> {
-    let candidates: Vec<&(&str, &str)> = entry.iter().take(CONCEPT_CANDIDATE_LIMIT).collect();
-    let linked: Vec<(&str, bool)> = candidates
-        .iter()
-        .map(|(_, description)| (*description, true))
-        .collect();
+) -> Vec<Candidate> {
+    completed_candidates(written, linked_candidates(entry.iter().copied()), catalogue())
+}
+
+/// The RxNorm concepts the mention written as `written` could refer to, as the candidates
+/// were ranked for it.
+///
+/// The modelled `RxNormConcept$Score` reports the likelihood of the match, so each
+/// candidate reports how well its own RxNorm name names that written form (see
+/// [`candidate_scores`]) and the list is strictly descending.
+fn concepts(written: &str, candidates: &[Candidate], score: f32) -> Vec<RxNormConcept> {
     candidates
         .iter()
-        .zip(candidate_likelihoods(score, written, &linked))
-        .map(|((code, description), candidate_score)| RxNormConcept {
-            code: Some((*code).to_string()),
-            description: Some((*description).to_string()),
+        .zip(candidate_scores(score, written, candidates))
+        .map(|(candidate, candidate_score)| RxNormConcept {
+            code: Some(candidate.code.to_string()),
+            description: Some(candidate.description.to_string()),
             score: Some(candidate_score),
         })
         .collect()
@@ -1033,7 +1056,7 @@ pub fn infer_rx_norm(text: &str) -> Vec<RxNormEntity> {
             traits: Some(traits),
             rx_norm_concepts: Some(concepts(
                 entity.medication.term,
-                entity.medication.concepts,
+                &medication_candidates(entity.medication.term, entity.medication.concepts),
                 score,
             )),
         });
