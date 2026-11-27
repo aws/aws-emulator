@@ -433,38 +433,77 @@ pub fn memory_not_found_for_account(operation: &str, memory_id: &str) -> Resourc
     }
 }
 
-/// How [`agent_runtime_not_found`] spells "the request asked for no particular
-/// version": the lookup ran with no version, and the sentence reports the
-/// missing value rather than leaving a gap.
+/// How [`agent_runtime_not_found`] spells "this operation selects a version, and
+/// the request left that member out": the lookup ran with no version, and the
+/// sentence reports the missing value rather than leaving a gap.
 pub const AGENT_RUNTIME_VERSION_UNSPECIFIED: &str = "null";
 
+/// The runtime family's lookup refusal, around whichever version clause the
+/// asking operation can report: the id the lookup ran for and the account it ran
+/// in are always named, and `version_clause` is appended to the account — the
+/// clause an operation that selects a version carries, or nothing at all.
+///
+/// The two sentences this builds are [`agent_runtime_not_found`] and
+/// [`agent_runtime_not_found_without_version`]; both come from here, so the
+/// fixed text around the agent id and the account cannot drift apart between
+/// the operations that select a version and the ones that cannot.
+fn agent_runtime_lookup_not_found(
+    agent_runtime_id: &str,
+    version_clause: &str,
+) -> ResourceNotFoundException {
+    ResourceNotFoundException {
+        message: Some(format!(
+            "Agent with agentId: {agent_runtime_id}, accountId: {}{version_clause} not found!",
+            ::engine::emulator_account_id(),
+        )),
+    }
+}
+
 /// The modelled not-found error for an agent runtime — or for a VERSION of one —
-/// that this service does not hold: the id the lookup ran for, the account it ran
-/// in, and the version it asked for ("Agent with agentId: <id>, accountId:
+/// that this service does not hold, as an operation whose input DECLARES a
+/// version member words it: the id the lookup ran for, the account it ran in,
+/// and the version it asked for ("Agent with agentId: <id>, accountId:
 /// <account>, and version: <version> not found!").
 ///
 /// This control plane words a missing runtime in terms of the agent it runs. The
 /// sentence around the three values is fixed: `agent_runtime_id` is the id the
 /// request carried, the account is the single one this emulator serves
 /// (`engine::emulator_account_id`), and `version` is the version the request
-/// asked for — a request that named none is reported with
-/// [`AGENT_RUNTIME_VERSION_UNSPECIFIED`].
+/// asked for — a request that left that member out is reported with
+/// [`AGENT_RUNTIME_VERSION_UNSPECIFIED`], because the lookup did run for a
+/// version the caller could have named.
 ///
-/// This is the sentence the runtime LOOKUP paths answer with — the ones that
-/// resolve a runtime, or one version of it, to report or to remove it. A request
-/// that asks to CHANGE a runtime is refused in its own sentence instead, which
+/// This is the sentence the VERSION-SELECTING runtime lookup paths answer with —
+/// the ones whose input carries `agentRuntimeVersion` to report or remove one
+/// version. An operation that names no version at all reports
+/// [`agent_runtime_not_found_without_version`] instead, and a request that asks
+/// to CHANGE a runtime is refused in its own sentence, which
 /// [`agent_runtime_not_found_on_update`] words.
 pub fn agent_runtime_not_found(
     agent_runtime_id: &str,
     version: Option<&str>,
 ) -> ResourceNotFoundException {
-    ResourceNotFoundException {
-        message: Some(format!(
-            "Agent with agentId: {agent_runtime_id}, accountId: {}, and version: {} not found!",
-            ::engine::emulator_account_id(),
+    agent_runtime_lookup_not_found(
+        agent_runtime_id,
+        &format!(
+            ", and version: {}",
             version.unwrap_or(AGENT_RUNTIME_VERSION_UNSPECIFIED)
-        )),
-    }
+        ),
+    )
+}
+
+/// The same not-found error as [`agent_runtime_not_found`] for an operation
+/// whose input declares NO version member: the lookup resolves the agent alone,
+/// so the sentence ends after the account it ran in ("Agent with agentId: <id>,
+/// accountId: <account> not found!").
+///
+/// A refusal reports only what the request could name: an operation that selects
+/// no version has no value to put in a version clause, so it carries none at all
+/// rather than one standing for an input the caller never had.
+pub fn agent_runtime_not_found_without_version(
+    agent_runtime_id: &str,
+) -> ResourceNotFoundException {
+    agent_runtime_lookup_not_found(agent_runtime_id, "")
 }
 
 /// The modelled not-found error for an agent runtime an UPDATE could not

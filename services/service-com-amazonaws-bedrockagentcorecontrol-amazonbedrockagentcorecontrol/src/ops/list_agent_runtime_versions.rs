@@ -163,11 +163,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         // A version is addressed only THROUGH its runtime, so a listing for a runtime
         // this account does not hold is the modelled 404 — never an empty page, which
-        // would say the runtime is there and has published nothing. The sentence is the
-        // runtime family's own lookup wording, which asked for no particular version.
+        // would say the runtime is there and has published nothing. This operation
+        // enumerates every version of the runtime and selects none, so the refusal
+        // names the agent and the account alone, with no version clause.
         let runtime = store.agent_runtimes.get(&input.agent_runtime_id).ok_or_else(|| {
             ListAgentRuntimeVersionsErrorModeled::ResourceNotFoundException(
-                crate::state::agent_runtime_not_found(&input.agent_runtime_id, None),
+                crate::state::agent_runtime_not_found_without_version(&input.agent_runtime_id),
             )
         })?;
 

@@ -519,7 +519,7 @@ async fn the_listing_refuses_an_unheld_runtime_and_a_foreign_token() {
         "case {case:?}: expected 404 ResourceNotFoundException, got {status} ({body})"
     );
     let expected = format!(
-        "Agent with agentId: {ABSENT_RUNTIME_ID}, accountId: {}, and version: null not found!",
+        "Agent with agentId: {ABSENT_RUNTIME_ID}, accountId: {} not found!",
         engine::emulator_account_id()
     );
     assert_eq!(

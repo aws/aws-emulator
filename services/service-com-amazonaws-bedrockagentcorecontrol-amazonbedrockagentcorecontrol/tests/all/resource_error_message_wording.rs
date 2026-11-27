@@ -139,8 +139,9 @@ fn text(body: &Value, member: &str) -> String {
         .to_string()
 }
 
-/// The runtime family's not-found sentence for `id` and the version the request asked for,
-/// which a request that named none has reported as `null`.
+/// The runtime family's not-found sentence for `id` and the version the request asked for, as
+/// an operation whose input DECLARES a version member words it: a request of such an operation
+/// that named no version has it reported as `null`.
 fn agent_not_found(id: &str, version: Option<&str>) -> String {
     format!(
         "Agent with agentId: {id}, accountId: {}, and version: {} not found!",
