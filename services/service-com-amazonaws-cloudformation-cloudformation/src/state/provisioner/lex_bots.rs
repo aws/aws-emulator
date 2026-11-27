@@ -48,6 +48,11 @@
 //!   `slotTypeId` — so the ids the slot-type and slot creates ANSWERED are what those members
 //!   carry ([`created_ids`]).
 //!
+//! An enum-valued property is a VALUE mapping rather than a member one: CloudFormation
+//! documents such a property's allowed values in its own spelling, which for these types is
+//! the upper-snake form of the value the API's enum admits, so each reaches the call spelled
+//! the way its own enum spells it ([`LEX_ENUM_MEMBERS`]).
+//!
 //! `TestBotAliasSettings` is a property no member of `CreateBot` carries: it configures the
 //! alias Amazon Lex keeps for testing a bot, which that service creates with the bot and whose
 //! settings only `UpdateBotAlias` writes, so it is not applied here and the test alias carries
@@ -456,11 +461,108 @@ const MESSAGE_GROUPS_MEMBER: &str = "messageGroups";
 /// `SubSlotSetting.SlotSpecifications`), while the API takes the map itself.
 const MAP_BLOCK_KEY: &str = "MapBlockKey";
 
+/// The ENUM-valued members of the Amazon Lex V2 model-building API a declaration of one of
+/// these types reaches, each beside the values its enum admits.
+///
+/// CloudFormation publishes an enum-valued property's allowed values in ITS own spelling,
+/// which for a Lex property is the upper-snake form of the API's: the slot-type property
+/// `ValueSelectionSetting.ResolutionStrategy` is documented as
+/// `ORIGINAL_VALUE | TOP_RESOLUTION | CONCATENATION` while the create's
+/// `valueSelectionSetting.resolutionStrategy` targets an enum of
+/// `OriginalValue | TopResolution | Concatenation`. The two spellings never meet on the wire,
+/// so a declared value reaches the call in the spelling its own enum admits
+/// ([`lex_enum_value`]).
+///
+/// The values are each enum's own, as that service's model declares them:
+/// `smithy_query(query="shape",shape="SlotValueResolutionStrategy,AudioRecognitionStrategy,MessageSelectionStrategy,SlotConstraint,ObfuscationSettingType,SlotShape,DialogActionType,VoiceEngine,BotType,SlotResolutionStrategy,BedrockTraceStatus",model_path="services/service-com-amazonaws-lexmodelsv2-lexmodelbuildingservicev2/smithy-model/com-amazonaws-lexmodelsv2-lexmodelbuildingservicev2.json")`.
+const LEX_ENUM_MEMBERS: &[(&str, &[&str])] = &[
+    // `SlotValueSelectionSetting.resolutionStrategy` (a slot type's).
+    (
+        "resolutionStrategy",
+        &["OriginalValue", "TopResolution", "Concatenation"],
+    ),
+    // `AdvancedRecognitionSetting.audioRecognitionStrategy` (a slot type's).
+    (
+        "audioRecognitionStrategy",
+        &["UseSlotValuesAsCustomVocabulary"],
+    ),
+    // `PromptSpecification.messageSelectionStrategy` (every prompt's).
+    ("messageSelectionStrategy", &["Random", "Ordered"]),
+    // `SlotValueElicitationSetting.slotConstraint` (a slot's).
+    ("slotConstraint", &["Required", "Optional"]),
+    // `ObfuscationSetting.obfuscationSettingType` (a slot's).
+    ("obfuscationSettingType", &["None", "DefaultObfuscation"]),
+    // `SlotValueOverride.shape` (a dialog step's slot override).
+    ("shape", &["Scalar", "List"]),
+    // `DialogAction.type` (every dialog step's).
+    (
+        "type",
+        &[
+            "ElicitIntent",
+            "StartIntent",
+            "ElicitSlot",
+            "EvaluateConditional",
+            "InvokeDialogCodeHook",
+            "ConfirmIntent",
+            "FulfillIntent",
+            "CloseIntent",
+            "EndConversation",
+        ],
+    ),
+    // `VoiceSettings.engine` (a locale's).
+    (
+        "engine",
+        &["standard", "neural", "long-form", "generative"],
+    ),
+    // `CreateBot.botType` (a bot's own).
+    ("botType", &["Bot", "BotNetwork"]),
+    // `SlotResolutionSetting.slotResolutionStrategy` (a slot's).
+    ("slotResolutionStrategy", &["EnhancedFallback", "Default"]),
+    // `BedrockModelSpecification.traceStatus`.
+    ("traceStatus", &["ENABLED", "DISABLED"]),
+];
+
+/// One declared value of an enum-valued member as the Amazon Lex V2 API spells it, or `None`
+/// where there is nothing to translate: the member is none of that API's enums, or the value
+/// is already one its enum admits.
+///
+/// CloudFormation's spelling of an enum value is the upper-snake form of the API's, so a
+/// declared value carrying no lower-case letter whose letters and digits are an admitted
+/// value's — the underscores it separates words with being all that differs — IS that
+/// admitted value. Anything else passes through unchanged, for that service's own validator to
+/// judge.
+fn lex_enum_value(member: &str, declared: &str) -> Option<String> {
+    let admitted = LEX_ENUM_MEMBERS
+        .iter()
+        .find(|(name, _)| *name == member)
+        .map(|(_, values)| *values)?;
+    if admitted.contains(&declared) || declared.chars().any(char::is_lowercase) {
+        return None;
+    }
+    let declared_letters = enum_letters(declared);
+    admitted
+        .iter()
+        .find(|value| enum_letters(value) == declared_letters)
+        .map(|value| (*value).to_string())
+}
+
+/// The letters and digits of an enum value, upper-cased: what both spellings of one value
+/// share, the separators each spells it with being all that differs.
+fn enum_letters(value: &str) -> String {
+    value
+        .chars()
+        .filter(char::is_ascii_alphanumeric)
+        .map(|character| character.to_ascii_uppercase())
+        .collect()
+}
+
 /// One declared property document as the request members the Amazon Lex V2 API takes.
 ///
 /// Every member is the property with its initial letter lower-cased, with the one member that
-/// service spells differently renamed ([`MESSAGE_GROUPS_PROPERTY`]) and a map a template
-/// states as a list of keyed entries turned back into that map ([`MAP_BLOCK_KEY`]). Bounded by
+/// service spells differently renamed ([`MESSAGE_GROUPS_PROPERTY`]), a map a template
+/// states as a list of keyed entries turned back into that map ([`MAP_BLOCK_KEY`]) and an
+/// enum-valued member's value spelled the way its own enum spells it ([`LEX_ENUM_MEMBERS`]).
+/// Bounded by
 /// the same nesting limit every other property walk is: the document is the requester's, so a
 /// deeper one is refused rather than walked.
 fn lex_members(value: &Value, depth: usize) -> Result<Value, Refusal> {
@@ -476,7 +578,15 @@ fn lex_members(value: &Value, depth: usize) -> Result<Value, Refusal> {
                 } else {
                     lower_initial(name)
                 };
-                converted.insert(member_name, lex_members(member, depth + 1)?);
+                let converted_member = match member.as_str() {
+                    Some(declared) => lex_enum_value(&member_name, declared).map(Value::String),
+                    None => None,
+                };
+                let converted_member = match converted_member {
+                    Some(spelled_as_the_api_does) => spelled_as_the_api_does,
+                    None => lex_members(member, depth + 1)?,
+                };
+                converted.insert(member_name, converted_member);
             }
             Ok(Value::Object(converted))
         }
