@@ -7,6 +7,10 @@ publish = false
 build = "build.rs"
 
 [dependencies]
+# The shared reader that says which modelled route a request addresses, for the one
+# operation whose `@required` query member the framework's route lookup withholds a route
+# over.
+service-common = { path = "../common" }
 engine = { workspace = true }
 smithy-macros = { workspace = true }
 aws-smithy-schema = { workspace = true }

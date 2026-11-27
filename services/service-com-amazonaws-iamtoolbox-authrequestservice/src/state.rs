@@ -2,10 +2,11 @@
 
 //! Engine state for the com-amazonaws-iamtoolbox-authrequestservice service.
 //!
-//! The service models exactly one operation, the `@readonly`
-//! `GetRequestAuthorizationDetails` read, so the store it reads from is the whole of
-//! this service's state: one record per authorization id, written when a request was
-//! denied and read back by the principal that was denied.
+//! The service models only `@readonly` reads of one denied request's authorization
+//! details — `GetRequestAuthorizationDetails` and `GetRequestAuthorizationPolicy` — so
+//! the store they read from is the whole of this service's state: one record per
+//! authorization id, written when a request was denied and read back by the principal
+//! that was denied.
 //!
 //! There is no modeled write operation, so a record enters the store through
 //! [`ComAmazonawsIamtoolboxAuthrequestserviceState::record_denial`] — the seam a host
@@ -45,6 +46,15 @@ pub struct AuthorizationDetailsRecord {
     pub evaluations: Vec<Evaluation>,
     /// The policies that were evaluated. Request-level, so every page repeats it.
     pub policies: Vec<PolicyInfo>,
+    /// The policy document captured with the denied request for each policy URI this
+    /// record publishes, keyed by that URI (the `uri` of a [`PolicyInfo`] in
+    /// [`policies`](Self::policies)).
+    ///
+    /// It holds the document as it was CAPTURED at denial time, not the current version
+    /// of the policy — which is what `GetRequestAuthorizationPolicy` documents it
+    /// returns. A policy the record publishes without a URI (an inline one) is not
+    /// addressable, so it has no entry here and cannot be fetched.
+    pub policy_documents: HashMap<String, ::aws_smithy_types::Document>,
     /// When the denial happened. Drives the retention window above.
     pub created_at: SystemTime,
 }
@@ -62,8 +72,27 @@ impl AuthorizationDetailsRecord {
             request_context,
             evaluations,
             policies,
+            policy_documents: HashMap::new(),
             created_at: SystemTime::now(),
         }
+    }
+
+    /// The same record, carrying the policy document captured for `policy_uri` — the URI
+    /// a caller passes to `GetRequestAuthorizationPolicy` to read that document back.
+    #[must_use]
+    pub fn with_policy_document(
+        mut self,
+        policy_uri: impl Into<String>,
+        document: ::aws_smithy_types::Document,
+    ) -> Self {
+        self.policy_documents.insert(policy_uri.into(), document);
+        self
+    }
+
+    /// The policy document this record captured for `policy_uri`; `None` when the URI is
+    /// not one of this record's own policy URIs, so no document was captured for it.
+    pub fn policy_document(&self, policy_uri: &str) -> Option<&::aws_smithy_types::Document> {
+        self.policy_documents.get(policy_uri)
     }
 
     /// The same record, as if the denial had happened `age` ago. Lets a caller record a
@@ -92,6 +121,47 @@ impl AuthorizationDetailsRecord {
     pub fn is_expired_at(&self, now: SystemTime) -> bool {
         now.duration_since(self.created_at)
             .is_ok_and(|age| age > AUTHORIZATION_DETAILS_RETENTION)
+    }
+}
+
+/// The policy document a captured policy's JSON TEXT is, ready for
+/// [`AuthorizationDetailsRecord::with_policy_document`]; `None` for text that is not a
+/// JSON document at all.
+///
+/// A policy store holds a policy as the text it was submitted as, while the modelled
+/// `policyDocument` is a `document` — "the structured JSON document of the policy that was
+/// captured with the original authorization request", "returned as a JSON object". So the
+/// text is parsed ONCE, here, rather than once in every service that records a denial.
+pub fn captured_policy_document(policy_text: &str) -> Option<::aws_smithy_types::Document> {
+    ::serde_json::from_str::<::serde_json::Value>(policy_text)
+        .ok()
+        .map(|value| document_of(&value))
+}
+
+/// The `Document` a parsed JSON value is: one level of recursion per nesting level of the
+/// document above it, which a parsed policy bounds.
+fn document_of(value: &::serde_json::Value) -> ::aws_smithy_types::Document {
+    use ::aws_smithy_types::{Document, Number};
+    match value {
+        ::serde_json::Value::Null => Document::Null,
+        ::serde_json::Value::Bool(flag) => Document::Bool(*flag),
+        ::serde_json::Value::Number(number) => Document::Number(if let Some(n) = number.as_u64() {
+            Number::PosInt(n)
+        } else if let Some(n) = number.as_i64() {
+            Number::NegInt(n)
+        } else {
+            Number::Float(number.as_f64().unwrap_or_default())
+        }),
+        ::serde_json::Value::String(text) => Document::String(text.clone()),
+        ::serde_json::Value::Array(items) => {
+            Document::Array(items.iter().map(document_of).collect())
+        }
+        ::serde_json::Value::Object(members) => Document::Object(
+            members
+                .iter()
+                .map(|(name, member)| (name.clone(), document_of(member)))
+                .collect(),
+        ),
     }
 }
 

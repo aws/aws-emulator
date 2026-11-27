@@ -25,9 +25,12 @@
 //!
 //! What the record carries is what the decision was made FROM, and nothing invented: the
 //! condition context the gate assembled, one evaluation for the `(action, resource)` pair the
-//! call was decided on with the effect that decided it, and one entry per policy document in
-//! force. A member the decision does not know — which statement matched — is left out rather
-//! than filled in.
+//! call was decided on with the effect that decided it, one entry per policy document in
+//! force, and the DOCUMENT of each of those policies the account holds — captured under the
+//! same URI the entry publishes, so the read that resolves a URI
+//! (`GetRequestAuthorizationPolicy`) answers the text the decision was made from. A member
+//! the decision does not know — which statement matched, which requirement's check grouped
+//! it — is left out rather than filled in.
 
 use ::std::sync::atomic::{AtomicU64, Ordering};
 use ::std::time::{SystemTime, UNIX_EPOCH};
@@ -36,7 +39,7 @@ use ::service_com_amazonaws_iamtoolbox_authrequestservice::ops::types::{
     AttachedTo, Evaluation, PolicyInfo,
 };
 use ::service_com_amazonaws_iamtoolbox_authrequestservice::state::{
-    AuthorizationContext, AuthorizationDetailsRecord,
+    captured_policy_document, AuthorizationContext, AuthorizationDetailsRecord,
     ComAmazonawsIamtoolboxAuthrequestserviceState as AuthorizationDetailsState,
 };
 
@@ -283,52 +286,108 @@ pub fn record_denial(store: &IamState, denied: &DeniedRequest<'_>) -> String {
         // Which statement matched is not part of the decision this gate reaches, so the
         // member is left out rather than filled with a policy that may not be the one.
         matched_policies: None,
+        // The same holds for the checks that group matched policies by the requirement
+        // they apply to: this gate decides the call, not which requirement's own policy
+        // set matched it, so nothing is reported for them either.
+        checks: None,
     };
-    store.authorization_details.write(AuthorizationDetailsRecord::new(
+    store.authorization_details.write(filed_record(
         authorization_id.clone(),
         context,
-        vec![evaluation],
+        evaluation,
         evaluated_policies(store, denied),
     ));
     authorization_id
 }
 
+/// The record filed for one refusal: its context, its one evaluation, the policies the
+/// decision was made against, and the DOCUMENT of each of those policies this account
+/// holds — captured under the same URI the policy is published under, which is the URI a
+/// caller passes to `GetRequestAuthorizationPolicy` to read that document back. A policy
+/// whose document this emulator does not hold (an AWS-managed ARN it carries no text for)
+/// publishes its URI and captures nothing, so the read answers that URI the way the
+/// operation answers a policy it has no document for.
+fn filed_record(
+    authorization_id: String,
+    context: AuthorizationContext,
+    evaluation: Evaluation,
+    evaluated: EvaluatedPolicies,
+) -> AuthorizationDetailsRecord {
+    let mut record = AuthorizationDetailsRecord::new(
+        authorization_id,
+        context,
+        vec![evaluation],
+        evaluated.policies,
+    );
+    for (uri, document) in evaluated.documents {
+        if let Some(document) = captured_policy_document(&document) {
+            record = record.with_policy_document(uri, document);
+        }
+    }
+    record
+}
+
+/// The policies one decision was made against, beside the document text of each policy
+/// that is addressable by URI and whose text this account holds.
+struct EvaluatedPolicies {
+    /// What the record's `policies` list carries.
+    policies: Vec<PolicyInfo>,
+    /// `(policy URI, policy document text)`, one per policy a caller can read the
+    /// document of back.
+    documents: Vec<(String, String)>,
+}
+
 /// The policies the decision was made against: every identity-based document in force on the
 /// identity, the permissions boundary that capped it where one was read, and the session
-/// policies the credential was scoped with.
-fn evaluated_policies(store: &IamState, denied: &DeniedRequest<'_>) -> Vec<PolicyInfo> {
+/// policies the credential was scoped with — each beside the policy document the account
+/// holds for it, where the policy is one a caller can address by URI.
+fn evaluated_policies(store: &IamState, denied: &DeniedRequest<'_>) -> EvaluatedPolicies {
+    let mut documents: Vec<(String, String)> = Vec::new();
     let mut policies: Vec<PolicyInfo> = store
         .principal_sourced_policies(denied.identity)
         .unwrap_or_default()
         .iter()
-        .map(|carried| match &carried.source {
-            // A managed policy is identified by its ARN ("for managed policies, this is the
-            // policy ARN") and attached to the identity the gate read it from.
-            PolicySource::Managed { policy_arn, .. } => PolicyInfo {
-                r#type: Some(IDENTITY_BASED_POLICY.to_string()),
-                inline: Some(false),
-                uri: Some(policy_arn.clone()),
-                attached_to: Some(vec![AttachedTo {
-                    arn: Some(denied.identity.to_string()),
-                }]),
-            },
-            // An inline policy has no ARN, so it is identified by the entity it is embedded
-            // in and its own name ("for inline policies, which have no ARN, this is an
-            // opaque identifier") — and it is attached to that entity, which for a policy
-            // inherited through a group is the GROUP and not the identity.
-            PolicySource::Inline {
-                policy_name,
-                attachment_type,
-                attachment_name,
-            } => PolicyInfo {
-                r#type: Some(IDENTITY_BASED_POLICY.to_string()),
-                inline: Some(true),
-                uri: Some(format!(
-                    "policy://{attachment_type}/{attachment_name}/{policy_name}"
-                )),
-                attached_to: embedding_entity_arn(store, attachment_type, attachment_name)
-                    .map(|arn| vec![AttachedTo { arn: Some(arn) }]),
-            },
+        .map(|carried| {
+            let policy = match &carried.source {
+                // A managed policy is identified by its ARN ("for managed policies, this is
+                // the policy ARN") and attached to the identity the gate read it from.
+                PolicySource::Managed { policy_arn, .. } => PolicyInfo {
+                    r#type: Some(IDENTITY_BASED_POLICY.to_string()),
+                    inline: Some(false),
+                    uri: Some(policy_arn.clone()),
+                    attached_to: Some(vec![AttachedTo {
+                        arn: Some(denied.identity.to_string()),
+                    }]),
+                    // `policySource` says what a policy was BUILT FROM, "such as a KMS key
+                    // policy or grant", and is "absent for other policies" — which an IAM
+                    // policy document is one of.
+                    policy_source: None,
+                },
+                // An inline policy has no ARN, so it is identified by the entity it is
+                // embedded in and its own name ("for inline policies, which have no ARN,
+                // this is an opaque identifier") — and it is attached to that entity, which
+                // for a policy inherited through a group is the GROUP and not the identity.
+                PolicySource::Inline {
+                    policy_name,
+                    attachment_type,
+                    attachment_name,
+                } => PolicyInfo {
+                    r#type: Some(IDENTITY_BASED_POLICY.to_string()),
+                    inline: Some(true),
+                    uri: Some(format!(
+                        "policy://{attachment_type}/{attachment_name}/{policy_name}"
+                    )),
+                    attached_to: embedding_entity_arn(store, attachment_type, attachment_name)
+                        .map(|arn| vec![AttachedTo { arn: Some(arn) }]),
+                    policy_source: None,
+                },
+            };
+            // The document in force is the one the decision was made FROM, so it is
+            // captured under the URI the entry above publishes.
+            if let (Some(uri), Some(document)) = (policy.uri.clone(), carried.document.clone()) {
+                documents.push((uri, document));
+            }
+            policy
         })
         .collect();
     if let Some(boundary) = denied.boundary {
@@ -339,7 +398,13 @@ fn evaluated_policies(store: &IamState, denied: &DeniedRequest<'_>) -> Vec<Polic
             attached_to: Some(vec![AttachedTo {
                 arn: Some(denied.identity.to_string()),
             }]),
+            policy_source: None,
         });
+        // The ceiling's document is read through the one definition of "the boundary in
+        // force on this identity", so the captured text is the text that capped the call.
+        if let Some(document) = store.permissions_boundary_document(denied.identity) {
+            documents.push((boundary.to_string(), document));
+        }
     }
     // A session policy is scoped to the CREDENTIAL the request was signed with, which is the
     // principal the refusal names rather than the identity whose policies it has.
@@ -351,9 +416,13 @@ fn evaluated_policies(store: &IamState, denied: &DeniedRequest<'_>) -> Vec<Polic
             attached_to: Some(vec![AttachedTo {
                 arn: Some(denied.principal.to_string()),
             }]),
+            policy_source: None,
         });
     }
-    policies
+    EvaluatedPolicies {
+        policies,
+        documents,
+    }
 }
 
 /// The ARN of the entity an inline policy is embedded in, read out of the account's own

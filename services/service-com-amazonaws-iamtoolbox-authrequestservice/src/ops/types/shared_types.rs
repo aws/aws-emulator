@@ -11,6 +11,38 @@ use super::*;
 
 smithy_macros::smithy_model!("smithy-model/com-amazonaws-iamtoolbox-authrequestservice.json");
 
+#[smithy_macros::smithy(shape = "com.amazonaws.iamtoolbox#AccessDeniedException")]
+#[derive(Debug, Clone, Default)]
+pub struct AccessDeniedException {
+    pub message: String,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.iamtoolbox#InternalServerException")]
+#[derive(Debug, Clone, Default)]
+pub struct InternalServerException {
+    pub message: String,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.iamtoolbox#ResourceNotFoundException")]
+#[derive(Debug, Clone, Default)]
+pub struct ResourceNotFoundException {
+    pub message: String,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.iamtoolbox#ValidationException")]
+#[derive(Debug, Clone, Default)]
+pub struct ValidationException {
+    pub message: String,
+}
+
+/// The values `CheckEffect` accepts on the wire.
+pub const CHECK_EFFECT_VALUES: &[&str] = &["ALLOW", "EXPLICIT_DENY", "IMPLICIT_DENY", "NO_IMPACT"];
+
+
+/// The values `CheckType` accepts on the wire.
+pub const CHECK_TYPE_VALUES: &[&str] = &["PERMISSIONS_BOUNDARY", "PRINCIPAL", "RESOURCE", "RESOURCE_CONTROL_POLICY", "SERVICE_CONTROL_POLICY", "SESSION", "VPC_ENDPOINT"];
+
+
 /// The values `EvaluatedEffect` accepts on the wire.
 pub const EVALUATED_EFFECT_VALUES: &[&str] = &["ALLOW", "EXPLICIT_DENY", "IMPLICIT_DENY"];
 

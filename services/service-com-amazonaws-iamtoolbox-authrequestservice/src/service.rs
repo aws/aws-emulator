@@ -21,8 +21,12 @@
 //!   for anything the model does not express: a signing name shared by several
 //!   services, or routing that keys on the access-key id.
 //! - `override_operation` — serve a request the model's routing key cannot name
-//!   correctly. The default returns `None`, so every request resolves through the
-//!   generated routing table. Return `Some(op)` to route one yourself.
+//!   correctly. This service uses it for one route: `GetRequestAuthorizationPolicy`
+//!   binds a `@required` query parameter, and the REST route table names no operation at
+//!   all when a request omits one — so the operation a request ADDRESSED, read off that
+//!   operation's own `@http` binding, serves it and refuses the absent member as the
+//!   modelled 400 instead of answering 501. Every request the routing key names is left
+//!   alone.
 //! - `override_refusal` — how this service words a request the framework refused
 //!   before any handler ran. The default returns `None`, keeping the framework's
 //!   wording. See the inline note on that method for how to reword.
@@ -40,9 +44,7 @@
 //! and is reached, not edited, through the one `definition` method below. You
 //! do not write it; editing the entry would let this file drift from the model.
 
-use smithy_server_runtime::{
-    http, ErasedOperation, Refusal, Refused, Service,
-};
+use smithy_server_runtime::{http, ErasedOperation, Operation, Refusal, Refused, Service};
 use std::sync::Arc;
 
 /// This service's endpoint prefix, as the model gives it (`iam-toolbox`) — distinct from
@@ -51,6 +53,23 @@ use std::sync::Arc;
 /// endpoint host (`iam-toolbox.<region>.amazonaws.com`, whose first label is the routing
 /// key for an unsigned request) still reaches it.
 pub const ENDPOINT_PREFIX: &str = "iam-toolbox";
+
+/// The WIRED operations of this service whose model binds a `@required` member to the
+/// query string, as `(the operation's name, its generated input schema)`.
+///
+/// Source: the model.
+/// `smithy_query(query="operation",operation="GetRequestAuthorizationPolicy")` reports
+/// `policyUri` as `required` with `httpQuery: "policyUri"`, and it is the only such member
+/// on either operation this crate wires: `GetRequestAuthorizationDetails` requires only
+/// its `@httpLabel`, so the lookup never withholds its route.
+///
+/// The row holds no method, no URI pattern and no parameter name: those are read off the
+/// schema and the operation is taken out of the generated routing table, so an entry here
+/// cannot fall out of step with the model.
+const ROUTES_WITH_REQUIRED_QUERY: &[(&str, &aws_smithy_schema::Schema)] = &[(
+    <crate::ops::get_request_authorization_policy::GetRequestAuthorizationPolicy<()> as Operation>::NAME,
+    crate::ops::types::GET_REQUEST_AUTHORIZATION_POLICY_INPUT_SCHEMA,
+)];
 
 /// The first `/`-separated segment of `path`, or `None` for a path with no non-empty
 /// first segment (`"/"`, `""`).
@@ -136,12 +155,35 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
         &self,
         req: &aws_smithy_runtime_api::http::Request,
     ) -> Option<&dyn ErasedOperation> {
-        // Return `Some(op)` to serve a request the model's routing key cannot name
-        // correctly; `None` (the default) lets the generated routing table resolve
-        // it. `req` is the whole request, so a decision that depends on the body —
-        // the `Action` form field on a query protocol, say — is reachable here.
-        let _ = req;
-        None
+        // `GetRequestAuthorizationPolicy` binds its `@required` `policyUri` to
+        // `@httpQuery`, and the framework's REST route table rejects a candidate route
+        // whose required bindings the request does not carry. That rule picks BETWEEN
+        // operations sharing one method and URI template; here it leaves the only
+        // operation of that route unnamed, so a call omitting `policyUri` falls to the
+        // unknown-operation tail — `501 NotImplemented`, the claim that nobody has
+        // written the operation yet (`crate::scaffolded`), for what is a bad request.
+        //
+        // Naming the operation it ADDRESSED hands such a request to the centralized walk,
+        // whose boundary refuses the absent member as the `400 ValidationException` this
+        // operation models for a request "missing one or more required parameters".
+        //
+        // Nothing about a route is written down here: the routing key is consulted FIRST,
+        // so every request that routes today keeps the answer it had, and which requests
+        // an operation addresses is read off that operation's own generated input schema —
+        // its `@http` method and URI pattern — by the shared reader.
+        let definition = self.definition();
+        if definition
+            .wire_protocol(req)
+            .protocol()
+            .routing_key(req)
+            .is_ok()
+        {
+            return None;
+        }
+        let (operation, _) = ROUTES_WITH_REQUIRED_QUERY
+            .iter()
+            .find(|(_, schema)| ::service_common::addresses_modeled_http_route(req, schema))?;
+        definition.routing_table().get(operation)
     }
 
     fn override_refusal(&self, refusal: &Refusal) -> Option<Refused> {

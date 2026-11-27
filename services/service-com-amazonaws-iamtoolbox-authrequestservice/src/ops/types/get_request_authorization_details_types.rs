@@ -35,6 +35,7 @@ pub struct Evaluation {
     pub context: Option<std::collections::HashMap<String, ::aws_smithy_types::Document>>,
     pub evaluated_effect: Option<String>,
     pub matched_policies: Option<Vec<MatchedPolicy>>,
+    pub checks: Option<Vec<Check>>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.iamtoolbox#MatchedPolicy")]
@@ -51,6 +52,16 @@ pub struct MatchedStatement {
     pub evaluated_effect: Option<String>,
 }
 
+#[smithy_macros::smithy(shape = "com.amazonaws.iamtoolbox#Check")]
+#[derive(Debug, Clone, Default)]
+pub struct Check {
+    pub check_type: String,
+    pub evaluated_effect: String,
+    pub target_arn: Option<String>,
+    pub relevant_policy_types: Option<Vec<String>>,
+    pub matched_policies: Option<Vec<MatchedPolicy>>,
+}
+
 #[smithy_macros::smithy(shape = "com.amazonaws.iamtoolbox#PolicyInfo")]
 #[derive(Debug, Clone, Default)]
 pub struct PolicyInfo {
@@ -58,35 +69,12 @@ pub struct PolicyInfo {
     pub inline: Option<bool>,
     pub uri: Option<String>,
     pub attached_to: Option<Vec<AttachedTo>>,
+    pub policy_source: Option<std::collections::HashMap<String, String>>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.iamtoolbox#AttachedTo")]
 #[derive(Debug, Clone, Default)]
 pub struct AttachedTo {
     pub arn: Option<String>,
-}
-
-#[smithy_macros::smithy(shape = "com.amazonaws.iamtoolbox#AccessDeniedException")]
-#[derive(Debug, Clone, Default)]
-pub struct AccessDeniedException {
-    pub message: String,
-}
-
-#[smithy_macros::smithy(shape = "com.amazonaws.iamtoolbox#InternalServerException")]
-#[derive(Debug, Clone, Default)]
-pub struct InternalServerException {
-    pub message: String,
-}
-
-#[smithy_macros::smithy(shape = "com.amazonaws.iamtoolbox#ResourceNotFoundException")]
-#[derive(Debug, Clone, Default)]
-pub struct ResourceNotFoundException {
-    pub message: String,
-}
-
-#[smithy_macros::smithy(shape = "com.amazonaws.iamtoolbox#ValidationException")]
-#[derive(Debug, Clone, Default)]
-pub struct ValidationException {
-    pub message: String,
 }
 

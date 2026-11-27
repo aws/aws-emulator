@@ -15,10 +15,13 @@
 //! ambiguous inside `ops` (`E0659`).
 
 pub mod get_request_authorization_details_types;
+pub mod get_request_authorization_policy_types;
 pub mod shared_types;
 
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use get_request_authorization_details_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use get_request_authorization_policy_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use shared_types::*;
 

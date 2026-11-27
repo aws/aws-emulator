@@ -1,16 +1,18 @@
 // SPDX-License-Identifier: CC0-1.0
 
-//! End-to-end tests for `GetRequestAuthorizationDetails`, the service's only operation.
+//! End-to-end tests for the service's authorization-details reads:
+//! `GetRequestAuthorizationDetails` and `GetRequestAuthorizationPolicy`.
 //!
 //! The rule under test: a read answers from the authorization-details record stored for
-//! the requested id — its own request context, its own evaluated policies, and its own
-//! evaluation list sliced into pages — for as long as that record is inside the
-//! retention window, and answers the modelled error otherwise.
+//! the requested id — its own request context, its own evaluated policies, its own
+//! evaluation list sliced into pages, and the policy document captured under each policy
+//! URI that list publishes — for as long as that record is inside the retention window,
+//! and answers the modelled error otherwise.
 //!
 //! Every assertion is driven over a TABLE of records whose evaluation counts straddle
 //! the page size, so nothing here can pass against a response built for one recorded
-//! shape: the counts, the ids, the context keys, the effects and the policy sets all
-//! vary row by row.
+//! shape: the counts, the ids, the context keys, the effects, the policy sets and the
+//! captured policy documents all vary row by row.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -20,11 +22,12 @@ use aws_smithy_types::{Document, Number};
 use serde_json::{json, Map, Value};
 
 use service_com_amazonaws_iamtoolbox_authrequestservice::ops::types::{
-    AttachedTo, Evaluation, MatchedPolicy, MatchedStatement, PolicyInfo,
-    EVALUATED_EFFECT_VALUES, POLICY_TYPE_VALUES, STATEMENT_EFFECT_VALUES,
+    AttachedTo, Check, Evaluation, MatchedPolicy, MatchedStatement, PolicyInfo,
+    CHECK_EFFECT_VALUES, CHECK_TYPE_VALUES, EVALUATED_EFFECT_VALUES, POLICY_TYPE_VALUES,
+    STATEMENT_EFFECT_VALUES,
 };
 use service_com_amazonaws_iamtoolbox_authrequestservice::state::{
-    AuthorizationDetailsRecord, AUTHORIZATION_DETAILS_RETENTION,
+    captured_policy_document, AuthorizationDetailsRecord, AUTHORIZATION_DETAILS_RETENTION,
 };
 use service_com_amazonaws_iamtoolbox_authrequestservice::{
     ComAmazonawsIamtoolboxAuthrequestserviceState, EmulatedService,
@@ -96,6 +99,51 @@ impl Emulator {
         };
         (status, parsed)
     }
+
+    /// `GET /authorization-details/{id}/policy[?policyUri=…]`, returning the status and
+    /// the raw body bytes. `policy_uri` is `None` to omit the query parameter entirely,
+    /// which is how the modelled `@required` member is exercised.
+    async fn get_policy_raw(&self, id: &str, policy_uri: Option<&str>) -> (u16, bytes::Bytes) {
+        let mut uri = format!("http://iam.amazonaws.com/authorization-details/{id}/policy");
+        if let Some(policy_uri) = policy_uri {
+            uri.push_str("?policyUri=");
+            uri.push_str(policy_uri);
+        }
+        let request = http::Request::builder()
+            .method("GET")
+            .uri(&uri)
+            .header("host", "iam.amazonaws.com")
+            .body(bytes::Bytes::new())
+            .expect("build the GetRequestAuthorizationPolicy request");
+        let response = self.router.dispatch(request).await;
+        let status = response.status().as_u16();
+        (status, response.into_body())
+    }
+
+    /// The same policy read, with the body parsed as JSON (restJson1).
+    async fn get_policy(&self, id: &str, policy_uri: Option<&str>) -> (u16, Value) {
+        let (status, body) = self.get_policy_raw(id, policy_uri).await;
+        let parsed = if body.is_empty() {
+            Value::Null
+        } else {
+            serde_json::from_slice(&body).unwrap_or_else(|e| {
+                panic!(
+                    "case id={id:?} policyUri={policy_uri:?}: response body must be JSON, \
+                     got {:?} ({e})",
+                    String::from_utf8_lossy(&body)
+                )
+            })
+        };
+        (status, parsed)
+    }
+}
+
+/// The stored form of a policy document this file writes as JSON: the service's own
+/// reading of a captured policy's text, so a record is seeded the way a service recording
+/// a denial seeds one.
+fn captured(document: &Value) -> Document {
+    captured_policy_document(&document.to_string())
+        .unwrap_or_else(|| panic!("the fixture document must be a JSON document: {document}"))
 }
 
 // ---------------------------------------------------------------------------
@@ -138,13 +186,36 @@ fn request_context_json(id: &str) -> Value {
     })
 }
 
+/// The URIs of the policies evaluated for the denial recorded for `id`, in the order the
+/// record's top-level `policies` list carries them.
+///
+/// The forms are the ones `PolicyInfo$uri` documents: a managed policy's URI is its
+/// policy ARN, and an inline policy's is an opaque identifier. Both are what a caller
+/// passes to `GetRequestAuthorizationPolicy` as `policyUri`, so the set varies per id
+/// and spans both forms.
+fn policy_uris(id: &str) -> Vec<String> {
+    vec![
+        engine::emulator_arn("iam", "", &format!("policy/{id}-managed")),
+        engine::emulator_arn("iam", "", &format!("policy/service-role/{id}-boundary")),
+        format!("inline-{id}-0f1e2d3c4b5a"),
+    ]
+}
+
+/// A URI no policy of `id`'s record carries, so nothing was captured under it.
+fn unevaluated_policy_uri(id: &str) -> String {
+    engine::emulator_arn("iam", "", &format!("policy/{id}-never-evaluated"))
+}
+
 /// Evaluation number `index` of the denial recorded for `id`. Distinct for every
 /// (id, index) pair, so a page can be placed exactly.
 ///
-/// The effect values are the model's own `EvaluatedEffect` / `StatementEffect` enum
-/// members, taken from the generated catalogs in `ops::types::shared_types` rather than
-/// written out here, so one record carries mixed ALLOW / EXPLICIT_DENY / IMPLICIT_DENY.
+/// The effect values are the model's own `EvaluatedEffect` / `StatementEffect` /
+/// `CheckType` / `CheckEffect` enum members, taken from the generated catalogs in
+/// `ops::types::shared_types` rather than written out here, so one record carries mixed
+/// effects. Every policy URI an evaluation names cross-references an entry of the
+/// record's top-level `policies` list, as `MatchedPolicy$uri` requires.
 fn evaluation(id: &str, index: usize) -> Evaluation {
+    let uris = policy_uris(id);
     Evaluation {
         action: format!("iamtoolbox:Action{index}"),
         resource: engine::emulator_arn("s3", "", &format!("{id}-bucket/object-{index}")),
@@ -156,7 +227,7 @@ fn evaluation(id: &str, index: usize) -> Evaluation {
             EVALUATED_EFFECT_VALUES[index % EVALUATED_EFFECT_VALUES.len()].to_string(),
         ),
         matched_policies: Some(vec![MatchedPolicy {
-            uri: format!("policy://{id}/evaluation-{index}"),
+            uri: uris[index % uris.len()].clone(),
             matched_statements: Some(vec![MatchedStatement {
                 // Half the statements carry no sid, so an omitted optional member is
                 // exercised too.
@@ -166,11 +237,28 @@ fn evaluation(id: &str, index: usize) -> Evaluation {
                 ),
             }]),
         }]),
+        // A check groups the policies that matched for one requirement, so it names a
+        // policy URI of the same record. Every third check carries no `targetArn`, so an
+        // omitted optional member is exercised there too.
+        checks: Some(vec![Check {
+            check_type: CHECK_TYPE_VALUES[index % CHECK_TYPE_VALUES.len()].to_string(),
+            evaluated_effect: CHECK_EFFECT_VALUES[index % CHECK_EFFECT_VALUES.len()].to_string(),
+            target_arn: (!index.is_multiple_of(3))
+                .then(|| engine::emulator_arn("iam", "", &format!("role/{id}-{index}"))),
+            relevant_policy_types: Some(vec![
+                POLICY_TYPE_VALUES[index % POLICY_TYPE_VALUES.len()].to_string(),
+            ]),
+            matched_policies: Some(vec![MatchedPolicy {
+                uri: uris[(index + 1) % uris.len()].clone(),
+                matched_statements: None,
+            }]),
+        }]),
     }
 }
 
 /// The JSON [`evaluation`] must serialize to, with the model's wire member names.
 fn evaluation_json(id: &str, index: usize) -> Value {
+    let uris = policy_uris(id);
     let mut statement = Map::new();
     if index.is_multiple_of(2) {
         statement.insert("sid".to_string(), json!(format!("Statement{index}")));
@@ -179,68 +267,182 @@ fn evaluation_json(id: &str, index: usize) -> Value {
         "evaluatedEffect".to_string(),
         json!(STATEMENT_EFFECT_VALUES[index % STATEMENT_EFFECT_VALUES.len()]),
     );
+    let mut check = Map::new();
+    check.insert(
+        "checkType".to_string(),
+        json!(CHECK_TYPE_VALUES[index % CHECK_TYPE_VALUES.len()]),
+    );
+    check.insert(
+        "evaluatedEffect".to_string(),
+        json!(CHECK_EFFECT_VALUES[index % CHECK_EFFECT_VALUES.len()]),
+    );
+    if !index.is_multiple_of(3) {
+        check.insert(
+            "targetArn".to_string(),
+            json!(engine::emulator_arn("iam", "", &format!("role/{id}-{index}"))),
+        );
+    }
+    check.insert(
+        "relevantPolicyTypes".to_string(),
+        json!([POLICY_TYPE_VALUES[index % POLICY_TYPE_VALUES.len()]]),
+    );
+    check.insert(
+        "matchedPolicies".to_string(),
+        json!([{ "uri": uris[(index + 1) % uris.len()] }]),
+    );
     json!({
         "action": format!("iamtoolbox:Action{index}"),
         "resource": engine::emulator_arn("s3", "", &format!("{id}-bucket/object-{index}")),
         "context": { "aws:RequestedRegion": format!("us-west-{}", index % 3) },
         "evaluatedEffect": EVALUATED_EFFECT_VALUES[index % EVALUATED_EFFECT_VALUES.len()],
         "matchedPolicies": [{
-            "uri": format!("policy://{id}/evaluation-{index}"),
+            "uri": uris[index % uris.len()],
             "matchedStatements": [Value::Object(statement)],
         }],
+        "checks": [Value::Object(check)],
     })
 }
 
-/// The policies evaluated for the denial recorded for `id`. The `type` values come from
-/// the model's `PolicyType` catalog; which two a record carries varies with the id, so
-/// two records do not share a policy list.
+/// The policies evaluated for the denial recorded for `id`, one per [`policy_uris`]
+/// entry. The `type` values come from the model's `PolicyType` catalog, offset by the id,
+/// so two records do not share a policy list.
+///
+/// `policySource` is on the last entry only — the member documents it as "absent for
+/// other policies" — and carries the `type` / `typeName` keys it says are always present
+/// plus the `grantId` key it gives as an example of a type-dependent one.
 fn policies(id: &str) -> Vec<PolicyInfo> {
-    let first = id.len() % POLICY_TYPE_VALUES.len();
-    let second = (first + 1) % POLICY_TYPE_VALUES.len();
-    vec![
-        PolicyInfo {
-            r#type: Some(POLICY_TYPE_VALUES[first].to_string()),
-            inline: Some(false),
-            uri: Some(format!("policy://{id}/attached")),
-            attached_to: Some(vec![AttachedTo {
-                arn: Some(engine::emulator_arn("iam", "", &format!("user/{id}"))),
-            }]),
-        },
-        PolicyInfo {
-            r#type: Some(POLICY_TYPE_VALUES[second].to_string()),
-            inline: Some(true),
-            uri: None,
-            attached_to: None,
-        },
-    ]
+    policy_uris(id)
+        .into_iter()
+        .enumerate()
+        .map(|(index, uri)| {
+            let inline = uri.starts_with("inline-");
+            PolicyInfo {
+                r#type: Some(
+                    POLICY_TYPE_VALUES[(id.len() + index) % POLICY_TYPE_VALUES.len()].to_string(),
+                ),
+                inline: Some(inline),
+                uri: Some(uri),
+                attached_to: (!inline).then(|| {
+                    vec![AttachedTo {
+                        arn: Some(engine::emulator_arn("iam", "", &format!("user/{id}"))),
+                    }]
+                }),
+                policy_source: inline.then(|| {
+                    HashMap::from([
+                        ("type".to_string(), "KMS_GRANT".to_string()),
+                        ("typeName".to_string(), "KMS grant".to_string()),
+                        ("grantId".to_string(), format!("grant-{id}")),
+                    ])
+                }),
+            }
+        })
+        .collect()
 }
 
 /// The JSON [`policies`] must serialize to.
 fn policies_json(id: &str) -> Value {
-    let first = id.len() % POLICY_TYPE_VALUES.len();
-    let second = (first + 1) % POLICY_TYPE_VALUES.len();
-    json!([
-        {
-            "type": POLICY_TYPE_VALUES[first],
-            "inline": false,
-            "uri": format!("policy://{id}/attached"),
-            "attachedTo": [{ "arn": engine::emulator_arn("iam", "", &format!("user/{id}")) }],
-        },
-        {
-            "type": POLICY_TYPE_VALUES[second],
-            "inline": true,
-        },
-    ])
+    Value::Array(
+        policy_uris(id)
+            .into_iter()
+            .enumerate()
+            .map(|(index, uri)| {
+                let inline = uri.starts_with("inline-");
+                let mut policy = Map::new();
+                policy.insert(
+                    "type".to_string(),
+                    json!(POLICY_TYPE_VALUES[(id.len() + index) % POLICY_TYPE_VALUES.len()]),
+                );
+                policy.insert("inline".to_string(), json!(inline));
+                policy.insert("uri".to_string(), json!(uri));
+                if !inline {
+                    policy.insert(
+                        "attachedTo".to_string(),
+                        json!([{ "arn": engine::emulator_arn("iam", "", &format!("user/{id}")) }]),
+                    );
+                } else {
+                    policy.insert(
+                        "policySource".to_string(),
+                        json!({
+                            "type": "KMS_GRANT",
+                            "typeName": "KMS grant",
+                            "grantId": format!("grant-{id}"),
+                        }),
+                    );
+                }
+                Value::Object(policy)
+            })
+            .collect(),
+    )
 }
 
-/// A record for `id` carrying `evaluation_count` evaluations.
+/// The policy document captured with the denial recorded for `id` under its policy URI
+/// number `index`.
+///
+/// The documents differ in the one thing the policy read generalises over: the JSON the
+/// captured document is. Row 0 is a one-statement policy, row 1 nests a condition block
+/// and a resource list, row 2 spans the remaining JSON kinds a document can carry
+/// (number, boolean, null, empty object, nested array, non-ASCII text).
+fn captured_policy_document_json(id: &str, index: usize) -> Value {
+    match index % 3 {
+        0 => json!({
+            "Version": "2012-10-17",
+            "Statement": [{
+                "Sid": format!("Allow{id}"),
+                "Effect": "Allow",
+                "Action": "s3:GetObject",
+                "Resource": engine::emulator_arn("s3", "", &format!("{id}-bucket/*")),
+            }],
+        }),
+        1 => json!({
+            "Version": "2012-10-17",
+            "Statement": [
+                {
+                    "Effect": "Deny",
+                    "NotAction": ["s3:GetObject", "s3:ListBucket"],
+                    "Resource": [
+                        engine::emulator_arn("s3", "", &format!("{id}-bucket")),
+                        engine::emulator_arn("s3", "", &format!("{id}-bucket/*")),
+                    ],
+                    "Condition": {
+                        "StringNotEquals": { "aws:PrincipalAccount": engine::emulator_account_id() },
+                        "Bool": { "aws:MultiFactorAuthPresent": "true" },
+                    },
+                },
+                {
+                    "Effect": "Allow",
+                    "Action": "*",
+                    "Resource": "*",
+                },
+            ],
+        }),
+        _ => json!({
+            "Version": "2012-10-17",
+            "Statement": [],
+            "CapturedAt": format!("2026-10-21T21:0{}:00Z", id.len() % 6),
+            "StatementCount": 0,
+            "Truncated": false,
+            "SupersededBy": Value::Null,
+            "Annotations": {},
+            "Tags": [["owner", format!("team-{id}")], []],
+            "Description": "policy captured for the dénied request — “as evaluated”",
+        }),
+    }
+}
+
+/// A record for `id` carrying `evaluation_count` evaluations, with the policy document
+/// captured under every policy URI the record publishes.
 fn record(id: &str, evaluation_count: usize) -> AuthorizationDetailsRecord {
-    AuthorizationDetailsRecord::new(
+    let mut record = AuthorizationDetailsRecord::new(
         id,
         request_context(id),
         (0..evaluation_count).map(|i| evaluation(id, i)).collect(),
         policies(id),
-    )
+    );
+    for (index, uri) in policy_uris(id).into_iter().enumerate() {
+        record = record
+            .with_policy_document(uri, captured(&captured_policy_document_json(id, index)));
+    }
+    record
 }
 
 /// The error code (`__type`) and message of a modelled error response.
@@ -661,4 +863,295 @@ async fn a_next_token_this_id_was_not_issued_is_a_validation_error() {
         Some(2),
         "the issued token must resume at the stored offset, got {body}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// GetRequestAuthorizationPolicy
+// ---------------------------------------------------------------------------
+
+/// Every policy URI the details read publishes for an id — in its top-level `policies`
+/// list and in the `matchedPolicies` of its evaluations and checks — collected from the
+/// pages of that read.
+async fn published_policy_uris(emulator: &Emulator, id: &str) -> Vec<String> {
+    let mut uris: Vec<String> = Vec::new();
+    let mut token: Option<String> = None;
+    loop {
+        let (status, body) = emulator.get(id, token.as_deref()).await;
+        assert_eq!(status, 200, "setup id={id}: must be 200, got {body}");
+
+        let mut collect = |value: Option<&Value>| {
+            for matched in value.and_then(Value::as_array).into_iter().flatten() {
+                if let Some(uri) = matched.get("uri").and_then(Value::as_str) {
+                    if !uris.iter().any(|seen| seen == uri) {
+                        uris.push(uri.to_string());
+                    }
+                }
+            }
+        };
+        collect(body.get("policies"));
+        for evaluation in body
+            .get("evaluations")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            collect(evaluation.get("matchedPolicies"));
+            for check in evaluation
+                .get("checks")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+            {
+                collect(check.get("matchedPolicies"));
+            }
+        }
+
+        match body.get("nextToken").and_then(Value::as_str) {
+            Some(next) => token = Some(next.to_string()),
+            None => break,
+        }
+    }
+    uris
+}
+
+/// The policy read answers, for every URI the details read publishes for an id, the
+/// document captured under that URI for that id — never a canned one, and never another
+/// URI's or another id's.
+#[tokio::test]
+async fn every_published_policy_uri_answers_its_own_captured_document() {
+    // Rows differ along what the rule generalises over: the id, how many evaluations
+    // reference the record's policies, and so which of its URIs the details read
+    // publishes where.
+    let cases: &[(&str, usize)] = &[
+        ("nopolicymatches", 0),
+        ("single", 1),
+        ("abc123def", 4),
+        ("manypages", PAGE_SIZE * 2 + 5),
+    ];
+
+    let emulator = Emulator::new();
+    for (id, count) in cases {
+        emulator.record(record(id, *count));
+    }
+
+    let mut bodies: Vec<(String, Value)> = Vec::new();
+    for (id, count) in cases {
+        let uris = published_policy_uris(&emulator, id).await;
+        assert!(
+            !uris.is_empty(),
+            "case id={id} evaluations={count}: the details read must publish a policy URI"
+        );
+
+        for uri in &uris {
+            let case = format!("id={id} evaluations={count} policyUri={uri}");
+            let index = policy_uris(id)
+                .iter()
+                .position(|known| known == uri)
+                .unwrap_or_else(|| {
+                    panic!("case {case}: a published URI must be one of the record's own")
+                });
+            let (status, body) = emulator.get_policy(id, Some(uri)).await;
+            assert_eq!(status, 200, "case {case}: must be 200, got {body}");
+            assert_eq!(
+                body,
+                json!({ "policyDocument": captured_policy_document_json(id, index) }),
+                "case {case}: the body must be the document captured under this URI"
+            );
+            bodies.push((case, body));
+        }
+    }
+
+    // Different (id, URI) pairs captured different documents, so no two answers are
+    // alike: nothing here can be satisfied by one canned body.
+    for (left_case, left) in &bodies {
+        for (right_case, right) in &bodies {
+            if left_case != right_case {
+                assert_ne!(
+                    left, right,
+                    "case {left_case} vs {right_case}: two captured documents must answer \
+                     two different bodies"
+                );
+            }
+        }
+    }
+}
+
+/// A policy read resolves ONLY the id's own live record and only a URI that record
+/// published: everything else is `ResourceNotFoundException` 404 — never an empty 200 and
+/// never a 501. The retention window is the same bound the details read keeps.
+#[tokio::test]
+async fn a_policy_uri_outside_the_live_record_is_not_found() {
+    let emulator = Emulator::new();
+    emulator.record(record("fresh", 3));
+    emulator.record(record("other", 3));
+    emulator.record(
+        record("onesecondinside", 3).aged(AUTHORIZATION_DETAILS_RETENTION - Duration::from_secs(1)),
+    );
+    emulator.record(
+        record("onesecondpast", 3).aged(AUTHORIZATION_DETAILS_RETENTION + Duration::from_secs(1)),
+    );
+
+    let cases: Vec<(&str, &str, String, u16)> = vec![
+        (
+            "the record's own managed policy URI",
+            "fresh",
+            policy_uris("fresh")[0].clone(),
+            200,
+        ),
+        (
+            "the record's own inline policy URI",
+            "fresh",
+            policy_uris("fresh")[2].clone(),
+            200,
+        ),
+        (
+            "a URI no policy of the record carries",
+            "fresh",
+            unevaluated_policy_uri("fresh"),
+            404,
+        ),
+        (
+            "a URI captured for another authorization id",
+            "fresh",
+            policy_uris("other")[0].clone(),
+            404,
+        ),
+        (
+            "an authorization id with no record at all",
+            "nosuchid",
+            policy_uris("nosuchid")[0].clone(),
+            404,
+        ),
+        (
+            "a record one second inside the retention window",
+            "onesecondinside",
+            policy_uris("onesecondinside")[1].clone(),
+            200,
+        ),
+        (
+            "a record one second past the retention window",
+            "onesecondpast",
+            policy_uris("onesecondpast")[1].clone(),
+            404,
+        ),
+    ];
+
+    for (what, id, policy_uri, expected_status) in cases {
+        let case = format!("{what} (id={id} policyUri={policy_uri})");
+        let (status, body) = emulator.get_policy(id, Some(&policy_uri)).await;
+        assert_eq!(
+            status, expected_status,
+            "case {case}: expected HTTP {expected_status}, got {status} with {body}"
+        );
+        if expected_status == 404 {
+            let (code, message) = error_of(&body, &case);
+            assert_eq!(
+                code, "ResourceNotFoundException",
+                "case {case}: expected ResourceNotFoundException, got {body}"
+            );
+            assert!(
+                !message.is_empty(),
+                "case {case}: the error must carry a message, got {body}"
+            );
+        } else {
+            assert!(
+                body.get("policyDocument").is_some(),
+                "case {case}: a 200 must carry policyDocument, got {body}"
+            );
+        }
+    }
+}
+
+/// `policyUri` is required and bounded: the model gives it `@required` and length 1..2048
+/// (`smithy_query(query="shape",shape="PolicyUri")`), so a request outside that is a 400
+/// `ValidationException`, while a URI inside it reaches the lookup and answers 404 when
+/// nothing was captured under it.
+#[tokio::test]
+async fn a_policy_uri_outside_the_modeled_bounds_is_refused() {
+    let emulator = Emulator::new();
+    emulator.record(record("abc123def", 2));
+
+    // The published bounds themselves, and one character past each.
+    let shortest = "a".to_string();
+    let longest = "a".repeat(2048);
+    let too_long = "a".repeat(2049);
+
+    let cases: Vec<(&str, Option<String>, u16)> = vec![
+        ("omitted entirely", None, 400),
+        ("empty, one below the minimum length", Some(String::new()), 400),
+        ("one character, the minimum length", Some(shortest), 404),
+        ("2048 characters, the maximum length", Some(longest), 404),
+        (
+            "2049 characters, one past the maximum length",
+            Some(too_long),
+            400,
+        ),
+        (
+            "a URI the record published",
+            Some(policy_uris("abc123def")[0].clone()),
+            200,
+        ),
+    ];
+
+    for (what, policy_uri, expected_status) in cases {
+        let case = format!("policyUri: {what}");
+        let (status, body) = emulator.get_policy("abc123def", policy_uri.as_deref()).await;
+        assert_eq!(
+            status, expected_status,
+            "case {case}: expected HTTP {expected_status}, got {status} with {body}"
+        );
+        if expected_status != 200 {
+            let (code, message) = error_of(&body, &case);
+            let expected_code = if expected_status == 400 {
+                "ValidationException"
+            } else {
+                "ResourceNotFoundException"
+            };
+            assert_eq!(
+                code, expected_code,
+                "case {case}: expected {expected_code}, got {body}"
+            );
+            assert!(
+                !message.is_empty(),
+                "case {case}: the error must carry a message, got {body}"
+            );
+        }
+    }
+}
+
+/// The policy read is `@readonly`: repeating it answers a byte-identical body and leaves
+/// every captured document in the store.
+#[tokio::test]
+async fn repeated_policy_reads_answer_identically_and_consume_nothing() {
+    let emulator = Emulator::new();
+    let ids = ["abc123def", "zzz999"];
+    for id in ids {
+        emulator.record(record(id, 2));
+    }
+
+    for id in ids {
+        for uri in policy_uris(id) {
+            let case = format!("id={id} policyUri={uri}");
+            let (first_status, first) = emulator.get_policy_raw(id, Some(&uri)).await;
+            let (second_status, second) = emulator.get_policy_raw(id, Some(&uri)).await;
+            assert_eq!(
+                (first_status, &first),
+                (second_status, &second),
+                "case {case}: two identical policy reads must answer identically"
+            );
+        }
+
+        let stored = emulator
+            .engine
+            .state::<ComAmazonawsIamtoolboxAuthrequestserviceState>()
+            .lock()
+            .authorization_details
+            .get(id)
+            .map(|record| record.policy_documents.len());
+        assert_eq!(
+            stored,
+            Some(policy_uris(id).len()),
+            "case id={id}: reading must not consume a captured policy document"
+        );
+    }
 }
