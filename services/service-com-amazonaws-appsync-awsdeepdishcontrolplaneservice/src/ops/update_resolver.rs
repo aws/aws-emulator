@@ -261,7 +261,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // The same definition rule the create enforces, over the same members: a
         // PIPELINE resolver is defined by the functions its `pipelineConfig` lists and
         // needs no data source of its own, a UNIT resolver names one data source and
-        // carries no pipeline, and `code` and `runtime` define each other. A definition
+        // carries no pipeline, and `code` and `runtime` define each other — while a
+        // `runtime` and a mapping template are two definitions of one resolver and
+        // cannot both be supplied. A definition
         // AppSync could not run is refused and the resolver is left exactly as it was.
         if let Some(message) = crate::state::resolver_definition_refusal(
             &kind,
@@ -269,6 +271,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             input.pipeline_config.as_ref(),
             input.code.as_deref(),
             input.runtime.as_ref(),
+            input.request_mapping_template.as_deref(),
+            input.response_mapping_template.as_deref(),
         ) {
             return Err(UpdateResolverErrorModeled::BadRequestException(BadRequestException {
                 message: Some(message),

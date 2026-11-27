@@ -328,6 +328,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             updated.code.as_deref(),
             updated.runtime.as_ref(),
             updated.function_version.as_deref(),
+            updated.request_mapping_template.as_deref(),
+            updated.response_mapping_template.as_deref(),
         ) {
             return Err(UpdateFunctionErrorModeled::BadRequestException(BadRequestException {
                 message: Some(message),

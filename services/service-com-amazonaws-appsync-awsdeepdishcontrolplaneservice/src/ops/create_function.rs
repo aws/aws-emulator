@@ -240,6 +240,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             input.code.as_deref(),
             input.runtime.as_ref(),
             input.function_version.as_deref(),
+            input.request_mapping_template.as_deref(),
+            input.response_mapping_template.as_deref(),
         ) {
             return Err(CreateFunctionErrorModeled::BadRequestException(BadRequestException {
                 message: Some(message),

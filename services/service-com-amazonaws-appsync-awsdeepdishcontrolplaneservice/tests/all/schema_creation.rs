@@ -429,11 +429,12 @@ async fn a_created_schema_is_the_types_its_document_declares() {
 
     for (row, api_id) in rows.iter().zip(&apis) {
         let settled = creation_status(&router, api_id).await;
-        // The detail counts the types the document declares, written out here rather
-        // than read off the service's own template.
+        // The detail counts the types the created schema holds: the ones the document
+        // declares plus the one the service contributes to every schema it creates.
+        // Written out here rather than read off the service's own template.
         let detail = format!(
             "Successfully created schema with {} types.",
-            row.declared.len()
+            row.declared.len() + 1
         );
         assert_eq!(
             (

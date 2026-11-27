@@ -266,6 +266,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             input.pipeline_config.as_ref(),
             input.code.as_deref(),
             input.runtime.as_ref(),
+            input.request_mapping_template.as_deref(),
+            input.response_mapping_template.as_deref(),
         ) {
             return Err(CreateResolverErrorModeled::BadRequestException(BadRequestException {
                 message: Some(message),

@@ -248,13 +248,18 @@ pub fn pipeline_functions_limit_message() -> String {
 ///   name that data source;
 /// * `code` and `runtime` define each other — "When code is used, the `runtime` is
 ///   required" (`Resolver$code`) — which is the pair rule
-///   [`super::code_runtime_refusal`] states for every operation that takes the two.
+///   [`super::code_runtime_refusal`] states for every operation that takes the two;
+/// * a `runtime` and a mapping template are two definitions of one resolver, so they
+///   cannot both be supplied ([`super::runtime_templates_refusal`], the same rule the
+///   function writes carry), and that is decided before the pair rule above.
 pub fn resolver_definition_refusal(
     kind: &str,
     data_source_name: Option<&str>,
     pipeline_config: Option<&PipelineConfig>,
     code: Option<&str>,
     runtime: Option<&AppSyncRuntime>,
+    request_mapping_template: Option<&str>,
+    response_mapping_template: Option<&str>,
 ) -> Option<String> {
     if kind == PIPELINE_KIND {
         let Some(pipeline_config) = pipeline_config else {
@@ -269,5 +274,10 @@ pub fn resolver_definition_refusal(
     } else if data_source_name.is_none_or(str::is_empty) {
         return Some(DATA_SOURCE_NAME_MISSING_MESSAGE.to_string());
     }
-    super::code_runtime_refusal(code, runtime)
+    super::runtime_templates_refusal(
+        runtime,
+        request_mapping_template,
+        response_mapping_template,
+    )
+    .or_else(|| super::code_runtime_refusal(code, runtime))
 }

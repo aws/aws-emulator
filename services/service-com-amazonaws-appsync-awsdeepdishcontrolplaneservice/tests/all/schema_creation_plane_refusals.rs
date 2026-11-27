@@ -6,9 +6,11 @@
 //! Two rules, each asserted over a class of inputs rather than over the one request that
 //! exposed the defect:
 //!
-//! 1. the detail of a schema creation that SUCCEEDED states how many types the submitted
-//!    document defines ("Successfully created schema with `<N>` types."), so the number
-//!    is derived from the document the caller passed rather than being a sentence that
+//! 1. the detail of a schema creation that SUCCEEDED states how many types the created
+//!    schema holds ("Successfully created schema with `<N>` types.") — the types the
+//!    submitted document defines plus the one the service contributes to every schema it
+//!    creates — so the number is derived from the document the caller passed rather than
+//!    being a sentence that
 //!    holds for every schema. Asserted over a table of documents spanning the count of
 //!    types they define, the kinds they declare them with, definitions that declare no
 //!    type at all (a `schema` definition, a directive definition), extensions of types
@@ -51,7 +53,8 @@ struct Row {
     label: &'static str,
     /// The document the creation carries, in GraphQL schema language.
     document: String,
-    /// The number of types the document defines, which the success detail must state.
+    /// The number of types the document defines; the success detail states this count
+    /// plus the one type the service contributes to every schema it creates.
     types: usize,
 }
 
@@ -172,7 +175,10 @@ async fn the_success_detail_states_how_many_types_the_document_defines() {
         await_creation(&router, api_id, row.label).await;
 
         let settled = creation_status(&router, api_id).await;
-        let expected = format!("Successfully created schema with {} types.", row.types);
+        let expected = format!(
+            "Successfully created schema with {} types.",
+            row.types + 1
+        );
         assert_eq!(
             (
                 settled.body["status"].as_str(),
@@ -185,13 +191,15 @@ async fn the_success_detail_states_how_many_types_the_document_defines() {
             settled.body
         );
 
-        // The count the detail states is the type system the creation installed, not the
-        // test's own reading of the document: the API reports exactly that many types.
+        // The count the detail states is the type system the creation installed plus the
+        // service's own type, not the test's own reading of the document: the API reports
+        // exactly the types the document declared.
         let listed = listed_types(&router, api_id).await;
         assert_eq!(
             listed.len(),
             row.types,
-            "case {:?}: expected the API to hold the {} types the detail states, got {listed:?}",
+            "case {:?}: expected the API to hold the {} types the document declared, got \
+             {listed:?}",
             row.label,
             row.types
         );
@@ -222,7 +230,7 @@ async fn a_second_creation_detail_follows_the_new_document() {
         await_creation(&router, &api_id, label).await;
 
         let settled = creation_status(&router, &api_id).await;
-        let expected = format!("Successfully created schema with {types} types.");
+        let expected = format!("Successfully created schema with {} types.", types + 1);
         assert_eq!(
             settled.body["details"].as_str(),
             Some(expected.as_str()),

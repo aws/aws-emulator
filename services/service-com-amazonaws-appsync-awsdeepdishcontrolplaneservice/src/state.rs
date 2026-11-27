@@ -1064,9 +1064,14 @@ pub const FUNCTION_NOT_FOUND_MESSAGE: &str = "Function not found.";
 /// The refusal text for a function definition AppSync could not run, or `None` when
 /// the request describes one it could.
 ///
-/// Three documented requirements, each over the members that carry the definition
+/// Four documented requirements, each over the members that carry the definition
 /// rather than over one request's values:
 ///
+/// * a `runtime` names the engine that runs the definition's `code`, and a mapping
+///   template is a definition in VTL, so the two describe two different definitions of
+///   one function and cannot both be supplied ([`runtime_templates_refusal`], which is
+///   decided FIRST because it is a property of the pair the request carries rather than
+///   of a member it left out);
 /// * `code` "When code is used, the runtime is required";
 /// * `runtime` "if a runtime is specified, code must also be specified";
 /// * `functionVersion` "when using VTL and mapping templates, the functionVersion is
@@ -1079,7 +1084,16 @@ pub fn function_definition_refusal(
     code: Option<&str>,
     runtime: Option<&AppSyncRuntime>,
     function_version: Option<&str>,
+    request_mapping_template: Option<&str>,
+    response_mapping_template: Option<&str>,
 ) -> Option<String> {
+    if let Some(message) = runtime_templates_refusal(
+        runtime,
+        request_mapping_template,
+        response_mapping_template,
+    ) {
+        return Some(message);
+    }
     match (code, runtime) {
         (None, None) if function_version.is_none_or(str::is_empty) => Some(
             "Invalid functionVersion given. A functionVersion is required when using mapping \
@@ -1088,6 +1102,42 @@ pub fn function_definition_refusal(
         ),
         pair => code_runtime_refusal(pair.0, pair.1),
     }
+}
+
+/// The text a `BadRequestException` (HTTP 400) carries for a definition that names a
+/// runtime AND supplies a mapping template.
+///
+/// Entirely fixed text: the sentence states which two members cannot be combined, so it
+/// interpolates nothing of the request.
+pub const TEMPLATES_WITH_RUNTIME_MESSAGE: &str =
+    "Request and Response mapping templates can not be supplied with provided runtime.";
+
+/// The refusal text for a definition that supplies a mapping template beside a `runtime`,
+/// or `None` when the two are not combined.
+///
+/// A `runtime` "Describes a runtime used by an … AppSync pipeline resolver or … function"
+/// and is the engine that runs that definition's `code` (`AppSyncRuntime`: "if a runtime is
+/// specified, code must also be specified"), while a `requestMappingTemplate` /
+/// `responseMappingTemplate` IS the definition, written in VTL — so a request carrying both
+/// describes one function or resolver two ways and AppSync refuses the combination
+/// ([`TEMPLATES_WITH_RUNTIME_MESSAGE`]) rather than the member the other definition left
+/// out.
+///
+/// The rule is over the MEMBERS, so it is the same for every operation that takes a runtime
+/// beside the two templates — the function writes and the resolver writes alike — and it is
+/// decided before the `code`/`runtime` pair rule ([`code_runtime_refusal`]): a request that
+/// supplies templates has a definition already and is not missing its `code`.
+///
+/// A template the request carries at all counts as supplied: `MappingTemplate`'s modelled
+/// `@length` of 1..65536 rules the empty string out before this, so there is no
+/// present-but-empty template to tell apart ([`mapping_templates_refusal`]).
+pub fn runtime_templates_refusal(
+    runtime: Option<&AppSyncRuntime>,
+    request_mapping_template: Option<&str>,
+    response_mapping_template: Option<&str>,
+) -> Option<String> {
+    let templated = request_mapping_template.is_some() || response_mapping_template.is_some();
+    (runtime.is_some() && templated).then(|| TEMPLATES_WITH_RUNTIME_MESSAGE.to_string())
 }
 
 /// The refusal text for a `code`/`runtime` pair that defines nothing AppSync could run,
@@ -3434,15 +3484,26 @@ pub fn merge_failed_detail(source_api_id: &str, association_id: &str, conflict: 
 
 /// How long after an association is created the merge it scheduled comes due.
 ///
-/// A chosen span, inside the emulator's 250-750 ms band for a transition the clock
-/// owes: AppSync reports a new association in the non-terminal [`MERGE_SCHEDULED`]
-/// status, so the span is never zero — a caller reading straight after the create still
-/// observes that status, and one initiating a merge is answered it. A merge that DEPENDS on a schema
+/// A chosen span, and a deliberately SHORT one. A merge is work the service performs by
+/// itself, and the only way a client learns it has been performed is by reading the
+/// association again: a client waiting for a terminal `SourceApiAssociationStatus` issues
+/// one read after another as fast as the calls themselves go, and against AppSync the
+/// merge is performed while that client is still reading. A span of the 250-750 ms band
+/// this project fixes for a provisioning transition outlasts such a run of reads
+/// altogether, so the association is reported as merely SCHEDULED for as long as anybody
+/// looks at it — which is indistinguishable from a merge that is never performed, the one
+/// outcome a scheduled merge must not have.
+///
+/// It is never zero, and it is longer than a call of this emulator takes: AppSync
+/// reports a new association in the non-terminal [`MERGE_SCHEDULED`] status, so a caller
+/// acting straight after the create still observes that status and the refusals that go
+/// with it — a merge initiation arriving then is answered
+/// [`ASSOCIATION_OPERATION_IN_PROGRESS_MESSAGE`]. A merge that DEPENDS on a schema
 /// creation the source API still owes takes one such span after that creation comes due
 /// ([`merge_due_instant`]). Nothing sleeps for it — the due instant is stored on the
 /// record and [`ComAmazonawsAppsyncAwsdeepdishcontrolplaneserviceState::settle_associations`]
 /// applies it.
-pub const MERGE_SPAN: Duration = Duration::from_millis(500);
+pub const MERGE_SPAN: Duration = Duration::from_millis(3);
 
 /// When a merge scheduled at `now` comes due, given the instant `source_schema_due` the
 /// source API's own schema creation comes due (`None` when it owes none).

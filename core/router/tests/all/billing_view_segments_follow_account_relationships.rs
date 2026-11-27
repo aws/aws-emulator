@@ -260,14 +260,28 @@ fn month_boundary(offset: i64) -> f64 {
 /// over the wire yet (`Organizations:ListAccounts` is still a stub, HTTP 501),
 /// and the expectation has to name the instant the SERVICE recorded rather than
 /// one this suite made up.
+///
+/// Taken as the WIRE carries that instant: a JSON timestamp of these protocols is
+/// an epoch-seconds decimal, so what the segments read above hold is the double
+/// that decimal parses to. Reading the stored instant as a float directly rounds
+/// the very same instant its own way — the two differ in the last bit a double has
+/// at this magnitude for about half of the nanosecond values a clock can land on,
+/// which is a fraction of a microsecond and not a different instant, so comparing
+/// against the wire's own number is what makes this expectation exact rather than
+/// a coin flip.
 fn joined_at(engine: &Arc<engine::InMemoryEngine>) -> f64 {
     let organizations = engine.state::<OrganizationsState>();
     let organizations = organizations.lock();
-    organizations
+    let joined = organizations
         .accounts
         .get(account_id())
-        .map(|account| account.joined_timestamp.as_secs_f64())
-        .expect("the organization records the account that created it")
+        .map(|account| account.joined_timestamp)
+        .expect("the organization records the account that created it");
+    joined
+        .fmt(aws_smithy_types::date_time::Format::EpochSeconds)
+        .expect("an instant renders as the epoch-seconds decimal the wire carries")
+        .parse::<f64>()
+        .expect("that decimal parses as the number a client reads")
 }
 
 /// Create the organization through Organizations' own `CreateOrganization` — the
