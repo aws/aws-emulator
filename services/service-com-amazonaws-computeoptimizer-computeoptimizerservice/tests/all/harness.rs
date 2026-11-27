@@ -34,7 +34,7 @@ use serde_json::{json, Value};
 use service_com_amazonaws_computeoptimizer_computeoptimizerservice::ops::types::RESOURCE_TYPE_VALUES;
 use service_com_amazonaws_computeoptimizer_computeoptimizerservice::state::{
     service_state, EBS_METRIC_NAMESPACE, EBS_VOLUME_DIMENSION, EXPORT_JOB_STEP,
-    JOB_STATUS_COMPLETE, JOB_STATUS_FAILED, METRIC_STATISTIC_MAXIMUM,
+    JOB_STATUS_COMPLETE, JOB_STATUS_FAILED, METRIC_STATISTIC_MAXIMUM, MemberAccountEnrollment,
     RESOURCE_TYPE_AUTO_SCALING_GROUP, SCOPE_ACCOUNT_ID, SCOPE_RESOURCE_ARN, ANALYSIS_DELAY,
 };
 use service_com_amazonaws_computeoptimizer_computeoptimizerservice::EmulatedService;
@@ -1003,6 +1003,47 @@ pub(crate) fn assert_figure(
         "case {case:?}: {column} must hold the figure the reader reports ({expected}), got \
          {actual} in {row:?}"
     );
+}
+
+/// Record `members` as the member accounts of the caller's organization, the way AWS
+/// Organizations would: no operation of THIS API creates one, and this service's store holding
+/// member accounts is exactly what makes the account it presents an organization's management
+/// account (`manages_an_organization`). A suite needs it to reach any surface served only to a
+/// management account — the organization's enrollment statuses, the organization-wide
+/// `includeMemberAccounts`, and a preference created at the organization-level scope.
+pub(crate) fn record_organization(
+    engine: &Arc<engine::InMemoryEngine>,
+    members: &[MemberAccountEnrollment],
+) {
+    let state = service_state(&**engine).expect("the engine bears this service's state");
+    let mut guard = state.lock();
+    for member in members {
+        guard.organization_members.insert(member.clone());
+    }
+}
+
+/// The member account [`management_account_emulator`] records: a well-formed account id other
+/// than the one this emulator presents ([`ACCOUNT`]), since a management account's organization
+/// is made of OTHER accounts.
+pub(crate) const ORGANIZATION_MEMBER_ACCOUNT: &str = "200000000001";
+
+/// The emulator a suite needs to write a preference at the organization-level scope: the same
+/// emulator as [`emulator_with_engine`], with one member account recorded, so the account it
+/// presents MANAGES an organization — "You can create recommendation preferences at the
+/// organization level (for management accounts of an organization only)"
+/// (`PutRecommendationPreferences$scope`).
+///
+/// The organization's size and the enrollment of its members are what that rule does NOT depend
+/// on, so one member account is enough here; the table in
+/// `tests/all/enrollment_and_preferences.rs` spans the organizations a management account can be
+/// recorded with.
+pub(crate) fn management_account_emulator() -> (MultiServiceRouter, Arc<engine::InMemoryEngine>) {
+    let (router, engine) = emulator_with_engine();
+    record_organization(
+        &engine,
+        &[MemberAccountEnrollment::new(ORGANIZATION_MEMBER_ACCOUNT)],
+    );
+    (router, engine)
 }
 
 /// Opt the account in, which every preference operation requires.

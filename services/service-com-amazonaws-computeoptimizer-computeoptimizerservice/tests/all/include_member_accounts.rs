@@ -32,14 +32,14 @@ use std::sync::Arc;
 
 use serde_json::{json, Value};
 use service_com_amazonaws_computeoptimizer_computeoptimizerservice::state::{
-    service_state, MemberAccountEnrollment, EXPORT_JOB_STEP, JOB_STATUS_COMPLETE,
-    JOB_STATUS_FAILED,
+    MemberAccountEnrollment, EXPORT_JOB_STEP, JOB_STATUS_COMPLETE, JOB_STATUS_FAILED,
 };
 use smithy_server_runtime::MultiServiceRouter;
 
 use crate::harness::{
     call, create_bucket, csv_rows, emulator_with_engine, error_code, export_destination,
-    get_object, make_analysis_due, opt_in, register_analysed_functions, ACCOUNT,
+    get_object, make_analysis_due, opt_in, record_organization, register_analysed_functions,
+    ACCOUNT,
 };
 
 /// The refusal every operation answers a caller that asks for member accounts while managing
@@ -122,16 +122,6 @@ async fn enrolled_emulator() -> (MultiServiceRouter, Arc<engine::InMemoryEngine>
     create_bucket(&router, BUCKET).await;
     opt_in(&router).await;
     (router, engine)
-}
-
-/// Record `members` as member accounts of the caller's organization, the way AWS Organizations
-/// would: no operation of this API creates one.
-fn record_organization(engine: &Arc<engine::InMemoryEngine>, members: &[MemberAccountEnrollment]) {
-    let state = service_state(&**engine).expect("the engine bears this service's state");
-    let mut guard = state.lock();
-    for member in members {
-        guard.organization_members.insert(member.clone());
-    }
 }
 
 /// The organizations a management account can be recorded with, spanning what the rule

@@ -32,7 +32,7 @@ use service_com_amazonaws_computeoptimizer_computeoptimizerservice::state::{
 
 use crate::harness::{
     call, call_in_region, emulator_with_engine, error_code, get_preferences, make_analysis_due,
-    opt_in, put_preference,
+    management_account_emulator, opt_in, put_preference,
 };
 
 /// The ONE account this emulator presents, and so the only account any reader of this
@@ -1595,8 +1595,11 @@ async fn the_savings_estimation_mode_preference_is_applied_to_idle_recommendatio
     for row in &rows {
         // A fresh store per row: a preference one row stored must not decide another's. The
         // analysis is made due by moving the enrollment instant back rather than by waiting,
-        // so nothing here depends on how fast the host runs.
-        let (router, engine) = emulator_with_engine();
+        // so nothing here depends on how fast the host runs. One row writes at the
+        // organization-level scope, which the model admits "for management accounts of an
+        // organization only" (`PutRecommendationPreferences$scope`), so every row's caller
+        // manages an organization.
+        let (router, engine) = management_account_emulator();
         opt_in(&router).await;
         make_analysis_due(&engine);
         record(&engine, vec![recorded_instance()]);

@@ -41,8 +41,9 @@ use service_com_amazonaws_computeoptimizer_computeoptimizerservice::state::{
 use smithy_server_runtime::MultiServiceRouter;
 
 use crate::harness::{
-    call, emulator, emulator_with_engine, get_preferences, make_analysis_due, opt_in,
-    put_preference, register_analysed_functions, scope_for, ACCOUNT, RESOURCE_TYPES,
+    call, emulator, emulator_with_engine, get_preferences, make_analysis_due,
+    management_account_emulator, opt_in, put_preference, register_analysed_functions, scope_for,
+    ACCOUNT, RESOURCE_TYPES,
 };
 
 /// `savingsEstimationMode` is accepted — HTTP 200 with an empty body — and stored for EVERY
@@ -101,7 +102,10 @@ async fn savings_estimation_mode_is_settable_for_every_resource_type() {
 /// every scope of that type, and a second write to the same key MERGES into it.
 #[tokio::test]
 async fn preferences_are_keyed_by_resource_type_and_scope() {
-    let router = emulator();
+    // One of the keys written below is at the organization-level scope, which the model admits
+    // "for management accounts of an organization only"
+    // (`PutRecommendationPreferences$scope`), so the caller here manages an organization.
+    let (router, _engine) = management_account_emulator();
     opt_in(&router).await;
 
     let account_scope = json!({"name": SCOPE_ACCOUNT_ID, "value": ACCOUNT});

@@ -21,8 +21,8 @@ use service_com_amazonaws_computeoptimizer_computeoptimizerservice::state::{
 };
 
 use crate::harness::{
-    auto_scaling_group_arn, call, effective_for, emulator, get_preferences, instance_arn, opt_in,
-    put_preference, ACCOUNT,
+    auto_scaling_group_arn, call, effective_for, emulator, get_preferences, instance_arn,
+    management_account_emulator, opt_in, put_preference, ACCOUNT,
 };
 
 /// One row per form a request that names no preference can take: a different resource type,
@@ -93,8 +93,11 @@ fn reported(read: &Value) -> usize {
 #[tokio::test]
 async fn a_put_that_sets_no_preference_stores_no_record() {
     for (case, request) in requests_that_set_no_preference() {
-        // A fresh emulator per row: what the reads report is this row's write alone.
-        let router = emulator();
+        // A fresh emulator per row: what the reads report is this row's write alone. One row
+        // addresses the organization-level scope, which the model admits "for management
+        // accounts of an organization only" (`PutRecommendationPreferences$scope`), so every
+        // row's caller manages an organization.
+        let (router, _engine) = management_account_emulator();
         opt_in(&router).await;
 
         let resource_type = request["resourceType"]
@@ -199,7 +202,9 @@ async fn a_put_that_sets_no_preference_leaves_a_stored_record_alone() {
         let resource_type = resource_type.as_str().expect("the row names a resourceType");
         let case = format!("{member} on {resource_type} at {scope:?}");
 
-        let router = emulator();
+        // One row stores at the organization-level scope, which only a management account may
+        // create a preference at.
+        let (router, _engine) = management_account_emulator();
         opt_in(&router).await;
 
         let mut request = json!({"resourceType": resource_type});

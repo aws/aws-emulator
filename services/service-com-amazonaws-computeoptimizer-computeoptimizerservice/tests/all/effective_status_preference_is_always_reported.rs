@@ -31,8 +31,8 @@ use service_com_amazonaws_computeoptimizer_computeoptimizerservice::state::{
 };
 
 use crate::harness::{
-    auto_scaling_group_arn, call, effective_for, emulator, get_preferences, instance_arn, opt_in,
-    put_preference, ACCOUNT,
+    auto_scaling_group_arn, call, effective_for, emulator, get_preferences, instance_arn,
+    management_account_emulator, opt_in, put_preference, ACCOUNT,
 };
 
 /// The member every row below reads.
@@ -181,7 +181,11 @@ async fn the_effective_status_is_reported_for_every_resource() {
         expected,
     } in rows()
     {
-        let router = emulator();
+        // Some rows write at the organization-level scope, which the model admits "for
+        // management accounts of an organization only"
+        // (`PutRecommendationPreferences$scope`), so every row's caller manages an organization
+        // — which decides nothing about the status that is then in force.
+        let (router, _engine) = management_account_emulator();
         opt_in(&router).await;
         for request in &writes {
             put_preference(&router, request).await;

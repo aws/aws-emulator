@@ -7,8 +7,8 @@
 //! and storing no record at all when the merged result holds no preference, so a request
 //! that sets none creates none — and refuses with `InvalidParameterValueException` a request that breaks a preference
 //! rule this service applies — the resource types each preference member may be set for,
-//! the scope levels a resource type admits, and the well-formedness of the preference
-//! values themselves.
+//! the scope levels a resource type admits, the scope levels the CALLER may create a
+//! preference at, and the well-formedness of the preference values themselves.
 //!
 //! ## Shape of an operation
 //!
@@ -240,6 +240,29 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         }
 
         let mut guard = state.lock();
+        // `scope`: "You can create recommendation preferences at the organization level (for
+        // management accounts of an organization only), account level, and resource level." An
+        // organization-level record applies to every resource of the account that inherits it
+        // (`crate::state::account_scope_precedence`), so a caller that manages no organization
+        // is refused rather than handed a preference the service says it cannot create. The
+        // role test and the wording are the crate's shared ones
+        // ([`crate::state::ComAmazonawsComputeoptimizerComputeoptimizerserviceState::organization_scope_rejection`]),
+        // so this writer judges the caller exactly as every other organization-wide surface
+        // does. Judged after the request's own rules above — a request that breaks one of those
+        // is malformed whoever sends it — and before the enrollment gate, as the shared export
+        // admission judges the same role: no enrollment status makes an organization the caller
+        // does not manage.
+        if let Some(message) = guard.organization_scope_rejection(input.scope.as_ref()) {
+            return Err(
+                PutRecommendationPreferencesErrorModeled::InvalidParameterValueException(
+                    InvalidParameterValueException {
+                        message: Some(message.to_string()),
+                    },
+                )
+                .into(),
+            );
+        }
+
         if !guard.enrollment.is_opted_in() {
             return Err(
                 PutRecommendationPreferencesErrorModeled::OptInRequiredException(

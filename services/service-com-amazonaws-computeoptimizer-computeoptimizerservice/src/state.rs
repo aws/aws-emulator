@@ -966,16 +966,17 @@ pub const AUTO_SCALING_GROUP_SCOPE_MESSAGE: &str = "You cannot create a recommen
 pub const INVALID_ENROLLMENT_STATUS_MESSAGE: &str = "Invalid status, should be 'Active' or \
      'Inactive'.";
 
-/// What this service answers a caller that asks for `includeMemberAccounts` — the
-/// organization-wide switch — while it manages no organization.
+/// What this service answers a caller that asks for an organization-wide surface — the
+/// `includeMemberAccounts` switch, or a preference at the organization-level scope — while it
+/// manages no organization.
 ///
-/// That member is conditioned on the caller's role: it indicates whether to include the
-/// resources of "all member accounts of the organization", and only an organization's
-/// management account or delegated administrator has any. A caller that has none is refused
-/// rather than answered as though an organization-wide call had been honoured; the refusal
-/// names neither the member nor the account, it states the two reasons the caller cannot ask
-/// for member accounts. ONE spelling for the whole crate, so no two operations that take the
-/// member word the same refusal differently.
+/// Both are conditioned on the caller's role: they ask for the resources, or the enrollment, of
+/// "all member accounts of the organization", or for a preference covering every account of
+/// one, and only an organization's management account or delegated administrator has any. A
+/// caller that has none is refused rather than answered as though an organization-wide call had
+/// been honoured; the refusal names neither the member nor the account, it states the two
+/// reasons the caller cannot ask for member accounts. ONE spelling for the whole crate, so no
+/// two operations that judge the caller's role word the same refusal differently.
 pub const INCLUDE_MEMBER_ACCOUNTS_MESSAGE: &str = "Cannot include member accounts. This could \
      be because you are not an AWS Organization user or you are not the master account in the \
      organization.";
@@ -4059,6 +4060,25 @@ impl ComAmazonawsComputeoptimizerComputeoptimizerserviceState {
         include_member_accounts: bool,
     ) -> Option<&'static str> {
         (include_member_accounts && !self.manages_an_organization())
+            .then_some(INCLUDE_MEMBER_ACCOUNTS_MESSAGE)
+    }
+
+    /// Why a `scope` a preference WRITE carries cannot be honoured, or `None` when it can.
+    ///
+    /// An organization-level scope ([`SCOPE_ORGANIZATION`]) states a preference for every
+    /// account of an organization, which the model admits for one caller only: "You can create
+    /// recommendation preferences at the organization level (for management accounts of an
+    /// organization only), account level, and resource level"
+    /// (`PutRecommendationPreferences$scope`). A caller that manages no organization
+    /// ([`manages_an_organization`](Self::manages_an_organization)) has no organization to set a
+    /// preference for, so the write is refused — with the crate's one wording for the condition
+    /// ([`INCLUDE_MEMBER_ACCOUNTS_MESSAGE`]) — rather than stored as a record every resource of
+    /// the account would then inherit ([`account_scope_precedence`]). Every other scope level
+    /// names the caller's own account or one of its resources and is always honoured.
+    pub fn organization_scope_rejection(&self, scope: Option<&Scope>) -> Option<&'static str> {
+        let names_the_organization =
+            scope.and_then(|scope| scope.name.as_deref()) == Some(SCOPE_ORGANIZATION);
+        (names_the_organization && !self.manages_an_organization())
             .then_some(INCLUDE_MEMBER_ACCOUNTS_MESSAGE)
     }
 

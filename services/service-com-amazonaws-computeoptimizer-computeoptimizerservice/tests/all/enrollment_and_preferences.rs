@@ -5,15 +5,22 @@
 //! Every call here goes through the shared wire harness (`tests/all/harness.rs`), i.e. the
 //! same `MultiServiceRouter::dispatch` the emulator's front door uses. Nothing reaches
 //! into the state struct, so what these tests prove is what a client sees.
+//!
+//! The tables at the end of this file pin WHICH CALLER may create a preference at the
+//! organization level: "for management accounts of an organization only"
+//! (`PutRecommendationPreferences$scope`).
 
 use serde_json::{json, Value};
 use service_com_amazonaws_computeoptimizer_computeoptimizerservice::state::{
-    DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, MAX_PREFERENCE_RECORDS,
+    MemberAccountEnrollment, DEFAULT_ENHANCED_INFRASTRUCTURE_METRICS, DEFAULT_LOOK_BACK_PERIOD,
+    DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, MAX_PREFERENCE_RECORDS, ORGANIZATION_SCOPE_VALUE,
+    SCOPE_ACCOUNT_ID, SCOPE_ORGANIZATION, SCOPE_RESOURCE_ARN,
 };
 
 use crate::harness::{
-    auto_scaling_group_arn, call, effective_for, emulator, error_code, get_preferences,
-    instance_arn, opt_in, put_preference, ACCOUNT,
+    auto_scaling_group_arn, call, effective_for, emulator, emulator_with_engine, error_code,
+    get_preferences, instance_arn, management_account_emulator, opt_in, put_preference,
+    record_organization, ACCOUNT,
 };
 
 /// `GetEnrollmentStatus` reports the documented default before any write, and afterwards
@@ -141,7 +148,10 @@ async fn enrollment_defaults_to_inactive_and_round_trips_every_settable_status()
 /// merges into the record rather than replacing it.
 #[tokio::test]
 async fn a_written_preference_is_read_back_at_its_own_resource_type_and_scope() {
-    let router = emulator();
+    // The rows below include a write at the organization-level scope, which the model admits
+    // "for management accounts of an organization only" (`PutRecommendationPreferences$scope`),
+    // so the caller here manages an organization.
+    let (router, _engine) = management_account_emulator();
     opt_in(&router).await;
 
     let instance = instance_arn("i-1234567890abcdef0");
@@ -319,7 +329,9 @@ async fn a_written_preference_is_read_back_at_its_own_resource_type_and_scope() 
 /// page stopped, whatever the page size: paging always yields the unpaged sequence.
 #[tokio::test]
 async fn preferences_page_through_an_opaque_next_token() {
-    let router = emulator();
+    // One of the scopes paged over is the organization level, which only a management account
+    // may create a preference at.
+    let (router, _engine) = management_account_emulator();
     opt_in(&router).await;
 
     let scopes = [
@@ -468,7 +480,9 @@ async fn preferences_page_through_an_opaque_next_token() {
 /// the look-back period is the documented default.
 #[tokio::test]
 async fn effective_preferences_resolve_by_scope_precedence() {
-    let router = emulator();
+    // The least specific record in the chain below is the organization-level one, which only a
+    // management account may create.
+    let (router, _engine) = management_account_emulator();
     opt_in(&router).await;
 
     let instance = instance_arn("i-1234567890abcdef0");
@@ -804,7 +818,10 @@ async fn delete_removes_only_the_named_preferences() {
 /// `InvalidParameterValueException`, and one that keeps every rule is stored.
 #[tokio::test]
 async fn preference_requests_are_checked_against_the_documented_rules() {
-    let router = emulator();
+    // These rows pin the rules a request's own members have to keep, so the caller manages an
+    // organization: WHICH caller may create a preference at the organization level is a
+    // separate rule, pinned by the tables at the end of this suite.
+    let (router, _engine) = management_account_emulator();
     opt_in(&router).await;
 
     let instance = instance_arn("i-1234567890abcdef0");
@@ -1306,5 +1323,416 @@ async fn the_preference_store_and_its_pages_are_bounded() {
     assert!(
         page <= MAX_PAGE_SIZE,
         "maxResults=1000: a page must not exceed the {MAX_PAGE_SIZE} ceiling, got {page}"
+    );
+}
+
+// --- which caller may create a preference at the organization level -----------------------
+//
+// "You can create recommendation preferences at the organization level (for management accounts
+// of an organization only), account level, and resource level"
+// (`PutRecommendationPreferences$scope`): a request stating an organization-level scope is
+// admitted only from a caller that MANAGES an organization, and any other caller is refused with
+// the service's one sentence for the condition, storing nothing. The tables below span what that
+// rule generalises over — the resource type, which preference member the request sets, how many
+// members ride along, and, on the admitting side, the organization the management account is
+// recorded with — because what a recording happens to carry is one row of the class.
+
+/// The sentence this service refuses an organization-wide request from a caller that manages no
+/// organization with: the wording it already answers the organization-wide
+/// `includeMemberAccounts` with, which names neither the member nor the account — it states the
+/// two reasons the caller cannot ask for the organization. Spelled out here rather than imported
+/// so the WORDING is what these tables pin.
+const NOT_A_MANAGEMENT_ACCOUNT_MESSAGE: &str = "Cannot include member accounts. This could be \
+     because you are not an AWS Organization user or you are not the master account in the \
+     organization.";
+
+/// The organization-level scope every row below states: the one value the model admits for it,
+/// "The `value` must be `ALL_ACCOUNTS`" (`Scope$value`).
+fn organization_scope() -> Value {
+    json!({"name": SCOPE_ORGANIZATION, "value": ORGANIZATION_SCOPE_VALUE})
+}
+
+/// One row: the resource type the preference is written for, and the preference members the
+/// request sets — each settable for that resource type, so the caller's role is the only thing
+/// that can refuse the request.
+struct ScopeRow {
+    case: &'static str,
+    resource_type: &'static str,
+    preferences: Value,
+}
+
+/// One row per preference member kind, spread over the resource types each is settable for: the
+/// two status switches (`enhancedInfrastructureMetrics`, `inferredWorkloadTypes`), the scalar
+/// (`lookBackPeriod`), the mode (`savingsEstimationMode`), the object
+/// (`externalMetricsPreference`) and the two lists (`utilizationPreferences`,
+/// `preferredResources`) — alone, and several in one request. An Auto Scaling group is absent:
+/// its preference "can only be set at the resource level" whoever asks, which
+/// `tests/all/client_refusal_wording.rs` pins.
+fn organization_scope_rows() -> Vec<ScopeRow> {
+    vec![
+        ScopeRow {
+            case: "a look-back period for EC2 instances",
+            resource_type: "Ec2Instance",
+            preferences: json!({"lookBackPeriod": "DAYS_93"}),
+        },
+        ScopeRow {
+            case: "a look-back period for EBS volumes",
+            resource_type: "EbsVolume",
+            preferences: json!({"lookBackPeriod": "DAYS_32"}),
+        },
+        ScopeRow {
+            case: "a status switch and an object in one request",
+            resource_type: "Ec2Instance",
+            preferences: json!({
+                "enhancedInfrastructureMetrics": "Active",
+                "externalMetricsPreference": {"source": "Datadog"},
+            }),
+        },
+        ScopeRow {
+            case: "a savings estimation mode for RDS DB instances",
+            resource_type: "RdsDBInstance",
+            preferences: json!({"savingsEstimationMode": "AfterDiscounts"}),
+        },
+        ScopeRow {
+            case: "the inferred workload types switch for Lambda functions",
+            resource_type: "LambdaFunction",
+            preferences: json!({"inferredWorkloadTypes": "Inactive"}),
+        },
+        ScopeRow {
+            case: "a preferred-resource list for ECS services",
+            resource_type: "EcsService",
+            preferences: json!({
+                "preferredResources": [{"name": "Ec2InstanceTypes", "includeList": ["m5"]}],
+            }),
+        },
+        ScopeRow {
+            case: "a utilization-preference list and a look-back period together",
+            resource_type: "Ec2Instance",
+            preferences: json!({
+                "utilizationPreferences": [{
+                    "metricName": "CpuUtilization",
+                    "metricParameters": {"threshold": "P95", "headroom": "PERCENT_20"},
+                }],
+                "lookBackPeriod": "DAYS_14",
+            }),
+        },
+        ScopeRow {
+            case: "a savings estimation mode for idle resources",
+            resource_type: "Idle",
+            preferences: json!({"savingsEstimationMode": "BeforeDiscounts"}),
+        },
+    ]
+}
+
+/// The `PutRecommendationPreferences` request a row sends, at `scope`.
+fn scope_row_request(row: &ScopeRow, scope: Option<&Value>) -> Value {
+    let mut request = json!({"resourceType": row.resource_type});
+    for (member, value) in row
+        .preferences
+        .as_object()
+        .expect("the row's preferences are an object")
+    {
+        request[member] = value.clone();
+    }
+    if let Some(scope) = scope {
+        request["scope"] = scope.clone();
+    }
+    request
+}
+
+/// How many preference records a `GetRecommendationPreferences` response reports.
+fn reported_records(read: &Value) -> usize {
+    read["recommendationPreferencesDetails"]
+        .as_array()
+        .map_or(0, Vec::len)
+}
+
+/// A caller that manages no organization — which this emulator presents while its store records
+/// no member account — cannot create a preference at the organization level: every row is
+/// refused with the service's sentence for the condition, nothing is stored at the key or
+/// anywhere in its resource type, and no resource inherits what the request asked for.
+#[tokio::test]
+async fn an_organization_level_preference_is_refused_to_a_caller_that_manages_no_organization() {
+    let scope = organization_scope();
+    for row in organization_scope_rows() {
+        // A fresh emulator per row: what the reads report is this row's request alone.
+        let router = emulator();
+        opt_in(&router).await;
+
+        let asked = scope_row_request(&row, Some(&scope));
+        let (status, body) = call(&router, "PutRecommendationPreferences", asked.clone()).await;
+        assert_eq!(
+            status, 400,
+            "case {:?}: expected {asked} to be refused with 400, got {status}: {body}",
+            row.case
+        );
+        assert!(
+            error_code(&body).contains("InvalidParameterValueException"),
+            "case {:?}: expected InvalidParameterValueException, got {body}",
+            row.case
+        );
+        assert_eq!(
+            body["message"].as_str(),
+            Some(NOT_A_MANAGEMENT_ACCOUNT_MESSAGE),
+            "case {:?}: expected the service's sentence for a caller that manages no \
+             organization, got {body}",
+            row.case
+        );
+
+        // A refused request stores nothing: neither at the key it addressed nor anywhere else
+        // in its resource type.
+        for (what, at) in [
+            ("the key it addressed", Some(&scope)),
+            ("the whole resource type", None),
+        ] {
+            let read = get_preferences(&router, row.resource_type, at).await;
+            assert_eq!(
+                reported_records(&read),
+                0,
+                "case {:?}: a refused request must leave nothing for a read of {what} to \
+                 report, got {read}",
+                row.case
+            );
+        }
+
+        // And nothing to inherit: an organization-level record is what every resource of the
+        // account would otherwise resolve its effective preferences from, so the documented
+        // defaults must still be in force.
+        let effective = effective_for(&router, &instance_arn("i-0ab0c0d0e0f000011")).await;
+        assert_eq!(
+            effective["lookBackPeriod"],
+            json!(DEFAULT_LOOK_BACK_PERIOD),
+            "case {:?}: expected the documented default lookBackPeriod, got {effective}",
+            row.case
+        );
+        assert_eq!(
+            effective["enhancedInfrastructureMetrics"],
+            json!(DEFAULT_ENHANCED_INFRASTRUCTURE_METRICS),
+            "case {:?}: expected the documented default status, got {effective}",
+            row.case
+        );
+    }
+}
+
+/// The organizations a management account can be recorded with — the organization's SIZE and the
+/// enrollment its members are in, neither of which the rule depends on: one member account,
+/// several, and one whose enrollment is already settled at a status.
+fn organizations() -> Vec<(&'static str, Vec<MemberAccountEnrollment>)> {
+    let settled = |account_id: &str, status: &str| {
+        let mut member = MemberAccountEnrollment::new(account_id);
+        member.status = status.to_string();
+        member
+    };
+    vec![
+        (
+            "one member account",
+            vec![MemberAccountEnrollment::new("200000000001")],
+        ),
+        (
+            "three member accounts",
+            vec![
+                MemberAccountEnrollment::new("200000000001"),
+                MemberAccountEnrollment::new("200000000002"),
+                MemberAccountEnrollment::new("200000000003"),
+            ],
+        ),
+        (
+            "a member account already opted in",
+            vec![settled("200000000004", "Active")],
+        ),
+        (
+            "a member account opted out",
+            vec![settled("200000000005", "Inactive")],
+        ),
+    ]
+}
+
+/// The same requests are ACCEPTED from a management account, whatever organization it manages,
+/// and the record each creates is read back at its own key: what the refusal above turns on is
+/// the caller's role, not the organization level itself.
+#[tokio::test]
+async fn an_organization_level_preference_is_created_by_a_management_account() {
+    let scope = organization_scope();
+    let organizations = organizations();
+    for (index, row) in organization_scope_rows().into_iter().enumerate() {
+        // Each row under a different organization, so no row's acceptance depends on one shape
+        // of organization; a fresh emulator per row keeps the reads to this row's write.
+        let (organization_case, members) = &organizations[index % organizations.len()];
+        let case = format!("{} for {organization_case}", row.case);
+        let (router, engine) = emulator_with_engine();
+        record_organization(&engine, members);
+        opt_in(&router).await;
+
+        let asked = scope_row_request(&row, Some(&scope));
+        // `put_preference` asserts HTTP 200 and the modelled empty output body.
+        put_preference(&router, &asked).await;
+
+        let read = get_preferences(&router, row.resource_type, Some(&scope)).await;
+        assert_eq!(
+            reported_records(&read),
+            1,
+            "case {case:?}: expected exactly the record just created, got {read}"
+        );
+        let detail = &read["recommendationPreferencesDetails"][0];
+        assert_eq!(
+            detail["scope"], scope,
+            "case {case:?}: expected the detail to carry the organization-level scope, got {read}"
+        );
+        for (member, written) in row
+            .preferences
+            .as_object()
+            .expect("the row's preferences are an object")
+        {
+            if member == "preferredResources" {
+                // Reported as `EffectivePreferredResource`: the stored lists plus the
+                // `effectiveIncludeList` expansion, so the stored list is what round-trips.
+                assert_eq!(
+                    detail[member][0]["includeList"], written[0]["includeList"],
+                    "case {case:?}: expected the stored includeList {written}, got {read}"
+                );
+                continue;
+            }
+            assert_eq!(
+                detail[member], *written,
+                "case {case:?}: expected {member} = {written} to be read back, got {read}"
+            );
+        }
+    }
+}
+
+/// The record a management account creates at the organization level is what every resource of
+/// the account then inherits: the admitted write is a real preference, not a 200 over an empty
+/// store.
+#[tokio::test]
+async fn a_created_organization_level_preference_is_inherited_by_the_accounts_resources() {
+    let (router, _engine) = management_account_emulator();
+    opt_in(&router).await;
+
+    put_preference(
+        &router,
+        &json!({
+            "resourceType": "Ec2Instance",
+            "scope": organization_scope(),
+            "lookBackPeriod": "DAYS_93",
+            "enhancedInfrastructureMetrics": "Active",
+        }),
+    )
+    .await;
+
+    for instance_id in ["i-0ab0c0d0e0f000011", "i-0ab0c0d0e0f000022"] {
+        let arn = instance_arn(instance_id);
+        let effective = effective_for(&router, &arn).await;
+        assert_eq!(
+            effective["lookBackPeriod"], "DAYS_93",
+            "case {arn:?}: expected the organization-level lookBackPeriod in force, got \
+             {effective}"
+        );
+        assert_eq!(
+            effective["enhancedInfrastructureMetrics"], "Active",
+            "case {arn:?}: expected the organization-level status in force, got {effective}"
+        );
+    }
+}
+
+/// The other scope levels name the caller's OWN account or one of its resources, so a caller
+/// that manages no organization still creates a preference at every one of them: the refusal is
+/// no wider than the organization level.
+#[tokio::test]
+async fn the_other_scope_levels_are_created_by_a_caller_that_manages_no_organization() {
+    let instance = instance_arn("i-0ab0c0d0e0f000033");
+    let scopes: Vec<(&str, &str, Option<Value>)> = vec![
+        ("no scope at all", "Ec2Instance", None),
+        (
+            "the account level",
+            "Ec2Instance",
+            Some(json!({"name": SCOPE_ACCOUNT_ID, "value": ACCOUNT})),
+        ),
+        (
+            "an instance at the resource level",
+            "Ec2Instance",
+            Some(json!({"name": SCOPE_RESOURCE_ARN, "value": instance})),
+        ),
+        (
+            "an Auto Scaling group at the resource level",
+            "AutoScalingGroup",
+            Some(json!({
+                "name": SCOPE_RESOURCE_ARN,
+                "value": auto_scaling_group_arn("batch-tier"),
+            })),
+        ),
+    ];
+
+    for (case, resource_type, scope) in &scopes {
+        let router = emulator();
+        opt_in(&router).await;
+
+        let mut asked = json!({"resourceType": resource_type, "lookBackPeriod": "DAYS_32"});
+        if let Some(scope) = scope {
+            asked["scope"] = scope.clone();
+        }
+        put_preference(&router, &asked).await;
+
+        let read = get_preferences(&router, resource_type, scope.as_ref()).await;
+        assert_eq!(
+            reported_records(&read),
+            1,
+            "case {case:?}: expected the record created at this scope, got {read}"
+        );
+        assert_eq!(
+            read["recommendationPreferencesDetails"][0]["lookBackPeriod"], "DAYS_32",
+            "case {case:?}: expected the written lookBackPeriod to be read back, got {read}"
+        );
+    }
+}
+
+/// Reading and deleting at the organization level stay SERVED to a caller that manages no
+/// organization: the rule is about creating that record, and such a caller holds none — so the
+/// read reports nothing at that scope and the delete removes nothing, while the records it does
+/// hold at its own scopes are untouched.
+#[tokio::test]
+async fn an_organization_level_read_and_delete_report_the_records_the_caller_holds() {
+    let router = emulator();
+    opt_in(&router).await;
+
+    let account_scope = json!({"name": SCOPE_ACCOUNT_ID, "value": ACCOUNT});
+    put_preference(
+        &router,
+        &json!({
+            "resourceType": "Ec2Instance",
+            "scope": account_scope.clone(),
+            "lookBackPeriod": "DAYS_93",
+        }),
+    )
+    .await;
+
+    let read = get_preferences(&router, "Ec2Instance", Some(&organization_scope())).await;
+    assert_eq!(
+        reported_records(&read),
+        0,
+        "case \"the organization-level read\": a caller that manages no organization holds no \
+         record at that scope, got {read}"
+    );
+
+    let (status, body) = call(
+        &router,
+        "DeleteRecommendationPreferences",
+        json!({
+            "resourceType": "Ec2Instance",
+            "scope": organization_scope(),
+            "recommendationPreferenceNames": ["LookBackPeriodPreference"],
+        }),
+    )
+    .await;
+    assert_eq!(
+        status, 200,
+        "case \"the organization-level delete\": expected 200, got {status}: {body}"
+    );
+
+    let read = get_preferences(&router, "Ec2Instance", Some(&account_scope)).await;
+    assert_eq!(
+        read["recommendationPreferencesDetails"][0]["lookBackPeriod"],
+        json!("DAYS_93"),
+        "case \"the account-level record\": a delete at another scope must leave it alone, got \
+         {read}"
     );
 }

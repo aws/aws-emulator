@@ -28,7 +28,10 @@ use service_com_amazonaws_computeoptimizer_computeoptimizerservice::state::{
     SOURCE_TYPE_RDS_DB_INSTANCE,
 };
 
-use crate::harness::{call, emulator_with_engine, get_preferences, opt_in, put_preference};
+use crate::harness::{
+    call, emulator_with_engine, get_preferences, management_account_emulator, opt_in,
+    put_preference,
+};
 
 /// Opt the account in and wait the analysis span out: a catalogued recommendation is
 /// reported only once the analysis the enrollment started is due ([`ANALYSIS_DELAY`]); the
@@ -459,8 +462,11 @@ async fn the_savings_estimation_mode_preference_is_applied_to_rds_recommendation
     );
 
     for row in &rows {
-        // A fresh store per row: a preference one row stored must not decide another's.
-        let (router, engine) = emulator_with_engine();
+        // A fresh store per row: a preference one row stored must not decide another's. One row
+        // writes at the organization-level scope, which the model admits "for management
+        // accounts of an organization only" (`PutRecommendationPreferences$scope`), so every
+        // row's caller manages an organization.
+        let (router, engine) = management_account_emulator();
         opted_in_and_analysed(&router).await;
         record(&engine, &[instance_db.clone(), storage_db.clone()]);
         if let Some(request) = &row.request {
