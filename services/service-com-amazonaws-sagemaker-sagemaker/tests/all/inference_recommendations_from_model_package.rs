@@ -12,15 +12,18 @@
 //! its inference specification — the one
 //! `EndpointInputConfiguration$InferenceSpecificationName` ("the inference specification name
 //! in the model package version") selects. So a job that names a model package this account
-//! holds is benchmarked on the artifact that specification's container names, reaches
-//! `COMPLETED` with one measured recommendation per endpoint configuration it tested, and the
-//! recommendation ids it reports are the ones a scaling configuration is computed from; a job
-//! naming a model package whose artifact this account holds nothing of measures nothing and
+//! holds is tested on the containers that specification carries, reaches `COMPLETED` with one
+//! recommendation per endpoint configuration it tested, and the recommendation ids it reports
+//! are the ones a scaling configuration is computed from; a container that names no model data
+//! at all brings its own model — `ModelDataUrl` and `ModelDataSource` are both optional — so it
+//! is tested like any other and its recommendation simply carries no metrics, while a job
+//! naming a model package this account holds NOTHING of has no container to put under test and
 //! ends in the modelled `FAILED` status instead.
 //!
 //! The rows span what the rule generalises over: how many endpoint configurations are under
 //! test, which instance type each declares, which of the package's inference specifications the
-//! test deploys, and whether the named package resolves to an artifact at all.
+//! test deploys, and whether the named package resolves to a container and to an artifact at
+//! all.
 //!
 //! Driven over the emulator's own Amazon S3 and IAM mounted beside SageMaker on ONE shared
 //! engine, through the real wire, on the training-run suite's harness
@@ -153,8 +156,8 @@ async fn given_package(
 }
 
 /// One case: a job naming a model package, the endpoint configurations it puts under test and
-/// how many measured recommendations that has to produce (none for a job with nothing to
-/// benchmark).
+/// how many recommendations that has to produce (none for a job with nothing to benchmark),
+/// plus whether those recommendations carry MEASURED metrics.
 struct Row {
     case: &'static str,
     /// The `InstanceType` of each `EndpointConfigurations` entry; empty declares none at all.
@@ -162,6 +165,10 @@ struct Row {
     /// `EndpointInputConfiguration$InferenceSpecificationName`, when the test names one.
     specification: Option<&'static str>,
     recommendations: usize,
+    /// Whether the invocations of each test measured metrics: a container that declares no
+    /// model data of its own brings its own model, which this emulator does not run, so its
+    /// test is reported with no metrics on it.
+    measured: bool,
 }
 
 /// The `CreateInferenceRecommendationsJob` body of one row: an `Advanced` load test — the only
@@ -207,9 +214,10 @@ fn create_body(name: &str, role_arn: &str, package: &str, row: &Row) -> Value {
 }
 
 /// THE RULE: an `Advanced` job that names its model under test by a model package ARN is
-/// benchmarked on the artifact that package's named inference specification carries, completes
-/// with one measured recommendation per endpoint configuration it tested, and those
-/// recommendation ids are what `GetScalingConfigurationRecommendation` computes from.
+/// tested on the containers that package's named inference specification carries, completes
+/// with one recommendation per endpoint configuration it tested — carrying metrics where its
+/// invocations measured any — and those recommendation ids are what
+/// `GetScalingConfigurationRecommendation` computes from.
 #[tokio::test]
 async fn an_advanced_job_benchmarks_the_model_package_it_names() {
     let emulator = Emulator::new();
@@ -228,6 +236,7 @@ async fn an_advanced_job_benchmarks_the_model_package_it_names() {
                 instance_types: &["ml.m5.xlarge"],
                 specification: None,
                 recommendations: 1,
+                measured: true,
             },
             &own,
         ),
@@ -237,6 +246,7 @@ async fn an_advanced_job_benchmarks_the_model_package_it_names() {
                 instance_types: &["ml.m5.xlarge", "ml.c5.large"],
                 specification: None,
                 recommendations: 2,
+                measured: true,
             },
             &own,
         ),
@@ -246,6 +256,7 @@ async fn an_advanced_job_benchmarks_the_model_package_it_names() {
                 instance_types: &[],
                 specification: None,
                 recommendations: 1,
+                measured: true,
             },
             &own,
         ),
@@ -255,15 +266,21 @@ async fn an_advanced_job_benchmarks_the_model_package_it_names() {
                 instance_types: &["ml.m5.xlarge"],
                 specification: Some(ADDITIONAL_SPECIFICATION),
                 recommendations: 1,
+                measured: true,
             },
             &extra,
         ),
         (
             Row {
+                // A container that names no model data is a container that brings its own
+                // model, which `ModelDataUrl` and `ModelDataSource` being optional makes a
+                // valid registration: the job tests it rather than failing for want of
+                // artifacts, and reports its test with no metrics measured off it.
                 case: "a package whose own specification names no artifact",
                 instance_types: &["ml.m5.xlarge"],
                 specification: None,
-                recommendations: 0,
+                recommendations: 1,
+                measured: false,
             },
             &extra,
         ),
@@ -293,7 +310,7 @@ async fn an_advanced_job_benchmarks_the_model_package_it_names() {
             assert_eq!(
                 str_field(&settled, "Status"),
                 "FAILED",
-                "case {case:?}: a job whose benchmark had no artifact to invoke must fail, got \
+                "case {case:?}: a job with no container to put under test must fail, got \
                  {settled}"
             );
             assert!(
@@ -302,7 +319,7 @@ async fn an_advanced_job_benchmarks_the_model_package_it_names() {
             );
             assert!(
                 settled.get("InferenceRecommendations").is_none(),
-                "case {case:?}: a job that measured nothing reports no recommendation, got \
+                "case {case:?}: a job that put nothing under test reports no recommendation, got \
                  {settled}"
             );
             // And nothing can be computed from a job that recommended nothing.
@@ -334,8 +351,8 @@ async fn an_advanced_job_benchmarks_the_model_package_it_names() {
         assert_eq!(
             str_field(&settled, "Status"),
             "COMPLETED",
-            "case {case:?}: the benchmark invoked the package's model, so the job completes, \
-             got {settled}"
+            "case {case:?}: the job tested the package's containers, so it completes, got \
+             {settled}"
         );
         let measured = settled
             .get("InferenceRecommendations")
@@ -345,7 +362,7 @@ async fn an_advanced_job_benchmarks_the_model_package_it_names() {
         assert_eq!(
             measured.len(),
             row.recommendations,
-            "case {case:?}: one measured recommendation per endpoint tested, got {settled}"
+            "case {case:?}: one recommendation per endpoint tested, got {settled}"
         );
 
         for (test, recommendation) in measured.iter().enumerate() {
@@ -372,11 +389,19 @@ async fn an_advanced_job_benchmarks_the_model_package_it_names() {
                 .pointer("/Metrics/MaxInvocations")
                 .and_then(Value::as_i64)
                 .unwrap_or_default();
-            assert!(
-                latency >= 1 && invocations >= 1,
-                "case {case:?} test {test}: the metrics are the ones the invocations measured, \
-                 got {recommendation}"
-            );
+            if row.measured {
+                assert!(
+                    latency >= 1 && invocations >= 1,
+                    "case {case:?} test {test}: the metrics are the ones the invocations \
+                     measured, got {recommendation}"
+                );
+            } else {
+                assert!(
+                    recommendation.get("Metrics").is_none(),
+                    "case {case:?} test {test}: a test that measured nothing reports no \
+                     metric, got {recommendation}"
+                );
+            }
 
             // And the scaling configuration is computed from THAT recommendation, resolved by
             // the id the job reported for it.
@@ -387,7 +412,7 @@ async fn an_advanced_job_benchmarks_the_model_package_it_names() {
                 .to_string();
             assert!(
                 !recommendation_id.is_empty(),
-                "case {case:?} test {test}: a measured recommendation carries an id, got \
+                "case {case:?} test {test}: a reported recommendation carries an id, got \
                  {recommendation}"
             );
             let scaling = emulator
@@ -421,12 +446,20 @@ async fn an_advanced_job_benchmarks_the_model_package_it_names() {
                 "case {case:?} test {test}: expected 1 <= MinCapacity <= MaxCapacity, got \
                  {scaling}"
             );
-            assert_eq!(
-                scaling.pointer("/Metric/ModelLatency"),
-                Some(&json!(latency)),
-                "case {case:?} test {test}: the metric it reports is the measured latency, got \
-                 {scaling}"
-            );
+            if row.measured {
+                assert_eq!(
+                    scaling.pointer("/Metric/ModelLatency"),
+                    Some(&json!(latency)),
+                    "case {case:?} test {test}: the metric it reports is the measured \
+                     latency, got {scaling}"
+                );
+            } else {
+                assert!(
+                    scaling.get("Metric").is_none(),
+                    "case {case:?} test {test}: nothing was measured, so the scaling \
+                     configuration states no metric, got {scaling}"
+                );
+            }
 
             // The same recommendation is reachable by the endpoint it was measured on, which is
             // the other way the request may pick one.
@@ -442,15 +475,15 @@ async fn an_advanced_job_benchmarks_the_model_package_it_names() {
             assert_eq!(
                 str_field(&by_endpoint, "RecommendationId"),
                 recommendation_id,
-                "case {case:?} test {test}: EndpointName picks the recommendation measured on \
+                "case {case:?} test {test}: EndpointName picks the recommendation reported for \
                  that endpoint, got {by_endpoint}"
             );
         }
     }
 
     // A job naming a model package this account holds none of has nothing to deploy for its
-    // test, so it measures nothing and ends FAILED — the same answer as a package carrying no
-    // artifact, reached the other way.
+    // test at all — no container, so not even a container that brings its own model — so it
+    // puts nothing under test and ends FAILED.
     let case = "a model package this account does not hold";
     let name = "recjob-absent";
     let row = Row {
@@ -458,6 +491,7 @@ async fn an_advanced_job_benchmarks_the_model_package_it_names() {
         instance_types: &["ml.m5.xlarge"],
         specification: None,
         recommendations: 0,
+        measured: false,
     };
     emulator
         .sagemaker_ok(

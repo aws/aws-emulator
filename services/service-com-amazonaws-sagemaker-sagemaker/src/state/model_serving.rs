@@ -259,6 +259,18 @@ pub struct ServingVariant {
     /// The entry point the model's container runs the artifact's own inference code by
     /// ([`super::model_inference_program`]), when the container names one.
     pub inference_program: Option<String>,
+    /// Whether the containers behind this variant were RESOLVED and none of them declares model
+    /// data at all, so the model is the container IMAGE's own.
+    ///
+    /// `ModelDataUrl` and `ModelDataSource` are both optional on a container definition, so a
+    /// container that loads its own model — one driven by its `Environment`, one identified by
+    /// a `ProductId`, one with the model baked into the image — declares neither, and that is a
+    /// valid model and a valid registered package. It is a DIFFERENT condition from a variant
+    /// whose model or package could not be resolved at all, which carries no containers to read
+    /// this off, and from one whose container names a location: a caller that only needs to know
+    /// there are no artifacts to load reads [`Self::model_data`], and one that has to tell "the
+    /// container brings the model" from "there is no container" reads this.
+    pub container_supplied_model: bool,
 }
 
 /// Why nothing could serve an invocation: the condition that stopped it, as the modelled
@@ -480,15 +492,33 @@ pub fn endpoint_serving_variants(
         .filter_map(|variant| {
             let model_name = variant.model_name.clone()?;
             let deployed = store.models.get(&model_name);
+            let model_data = deployed.and_then(|model| served_model_data(store, model));
             Some(ServingVariant {
                 variant_name: variant.variant_name.clone(),
-                model_data: deployed.and_then(|model| served_model_data(store, model)),
+                container_supplied_model: model_data.is_none()
+                    && deployed.is_some_and(model_declares_containers),
+                model_data,
                 inference_program: deployed
                     .and_then(|model| served_inference_program(store, model)),
                 model_name,
             })
         })
         .collect()
+}
+
+/// Whether `model` declares a container at all: its primary container, or a container of its
+/// inference pipeline.
+///
+/// What tells a model whose containers name NO model data — the model is then the container
+/// image's own ([`ServingVariant::container_supplied_model`]) — from a reference that resolved
+/// to no model at all.
+#[must_use]
+pub fn model_declares_containers(model: &Model) -> bool {
+    model.primary_container.is_some()
+        || model
+            .containers
+            .as_deref()
+            .is_some_and(|containers| !containers.is_empty())
 }
 
 /// Every Amazon S3 location a model's containers hold their model data at, in the order the
@@ -574,8 +604,11 @@ fn container_model_data(container: &ContainerDefinition) -> Option<ModelDataLoca
 ///
 /// A package this account holds whose named specification it does NOT carry answers the variant
 /// with no artifact rather than nothing at all: the package is the model under test either way,
-/// so what stopped the invocation is reported as the model carrying no artifact — deliberately,
-/// because the caller needs the model the request named in order to say so.
+/// so what stopped an invocation is reported as the model carrying no artifact — deliberately,
+/// because the caller needs the model the request named in order to say so. Such a variant
+/// carries no containers, so it is NOT a container-supplied model
+/// ([`ServingVariant::container_supplied_model`]): that flag is for a specification whose
+/// containers were read and declare no model data of their own.
 #[must_use]
 pub fn model_package_serving_variant(
     store: &ComAmazonawsSagemakerSagemakerState,
@@ -584,14 +617,17 @@ pub fn model_package_serving_variant(
 ) -> Option<ServingVariant> {
     let package = resolved_package(store, identifier)?;
     let containers = specification_containers(package, specification);
+    let model_data = containers
+        .iter()
+        .copied()
+        .flatten()
+        .find_map(package_container_model_data);
     Some(ServingVariant {
         variant_name: package.name.clone(),
         model_name: package.key(),
-        model_data: containers
-            .iter()
-            .copied()
-            .flatten()
-            .find_map(package_container_model_data),
+        container_supplied_model: model_data.is_none()
+            && containers.is_some_and(|declared| !declared.is_empty()),
+        model_data,
         inference_program: containers
             .iter()
             .copied()

@@ -241,27 +241,37 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .into());
         };
 
-        // What one instance is asked to take: the load the job benchmarked on that
-        // instance type, scaled by the utilisation the caller wants to run it at.
-        let per_instance = i64::from(recommendation.max_invocations_per_minute)
-            * i64::from(target_cpu)
-            / 100;
-        let per_instance = i32::try_from(per_instance.max(1)).unwrap_or(i32::MAX);
+        // What one instance is asked to take: the load the job MEASURED on that instance
+        // type, scaled by the utilisation the caller wants to run it at. A recommendation
+        // whose test measured nothing states no such load, and nothing here invents one.
+        let per_instance = recommendation.measured.map(|measured| {
+            let scaled =
+                i64::from(measured.invocations_per_minute) * i64::from(target_cpu) / 100;
+            i32::try_from(scaled.max(1)).unwrap_or(i32::MAX)
+        });
 
-        // The capacity band follows the traffic the caller anticipates. With no
-        // objective named there is nothing to plan for beyond the load that was
-        // benchmarked, which one instance carries.
+        // The capacity band follows the traffic the caller anticipates, in instances of the
+        // load one of them was measured to carry. With no objective named there is nothing
+        // to plan for beyond the load that was benchmarked, which one instance carries — and
+        // with no measured load there is nothing to divide an anticipated traffic by either,
+        // so the band stays the one instance an endpoint runs on at least.
         let objective = input.scaling_policy_objective.clone();
-        let min_capacity = objective
-            .as_ref()
-            .and_then(|objective| objective.min_invocations_per_minute)
-            .map_or(1, |load| capacity_for(load, per_instance));
-        let max_capacity = objective
-            .as_ref()
-            .and_then(|objective| objective.max_invocations_per_minute)
-            .map_or(min_capacity, |load| {
-                capacity_for(load, per_instance).max(min_capacity)
-            });
+        let anticipated = |load: Option<i32>, floor: i32| match (load, per_instance) {
+            (Some(load), Some(per_instance)) => capacity_for(load, per_instance).max(floor),
+            _ => floor,
+        };
+        let min_capacity = anticipated(
+            objective
+                .as_ref()
+                .and_then(|objective| objective.min_invocations_per_minute),
+            1,
+        );
+        let max_capacity = anticipated(
+            objective
+                .as_ref()
+                .and_then(|objective| objective.max_invocations_per_minute),
+            min_capacity,
+        );
 
         Ok(GetScalingConfigurationRecommendationOutput {
             inference_recommendations_job_name: Some(job.name.clone()),
@@ -269,10 +279,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             endpoint_name: Some(recommendation.endpoint_name.clone()),
             target_cpu_utilization_per_core: Some(target_cpu),
             scaling_policy_objective: objective,
-            metric: Some(ScalingPolicyMetric {
-                invocations_per_instance: Some(per_instance),
-                model_latency: Some(recommendation.model_latency_millis),
-            }),
+            // The metric a scaling policy tracks is the measurement the recommendation
+            // carries, so a recommendation that carries none states none.
+            metric: recommendation
+                .measured
+                .map(|measured| ScalingPolicyMetric {
+                    invocations_per_instance: per_instance,
+                    model_latency: Some(measured.latency_millis),
+                }),
             dynamic_scaling_configuration: Some(DynamicScalingConfiguration {
                 min_capacity: Some(min_capacity),
                 max_capacity: Some(max_capacity),
@@ -287,7 +301,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                                 ),
                             },
                         )),
-                        target_value: Some(f64::from(per_instance)),
+                        // The value the policy tracks is the per-instance load, so a
+                        // recommendation with no measured load names no target either.
+                        target_value: per_instance.map(f64::from),
                     },
                 )]),
             }),

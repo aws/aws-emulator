@@ -143,6 +143,11 @@ pub struct TransformTarget {
     /// The entry point the model's container runs the artifact's own inference code by
     /// (`SAGEMAKER_PROGRAM`), when the container names one.
     pub inference_program: Option<String>,
+    /// Whether the model declares a container at all
+    /// ([`super::model_declares_containers`]), which is what tells a model whose containers
+    /// name no model data — the model is then the container image's own — from a record that
+    /// carries no container to read it off.
+    pub declares_containers: bool,
     /// `TransformS3DataSource$S3Uri`.
     pub input_uri: String,
     /// `TransformS3DataSource$S3DataType`.
@@ -295,6 +300,9 @@ async fn load_transform_model(
     let variant = ServingVariant {
         variant_name: target.model_name.clone(),
         model_name: target.model_name.clone(),
+        // Read the one way every other producer reads it: a model that declares a container
+        // and no model data serves the model its own image carries.
+        container_supplied_model: target.model_data.is_none() && target.declares_containers,
         model_data: target.model_data.clone(),
         inference_program: target.inference_program.clone(),
     };

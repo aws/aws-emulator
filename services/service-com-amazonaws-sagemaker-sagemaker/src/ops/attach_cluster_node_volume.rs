@@ -5,12 +5,12 @@
 //! EC2, over the in-process hop), refusing an identifier it answered the account holds no
 //! volume for with the 400 `ValidationException` its documented precondition on the volume
 //! gets; then resolves the `ClusterArn` against `crate::state` — a cluster this account
-//! does not hold is the modelled `ResourceNotFound`, carrying the refusal the cluster's
-//! orchestration component raised, and one that is not `InService` fails the
+//! does not hold is the modelled `ResourceNotFound` carrying the cluster lookup's own fixed
+//! sentence, and one that is not `InService` fails the
 //! documented precondition with a 400 `ValidationException`
 //! — then resolves the node by `NodeId` inside that cluster, refusing a `NodeId` that
-//! names no node of that cluster as the bad request PARAMETER it is (400
-//! `ValidationException`), and attaches the volume, answering the
+//! names no node of that cluster the modelled `ResourceNotFound` too, under the node
+//! lookup's own sentence, and attaches the volume, answering the
 //! attachment it already holds when the same volume is attached again. The
 //! already-attached-elsewhere check is scoped to the cluster the `ClusterArn` names,
 //! which is the only cluster this request addresses: this emulator models no EBS volume
@@ -194,17 +194,16 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let mut store = state.lock();
         // The `ClusterArn` says WHERE to attach, and it is resolved next.
         // The cluster is the one RESOURCE this request addresses by ARN, so a cluster this
-        // account does not hold is the operation's modelled `ResourceNotFound`. The volume
-        // attachment itself is served by the cluster's EKS orchestration (the EBS CSI
-        // driver manages the volume's lifecycle), which is where the ARN is resolved, so
-        // the message is that component's refusal relayed verbatim — the class it raised
-        // in front of its sentence ([`crate::state::orchestrated_cluster_not_found`]) —
-        // and carries nothing from the request. The node's own refusal below states a
-        // different sentence under a different code, so a caller tells an unknown cluster
-        // from an unknown node by either one.
+        // account does not hold is the operation's modelled `ResourceNotFound`. The SUBJECT
+        // of the call is a node's volume rather than the cluster itself, so the sentence is
+        // the fixed one such an operation states for a cluster it could not resolve
+        // ([`crate::state::CLUSTER_NOT_FOUND`]) — the whole message, with the class of the
+        // failure travelling in the error code — and it carries nothing from the request.
+        // The node's own refusal below states a DIFFERENT sentence under the same code, so a
+        // caller tells an unknown cluster from an unknown node by the message.
         let Some(cluster) = store.cluster_by_arn_mut(&input.cluster_arn) else {
             return Err(AttachClusterNodeVolumeErrorModeled::ResourceNotFound(ResourceNotFound {
-                message: Some(crate::state::orchestrated_cluster_not_found()),
+                message: Some(crate::state::CLUSTER_NOT_FOUND.to_string()),
             })
             .into());
         };
@@ -248,16 +247,16 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         let Some(node) = cluster.node_by_instance_id_mut(&input.node_id) else {
             // The cluster resolved, so what is left is a `NodeId` that names no node of
-            // it: a value of a request PARAMETER this operation validates against the
-            // cluster it was given, not a resource the request addresses — the modelled
-            // `ResourceNotFound` ("Resource being access is not found.") is answered for
-            // the `ClusterArn` above. A parameter this service understood and will not
-            // accept is the 400 `ValidationException`, so the two failures carry different
-            // codes and a caller never retries a cluster-missing path for a bad node id.
-            // The sentence is the node lookup's own fixed one.
-            return Err(crate::scaffolded::Scaffolded::validation(
-                crate::state::CLUSTER_NODE_NOT_FOUND,
-            ));
+            // it: a node this operation could not find, which is the same missing RESOURCE
+            // the `ClusterArn` above answers for — the modelled `ResourceNotFound`
+            // ("Resource being access is not found."), the only error this operation
+            // declares. What tells the two halves apart is the SENTENCE: the node lookup's
+            // own fixed one here, the cluster lookup's own above, so a caller
+            // reads "gone" off the code and which half off the message.
+            return Err(AttachClusterNodeVolumeErrorModeled::ResourceNotFound(ResourceNotFound {
+                message: Some(crate::state::CLUSTER_NODE_NOT_FOUND.to_string()),
+            })
+            .into());
         };
         // A volume another node of this cluster holds is not available for this one, and
         // the operation models no error for that.

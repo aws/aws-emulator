@@ -7,10 +7,9 @@
 //!    own ARN, and publishes no count of what blocks the delete;
 //! 2. a Feature Store schema whose event-time feature cannot carry an instant is refused
 //!    with the Feature Store's own `Validation Error: ` sentence;
-//! 3. the volume-attachment path relays the refusal the cluster's orchestration component
-//!    raised (its class in front of the sentence) for a cluster the account does not hold,
-//!    and a node reference that resolves to no node is answered the node lookup's sentence,
-//!    classified by which half of the reference was wrong;
+//! 3. the volume-attachment path states the fixed cluster sentence for a cluster the account
+//!    does not hold, and a node reference that resolves to no node is answered the node
+//!    lookup's own sentence, both under the modelled not-found code;
 //! 4. a `Resource` outside the search surface's resource type is told the value set the
 //!    SERVICE declares for that member, which is larger than the public model's enum;
 //! 5. a cluster identifier this account holds no cluster under is stated by the lookup its
@@ -31,7 +30,11 @@ use crate::inference_deployment_lifecycle::{error_code, message, str_field, Emul
 /// built here.
 const REGION: &str = "us-east-1";
 
-/// The sentence the volume-attachment path relays for a cluster this account does not
+/// The sentence the volume-attachment path states for a cluster this account does not
+/// hold: the fixed one an operation whose subject hangs off the cluster words it with.
+const ATTACH_CLUSTER_NOT_FOUND: &str = "Specified cluster not found";
+
+/// The sentence a cluster READER handed an ARN relays for a cluster this account does not
 /// hold: the class the cluster's orchestration component raised, then its own sentence.
 const RELAYED_CLUSTER_NOT_FOUND: &str = "ClusterNotExistsException: Specified cluster not found";
 
@@ -288,14 +291,14 @@ async fn an_event_time_feature_of_an_unusable_type_is_refused_with_the_stores_se
     }
 }
 
-/// RULE: the volume-attachment path resolves the cluster it acts in ITSELF, inside the
-/// cluster's orchestration component, so a cluster this account does not hold is the
-/// operation's modelled `ResourceNotFound` carrying that component's refusal verbatim — the
-/// class it raised in front of its sentence. A node REFERENCE that resolves to no node is
-/// answered the node lookup's own sentence instead, by the attach and by the node reader
-/// alike, under the 400 `ValidationException` a bad request parameter gets where the
-/// cluster it names IS held, and under the modelled not-found where the missing resource is
-/// that cluster.
+/// RULE: the volume-attachment path addresses a node's volume rather than the cluster, so a
+/// cluster this account does not hold is the operation's modelled `ResourceNotFound` carrying
+/// the fixed sentence such an operation words that condition with, while a cluster READER
+/// handed an ARN relays its orchestration component's own refusal — the class it raised in
+/// front of that same sentence. A node REFERENCE that resolves to no node is answered the node
+/// lookup's own sentence instead, by the attach and by the node reader alike, under that same
+/// modelled not-found code: a reference that resolves to no node is a resource the operation
+/// could not find, whichever half of it — the cluster or the node — is the missing one.
 #[tokio::test]
 async fn the_cluster_node_operations_relay_their_cluster_class_and_validate_their_node() {
     let emulator = Emulator::new();
@@ -317,7 +320,7 @@ async fn the_cluster_node_operations_relay_their_cluster_class_and_validate_thei
                 "VolumeId": volume,
             }),
             "ResourceNotFound",
-            RELAYED_CLUSTER_NOT_FOUND,
+            ATTACH_CLUSTER_NOT_FOUND,
         ),
         (
             "a cluster of another Region",
@@ -327,12 +330,12 @@ async fn the_cluster_node_operations_relay_their_cluster_class_and_validate_thei
                 "VolumeId": volume,
             }),
             "ResourceNotFound",
-            RELAYED_CLUSTER_NOT_FOUND,
+            ATTACH_CLUSTER_NOT_FOUND,
         ),
         (
             "a short node id the cluster does not own",
             json!({"ClusterArn": cluster_arn, "NodeId": "i-00000000", "VolumeId": volume}),
-            "ValidationException",
+            "ResourceNotFound",
             CLUSTER_NODE_NOT_FOUND,
         ),
         (
@@ -342,7 +345,7 @@ async fn the_cluster_node_operations_relay_their_cluster_class_and_validate_thei
                 "NodeId": "i-0000000000000000f",
                 "VolumeId": volume,
             }),
-            "ValidationException",
+            "ResourceNotFound",
             CLUSTER_NODE_NOT_FOUND,
         ),
     ];
@@ -370,24 +373,23 @@ async fn the_cluster_node_operations_relay_their_cluster_class_and_validate_thei
 
     // The node READER resolves the whole node REFERENCE: a reference that resolves to no
     // node carries the node lookup's sentence under either selector and however the cluster
-    // it names was addressed, and the CODE says which half of the reference was wrong — the
-    // modelled not-found when the account holds no such cluster, the 400
-    // `ValidationException` when it does and only the node is unknown.
+    // it names was addressed, under the modelled not-found CODE whichever half of the
+    // reference was wrong.
     let reader_rows: Vec<(&str, Value, &str)> = vec![
         (
             "the reader, a short node id, cluster by name",
             json!({"ClusterName": "hyperpod-attach", "NodeId": "i-00000000"}),
-            "ValidationException",
+            "ResourceNotFound",
         ),
         (
             "the reader, a long node id, cluster by ARN",
             json!({"ClusterName": cluster_arn, "NodeId": "i-0000000000000000f"}),
-            "ValidationException",
+            "ResourceNotFound",
         ),
         (
             "the reader, a logical id nothing carries",
             json!({"ClusterName": "hyperpod-attach", "NodeLogicalId": "no-such-node"}),
-            "ValidationException",
+            "ResourceNotFound",
         ),
         (
             "the reader, a cluster name the account does not hold",

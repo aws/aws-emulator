@@ -124,10 +124,6 @@ pub const MAX_FIT_OPERATIONS: usize = 2_000_000;
 /// The most epochs the descent runs, however small the data is.
 pub const MAX_EPOCHS: usize = 200;
 
-/// The step the descent takes along the gradient of the mean squared error. Fixed, so one
-/// dataset fits to one model.
-const LEARNING_RATE: f64 = 0.5;
-
 /// The channel SageMaker's built-in algorithms take their training data from ("specify the
 /// training data in the `train` channel"). The run fits on this channel's records when the
 /// job declares one.
@@ -1415,6 +1411,19 @@ pub fn fit(records: &[Record], epochs: usize) -> LinearModel {
 ///
 /// Either way the value served for a record is the link applied to the fitted score, so it
 /// lies in the range the task's output is defined on.
+///
+/// # How far each pass steps
+///
+/// Along the gradient, by the distance the DATA's own curvature in that direction admits
+/// ([`descent_step`]) — the step that minimises the squared error along it, which is what
+/// makes the descent CONVERGE: the squared error falls on every pass, so the fit a pass
+/// leaves is nearer the data than the one before it and the parameters stay in the range the
+/// targets themselves live in. A step fixed independently of the data cannot do that: the
+/// curvature of a standardised design grows with how strongly its columns move together, so
+/// one constant that settles a dataset of independent columns overshoots a dataset of
+/// correlated ones and the passes then amplify each other's overshoot — which leaves weights
+/// (and so predictions) orders of magnitude away from anything the targets state, while every
+/// number involved is still finite.
 pub fn fit_under(records: &[Record], epochs: usize, link: ObjectiveLink) -> LinearModel {
     let columns = records.first().map_or(0, |record| record.features.len());
     let count = records.len().max(1) as f64;
@@ -1465,12 +1474,7 @@ pub fn fit_under(records: &[Record], epochs: usize, link: ObjectiveLink) -> Line
         let mut gradient = vec![0.0_f64; columns];
         let mut bias_gradient = 0.0_f64;
         for (row, record) in standardised.iter().zip(records) {
-            let score = intercept
-                + weights
-                    .iter()
-                    .zip(row)
-                    .map(|(weight, value)| weight * value)
-                    .sum::<f64>();
+            let score = intercept + dot(&weights, row);
             let error = match link {
                 ObjectiveLink::Logistic => link.apply(score) - record.target,
                 _ => score - link.margin_of(record.target),
@@ -1480,15 +1484,23 @@ pub fn fit_under(records: &[Record], epochs: usize, link: ObjectiveLink) -> Line
                 *slot += error * value;
             }
         }
+        bias_gradient /= count;
+        for slot in &mut gradient {
+            *slot /= count;
+        }
+        // The pass is over once the gradient says the fit is already at the bottom of the
+        // squared error along it, or once the data admits no step at all.
+        let Some(step) = descent_step(&standardised, &gradient, bias_gradient, count) else {
+            break;
+        };
         // A pass whose step leaves the numbers a model can carry is not taken: the descent
         // stops at the last pass that was finite, so the model served is one fitted on the
         // caller's data rather than one carrying values no prediction can be computed from.
-        // Only a link that grows without bound can reach this at all.
-        let stepped_intercept = intercept - LEARNING_RATE * bias_gradient / count;
+        let stepped_intercept = intercept - step * bias_gradient;
         let stepped: Vec<f64> = weights
             .iter()
             .zip(&gradient)
-            .map(|(weight, slot)| weight - LEARNING_RATE * slot / count)
+            .map(|(weight, slot)| weight - step * slot)
             .collect();
         if !stepped_intercept.is_finite() || stepped.iter().any(|weight| !weight.is_finite()) {
             break;
@@ -1514,6 +1526,48 @@ pub fn fit_under(records: &[Record], epochs: usize, link: ObjectiveLink) -> Line
         epochs,
         link,
     }
+}
+
+/// How far one pass of the descent steps along the gradient, and `None` where no step is to
+/// be taken at all.
+///
+/// The step the SQUARED ERROR is smallest at along that direction, which the data states: for
+/// the gradient `g` (its intercept part `bias`) over the standardised design `rows`, moving by
+/// `a` changes the mean squared error by `-a·‖g‖² + a²·c/2`, where `c` is the mean square of
+/// what the direction does to the records — the curvature the data has along it. That is
+/// smallest at `a = ‖g‖² / c`, so the step is read off the caller's own data rather than
+/// chosen, and the error a pass leaves can never be larger than the one it started from.
+///
+/// So the descent cannot run away: each pass lowers the squared error of the fit against the
+/// records, which bounds the parameters by the targets those records carry. A direction the
+/// data has NO curvature along (every record answers it the same way) and a gradient that has
+/// already vanished are both "nothing to step": the first admits no finite minimising step,
+/// the second is already at the bottom.
+///
+/// A task fitted through a bounded link (the logistic one) has a smaller curvature than the
+/// squared-error one this reads, so the step is shorter than that task's own minimiser rather
+/// than longer: its error falls on every pass too.
+fn descent_step(rows: &[Vec<f64>], gradient: &[f64], bias: f64, count: f64) -> Option<f64> {
+    let slope = bias.powi(2) + gradient.iter().map(|slot| slot.powi(2)).sum::<f64>();
+    let curvature = rows
+        .iter()
+        .map(|row| (bias + dot(gradient, row)).powi(2))
+        .sum::<f64>()
+        / count;
+    if !slope.is_finite() || slope <= f64::MIN_POSITIVE || !curvature.is_finite() {
+        return None;
+    }
+    let step = slope / curvature;
+    step.is_finite().then_some(step)
+}
+
+/// The inner product of as many values of `left` and `right` as both carry, so a record of
+/// another width contributes only the columns it has.
+fn dot(left: &[f64], right: &[f64]) -> f64 {
+    left.iter()
+        .zip(right)
+        .map(|(left, right)| left * right)
+        .sum()
 }
 
 /// The model the archive holds: the parameters the fit measured, how to compute an inference

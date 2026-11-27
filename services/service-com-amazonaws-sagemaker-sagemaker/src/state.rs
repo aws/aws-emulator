@@ -2471,8 +2471,8 @@ impl VolumeAttachment {
     }
 }
 
-/// One benchmarked recommendation of an Inference Recommender job: what the job's own load
-/// test MEASURED on one endpoint (see [`recommendation_run`]).
+/// One recommendation of an Inference Recommender job: the endpoint one of its tests was run
+/// on, and what that test's own load test MEASURED there (see [`recommendation_run`]).
 #[derive(Debug, Clone)]
 pub struct InferenceRecommendation {
     pub recommendation_id: String,
@@ -2481,10 +2481,11 @@ pub struct InferenceRecommendation {
     /// served by.
     pub variant_name: String,
     pub instance_type: String,
-    /// What one instance of `instance_type` sustained, in invocations per minute.
-    pub max_invocations_per_minute: i32,
-    /// The model latency measured at that load, in milliseconds.
-    pub model_latency_millis: i32,
+    /// What the invocations against that endpoint measured — what one instance of
+    /// `instance_type` sustained, and the model latency at that load — and `None` for a test
+    /// whose invocations measured nothing, whose recommendation therefore reports no metrics
+    /// rather than numbers nothing produced.
+    pub measured: Option<Measurement>,
 }
 
 /// The most notebook instance lifecycle configurations this service's store holds, after
@@ -3947,9 +3948,10 @@ pub fn tuning_job_not_found(name: &str) -> String {
 /// every one of them words the same fact the same way. The operations whose subject IS the
 /// cluster name it instead ([`cluster_not_found`]).
 ///
-/// A control-plane operation answers this sentence as the WHOLE message, since the class
-/// of the failure travels in the error code. The operations whose cluster lookup happens
-/// inside the cluster's orchestration component relay that component's own refusal, which
+/// A control-plane operation whose subject hangs off the cluster — the node-volume
+/// attachment, a policy — answers this sentence as the WHOLE message, since the class of the
+/// failure travels in the error code. A READER handed the cluster's ARN resolves it inside
+/// the cluster's orchestration component and relays that component's own refusal, which
 /// carries the raising class in front of the same sentence
 /// ([`orchestrated_cluster_not_found`]).
 pub const CLUSTER_NOT_FOUND: &str = "Specified cluster not found";
@@ -3966,12 +3968,12 @@ const CLUSTER_NOT_EXISTS_CLASS: &str = "ClusterNotExistsException";
 /// cluster this account does not hold: that component's refusal relayed verbatim — the
 /// raising class of [`CLUSTER_NOT_EXISTS_CLASS`], then `: `, then [`CLUSTER_NOT_FOUND`].
 ///
-/// The EBS volume attachment of a node is served by the cluster's EKS orchestration (the
-/// Amazon EBS CSI driver manages the volume's lifecycle, `smithy_query(query="doc",
-/// shape="AttachClusterNodeVolume")`), which is where the `ClusterArn` is resolved, so the
-/// message that reaches the caller is the one that component raised rather than a sentence
-/// this service worded itself. Stated once here so every operation served that way relays
-/// the same fact the same way.
+/// Which operations those are is decided by the FORM the identifier arrived in rather than by
+/// what the operation does: a `ClusterArn` carries the cluster id that component knows the
+/// cluster by, so a reader handed one resolves it there and relays what it raised
+/// ([`cluster_not_found`]). An operation whose subject is something hanging off the cluster
+/// states the sentence alone ([`CLUSTER_NOT_FOUND`]), which is the recorded refusal of the
+/// node-volume attachment for a `ClusterArn` naming no cluster.
 pub fn orchestrated_cluster_not_found() -> String {
     format!("{CLUSTER_NOT_EXISTS_CLASS}: {CLUSTER_NOT_FOUND}")
 }
@@ -4011,10 +4013,9 @@ pub fn cluster_not_found(identifier: &str) -> String {
 /// How the HyperPod node lookup words a node reference that names no node of the cluster.
 ///
 /// Fixed text, and DIFFERENT from [`CLUSTER_NOT_FOUND`]: the two unknown-identifier cases
-/// of one request \u2014 the cluster the request addresses, and the node it names inside it \u2014
-/// are what a caller tells apart by the refusal, and they carry different codes too (a
-/// node reference is a request PARAMETER, so it fails the 400 `ValidationException`, where
-/// the cluster is the resource addressed and gets the modelled not-found).
+/// of one request — the cluster the request addresses, and the node it names inside it —
+/// are what a caller tells apart by the refusal's SENTENCE, since both are a resource the
+/// operation could not find and both carry the modelled not-found CODE.
 pub const CLUSTER_NODE_NOT_FOUND: &str = "Specified cluster node not found";
 
 /// The one `<Entity> with arn <arn> could not be found` sentence — how the HyperPod

@@ -17,10 +17,21 @@
 //! takes ([`super::model_serving`]): the model behind the endpoint under test is loaded out of
 //! this emulator's own Amazon S3 and really applied to the records the benchmark sends, and
 //! the numbers reported are measured off those invocations — how long they took and how many
-//! of them one instance performed in that time. Nothing is synthesised: a model the benchmark
-//! cannot invoke measures nothing, and the job then ends in the modelled `FAILED` status
-//! carrying the condition that stopped it rather than in `COMPLETED` with numbers no
-//! invocation produced.
+//! of them one instance performed in that time. Nothing is synthesised: a test whose
+//! invocations measured nothing reports NO metrics rather than numbers no invocation produced,
+//! and a job that had nothing to put under test at all — it names no endpoint and no model
+//! this account holds to deploy one for — ends in the modelled `FAILED` status carrying the
+//! condition that stopped it rather than in `COMPLETED` with numbers no invocation produced.
+//!
+//! # A model under test whose container brings its own
+//!
+//! `ModelDataUrl` and `ModelDataSource` are optional on a container definition, so a container
+//! that loads its own model declares neither and the model it serves is the container IMAGE's
+//! own. That is a valid model and a valid registered package, and AWS benchmarks it like any
+//! other, so the job is NOT failed for want of artifacts. What this emulator cannot do is run
+//! the image: nothing here loads that model, so such a test measures nothing, and the
+//! recommendation it reports carries the endpoint it was planned on and no metrics
+//! ([`unmeasured_recommendation`]).
 //!
 //! # Which endpoints are benchmarked
 //!
@@ -290,10 +301,12 @@ fn model_serving_variant(
     model_name: &str,
 ) -> Option<ServingVariant> {
     let model = store.models.get(model_name)?;
+    let model_data = served_model_data(store, model);
     Some(ServingVariant {
         variant_name: model.name.clone(),
         model_name: model.name.clone(),
-        model_data: served_model_data(store, model),
+        container_supplied_model: model_data.is_none() && model_declares_containers(model),
+        model_data,
         inference_program: served_inference_program(store, model),
     })
 }
@@ -320,6 +333,19 @@ pub async fn run_inference_recommendations_job(
     for target in targets {
         let model = match load_served_artifact(ctx, region, &target.variant).await {
             Some(Ok(model)) => model,
+            // The container of the model under test declares NO model data, so the model is
+            // the container image's own. That is a model this emulator does not run, so this
+            // test MEASURED nothing — but it is not a failure of the job: the package is a
+            // valid one (`ModelDataUrl` and `ModelDataSource` are both optional), the test
+            // was planned and its endpoint was put under test, so the job reports the
+            // recommendation for it with no metrics on it rather than failing for want of
+            // artifacts. Nothing is claimed that nothing measured.
+            Some(Err(ServingRefusal::NoModelArtifact { .. }))
+                if target.variant.container_supplied_model =>
+            {
+                measured.push(unmeasured_recommendation(target));
+                continue;
+            }
             Some(Err(refusal)) => {
                 return RecommendationRunOutcome::Failed {
                     reason: refusal.message(),
@@ -353,8 +379,7 @@ pub async fn run_inference_recommendations_job(
                 endpoint_name: target.endpoint_name.clone(),
                 variant_name: target.variant_name.clone(),
                 instance_type: target.instance_type.clone().unwrap_or_default(),
-                max_invocations_per_minute: measurement.invocations_per_minute,
-                model_latency_millis: measurement.latency_millis,
+                measured: Some(measurement),
             }),
             Err(refusal) => {
                 return RecommendationRunOutcome::Failed {
@@ -364,6 +389,23 @@ pub async fn run_inference_recommendations_job(
         }
     }
     RecommendationRunOutcome::Completed(measured)
+}
+
+/// The recommendation one test of the job reports when its own invocations measured NOTHING:
+/// the endpoint and the ML compute the test was planned on, and no metrics at all.
+///
+/// `RecommendationMetrics` is an optional member of a recommendation, and the metrics it
+/// carries are documented as values that may be unavailable, so a test that measured nothing
+/// reports a recommendation without them. The alternative would be a number no invocation
+/// produced, which is not a measurement.
+fn unmeasured_recommendation(target: &BenchmarkTarget) -> InferenceRecommendation {
+    InferenceRecommendation {
+        recommendation_id: mint_opaque_resource_id(),
+        endpoint_name: target.endpoint_name.clone(),
+        variant_name: target.variant_name.clone(),
+        instance_type: target.instance_type.clone().unwrap_or_default(),
+        measured: None,
+    }
 }
 
 /// What one endpoint's benchmark measured.

@@ -358,27 +358,65 @@ async fn describe_replays_every_member_the_create_carried() {
                 "case {case}: replayed {member}, got {described}"
             );
         }
-        assert_eq!(
-            str_field(&described, "Status"),
-            // The job's benchmark ran inside the create and had no model artifact to invoke
-            // (the seeded model carries none), so the terminal status the clock owes from the
-            // instant that create answered is `RecommendationJobStatus`'s `FAILED`
-            // (smithy_query shape=RecommendationJobStatus).
-            "FAILED",
-            "case {case}: the first read reports what the create's own benchmark produced, got \
-             {described}"
-        );
-        assert!(
-            !str_field(&described, "FailureReason").is_empty(),
-            "case {case}: a FAILED job must say what stopped it, got {described}"
-        );
-        // Nothing was measured, so neither of the measurement members is reported.
-        for absent in ["InferenceRecommendations", "EndpointPerformances"] {
+        // The job's benchmark ran inside the create, so the terminal status the clock owes
+        // from the instant that create answered is already decided
+        // (`RecommendationJobStatus`, smithy_query shape=RecommendationJobStatus). Which one
+        // it is follows from what the row put under test: the seeded model's container names
+        // no model data, so the model it serves is the container image's own — a valid model
+        // AWS benchmarks like any other, which nothing here invokes — while the row naming a
+        // model package this account holds none of has no container under test at all.
+        let nothing_under_test = extra_input.get("ModelPackageVersionArn").is_some();
+        if nothing_under_test {
+            assert_eq!(
+                str_field(&described, "Status"),
+                "FAILED",
+                "case {case}: a job with nothing under test reports its failure, got {described}"
+            );
             assert!(
-                described.get(absent).is_none(),
-                "case {case}: {absent} must be absent when the benchmark measured nothing, got \
-                 {:?}",
-                described.get(absent)
+                !str_field(&described, "FailureReason").is_empty(),
+                "case {case}: a FAILED job must say what stopped it, got {described}"
+            );
+            for absent in ["InferenceRecommendations", "EndpointPerformances"] {
+                assert!(
+                    described.get(absent).is_none(),
+                    "case {case}: {absent} must be absent when nothing was put under test, got \
+                     {:?}",
+                    described.get(absent)
+                );
+            }
+        } else {
+            assert_eq!(
+                str_field(&described, "Status"),
+                "COMPLETED",
+                "case {case}: the first read reports what the create's own benchmark produced, \
+                 got {described}"
+            );
+            assert!(
+                described.get("FailureReason").is_none(),
+                "case {case}: a COMPLETED job states no failure, got {described}"
+            );
+            // Nothing ran the container's own model, so the test reports no metric — and an
+            // endpoint performance carries metrics by definition, so none is reported either.
+            let reported = described
+                .get("InferenceRecommendations")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            assert_eq!(
+                reported.len(),
+                1,
+                "case {case}: one recommendation per endpoint put under test, got {described}"
+            );
+            assert!(
+                reported[0].get("Metrics").is_none(),
+                "case {case}: nothing invoked the container's own model, so no metric is \
+                 reported, got {described}"
+            );
+            assert!(
+                described.get("EndpointPerformances").is_none(),
+                "case {case}: EndpointPerformances must be absent when nothing was measured, \
+                 got {:?}",
+                described.get("EndpointPerformances")
             );
         }
         let creation_time = described
@@ -423,25 +461,30 @@ async fn the_first_read_after_the_create_reports_the_benchmark_the_create_ran() 
     assert_eq!(status, 200, "case settled: describe, got {status} with {settled}");
     let reached = str_field(&settled, "Status");
     // `RecommendationJobStatus`'s terminal members are COMPLETED | FAILED | STOPPED
-    // (smithy_query shape=RecommendationJobStatus). This job's model carries no model
-    // artifact, so its benchmark had nothing to invoke and measured nothing.
+    // (smithy_query shape=RecommendationJobStatus). This job's model carries no model data of
+    // its own, so the model its container serves is the image's own: a valid model, put under
+    // test like any other, which nothing here invokes.
     assert_eq!(
-        reached, "FAILED",
-        "case settled: the benchmark could not invoke the model under test, so the run must \
-         end FAILED, got {settled}"
+        reached, "COMPLETED",
+        "case settled: the model under test is a valid one, so the run completes, got {settled}"
     );
     assert!(
-        !str_field(&settled, "FailureReason").is_empty(),
-        "case settled: a FAILED job must say why, got {settled}"
+        settled.get("FailureReason").is_none(),
+        "case settled: a COMPLETED job states no failure, got {settled}"
     );
-    // Nothing was measured, so no recommendation is reported even in a terminal status.
-    for absent in ["InferenceRecommendations", "EndpointPerformances"] {
-        assert!(
-            settled.get(absent).is_none(),
-            "case settled: {absent} must be absent when the benchmark measured nothing, got {:?}",
-            settled.get(absent)
-        );
-    }
+    // Nothing was measured, so no metric is reported and the job's own test was on an
+    // endpoint it deployed rather than on an existing one.
+    assert!(
+        settled
+            .pointer("/InferenceRecommendations/0/Metrics")
+            .is_none(),
+        "case settled: nothing invoked the model, so no metric is reported, got {settled}"
+    );
+    assert!(
+        settled.get("EndpointPerformances").is_none(),
+        "case settled: EndpointPerformances must be absent when nothing was measured, got {:?}",
+        settled.get("EndpointPerformances")
+    );
     let completion_time = settled
         .get("CompletionTime")
         .and_then(Value::as_f64)

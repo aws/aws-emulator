@@ -214,8 +214,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             last_modified_time: crate::state::timestamp(job.last_modified_time),
             completion_time: job.completion_time.map(crate::state::timestamp),
             // What the job's own load test MEASURED, once the clock has revealed it. The
-            // member is modelled `len 1..10`, so a job that measured nothing reports none
-            // rather than an empty list. `InvocationStartTime` and `InvocationEndTime` are
+            // member is modelled `len 1..10`, so a job that put nothing under test reports
+            // none rather than an empty list. `Metrics` is optional on a recommendation and
+            // the values it carries are documented as ones that may be unavailable, so a
+            // test whose invocations measured nothing carries none of them rather than a
+            // number nothing produced. `InvocationStartTime` and `InvocationEndTime` are
             // the instants the job's benchmark ran between: it starts when the job is
             // accepted and is over when the job completes.
             inference_recommendations: (!job.recommendations.is_empty()).then(|| {
@@ -223,9 +226,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     .iter()
                     .map(|measured| InferenceRecommendation {
                         recommendation_id: Some(measured.recommendation_id.clone()),
-                        metrics: Some(RecommendationMetrics {
-                            max_invocations: Some(measured.max_invocations_per_minute),
-                            model_latency: Some(measured.model_latency_millis),
+                        metrics: measured.measured.map(|measurement| RecommendationMetrics {
+                            max_invocations: Some(measurement.invocations_per_minute),
+                            model_latency: Some(measurement.latency_millis),
                             ..RecommendationMetrics::default()
                         }),
                         endpoint_configuration: EndpointOutputConfiguration {
@@ -242,24 +245,29 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     })
                     .collect()
             }),
-            // The load test measured each endpoint it benchmarked; the ones the job named as
-            // EXISTING endpoints of this account are the ones `EndpointPerformances` reports —
-            // "the performance results from running an Inference Recommender job on an existing
-            // endpoint" — each carrying that endpoint's own name and the metrics the
-            // invocations against it measured
-            // (`crate::state::InferenceRecommendationsJob::endpoint_performances`). A job that
+            // The load test measured each endpoint whose model it could invoke; the ones the
+            // job named as EXISTING endpoints of this account are the ones
+            // `EndpointPerformances` reports — "the performance results from running an
+            // Inference Recommender job on an existing endpoint" — each carrying that
+            // endpoint's own name and the metrics the invocations against it measured
+            // (`crate::state::InferenceRecommendationsJob::endpoint_performances`). Both
+            // members of `InferenceMetrics` are required, so an endpoint whose invocations
+            // measured nothing has no performance to report and is left out; a job that
             // measured none of them reports none rather than an empty list.
             endpoint_performances: Some(
                 job.endpoint_performances()
                     .into_iter()
-                    .map(|measured| EndpointPerformance {
-                        metrics: InferenceMetrics {
-                            max_invocations: measured.max_invocations_per_minute,
-                            model_latency: measured.model_latency_millis,
-                        },
-                        endpoint_info: EndpointInfo {
-                            endpoint_name: Some(measured.endpoint_name.clone()),
-                        },
+                    .filter_map(|measured| {
+                        let measurement = measured.measured?;
+                        Some(EndpointPerformance {
+                            metrics: InferenceMetrics {
+                                max_invocations: measurement.invocations_per_minute,
+                                model_latency: measurement.latency_millis,
+                            },
+                            endpoint_info: EndpointInfo {
+                                endpoint_name: Some(measured.endpoint_name.clone()),
+                            },
+                        })
                     })
                     .collect::<Vec<EndpointPerformance>>(),
             )
