@@ -1,15 +1,21 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op TagResource
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `TagResource`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`TagResource::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! Adds the request's tags to the resource its `resourceArn` names, whichever kind of
+//! Connect resource that is: the instance itself, a queue, flow or hours of operation
+//! inside it, or a phone number claimed to the account. The lookup from an ARN to the
+//! record that carries the tags is
+//! [`crate::state::ComAmazonawsConnectAmazonconnectserviceState::tags_of_resource_mut`],
+//! the writing form of the one resolution `ListTagsForResource` reads through, so every
+//! ARN-addressed operation of the tagging plane resolves its target the same way.
+//!
+//! The request's tags are MERGED into the ones the resource already carries: a key it
+//! does not have is added, a key it does have takes the request's value, and a key the
+//! request does not name keeps the value it had. The map a resource carries is held to the
+//! maximum the `TagMap` every read reports it through declares, so a request whose new
+//! keys would push it past that is refused as the invalid parameter it is. An ARN no
+//! stored resource carries is this service's single 404.
 //!
 //! ## Shape of an operation
 //!
@@ -171,18 +177,56 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `TagResource` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(TagResourceErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
+        let _ = ctx;
+        let state = crate::state::service_state(&*self.engine).ok_or_else(|| {
+            TagResourceErrorModeled::InternalServiceException(InternalServiceException {
+                message: Some("the Amazon Connect store is unavailable".to_string()),
+            })
+        })?;
+        let mut store = state.lock();
+
+        // The ARN is resolved against the stored records, so there is nothing to tag until
+        // the resource exists — including one an ARN named until a delete retired it. That
+        // is the same refusal every other operation of this service gives for a resource
+        // that is not there (`crate::state::resource_not_found`), whichever kind of
+        // resource the ARN names: the model leaves the ARN's form unconstrained, and this
+        // service states that one sentence for every resource it cannot resolve, so an ARN
+        // that resolves to nothing is answered that way whatever it looks like.
+        let tags = store
+            .tags_of_resource_mut(&input.resource_arn)
+            .ok_or_else(|| {
+                TagResourceErrorModeled::ResourceNotFoundException(
+                    crate::state::resource_not_found(),
+                )
+            })?;
+
+        // ADDING tags, not replacing the map: a key the request names takes the request's
+        // value (so tagging a key the resource already carries updates it, and a repeated
+        // identical call leaves the same tags stored), and a key the request does not name
+        // keeps the value it had. The stored map is what every later read of this resource
+        // reports — its own `Describe`/`List` as much as `ListTagsForResource`.
         //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("TagResource"))
+        // The map a resource carries is held to the modelled maximum of the `TagMap` every
+        // read reports it through (`crate::state::TAGS_PER_RESOURCE_MAXIMUM`): a request
+        // whose new keys would push it past that is refused as the bad parameter it is,
+        // naming the member and nothing the request carried. Only keys the resource does
+        // not already carry grow it, so re-tagging a resource that is already at the
+        // maximum is still served.
+        if tags.len() + crate::state::tags_growth(tags, &input.tags)
+            > crate::state::TAGS_PER_RESOURCE_MAXIMUM
+        {
+            return Err(TagResourceErrorModeled::InvalidParameterException(
+                crate::state::invalid_parameter(crate::state::TAGS_PARAMETER),
+            )
+            .into());
+        }
+
+        for (key, value) in input.tags {
+            tags.insert(key, value);
+        }
+
+        // The modelled output is empty (`Unit`): what this call persisted is read back
+        // through the tags of the resource it named.
+        Ok(TagResourceOutput)
     }
 }

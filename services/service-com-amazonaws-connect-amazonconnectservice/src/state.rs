@@ -59,9 +59,12 @@ pub use instance_attributes::{
 };
 
 /// The tagging plane's lookup from a resource ARN to the tag map that resource carries:
-/// one concern of its own, so its own file. It declares no name of its own — it extends
-/// [`ComAmazonawsConnectAmazonconnectserviceState`] — so there is nothing to re-export.
+/// one concern of its own, so its own file. Most of it extends
+/// [`ComAmazonawsConnectAmazonconnectserviceState`]; the bound a tag map is held to, and
+/// how the growth of one is measured, are re-exported so a handler reaches them through
+/// `crate::state` like everything else here.
 mod tagging;
+pub use tagging::{tags_growth, TAGS_PARAMETER, TAGS_PER_RESOURCE_MAXIMUM};
 
 /// How this service words a refusal, and the identifier forms a path label may take:
 /// one concern of its own, so its own file, re-exported so a handler reaches it through

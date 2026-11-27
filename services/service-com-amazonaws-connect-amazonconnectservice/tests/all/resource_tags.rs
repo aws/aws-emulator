@@ -18,157 +18,14 @@
 
 use std::collections::BTreeMap;
 
-use serde_json::{json, Value};
+use serde_json::json;
 
-use super::harness::{connect_managed, Answer, Connect};
-
-/// The modelled `TagMap` maximum: `smithy_query(query="shape",shape="TagMap")` -> length
-/// min 1 max 50.
-const TAG_MAP_MAXIMUM: usize = 50;
-
-/// The sentence this service's `ResourceNotFoundException` carries, written out here
-/// rather than read off the implementation so the suite pins the text itself.
-const RESOURCE_NOT_FOUND: &str = "Resource not found";
-
-/// An identifier of the form this service mints that names nothing, so a row can build
-/// the ARN of a resource that was never stored.
-const ABSENT_ID: &str = "11111111-2222-3333-4444-555555555555";
-
-/// A flow content of the documented form: the JSON string of a flow definition.
-const FLOW_CONTENT: &str = r#"{"Version":"2019-10-30","StartAction":"a1","Actions":[{"Identifier":"a1","Type":"DisconnectParticipant","Parameters":{}}]}"#;
-
-/// An ARN as ONE URI path segment: `/tags/{resourceArn}` binds the ARN to a non-greedy
-/// label, so its `:` and `/` travel as `%3A` and `%2F` or the request addresses a
-/// different route.
-fn label(arn: &str) -> String {
-    arn.replace('%', "%25")
-        .replace(':', "%3A")
-        .replace('/', "%2F")
-}
+use super::harness::{
+    connect_managed, expected, queue_with_tags, tag_map, tags_of, Connect, ABSENT_ID, FLOW_CONTENT,
+    RESOURCE_NOT_FOUND, TAG_MAP_MAXIMUM,
+};
 
 impl Connect {
-    /// `ListTagsForResource`: `GET /tags/{resourceArn}`.
-    async fn list_tags_for_resource(&self, resource_arn: &str) -> Answer {
-        self.send_answer("GET", &format!("/tags/{}", label(resource_arn)), None)
-            .await
-    }
-
-    /// `CreateQueue`, asserting success and handing back the queue's ARN.
-    async fn queue_arn(&self, instance_id: &str, body: Value) -> String {
-        let created = self
-            .send_answer("PUT", &format!("/queues/{instance_id}"), Some(body.clone()))
-            .await;
-        assert_eq!(
-            created.status, 200,
-            "CreateQueue {body}: got {} {}",
-            created.status, created.body
-        );
-        created.body["QueueArn"]
-            .as_str()
-            .unwrap_or_else(|| panic!("CreateQueue answers a QueueArn, got {}", created.body))
-            .to_string()
-    }
-
-    /// `CreateContactFlow`, asserting success and handing back the flow's ARN.
-    async fn contact_flow_arn(&self, instance_id: &str, body: Value) -> String {
-        let created = self
-            .send_answer(
-                "PUT",
-                &format!("/contact-flows/{instance_id}"),
-                Some(body.clone()),
-            )
-            .await;
-        assert_eq!(
-            created.status, 200,
-            "CreateContactFlow {body}: got {} {}",
-            created.status, created.body
-        );
-        created.body["ContactFlowArn"]
-            .as_str()
-            .unwrap_or_else(|| {
-                panic!(
-                    "CreateContactFlow answers a ContactFlowArn, got {}",
-                    created.body
-                )
-            })
-            .to_string()
-    }
-
-    /// `CreateHoursOfOperation`, asserting success and handing back its ARN.
-    async fn hours_of_operation_arn(&self, instance_id: &str, body: Value) -> String {
-        let created = self
-            .send_answer(
-                "PUT",
-                &format!("/hours-of-operations/{instance_id}"),
-                Some(body.clone()),
-            )
-            .await;
-        assert_eq!(
-            created.status, 200,
-            "CreateHoursOfOperation {body}: got {} {}",
-            created.status, created.body
-        );
-        created.body["HoursOfOperationArn"]
-            .as_str()
-            .unwrap_or_else(|| {
-                panic!(
-                    "CreateHoursOfOperation answers a HoursOfOperationArn, got {}",
-                    created.body
-                )
-            })
-            .to_string()
-    }
-
-    /// `ClaimPhoneNumber` of the first number the inventory advertises for this instance,
-    /// handing back the claim's ARN.
-    async fn claimed_phone_number_arn(&self, instance_id: &str, tags: Value) -> String {
-        let search = self
-            .send_answer(
-                "POST",
-                "/phone-number/search-available",
-                Some(json!({
-                    "InstanceId": instance_id,
-                    "PhoneNumberCountryCode": "US",
-                    "PhoneNumberType": "TOLL_FREE",
-                })),
-            )
-            .await;
-        assert_eq!(
-            search.status, 200,
-            "SearchAvailablePhoneNumbers: got {} {}",
-            search.status, search.body
-        );
-        let number = search.body["AvailableNumbersList"][0]["PhoneNumber"]
-            .as_str()
-            .unwrap_or_else(|| panic!("the search advertises a number, got {}", search.body))
-            .to_string();
-        let claimed = self
-            .send_answer(
-                "POST",
-                "/phone-number/claim",
-                Some(json!({
-                    "InstanceId": instance_id,
-                    "PhoneNumber": number,
-                    "Tags": tags,
-                })),
-            )
-            .await;
-        assert_eq!(
-            claimed.status, 200,
-            "ClaimPhoneNumber {number}: got {} {}",
-            claimed.status, claimed.body
-        );
-        claimed.body["PhoneNumberArn"]
-            .as_str()
-            .unwrap_or_else(|| {
-                panic!(
-                    "ClaimPhoneNumber answers a PhoneNumberArn, got {}",
-                    claimed.body
-                )
-            })
-            .to_string()
-    }
-
     /// The ARN of one resource the instance was born with, read off the `List*` that
     /// reports that kind: an untagged resource nobody created by hand.
     async fn first_listed_arn(&self, uri: &str, list_member: &str) -> String {
@@ -183,49 +40,6 @@ impl Connect {
             .unwrap_or_else(|| panic!("{uri} reports an entry with an Arn, got {}", listed.body))
             .to_string()
     }
-}
-
-/// A minimal valid `CreateQueue` body carrying `tags`.
-fn queue_with_tags(name: &str, tags: Value) -> Value {
-    json!({ "Name": name, "HoursOfOperationId": ABSENT_ID, "Tags": tags })
-}
-
-/// The `tags` member of an answer, as a plain map, or `None` when the answer carries no
-/// `tags` member at all.
-fn tags_of(answer: &Answer) -> Option<BTreeMap<String, String>> {
-    let tags = answer.body.get("tags")?;
-    Some(
-        tags.as_object()
-            .unwrap_or_else(|| panic!("tags is a map, got {tags}"))
-            .iter()
-            .map(|(key, value)| {
-                (
-                    key.clone(),
-                    value
-                        .as_str()
-                        .unwrap_or_else(|| panic!("a tag value is a string, got {value}"))
-                        .to_string(),
-                )
-            })
-            .collect(),
-    )
-}
-
-/// `tags` as the request that stored them sent it.
-fn expected(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
-    pairs
-        .iter()
-        .map(|(key, value)| ((*key).to_string(), (*value).to_string()))
-        .collect()
-}
-
-/// A tag map of `count` distinct entries, for the size rows.
-fn tag_map(count: usize) -> Value {
-    Value::Object(
-        (0..count)
-            .map(|index| (format!("key{index}"), json!(format!("value{index}"))))
-            .collect(),
-    )
 }
 
 /// RULE: the answer is the tag map stored on the resource the ARN names — for every kind

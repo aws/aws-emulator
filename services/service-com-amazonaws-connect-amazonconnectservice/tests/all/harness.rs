@@ -12,6 +12,7 @@
 //! there: this module holds only what two or more suites share, so no suite stands up a
 //! second copy of the emulator fixture.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use bytes::Bytes;
@@ -122,6 +123,195 @@ impl Connect {
             out["Arn"].as_str().expect("Arn").to_string(),
         )
     }
+
+    /// `ListTagsForResource`: `GET /tags/{resourceArn}`.
+    pub(crate) async fn list_tags_for_resource(&self, resource_arn: &str) -> Answer {
+        self.send_answer("GET", &format!("/tags/{}", label(resource_arn)), None)
+            .await
+    }
+
+    /// `CreateQueue`, asserting success and handing back the queue's ARN.
+    pub(crate) async fn queue_arn(&self, instance_id: &str, body: Value) -> String {
+        let created = self
+            .send_answer("PUT", &format!("/queues/{instance_id}"), Some(body.clone()))
+            .await;
+        assert_eq!(
+            created.status, 200,
+            "CreateQueue {body}: got {} {}",
+            created.status, created.body
+        );
+        created.body["QueueArn"]
+            .as_str()
+            .unwrap_or_else(|| panic!("CreateQueue answers a QueueArn, got {}", created.body))
+            .to_string()
+    }
+
+    /// `CreateContactFlow`, asserting success and handing back the flow's ARN.
+    pub(crate) async fn contact_flow_arn(&self, instance_id: &str, body: Value) -> String {
+        let created = self
+            .send_answer(
+                "PUT",
+                &format!("/contact-flows/{instance_id}"),
+                Some(body.clone()),
+            )
+            .await;
+        assert_eq!(
+            created.status, 200,
+            "CreateContactFlow {body}: got {} {}",
+            created.status, created.body
+        );
+        created.body["ContactFlowArn"]
+            .as_str()
+            .unwrap_or_else(|| {
+                panic!(
+                    "CreateContactFlow answers a ContactFlowArn, got {}",
+                    created.body
+                )
+            })
+            .to_string()
+    }
+
+    /// `CreateHoursOfOperation`, asserting success and handing back its ARN.
+    pub(crate) async fn hours_of_operation_arn(&self, instance_id: &str, body: Value) -> String {
+        let created = self
+            .send_answer(
+                "PUT",
+                &format!("/hours-of-operations/{instance_id}"),
+                Some(body.clone()),
+            )
+            .await;
+        assert_eq!(
+            created.status, 200,
+            "CreateHoursOfOperation {body}: got {} {}",
+            created.status, created.body
+        );
+        created.body["HoursOfOperationArn"]
+            .as_str()
+            .unwrap_or_else(|| {
+                panic!(
+                    "CreateHoursOfOperation answers a HoursOfOperationArn, got {}",
+                    created.body
+                )
+            })
+            .to_string()
+    }
+
+    /// `ClaimPhoneNumber` of the first number the inventory advertises for this instance,
+    /// handing back the claim's ARN.
+    pub(crate) async fn claimed_phone_number_arn(&self, instance_id: &str, tags: Value) -> String {
+        let search = self
+            .send_answer(
+                "POST",
+                "/phone-number/search-available",
+                Some(json!({
+                    "InstanceId": instance_id,
+                    "PhoneNumberCountryCode": "US",
+                    "PhoneNumberType": "TOLL_FREE",
+                })),
+            )
+            .await;
+        assert_eq!(
+            search.status, 200,
+            "SearchAvailablePhoneNumbers: got {} {}",
+            search.status, search.body
+        );
+        let number = search.body["AvailableNumbersList"][0]["PhoneNumber"]
+            .as_str()
+            .unwrap_or_else(|| panic!("the search advertises a number, got {}", search.body))
+            .to_string();
+        let claimed = self
+            .send_answer(
+                "POST",
+                "/phone-number/claim",
+                Some(json!({
+                    "InstanceId": instance_id,
+                    "PhoneNumber": number,
+                    "Tags": tags,
+                })),
+            )
+            .await;
+        assert_eq!(
+            claimed.status, 200,
+            "ClaimPhoneNumber {number}: got {} {}",
+            claimed.status, claimed.body
+        );
+        claimed.body["PhoneNumberArn"]
+            .as_str()
+            .unwrap_or_else(|| {
+                panic!(
+                    "ClaimPhoneNumber answers a PhoneNumberArn, got {}",
+                    claimed.body
+                )
+            })
+            .to_string()
+    }
+}
+
+/// The modelled `TagMap` maximum: `smithy_query(query="shape",shape="TagMap")` -> length
+/// min 1 max 50.
+pub(crate) const TAG_MAP_MAXIMUM: usize = 50;
+
+/// The sentence this service's `ResourceNotFoundException` carries, written out here
+/// rather than read off the implementation so the suites pin the text itself.
+pub(crate) const RESOURCE_NOT_FOUND: &str = "Resource not found";
+
+/// An identifier of the form this service mints that names nothing, so a row can build
+/// the ARN of a resource that was never stored.
+pub(crate) const ABSENT_ID: &str = "11111111-2222-3333-4444-555555555555";
+
+/// A flow content of the documented form: the JSON string of a flow definition.
+pub(crate) const FLOW_CONTENT: &str = r#"{"Version":"2019-10-30","StartAction":"a1","Actions":[{"Identifier":"a1","Type":"DisconnectParticipant","Parameters":{}}]}"#;
+
+/// An ARN as ONE URI path segment: `/tags/{resourceArn}` binds the ARN to a non-greedy
+/// label, so its `:` and `/` travel as `%3A` and `%2F` or the request addresses a
+/// different route.
+pub(crate) fn label(arn: &str) -> String {
+    arn.replace('%', "%25")
+        .replace(':', "%3A")
+        .replace('/', "%2F")
+}
+
+/// A minimal valid `CreateQueue` body carrying `tags`.
+pub(crate) fn queue_with_tags(name: &str, tags: Value) -> Value {
+    json!({ "Name": name, "HoursOfOperationId": ABSENT_ID, "Tags": tags })
+}
+
+/// The `tags` member of an answer, as a plain map, or `None` when the answer carries no
+/// `tags` member at all.
+pub(crate) fn tags_of(answer: &Answer) -> Option<BTreeMap<String, String>> {
+    let tags = answer.body.get("tags")?;
+    Some(
+        tags.as_object()
+            .unwrap_or_else(|| panic!("tags is a map, got {tags}"))
+            .iter()
+            .map(|(key, value)| {
+                (
+                    key.clone(),
+                    value
+                        .as_str()
+                        .unwrap_or_else(|| panic!("a tag value is a string, got {value}"))
+                        .to_string(),
+                )
+            })
+            .collect(),
+    )
+}
+
+/// `tags` as the request that stored them sent it.
+pub(crate) fn expected(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
+    pairs
+        .iter()
+        .map(|(key, value)| ((*key).to_string(), (*value).to_string()))
+        .collect()
+}
+
+/// A tag map of `count` distinct entries, for the size rows.
+pub(crate) fn tag_map(count: usize) -> Value {
+    Value::Object(
+        (0..count)
+            .map(|index| (format!("key{index}"), json!(format!("value{index}"))))
+            .collect(),
+    )
 }
 
 /// Build the `maxResults`/`nextToken` query string the `List*` models bind, plus any
