@@ -18,8 +18,8 @@
 //! is `DBInstanceNotFoundFault` (HTTP 404); a resource whose engine has no database activity
 //! stream, one that is not in a state the call can be taken in, a second start of a running
 //! stream and a stop of a stream that is not running are the matching invalid-state fault
-//! (HTTP 400); and a value that is no Amazon RDS DB cluster or DB instance ARN at all is
-//! refused on the member that carried it —
+//! (HTTP 400); and a value that is no Amazon RDS DB cluster or DB instance ARN of the
+//! request's Region at all is refused on the member that carried it —
 //! `smithy_query(query="operation", operation="StartActivityStream")` for the faults and their
 //! statuses, and `smithy_query(query="shape", shape="ActivityStreamStatus")` for the four
 //! states a stream is reported in.
@@ -29,8 +29,10 @@
 //! modes a stream can be started in, each form `KmsKeyId` accepts (key ARN, key id, alias ARN
 //! and alias name), the engine-native-audit-fields setting present and absent, both ways
 //! `ApplyImmediately` decides when the start comes due, the engines that have no stream at
-//! all, and the forms a `ResourceArn` can take that resolve to nothing (another Region,
-//! another account, another resource type and no ARN at all).
+//! all, and the forms a `ResourceArn` can take that resolve to nothing (another account,
+//! another resource type and no ARN at all), and a `ResourceArn` naming another REGION, which
+//! is refused on the member rather than reported absent — the Region pairs and resource kinds
+//! that rule covers are the table in `activity_stream_resource_arn_region`.
 //!
 //! Every call goes over the wire through the harness in `db_instances.rs`, so the assertions
 //! read the XML the emulator itself answered with, and every wait is the poll loop a client
@@ -701,13 +703,15 @@ async fn an_engine_with_no_activity_stream_is_refused_on_its_engine() {
 }
 
 /// RULE: a `ResourceArn` that names no resource of this account in the request's Region is the
-/// not-found fault of the resource kind the ARN names, whichever of the two calls raised it.
+/// not-found fault of the resource kind the ARN names, whichever of the two calls raised it —
+/// while an ARN whose REGION is not the endpoint's is refused on the member instead, since no
+/// resource of another Region is one this endpoint could act on.
 #[tokio::test]
 async fn a_resource_arn_that_names_nothing_in_the_region_is_not_found() {
     let router = emulator();
 
-    // One cluster and one instance in each Region, so a miss is a miss because of WHERE the
-    // ARN points rather than because the store is empty.
+    // One cluster and one instance in each Region, so a miss is a miss because of what the
+    // ARN names rather than because the store is empty.
     let here = StreamCase {
         case: "setup",
         kind: Kind::Cluster,
@@ -737,12 +741,11 @@ async fn a_resource_arn_that_names_nothing_in_the_region_is_not_found() {
     );
 
     // (case, the ARN as sent, the fault's HTTP status and wire code, the wording)
+    //
+    // Every row names the Region the request is signed for: an ARN naming ANOTHER Region is
+    // not a missing resource but a value this endpoint could not act on, which the loop after
+    // this one asserts.
     let misses = [
-        (
-            "a cluster ARN in another Region",
-            cluster_arn(OTHER_REGION, "emu-das-elsewhere"),
-            "DBClusterNotFoundFault",
-        ),
         (
             "a cluster ARN of an identifier nothing created",
             cluster_arn(REGION, "emu-das-absent"),
@@ -759,8 +762,8 @@ async fn a_resource_arn_that_names_nothing_in_the_region_is_not_found() {
             "DBInstanceNotFound",
         ),
         (
-            "an instance ARN in another Region",
-            instance_arn(OTHER_REGION, "emu-das-elsewhere"),
+            "an instance ARN of another account",
+            instance_arn(REGION, "emu-das-here").replace(ACCOUNT, "123456789012"),
             "DBInstanceNotFound",
         ),
     ];
@@ -784,6 +787,45 @@ async fn a_resource_arn_that_names_nothing_in_the_region_is_not_found() {
                 let named = arn.rsplit(':').next().expect("an ARN carries a resource");
                 format!("DBInstance not found: {named}")
             };
+            assert_member(case, &refused, "Message", &expected);
+        }
+    }
+
+    // An ARN of ANOTHER Region is no miss at all: Amazon RDS serves one Region per endpoint,
+    // so such a value names nothing either call could act on and is refused on the member,
+    // before the lookup — the Region pairs and resource kinds that rule covers are the table
+    // in `activity_stream_resource_arn_region`.
+    for (case, arn) in [
+        (
+            "a cluster ARN in another Region",
+            cluster_arn(OTHER_REGION, "emu-das-elsewhere"),
+        ),
+        (
+            "an instance ARN in another Region",
+            instance_arn(OTHER_REGION, "emu-das-elsewhere"),
+        ),
+    ] {
+        for refused in [
+            expect_error(
+                case,
+                start(&router, &arn, ASYNC, "alias/emu-das-key", None, Some(true)).await,
+                400,
+                "InvalidParameterValue",
+            ),
+            expect_error(
+                case,
+                stop(&router, &arn, Some(true)).await,
+                400,
+                "InvalidParameterValue",
+            ),
+        ] {
+            // The sentence Amazon RDS refuses an ARN parameter of another Region with: its
+            // fixed text, with the ARN as submitted, the member, the Region the endpoint
+            // serves and the Region in the ARN as the variable parts.
+            let expected = format!(
+                "The provided ARN ({arn}) is invalid for this parameter (ResourceArn). \
+                 Expected region = {REGION}, actual region = {OTHER_REGION}"
+            );
             assert_member(case, &refused, "Message", &expected);
         }
     }

@@ -14,7 +14,8 @@
 //! of this account in the request's Region is `DBInstanceNotFoundFault` (HTTP 404), an
 //! instance whose engine has no database activity stream or that is not in a state a
 //! modification can be taken in is `InvalidDBInstanceStateFault` (HTTP 400), and a value
-//! that is no Amazon RDS DB instance ARN at all is refused on the member that carried it —
+//! that is no Amazon RDS DB instance ARN of this Region at all is refused on the member that
+//! carried it —
 //! `smithy_query(query="operation", operation="ModifyActivityStream")` for the faults and
 //! their statuses, and `smithy_query(query="shape", shape="ActivityStreamPolicyStatus")` for
 //! the four states a policy is reported in.
@@ -25,8 +26,10 @@
 //! request that names no `AuditPolicyState` at all (the documented default), the engine
 //! families with no activity stream (an RDS Custom edition of a served family among them),
 //! the statuses that make an instance unmodifiable, and the forms a `ResourceArn` can take
-//! that resolve to nothing (another Region, another account, another partition, another
-//! resource type, no ARN at all, and no value at all).
+//! that resolve to nothing (another account, another partition, another resource type, no ARN
+//! at all, and no value at all), and a `ResourceArn` naming another REGION, which is refused
+//! on the member rather than reported absent — the Region pairs and resource kinds that rule
+//! covers are the table in `activity_stream_resource_arn_region`.
 //!
 //! Every call goes over the wire through the harness in `db_instances.rs`, so the assertions
 //! read the XML the emulator itself answered with, and every wait is the poll loop a client
@@ -392,8 +395,8 @@ async fn each_published_engine_locks_and_unlocks_its_audit_policy_and_the_instan
 async fn a_resource_arn_that_names_no_db_instance_in_the_region_is_not_found() {
     let router = emulator();
 
-    // One instance in each Region, so a miss is a miss because of WHERE the ARN points
-    // rather than because the store is empty.
+    // One instance in each Region, so a miss is a miss because of what the ARN names rather
+    // than because the store is empty.
     expect_ok(
         "setup",
         create_instance(&router, REGION, "emu-das-here", "oracle-se2", "db.m5.large").await,
@@ -427,21 +430,15 @@ async fn a_resource_arn_that_names_no_db_instance_in_the_region_is_not_found() {
     .await;
 
     // (case, the `ResourceArn` the refused call carries, the DB instance that ARN names)
+    //
+    // Every row names the Region the request is signed for: an ARN naming ANOTHER Region is
+    // not a missing instance but a value this endpoint could not act on, which the loop after
+    // this one asserts.
     let misses = [
         (
             "an instance that was never created",
             instance_arn(REGION, "emu-das-absent"),
             "emu-das-absent",
-        ),
-        (
-            "an existing instance's ARN with another Region in it",
-            instance_arn(OTHER_REGION, "emu-das-here"),
-            "emu-das-here",
-        ),
-        (
-            "an instance that exists only in another Region",
-            instance_arn(OTHER_REGION, "emu-das-elsewhere"),
-            "emu-das-elsewhere",
         ),
         (
             "an existing instance's ARN under another account",
@@ -465,6 +462,44 @@ async fn a_resource_arn_that_names_no_db_instance_in_the_region_is_not_found() {
             );
             let message = text(&refused, "Message");
             let expected = format!("DBInstance not found: {named}");
+            assert_eq!(
+                message, expected,
+                "case {case:?} asking for {asked_for:?}: expected the wording {expected:?}, \
+                 got {message:?}"
+            );
+        }
+    }
+
+    // The same identifiers under ANOTHER Region are not misses at all: Amazon RDS serves one
+    // Region per endpoint, so an ARN whose Region is not the endpoint's names nothing this
+    // call could act on and is refused on the member, before the lookup — the pairs of
+    // Regions and resource kinds that rule covers are the table in
+    // `activity_stream_resource_arn_region`.
+    for (case, arn) in [
+        (
+            "an existing instance's ARN with another Region in it",
+            instance_arn(OTHER_REGION, "emu-das-here"),
+        ),
+        (
+            "an instance that exists only in another Region",
+            instance_arn(OTHER_REGION, "emu-das-elsewhere"),
+        ),
+    ] {
+        for asked_for in [None, Some(LOCKED), Some(UNLOCKED)] {
+            let refused = expect_error(
+                case,
+                modify(&router, &arn, asked_for).await,
+                400,
+                "InvalidParameterValue",
+            );
+            let message = text(&refused, "Message");
+            // The sentence Amazon RDS refuses an ARN parameter of another Region with: its
+            // fixed text, with the ARN as submitted, the member, the Region the endpoint
+            // serves and the Region in the ARN as the variable parts.
+            let expected = format!(
+                "The provided ARN ({arn}) is invalid for this parameter (ResourceArn). \
+                 Expected region = {REGION}, actual region = {OTHER_REGION}"
+            );
             assert_eq!(
                 message, expected,
                 "case {case:?} asking for {asked_for:?}: expected the wording {expected:?}, \

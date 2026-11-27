@@ -32,7 +32,10 @@
 //! A `ResourceArn` that names no DB instance of this service at all is refused on the MEMBER,
 //! with the one sentence this front door gives every operation that addresses its resource by
 //! ARN ([`tags::invalid_resource_name_message`]), so this operation cannot drift from the tag
-//! writes and the Data API toggles in how it words an unusable reference.
+//! writes and the Data API toggles in how it words an unusable reference. A `ResourceArn` that
+//! IS a DB instance ARN but names another REGION is refused on the member too, and before any
+//! lookup: a regional endpoint serves its own Region's resources only, so such a value names
+//! nothing it could act on whatever this store holds ([`check_arn_parameter_region`]).
 //!
 //! The STREAM itself ([`ActivityStream`]) is stored on the same records, for the same reasons:
 //! "Starts a database activity stream to monitor activity on the database" is a write on the
@@ -85,6 +88,13 @@ pub const ACTIVITY_STREAM_POLICY_UNLOCKING: &str = "unlocking-policy";
 /// change the answer.
 pub const ACTIVITY_STREAM_ENGINE_MESSAGE: &str =
     "This operation is supported for RDS for Oracle and Microsoft SQL Server.";
+
+/// How the ARN member all three activity-stream operations address their resource by is named
+/// in a refusal of the VALUE it carried: `ResourceArn`, the member each of them declares
+/// (`smithy_query(query="operation", operation="ModifyActivityStream")`), spelled as the model
+/// spells it — which is what a caller matching the refusal against the parameter it sent looks
+/// for.
+pub const ACTIVITY_STREAM_RESOURCE_ARN_PARAMETER: &str = "ResourceArn";
 
 /// Whether a DB instance running `engine` has an audit policy this operation modifies.
 ///
@@ -200,10 +210,11 @@ impl ActivityStreamPolicy {
 /// modelled errors (`smithy_query(query="operation", operation="ModifyActivityStream")`).
 #[derive(Debug, Clone)]
 pub enum ActivityStreamRefusal {
-    /// `ResourceArn` carries no Amazon RDS DB instance ARN at all — a value that is no ARN,
-    /// or an ARN of another of this service's resource types. The value itself is unusable, so
-    /// this is refused on the MEMBER that carried it rather than reported as a resource that
-    /// might yet appear.
+    /// `ResourceArn` carries no Amazon RDS DB instance ARN this endpoint can act on — a value
+    /// that is no ARN, an ARN of another of this service's resource types, or a well-formed
+    /// ARN naming another Region than the one the request's endpoint serves. The value itself
+    /// is unusable, so this is refused on the MEMBER that carried it rather than reported as a
+    /// resource that might yet appear.
     UnusableArn(String),
     /// A DB instance ARN that names no DB instance this account holds in the request's
     /// region.
@@ -236,9 +247,10 @@ impl ComAmazonawsRdsAmazonrdsv19State {
     /// names in `region`, and report the stream and its policy as they now stand.
     ///
     /// Resolution is by the ARN each stored instance RENDERS ([`DbInstanceRecord::arn`]), so
-    /// an ARN of another account, partition or region resolves to nothing here: RDS is
-    /// regional, and the only instance this request can act on is one whose own reports carry
-    /// the ARN it named.
+    /// an ARN of another account or partition resolves to nothing here: the only instance this
+    /// request can act on is one whose own reports carry the ARN it named. An ARN naming
+    /// another REGION is refused on the member before that lookup, because a regional endpoint
+    /// could not act on it whatever it holds ([`check_arn_parameter_region`]).
     pub fn set_activity_stream_audit_policy(
         &mut self,
         region: &str,
@@ -259,6 +271,18 @@ impl ComAmazonawsRdsAmazonrdsv19State {
                 tags::invalid_resource_name_message(resource_arn),
             ));
         };
+        // And the ARN has to name the Region this endpoint serves: Amazon RDS is regional, so
+        // an ARN of another Region names no DB instance this call could ever act on, whichever
+        // Region holds one of that identifier. That is a bad value rather than a missing
+        // instance, so it is answered on the member BEFORE the lookup
+        // ([`check_arn_parameter_region`]).
+        if let Err(message) = check_arn_parameter_region(
+            ACTIVITY_STREAM_RESOURCE_ARN_PARAMETER,
+            resource_arn,
+            region,
+        ) {
+            return Err(ActivityStreamRefusal::UnusableArn(message));
+        }
 
         // The DB instance the ARN names is its resource-name segment — the identifier —
         // which is also the handle the refusal names the instance by.
@@ -273,9 +297,9 @@ impl ComAmazonawsRdsAmazonrdsv19State {
         let Some(record) = self.db_instances.get_mut(&key) else {
             return Err(not_found());
         };
-        // RDS is regional, and an account acts on its own resources: the only instance this
-        // request can act on is one whose own reports carry the ARN it named, so an ARN of
-        // another account, partition or region resolves to nothing here.
+        // An account acts on its own resources: the only instance this request can act on is
+        // one whose own reports carry the ARN it named, so an ARN of another account or
+        // partition resolves to nothing here.
         if record.arn() != resource_arn {
             return Err(not_found());
         }
@@ -609,10 +633,11 @@ pub struct ActivityStreamDelivery {
 /// errors.
 #[derive(Debug, Clone)]
 pub enum ActivityStreamDeliveryRefusal {
-    /// `ResourceArn` carries no Amazon RDS DB cluster or DB instance ARN at all — a value
-    /// that is no ARN, or an ARN of another of this service's resource types. The value
-    /// itself is unusable, so this is refused on the MEMBER that carried it rather than
-    /// reported as a resource that might yet appear.
+    /// `ResourceArn` carries no Amazon RDS DB cluster or DB instance ARN this endpoint can
+    /// act on — a value that is no ARN, an ARN of another of this service's resource types,
+    /// or a well-formed ARN naming another Region than the one the request's endpoint serves.
+    /// The value itself is unusable, so this is refused on the MEMBER that carried it rather
+    /// than reported as a resource that might yet appear.
     UnusableArn(String),
     /// A DB cluster ARN that names no cluster this account holds in the request's region.
     ClusterNotFound(String),
@@ -641,9 +666,11 @@ impl ComAmazonawsRdsAmazonrdsv19State {
     /// stream.
     ///
     /// Resolution is by the ARN each stored record RENDERS ([`DbClusterRecord::arn`],
-    /// [`DbInstanceRecord::arn`]), so an ARN of another account, partition or region resolves
-    /// to nothing here: RDS is regional, and the only resource this request can act on is one
-    /// whose own reports carry the ARN it named.
+    /// [`DbInstanceRecord::arn`]), so an ARN of another account or partition resolves to
+    /// nothing here: the only resource this request can act on is one whose own reports carry
+    /// the ARN it named. An ARN naming another REGION is refused on the member before that
+    /// lookup, because a regional endpoint could not act on it whatever it holds
+    /// ([`check_arn_parameter_region`]).
     ///
     /// Each miss is worded the way this front door words the FAULT the call raises for that
     /// resource: the cluster's `DBClusterNotFoundFault` in the
@@ -670,8 +697,26 @@ impl ComAmazonawsRdsAmazonrdsv19State {
         // The stored key of the resource the ARN names, folded the way every key of both
         // stores is ("stored as a lowercase string").
         let key = (region.to_string(), parsed.identifier.to_ascii_lowercase());
-        match tags::TaggedKind::from_arn_resource_type(parsed.resource_type) {
-            Some(tags::TaggedKind::DbCluster) => {
+        // The two resource kinds a database activity stream belongs to; every other resource
+        // type this service keeps records of — and every value that is no ARN at all — names
+        // no resource one belongs to.
+        let kind = match tags::TaggedKind::from_arn_resource_type(parsed.resource_type) {
+            Some(kind @ (tags::TaggedKind::DbCluster | tags::TaggedKind::DbInstance)) => kind,
+            _ => return Err(unusable()),
+        };
+        // Amazon RDS is regional: whichever of the two kinds the ARN names, an ARN of another
+        // Region names nothing this endpoint can act on, which is a bad value rather than a
+        // missing resource and is answered on the member before the lookup
+        // ([`check_arn_parameter_region`]).
+        if let Err(message) = check_arn_parameter_region(
+            ACTIVITY_STREAM_RESOURCE_ARN_PARAMETER,
+            resource_arn,
+            region,
+        ) {
+            return Err(ActivityStreamDeliveryRefusal::UnusableArn(message));
+        }
+        match kind {
+            tags::TaggedKind::DbCluster => {
                 if self
                     .db_clusters
                     .get(&key)
@@ -683,7 +728,7 @@ impl ComAmazonawsRdsAmazonrdsv19State {
                 }
                 Ok(ActivityStreamSubject::Cluster(key))
             }
-            Some(tags::TaggedKind::DbInstance) => {
+            tags::TaggedKind::DbInstance => {
                 if self
                     .db_instances
                     .get(&key)
@@ -695,8 +740,7 @@ impl ComAmazonawsRdsAmazonrdsv19State {
                 }
                 Ok(ActivityStreamSubject::Instance(key))
             }
-            // Every other resource type this service keeps records of — and every value that
-            // is no ARN at all — names no resource a database activity stream belongs to.
+            // The kind was narrowed to the two above before the lookup.
             _ => Err(unusable()),
         }
     }

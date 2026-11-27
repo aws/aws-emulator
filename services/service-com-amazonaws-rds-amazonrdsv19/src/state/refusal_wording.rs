@@ -791,6 +791,55 @@ pub fn invalid_arn_for_parameter_message(arn: &str, parameter: &str) -> String {
     format!("The provided ARN ({arn}) is invalid for this parameter ({parameter}).")
 }
 
+/// How this service words the refusal of a member whose value is a well-formed ARN of a
+/// resource in ANOTHER Region than the one the endpoint serving the request serves.
+///
+/// Amazon RDS is regional: an endpoint serves the resources of its own Region only, so an
+/// ARN whose Region field names another one names no resource this endpoint could ever act
+/// on, whatever it holds — which is a bad REQUEST rather than a resource that happens to be
+/// missing, and is answered before any lookup. The sentence continues the one every unusable
+/// ARN value is refused with ([`invalid_arn_for_parameter_message`]) and then states both
+/// Regions, because the pair is what the caller has to reconcile: `expected` is the Region
+/// the endpoint serves and `actual` the Region read out of the value.
+pub fn arn_region_mismatch_message(
+    arn: &str,
+    parameter: &str,
+    expected: &str,
+    actual: &str,
+) -> String {
+    format!(
+        "{} Expected region = {expected}, actual region = {actual}",
+        invalid_arn_for_parameter_message(arn, parameter)
+    )
+}
+
+/// Whether the ARN `value` arrived in `parameter` with names the Region the endpoint serving
+/// this request serves, which is the only Region a regional endpoint can act in.
+///
+/// `Err` carries the sentence the refusal answers with
+/// ([`arn_region_mismatch_message`]), so a handler lifts it into its own
+/// `InvalidParameterValue` channel BEFORE any lookup — the same reading this front door
+/// holds every member that must be an ARN to ([`check_arn_parameter`]). A value written in
+/// no ARN form at all carries no Region field to compare and is left to the member's own
+/// refusal of an unusable value ([`check_arn_parameter`], the resource-type readings); whether
+/// the resource the ARN names EXISTS is the lookup's question, and a same-Region ARN naming
+/// none is that operation's not-found fault.
+pub fn check_arn_parameter_region(
+    parameter: &str,
+    value: &str,
+    region: &str,
+) -> Result<(), String> {
+    let Some(arn_region) = arn_region(value) else {
+        return Ok(());
+    };
+    match arn_region == region {
+        true => Ok(()),
+        false => Err(arn_region_mismatch_message(
+            value, parameter, region, arn_region,
+        )),
+    }
+}
+
 /// Whether `value` is an ARN of THIS service at all, which is what a member documented as
 /// one has to carry: the fields an Amazon Resource Name of this service is written in — this
 /// front door's one reading of that form ([`parse_rds_resource_arn`]).
