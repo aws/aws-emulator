@@ -40,7 +40,8 @@ use crate::ops::types::{
     NotebookExecution, NotebookExecutionSummary, NotebookS3LocationForOutput, OSRelease,
     OutputNotebookS3LocationForOutput, PersistentAppUI, PlacementGroupConfig, PortRange, Session,
     SessionMappingDetail, ShrinkPolicy, SimplifiedApplication, StartNotebookExecutionInput, Step,
-    StepConfig, StepStateChangeReason, StepStatus, StepSummary, StepTimeline, Studio,
+    StepAdditionalInfo, StepConfig, StepStateChangeReason, StepStatus, StepSummary, StepTimeline,
+    Studio,
     SupportedInstanceType, Tag,
 };
 

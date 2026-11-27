@@ -24,15 +24,7 @@ pub struct DescribeStepOutput {
     pub step: Option<Step>,
 }
 
-/// The step one read reports: the members `Step` declares, in the model's own member order,
-/// and `AdditionalInfo` appended last.
-///
-/// Member set and order from `smithy_query(query="shape", shape="Step")`, plus
-/// `AdditionalInfo` — a member the real service reports for a step whose execution reached the
-/// cluster's resource manager and the on-disk model omits, which is why the schema and the
-/// codec come from `types/recorded_member_wire.rs` rather than from the derive (see that
-/// module's note). What it carries is read off the stored step
-/// (`crate::state::StepRecord::to_additional_info`), never fixed here.
+#[smithy_macros::smithy(shape = "com.amazonaws.emr#Step")]
 #[derive(Debug, Clone, Default)]
 pub struct Step {
     pub id: Option<String>,
@@ -43,51 +35,6 @@ pub struct Step {
     pub execution_role_arn: Option<String>,
     pub log_uri: Option<String>,
     pub encryption_key_arn: Option<String>,
-    pub additional_info: Option<::aws_smithy_types::Document>,
+    pub additional_info: Option<StepAdditionalInfo>,
 }
-
-emr_schema_and_codec!(
-    Step,
-    STEP_SCHEMA,
-    "com.amazonaws.emr#Step",
-    "com.amazonaws.emr",
-    "Step",
-    (M_ID, id, "Id", 0, opt, string),
-    (M_NAME, name, "Name", 1, opt, string),
-    (M_CONFIG, config, "Config", 2, opt, struct_of(HadoopStepConfig)),
-    (
-        M_ACTION_ON_FAILURE,
-        action_on_failure,
-        "ActionOnFailure",
-        3,
-        opt,
-        string
-    ),
-    (M_STATUS, status, "Status", 4, opt, struct_of(StepStatus)),
-    (
-        M_EXECUTION_ROLE_ARN,
-        execution_role_arn,
-        "ExecutionRoleArn",
-        5,
-        opt,
-        string
-    ),
-    (M_LOG_URI, log_uri, "LogUri", 6, opt, string),
-    (
-        M_ENCRYPTION_KEY_ARN,
-        encryption_key_arn,
-        "EncryptionKeyArn",
-        7,
-        opt,
-        string
-    ),
-    (
-        M_ADDITIONAL_INFO,
-        additional_info,
-        "AdditionalInfo",
-        8,
-        opt,
-        recorded("com.amazonaws.emr.recorded", document)
-    ),
-);
 

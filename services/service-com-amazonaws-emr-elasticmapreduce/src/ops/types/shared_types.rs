@@ -423,6 +423,13 @@ pub struct StepTimeline {
     pub end_date_time: Option<::aws_smithy_types::DateTime>,
 }
 
+#[smithy_macros::smithy(shape = "com.amazonaws.emr#StepAdditionalInfo")]
+#[derive(Debug, Clone, Default)]
+pub struct StepAdditionalInfo {
+    pub resource_manager_application_ids: Option<Vec<String>>,
+    pub resource_manager: Option<String>,
+}
+
 #[smithy_macros::smithy(shape = "com.amazonaws.emr#AutoTerminationPolicy")]
 #[derive(Debug, Clone, Default)]
 pub struct AutoTerminationPolicy {

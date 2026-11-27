@@ -27,9 +27,7 @@ pub struct ListStepsOutput {
     pub marker: Option<String>,
 }
 
-/// The step one listing reports: the members `StepSummary` declares, in the model's own member
-/// order, and `AdditionalInfo` appended last — the same recorded member `Step` carries, for the
-/// same reason (see `types/recorded_member_wire.rs`), read off the same stored step.
+#[smithy_macros::smithy(shape = "com.amazonaws.emr#StepSummary")]
 #[derive(Debug, Clone, Default)]
 pub struct StepSummary {
     pub id: Option<String>,
@@ -39,43 +37,6 @@ pub struct StepSummary {
     pub status: Option<StepStatus>,
     pub log_uri: Option<String>,
     pub encryption_key_arn: Option<String>,
-    pub additional_info: Option<::aws_smithy_types::Document>,
+    pub additional_info: Option<StepAdditionalInfo>,
 }
-
-emr_schema_and_codec!(
-    StepSummary,
-    STEP_SUMMARY_SCHEMA,
-    "com.amazonaws.emr#StepSummary",
-    "com.amazonaws.emr",
-    "StepSummary",
-    (M_ID, id, "Id", 0, opt, string),
-    (M_NAME, name, "Name", 1, opt, string),
-    (M_CONFIG, config, "Config", 2, opt, struct_of(HadoopStepConfig)),
-    (
-        M_ACTION_ON_FAILURE,
-        action_on_failure,
-        "ActionOnFailure",
-        3,
-        opt,
-        string
-    ),
-    (M_STATUS, status, "Status", 4, opt, struct_of(StepStatus)),
-    (M_LOG_URI, log_uri, "LogUri", 5, opt, string),
-    (
-        M_ENCRYPTION_KEY_ARN,
-        encryption_key_arn,
-        "EncryptionKeyArn",
-        6,
-        opt,
-        string
-    ),
-    (
-        M_ADDITIONAL_INFO,
-        additional_info,
-        "AdditionalInfo",
-        7,
-        opt,
-        recorded("com.amazonaws.emr.recorded", document)
-    ),
-);
 

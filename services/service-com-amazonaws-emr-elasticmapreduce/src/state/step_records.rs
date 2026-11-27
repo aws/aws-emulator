@@ -9,8 +9,6 @@
 
 use super::*;
 
-use ::aws_smithy_types::Document;
-
 /// One persisted step, built from a submitted `StepConfig`.
 #[derive(Debug, Clone)]
 pub struct StepRecord {
@@ -546,23 +544,14 @@ impl StepRecord {
     /// A step whose execution has not STARTED has reached no resource manager, so there is
     /// nothing of one to report and the member stays absent rather than naming a manager the
     /// step was never submitted to.
-    pub fn to_additional_info(&self) -> Option<Document> {
+    pub fn to_additional_info(&self) -> Option<StepAdditionalInfo> {
         self.start_date_time?;
-        Some(Document::Object(HashMap::from([
-            (
-                RESOURCE_MANAGER_MEMBER.to_string(),
-                Document::String(CLUSTER_RESOURCE_MANAGER.to_string()),
+        Some(StepAdditionalInfo {
+            resource_manager: Some(CLUSTER_RESOURCE_MANAGER.to_string()),
+            resource_manager_application_ids: Some(
+                self.resource_manager_application_ids.clone(),
             ),
-            (
-                RESOURCE_MANAGER_APPLICATION_IDS_MEMBER.to_string(),
-                Document::Array(
-                    self.resource_manager_application_ids
-                        .iter()
-                        .map(|id| Document::String(id.clone()))
-                        .collect(),
-                ),
-            ),
-        ])))
+        })
     }
 
     /// The wire `Step` for this record — what `DescribeStep` answers with.
@@ -599,13 +588,6 @@ impl StepRecord {
 /// it: Apache Hadoop YARN, which every Amazon EMR release of this emulator's catalog ships
 /// ([`APPLICATION_CATALOG`]) and schedules every step's execution through.
 pub const CLUSTER_RESOURCE_MANAGER: &str = "YARN";
-
-/// The member of a step's `AdditionalInfo` naming that manager.
-pub const RESOURCE_MANAGER_MEMBER: &str = "ResourceManager";
-
-/// The member of a step's `AdditionalInfo` carrying the applications the manager admitted for
-/// the step.
-pub const RESOURCE_MANAGER_APPLICATION_IDS_MEMBER: &str = "ResourceManagerApplicationIds";
 
 /// How the resource manager names one application it admitted.
 ///
