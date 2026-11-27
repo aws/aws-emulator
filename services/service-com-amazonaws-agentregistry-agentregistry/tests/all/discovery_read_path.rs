@@ -482,6 +482,111 @@ async fn list_pages_through_exactly_the_discoverable_records_at_every_page_size(
     }
 }
 
+/// The list read, as a page-size case addresses it.
+const LIST_READ: &str = "list";
+/// The search read, as a page-size case addresses it.
+const SEARCH_READ: &str = "search";
+
+/// Ask one of the two paginated reads for a page of [`BULK_REGISTRY`], with
+/// `maxResults` spelled only when the case names one — so an absent member really is
+/// absent on the wire.
+async fn page_of(
+    router: &MultiServiceRouter,
+    read: &str,
+    max_results: Option<i64>,
+) -> (u16, Value) {
+    let (path, mut body) = if read == LIST_READ {
+        (list_path(BULK_REGISTRY), json!({}))
+    } else {
+        (
+            "/discoverable-records-search".to_string(),
+            // A query with no term matches every discoverable record, so what bounds
+            // the answer is the page size alone.
+            json!({ "searchQuery": "", "registryIds": [BULK_REGISTRY] }),
+        )
+    };
+    if let Some(max) = max_results {
+        body["maxResults"] = json!(max);
+    }
+    post(router, &path, &body).await
+}
+
+/// Resolving a paginated read's page size is ONE rule, so both reads that have one
+/// answer by it: an absent `maxResults` is served at that read's documented default,
+/// a value the documented range admits bounds the answer at exactly that many
+/// records, and a value outside that range is refused 400 `ValidationException`
+/// naming `maxResults`.
+///
+/// Each read keeps its own documented numbers: `maxResults` is `@range{min:1,max:100}`
+/// with no default on the list and `@range{min:1,max:20}` with `@default: 10` on the
+/// search (`smithy_query(query="operation",
+/// operation="ListDiscoverableRegistryRecords,SearchDiscoverableRegistryRecords")`).
+/// [`BULK_REGISTRY`] holds fewer discoverable records than either maximum, so a page
+/// bounded above that count carries every one of them.
+#[tokio::test]
+async fn both_paginated_reads_resolve_their_page_size_by_the_same_rule() {
+    let router = seeded_router();
+    // (read, maxResults in the request, records in the answer): each read's published
+    // minimum, a value strictly between its bounds, its published maximum, and the
+    // absent member — the four points the rule distinguishes.
+    let served: [(&str, Option<i64>, usize); 8] = [
+        (LIST_READ, Some(1), 1),
+        (LIST_READ, Some(7), 7),
+        (LIST_READ, Some(100), BULK_RECORDS),
+        (LIST_READ, None, BULK_RECORDS),
+        (SEARCH_READ, Some(1), 1),
+        (SEARCH_READ, Some(7), 7),
+        (SEARCH_READ, Some(20), BULK_RECORDS),
+        (SEARCH_READ, None, 10),
+    ];
+    for (read, max_results, expected) in served {
+        let case = format!("{read} maxResults={max_results:?}");
+        let (status, body) = page_of(&router, read, max_results).await;
+        assert_eq!(
+            status, 200,
+            "case {case:?}: expected 200, got {status}: {body}"
+        );
+        let found = record_ids(&case, &body);
+        assert_eq!(
+            found.len(),
+            expected,
+            "case {case:?}: expected {expected} records, got {found:?}"
+        );
+    }
+
+    // (read, maxResults): one past each read's published maximum, its published
+    // minimum less one, and a value that is no count at all.
+    let refused: [(&str, i64); 6] = [
+        (LIST_READ, 101),
+        (LIST_READ, 0),
+        (LIST_READ, -1),
+        (SEARCH_READ, 21),
+        (SEARCH_READ, 0),
+        (SEARCH_READ, -1),
+    ];
+    for (read, max_results) in refused {
+        let case = format!("{read} maxResults={max_results}");
+        let (status, body) = page_of(&router, read, Some(max_results)).await;
+        assert_eq!(
+            status, 400,
+            "case {case:?}: expected 400, got {status}: {body}"
+        );
+        assert!(
+            body["__type"]
+                .as_str()
+                .is_some_and(|code| code.contains("ValidationException")),
+            "case {case:?}: expected a ValidationException, got {body}"
+        );
+        let message = body["message"]
+            .as_str()
+            .unwrap_or_else(|| panic!("case {case:?}: message must be a string: {body}"));
+        assert!(
+            message.contains("maxResults"),
+            "case {case:?}: the refusal must name maxResults, got {message:?}"
+        );
+    }
+}
+
 #[tokio::test]
 async fn list_first_page_reports_a_token_only_while_records_remain() {
     let router = seeded_router();

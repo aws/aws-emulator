@@ -177,22 +177,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // absent member and an explicit `0` are indistinguishable here; the modelled
         // `@range` already refuses an explicit `0` at the boundary (pinned by the
         // refusal table in `tests/all/discovery_read_path.rs`), so a zero reaching
-        // this handler means the member was not populated and is served at the
-        // documented default.
-        let requested = if input.max_results == 0 {
-            DEFAULT_MAX_RESULTS
-        } else {
-            input.max_results
-        };
-        if !(MIN_MAX_RESULTS..=MAX_MAX_RESULTS).contains(&requested) {
-            return Err(field_validation(
-                "maxResults",
-                &format!(
-                    "{requested} is outside the valid range {MIN_MAX_RESULTS} through {MAX_MAX_RESULTS}."
-                ),
-            ));
-        }
-        let max_results = usize::try_from(requested).unwrap_or(MAX_MAX_RESULTS as usize);
+        // this handler means the member was not populated and is read as the absent
+        // member it is. What an absent member defaults to, and which value the
+        // documented range refuses, is the one page-size rule every paginated read of
+        // this service applies ([`crate::state::page_size`]); what this read states is
+        // its own documented numbers and its own error channel.
+        let requested = (input.max_results != 0).then_some(input.max_results);
+        let max_results = crate::state::page_size(requested, PAGE_SIZE_BOUNDS)
+            .map_err(SearchDiscoverableRegistryRecordsErrorModeled::ValidationException)?;
         let terms = query_terms(&input.search_query);
 
         // Validate the metadata filter ONCE, before any record is read: whether the
@@ -251,9 +243,16 @@ const REGISTRY_IDS_PER_REQUEST: usize = 1;
 /// `SearchDiscoverableRegistryRecordsRequest$maxResults` is modelled
 /// `@range{min:1,max:20}` with `@default: 10` — "Valid values are 1 through 20.
 /// The default value is 10."
-const MIN_MAX_RESULTS: i32 = 1;
-const MAX_MAX_RESULTS: i32 = 20;
-const DEFAULT_MAX_RESULTS: i32 = 10;
+const MIN_MAX_RESULTS: usize = 1;
+const MAX_MAX_RESULTS: usize = 20;
+const DEFAULT_MAX_RESULTS: usize = 10;
+
+/// This operation's own page-size bounds, as the shared page-size rule takes them.
+const PAGE_SIZE_BOUNDS: crate::state::PageSizeBounds = crate::state::PageSizeBounds {
+    min: MIN_MAX_RESULTS,
+    max: MAX_MAX_RESULTS,
+    default: DEFAULT_MAX_RESULTS,
+};
 
 /// How deep a `$and`/`$or` nesting a metadata filter may reach before it is
 /// refused. A document arrives from the request, so the recursion that walks it is

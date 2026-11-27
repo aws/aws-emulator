@@ -125,6 +125,55 @@ pub fn field_validation(member: &str, message: &str) -> ValidationException {
     }
 }
 
+/// The request member a paginated read's page size arrives in, named by the refusal
+/// [`page_size`] answers for a value outside the documented range.
+const MAX_RESULTS_MEMBER: &str = "maxResults";
+
+/// The documented bounds ONE operation puts on its page size: the `@range` its model
+/// declares, and the size it serves a request that names none.
+///
+/// The three numbers stay where they are documented — beside each operation, against
+/// that operation's own model — and this is only the shape they are handed to
+/// [`page_size`] in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PageSizeBounds {
+    /// The smallest page the operation admits (`@range{min}`).
+    pub min: usize,
+    /// The largest page the operation admits (`@range{max}`).
+    pub max: usize,
+    /// The page served for a request that names no page size.
+    pub default: usize,
+}
+
+/// The number of records a paginated read serves for the page size it was asked for:
+/// the documented default when the member is absent, the requested value when the
+/// documented range admits it, and otherwise the modelled `ValidationException`
+/// naming `maxResults` and stating that range.
+///
+/// One rule for every paginated read of this service, so two reads cannot drift in
+/// what they default to, in what they refuse or in how they word the refusal; each
+/// read passes its own [`PageSizeBounds`], so each states its own numbers in that one
+/// sentence. The requested value is narrowed to a record count here as well: a page
+/// size that is no count at all is outside the range for the same reason a value past
+/// the maximum is, so there is one branch rather than a second, unreachable one that
+/// could answer differently.
+pub fn page_size(
+    requested: Option<i32>,
+    bounds: PageSizeBounds,
+) -> Result<usize, ValidationException> {
+    let PageSizeBounds { min, max, default } = bounds;
+    let Some(requested) = requested else {
+        return Ok(default);
+    };
+    match usize::try_from(requested) {
+        Ok(page) if (min..=max).contains(&page) => Ok(page),
+        _ => Err(field_validation(
+            MAX_RESULTS_MEMBER,
+            &format!("{requested} is outside the valid range {min} through {max}."),
+        )),
+    }
+}
+
 /// The modelled `ValidationException` whose sentence the service words itself,
 /// rather than the member-and-constraint sentence [`field_validation`] builds: a
 /// refusal about a request value the service alone decides, stated verbatim.

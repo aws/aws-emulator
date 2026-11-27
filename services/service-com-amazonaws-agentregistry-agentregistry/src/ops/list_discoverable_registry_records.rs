@@ -201,20 +201,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             }
         }
 
-        let max_results = match input.max_results {
-            Some(requested) => {
-                if !(MIN_MAX_RESULTS..=MAX_MAX_RESULTS).contains(&requested) {
-                    return Err(field_validation(
-                        "maxResults",
-                        &format!(
-                            "{requested} is outside the valid range {MIN_MAX_RESULTS} through {MAX_MAX_RESULTS}."
-                        ),
-                    ));
-                }
-                usize::try_from(requested).unwrap_or(DEFAULT_MAX_RESULTS)
-            }
-            None => DEFAULT_MAX_RESULTS,
-        };
+        // The page-size rule — default when absent, refuse what the documented range
+        // excludes — belongs to every paginated read of this service, so it is applied
+        // from the one place it is written ([`crate::state::page_size`]); what this read
+        // states is its own documented numbers and its own error channel.
+        let max_results = crate::state::page_size(input.max_results, PAGE_SIZE_BOUNDS)
+            .map_err(ListDiscoverableRegistryRecordsErrorModeled::ValidationException)?;
 
         // Whether IAM lets this caller list this registry's discoverable records is
         // decided BEFORE the registry is resolved, so an unauthorized caller is told
@@ -287,16 +279,23 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
     }
 }
 
+/// `ListDiscoverableRegistryRecordsRequest$maxResults` is modelled
+/// `@range{min:1,max:100}`.
+const MIN_MAX_RESULTS: usize = 1;
+const MAX_MAX_RESULTS: usize = 100;
+
 /// The page size used when the caller names no `maxResults`. The model documents
 /// `maxResults` as "Valid values are 1 through 100" and declares no default, so an
 /// unbounded request is served at that documented maximum — which is also what
 /// bounds the page: at most [`MAX_MAX_RESULTS`] summaries per response.
-const DEFAULT_MAX_RESULTS: usize = MAX_MAX_RESULTS as usize;
+const DEFAULT_MAX_RESULTS: usize = MAX_MAX_RESULTS;
 
-/// `ListDiscoverableRegistryRecordsRequest$maxResults` is modelled
-/// `@range{min:1,max:100}`.
-const MIN_MAX_RESULTS: i32 = 1;
-const MAX_MAX_RESULTS: i32 = 100;
+/// This operation's own page-size bounds, as the shared page-size rule takes them.
+const PAGE_SIZE_BOUNDS: crate::state::PageSizeBounds = crate::state::PageSizeBounds {
+    min: MIN_MAX_RESULTS,
+    max: MAX_MAX_RESULTS,
+    default: DEFAULT_MAX_RESULTS,
+};
 
 /// `ListDiscoverableRegistryRecordsRequest$filters` is modelled `@length{max:10}`.
 const MAX_FILTERS: usize = 10;
