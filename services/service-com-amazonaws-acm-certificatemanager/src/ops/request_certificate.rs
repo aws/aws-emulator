@@ -11,6 +11,11 @@
 //! entry per domain name, and returns the ARN. An `IdempotencyToken` re-sent with the
 //! same request parameters resolves to the certificate already created for it.
 //!
+//! A request naming a `RootHierarchyType` asks for an Amazon N2 certificate: the
+//! record carries that hierarchy and the `CertificateUsage` profile such a certificate
+//! has, and the parameters such a request may combine are the ones the two members are
+//! documented under ([`crate::state::amazon_n2_request_refusal`]).
+//!
 //! A request naming a `CertificateAuthorityArn` is issued by THAT authority: ACM mints the
 //! certificate's key pair, has the private CA sign a certificate for it
 //! ([`crate::state::issue_through_private_ca`]) and owes the request what the CA answered
@@ -85,6 +90,14 @@
 //!   private CAs, see the Amazon Web Services Private Certificate Authority user guide. The
 //!   ARN must have the following form:
 //!   arn:aws:acm-pca:region:account:certificate-authority/12345678-1234-1234-1234-123456789012
+//! * `CertificateUsage` (CertificateUsage, one of: CLIENT_AND_SERVER_AUTH |
+//!   CLIENT_AUTH_ONLY) — The Extended Key Usage profile of the certificate. You can specify
+//!   this parameter only when RootHierarchyType is N2_AMAZON_MANAGED or
+//!   N2_SFG2_AMAZON_MANAGED. If you specify CertificateUsage with any other root hierarchy
+//!   type, or without RootHierarchyType, the request fails with a ValidationException.
+//!   CLIENT_AND_SERVER_AUTH authenticates both the client and the server. Valid for both N2
+//!   root hierarchy types. CLIENT_AUTH_ONLY authenticates only the client. Valid only for
+//!   N2_AMAZON_MANAGED. Default: CLIENT_AND_SERVER_AUTH
 //! * `DomainName` (DomainNameString, len 1..253, pattern
 //!   ^(\*\.)?(((?!-)[A-Za-z0-9-]{0,62}[A-Za-z0-9])\.)+((?!-)[A-Za-z0-9-]{1,62}[A-Za-z0-9])$)
 //!   **required** — Fully qualified domain name (FQDN), such as www.example.com, that you
@@ -122,6 +135,18 @@
 //!   certificates to use with Amazon Web Services services as well as outside the Amazon Web
 //!   Services Cloud. For more information, see Certificate Manager exportable public
 //!   certificate.
+//! * `RootHierarchyType` (RootHierarchyType, one of: N2_AMAZON_MANAGED |
+//!   N2_SFG2_AMAZON_MANAGED) — The root hierarchy from which ACM issues the certificate.
+//!   Specify one of the following values to request an Amazon N2 certificate:
+//!   N2_AMAZON_MANAGED – An Amazon N2 certificate that chains to an Amazon N2 root. The
+//!   maximum validity period, which is also the default, is 395 days. N2_SFG2_AMAZON_MANAGED
+//!   – An Amazon N2 certificate that chains to an Amazon N2 root cross-signed by Starfield
+//!   G2. The maximum validity period, which is also the default, is 98 days. You cannot
+//!   specify RootHierarchyType together with CertificateAuthorityArn. If you omit this
+//!   parameter, ACM issues a standard public certificate. An Amazon N2 certificate request
+//!   must specify a ValidationMethod of DNS. Amazon N2 certificates are not recorded in a
+//!   certificate transparency log. Algorithms supported for an N2 certificate request
+//!   include: RSA_2048, EC_prime256v1, EC_secp384r1.
 //! * `SubjectAlternativeNames` (DomainList, len 1..100) — Additional FQDNs to be included in
 //!   the Subject Alternative Name extension of the ACM certificate. For example, add the name
 //!   www.example.net to a certificate for which the DomainName field is www.example.com if
@@ -326,6 +351,37 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .clone()
             .unwrap_or_else(|| crate::state::DEFAULT_KEY_ALGORITHM.to_string());
 
+        // The rules the Amazon N2 parameters of a request are documented under, read
+        // against the values the request RESOLVED to above: which other members a root
+        // hierarchy may be combined with, and which validation method and key algorithm
+        // an Amazon N2 certificate may be issued under
+        // ([`crate::state::amazon_n2_request_refusal`]). A request outside them
+        // describes a certificate ACM does not issue, so it is refused before anything
+        // is stored — `InvalidParameterException` being the error this operation models
+        // for an input parameter that was invalid.
+        if let Some(message) = crate::state::amazon_n2_request_refusal(
+            input.root_hierarchy_type.as_deref(),
+            input.certificate_usage.as_deref(),
+            input.certificate_authority_arn.as_deref(),
+            &validation_method,
+            &key_algorithm,
+        ) {
+            return Err(RequestCertificateErrorModeled::InvalidParameterException(
+                InvalidParameterException {
+                    message: Some(message),
+                },
+            )
+            .into());
+        }
+
+        // The Extended Key Usage profile the certificate this request creates carries,
+        // which exists only for an Amazon N2 one and is defaulted for a request that
+        // named no profile.
+        let certificate_usage = crate::state::requested_certificate_usage(
+            input.root_hierarchy_type.as_deref(),
+            input.certificate_usage.as_deref(),
+        );
+
         let region = crate::state::request_region(ctx.parts());
         let idempotency = input.idempotency_token.as_ref().map(|token| {
             idempotency_key(
@@ -338,6 +394,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     key_algorithm: &key_algorithm,
                     tags: &tags,
                     validation_domains: &validation_domains,
+                    certificate_usage: certificate_usage.as_deref().unwrap_or_default(),
                 },
             )
         });
@@ -550,6 +607,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             // other certificate ACM requests has one at all.
             private_key: None,
             tags,
+            // The root hierarchy the request asked ACM to issue from, and the Extended
+            // Key Usage profile such a certificate carries: both exist only for an
+            // Amazon N2 certificate, so a request that named no root hierarchy stores
+            // neither.
+            root_hierarchy_type: input.root_hierarchy_type.clone(),
+            certificate_usage,
         };
 
         store.certificates.insert(arn.clone(), certificate);
@@ -723,6 +786,10 @@ struct DerivedRequest<'a> {
     key_algorithm: &'a str,
     tags: &'a std::collections::BTreeMap<String, String>,
     validation_domains: &'a std::collections::HashMap<String, String>,
+    /// The resolved `CertificateUsage`, which is the request's own for an Amazon N2
+    /// certificate and the documented default for one that named none — so a re-send
+    /// that adds the profile explicitly is recognised as the SAME request.
+    certificate_usage: &'a str,
 }
 
 /// The idempotency index key for a request: the caller's token plus a fingerprint of
@@ -732,7 +799,8 @@ struct DerivedRequest<'a> {
 /// it unchanged must not create a second certificate, while the same token on a
 /// different request is a different request and gets its own certificate. The
 /// fingerprint therefore has to cover every member that ends up on the record
-/// (names, validation method, key algorithm, CA ARN, `ManagedBy`, `Options`, the tags
+/// (names, validation method, key algorithm, CA ARN, `ManagedBy`, `Options`, the root
+/// hierarchy and certificate usage, the tags
 /// and the per-domain validation domains) plus the Region the ARN is minted in, or a
 /// re-send that changed one of them would answer 200 while silently discarding the
 /// change — or hand back another Region's ARN.
@@ -760,6 +828,7 @@ fn idempotency_key(
     let options_validation_method = options
         .and_then(|o| o.validation_method.clone())
         .unwrap_or_default();
+    let root_hierarchy_type = input.root_hierarchy_type.clone().unwrap_or_default();
     let scalars = [
         derived.region,
         derived.validation_method,
@@ -769,6 +838,8 @@ fn idempotency_key(
         &transparency_logging,
         &export,
         &options_validation_method,
+        &root_hierarchy_type,
+        derived.certificate_usage,
     ];
 
     let mut domains: Vec<(&str, &str)> = derived

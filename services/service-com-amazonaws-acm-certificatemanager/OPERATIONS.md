@@ -138,7 +138,7 @@ contents — read that shape in the model above when you need its own members.
 
 ## ImportCertificate
 
-- **Input:** `CertificateArn` (string, len 20..2048, pattern ^arn:[\w+=/,.@-]+:acm:[\w+=/,.@-]*:[0-9]+:[\w+=,.@-]+(/[\w+=,.@-]+)*$), `Certificate` (blob, len 1..32768, required), `PrivateKey` (blob, len 1..5120, required), `CertificateChain` (blob, len 1..2097152), `Tags` (list<Tag>, len 1..50)
+- **Input:** `CertificateArn` (string, len 20..2048, pattern ^arn:[\w+=/,.@-]+:acm:[\w+=/,.@-]*:[0-9]+:[\w+=,.@-]+(/[\w+=,.@-]+)*$), `Certificate` (blob, len 1..32768, required), `PrivateKey` (blob, len 1..8192, required), `CertificateChain` (blob, len 1..2097152), `Tags` (list<Tag>, len 1..50)
 - **Output:** `CertificateArn` (string, len 20..2048, pattern ^arn:[\w+=/,.@-]+:acm:[\w+=/,.@-]*:[0-9]+:[\w+=,.@-]+(/[\w+=,.@-]+)*$)
 - **Errors:** `ConflictException (HTTP 400)`, `InvalidArnException (HTTP 400)`, `InvalidParameterException (HTTP 400)`, `InvalidTagException (HTTP 400)`, `LimitExceededException (HTTP 400)`, `ResourceNotFoundException (HTTP 400)`, `TagPolicyException (HTTP 400)`, `TooManyTagsException (HTTP 400)`, `ValidationException (HTTP 400)`
 
@@ -180,7 +180,7 @@ contents — read that shape in the model above when you need its own members.
 ## ListCertificates
 
 - **Traits:** @paginated(inputToken=NextToken, outputToken=NextToken, items=CertificateSummaryList)
-- **Input:** `CertificateStatuses` (list<CertificateStatus>), `CertificateKeyPairOrigins` (list<CertificateKeyPairOrigin>, len 1..3), `Includes` (Filters), `NextToken` (string, len 1..10000, pattern ^[\u0009\u000A\u000D\u0020-\u00FF]*$), `MaxItems` (integer, range 1..1000), `SortBy` (SortBy, one of: CREATED_AT), `SortOrder` (SortOrder, one of: ASCENDING | DESCENDING)
+- **Input:** `CertificateStatuses` (list<CertificateStatus>), `CertificateKeyPairOrigins` (list<CertificateKeyPairOrigin>, len 1..3), `RootHierarchyTypes` (list<RootHierarchyType>, len 1..5), `Includes` (Filters), `NextToken` (string, len 1..10000, pattern ^[\u0009\u000A\u000D\u0020-\u00FF]*$), `MaxItems` (integer, range 1..1000), `SortBy` (SortBy, one of: CREATED_AT), `SortOrder` (SortOrder, one of: ASCENDING | DESCENDING)
 - **Output:** `NextToken` (string, len 1..10000, pattern ^[\u0009\u000A\u000D\u0020-\u00FF]*$), `CertificateSummaryList` (list<CertificateSummary>)
 - **Errors:** `InvalidArgsException (HTTP 400)`, `ValidationException (HTTP 400)`
 
@@ -217,7 +217,7 @@ contents — read that shape in the model above when you need its own members.
 
 ## RequestCertificate
 
-- **Input:** `DomainName` (string, len 1..253, pattern ^(\*\.)?(((?!-)[A-Za-z0-9-]{0,62}[A-Za-z0-9])\.)+((?!-)[A-Za-z0-9-]{1,62}[A-Za-z0-9])$, required), `ValidationMethod` (ValidationMethod, one of: DNS | EMAIL | HTTP), `SubjectAlternativeNames` (list<string>, len 1..100), `IdempotencyToken` (string, len 1..32, pattern ^\w+$), `DomainValidationOptions` (list<DomainValidationOption>, len 1..100), `Options` (CertificateOptions), `CertificateAuthorityArn` (string, len 20..2048, pattern ^arn:[\w+=/,.@-]+:acm-pca:[\w+=/,.@-]*:[0-9]+:[\w+=,.@-]+(/[\w+=,.@-]+)*$), `Tags` (list<Tag>, len 1..50), `KeyAlgorithm` (KeyAlgorithm, one of: EC_prime256v1 | EC_secp384r1 | EC_secp521r1 | RSA_1024 | RSA_2048 | RSA_3072 | RSA_4096), `ManagedBy` (CertificateManagedBy, one of: CLOUDFRONT)
+- **Input:** `DomainName` (string, len 1..253, pattern ^(\*\.)?(((?!-)[A-Za-z0-9-]{0,62}[A-Za-z0-9])\.)+((?!-)[A-Za-z0-9-]{1,62}[A-Za-z0-9])$, required), `ValidationMethod` (ValidationMethod, one of: DNS | EMAIL | HTTP), `SubjectAlternativeNames` (list<string>, len 1..100), `IdempotencyToken` (string, len 1..32, pattern ^\w+$), `DomainValidationOptions` (list<DomainValidationOption>, len 1..100), `Options` (CertificateOptions), `CertificateAuthorityArn` (string, len 20..2048, pattern ^arn:[\w+=/,.@-]+:acm-pca:[\w+=/,.@-]*:[0-9]+:[\w+=,.@-]+(/[\w+=,.@-]+)*$), `Tags` (list<Tag>, len 1..50), `KeyAlgorithm` (KeyAlgorithm, one of: EC_prime256v1 | EC_secp384r1 | EC_secp521r1 | RSA_1024 | RSA_2048 | RSA_3072 | RSA_4096), `ManagedBy` (CertificateManagedBy, one of: CLOUDFRONT), `CertificateUsage` (CertificateUsage, one of: CLIENT_AND_SERVER_AUTH | CLIENT_AUTH_ONLY), `RootHierarchyType` (RootHierarchyType, one of: N2_AMAZON_MANAGED | N2_SFG2_AMAZON_MANAGED)
 - **Output:** `CertificateArn` (string, len 20..2048, pattern ^arn:[\w+=/,.@-]+:acm:[\w+=/,.@-]*:[0-9]+:[\w+=,.@-]+(/[\w+=,.@-]+)*$)
 - **Errors:** `InvalidArnException (HTTP 400)`, `InvalidDomainValidationOptionsException (HTTP 400)`, `InvalidParameterException (HTTP 400)`, `InvalidTagException (HTTP 400)`, `LimitExceededException (HTTP 400)`, `TagPolicyException (HTTP 400)`, `TooManyTagsException (HTTP 400)`
 

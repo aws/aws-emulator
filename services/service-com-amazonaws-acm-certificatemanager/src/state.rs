@@ -103,11 +103,13 @@
 //! zone it was published in (`public_delegation`).
 
 pub mod acme_socket;
+mod amazon_n2;
 mod dns_validation;
 mod leaf_key_material;
 mod private_ca;
 mod public_delegation;
 
+pub use amazon_n2::*;
 pub use dns_validation::first_unvalidatable_name_in;
 pub use leaf_key_material::*;
 pub use private_ca::*;
@@ -464,8 +466,20 @@ pub fn no_key_usage() -> Vec<String> {
 /// Stored as the identifiers rather than the names because the identifier is what an
 /// X.509 extension carries; the name each one is reported under comes from
 /// [`EXTENDED_KEY_USAGE_OIDS`].
-pub const ISSUED_EXTENDED_KEY_USAGE_OIDS: &[&str] =
-    &["1.3.6.1.5.5.7.3.1", "1.3.6.1.5.5.7.3.2"];
+pub const ISSUED_EXTENDED_KEY_USAGE_OIDS: &[&str] = &[
+    EXTENDED_KEY_USAGE_OID_SERVER_AUTH,
+    EXTENDED_KEY_USAGE_OID_CLIENT_AUTH,
+];
+
+/// The object identifier of the `serverAuth` key purpose (RFC 5280 section 4.2.1.12),
+/// which [`EXTENDED_KEY_USAGE_OIDS`] pairs with the
+/// `TLS_WEB_SERVER_AUTHENTICATION` name ACM reports it under.
+pub const EXTENDED_KEY_USAGE_OID_SERVER_AUTH: &str = "1.3.6.1.5.5.7.3.1";
+
+/// The object identifier of the `clientAuth` key purpose (RFC 5280 section 4.2.1.12),
+/// which [`EXTENDED_KEY_USAGE_OIDS`] pairs with the
+/// `TLS_WEB_CLIENT_AUTHENTICATION` name ACM reports it under.
+pub const EXTENDED_KEY_USAGE_OID_CLIENT_AUTH: &str = "1.3.6.1.5.5.7.3.2";
 
 /// One key purpose of a certificate's X.509 Extended Key Usage extension, as ACM
 /// publishes it: the object identifier the extension carries and the
@@ -1299,6 +1313,22 @@ pub struct Certificate {
     pub private_key: Option<LeafPrivateKey>,
     /// Tag key -> value, as `ListTagsForCertificate` reports them.
     pub tags: BTreeMap<String, String>,
+    /// The `RootHierarchyType` ACM issued this certificate from — "the root hierarchy
+    /// from which the certificate was issued", which "exists only for Amazon N2
+    /// certificates" (`CertificateDetail$RootHierarchyType` doc).
+    ///
+    /// `None` for every other certificate, since a request naming no root hierarchy
+    /// gets "a standard public certificate"
+    /// (`RequestCertificateRequest$RootHierarchyType` doc) — so this member is what
+    /// says whether a record is an Amazon N2 certificate at all
+    /// ([`Self::is_amazon_n2`]), and with it the validity window its issuance opens.
+    pub root_hierarchy_type: Option<String>,
+    /// The `CertificateUsage` of this certificate: "the Extended Key Usage profile of
+    /// the certificate", which "exists only for Amazon N2 certificates"
+    /// (`CertificateDetail$CertificateUsage` doc) and so is `Some` exactly for a record
+    /// carrying a [`Self::root_hierarchy_type`], defaulted when the request named none
+    /// ([`requested_certificate_usage`]).
+    pub certificate_usage: Option<String>,
 }
 
 impl Certificate {
@@ -1447,7 +1477,7 @@ impl Certificate {
         }
         self.issued_at = Some(renewed_at);
         self.not_before = Some(renewed_at);
-        self.not_after = Some(renewed_at + CERTIFICATE_VALIDITY);
+        self.not_after = Some(renewed_at + self.issued_validity());
     }
 
     /// Whether ACM renews this certificate on request: "at this time, only exported
@@ -1582,12 +1612,13 @@ impl Certificate {
         }
         self.issued_at = Some(at);
         self.not_before = Some(at);
-        self.not_after = Some(at + CERTIFICATE_VALIDITY);
+        self.not_after = Some(at + self.issued_validity());
         self.key_usages = ISSUED_KEY_USAGES
             .iter()
             .map(|name| (*name).to_string())
             .collect();
-        self.extended_key_usages = ISSUED_EXTENDED_KEY_USAGE_OIDS
+        self.extended_key_usages = self
+            .issued_extended_key_usage_oids()
             .iter()
             .map(|oid| extended_key_usage(oid))
             .collect();
@@ -4275,8 +4306,12 @@ pub fn export_option(cert: &Certificate) -> String {
 /// log, and one whose material came from outside ACM is not — ACM logs no certificate
 /// it did not issue, which is what the recorded responses of an imported certificate
 /// report, so the preference it reports for one is the disabled value.
+///
+/// An Amazon N2 certificate is the other certificate ACM issues that is not logged:
+/// "Amazon N2 certificates are not recorded in a certificate transparency log"
+/// (`RequestCertificateRequest$RootHierarchyType` doc).
 fn default_transparency_logging(cert: &Certificate) -> &'static str {
-    if cert.is_imported() {
+    if cert.is_imported() || cert.is_amazon_n2() {
         TRANSPARENCY_LOGGING_DISABLED
     } else {
         TRANSPARENCY_LOGGING_ENABLED
@@ -4509,6 +4544,11 @@ pub fn certificate_detail(cert: &Certificate, in_use_by: Vec<String>) -> Certifi
         revocation_reason: cert.revocation_reason.clone(),
         options: Some(certificate_options(cert)),
         certificate_key_pair_origin: Some(cert.key_pair_origin.clone()),
+        // Both "exist only for Amazon N2 certificates"
+        // (`CertificateDetail$RootHierarchyType` / `$CertificateUsage` docs), and the
+        // record carries each exactly for such a certificate.
+        root_hierarchy_type: cert.root_hierarchy_type.clone(),
+        certificate_usage: cert.certificate_usage.clone(),
         ..CertificateDetail::default()
     }
 }
@@ -4558,6 +4598,11 @@ pub fn certificate_summary(cert: &Certificate, in_use: bool) -> CertificateSumma
         revoked_at: cert.revoked_at.map(to_date_time),
         managed_by: cert.managed_by.clone(),
         certificate_key_pair_origin: Some(cert.key_pair_origin.clone()),
+        // As on `CertificateDetail`: both "exist only for Amazon N2 certificates"
+        // (`CertificateSummary$RootHierarchyType` / `$CertificateUsage` docs), so one
+        // certificate's summary and its detail report the same two members or neither.
+        root_hierarchy_type: cert.root_hierarchy_type.clone(),
+        certificate_usage: cert.certificate_usage.clone(),
     }
 }
 
@@ -4909,6 +4954,13 @@ pub fn certificate_search_result(cert: &Certificate, in_use: bool) -> Certificat
                 managed_by: cert.managed_by.clone(),
                 validation_method: cert.validation_method.clone(),
                 certificate_key_pair_origin: Some(cert.key_pair_origin.clone()),
+                // The root hierarchy an Amazon N2 certificate was issued from, which
+                // is the value the matching filter selects on, beside the Extended Key
+                // Usage profile that certificate carries; both are absent for every
+                // other record, which is what the root-hierarchy filter then keeps
+                // nothing on.
+                root_hierarchy_type: cert.root_hierarchy_type.clone(),
+                certificate_usage: cert.certificate_usage.clone(),
                 ..AcmCertificateMetadata::default()
             },
         )),

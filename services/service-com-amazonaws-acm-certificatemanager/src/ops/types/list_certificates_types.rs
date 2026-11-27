@@ -16,6 +16,7 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-acm-certificatemanager.
 pub struct ListCertificatesInput {
     pub certificate_statuses: Option<Vec<String>>,
     pub certificate_key_pair_origins: Option<Vec<String>>,
+    pub root_hierarchy_types: Option<Vec<String>>,
     pub includes: Option<Filters>,
     pub next_token: Option<String>,
     pub max_items: Option<i32>,
@@ -64,5 +65,7 @@ pub struct CertificateSummary {
     pub revoked_at: Option<::aws_smithy_types::DateTime>,
     pub managed_by: Option<String>,
     pub certificate_key_pair_origin: Option<String>,
+    pub certificate_usage: Option<String>,
+    pub root_hierarchy_type: Option<String>,
 }
 

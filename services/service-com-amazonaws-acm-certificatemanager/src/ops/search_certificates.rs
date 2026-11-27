@@ -535,6 +535,11 @@ fn validate_filter(filter: &CertificateFilter) -> Result<(), SearchCertificatesE
                 origin,
                 CERTIFICATE_KEY_PAIR_ORIGIN_VALUES,
             ),
+            AcmCertificateMetadataFilter::RootHierarchyType(root_hierarchy_type) => validate_enum(
+                &metadata_path("RootHierarchyType"),
+                root_hierarchy_type,
+                ROOT_HIERARCHY_TYPE_VALUES,
+            ),
             // A boolean has no value set to be outside of, and the ACME members carry
             // free text the model constrains itself.
             AcmCertificateMetadataFilter::InUse(_)
@@ -711,6 +716,14 @@ fn metadata_matches(
         }
         AcmCertificateMetadataFilter::CertificateKeyPairOrigin(origin) => {
             cert.key_pair_origin == *origin
+        }
+        // The root hierarchy a certificate was issued from, which "exists only for
+        // Amazon N2 certificates" (`AcmCertificateMetadata$RootHierarchyType` doc): a
+        // record carrying one is selected by the hierarchy it carries, and every other
+        // record — a standard public certificate, a private one, an imported one — is
+        // selected by no such filter.
+        AcmCertificateMetadataFilter::RootHierarchyType(root_hierarchy_type) => {
+            cert.root_hierarchy_type.as_deref() == Some(root_hierarchy_type.as_str())
         }
         // A renewal status belongs to a renewal ACM has started for a certificate,
         // which `RenewCertificate` is what starts: a record carrying one is selected by

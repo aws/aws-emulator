@@ -335,7 +335,11 @@ async fn submit_record_set(
 
 /// The validation records ACM handed out for a described certificate, one per covered
 /// name, in the order the response lists them.
-fn handed_out_records(case: &str, detail: &Value) -> Vec<Record> {
+///
+/// `pub(crate)` so a sibling suite that has to publish the proof of a certificate it
+/// requested reads the handed-out records through this one reader rather than growing a
+/// second copy of it.
+pub(crate) fn handed_out_records(case: &str, detail: &Value) -> Vec<Record> {
     validations(case, detail)
         .iter()
         .map(|validation| {

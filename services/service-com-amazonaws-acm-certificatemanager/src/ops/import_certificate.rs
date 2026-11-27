@@ -558,6 +558,11 @@ impl ImportedCertificate {
             // material directory rather than on this record.
             private_key: None,
             tags,
+            // An imported certificate is not one ACM issued from an Amazon N2 root
+            // hierarchy, so neither member that "exists only for Amazon N2
+            // certificates" applies to it.
+            root_hierarchy_type: None,
+            certificate_usage: None,
         }
     }
 }

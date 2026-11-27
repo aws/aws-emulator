@@ -268,6 +268,10 @@ pub const CERTIFICATE_TRANSPARENCY_LOGGING_PREFERENCE_VALUES: &[&str] = &["DISAB
 pub const CERTIFICATE_TYPE_VALUES: &[&str] = &["AMAZON_ISSUED", "IMPORTED", "PRIVATE"];
 
 
+/// The values `CertificateUsage` accepts on the wire.
+pub const CERTIFICATE_USAGE_VALUES: &[&str] = &["CLIENT_AND_SERVER_AUTH", "CLIENT_AUTH_ONLY"];
+
+
 /// The values `ComparisonOperator` accepts on the wire.
 pub const COMPARISON_OPERATOR_VALUES: &[&str] = &["CONTAINS", "EQUALS"];
 
@@ -318,6 +322,10 @@ pub const RENEWAL_STATUS_VALUES: &[&str] = &["FAILED", "PENDING_AUTO_RENEWAL", "
 
 /// The values `RevocationReason` accepts on the wire.
 pub const REVOCATION_REASON_VALUES: &[&str] = &["AFFILIATION_CHANGED", "A_A_COMPROMISE", "CA_COMPROMISE", "CERTIFICATE_HOLD", "CESSATION_OF_OPERATION", "KEY_COMPROMISE", "PRIVILEGE_WITHDRAWN", "REMOVE_FROM_CRL", "SUPERCEDED", "SUPERSEDED", "UNSPECIFIED"];
+
+
+/// The values `RootHierarchyType` accepts on the wire.
+pub const ROOT_HIERARCHY_TYPE_VALUES: &[&str] = &["N2_AMAZON_MANAGED", "N2_SFG2_AMAZON_MANAGED"];
 
 
 /// The values `SearchCertificatesSortBy` accepts on the wire.

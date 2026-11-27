@@ -24,6 +24,8 @@ pub struct RequestCertificateInput {
     pub tags: Option<Vec<Tag>>,
     pub key_algorithm: Option<String>,
     pub managed_by: Option<String>,
+    pub certificate_usage: Option<String>,
+    pub root_hierarchy_type: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.acm#DomainValidationOption")]

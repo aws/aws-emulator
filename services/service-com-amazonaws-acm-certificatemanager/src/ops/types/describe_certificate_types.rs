@@ -57,6 +57,8 @@ pub struct CertificateDetail {
     pub certificate_key_pair_origin: Option<String>,
     pub acme_endpoint_arn: Option<String>,
     pub acme_account_id: Option<String>,
+    pub certificate_usage: Option<String>,
+    pub root_hierarchy_type: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.acm#DomainValidation")]

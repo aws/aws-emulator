@@ -2,8 +2,10 @@
 
 //! @op ListCertificates
 //! IMPLEMENTED: enumerates the stored certificate records as `CertificateSummary`
-//! values, honouring `CertificateStatuses`, `CertificateKeyPairOrigins` and
-//! `Includes` filtering — including the default key-pair-origin filter the operation
+//! values, honouring `CertificateStatuses`, `CertificateKeyPairOrigins`,
+//! `RootHierarchyTypes` and
+//! `Includes` filtering — including the default key-pair-origin and root-hierarchy
+//! filters the operation
 //! documents for a request that names none, and the default key-algorithm filter it
 //! documents for a request that supplied no `Includes` structure at all —
 //! `SortBy`/`SortOrder` ordering, and `MaxItems` paging with a `NextToken` that
@@ -57,7 +59,10 @@
 //! attributes of the certificate. Default filtering returns only RSA_2048 certificates. For
 //! more information, see Filters. By default, this action does not return certificates with
 //! a CertificateKeyPairOrigin of ACME. To include ACME certificates, specify ACME in the
-//! CertificateKeyPairOrigins filter.
+//! CertificateKeyPairOrigins filter. By default, this action does not return certificates
+//! with a RootHierarchyType of N2_AMAZON_MANAGED or N2_SFG2_AMAZON_MANAGED. To list only
+//! Amazon N2 certificates, specify one or both of these values in the RootHierarchyTypes
+//! filter.
 //!
 //! ## Input
 //!
@@ -77,6 +82,11 @@
 //!   Use this parameter only when paginating results and only in a subsequent request after
 //!   you receive a response with truncated results. Set it to the value of NextToken from the
 //!   response you just received.
+//! * `RootHierarchyTypes` (RootHierarchyTypes, len 1..5) — Filter the certificate list by root
+//!   hierarchy type. Specify one or more RootHierarchyType values. By default, this action
+//!   does not return certificates with a RootHierarchyType of N2_AMAZON_MANAGED or
+//!   N2_SFG2_AMAZON_MANAGED. To list only Amazon N2 certificates, specify one or both of these
+//!   values in the RootHierarchyTypes filter.
 //! * `SortBy` (SortBy, one of: CREATED_AT) — Specifies the field to sort results by. If you
 //!   specify SortBy, you must also specify SortOrder.
 //! * `SortOrder` (SortOrder, one of: ASCENDING | DESCENDING) — Specifies the order of sorted
@@ -327,8 +337,9 @@ const SORT_PAIR_REQUIRED: &str = "Request contains either SortBy or SortOrder. B
 /// A filter the request sets keeps a certificate only when the certificate's own
 /// stored value is one of the requested ones. A filter the request omits keeps
 /// everything, EXCEPT where the operation documents a default filter — the key
-/// algorithm and the key-pair origin both have one, so an omitted filter there falls
-/// back to the documented default set rather than to "everything".
+/// algorithm, the key-pair origin and the root hierarchy each have one, so an omitted
+/// filter there falls
+/// back to the documented default rather than to "everything".
 ///
 /// A documented default is the fallback for a filter the request did not SUPPLY, and
 /// a filter nested in an optional filter structure is supplied through that
@@ -349,6 +360,21 @@ fn matches_filters(cert: &crate::state::Certificate, input: &ListCertificatesInp
         crate::state::DEFAULT_LISTED_KEY_PAIR_ORIGINS,
         &cert.key_pair_origin,
     );
+    // The root hierarchy filter's default is an EXCLUSION rather than a value set: "by
+    // default, this action does not return certificates with a RootHierarchyType of
+    // N2_AMAZON_MANAGED or N2_SFG2_AMAZON_MANAGED. To list only Amazon N2 certificates,
+    // specify one or both of these values in the RootHierarchyTypes filter"
+    // (`ListCertificates` / `ListCertificatesRequest$RootHierarchyTypes` docs). A
+    // certificate ACM issued from no such hierarchy carries no `RootHierarchyType` at
+    // all, so a request that names none lists exactly those, and a request that names
+    // some lists only the Amazon N2 certificates of the hierarchies it named.
+    let excluded_by_root_hierarchy = match input.root_hierarchy_types.as_deref() {
+        Some(wanted) => cert
+            .root_hierarchy_type
+            .as_deref()
+            .is_none_or(|carried| !names(wanted, carried)),
+        None => cert.root_hierarchy_type.is_some(),
+    };
     // `keyTypes` is nested in `Includes`, so the documented default key-algorithm set
     // is reached by a request that supplied no `Includes` at all. An `Includes` that
     // names other members, or no members, selects on those members alone and leaves
@@ -360,7 +386,8 @@ fn matches_filters(cert: &crate::state::Certificate, input: &ListCertificatesInp
             .is_some_and(|wanted| !names(wanted, &cert.key_algorithm)),
         None => !crate::state::DEFAULT_LISTED_KEY_ALGORITHMS.contains(&cert.key_algorithm.as_str()),
     };
-    if excluded_by_status || excluded_by_origin || excluded_by_key_type {
+    if excluded_by_status || excluded_by_origin || excluded_by_root_hierarchy || excluded_by_key_type
+    {
         return false;
     }
 
