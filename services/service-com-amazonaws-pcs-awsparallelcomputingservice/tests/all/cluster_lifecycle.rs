@@ -169,6 +169,22 @@ pub(crate) fn create_queue(cluster: &str, name: &str, groups: &[&str]) -> Value 
     })
 }
 
+/// The stored cluster `identifier` names, as `GetCluster` reports it — the one reader every
+/// suite in this target reads a cluster back through, so no two of them read it differently.
+pub(crate) async fn stored_cluster(router: &MultiServiceRouter, identifier: &str) -> Value {
+    let (status, read) = call(
+        router,
+        "GetCluster",
+        &json!({"clusterIdentifier": identifier}),
+    )
+    .await;
+    assert_eq!(
+        status, 200,
+        "read back {identifier}: got {status} with {read}"
+    );
+    read["cluster"].clone()
+}
+
 /// Create a cluster and answer its id. The request that follows the create observes it
 /// `ACTIVE`, so there is nothing to wait for.
 async fn active_cluster(router: &MultiServiceRouter, name: &str) -> String {

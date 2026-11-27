@@ -23,6 +23,7 @@ use smithy_server_runtime::MultiServiceRouter;
 
 use crate::cluster_lifecycle::{
     call, create_cluster, create_compute_node_group, create_queue, emulator, emulator_with_engine,
+    stored_cluster,
 };
 
 /// The value the cluster of each case starts out with, so a refusal that stored something
@@ -163,18 +164,6 @@ fn group_name(index: usize) -> String {
 /// The name the `index`th queue of a case is created under.
 fn queue_name(index: usize) -> String {
     format!("queue-{index}")
-}
-
-/// The stored cluster, as `GetCluster` reports it.
-async fn stored_cluster(router: &MultiServiceRouter, cluster: &str) -> Value {
-    let (status, read) = call(
-        router,
-        "GetCluster",
-        &json!({"clusterIdentifier": cluster}),
-    )
-    .await;
-    assert_eq!(status, 200, "read back {cluster}: got {status} with {read}");
-    read["cluster"].clone()
 }
 
 /// Hold the child named `name` of the cluster `cluster` in `status` with nothing owed. No

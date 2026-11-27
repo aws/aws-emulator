@@ -16,9 +16,10 @@
 //! state it finds, and a token an accepted update used for ANOTHER cluster conflicts.
 //!
 //! The suites are tables. Their rows differ along what the rule generalises over: which
-//! members the update carries, the form the call addresses the cluster by (the generated id
-//! or the name, the two forms `ClusterIdentifier` allows) and the length of the token at
-//! both of `SBClientToken`'s published bounds.
+//! members the update carries, how a retry's body differs from the body of the call its
+//! token named, the form the call addresses the cluster by (the generated id or the name,
+//! the two forms `ClusterIdentifier` allows) and the length of the token at both of
+//! `SBClientToken`'s published bounds.
 //!
 //! Nothing here waits on the wall clock: a transition this service owes is materialised
 //! before the next request is answered.
@@ -27,7 +28,7 @@ use serde_json::{json, Value};
 use service_com_amazonaws_pcs_awsparallelcomputingservice::service::wire::CLIENT_ERROR_STATUS;
 use smithy_server_runtime::MultiServiceRouter;
 
-use crate::cluster_lifecycle::{call, create_cluster, emulator};
+use crate::cluster_lifecycle::{call, create_cluster, emulator, stored_cluster};
 
 /// The release every cluster here is created on, and the one an update moves it to: "You
 /// can only update to a newer version" (`UpdateSchedulerRequest$version`), so the second
@@ -184,6 +185,170 @@ async fn a_retry_with_the_same_client_token_replays_the_update() {
             (200, Some(expected_version), Some("ACTIVE")),
             "case {case}: expected the replay to leave the cluster as the first call left \
              it, got {status} with {read}"
+        );
+    }
+}
+
+/// An `UpdateCluster` request carrying `members` verbatim, addressed at `cluster` and
+/// presenting `token` — the form the rows below need, which choose their members as whole
+/// bodies rather than from the named sets above.
+fn update_carrying(cluster: &str, members: Value, token: &str) -> Value {
+    let mut body = members;
+    body["clusterIdentifier"] = json!(cluster);
+    body["clientToken"] = json!(token);
+    body
+}
+
+/// The result the accepted update left, which is what a retry of it owes its caller: the
+/// stored cluster, settled, read back through the shared reader
+/// ([`crate::cluster_lifecycle::stored_cluster`]).
+async fn left_by_the_update(router: &MultiServiceRouter, case: &str, identifier: &str) -> Value {
+    let cluster = stored_cluster(router, identifier).await;
+    assert_eq!(
+        cluster["status"].as_str(),
+        Some("ACTIVE"),
+        "case {case}: expected the stored cluster settled, got {cluster}"
+    );
+    cluster
+}
+
+#[tokio::test]
+async fn a_retry_whose_body_differs_still_replays_the_first_call() {
+    // The rows: how the retry's body DIFFERS from the body of the call the token named — a
+    // newer release than that call applied, another value for the member it set, a member it
+    // did not carry at all, and one fewer member than it carried. Each difference would
+    // change the cluster if the retry were applied, so each row separates replaying the
+    // first call's result from updating a second time.
+    let rows: [(&str, Value, Value); 4] = [
+        (
+            "a newer release than the first call applied",
+            json!({"scheduler": {"version": UPDATED_TO}}),
+            json!({"scheduler": {"version": "25.11"}}),
+        ),
+        (
+            "another value for the slurm option the first call set",
+            json!({"slurmConfiguration": {"scaleDownIdleTimeInSeconds": 600}}),
+            json!({"slurmConfiguration": {"scaleDownIdleTimeInSeconds": 900}}),
+        ),
+        (
+            "a member the first call did not carry",
+            json!({"scheduler": {"version": UPDATED_TO}}),
+            json!({
+                "scheduler": {"version": UPDATED_TO},
+                "slurmConfiguration": {"scaleDownIdleTimeInSeconds": 900},
+            }),
+        ),
+        (
+            "one fewer member than the first call carried",
+            json!({
+                "scheduler": {"version": UPDATED_TO},
+                "slurmConfiguration": {"scaleDownIdleTimeInSeconds": 600},
+            }),
+            json!({"slurmConfiguration": {"scaleDownIdleTimeInSeconds": 900}}),
+        ),
+    ];
+    for (case, first_members, retry_members) in rows {
+        let router = emulator();
+        let id = active_cluster(&router, case, "differing-retry-cluster").await;
+        let token = shortest_token();
+
+        let (status, first) = call(
+            &router,
+            "UpdateCluster",
+            &update_carrying(&id, first_members, &token),
+        )
+        .await;
+        assert_eq!(
+            status, 200,
+            "case {case}: the first update must be served, got {status} with {first}"
+        );
+        // The result that call left behind, settled: every member of it, `modifiedAt`
+        // included, is what the retry owes and what the store must still hold afterwards.
+        let left_by_the_first_call = left_by_the_update(&router, case, &id).await;
+
+        let (status, replayed) = call(
+            &router,
+            "UpdateCluster",
+            &update_carrying(&id, retry_members, &token),
+        )
+        .await;
+        assert_eq!(
+            status, 200,
+            "case {case}: expected the first call's result, got {status} with {replayed}"
+        );
+        assert_eq!(
+            replayed["cluster"], left_by_the_first_call,
+            "case {case}: expected the cluster the first call left, got {replayed}"
+        );
+
+        // And the retry stored nothing of its own body: the cluster reads back exactly as
+        // the first call left it, so it was neither moved nor modified again.
+        let read_back = left_by_the_update(&router, case, &id).await;
+        assert_eq!(
+            read_back, left_by_the_first_call,
+            "case {case}: expected the retry to have no further effect, got {read_back}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_retry_replays_whichever_form_addresses_the_same_cluster() {
+    // The rows: which form the retry addresses the cluster by, against the form the first
+    // call used — `ClusterIdentifier` admits the generated id and the name, and a retry
+    // naming the SAME cluster by either form is the same request.
+    let rows = [
+        ("the first call by id, the retry by name", false),
+        ("the first call by name, the retry by id", true),
+    ];
+    for (case, first_by_name) in rows {
+        let router = emulator();
+        let name = "retry-by-either-form";
+        let id = active_cluster(&router, case, name).await;
+        let (first_form, retry_form): (&str, &str) = if first_by_name {
+            (name, &id)
+        } else {
+            (&id, name)
+        };
+        let token = longest_token();
+
+        let (status, first) = call(
+            &router,
+            "UpdateCluster",
+            &update_carrying(
+                first_form,
+                json!({"scheduler": {"version": UPDATED_TO}}),
+                &token,
+            ),
+        )
+        .await;
+        assert_eq!(
+            status, 200,
+            "case {case}: the first update must be served, got {status} with {first}"
+        );
+        let left_by_the_first_call = left_by_the_update(&router, case, &id).await;
+
+        let (status, replayed) = call(
+            &router,
+            "UpdateCluster",
+            &update_carrying(
+                retry_form,
+                json!({"scheduler": {"version": "25.11"}}),
+                &token,
+            ),
+        )
+        .await;
+        assert_eq!(
+            status, 200,
+            "case {case}: expected the first call's result, got {status} with {replayed}"
+        );
+        assert_eq!(
+            replayed["cluster"], left_by_the_first_call,
+            "case {case}: expected the cluster the first call left, got {replayed}"
+        );
+        let read_back = left_by_the_update(&router, case, &id).await;
+        assert_eq!(
+            read_back, left_by_the_first_call,
+            "case {case}: expected the retry to have no further effect, got {read_back}"
         );
     }
 }
