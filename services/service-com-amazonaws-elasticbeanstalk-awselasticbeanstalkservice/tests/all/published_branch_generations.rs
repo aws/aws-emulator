@@ -121,7 +121,7 @@ const GENERATION_ROWS: &[CatalogRow] = &[
         platform_name: "Java",
         branch_name: "Java 7 running on 64bit Amazon Linux",
         lifecycle_state: "Retired",
-        branch_order: 10000,
+        branch_order: 9700,
         both_tiers: true,
     },
     CatalogRow {
@@ -135,14 +135,14 @@ const GENERATION_ROWS: &[CatalogRow] = &[
         platform_name: "PHP",
         branch_name: "PHP 5.4 running on 64bit Amazon Linux",
         lifecycle_state: "Retired",
-        branch_order: 9500,
+        branch_order: 9400,
         both_tiers: true,
     },
     CatalogRow {
         platform_name: "Ruby",
         branch_name: "Passenger Standalone with Ruby 2.4 running on 64bit Amazon Linux",
         lifecycle_state: "Retired",
-        branch_order: 9700,
+        branch_order: 9100,
         both_tiers: true,
     },
     CatalogRow {
@@ -156,7 +156,7 @@ const GENERATION_ROWS: &[CatalogRow] = &[
         platform_name: "Python",
         branch_name: "Preconfigured Docker - Python 3.4 running on 64bit Debian",
         lifecycle_state: "Retired",
-        branch_order: 9600,
+        branch_order: 9300,
         both_tiers: true,
     },
 ];
@@ -164,29 +164,35 @@ const GENERATION_ROWS: &[CatalogRow] = &[
 /// The operating-system generations the catalog publishes branches on, newest
 /// first within each operating system.
 ///
-/// SOURCE: the operating-system component of the published branch names. The
-/// RANK is what the ordinal bands are asserted against: a branch of a later
-/// entry here is of an older generation than a branch of an earlier one.
+/// SOURCE: the operating-system component of the published branch names, with
+/// the ARCHITECTURE taken off: a generation of Amazon Linux published its
+/// 32-bit and its 64-bit branches side by side, so the two spellings name ONE
+/// generation and rank together here. The RANK is what the ordinal bands are
+/// asserted against: a branch of a later entry here is of an older generation
+/// than a branch of an earlier one.
 const GENERATIONS: &[&str] = &[
-    "64bit Amazon Linux 2023",
-    "64bit Amazon Linux 2",
-    "64bit Amazon Linux",
-    "32bit Amazon Linux",
-    "64bit Debian",
-    "64bit Windows Server 2025",
-    "64bit Windows Server Core 2025",
-    "64bit Windows Server 2022",
-    "64bit Windows Server Core 2022",
-    "64bit Windows Server 2019",
-    "64bit Windows Server Core 2019",
-    "64bit Windows Server 2016",
-    "64bit Windows Server Core 2016",
-    "64bit Windows Server 2012 R2",
-    "64bit Windows Server Core 2012 R2",
-    "64bit Windows Server 2012",
-    "64bit Windows Server 2008 R2",
-    "64bit Windows Server",
+    "Amazon Linux 2023",
+    "Amazon Linux 2",
+    "Amazon Linux",
+    "Debian",
+    "Windows Server 2025",
+    "Windows Server Core 2025",
+    "Windows Server 2022",
+    "Windows Server Core 2022",
+    "Windows Server 2019",
+    "Windows Server Core 2019",
+    "Windows Server 2016",
+    "Windows Server Core 2016",
+    "Windows Server 2012 R2",
+    "Windows Server Core 2012 R2",
+    "Windows Server 2012",
+    "Windows Server 2008 R2",
+    "Windows Server",
 ];
+
+/// The architectures a published branch name states, which are not generations
+/// of their own (see [`GENERATIONS`]).
+const ARCHITECTURES: &[&str] = &["64bit ", "32bit "];
 
 /// The operating system `branch_name` names, and how old its generation is: 0
 /// is the newest generation of its operating system, and a larger number an
@@ -194,13 +200,17 @@ const GENERATIONS: &[&str] = &[
 /// builder) has no generation.
 fn generation_of(branch_name: &str) -> Option<(&'static str, usize)> {
     let (_, operating_system) = branch_name.split_once(" running on ")?;
+    let generation = ARCHITECTURES
+        .iter()
+        .find_map(|architecture| operating_system.strip_prefix(*architecture))
+        .unwrap_or(operating_system);
     let rank = GENERATIONS
         .iter()
-        .position(|generation| *generation == operating_system)
+        .position(|published| *published == generation)
         .unwrap_or_else(|| {
             panic!(
                 "case {branch_name:?}: the branch names the operating-system generation \
-                 {operating_system:?}, which is not one the published inventory lists"
+                 {generation:?}, which is not one the published inventory lists"
             )
         });
     Some((GENERATIONS[rank], rank))

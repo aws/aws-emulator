@@ -76,8 +76,8 @@ async fn the_catalog_is_reported_whole_and_does_not_change_when_read() {
     // Java SE `jar`, the Tomcat `war`), each named in full.
     assert_eq!(
         listed.values_at("SolutionStacks/member").len(),
-        39,
-        "case {case:?}: expected the 39 stacks the catalog holds, got {}",
+        40,
+        "case {case:?}: expected the 40 stacks the catalog holds, got {}",
         listed.body
     );
     let pinned: &[(&str, &[&str])] = &[
@@ -90,7 +90,7 @@ async fn the_catalog_is_reported_whole_and_does_not_change_when_read() {
             &["jar", "zip"],
         ),
         (
-            "64bit Amazon Linux 2023 v5.4.0 running Tomcat 10.1 with Corretto 21",
+            "64bit Amazon Linux 2023 v5.4.0 running Tomcat 10 with Corretto 21",
             &["war", "zip"],
         ),
     ];

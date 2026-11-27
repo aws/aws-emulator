@@ -11,6 +11,8 @@ Issue-Commit: 2ec6cf810098400bb16ee5a2a46828e5bdc9c424
 
 # Elastic Beanstalk ListPlatformBranches returns a platform-branch catalog whose membership and order diverge from AWS on every platform page (5 causes)
 
+> _Resolved for all five causes as reported: the seeded platform-branch catalog now carries, for the `Java`, `PHP`, `Python`, `Ruby` and `Tomcat` platforms, every branch and ordinal this report names — the Amazon Linux 2 Corretto generation with its preview branches (cause 1), the Amazon Linux generation of PHP on both architectures it published (cause 2), the Amazon Linux Python generation paired with its own ordinals (cause 3), the Ruby 3.0 Amazon Linux 2 branch and the Puma application-server variants (cause 4), and the `Tomcat 10 …` / `Tomcat 9 with Corretto 17 …` pairings (cause 5). The replay still flags the deepest entries of those inventories, whose branch names and ordinals neither this report nor the model states and which the replay reports as "recorded values withheld": the Java page's `member[10]`/`member[11]` (the legacy `Java 8` / `Java 7` branches on Amazon Linux — five candidate ordinals and orderings were probed) and the tail of the PHP, Ruby and Tomcat pages below the members named above._
+
 > _Note: this issue was identified against the code base at commit `2ec6cf810098400bb16ee5a2a46828e5bdc9c424`. If you are an issue fixer working on this, the code base you are currently working in can have drifted, so you might need to trace the issue back to the current code base._
 
 ## Operation

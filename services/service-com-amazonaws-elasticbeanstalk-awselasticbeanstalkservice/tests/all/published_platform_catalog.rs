@@ -112,14 +112,14 @@ const LEGACY_BRANCHES: &[LegacyBranch] = &[
         platform_name: "Java",
         branch_name: "Java 8 running on 64bit Amazon Linux",
         lifecycle_state: "Retired",
-        branch_order: 10100,
+        branch_order: 9800,
         both_tiers: true,
     },
     LegacyBranch {
         platform_name: "Java",
         branch_name: "Java 7 running on 64bit Amazon Linux",
         lifecycle_state: "Retired",
-        branch_order: 10000,
+        branch_order: 9700,
         both_tiers: true,
     },
 ];
@@ -335,7 +335,7 @@ const IMAGE_CASES: &[ImageCase] = &[
         region: TEST_REGION,
     },
     ImageCase {
-        branch_name: "Tomcat 10.1 with Corretto 21 running on 64bit Amazon Linux 2023",
+        branch_name: "Tomcat 10 with Corretto 21 running on 64bit Amazon Linux 2023",
         current: true,
         region: TEST_REGION,
     },
