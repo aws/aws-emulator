@@ -14,7 +14,9 @@ cargo test  -p service-com-amazonaws-bcmdashboards-awsbcmdashboardsservice
 service-com-amazonaws-bcmdashboards-awsbcmdashboardsservice/
 ├── build.rs              # calls emulator_core_build_support::generate(...)
 ├── smithy-model/
-│   └── com-amazonaws-bcmdashboards-awsbcmdashboardsservice.json      # the Smithy model — drives routing + wire shapes
+│   ├── com-amazonaws-bcmdashboards-awsbcmdashboardsservice.json      # the Smithy model — drives routing + wire shapes
+│   ├── local-additions.json  # overlay model for the widget queries AWS answers with that the snapshot lacks
+│   └── LOCAL-ADDITIONS.md    # what that overlay adds, and why
 ├── OPERATIONS.md         # every operation's contract, re-rendered from the model
 ├── tests/
 │   └── state_roundtrip.rs  # compiled example of the state API

@@ -1165,3 +1165,487 @@ async fn create_dashboard_stops_at_the_dashboard_quota() {
         "case back at the quota: CreateDashboard must refuse again, got {status}: {body}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// The QUERY a widget runs: every member of the `QueryParameters` union.
+//
+// RULE: a widget configuration carries exactly one `QueryParameters` member, and a write
+// stores the member and the query the request submitted — so a read answers that member
+// with the values it was given and no other member set. The union's members are the five
+// the model snapshot declares plus the two AWS answers the published catalog's panels with
+// (`budget`, `costEfficiency`), which this crate declares from the overlay model beside the
+// snapshot (`smithy-model/LOCAL-ADDITIONS.md`).
+// ---------------------------------------------------------------------------
+
+/// The published model snapshot this crate is generated from, embedded at compile time so
+/// the local declaration is checked against the model rather than against a copy of it.
+const SNAPSHOT: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/smithy-model/com-amazonaws-bcmdashboards-awsbcmdashboardsservice.json"
+));
+
+/// The overlay model the local query declarations are generated from, embedded for the same
+/// reason: what it restates of the snapshot must still match it.
+const OVERLAY: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/smithy-model/local-additions.json"
+));
+
+/// The union whose members a widget configuration chooses between.
+const UNION_SHAPE: &str = "com.amazonaws.bcmdashboards#QueryParameters";
+
+/// The union members this crate declares locally, which the snapshot does not.
+const LOCAL_MEMBERS: [&str; 2] = ["budget", "costEfficiency"];
+
+/// The shapes the overlay adds for those members, which the snapshot declares nowhere.
+const LOCAL_SHAPES: [&str; 2] = [
+    "com.amazonaws.bcmdashboards#BudgetQuery",
+    "com.amazonaws.bcmdashboards#CostEfficiencyQuery",
+];
+
+/// Every member of the `QueryParameters` union, so a stored configuration can be held to
+/// carrying exactly one of them.
+const QUERY_MEMBERS: [&str; 7] = [
+    "costAndUsage",
+    "savingsPlansCoverage",
+    "savingsPlansUtilization",
+    "reservationCoverage",
+    "reservationUtilization",
+    "budget",
+    "costEfficiency",
+];
+
+/// One row of the query table: the member the request submits, the query it carries and the
+/// display configuration beside it.
+struct QueryCase {
+    label: &'static str,
+    member: &'static str,
+    query: Value,
+    display: Value,
+}
+
+/// A relative `DateTimeRange`, both bounds ISO 8601 durations.
+fn relative_range(start: &str, end: &str) -> Value {
+    json!({
+        "startTime": {"type": "RELATIVE", "value": start},
+        "endTime": {"type": "RELATIVE", "value": end}
+    })
+}
+
+/// A grouping by one `Dimension`, with the `GroupDefinitionType` the member defaults to
+/// stated explicitly so a row submits exactly what it reads back.
+fn group_by(dimension: &str) -> Value {
+    json!([{"key": dimension, "type": "DIMENSION"}])
+}
+
+/// A filter narrowing a query to the values of one `Dimension`.
+fn dimension_filter(dimension: &str, values: &[&str]) -> Value {
+    json!({"dimensions": {"key": dimension, "values": values}})
+}
+
+/// The rows every case below runs: each member of the union at least once, and the two
+/// locally declared ones twice — once carrying every member of the query they model, once
+/// carrying the fewest the model requires.
+fn query_cases() -> Vec<QueryCase> {
+    vec![
+        QueryCase {
+            label: "a cost-and-usage query",
+            member: "costAndUsage",
+            query: json!({
+                "metrics": ["UnblendedCost"],
+                "timeRange": relative_range("-P12M", "P0M"),
+                "granularity": "MONTHLY",
+                "groupBy": group_by("SERVICE")
+            }),
+            display: json!({"graph": {"UnblendedCost": {"visualType": "STACK"}}}),
+        },
+        QueryCase {
+            label: "a Savings Plans coverage query",
+            member: "savingsPlansCoverage",
+            query: json!({
+                "timeRange": relative_range("-P6M", "P0M"),
+                "metrics": ["SpendCoveredBySavingsPlans"],
+                "granularity": "DAILY"
+            }),
+            display: json!({"table": {}}),
+        },
+        QueryCase {
+            label: "a Savings Plans utilization query",
+            member: "savingsPlansUtilization",
+            query: json!({
+                "timeRange": relative_range("-P3M", "P0M"),
+                "granularity": "MONTHLY"
+            }),
+            display: json!({"table": {}}),
+        },
+        QueryCase {
+            label: "a reservation coverage query",
+            member: "reservationCoverage",
+            query: json!({
+                "timeRange": relative_range("-P12M", "P0M"),
+                "granularity": "MONTHLY",
+                "groupBy": group_by("INSTANCE_TYPE"),
+                "metrics": ["Hour", "Cost"]
+            }),
+            display: json!({"table": {}}),
+        },
+        QueryCase {
+            label: "a reservation utilization query",
+            member: "reservationUtilization",
+            query: json!({
+                "timeRange": relative_range("-P12M", "P0M"),
+                "granularity": "MONTHLY",
+                "groupBy": group_by("REGION")
+            }),
+            display: json!({"table": {}}),
+        },
+        QueryCase {
+            // The locally declared member the published budget-health panel carries: it
+            // models no time period, no granularity and no metrics, so a query over every
+            // budget the account holds carries NO member at all.
+            label: "a budget query over every budget the account holds",
+            member: "budget",
+            query: json!({}),
+            display: json!({"table": {}}),
+        },
+        QueryCase {
+            label: "a budget query narrowed to one dimension",
+            member: "budget",
+            query: json!({"filter": dimension_filter("SERVICE", ["Amazon Simple Storage Service"].as_slice())}),
+            display: json!({"table": {}}),
+        },
+        QueryCase {
+            // The other locally declared member: the series it draws is a score rather
+            // than a `MetricName`, which is why it models no `metrics` member.
+            label: "a cost-efficiency query, grouped and at a granularity",
+            member: "costEfficiency",
+            query: json!({
+                "timeRange": relative_range("-P3M", "P0M"),
+                "granularity": "MONTHLY",
+                "groupBy": group_by("LINKED_ACCOUNT")
+            }),
+            display: json!({"graph": {"EfficiencyScore": {"visualType": "LINE"}}}),
+        },
+        QueryCase {
+            label: "a cost-efficiency query carrying only the time period it requires",
+            member: "costEfficiency",
+            query: json!({"timeRange": relative_range("-P1M", "P0M")}),
+            display: json!({"table": {}}),
+        },
+    ]
+}
+
+/// The one stored configuration of the one stored widget of `dashboard`.
+fn only_config(label: &str, dashboard: &Value) -> Value {
+    let widgets = dashboard["widgets"]
+        .as_array()
+        .unwrap_or_else(|| panic!("case {label}: widgets is @required, got {dashboard}"));
+    assert_eq!(
+        widgets.len(),
+        1,
+        "case {label}: expected the one submitted widget, got {dashboard}"
+    );
+    let configs = widgets[0]["configs"]
+        .as_array()
+        .unwrap_or_else(|| panic!("case {label}: configs is @required, got {dashboard}"));
+    assert_eq!(
+        configs.len(),
+        1,
+        "case {label}: expected the one submitted configuration, got {dashboard}"
+    );
+    configs[0].clone()
+}
+
+/// Assert that `config` carries `case`'s query under `case`'s member and under no other.
+fn assert_carries_only(case: &QueryCase, site: &str, config: &Value) {
+    let label = case.label;
+    let parameters = &config["queryParameters"];
+    assert_eq!(
+        &parameters[case.member], &case.query,
+        "case {label}: {site} must carry the submitted {} query, got {config}",
+        case.member
+    );
+    for member in QUERY_MEMBERS {
+        if member == case.member {
+            continue;
+        }
+        assert!(
+            parameters[member].is_null(),
+            "case {label}: {site} carries one union member, but {member} is set too: {config}"
+        );
+    }
+    assert_eq!(
+        &config["displayConfig"], &case.display,
+        "case {label}: {site} must carry the submitted display configuration, got {config}"
+    );
+}
+
+/// Every member of the union round-trips: a create stores the submitted query, a read
+/// answers it with no other member set, and an update replacing the widget list stores the
+/// query it submits in turn.
+#[tokio::test]
+async fn every_query_parameters_member_round_trips() {
+    let router = router();
+
+    for (index, case) in query_cases().into_iter().enumerate() {
+        let name = format!("Query Member {index:02}");
+        let member = case.member;
+        let query = case.query.clone();
+        let display = case.display.clone();
+        let widgets = json!([{
+            "title": "Spend",
+            "configs": [{"queryParameters": {member: query}, "displayConfig": display}]
+        }]);
+        let created = ok_call(
+            &router,
+            "CreateDashboard",
+            &json!({"name": name, "widgets": widgets}),
+        )
+        .await;
+        let arn = created["arn"]
+            .as_str()
+            .unwrap_or_else(|| {
+                panic!(
+                    "case {}: CreateDashboard answered no arn: {created}",
+                    case.label
+                )
+            })
+            .to_string();
+
+        let fetched = ok_call(&router, "GetDashboard", &json!({"arn": arn})).await;
+        assert_carries_only(&case, "the stored dashboard", &only_config(case.label, &fetched));
+
+        // The same query submitted on the update path, and read back again: a second read
+        // of the same record must answer the same query.
+        ok_call(
+            &router,
+            "UpdateDashboard",
+            &json!({"arn": arn, "name": name, "widgets": widgets}),
+        )
+        .await;
+        let updated = ok_call(&router, "GetDashboard", &json!({"arn": arn})).await;
+        assert_carries_only(
+            &case,
+            "the updated dashboard",
+            &only_config(case.label, &updated),
+        );
+    }
+}
+
+/// A caller may replace the query of a stored widget with ANY other member of the union,
+/// including the two declared locally: the stored configuration is the one last submitted,
+/// never a merge of the two.
+#[tokio::test]
+async fn an_update_replaces_the_query_member_it_was_given() {
+    let router = router();
+    let created = ok_call(
+        &router,
+        "CreateDashboard",
+        &json!({
+            "name": "Query Member Replacement",
+            "widgets": [{"title": "Spend", "configs": [graph_config("UnblendedCost", "LINE", "MONTHLY")]}]
+        }),
+    )
+    .await;
+    let arn = created["arn"].as_str().expect("an arn").to_string();
+
+    for case in query_cases() {
+        let member = case.member;
+        let query = case.query.clone();
+        let display = case.display.clone();
+        ok_call(
+            &router,
+            "UpdateDashboard",
+            &json!({
+                "arn": arn,
+                "name": "Query Member Replacement",
+                "widgets": [{
+                    "title": "Spend",
+                    "configs": [{
+                        "queryParameters": {member: query},
+                        "displayConfig": display
+                    }]
+                }]
+            }),
+        )
+        .await;
+        let fetched = ok_call(&router, "GetDashboard", &json!({"arn": arn})).await;
+        assert_carries_only(
+            &case,
+            "the replaced configuration",
+            &only_config(case.label, &fetched),
+        );
+    }
+}
+
+/// The `shapes` object of one model document.
+fn model_shapes(model: &str) -> Value {
+    let parsed: Value = serde_json::from_str(model).expect("a model document must be JSON");
+    Value::Object(
+        parsed["shapes"]
+            .as_object()
+            .expect("a model document must carry a shapes object")
+            .clone(),
+    )
+}
+
+/// `declaration` with every documentation trait dropped, recursively — and with a traits
+/// object left empty by that dropped too, so a member the snapshot documents and nothing
+/// else compares equal to the same member restated with no traits at all.
+///
+/// Documentation is prose: the overlay restates what codegen READS — targets, types, enum
+/// values and constraint traits — so comparing declarations has to ignore the one trait that
+/// carries no behaviour.
+fn without_docs(declaration: &Value) -> Value {
+    match declaration {
+        Value::Object(members) => Value::Object(
+            members
+                .iter()
+                .filter(|(key, _)| key.as_str() != "smithy.api#documentation")
+                .map(|(key, value)| (key.clone(), without_docs(value)))
+                .filter(|(key, value)| {
+                    key.as_str() != "traits"
+                        || !value
+                            .as_object()
+                            .is_some_and(serde_json::Map::<String, Value>::is_empty)
+                })
+                .collect(),
+        ),
+        Value::Array(items) => Value::Array(items.iter().map(without_docs).collect()),
+        other => other.clone(),
+    }
+}
+
+/// The wire values of an `enum` shape, read the way codegen reads them: each member's
+/// `@enumValue`, falling back to the member name.
+fn enum_values(shape: &Value) -> Vec<String> {
+    shape["members"]
+        .as_object()
+        .map(|members| {
+            members
+                .iter()
+                .map(|(name, member)| {
+                    member["traits"]["smithy.api#enumValue"]
+                        .as_str()
+                        .unwrap_or(name)
+                        .to_string()
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The overlay the local query declarations are generated from restates the snapshot: every
+/// shape it names is declared there with the same type, every member and enum value it
+/// restates is the snapshot's own, and the only thing it adds is the two members AWS
+/// carries. A refreshed snapshot that declares either of them — or that changes a target or
+/// a value set the overlay restates — fails here, and the local declaration should then
+/// give way to the modelled shape.
+#[test]
+fn the_overlay_restates_the_snapshot_but_for_the_members_it_adds() {
+    let snapshot = model_shapes(SNAPSHOT);
+    let overlay = model_shapes(OVERLAY);
+    let restated = overlay
+        .as_object()
+        .expect("the overlay carries a shapes object");
+
+    assert!(
+        restated.contains_key(UNION_SHAPE),
+        "the overlay must restate {UNION_SHAPE}, the shape the local declaration is of"
+    );
+    for shape_id in LOCAL_SHAPES {
+        assert!(
+            restated.contains_key(shape_id),
+            "the overlay must declare {shape_id}, a local member's target"
+        );
+    }
+
+    for (shape_id, declared) in restated {
+        if LOCAL_SHAPES.contains(&shape_id.as_str()) {
+            assert!(
+                snapshot[shape_id].is_null(),
+                "the snapshot now declares {shape_id}, so the local declaration should give \
+                 way to the modelled shape"
+            );
+            continue;
+        }
+        let modelled = &snapshot[shape_id];
+        assert!(
+            !modelled.is_null(),
+            "the overlay restates {shape_id}, which the snapshot no longer declares"
+        );
+        assert_eq!(
+            declared["type"], modelled["type"],
+            "{shape_id} must be restated with the type the snapshot gives it, got {}",
+            declared["type"]
+        );
+
+        // An enum is restated for its VALUE SET, which is what holds a submitted value to
+        // the enumerated ones; a list for its element target, which is what classifies it.
+        if declared["type"] == "enum" {
+            assert_eq!(
+                enum_values(declared),
+                enum_values(modelled),
+                "{shape_id} must be restated with the value set the snapshot declares"
+            );
+            continue;
+        }
+        if declared["type"] == "list" {
+            assert_eq!(
+                without_docs(&declared["member"]),
+                without_docs(&modelled["member"]),
+                "{shape_id} must be restated with the element the snapshot declares, got {}",
+                declared["member"]
+            );
+            continue;
+        }
+
+        let declared_members = declared["members"].as_object().cloned().unwrap_or_default();
+        let modelled_members = modelled["members"].as_object().cloned().unwrap_or_default();
+        for (member, declaration) in &declared_members {
+            if shape_id == UNION_SHAPE && LOCAL_MEMBERS.contains(&member.as_str()) {
+                let target = declaration["target"].as_str().unwrap_or("<none>");
+                assert!(
+                    LOCAL_SHAPES.contains(&target),
+                    "the local member {member} must target a locally declared shape, got \
+                     {target}"
+                );
+                continue;
+            }
+            assert_eq!(
+                without_docs(declaration),
+                without_docs(&modelled_members[member]),
+                "member {member} of {shape_id} must be restated as the snapshot declares it, \
+                 got {declaration}"
+            );
+        }
+
+        let added: Vec<&str> = declared_members
+            .keys()
+            .filter(|member| !modelled_members.contains_key(*member))
+            .map(String::as_str)
+            .collect();
+        if shape_id == UNION_SHAPE {
+            for member in modelled_members.keys() {
+                assert!(
+                    declared_members.contains_key(member),
+                    "the overlay must restate the modelled member {member} of {shape_id}, or \
+                     this service stops serving it"
+                );
+            }
+            assert_eq!(
+                added,
+                LOCAL_MEMBERS.to_vec(),
+                "{shape_id} may add {LOCAL_MEMBERS:?} and nothing else, added {added:?}"
+            );
+        } else {
+            // Restated only so the declarations above can target it: its own Rust type is
+            // generated from the snapshot, so nothing of its member list is read here.
+            assert!(
+                added.is_empty(),
+                "{shape_id} is restated for the declarations above to target, so it may add \
+                 no member; added {added:?}"
+            );
+        }
+    }
+}

@@ -1,0 +1,55 @@
+{
+  "smithy": "2.0",
+  "shapes": {
+    "com.amazonaws.bcmdashboards#QueryParameters": {
+      "type": "union",
+      "members": {
+        "costAndUsage": { "target": "com.amazonaws.bcmdashboards#CostAndUsageQuery" },
+        "savingsPlansCoverage": { "target": "com.amazonaws.bcmdashboards#SavingsPlansCoverageQuery" },
+        "savingsPlansUtilization": { "target": "com.amazonaws.bcmdashboards#SavingsPlansUtilizationQuery" },
+        "reservationCoverage": { "target": "com.amazonaws.bcmdashboards#ReservationCoverageQuery" },
+        "reservationUtilization": { "target": "com.amazonaws.bcmdashboards#ReservationUtilizationQuery" },
+        "budget": { "target": "com.amazonaws.bcmdashboards#BudgetQuery" },
+        "costEfficiency": { "target": "com.amazonaws.bcmdashboards#CostEfficiencyQuery" }
+      }
+    },
+    "com.amazonaws.bcmdashboards#BudgetQuery": {
+      "type": "structure",
+      "members": {
+        "filter": { "target": "com.amazonaws.bcmdashboards#Expression" }
+      }
+    },
+    "com.amazonaws.bcmdashboards#CostEfficiencyQuery": {
+      "type": "structure",
+      "members": {
+        "timeRange": {
+          "target": "com.amazonaws.bcmdashboards#DateTimeRange",
+          "traits": { "smithy.api#required": {} }
+        },
+        "granularity": { "target": "com.amazonaws.bcmdashboards#Granularity" },
+        "groupBy": { "target": "com.amazonaws.bcmdashboards#GroupDefinitions" },
+        "filter": { "target": "com.amazonaws.bcmdashboards#Expression" }
+      }
+    },
+    "com.amazonaws.bcmdashboards#Granularity": {
+      "type": "enum",
+      "members": {
+        "HOURLY": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "HOURLY" } },
+        "DAILY": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "DAILY" } },
+        "MONTHLY": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "MONTHLY" } }
+      }
+    },
+    "com.amazonaws.bcmdashboards#GroupDefinitions": {
+      "type": "list",
+      "member": { "target": "com.amazonaws.bcmdashboards#GroupDefinition" }
+    },
+    "com.amazonaws.bcmdashboards#GroupDefinition": { "type": "structure" },
+    "com.amazonaws.bcmdashboards#DateTimeRange": { "type": "structure" },
+    "com.amazonaws.bcmdashboards#Expression": { "type": "structure" },
+    "com.amazonaws.bcmdashboards#CostAndUsageQuery": { "type": "structure" },
+    "com.amazonaws.bcmdashboards#SavingsPlansCoverageQuery": { "type": "structure" },
+    "com.amazonaws.bcmdashboards#SavingsPlansUtilizationQuery": { "type": "structure" },
+    "com.amazonaws.bcmdashboards#ReservationCoverageQuery": { "type": "structure" },
+    "com.amazonaws.bcmdashboards#ReservationUtilizationQuery": { "type": "structure" }
+  }
+}

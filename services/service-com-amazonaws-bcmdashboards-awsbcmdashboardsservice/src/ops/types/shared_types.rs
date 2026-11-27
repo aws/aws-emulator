@@ -30,18 +30,9 @@ pub struct WidgetConfig {
     pub display_config: DisplayConfig,
 }
 
-#[smithy_macros::smithy(union_for = "com.amazonaws.bcmdashboards#QueryParameters")]
-#[allow(clippy::large_enum_variant)]
-#[derive(Debug, Clone)]
-pub enum QueryParameters {
-    Budget(BudgetQuery),
-    costEfficiency(CostEfficiencyQuery),
-    costAndUsage(CostAndUsageQuery),
-    savingsPlansCoverage(SavingsPlansCoverageQuery),
-    savingsPlansUtilization(SavingsPlansUtilizationQuery),
-    reservationCoverage(ReservationCoverageQuery),
-    reservationUtilization(ReservationUtilizationQuery),
-}
+// `QueryParameters` is in `query_parameters_types`, with the two query shapes only it
+// reaches: AWS carries two members of that union the model snapshot does not declare, so
+// it is generated from the overlay model beside it (see `smithy-model/LOCAL-ADDITIONS.md`).
 
 #[smithy_macros::smithy(shape = "com.amazonaws.bcmdashboards#CostAndUsageQuery")]
 #[derive(Debug, Clone, Default)]
@@ -49,21 +40,6 @@ pub struct CostAndUsageQuery {
     pub metrics: Vec<String>,
     pub time_range: DateTimeRange,
     pub granularity: String,
-    pub group_by: Option<Vec<GroupDefinition>>,
-    pub filter: Option<Expression>,
-}
-
-#[smithy_macros::smithy(shape = "com.amazonaws.bcmdashboards#BudgetQuery")]
-#[derive(Debug, Clone, Default)]
-pub struct BudgetQuery {
-    pub filter: Option<Expression>,
-}
-
-#[smithy_macros::smithy(shape = "com.amazonaws.bcmdashboards#CostEfficiencyQuery")]
-#[derive(Debug, Clone, Default)]
-pub struct CostEfficiencyQuery {
-    pub time_range: DateTimeRange,
-    pub granularity: Option<String>,
     pub group_by: Option<Vec<GroupDefinition>>,
     pub filter: Option<Expression>,
 }
