@@ -887,8 +887,9 @@ impl DbInstanceRecord {
         )
     }
 
-    /// The port the instance's database engine listens on: the port its own engine listener
-    /// was assigned where it HAS one, else the configured port.
+    /// The port the instance's database engine listens on: the port of the listener this
+    /// emulator bound for the instance's OWN engine wire where it bound one
+    /// ([`Self::own_wire_listener_port`]), else the port the instance is CONFIGURED on.
     ///
     /// The core owns the port range the listener is bound in and takes no port from this
     /// service (`vendor/server/src/listeners.rs`), so the configured port
@@ -898,13 +899,45 @@ impl DbInstanceRecord {
     /// listener the two are the same value.
     ///
     /// An instance of an engine whose data plane this emulator serves as an API
-    /// ([`engine_data_plane_is_an_api`]) publishes the port that API answers on — this
-    /// process's own, which `Endpoint$Address` is published beside — the same reading its
-    /// cluster follows ([`DbClusterRecord::published_port`]).
+    /// ([`engine_data_plane_is_an_api`]) has no listener of its own: that plane is reached at
+    /// this process's address, which the instance publishes through `Endpoint$Address`
+    /// ([`Self::endpoint_address`]), while its port stays the instance's own — the same
+    /// reading its cluster follows ([`DbClusterRecord::published_port`]).
     pub fn published_port(&self) -> i32 {
-        self.served_endpoint
-            .as_ref()
-            .map_or(self.endpoint_port, |served| served.port)
+        self.own_wire_listener_port().unwrap_or(self.endpoint_port)
+    }
+
+    /// The port of the listener this emulator bound for the instance's own engine wire, or
+    /// `None` for an instance it bound none for — including one whose data plane it serves as
+    /// an AWS API, whose published address is this PROCESS's own
+    /// ([`crate::state::api_plane_endpoint`]) and whose port therefore answers that API
+    /// rather than this instance's database engine.
+    fn own_wire_listener_port(&self) -> Option<i32> {
+        if engine_data_plane_is_an_api(&self.engine) {
+            return None;
+        }
+        self.served_endpoint.as_ref().map(|served| served.port)
+    }
+
+    /// `Endpoint$Port`: the port a client reaches this instance's endpoint on.
+    ///
+    /// The port of the listener opened for the instance's own engine wire where it has one,
+    /// which is the port that wire answers on ([`Self::published_port`]). Otherwise the
+    /// configured port — and for a member whose cluster MANAGES its port
+    /// ([`cluster_manages_member_attributes`]) that is the CLUSTER's published port: `Port`
+    /// "doesn't apply to Aurora DB instances. The port number is managed by the cluster", so
+    /// such a member has no port of its own and a client reaches it where the cluster says
+    /// its engine listens ([`DbClusterRecord::published_port`]).
+    ///
+    /// `db_cluster` is `None` for an instance that belongs to no cluster and for a member
+    /// whose cluster this store no longer holds, both of which report the instance's own.
+    pub fn endpoint_published_port(&self, db_cluster: Option<&DbClusterRecord>) -> i32 {
+        if let Some(port) = self.own_wire_listener_port() {
+            return port;
+        }
+        db_cluster
+            .filter(|cluster| cluster_manages_member_attributes(&cluster.engine))
+            .map_or(self.endpoint_port, DbClusterRecord::published_port)
     }
 
     /// When the server certificate issued at creation expires:
@@ -1221,7 +1254,10 @@ impl DbInstanceRecord {
                 .map(str::to_string),
             endpoint: Some(Endpoint {
                 address: Some(self.endpoint_address()),
-                port: Some(self.published_port()),
+                // The port a client reaches this endpoint on, which for a member whose port
+                // its cluster manages is the CLUSTER's
+                // ([`Self::endpoint_published_port`]).
+                port: Some(self.endpoint_published_port(db_cluster)),
                 hosted_zone_id: Some(hosted_zone_id(
                     &self.region,
                     endpoint_domain(&self.engine),

@@ -3,17 +3,22 @@
 //! The ADDRESS a DB cluster and its instances ANNOUNCE for a client to connect to.
 //!
 //! `DBCluster$Endpoint` is "the connection endpoint for the primary instance of the DB
-//! cluster", `Endpoint$Address` is "the DNS address of the DB instance", and both
-//! `DBCluster$Port` and `Endpoint$Port` are "the port that the database engine is listening
-//! on": the pair is the one thing a client DIALS to reach the graph, because the Neptune
-//! data plane is addressed at the cluster's own endpoint and nowhere else. A pair naming an
-//! address this process does not answer on therefore makes the whole data plane
-//! unreachable.
+//! cluster" and `Endpoint$Address` is "the DNS address of the DB instance": the HOST a client
+//! reaches the graph at, because the Neptune data plane is addressed at the cluster's own
+//! endpoint and nowhere else. A host this process does not answer on makes the whole data
+//! plane unreachable, so the host announced is the one this emulator is REACHED at whenever
+//! it has one, and the AWS-shaped DNS name only on an emulator that is served on no port at
+//! all — an in-process call with no socket behind it, where there is no address of this
+//! process to announce.
 //!
-//! So the pair announced is the address this emulator is REACHED at whenever it has one,
-//! and the AWS-shaped DNS host with the documented engine port only on an emulator that is
-//! served on no port at all — an in-process call with no socket behind it, where there is
-//! no address of this process to announce.
+//! `DBCluster$Port` and `Endpoint$Port` are "the port that the database engine is listening
+//! on", and that is a value the CREATE configures: `CreateDBCluster$Port` is "the port number
+//! on which the instances in the DB cluster accept connections" with "Default: 8182", so the
+//! port announced is the one the request asked for, or that default when it asked for none.
+//! It is a stored property of the resource — the same on every read of it and across
+//! restarts — where the port this process happens to be bound to is a property of the
+//! PROCESS, differing between two clusters and between two boots, which a client could
+//! neither reconcile against the value it sent nor cache.
 //!
 //! WHICH address is this emulator's own is the tree's one reading of that question
 //! (`service_common::data_plane_addressing::reached_emulator_host_and_port`), so this
@@ -45,9 +50,9 @@ pub fn served_address(
 /// The address a CLUSTER announces.
 ///
 /// One process serves every cluster's data plane, so on a served emulator the writer and
-/// the reader endpoint are the same host — it is the only address a client can reach — and
-/// the port is the one this process listens on, whatever port the request asked for, because
-/// that is where the engine answers.
+/// the reader endpoint are the same host — it is the only address a client can reach. The
+/// port is the cluster's own configured one either way: the value the request named, else the
+/// engine default this control plane publishes ([`super::DEFAULT_PORT`]).
 pub fn announced_cluster_address(
     ctx: &::smithy_server_runtime::OperationContext<'_>,
     identifier: &str,
@@ -55,8 +60,9 @@ pub fn announced_cluster_address(
     region: &str,
     requested_port: Option<i32>,
 ) -> ClusterAddress {
+    let port = requested_port.unwrap_or(super::DEFAULT_PORT);
     match served_address(ctx) {
-        Some((host, port)) => ClusterAddress {
+        Some((host, _)) => ClusterAddress {
             endpoint: host.clone(),
             reader_endpoint: host,
             port,
@@ -64,23 +70,26 @@ pub fn announced_cluster_address(
         None => ClusterAddress {
             endpoint: cluster_dns_name(identifier, endpoint_token, region, "cluster-"),
             reader_endpoint: cluster_dns_name(identifier, endpoint_token, region, "cluster-ro-"),
-            port: requested_port.unwrap_or(super::DEFAULT_PORT),
+            port,
         },
     }
 }
 
-/// The address an INSTANCE of a cluster announces: the same address its cluster is reached
-/// at, since one process serves both.
+/// The address an INSTANCE of a cluster announces: the host its cluster is reached at, since
+/// one process serves both, and its CLUSTER's port.
+///
+/// Every instance of this engine belongs to a cluster, and `CreateDBInstance$Port` says of
+/// such an instance "Not applicable. The port is managed by the DB cluster", so the port a
+/// client reaches a member at is the cluster's and never one of the member's own.
 pub fn announced_instance_address(
     ctx: &::smithy_server_runtime::OperationContext<'_>,
     identifier: &str,
     endpoint_token: &str,
     region: &str,
-    requested_port: Option<i32>,
     cluster_port: i32,
 ) -> (String, i32) {
     match served_address(ctx) {
-        Some((host, port)) => (host, port),
+        Some((host, _)) => (host, cluster_port),
         None => (
             // An instance in a cluster inherits the cluster's endpoint shard label; only
             // its own DNS label differs.
@@ -88,7 +97,7 @@ pub fn announced_instance_address(
                 "{identifier}.{endpoint_token}.{region}.{}",
                 super::ENDPOINT_DOMAIN
             ),
-            requested_port.unwrap_or(cluster_port),
+            cluster_port,
         ),
     }
 }

@@ -2,17 +2,18 @@
 
 //! The ADDRESS a DB cluster and its instances announce, end to end over the awsQuery wire.
 //!
-//! The rule under test: `DBCluster$Endpoint` / `Endpoint$Address` is the host a client
-//! connects to and `DBCluster$Port` / `Endpoint$Port` is "the port that the database engine
-//! is listening on", so the pair a cluster reports is the address this emulator is actually
-//! reached at — a bare host with no scheme and no port of its own, plus the port this
-//! process listens on, whatever port the request asked for. That is what makes
-//! `https://<Endpoint>:<Port>` an address the Neptune data plane (`neptunedata`, which is
-//! addressed at the cluster's own endpoint and nowhere else) answers on.
+//! The rule under test: `DBCluster$Endpoint` / `Endpoint$Address` is the HOST a client
+//! connects to, so it is the host this emulator is actually reached at — a bare host with no
+//! scheme and no port of its own — because a `*.neptune.amazonaws.com` name resolves nowhere
+//! here and the Neptune data plane is addressed at the cluster's own endpoint.
+//! `DBCluster$Port` / `Endpoint$Port` is "the port that the database engine is listening on",
+//! which `CreateDBCluster$Port` CONFIGURES ("Default: 8182"), so it is the port the request
+//! asked for — or that default — on every read and whatever address the request arrived at,
+//! and a member instance reports its CLUSTER's, the port "managed by the DB cluster".
 //!
 //! Only an emulator served on no port at all — an in-process call with no socket behind it —
-//! has no address of this process to announce; there the AWS-shaped DNS host and the
-//! documented engine port are reported, which the second test below pins.
+//! has no host of this process to announce; there the AWS-shaped DNS name is reported, which
+//! the second test below pins.
 //!
 //! Each test states the rule over a TABLE of addresses: the loopback address a replay run
 //! publishes is one row.
@@ -35,7 +36,8 @@ struct AddressCase {
     requested_port: Option<&'static str>,
     /// The host every endpoint of the cluster and of its instances must report.
     expected_host: &'static str,
-    /// The port the cluster and its instances must report.
+    /// The port the cluster and its instances must report: the one the create asked for,
+    /// else the engine default `CreateDBCluster$Port` publishes.
     expected_port: &'static str,
 }
 
@@ -48,7 +50,7 @@ async fn a_cluster_announces_the_address_this_emulator_is_reached_at() {
             served_base: None,
             requested_port: None,
             expected_host: "127.0.0.1",
-            expected_port: "9297",
+            expected_port: "8182",
         },
         AddressCase {
             name: "an ephemeral data port, with the request asking for the engine port",
@@ -56,7 +58,7 @@ async fn a_cluster_announces_the_address_this_emulator_is_reached_at() {
             served_base: None,
             requested_port: Some("8182"),
             expected_host: "127.0.0.1",
-            expected_port: "44903",
+            expected_port: "8182",
         },
         AddressCase {
             name: "loopback by name, with the request asking for another port",
@@ -64,7 +66,7 @@ async fn a_cluster_announces_the_address_this_emulator_is_reached_at() {
             served_base: None,
             requested_port: Some("9999"),
             expected_host: "localhost",
-            expected_port: "41509",
+            expected_port: "9999",
         },
         AddressCase {
             name: "an IPv6 loopback literal, whose own colons live inside its brackets",
@@ -72,15 +74,15 @@ async fn a_cluster_announces_the_address_this_emulator_is_reached_at() {
             served_base: None,
             requested_port: None,
             expected_host: "[::1]",
-            expected_port: "38001",
+            expected_port: "8182",
         },
         AddressCase {
-            name: "an authority that names no port, which https dials on 443",
+            name: "an authority that names no port, asking for the published floor",
             host: Some("127.0.0.1"),
             served_base: None,
-            requested_port: None,
+            requested_port: Some("1150"),
             expected_host: "127.0.0.1",
-            expected_port: "443",
+            expected_port: "1150",
         },
         AddressCase {
             name: "an in-process call on an emulator that IS served on a port",
@@ -88,15 +90,15 @@ async fn a_cluster_announces_the_address_this_emulator_is_reached_at() {
             served_base: Some("https://127.0.0.1:9297"),
             requested_port: Some("8182"),
             expected_host: "127.0.0.1",
-            expected_port: "9297",
+            expected_port: "8182",
         },
         AddressCase {
             name: "a request that addressed an AWS host on an emulator served on a port",
             host: Some("rds.us-east-1.amazonaws.com"),
             served_base: Some("https://127.0.0.1:35117"),
-            requested_port: None,
+            requested_port: Some("65535"),
             expected_host: "127.0.0.1",
-            expected_port: "35117",
+            expected_port: "65535",
         },
     ];
 
@@ -140,8 +142,8 @@ async fn a_cluster_announces_the_address_this_emulator_is_reached_at() {
             "case {:?}: expected Port {:?}, got {port:?}",
             case.name, case.expected_port
         );
-        // The whole point of the pair: `<Endpoint>:<Port>` is ONE address a client dials,
-        // so it parses as a URL naming exactly one port — the announced one.
+        // `<Endpoint>` carries no port of its own, so `<Endpoint>:<Port>` — the pair a client
+        // composes — parses as a URL naming exactly one port: the announced one.
         let dialled = format!("https://{endpoint}:{port}/")
             .parse::<http::Uri>()
             .unwrap_or_else(|error| {
@@ -159,8 +161,9 @@ async fn a_cluster_announces_the_address_this_emulator_is_reached_at() {
             dialled.port_u16()
         );
 
-        // An instance of the cluster is reached at the same address, whatever port it asks
-        // for: one process serves both.
+        // An instance of the cluster is reached at the same host, and at its CLUSTER's port
+        // whatever port its own create asks for: `CreateDBInstance$Port` is "Not applicable.
+        // The port is managed by the DB cluster".
         let instance = format!("{identifier}-1");
         let created_instance = call(
             &neptune,

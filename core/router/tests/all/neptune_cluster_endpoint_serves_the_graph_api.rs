@@ -4,31 +4,32 @@
 //! cluster's data plane on.
 //!
 //! `DBCluster$Endpoint` is "the connection endpoint for the primary instance of the DB
-//! cluster" and `DBCluster$Port` is "the port that the database engine is listening on": the
-//! pair is the one address a client composes and dials, because an Amazon Neptune cluster's
-//! data plane — the graph API, restJson1, signing name `neptune-db` — has no regional
-//! endpoint of its own and is addressed at the cluster's connection endpoint and nowhere
-//! else. This emulator serves that API at its OWN endpoint, so the pair a Neptune cluster
-//! publishes is this process's host and the port it is reached on; a pair naming anything
-//! else (a `*.neptune.amazonaws.com` name this machine does not resolve, or a port nothing
-//! of this process listens on) is no connection endpoint at all, and leaves the whole
-//! 43-operation graph API unreachable.
+//! cluster": the HOST a client dials, because an Amazon Neptune cluster's data plane — the
+//! graph API, restJson1, signing name `neptune-db` — has no regional endpoint of its own and
+//! is addressed at the cluster's connection endpoint and nowhere else. This emulator serves
+//! that API at its OWN endpoint, so the host a Neptune cluster publishes is this process's;
+//! a `*.neptune.amazonaws.com` name resolves nowhere here, and publishing it would leave the
+//! whole 43-operation graph API unreachable.
+//!
+//! `DBCluster$Port` is "the port that the database engine is listening on", which
+//! `CreateDBCluster$Port` CONFIGURES ("Default: 8182") — a stored property of the cluster,
+//! the same on every read and across restarts, and never the port this process happens to be
+//! bound to.
 //!
 //! So each row below creates a cluster through the control plane, asserts the exact host and
 //! the exact port it published — those two assertions are what pin this rule — and then
 //! composes `https://<Endpoint>:<Port>` exactly as a client does and DIALS it with a
 //! neptunedata request: the published address must reach the graph API's own front door and
 //! be answered by it. (The dial goes through the router, which resolves a service from the
-//! signing name rather than from the authority's port, so it is the exact `<Port>`
-//! comparison above it that would catch a port nothing answers on — do not weaken that
-//! assertion on the strength of the dial.)
+//! signing name rather than from the authority's port, so it is the two comparisons above it
+//! that pin what was published — do not weaken them on the strength of the dial.)
 //!
 //! The rows differ along what the rule generalises over: the address the control-plane
 //! client is configured with (loopback by number and by name, with a port and without), the
-//! port the create asks for (which configures the engine but cannot move where the API
-//! answers), and an engine whose data plane this emulator serves neither as an API nor as a
-//! native wire — which keeps the AWS DNS name and the engine's own default port, because
-//! there is no address of this process to publish for it.
+//! port the create asks for (none, the engine default, another value), and an engine whose
+//! data plane this emulator serves neither as an API nor as a native wire — which keeps the
+//! AWS DNS name and the engine's own default port, because there is no host of this process
+//! to publish for it.
 //!
 //! This suite needs the WHOLE router: the control plane that publishes the address (Amazon
 //! RDS, which serves the Neptune control plane's model too) and the data plane that has to
@@ -75,9 +76,10 @@ struct Row {
     endpoint: &'static str,
     /// Request members beyond `DBClusterIdentifier` and `Engine`.
     extra: &'static [(&'static str, &'static str)],
-    /// The `host` and `Port` the cluster must publish, for a cluster whose data plane this
-    /// emulator serves; `None` for one it serves neither way, which keeps the AWS DNS name
-    /// of its engine's control plane and the port the create configured.
+    /// The `host` this emulator is reached at and the `Port` the create configured, which is
+    /// what a cluster whose data plane this emulator serves must publish; `None` for one it
+    /// serves neither way, which keeps the AWS DNS name of its engine's control plane and
+    /// the port the create configured.
     served_at: Option<(&'static str, &'static str)>,
 }
 
@@ -87,32 +89,30 @@ const ROWS: &[Row] = &[
         engine: GRAPH_ENGINE,
         endpoint: "https://127.0.0.1:9297/",
         extra: &[],
-        served_at: Some(("127.0.0.1", "9297")),
+        // `CreateDBClusterMessage$Port` of the Neptune model: "Default: 8182".
+        served_at: Some(("127.0.0.1", "8182")),
     },
     Row {
         case: "a Neptune cluster whose create asked for the Neptune engine port",
         engine: GRAPH_ENGINE,
         endpoint: "https://127.0.0.1:44903/",
-        // `CreateDBClusterMessage$Port` of the Neptune model: "Default: 8182". The port the
-        // create configures the engine with cannot move where the API answers.
         extra: &[("Port", "8182")],
-        served_at: Some(("127.0.0.1", "44903")),
+        served_at: Some(("127.0.0.1", "8182")),
     },
     Row {
         case: "a Neptune cluster reached by the loopback NAME, asking for another port",
         engine: GRAPH_ENGINE,
         endpoint: "https://localhost:41509/",
         extra: &[("Port", "9999")],
-        served_at: Some(("localhost", "41509")),
+        served_at: Some(("localhost", "9999")),
     },
     Row {
         case: "a Neptune cluster reached at an endpoint that names no port",
         engine: GRAPH_ENGINE,
         endpoint: "https://127.0.0.1/",
-        extra: &[],
-        // An `https` endpoint naming no port is dialled on the port RFC 9110 fixes for the
-        // scheme, which is where this emulator answered the create.
-        served_at: Some(("127.0.0.1", "443")),
+        // The floor of the range an endpoint port may fall in ("Valid Values: 1150-65535").
+        extra: &[("Port", "1150")],
+        served_at: Some(("127.0.0.1", "1150")),
     },
     Row {
         case: "a DocumentDB cluster, whose data plane this emulator serves neither way",
@@ -248,8 +248,8 @@ fn a_neptune_clusters_published_endpoint_answers_the_graph_api() {
                 );
                 assert_eq!(
                     port, expected_port,
-                    "case {case:?}: expected <Port> {expected_port:?} — the port this \
-                     emulator answers the graph API on — got {port:?} in {created}"
+                    "case {case:?}: expected <Port> {expected_port:?} — the port the create \
+                     configured this cluster's engine with — got {port:?} in {created}"
                 );
                 let composed = format!("https://{endpoint}:{port}/")
                     .parse::<::http::Uri>()

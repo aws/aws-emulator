@@ -13,21 +13,21 @@
 //! graph API unreachable.
 //!
 //! `DBCluster$Port` / `Endpoint$Port` — "the port that the database engine is listening on"
-//! — is the other half of that one address. `Endpoint` carries no port of its own, so
-//! `Endpoint` + `Port` is the pair a client dials, and a port nothing answers on is no
-//! connection endpoint any more than a host nothing resolves is: a resource whose plane is
-//! served as an API therefore publishes the port that API answers on — this process's own —
-//! exactly as a resource with a listener OF ITS OWN publishes that listener's port. Only a
-//! resource whose plane this emulator serves neither way publishes the port the create
-//! configured, beside the AWS DNS name it also keeps.
+//! — is NOT that address's. It is the port the create CONFIGURED (`CreateDBCluster$Port`,
+//! "the port number on which the instances in the DB cluster accept connections"), a stored
+//! property of the resource: the same on every read of it and across restarts, where the port
+//! this process is bound to differs between two clusters and between two boots. So a resource
+//! whose plane is served as an API publishes that address through its endpoint HOST and keeps
+//! its own configured port; only a resource with a LISTENER of its own publishes that
+//! listener's port, which is the port its engine really answers on.
 //!
 //! The table spans what the rule generalises over: the address the client is talking to
 //! (loopback by number and by name, with and without a port), the port the request asks
-//! for, an engine whose data plane this emulator serves as a native WIRE instead (which
-//! keeps publishing its own listener), an engine whose data plane it does not serve at all
-//! (which keeps its AWS DNS name and its engine's port), and a request addressed to this
-//! service's own AWS host on an emulator served on no port (which has no address of its own
-//! to publish).
+//! for (none, the engine default, another value), an engine whose data plane this emulator
+//! serves as a native WIRE instead (which publishes its own listener's port), an engine whose
+//! data plane it does not serve at all (which keeps its AWS DNS name and its engine's port),
+//! and a request addressed to this service's own AWS host on an emulator served on no port
+//! (which has no host of its own to publish).
 
 use crate::db_clusters::{describe_one, the_cluster};
 use crate::db_instance_engine_endpoint::endpoint_of;
@@ -44,7 +44,8 @@ const CLUSTER_MEMBER_CLASS: &str = "db.r5.large";
 /// What a row expects the cluster to publish.
 #[derive(Debug, PartialEq, Eq)]
 enum Expected {
-    /// The exact host and port this emulator answers the cluster's data plane on.
+    /// The exact host this emulator answers the cluster's data plane on, beside the port the
+    /// create configured the cluster's engine with.
     Address(&'static str, &'static str),
     /// A listener of the cluster's own: the two DNS names the cluster mints from its
     /// identifier, in the zone the interface that listener is bound on is named by, with the
@@ -72,32 +73,31 @@ const ADDRESS_CASES: &[AddressCase] = &[
         engine: "neptune",
         endpoint: "https://127.0.0.1:9297/",
         extra: &[],
-        expected: Expected::Address("127.0.0.1", "9297"),
+        // `CreateDBClusterMessage$Port` of the Neptune model: "Default: 8182" — the port a
+        // create that names none configures.
+        expected: Expected::Address("127.0.0.1", "8182"),
     },
     AddressCase {
         name: "a Neptune cluster whose request asked for the Neptune engine port",
         engine: "neptune",
         endpoint: "https://127.0.0.1:44903/",
-        // `CreateDBClusterMessage$Port` of the Neptune model: "Default: 8182" — the port
-        // the create configures the engine with, which cannot move where the API answers.
         extra: &[("Port", "8182")],
-        expected: Expected::Address("127.0.0.1", "44903"),
+        expected: Expected::Address("127.0.0.1", "8182"),
     },
     AddressCase {
         name: "a Neptune cluster reached by loopback NAME, asking for another port",
         engine: "neptune",
         endpoint: "https://localhost:41509/",
         extra: &[("Port", "9999")],
-        expected: Expected::Address("localhost", "41509"),
+        expected: Expected::Address("localhost", "9999"),
     },
     AddressCase {
         name: "a Neptune cluster reached at an endpoint that names no port",
         engine: "neptune",
         endpoint: "https://127.0.0.1/",
-        extra: &[],
-        // An `https` endpoint that names no port is dialled on the one RFC 9110 fixes for
-        // the scheme, which is where this emulator answered that create.
-        expected: Expected::Address("127.0.0.1", "443"),
+        // The floor of the range an endpoint port may fall in ("Valid Values: 1150-65535").
+        extra: &[("Port", "1150")],
+        expected: Expected::Address("127.0.0.1", "1150"),
     },
     AddressCase {
         name: "a Neptune cluster created through this service's own AWS host",
@@ -143,8 +143,8 @@ fn assert_published_address(case: &str, label: &str, cluster: &str, row: &Addres
             );
             assert_eq!(
                 port, expected_port,
-                "case {case:?}: expected <Port> {expected_port:?} — the port this emulator \
-                 answers this cluster's data plane on — got {port:?} in {cluster}"
+                "case {case:?}: expected <Port> {expected_port:?} — the port the create \
+                 configured this cluster's engine with — got {port:?} in {cluster}"
             );
             // `<Endpoint>` carries no port of its own, so `<Endpoint>:<Port>` parses as a
             // URL naming exactly the published port.
@@ -236,8 +236,9 @@ async fn a_cluster_publishes_the_address_its_data_plane_is_served_at() {
 
 /// What a member instance must publish.
 enum MemberAddress {
-    /// The host this emulator answers an API data plane on, with the port it answers it at:
-    /// the address of this process itself, which is where that plane is served.
+    /// The host this emulator answers an API data plane on, with the port its CLUSTER
+    /// publishes: the plane is served at this process's host, and the port a member is
+    /// reached at is the one the cluster manages.
     ApiPlane(&'static str, &'static str),
     /// A listener of the member's OWN, for an engine whose native wire this emulator serves:
     /// the address and port of the socket the core opened for it.
@@ -260,9 +261,10 @@ async fn a_cluster_member_publishes_the_same_address_as_its_cluster() {
         (
             "a Neptune cluster member",
             "neptune",
-            // The address this emulator answers the graph API on — never the engine port
-            // the create asks for below, which nothing of this process listens on.
-            MemberAddress::ApiPlane("127.0.0.1", "9297"),
+            // The host this emulator answers the graph API on, beside the port its CLUSTER
+            // was configured with — `Port` "doesn't apply" to such a member, so the port the
+            // member's own create asks for below is not its port.
+            MemberAddress::ApiPlane("127.0.0.1", "8182"),
         ),
         (
             "a DocumentDB cluster member",
@@ -298,7 +300,8 @@ async fn a_cluster_member_publishes_the_same_address_as_its_cluster() {
                     ("Engine", engine),
                     ("DBInstanceClass", CLUSTER_MEMBER_CLASS),
                     ("DBClusterIdentifier", cluster.as_str()),
-                    // The port a client asks for cannot move where the API answers.
+                    // `Port` "doesn't apply" to a member whose cluster manages it, so this
+                    // is not the port such a member is reached at.
                     ("Port", "7777"),
                 ],
             )

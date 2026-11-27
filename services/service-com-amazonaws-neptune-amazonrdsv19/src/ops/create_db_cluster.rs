@@ -319,9 +319,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let created = ::std::time::SystemTime::now();
         let seed = st::record_seed(&identifier, created);
         let endpoint_token = st::mint_endpoint_token(&identifier, created);
-        // The connection endpoint and the port the cluster reports have to be an address
-        // this emulator answers on: they are the only way a neptunedata client finds the
-        // graph.
+        // The connection endpoint the cluster reports has to be a host this emulator answers
+        // on: it is the only way a neptunedata client finds the graph. The `Port` beside it is
+        // the cluster's own configured one ([`st::announced_cluster_address`]).
         let address =
             st::announced_cluster_address(ctx, &identifier, &endpoint_token, &region, input.port);
         let engine_version = input

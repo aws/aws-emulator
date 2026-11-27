@@ -368,14 +368,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             let engine_version = input
                 .engine_version
                 .unwrap_or_else(|| cluster.engine_version.clone());
-            // Its connection endpoint, like the cluster's, has to be an address this
-            // emulator answers on.
+            // Its connection endpoint, like the cluster's, has to be a host this emulator
+            // answers on, and the port it is reached at is the one its CLUSTER manages.
             let (endpoint_address, endpoint_port) = st::announced_instance_address(
                 ctx,
                 &identifier,
                 &cluster.endpoint_token,
                 &region,
-                input.port,
                 cluster.port,
             );
             let record = st::DbInstanceRecord {

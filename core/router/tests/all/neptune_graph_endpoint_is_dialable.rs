@@ -4,13 +4,13 @@
 //! reports the same pair the create published.
 //!
 //! The rule this suite pins is the one `neptune_cluster_endpoint_serves_the_graph_api.rs`
-//! states for the cluster envelope — `Endpoint` + `Port` is the one address a `neptunedata`
-//! client composes and dials, so for a plane this emulator serves at its own endpoint both
-//! members are that address's — carried to the two places that suite leaves open:
+//! states for the cluster envelope — `Endpoint` is the HOST this emulator serves the plane
+//! at, and `Port` is the port the create configured — carried to the two places that suite
+//! leaves open:
 //!
-//! * a MEMBER instance of the cluster, whose own `Endpoint$Address` / `Endpoint$Port` is a
-//!   second address onto the same data plane, however the create configured its engine's
-//!   port; and
+//! * a MEMBER instance of the cluster, whose own `Endpoint$Address` is a second address onto
+//!   the same data plane and whose `Endpoint$Port` is its CLUSTER's, the port
+//!   `CreateDBInstance$Port` says is "managed by the DB cluster"; and
 //! * the READ back, because the address is persisted on the record rather than recomputed
 //!   per response: `DescribeDBClusters` and `DescribeDBInstances` report the pair the
 //!   creates published, and the graph API still answers there.
@@ -48,12 +48,13 @@ const MEMBER_CLASS: &str = "db.t4g.medium";
 /// publish.
 const CLIENT_ENDPOINT: &str = "https://127.0.0.1:9297/";
 
-/// The host and port that endpoint names, which is the pair the published members must
-/// carry.
-const SERVED_AT: (&str, &str) = ("127.0.0.1", "9297");
+/// The host that endpoint names, which is the host the published members must carry, beside
+/// the port the cluster's create configured — here the engine default `CreateDBCluster$Port`
+/// publishes ("Default: 8182"), since the create below names no `Port`.
+const SERVED_AT: (&str, &str) = ("127.0.0.1", "8182");
 
-/// The port the member's create asks for: it configures the member's engine and cannot move
-/// where the graph API answers.
+/// The port the member's create asks for: `CreateDBInstance$Port` is "Not applicable. The
+/// port is managed by the DB cluster", so it is not the port the member is reached at.
 const REQUESTED_ENGINE_PORT: &str = "7777";
 
 /// One awsQuery call against the RDS front door, addressed to [`CLIENT_ENDPOINT`].
@@ -140,12 +141,12 @@ fn a_cluster_member_publishes_the_same_dialable_address_and_reads_report_it() {
                     element(&created, "Port").as_str()
                 ),
                 (expected_host, expected_port),
-                "the cluster must publish the address this emulator answers its graph API \
-                 at, got {created}"
+                "the cluster must publish the host this emulator answers its graph API at \
+                 beside the port its create configured, got {created}"
             );
 
             // A member of that cluster is a SECOND address onto the same data plane, and the
-            // engine port its create configures cannot move where the API answers.
+            // port it is reached at is the one its cluster manages.
             let (status, member_created) = runtime.block_on(control_plane_call(
                 &router,
                 "CreateDBInstance",
@@ -168,7 +169,7 @@ fn a_cluster_member_publishes_the_same_dialable_address_and_reads_report_it() {
                     element(&endpoint, "Port").as_str()
                 ),
                 (expected_host, expected_port),
-                "the member must publish the same dialable address as its cluster, got \
+                "the member must publish the same host and its cluster's port, got \
                  {endpoint}"
             );
 

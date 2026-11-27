@@ -17,14 +17,15 @@
 //! ([`super::endpoint_domain`]) resolves to nothing here and would be no connection endpoint
 //! at all.
 //!
-//! Its `Port` is that address's too. `Endpoint` carries no port of its own, so
-//! `Endpoint` + `Port` is the ONE pair a client dials, and a pair that names a port nothing
-//! answers on is no connection endpoint at all — exactly as a host nothing resolves is none.
-//! So a resource whose plane is served as an API publishes the port this process answers
-//! that API on, as a resource with a listener of its own publishes the port the core
-//! assigned that listener ([`super::DbClusterRecord::published_port`]): the port the create
-//! configured stays on the record, and is what the resource publishes only where this
-//! emulator serves its plane neither way.
+//! Its `Port` is NOT that address's. `Port` is "the port that the database engine is
+//! listening on", a value the CREATE configures and a modification moves, so it is a stored
+//! property of the resource: identical on every read of it and across restarts. The port this
+//! process is bound to is a property of the PROCESS — it differs between two resources and
+//! between two boots — so publishing it as `Port` would answer a client a value it never
+//! configured and could not cache. The address this emulator answers the API at is therefore
+//! published through the HOST alone, and the resource keeps its own configured port
+//! ([`super::DbClusterRecord::published_port`]). Only the port of a listener opened for a
+//! resource's own engine WIRE replaces it, because there the port is that engine's.
 //!
 //! WHICH address is this emulator's own is the tree's one reading of that question
 //! (`service_common::data_plane_addressing::reached_emulator_host_and_port`), so this
@@ -46,8 +47,13 @@ pub fn engine_data_plane_is_an_api(engine: &str) -> bool {
 
 /// The address a cluster or instance running `engine` publishes, for an engine whose data
 /// plane this emulator serves as an API at its own endpoint: the HOST this request reached
-/// this emulator at, and the PORT it reached it on — the address that plane is served on,
-/// which is what [`super::DbClusterRecord::published_port`] reports beside the host.
+/// this emulator at, which is the host that plane is served on and the one member such a
+/// resource publishes it through — its `Port` stays the port the resource was configured on
+/// ([`super::DbClusterRecord::published_port`]).
+///
+/// The port this process was reached on is carried along for the readers that need the whole
+/// address of the plane rather than the resource's endpoint pair (a custom endpoint's single
+/// `Endpoint` string, which has no port member of its own).
 ///
 /// `None` for an engine whose data plane is a native wire (the resource's own listener is
 /// its address), and for an emulator served on no port at all that no request addressed

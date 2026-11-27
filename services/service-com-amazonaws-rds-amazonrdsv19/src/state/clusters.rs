@@ -71,11 +71,14 @@ pub struct DbClusterRecord {
     ///
     /// Every endpoint member in front of that plane publishes THIS host — the two cluster
     /// endpoints ([`Self::endpoint`], [`Self::reader_endpoint`]) and each CUSTOM endpoint
-    /// ([`Self::custom_endpoint_host`]) — beside the `Port` published with them
-    /// ([`Self::published_port`]), because a client resolves and dials exactly what the control
-    /// plane published and this is the address the plane answers on. A cluster this emulator
-    /// serves no plane for publishes the AWS DNS form instead, there being no local plane for
-    /// such a cluster to lead a client to.
+    /// ([`Self::custom_endpoint_host`]) — because a client resolves and dials exactly what the
+    /// control plane published and this is the address the plane answers on. A cluster this
+    /// emulator serves no plane for publishes the AWS DNS form instead, there being no local
+    /// plane for such a cluster to lead a client to.
+    ///
+    /// Its PORT is published with it only where it is the port of a listener opened for the
+    /// cluster's own engine wire; a cluster whose plane is served as an AWS API publishes its
+    /// own configured `Port` beside this host ([`Self::published_port`]).
     pub served_endpoint: Option<ServedEndpoint>,
     /// `Status`.
     pub status: String,
@@ -639,30 +642,42 @@ impl DbClusterRecord {
         )
     }
 
-    /// The port the cluster's database engine listens on: the port of the address this
-    /// emulator answers the cluster's data plane at where it serves one, else the configured
-    /// port.
+    /// The port the cluster's database engine listens on: the port the cluster is
+    /// CONFIGURED on — what `Port` set at create or a modification moved it to, which the
+    /// record keeps ([`Self::port`]), and the engine's published default where no request
+    /// named one — unless this emulator bound a listener for the cluster's OWN engine wire,
+    /// whose port it publishes instead ([`Self::own_wire_listener_port`]).
     ///
     /// The core owns the port range a listener is bound in and takes no port from this
     /// service (`vendor/server/src/listeners.rs`), so for an engine whose native wire this
-    /// emulator speaks the configured port (what `Port` set, which the record keeps) is what
-    /// the cluster records and the port the listener landed on is what it publishes — an
-    /// engine endpoint whose port nothing answers on would be no endpoint at all.
+    /// emulator speaks the configured port is what the cluster records and the port the
+    /// listener landed on is what it publishes — an engine endpoint whose port nothing
+    /// answers on would be no endpoint at all.
     ///
-    /// The same holds for an engine whose data plane this emulator serves as an API
-    /// ([`engine_data_plane_is_an_api`]): that plane answers on THIS process's endpoint, so
-    /// the cluster publishes the port it is reached on there
-    /// ([`crate::state::api_plane_endpoint`]). `Endpoint` carries no port of its own, so
-    /// `Endpoint` + `Port` is the one pair a client dials, and the engine's own default
-    /// beside a host this process serves would name a port nothing answers on.
-    ///
-    /// A cluster whose plane this emulator serves NEITHER way publishes the port it was
-    /// created with — the engine's published default where the request named none — beside
-    /// the AWS DNS name it also keeps.
+    /// A cluster whose data plane this emulator serves as an AWS API
+    /// ([`engine_data_plane_is_an_api`]) has no such listener: that plane is reached at THIS
+    /// process's address, which the cluster publishes through its endpoint HOST
+    /// ([`Self::serves_at_its_own_host`]) — the one member that names where the plane is
+    /// answered. The port this process happens to be bound to is a property of the PROCESS
+    /// and not of the cluster: it differs between two clusters and between two boots, where
+    /// `Port` is the value the create carried and every later read of the cluster reports it
+    /// unchanged.
     pub fn published_port(&self) -> i32 {
-        self.served_endpoint
-            .as_ref()
-            .map_or(self.port, |served| served.port)
+        self.own_wire_listener_port().unwrap_or(self.port)
+    }
+
+    /// The port of the listener this emulator bound for the cluster's own engine wire, or
+    /// `None` for a cluster it bound none for.
+    ///
+    /// `None` for a cluster whose data plane it serves as an AWS API too: the address such a
+    /// cluster publishes is this PROCESS's own ([`crate::state::api_plane_endpoint`]), whose
+    /// port answers that API rather than the cluster's database engine, so it is no port of
+    /// the cluster's to publish.
+    fn own_wire_listener_port(&self) -> Option<i32> {
+        if engine_data_plane_is_an_api(&self.engine) {
+            return None;
+        }
+        self.served_endpoint.as_ref().map(|served| served.port)
     }
 
     /// The reader endpoint, which "load-balances connections across the Aurora Replicas
