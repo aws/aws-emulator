@@ -12,11 +12,18 @@
 //! ([`crate::state::presigned_session_url`]). Fetching that URL is how the caller opens the
 //! session, so this module serves it:
 //!
-//! * a `GET` of the session address carrying a live grant token reports the session that
-//!   grant opened — the resource it belongs to and when it stops authenticating;
+//! * a `GET` carrying a live grant token whose resource publishes a web address of its OWN is
+//!   HANDED OFF to it — `302`, with that address in `Location` and the grant travelling in
+//!   the query — because that is what the URL exists for: "the user will be automatically
+//!   signed in to the domain, and granted access to all of the Apps and files associated with
+//!   the Domain's … volume". A Studio domain publishes one (its `Url`, the Studio landing of
+//!   that domain), so a presigned domain URL lands its holder in that domain's own Studio
+//!   rather than answering from the address it was fetched at;
+//! * a `GET` of a resource that publishes no second address reports the session that grant
+//!   opened — the resource it belongs to and when it stops authenticating;
 //! * a token no grant of that resource holds, and one whose window the clock has closed,
 //!   authenticate nothing: the answer is `403`, as AWS stops authenticating a URL past the
-//!   window the request asked for.
+//!   window the request asked for, and nothing is handed off.
 //!
 //! The model binds no operation to that path — an opened session is not an API call, it is
 //! what the API's URL points at — so it is claimed through
@@ -35,7 +42,8 @@ use aws_smithy_runtime_api::http::{Request as RtRequest, Response as RtResponse}
 use smithy_server_runtime::{BoxFuture, ErasedOperation, OperationContext, Service};
 
 use super::published_address::{
-    answer, decoded_segments, query_field, FETCH_METHOD, JSON_MEDIA_TYPE, PLAIN_MEDIA_TYPE,
+    answer, decoded_segments, hand_off, query_field, FETCH_METHOD, JSON_MEDIA_TYPE,
+    PLAIN_MEDIA_TYPE,
 };
 
 /// The method a presigned session is opened on: a browser following the URL.
@@ -98,23 +106,60 @@ impl<Eng: Send + Sync + 'static> PresignedSessionRoute<Eng> {
         let Some(state) = crate::state::service_state(&*self.engine) else {
             return answer(500, PLAIN_MEDIA_TYPE, NO_SESSION);
         };
-        // The token is read DECODED, the way the mint percent-encoded it into the URL, so
-        // the value matched here is the one the grant holds.
+        // The token is the credential this address verifies, so a fetch that presents NONE —
+        // no field at all, or an empty one — authenticates nothing and is answered before the
+        // store is touched. It is read DECODED, the way the mint percent-encoded it into the
+        // URL, so the value matched below is the one the grant holds.
         let token = query_field(req.uri(), crate::state::PRESIGNED_SESSION_TOKEN_FIELD)
-            .unwrap_or_default();        let store = state.lock();
+            .filter(|token| !token.is_empty());
+        let Some(token) = token else {
+            return answer(403, PLAIN_MEDIA_TYPE, NO_SESSION);
+        };
+        let store = state.lock();
         let session = store.presigned_session(
             &addressed.kind,
             &addressed.resource,
             &token,
             std::time::SystemTime::now(),
         );
+        // Where the resource this session belongs to publishes its own web address, when it
+        // publishes one: a session that opens at another address is HANDED OFF to it below.
+        let published = store.published_session_address(&addressed.kind, &addressed.resource);
         drop(store);
 
         match session {
             crate::state::PresignedSession::Open {
                 subject_arn,
                 session_expires_at,
-            } => answer_session(&subject_arn, session_expires_at),
+            } => {
+                // A presigned URL exists to sign its holder in to the resource's OWN web
+                // experience ("the user will be automatically signed in to the domain, and
+                // granted access to all of the Apps and files associated with the Domain's
+                // … volume"), which is served at an address of that resource's own. So a
+                // fetch that has not reached that address yet is answered with the hand-off
+                // to it, carrying the grant and the session fields this plane published — and
+                // the fetch that arrives there opens the session. A resource that publishes
+                // no web address of its own serves the session where the URL was published,
+                // and so does a hand-off this process could not address.
+                let landing = landing_fields(req.uri());
+                let landing: Vec<(&str, &str)> = landing
+                    .iter()
+                    .map(|(field, value)| (*field, value.as_str()))
+                    .collect();
+                let handed_off = published
+                    .filter(|address| {
+                        !crate::state::addresses_published_path(address, req.uri())
+                    })
+                    .and_then(|address| {
+                        hand_off(&crate::state::handed_off_address(
+                            &address, &token, &landing,
+                        ))
+                    });
+                match handed_off {
+                    Some(answer) => answer,
+                    None => answer_session(&subject_arn, session_expires_at),
+                }
+            }
             crate::state::PresignedSession::Expired => {
                 answer(403, PLAIN_MEDIA_TYPE, SESSION_OVER)
             }
@@ -144,6 +189,22 @@ impl<Eng: Send + Sync + 'static> ErasedOperation for PresignedSessionRoute<Eng> 
     fn auth_schemes(&self) -> Option<&'static [&'static str]> {
         Some(ANONYMOUS)
     }
+}
+
+/// The session fields BESIDE the grant token that a fetch of a session address carries, as
+/// the mint published them: where the session lands ([`crate::state::PRESIGNED_SESSION_SPACE_FIELD`],
+/// [`crate::state::PRESIGNED_SESSION_LANDING_URI_FIELD`]), each only when the fetch names it.
+///
+/// Only these travel on to the address a hand-off leads to: the fetch's own query is not
+/// copied, so nothing a caller appended to the URL reaches the next address.
+fn landing_fields(uri: &str) -> Vec<(&'static str, String)> {
+    [
+        crate::state::PRESIGNED_SESSION_SPACE_FIELD,
+        crate::state::PRESIGNED_SESSION_LANDING_URI_FIELD,
+    ]
+    .into_iter()
+    .filter_map(|field| query_field(uri, field).map(|value| (field, value)))
+    .collect()
 }
 
 /// The session an open grant reports: the resource it belongs to and when it stops

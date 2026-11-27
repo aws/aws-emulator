@@ -5,19 +5,19 @@
 //! real wire path (SageMaker, Amazon S3 and IAM mounted on ONE shared engine, as the
 //! production router mounts every service), so what is asserted is what a client sees.
 //!
-//! THE RULE UNDER TEST: a feature group whose `OfflineStoreConfig` names a location the
-//! permissions in force do not let its `RoleArn` write is CREATED — the call is answered — and
-//! then FAILS: the clock settles it into the modelled `FeatureGroupStatus` `CreateFailed`
-//! carrying a `FailureReason`, which is the member the model gives exactly this condition
-//! ("The reason that the `FeatureGroup` failed to be replicated in the `OfflineStore`. This is
-//! failure can occur because: The `FeatureGroup` could not be created in the `OfflineStore`" —
-//! `DescribeFeatureGroup$FailureReason`). A group whose write IS permitted settles `Created`
-//! with no reason, and a group that failed cannot be updated.
+//! THE RULE UNDER TEST: a feature group's offline store is SET UP as the `RoleArn` the create
+//! supplies ("the IAM execution role used to persist data into the OfflineStore"), so
+//! SageMaker probes that location with that role before it admits the group: a create whose
+//! role the permissions in force do not let write the configured location is REFUSED at the
+//! call site — HTTP 400 `ValidationException`, naming the Amazon S3 access-denied cause — and
+//! nothing is stored for it, so the name is free and `DescribeFeatureGroup` answers
+//! `ResourceNotFound`. A create whose write IS permitted is admitted and settles `Created`
+//! with its offline store reporting `Active`.
 //!
 //! The two documents in force are weighed as IAM weighs them within one account: an `Allow`
 //! from EITHER the destination bucket's own policy or the role's identity-based policies
 //! grants, and an explicit `Deny` from either refuses. Only what IAM and Amazon S3
-//! ESTABLISHED fails a group: a role this account's IAM holds nothing under, and a bucket
+//! ESTABLISHED refuses a create: a role this account's IAM holds nothing under, and a bucket
 //! carrying no policy, establish nothing.
 //!
 //! The table spans what the rule generalises over: WHICH resource the role's one grant names
@@ -45,9 +45,14 @@ const UNRELATED_ACTION: &str = "s3:DeleteObject";
 /// The `FeatureGroupStatus` a group whose offline store could be created settles in.
 const CREATED: &str = service_com_amazonaws_sagemaker_sagemaker::state::FEATURE_GROUP_STATUS_CREATED;
 
-/// The `FeatureGroupStatus` a group whose offline store could NOT be created settles in.
-const CREATE_FAILED: &str =
-    service_com_amazonaws_sagemaker_sagemaker::state::FEATURE_GROUP_STATUS_CREATE_FAILED;
+/// The error code an unmodelled refusal of this operation travels as: `CreateFeatureGroup`
+/// models `ResourceInUse` and `ResourceLimitExceeded` alone
+/// (`smithy_query(query="operation", operation="CreateFeatureGroup")`), so a refusal neither
+/// states is the service-common one.
+const VALIDATION: &str = "ValidationException";
+
+/// The error code a feature group this account does not hold is reported with.
+const NOT_FOUND: &str = "ResourceNotFound";
 
 /// The group's record-identifier feature.
 const IDENTIFIER_FEATURE: &str = "customer-id";
@@ -55,7 +60,7 @@ const IDENTIFIER_FEATURE: &str = "customer-id";
 /// The group's event-time feature.
 const EVENT_TIME_FEATURE: &str = "event-time";
 
-/// How long a case waits for the terminal status the clock already owes a created group.
+/// How long a case waits for the terminal status the clock already owes an admitted group.
 ///
 /// GENEROUS on purpose: what is under test is WHICH status the group settles in, never how
 /// fast it gets there, so each case polls the reader for the condition it needs and this is
@@ -79,8 +84,8 @@ struct Row {
     /// The effect, action and resource of the destination bucket policy's one statement, which
     /// names the row's role as its principal; `None` for a bucket carrying no policy.
     bucket_policy: Option<(&'static str, &'static str, &'static str)>,
-    /// Whether the group's creation must FAIL.
-    failed: bool,
+    /// Whether the create must be REFUSED.
+    refused: bool,
 }
 
 /// The `CreateFeatureGroup` body for `group`, with the offline store `offline` describes.
@@ -136,23 +141,23 @@ async fn settled(emulator: &Emulator, case: &str, group: &str) -> Value {
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_string();
-        if status == CREATED || status == CREATE_FAILED {
+        if status == CREATED {
             return described;
         }
         assert!(
             std::time::Instant::now() < deadline,
-            "case {case:?}: the group never left {status:?}, last read {described}"
+            "case {case:?}: the group never reached {CREATED}, last read {described}"
         );
         tokio::time::sleep(POLL_INTERVAL).await;
     }
 }
 
-/// RULE: a created feature group settles `CreateFailed`, carrying a `FailureReason` that names
-/// the role and the location, exactly when the permissions in force establish that its role
-/// may not write the offline location the request named — and settles `Created` with no reason
-/// otherwise. The CALL is answered either way.
+/// RULE: `CreateFeatureGroup` is refused — HTTP 400 `ValidationException`, naming the Amazon
+/// S3 access-denied cause, with nothing stored under the name — exactly when the permissions
+/// in force establish that its `RoleArn` may not write the offline location the request
+/// named; and it is admitted, settling `Created`, otherwise.
 #[tokio::test]
-async fn a_feature_group_whose_role_may_not_write_its_offline_store_fails() {
+async fn a_feature_group_whose_role_may_not_write_its_offline_store_is_refused() {
     let rows = [
         Row {
             case: "a role granted the write on the whole destination bucket",
@@ -160,7 +165,7 @@ async fn a_feature_group_whose_role_may_not_write_its_offline_store_fails() {
             role_held: true,
             grant: Some((WRITE_ACTION, "arn:aws:s3:::{bucket}/*")),
             bucket_policy: None,
-            failed: false,
+            refused: false,
         },
         Row {
             case: "a role granted the write on exactly the configured nested prefix",
@@ -168,7 +173,7 @@ async fn a_feature_group_whose_role_may_not_write_its_offline_store_fails() {
             role_held: true,
             grant: Some((WRITE_ACTION, "arn:aws:s3:::{bucket}/offline/store/*")),
             bucket_policy: None,
-            failed: false,
+            refused: false,
         },
         Row {
             case: "a location that is the destination bucket's root",
@@ -176,7 +181,7 @@ async fn a_feature_group_whose_role_may_not_write_its_offline_store_fails() {
             role_held: true,
             grant: Some((WRITE_ACTION, "arn:aws:s3:::{bucket}/*")),
             bucket_policy: None,
-            failed: false,
+            refused: false,
         },
         Row {
             case: "a role whose one grant names another bucket",
@@ -184,7 +189,7 @@ async fn a_feature_group_whose_role_may_not_write_its_offline_store_fails() {
             role_held: true,
             grant: Some((WRITE_ACTION, "arn:aws:s3:::somewhere-else/*")),
             bucket_policy: None,
-            failed: true,
+            refused: true,
         },
         Row {
             case: "a role carrying no policy at all",
@@ -192,7 +197,7 @@ async fn a_feature_group_whose_role_may_not_write_its_offline_store_fails() {
             role_held: true,
             grant: None,
             bucket_policy: None,
-            failed: true,
+            refused: true,
         },
         Row {
             case: "a role whose one grant names another action on the location",
@@ -200,7 +205,7 @@ async fn a_feature_group_whose_role_may_not_write_its_offline_store_fails() {
             role_held: true,
             grant: Some((UNRELATED_ACTION, "arn:aws:s3:::{bucket}/*")),
             bucket_policy: None,
-            failed: true,
+            refused: true,
         },
         Row {
             case: "a role this account's IAM holds nothing under",
@@ -208,7 +213,7 @@ async fn a_feature_group_whose_role_may_not_write_its_offline_store_fails() {
             role_held: false,
             grant: None,
             bucket_policy: None,
-            failed: false,
+            refused: false,
         },
         Row {
             case: "a destination bucket whose policy denies the write to the role",
@@ -216,7 +221,7 @@ async fn a_feature_group_whose_role_may_not_write_its_offline_store_fails() {
             role_held: true,
             grant: Some((WRITE_ACTION, "arn:aws:s3:::{bucket}/*")),
             bucket_policy: Some(("Deny", WRITE_ACTION, "arn:aws:s3:::{bucket}/*")),
-            failed: true,
+            refused: true,
         },
         Row {
             case: "a destination bucket whose policy allows the write to a role with no grant",
@@ -224,7 +229,7 @@ async fn a_feature_group_whose_role_may_not_write_its_offline_store_fails() {
             role_held: true,
             grant: None,
             bucket_policy: Some(("Allow", WRITE_ACTION, "arn:aws:s3:::{bucket}/*")),
-            failed: false,
+            refused: false,
         },
         Row {
             case: "a create that names no offline store at all",
@@ -232,7 +237,7 @@ async fn a_feature_group_whose_role_may_not_write_its_offline_store_fails() {
             role_held: true,
             grant: None,
             bucket_policy: None,
-            failed: false,
+            refused: false,
         },
     ];
 
@@ -284,56 +289,79 @@ async fn a_feature_group_whose_role_may_not_write_its_offline_store_fails() {
             }
         });
         let body = create_body(&group, s3_uri.as_deref().map(|uri| (uri, role.as_str())));
-        // The CALL is answered whatever the permissions say: the failure travels on the
-        // resource, never as a refusal of the create.
-        let created = emulator.sagemaker_ok(case, "CreateFeatureGroup", &body).await;
+        let (status, answered) = emulator.sagemaker("CreateFeatureGroup", &body).await;
 
-        let described = settled(&emulator, case, &group).await;
-        let status = described
-            .get("FeatureGroupStatus")
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-        let reason = described
-            .get("FailureReason")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string();
-        assert_eq!(
-            described.get("FeatureGroupArn"),
-            created.get("FeatureGroupArn"),
-            "case {case:?}: expected the created ARN to read back, got {described}"
-        );
-        if row.failed {
+        if row.refused {
             assert_eq!(
-                status, CREATE_FAILED,
-                "case {case:?}: expected the group to settle {CREATE_FAILED}, got {described}"
+                (status, error_code(&answered).as_str()),
+                (400, VALIDATION),
+                "case {case:?}: expected the create refused, got {status} with {answered}"
             );
+            let refusal = message(&answered);
+            // The refusal states the access-denied cause and the three facts a client repairs
+            // it with: the role the store is written as, the permission it is missing and the
+            // location it is missing it on, as the REQUEST spelled them.
             let named = s3_uri.clone().unwrap_or_default();
-            for expected in [role.as_str(), WRITE_ACTION, named.as_str()] {
+            for expected in [
+                "AccessDenied",
+                "is not authorized to perform",
+                role.as_str(),
+                WRITE_ACTION,
+                named.as_str(),
+            ] {
                 assert!(
-                    reason.contains(expected),
-                    "case {case:?}: expected the FailureReason to name {expected:?}, got \
-                     {reason:?}"
+                    refusal.contains(expected),
+                    "case {case:?}: expected the refusal to name {expected:?}, got {refusal:?}"
                 );
             }
-        } else {
+            // Nothing was stored for a refused create: the name is free and the reader finds
+            // no group under it.
+            let (status, absent) = emulator
+                .sagemaker(
+                    "DescribeFeatureGroup",
+                    &json!({ "FeatureGroupName": group }),
+                )
+                .await;
             assert_eq!(
-                status, CREATED,
-                "case {case:?}: expected the group to settle {CREATED}, got {described}"
+                (status, error_code(&absent).as_str()),
+                (400, NOT_FOUND),
+                "case {case:?}: a refused create stores nothing, got {status} with {absent}"
             );
-            assert!(
-                reason.is_empty(),
-                "case {case:?}: expected no FailureReason, got {reason:?}"
+            assert_eq!(
+                message(&absent),
+                format!(
+                    "Resource Not Found: Amazon SageMaker can't find a FeatureGroup with name \
+                     {group}"
+                ),
+                "case {case:?}: expected the reader's not-found sentence, got {absent}"
             );
+            continue;
         }
+
+        assert_eq!(
+            status, 200,
+            "case {case:?}: expected the create admitted, got {status} with {answered}"
+        );
+        let described = settled(&emulator, case, &group).await;
+        assert_eq!(
+            described.get("FeatureGroupArn"),
+            answered.get("FeatureGroupArn"),
+            "case {case:?}: expected the created ARN to read back, got {described}"
+        );
+        assert_eq!(
+            described.get("FailureReason"),
+            None,
+            "case {case:?}: an admitted group carries no FailureReason, got {described}"
+        );
     }
 }
 
-/// RULE (the control pair): ONE request and ONE role — the group fails while the permissions in
-/// force give the role no write at the offline location, and the identical create made once the
-/// same role is granted that write settles `Created` with its offline store reporting `Active`.
+/// RULE (the control pair): ONE request and ONE role — the create is refused while the
+/// permissions in force give the role no write at the offline location, and the IDENTICAL
+/// create made once the same role is granted that write is admitted and settles `Created`
+/// with its offline store replicating.
 #[tokio::test]
-async fn granting_the_write_turns_the_same_failed_create_into_a_healthy_group() {
+async fn granting_the_write_turns_the_same_refused_create_into_a_healthy_group() {
     let emulator = Emulator::new();
     let bucket = "features-control-pair";
     let role_name = "offline-store-control";
@@ -344,38 +372,16 @@ async fn granting_the_write_turns_the_same_failed_create_into_a_healthy_group() 
     let s3_uri = format!("s3://{bucket}/offline/");
 
     let case = "the role carries no grant at all";
-    let failed_group = "offlinecontrolfailed";
-    emulator
-        .sagemaker_ok(
-            case,
-            "CreateFeatureGroup",
-            &create_body(failed_group, Some((&s3_uri, role.as_str()))),
-        )
-        .await;
-    let described = settled(&emulator, case, failed_group).await;
-    assert_eq!(
-        described.get("FeatureGroupStatus").and_then(Value::as_str),
-        Some(CREATE_FAILED),
-        "case {case:?}: expected the group's creation to fail, got {described}"
-    );
-    // A group whose creation failed holds no provisioned store for an update to change.
-    let (status, refused) = emulator
-        .sagemaker(
-            "UpdateFeatureGroup",
-            &json!({
-                "FeatureGroupName": failed_group,
-                "ThroughputConfig": { "ThroughputMode": "OnDemand" },
-            }),
-        )
-        .await;
+    let group = "offlinecontrolpair";
+    let body = create_body(group, Some((&s3_uri, role.as_str())));
+    let (status, refused) = emulator.sagemaker("CreateFeatureGroup", &body).await;
     assert_eq!(
         (status, error_code(&refused).as_str()),
-        (400, "ValidationException"),
-        "case {case:?}: expected updating a failed group to be refused, got {status} with \
-         {refused}"
+        (400, VALIDATION),
+        "case {case:?}: expected the create refused, got {status} with {refused}"
     );
     let refusal = message(&refused);
-    for expected in [failed_group, &CREATE_FAILED.to_uppercase()] {
+    for expected in ["AccessDenied", role.as_str(), s3_uri.as_str()] {
         assert!(
             refusal.contains(expected),
             "case {case:?}: expected the refusal to name {expected:?}, got {refusal:?}"
@@ -383,7 +389,6 @@ async fn granting_the_write_turns_the_same_failed_create_into_a_healthy_group() 
     }
 
     let case = "the same role granted the write";
-    let healthy_group = "offlinecontrolhealthy";
     emulator
         .given_role_policy(
             role_name,
@@ -395,14 +400,9 @@ async fn granting_the_write_turns_the_same_failed_create_into_a_healthy_group() 
             ),
         )
         .await;
-    emulator
-        .sagemaker_ok(
-            case,
-            "CreateFeatureGroup",
-            &create_body(healthy_group, Some((&s3_uri, role.as_str()))),
-        )
-        .await;
-    let described = settled(&emulator, case, healthy_group).await;
+    // The IDENTICAL request, under the name the refused create left free.
+    emulator.sagemaker_ok(case, "CreateFeatureGroup", &body).await;
+    let described = settled(&emulator, case, group).await;
     assert_eq!(
         described.get("FeatureGroupStatus").and_then(Value::as_str),
         Some(CREATED),
@@ -414,7 +414,7 @@ async fn granting_the_write_turns_the_same_failed_create_into_a_healthy_group() 
         "case {case:?}: expected no FailureReason, got {described}"
     );
     // The permission the create resolved is the one the group's own status is reported from,
-    // so a group this create did not fail reports its offline store as replicating.
+    // so a group this create admitted reports its offline store as replicating.
     assert_eq!(
         described
             .pointer("/OfflineStoreStatus/Status")

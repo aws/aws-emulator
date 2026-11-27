@@ -1,18 +1,16 @@
 // SPDX-License-Identifier: CC0-1.0
 
-//! The SageMaker Feature Store hand-off for a feature group whose OFFLINE STORE could not be
-//! created: the control plane fails the group, and the data plane serves none of its records.
+//! The SageMaker Feature Store hand-off for a feature group whose OFFLINE STORE cannot be
+//! created: the control plane REFUSES the create, and neither plane holds the group.
 //!
 //! RULE: a feature group's offline store is set up and written AS the `RoleArn` its create
-//! supplied ("the IAM execution role used to persist data into the OfflineStore"), so where the
-//! permissions in force do not allow that write the create is ANSWERED and the group then
-//! FAILS: it settles the modelled `FeatureGroupStatus` `CreateFailed` carrying a
-//! `FailureReason` ("The reason that the FeatureGroup failed to be replicated in the
-//! OfflineStore. This is failure can occur because: The FeatureGroup could not be created in
-//! the OfflineStore" — `DescribeFeatureGroup$FailureReason`). Such a group holds no
-//! provisioned store, so every FeatureStore Runtime call on it — a record write and a record
-//! read alike — is refused with that service's modelled `ValidationError` (HTTP 400). The same
-//! create made with the write permitted settles `Created` and its records are served.
+//! supplied ("the IAM execution role used to persist data into the OfflineStore"), so
+//! SageMaker probes that location with that role before it admits the group: where the
+//! permissions in force do not allow the write the create is REFUSED at the call site — HTTP
+//! 400 `ValidationException` naming the Amazon S3 access-denied cause — and nothing is stored,
+//! so the control plane answers `ResourceNotFound` for the name and the FeatureStore Runtime
+//! data plane resolves no group under it either. The same create made with the write permitted
+//! is admitted, settles `Created`, and its records are written and read.
 //!
 //! The four services the rule spans are mounted on ONE shared engine, exactly as
 //! `core/router/src/lib.rs` mounts them: the SageMaker control plane that creates the group,
@@ -44,8 +42,12 @@ const WRITE_ACTION: &str = "s3:PutObject";
 /// The `FeatureGroupStatus` a group whose offline store could be created settles in.
 const CREATED: &str = "Created";
 
-/// The `FeatureGroupStatus` a group whose offline store could NOT be created settles in.
-const CREATE_FAILED: &str = "CreateFailed";
+/// The error code a refusal neither of `CreateFeatureGroup`'s two modelled errors states
+/// travels as.
+const VALIDATION_EXCEPTION: &str = "ValidationException";
+
+/// The error code the control plane reports a feature group this account does not hold with.
+const NOT_FOUND: &str = "ResourceNotFound";
 
 /// How long a case waits for the terminal status the clock already owes a created group.
 ///
@@ -271,9 +273,8 @@ impl Aws {
     }
 
     /// `CreateFeatureGroup` with an offline store at `s3_uri`, written as `role_arn`.
-    async fn create_feature_group(&self, case: &str, group: &str, s3_uri: &str, role_arn: &str) {
-        self.sagemaker_ok(
-            case,
+    async fn create_feature_group(&self, group: &str, s3_uri: &str, role_arn: &str) -> Answer {
+        self.sagemaker(
             "CreateFeatureGroup",
             &json!({
                 "FeatureGroupName": group,
@@ -293,7 +294,16 @@ impl Aws {
                 "RoleArn": role_arn,
             }),
         )
-        .await;
+        .await
+    }
+
+    /// `DescribeFeatureGroup` as it answers, whether or not the group is held.
+    async fn describe_feature_group(&self, group: &str) -> Answer {
+        self.sagemaker(
+            "DescribeFeatureGroup",
+            &json!({ "FeatureGroupName": group }),
+        )
+        .await
     }
 
     /// `DescribeFeatureGroup`, polled until the group's `FeatureGroupStatus` is one the clock
@@ -313,12 +323,12 @@ impl Aws {
                 .and_then(Value::as_str)
                 .unwrap_or_default()
                 .to_owned();
-            if status == CREATED || status == CREATE_FAILED {
+            if status == CREATED {
                 return described;
             }
             assert!(
                 Instant::now() < deadline,
-                "case {case:?}: the group never left {status:?}, last read {described}"
+                "case {case:?}: the group never reached {CREATED}, last read {described}"
             );
             tokio::time::sleep(POLL_INTERVAL).await;
         }
@@ -360,20 +370,20 @@ impl Aws {
     }
 }
 
-/// RULE: the create is ANSWERED either way; the group settles `CreateFailed` with a
-/// `FailureReason` exactly when the permissions in force do not let its role write the offline
-/// location, and the data plane then serves none of its records — while the same create made
-/// with that write granted settles `Created` and its records are written and read.
+/// RULE: the create is REFUSED exactly when the permissions in force do not let its role
+/// write the offline location — HTTP 400 `ValidationException` naming the access-denied cause,
+/// with neither plane left holding the group — while the same create made with that write
+/// granted is admitted, settles `Created`, and its records are written and read.
 #[tokio::test]
-async fn a_feature_group_whose_offline_store_could_not_be_created_serves_no_records() {
+async fn a_feature_group_whose_offline_store_cannot_be_created_is_refused_in_both_planes() {
     // (case, whether the role is granted the object write on the group's own bucket, whether
-    //  the group's creation must fail)
+    //  the create must be refused)
     let rows = [
         ("a role granted the write on the offline store", true, false),
         ("a role carrying no policy at all", false, true),
     ];
 
-    for (case, granted, must_fail) in rows {
+    for (case, granted, must_refuse) in rows {
         let aws = Aws::new();
         let bucket = if granted {
             "offline-store-granted"
@@ -394,80 +404,82 @@ async fn a_feature_group_whose_offline_store_could_not_be_created_serves_no_reco
         }
 
         let s3_uri = format!("s3://{bucket}/offline/");
-        aws.create_feature_group(case, group, &s3_uri, &role_arn)
-            .await;
+        let created = aws.create_feature_group(group, &s3_uri, &role_arn).await;
 
-        let described = aws.settled(case, group).await;
-        let status = described
-            .get("FeatureGroupStatus")
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-        let reason = described
-            .get("FailureReason")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_owned();
-        let put = aws.put_record(group).await;
-        let got = aws.get_record(group).await;
-
-        if must_fail {
+        if must_refuse {
             assert_eq!(
-                status, CREATE_FAILED,
-                "case {case:?}: expected the group to settle {CREATE_FAILED}, got {described}"
+                (created.status, created.error_code().as_str()),
+                (400, VALIDATION_EXCEPTION),
+                "case {case:?}: expected the create refused, got {} with {}",
+                created.status,
+                created.body
             );
-            for expected in [role_arn.as_str(), WRITE_ACTION, s3_uri.as_str()] {
+            let refusal = created.message();
+            for expected in ["AccessDenied", role_arn.as_str(), WRITE_ACTION, s3_uri.as_str()] {
                 assert!(
-                    reason.contains(expected),
-                    "case {case:?}: expected the FailureReason to name {expected:?}, got \
-                     {reason:?}"
+                    refusal.contains(expected),
+                    "case {case:?}: expected the refusal to name {expected:?}, got {refusal:?}"
                 );
             }
-            // A group that holds no provisioned store serves nothing: both planes agree.
-            for (call, answer) in [("PutRecord", &put), ("GetRecord", &got)] {
-                assert_eq!(
-                    (answer.status, answer.error_code().as_str()),
-                    (400, "ValidationError"),
-                    "case {case:?}: expected {call} on a failed group to be refused 400 \
-                     ValidationError, got {} {:?} with {}",
+            // NEITHER plane holds the group: the control plane never stored it, so the name is
+            // free, and the data plane — which resolves a group through the directory that
+            // create registers — resolves nothing under it.
+            let absent = aws.describe_feature_group(group).await;
+            assert_eq!(
+                (absent.status, absent.error_code().as_str()),
+                (400, NOT_FOUND),
+                "case {case:?}: a refused create stores nothing, got {} with {}",
+                absent.status,
+                absent.body
+            );
+            for (call, answer) in [
+                ("PutRecord", aws.put_record(group).await),
+                ("GetRecord", aws.get_record(group).await),
+            ] {
+                let refusal = answer.message();
+                assert!(
+                    refusal.contains("can't find a FeatureGroup"),
+                    "case {case:?}: expected {call} to resolve no group under {group:?}, got {} \
+                     {:?} with {}",
                     answer.status,
                     answer.error_code(),
                     answer.body
                 );
-                let refusal = answer.message();
-                assert!(
-                    refusal.contains(group) && refusal.contains("CREATE_FAILED"),
-                    "case {case:?}: expected the {call} refusal to name the group and the \
-                     status standing in the way, got {refusal:?}"
-                );
             }
-        } else {
-            assert_eq!(
-                status, CREATED,
-                "case {case:?}: expected the group to settle {CREATED}, got {described}"
-            );
-            assert!(
-                reason.is_empty(),
-                "case {case:?}: expected no FailureReason, got {reason:?}"
-            );
-            assert_eq!(
-                put.status, 200,
-                "case {case:?}: expected PutRecord to be served, got {} with {}",
-                put.status, put.body
-            );
-            let served = got
-                .body
-                .get("Record")
-                .and_then(Value::as_array)
-                .map(Vec::len)
-                .unwrap_or_default();
-            assert_eq!(
-                (got.status, served),
-                (200, 3),
-                "case {case:?}: expected GetRecord to serve the three features written, got {} \
-                 with {}",
-                got.status,
-                got.body
-            );
+            continue;
         }
+
+        assert_eq!(
+            created.status, 200,
+            "case {case:?}: expected the create admitted, got {} with {}",
+            created.status, created.body
+        );
+        let described = aws.settled(case, group).await;
+        assert_eq!(
+            described.get("FailureReason"),
+            None,
+            "case {case:?}: expected no FailureReason, got {described}"
+        );
+        let put = aws.put_record(group).await;
+        assert_eq!(
+            put.status, 200,
+            "case {case:?}: expected PutRecord to be served, got {} with {}",
+            put.status, put.body
+        );
+        let got = aws.get_record(group).await;
+        let served = got
+            .body
+            .get("Record")
+            .and_then(Value::as_array)
+            .map(Vec::len)
+            .unwrap_or_default();
+        assert_eq!(
+            (got.status, served),
+            (200, 3),
+            "case {case:?}: expected GetRecord to serve the three features written, got {} \
+             with {}",
+            got.status,
+            got.body
+        );
     }
 }

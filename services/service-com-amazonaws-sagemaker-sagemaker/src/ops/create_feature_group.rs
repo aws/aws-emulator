@@ -13,11 +13,10 @@
 //! features, and where its OfflineStore replicates to. A create that names an
 //! `OfflineStoreConfig` resolves that store's output path
 //! (`S3StorageConfig$ResolvedOutputS3Uri`) here, since the path carries the group's
-//! creation instant, and records why that store could NOT be created when the supplied
-//! `RoleArn` may not write that path: the call is answered, and the clock settles the group
-//! into the modelled `CreateFailed` with that `FailureReason` rather than reporting a
-//! healthy store nothing can be written to. This is the ONLY file to touch for this
-//! operation.
+//! creation instant, and is REFUSED with the Amazon S3 access-denied cause when the supplied
+//! `RoleArn` may not write that path: SageMaker probes the location with that role before it
+//! admits the group, so nothing is stored for a store nothing can be written to. This is the
+//! ONLY file to touch for this operation.
 //!
 //! ## Shape of an operation
 //!
@@ -242,23 +241,26 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 );
         }
         // The group's offline store is SET UP and written as the role the request supplies —
-        // "the IAM execution role used to persist data into the OfflineStore" — so whether
-        // that store can be created at all is resolved here, before anything is stored. The
-        // CALL is accepted either way: recorded SageMaker answers the create and reports the
-        // failure on the RESOURCE, which is what the model gives `FeatureGroupStatus`
-        // `CreateFailed` and `FailureReason` ("The FeatureGroup could not be created in the
-        // OfflineStore") for — so a group whose store the role may not write settles failed
-        // with that reason instead of coming up healthy. Only what IAM and Amazon S3
-        // established fails a group (see `crate::state::offline_store_creation_failure_reason`).
-        // Awaited BEFORE the store is locked, like every other admission question this service
-        // asks.
-        let offline_store_failure = crate::state::offline_store_creation_failure_reason(
+        // "the IAM execution role used to persist data into the OfflineStore" — so SageMaker
+        // probes that location WITH that role before it admits the group, and a role that may
+        // not write there backs no offline store at all: the call is REFUSED with the Amazon
+        // S3 access-denied cause and nothing is stored, rather than answered for a group whose
+        // store nothing can be written to. The refusal travels as the service-common
+        // `ValidationException` (HTTP 400), the only 400 left for it: this operation models
+        // `ResourceInUse` and `ResourceLimitExceeded` alone, and neither states this.
+        // Only what IAM and Amazon S3 established refuses the call (see
+        // `crate::state::offline_store_admission_refusal`). Awaited BEFORE the store is
+        // locked, like every other admission question this service asks.
+        if let Some(refusal) = crate::state::offline_store_admission_refusal(
             ctx,
             &region,
             offline_store_config.as_ref(),
             input.role_arn.as_deref(),
         )
-        .await;
+        .await
+        {
+            return Err(crate::scaffolded::Scaffolded::validation(refusal));
+        }
 
         let mut store = state.lock();
         // The removals the clock already completed are materialised first, so the name and
@@ -340,11 +342,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 .online_store_config
                 .as_ref()
                 .and_then(crate::state::online_store_default_ttl_seconds),
-            // Whether this group's offline store could NOT be created, resolved above: such
-            // a group holds no provisioned store, so the data plane serves none of its
-            // records — the one fact about a group's status the runtime API carries nothing
-            // about.
-            creation_failed: offline_store_failure.is_some(),
+            // Whether this group's offline store could NOT be created: a create whose store
+            // the role may not write is refused above and stores nothing, so every group that
+            // reaches this point has a store its role can write.
+            creation_failed: false,
         };
         store.feature_groups.insert(
             input.feature_group_name.clone(),
@@ -369,12 +370,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 description: input.description,
                 tags: input.tags.unwrap_or_default(),
                 // A feature group AWS has just accepted is not provisioned yet: it is
-                // `Creating` until the clock owes it `Created` — or `CreateFailed`, where the
-                // offline store it asks for could not be created.
+                // `Creating` until the clock owes it `Created`.
                 status: crate::state::FEATURE_GROUP_STATUS_CREATING.to_string(),
-                // Why the clock will fail this group, resolved above; `None` for a group
-                // nothing fails.
-                failure_reason: offline_store_failure,
+                // Nothing is left to fail this group: the one failure this service
+                // establishes refused the call above.
+                failure_reason: None,
                 creation_time: now,
                 last_modified_time: now,
                 created_due_at: now + crate::state::FEATURE_GROUP_CREATED_AFTER,

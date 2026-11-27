@@ -11,16 +11,15 @@
 //! `error_code`, `message`, `str_field`) is the one `inference_deployment_lifecycle`
 //! defines for this target.
 //!
-//! The RULE under test: a transition of the domain itself is DECIDED by the call that
-//! starts it — `CreateDomain` admits the domain and resolves what its provisioning comes
-//! to, `UpdateDomain` admits the change, `DeleteDomain` admits the teardown — so nothing is
-//! left to compute afterwards and the transition is owed from the instant that call answers
-//! (`state::transition_owed_at`). The transient status stays the answer of the call that
-//! stores it, and the FIRST request after it reports the settled domain, with no wait of any
-//! length: a client polling at the interval it sizes against the many minutes real Studio
-//! provisioning takes spends none of that interval here. The move is still the CLOCK's and
-//! no reader decides it — a domain whose due instant is ahead is reported in its transient
-//! status by every reader.
+//! The RULE under test: a domain's PROVISIONING is work SageMaker does after `CreateDomain`
+//! has answered, so the domain is `Pending` for a span of its own
+//! (`state::DOMAIN_IN_SERVICE_AFTER`) and the requests that immediately follow the create
+//! still read that status, while a client polling for the condition reaches `InService`
+//! without waiting a real provisioning out. The transitions the domain's own CALLS decide —
+//! the change `UpdateDomain` admits and the teardown `DeleteDomain` admits — are owed from the
+//! instant that call answers (`state::transition_owed_at`), so the FIRST request after one of
+//! those reports the settled domain. Every move is still the CLOCK's and no reader decides it
+//! — a domain whose due instant is ahead is reported in its transient status by every reader.
 //!
 //! The tables span what the rule generalises over rather than one recorded flow: the Region
 //! the request is signed for, the `AuthMode` the domain is created with, the `DomainName`
@@ -35,6 +34,7 @@ use service_com_amazonaws_sagemaker_sagemaker::state::{
 };
 
 use crate::inference_deployment_lifecycle::{error_code, message, str_field, Emulator, ACCOUNT};
+use crate::studio_user_profiles::wait_for_domain_in_service;
 
 /// An execution role inside `RoleArn`'s modelled pattern, for the `DefaultUserSettings`
 /// every create must carry.
@@ -126,13 +126,13 @@ struct Row {
     extra: Value,
 }
 
-/// RULE: every transition of the domain itself is owed from the instant the call that
-/// decided it answers, so a client that creates, re-creates, deletes and re-creates a Studio
-/// domain reads the settled resource on its FIRST request after each of those calls — the
-/// domain is `InService` on the read that follows the create, the held name is refused
-/// `ResourceInUse` and leaves no second domain, the deleted id resolves to nothing for both
-/// the reader and the update on the read that follows the delete, and the freed name is
-/// admitted again — with no wait of any length anywhere in the flow.
+/// RULE: a domain is still being provisioned when its create answers, so the read that
+/// immediately follows reports `Pending` and a client that polls reads `InService`; the
+/// transitions the domain's own later calls decide are owed from the instant each answers, so
+/// a client that creates, re-creates, deletes and re-creates a Studio domain reads the settled
+/// resource on its FIRST request after the delete — the held name is refused `ResourceInUse`
+/// and leaves no second domain, the deleted id resolves to nothing for both the reader and
+/// the update, and the freed name is admitted again.
 #[tokio::test]
 async fn the_first_request_after_each_domain_call_reports_the_settled_domain() {
     // Rows differ along what the rule generalises over: the Region signed for, the
@@ -194,16 +194,16 @@ async fn the_first_request_after_each_domain_call_reports_the_settled_domain() {
         );
         let domain_id = str_field(&created, "DomainId");
 
-        // The FIRST read after the create reports the provisioned domain: the create had
-        // already resolved what its provisioning comes to, so nothing is owed any longer.
+        // The read that FOLLOWS the create reports the domain still provisioning: the move
+        // out of `Pending` is the clock's, a span after the create.
         let described = emulator
             .call_in(region, "DescribeDomain", &json!({ "DomainId": domain_id }))
             .await
             .1;
         assert_eq!(
             str_field(&described, "Status"),
-            DOMAIN_STATUS_IN_SERVICE,
-            "case {case:?}: the first read after the create must report the settled domain, \
+            DOMAIN_STATUS_PENDING,
+            "case {case:?}: the read after the create must report the provisioning domain, \
              got {described}"
         );
         assert_eq!(
@@ -211,6 +211,8 @@ async fn the_first_request_after_each_domain_call_reports_the_settled_domain() {
             domain_arn(region, &domain_id),
             "case {case:?}: the reader replays the domain's own ARN, got {described}"
         );
+        // A client that polls for the condition reaches the provisioned domain.
+        wait_for_domain_in_service(&emulator, region, &domain_id).await;
 
         // While the name is held, the identical create is refused as in use, and the
         // refusal leaves exactly one domain under that name.
@@ -301,10 +303,11 @@ async fn the_first_request_after_each_domain_call_reports_the_settled_domain() {
             .1;
         assert_eq!(
             str_field(&described, "Status"),
-            DOMAIN_STATUS_IN_SERVICE,
-            "case {case:?}: the first read after the re-create must report the settled \
+            DOMAIN_STATUS_PENDING,
+            "case {case:?}: the read after the re-create must report the provisioning \
              domain, got {described}"
         );
+        wait_for_domain_in_service(&emulator, region, &second_id).await;
         let matches = listed_under(&emulator, region, domain_name).await;
         assert_eq!(
             matches.len(),

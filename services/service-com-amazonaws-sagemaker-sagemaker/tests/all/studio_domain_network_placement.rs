@@ -445,10 +445,10 @@ async fn a_domain_settles_by_whether_its_placement_names_one_vpc() {
         },
     ];
 
-    // Every create is served first, so the whole table is driven in one pass; each create
-    // resolved its placement before it answered, so the FIRST read after it already reports
-    // the status the clock owed (`state::transition_owed_at`) — the row below weighs that
-    // status rather than a transient one.
+    // Every create is served first, so the whole table waits out ONE provisioning span rather
+    // than one each; the create resolved what its placement comes to before it answered, so
+    // the read that immediately follows it still reports the transient status and the poll
+    // below weighs the terminal one the clock owed.
     let mut created: Vec<(&Row, String)> = Vec::with_capacity(rows.len());
     for row in &rows {
         let answered = wired.ok(row.case, "CreateDomain", &row.request).await;
@@ -458,11 +458,10 @@ async fn a_domain_settles_by_whether_its_placement_names_one_vpc() {
             .await;
         let status = str_field(&described, "Status");
         assert!(
-            status == row.status,
-            "case {:?}: the first read after the create reports what the create decided \
-             ({:?}), got {status:?}",
-            row.case,
-            row.status
+            status == PENDING,
+            "case {:?}: the read that follows the create reports the domain still \
+             provisioning ({PENDING:?}), got {status:?}",
+            row.case
         );
         created.push((row, domain_id));
     }

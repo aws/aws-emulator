@@ -3,8 +3,9 @@
 //! @op CreatePresignedDomainUrl
 //!
 //! Mints the Studio sign-in URL for one user profile of a Studio domain this account holds:
-//! the address THIS emulator serves the session at ([`crate::state::presigned_session_url`])
-//! with an opaque grant token this call records on the profile, valid for the window the
+//! the address THIS emulator serves the sign-in at ([`crate::state::presigned_session_url`]),
+//! which hands its holder off to the domain's own Studio address, with an opaque grant token
+//! this call records on the profile, valid for the window the
 //! request asked for (the documented 5 minutes by default) and opening a session of the
 //! requested duration (12 hours by default). A `DomainId`, a `UserProfileName` or a
 //! `SpaceName` this account holds nothing under is refused with the modelled
@@ -228,12 +229,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         }
         // The URL grants access to the apps and the file system of the domain, which exist
         // only once the domain's own provisioning has settled: while it is still `Pending` —
-        // or `Failed`, or on its way out — there is no session to sign in to. This call
-        // creates no member of the domain, so the refusal is this operation's own sentence
-        // rather than the one a create of a member is refused with.
-        if domain_status != crate::state::DOMAIN_STATUS_IN_SERVICE {
+        // or `Failed`, or on its way out — there is no session to sign in to. A domain whose
+        // last UPDATE failed still has them, so it signs a holder in as well, which is the
+        // rule the refusal itself states (`crate::state::domain_url_needs_domain_in_service`).
+        // This call creates no member of the domain, so the refusal is this operation's own
+        // sentence rather than the one a create of a member is refused with.
+        if !crate::state::DOMAIN_STATUSES_SIGNING_IN.contains(&domain_status.as_str()) {
             return Err(crate::scaffolded::Scaffolded::validation(
-                crate::state::domain_url_needs_domain_in_service(&domain_arn, &domain_status),
+                crate::state::domain_url_needs_domain_in_service(&domain_status),
             ));
         }
 
@@ -315,11 +318,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             ));
         }
         // The URL the caller opens later has to lead back to THIS emulator, on the endpoint
-        // the request arrived on: the domain's own Studio host (which `DescribeDomain` still
-        // reports, as AWS reports it) resolves to nothing a client of this emulator can
-        // reach, so a caller that did what this operation exists for — fetch the URL to be
-        // signed in to Studio — would get a name-resolution error instead of a session.
-        // `crate::service::presigned_session` serves that address.
+        // the request arrived on: a Studio host of AWS's own
+        // (`studio-d-<id>.studio.<region>.sagemaker.aws`) resolves to nothing a client of this
+        // emulator can reach, so a caller that did what this operation exists for — fetch the
+        // URL to be signed in to Studio — would get a name-resolution error instead of a
+        // session. FOLLOWING it is the sign-in: that address hands its holder off to the
+        // domain's own Studio address, which `DescribeDomain` reports as the domain's `Url`
+        // (`crate::service::presigned_session`, `crate::service::studio_landing`).
         let authorized_url = crate::state::presigned_session_url(
             ctx,
             crate::state::USER_PROFILE_ARN_KIND,

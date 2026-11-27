@@ -44,15 +44,35 @@ pub const DOMAIN_STATUS_DELETING: &str = "Deleting";
 /// the change to the domain's own apps and network after it has answered, so the domain is
 /// not in service while that is in flight.
 pub const DOMAIN_STATUS_UPDATING: &str = "Updating";
+/// See [`DOMAIN_STATUS_PENDING`]. The status a domain whose UPDATE could not be applied
+/// reports: no operation here fails an update, so no record carries it — it is named because
+/// such a domain still holds the apps and the file system a presigned domain URL signs its
+/// holder in to, which is the rule that refusal states
+/// ([`crate::state::DOMAIN_STATUSES_SIGNING_IN`]), and a handler must not compare a bare
+/// string literal.
+pub const DOMAIN_STATUS_UPDATE_FAILED: &str = "Update_Failed";
 
-// A Studio domain's own transitions are owed from the instant the call that starts them
-// answers (`transition_owed_at`), so this slice owns no span of its own: `CreateDomain`
-// admits the domain and resolves what its provisioning will come to
-// (`Domain::creation_failure_reason`), `UpdateDomain` admits the change and `DeleteDomain`
-// admits the teardown, so nothing is left to compute once each of those has answered. The
-// transient status stays the answer of the call that stores it, and the first request after
-// it reports the settled domain — see `transition_owed_at` for the rule and what it costs.
-// The MEMBERS of a domain keep spans of their own (`USER_PROFILE_IN_SERVICE_AFTER`).
+/// How long after `CreateDomain` the clock owes the `Pending` -> `InService` (or
+/// [`DOMAIN_STATUS_FAILED`]) transition of a Studio domain.
+///
+/// The same compressed, never-zero span this domain's own MEMBERS take
+/// ([`USER_PROFILE_IN_SERVICE_AFTER`]), because a domain's provisioning is work SageMaker
+/// does after the create has answered: it builds the domain's EFS volume, its network
+/// interfaces and its apps, which takes minutes on the real service. So the window is
+/// observable here too — a caller that reads the domain straight after creating it sees
+/// `Pending`, and every create that hangs a member off the domain in that window is refused
+/// ([`domain_not_in_service_refusal`]), which is the state those refusals exist in at all —
+/// while a caller that polls for the condition reaches `InService` without waiting a real
+/// provisioning out. The due instant is STORED and never slept on
+/// ([`Domain::settle_status`]), so a poller spends none of its interval on the settle: the
+/// first request at or after the instant materialises it.
+pub const DOMAIN_IN_SERVICE_AFTER: Duration = USER_PROFILE_IN_SERVICE_AFTER;
+
+// The transitions an UPDATE and a DELETE of a domain owe stay owed from the instant the
+// call that decided them answers (`transition_owed_at`): `UpdateDomain` admits the change
+// and `DeleteDomain` admits the teardown, so nothing is left to compute once each of those
+// has answered — see `transition_owed_at` for that rule and what it costs. The PROVISIONING
+// a create starts is different work, and takes the span above.
 
 /// The page `ListDomains` serves when the request names no `MaxResults`: its
 /// `MaxResults` doc says "The default value for MaxResults is 10". [`MAX_PAGE_SIZE`]
@@ -141,11 +161,12 @@ pub fn studio_domain_path(domain_id: &str) -> String {
 /// domain's `Url`.
 ///
 /// The host is NEVER one of AWS's own names: a caller handed this address FOLLOWS it, and
-/// a Studio DNS name of AWS's (`d-<id>.studio.<region>.sagemaker.aws`) resolves to nothing
-/// a client of the emulator can reach, so the Studio flow the member exists for could
-/// never be driven here. Derived from the domain's own id, so it is stable across reads
-/// and distinct per domain, and minted ONCE by the create so every later reader replays
-/// the same address.
+/// a Studio DNS name of AWS's (`studio-d-<id>.studio.<region>.sagemaker.aws`) resolves to
+/// nothing a client of the emulator can reach, so the Studio flow the member exists for could
+/// never be driven here. The DOMAIN's own half of the address is therefore its PATH, which is
+/// what the one endpoint this emulator serves can carry — derived from the domain's own id, so
+/// it is stable across reads and distinct per domain, and minted ONCE by the create so every
+/// later reader replays the same address.
 pub fn studio_domain_url(
     ctx: &smithy_server_runtime::OperationContext<'_>,
     domain_id: &str,
@@ -155,6 +176,19 @@ pub fn studio_domain_url(
         endpoint = ctx.endpoint().as_str().trim_end_matches('/'),
         path = studio_domain_path(domain_id),
     )
+}
+
+/// Whether a fetch of the request target `uri` has ALREADY reached the published address
+/// `url`, i.e. names that address's own path.
+///
+/// Both sides are read through the crate's one reading of a request target's PATH
+/// ([`::service_common::request_path`]), so an address published as a whole URL and a target
+/// that arrived as an origin-form path are compared the same way. What this decides is whether
+/// a fetch is AT the address a resource publishes, so a request that is there is served rather
+/// than handed off to the address it has already reached.
+#[must_use]
+pub fn addresses_published_path(url: &str, uri: &str) -> bool {
+    ::service_common::request_path(url) == ::service_common::request_path(uri)
 }
 
 /// `StudioWebPortal`'s resolved value for a domain whose create named none: the member
@@ -418,9 +452,10 @@ pub fn app_network_access_type_locked_by_apps(arn: &str) -> String {
 /// `Pending` — into `InService`, or into [`DOMAIN_STATUS_FAILED`] where the create
 /// resolved a placement the account's network does not admit; it is stored, never slept
 /// on, and materialised by whichever reporting call first runs at or after it
-/// ([`Domain::settle_status`]). The create owes it from the instant it answers
-/// ([`transition_owed_at`]), so the first request after the create reports the settled
-/// domain; a test that needs the transient status sets the stored instant itself.
+/// ([`Domain::settle_status`]). The create owes it [`DOMAIN_IN_SERVICE_AFTER`] ahead, so
+/// the requests that immediately follow the create still report the `Pending` domain and
+/// the member-creates they make are refused; a test that needs the domain settled sets the
+/// stored instant itself.
 ///
 /// The members the request did not carry stay `None`: the model documents a default for
 /// `AppNetworkAccessType`, `HomeEfsFileSystemCreation` and `TagPropagation` only, so

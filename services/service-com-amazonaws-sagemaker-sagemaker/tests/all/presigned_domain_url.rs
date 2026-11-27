@@ -6,7 +6,8 @@
 //! The RULE under test: the operation records a grant on the user profile it signs its
 //! holder in as, publishes a URL addressing THAT profile on the endpoint the request
 //! arrived on — never a host of AWS's own, which resolves to nothing a client of this
-//! emulator can reach — and the emulator serves a session there for exactly as long as the
+//! emulator can reach — following that URL HANDS its holder off to the domain's own Studio
+//! address, where the session opens, and it authenticates for exactly as long as the
 //! two windows the request asked for, the URL's own `ExpiresInSeconds` (300 by default) and
 //! the session's `SessionExpirationDurationInSeconds` (43200 by default). A `DomainId`, a
 //! `UserProfileName` or a `SpaceName` this account holds nothing under is refused with
@@ -15,8 +16,8 @@
 //!
 //! Every case goes over the wire through the same `MultiServiceRouter` the production
 //! router uses, on the shared `Emulator` harness in `inference_deployment_lifecycle`: the
-//! mint as an `awsJson1_1` call, and the published URL fetched the way a browser fetches it
-//! (`Emulator::fetch`).
+//! mint as an `awsJson1_1` call, and the published URL followed the way a browser follows it
+//! (`Emulator::follow`).
 //!
 //! The windows are driven by moving the stored grant into the past rather than by waiting
 //! for a clock, so nothing here sleeps for a span or asserts on elapsed time.
@@ -41,10 +42,6 @@ const RESOURCE_NOT_FOUND: &str = "ResourceNotFound";
 /// The error code an unmodelled refusal travels as, the way every other refusal this
 /// service words itself does.
 const VALIDATION: &str = "ValidationException";
-
-/// The ARN resource kind the session address names a user profile by, spelled out here
-/// rather than taken from the service, so the suite pins the address instead of echoing it.
-const SESSION_KIND: &str = "user-profile";
 
 /// One row of the mint table: what the request carries beyond the two required members, and
 /// the two windows the grant must end up with.
@@ -247,11 +244,29 @@ fn backdate_grants(emulator: &Emulator, domain_id: &str, profile: &str, shift: D
 /// the reserved `_aws` namespace, this service's plane, the profile's own identifier with
 /// its one `/` percent-encoded as a path segment must be, and the `auth` segment the URL
 /// signs in at.
+const SESSION_KIND: &str = "user-profile";
+
+/// See [`SESSION_KIND`].
 fn expected_prefix(domain_id: &str, profile: &str) -> String {
     format!(
         "{}/_aws/sagemaker/{SESSION_KIND}/{domain_id}%2F{profile}/auth?authToken=",
         smithy_server_runtime::UNSERVED_URL_BASE
     )
+}
+
+/// The address the domain `domain_id` serves its own Studio at, which is where following the
+/// sign-in URL must land: the domain's own landing address, which `DescribeDomain` reports as
+/// its `Url`.
+fn expected_studio_address(domain_id: &str) -> String {
+    format!(
+        "{}/_aws/sagemaker/domain/{domain_id}/studio",
+        smithy_server_runtime::UNSERVED_URL_BASE
+    )
+}
+
+/// The address of `url` without its query, which is what a landing is compared by.
+fn address_of(url: &str) -> String {
+    url.split('?').next().unwrap_or_default().to_string()
 }
 
 /// The `authToken` a published URL carries, DECODED — the form the grant holds, since the
@@ -370,11 +385,27 @@ async fn a_presigned_domain_url_publishes_the_session_the_request_asked_for() {
             row.session_seconds
         );
 
-        // Fetching it opens the session that grant describes, named by the profile's ARN.
-        let (status, body) = emulator.fetch(&url).await;
+        // Following it signs the holder in at the DOMAIN's own Studio address — the `Url`
+        // that domain publishes, never the sign-in address it was fetched at — and that
+        // landing reports the session the grant opened, named by the profile's ARN.
+        let (status, landed, body) = emulator.follow(row.case, &url).await;
         assert_eq!(
             status, 200,
-            "case {}: fetching the published URL must open a session, got {status} {body:?}",
+            "case {}: following the published URL must open a session, got {status} {body:?}",
+            row.case
+        );
+        assert_eq!(
+            address_of(&landed),
+            expected_studio_address(&domain_id),
+            "case {}: following {url:?} must land at the domain's own Studio address, got \
+             {landed:?}",
+            row.case
+        );
+        assert_ne!(
+            address_of(&landed),
+            address_of(&url),
+            "case {}: the sign-in address must hand off rather than serve itself, got \
+             {landed:?}",
             row.case
         );
         let session: Value = serde_json::from_str(&body).unwrap_or_else(|error| {
@@ -421,11 +452,13 @@ async fn a_presigned_domain_url_stops_authenticating_once_its_window_elapses() {
         prepare(&emulator, &row, &domain_id).await;
         let url = published_url(&emulator, &row, &domain_id).await;
 
-        // The control: while the grant is live the address authenticates.
-        let (status, body) = emulator.fetch(&url).await;
+        // The control: while the grant is live the address hands its holder off to the
+        // domain's own Studio address, where the session opens.
+        let (status, landed, body) = emulator.follow(row.case, &url).await;
         assert_eq!(
-            status, 200,
-            "case {}: a fresh URL must authenticate, got {status} {body:?}",
+            (status, address_of(&landed)),
+            (200, expected_studio_address(&domain_id)),
+            "case {}: a fresh URL must sign its holder in, got {status} {landed:?} {body:?}",
             row.case
         );
 
@@ -437,10 +470,11 @@ async fn a_presigned_domain_url_stops_authenticating_once_its_window_elapses() {
             row.profile,
             Duration::from_secs(row.expires_in + 1),
         );
-        let (status, body) = emulator.fetch(&url).await;
+        let (status, landed, body) = emulator.follow(row.case, &url).await;
         assert_eq!(
             status, 403,
-            "case {}: a URL past its {}s window must not authenticate, got {status} {body:?}",
+            "case {}: a URL past its {}s window must not authenticate, got {status} {landed:?} \
+             {body:?}",
             row.case, row.expires_in
         );
     }
@@ -481,10 +515,12 @@ async fn every_minted_url_authenticates_and_opening_one_changes_no_later_read() 
     let before = ok_in(&emulator, row.region, "DescribeUserProfile", &read).await;
     for (attempt, url) in [("first url", &first), ("second url", &second)] {
         for fetch in ["first fetch", "second fetch"] {
-            let (status, body) = emulator.fetch(url).await;
+            let (status, landed, body) = emulator.follow(row.case, url).await;
             assert_eq!(
-                status, 200,
-                "case {}/{attempt}/{fetch}: the session must open, got {status} {body:?}",
+                (status, address_of(&landed)),
+                (200, expected_studio_address(&domain_id)),
+                "case {}/{attempt}/{fetch}: the session must open at the domain's own Studio \
+                 address, got {status} {landed:?} {body:?}",
                 row.case
             );
         }
@@ -601,11 +637,8 @@ async fn create_presigned_domain_url_refuses_what_it_cannot_sign_in() {
             "the domain is still coming up",
             json!({ "DomainId": pending, "UserProfileName": "held" }),
             VALIDATION,
-            format!(
-                "Unable to create a presigned domain URL for Domain [{}] because it is in \
-                 Pending status instead of InService.",
-                domain_arn(REGION, pending)
-            ),
+            "Domain must be in either InService or Update_Failed state and not in: Pending"
+                .to_string(),
         ),
         (
             "the domain does not authenticate against IAM",

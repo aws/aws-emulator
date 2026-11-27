@@ -118,33 +118,70 @@ impl Emulator {
     }
 
     /// Fetch one URL this emulator published, the way a browser fetches it: a plain `GET`
-    /// of the path and query the URL carries, nothing signed beyond what the URL itself
-    /// holds, and no redirect followed.
+    /// of the path and query the URL carries, the URL's own host in the `Host` header,
+    /// nothing signed beyond what the URL itself holds, and no redirect followed.
     ///
     /// Returns `(status, body)`. Whatever host the URL names, the request is dispatched to
     /// this router — what is under test is the address the service published, not name
-    /// resolution. Shared with the suite that follows a published URL
-    /// (`tests/all/presigned_session.rs`).
+    /// resolution — but the host TRAVELS, because a service that publishes a per-resource
+    /// host decides from it whether the fetch has reached that host yet. Shared with the
+    /// suite that follows a published URL (`tests/all/presigned_session.rs`).
     pub(crate) async fn fetch(&self, url: &str) -> (u16, String) {
-        let target = match url.split_once("://") {
+        let (status, _location, body) = self.fetched(url).await;
+        (status, body)
+    }
+
+    /// [`Self::fetch`] with the `Location` the answer hands the client off to, when it hands
+    /// one off: `(status, location, body)`.
+    async fn fetched(&self, url: &str) -> (u16, Option<String>, String) {
+        let (host, target) = match url.split_once("://") {
             Some((_, rest)) => match rest.split_once('/') {
-                Some((_, path_and_query)) => format!("/{path_and_query}"),
-                None => "/".to_string(),
+                Some((host, path_and_query)) => (host.to_string(), format!("/{path_and_query}")),
+                None => (rest.to_string(), "/".to_string()),
             },
-            None => url.to_string(),
+            None => (String::new(), url.to_string()),
         };
-        let request = http::Request::builder()
-            .method("GET")
-            .uri(target)
+        let mut builder = http::Request::builder().method("GET").uri(target);
+        if !host.is_empty() {
+            builder = builder.header("host", host);
+        }
+        let request = builder
             .body(bytes::Bytes::new())
             .expect("a well-formed request");
         let response = self.router.dispatch(request).await;
         let status = response.status().as_u16();
-        (
-            status,
-            String::from_utf8_lossy(response.body()).to_string(),
-        )
+        let location = response
+            .headers()
+            .get("location")
+            .map(|value| value.to_str().unwrap_or_default().to_string());
+        let body = String::from_utf8_lossy(response.body()).to_string();
+        (status, location, body)
     }
+
+    /// Fetch `url` the way a browser that FOLLOWS redirects does, and report the address the
+    /// chain ended at: `(status, final url, body)`.
+    ///
+    /// Bounded by [`Self::MAX_HANDOFFS`] hops, so a chain that does not terminate fails the
+    /// case instead of hanging it.
+    pub(crate) async fn follow(&self, case: &str, url: &str) -> (u16, String, String) {
+        let mut at = url.to_string();
+        for hop in 0..=Self::MAX_HANDOFFS {
+            let (status, location, body) = self.fetched(&at).await;
+            let Some(next) = location.filter(|_| (300..400).contains(&status)) else {
+                return (status, at, body);
+            };
+            assert!(
+                hop < Self::MAX_HANDOFFS,
+                "case {case:?}: following {url:?} took more than {} hand-offs, at {next:?}",
+                Self::MAX_HANDOFFS
+            );
+            at = next;
+        }
+        unreachable!("the loop above returns or asserts before it runs out of hops")
+    }
+
+    /// How many hand-offs following a published URL may take before a case gives up.
+    const MAX_HANDOFFS: usize = 4;
 }
 
 /// The `__type` an error body carries, with any `namespace#` prefix stripped.

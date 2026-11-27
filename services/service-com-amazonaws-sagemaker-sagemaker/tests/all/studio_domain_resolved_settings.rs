@@ -19,7 +19,8 @@
 //!   replayed by `DescribeDomain`, while every value the request carried is kept as sent;
 //! * an address this service publishes for a caller to FOLLOW — a domain's `Url`, and the
 //!   `Url` of a space under it — is addressed on the endpoint the request arrived on and
-//!   SERVED there, never on a host of AWS's own.
+//!   SERVED there, never on a host of AWS's own, and it serves Studio only to a fetch that
+//!   has SIGNED IN with the grant `CreatePresignedDomainUrl` mints.
 //!
 //! In this harness the router is not served on a port, so the base it publishes is
 //! `smithy_server_runtime::UNSERVED_URL_BASE` — the same value `ctx.endpoint()` answers
@@ -51,6 +52,53 @@ const SETTLE_DEADLINE: Duration = Duration::from_secs(120);
 
 /// How often a poll looks again.
 const POLL_INTERVAL: Duration = Duration::from_millis(25);
+
+/// A `UserProfileName` every domain that is signed into below holds, so a landing fetch has a
+/// grant to present.
+const SIGN_IN_PROFILE: &str = "lander";
+
+/// Sign in to the domain `domain_id` of `region`: hold a user profile in it, mint the
+/// presigned domain URL `CreatePresignedDomainUrl` answers for that profile, and answer the
+/// QUERY that URL carries — the grant token, exactly as the hand-off brings it to a landing
+/// address ([`signed_in_fetch`]).
+///
+/// A landing address serves Studio only to a signed-in session, so every case that expects a
+/// landing goes through here rather than fetching anonymously.
+async fn sign_in(emulator: &Emulator, region: &str, domain_id: &str) -> String {
+    let (status, profile) = emulator
+        .call_in(
+            region,
+            "CreateUserProfile",
+            &json!({ "DomainId": domain_id, "UserProfileName": SIGN_IN_PROFILE }),
+        )
+        .await;
+    assert_eq!(
+        status, 200,
+        "case sign-in-{domain_id}: CreateUserProfile must be served, got {status} with {profile}"
+    );
+    let (status, minted) = emulator
+        .call_in(
+            region,
+            "CreatePresignedDomainUrl",
+            &json!({ "DomainId": domain_id, "UserProfileName": SIGN_IN_PROFILE }),
+        )
+        .await;
+    assert_eq!(
+        status, 200,
+        "case sign-in-{domain_id}: CreatePresignedDomainUrl must be served, got {status} with \
+         {minted}"
+    );
+    let url = str_field(&minted, "AuthorizedUrl");
+    url.split_once('?')
+        .map(|(_address, query)| query.to_string())
+        .unwrap_or_else(|| panic!("case sign-in-{domain_id}: the minted URL carries a grant"))
+}
+
+/// Fetch the published address `url` the way a holder that FOLLOWED a presigned domain URL
+/// reaches it: with the grant `query` that hand-off carries.
+async fn signed_in_fetch(emulator: &Emulator, url: &str, query: &str) -> (u16, String) {
+    emulator.fetch(&format!("{url}?{query}")).await
+}
 
 /// The status a domain reports once its provisioning is finished, and the one it reports
 /// while the clock still owes that move (`smithy_query(query="shape",shape="DomainStatus")`).
@@ -407,8 +455,10 @@ async fn describe_domain_reports_the_resolved_default_user_settings() {
 
 /// RULE: the `Url` a domain publishes is an address this emulator SERVES — the endpoint the
 /// request arrived on plus that domain's own landing path, never a host of AWS's own — it is
-/// minted once so every reader replays it, and a fetch of it reports the landing of the
-/// domain it addresses: the domain while it is serving Studio, a refusal while it is not.
+/// minted once so every reader replays it, and it serves Studio only to a fetch that signed in
+/// with the grant `CreatePresignedDomainUrl` mints: the domain's landing while it is serving
+/// Studio, a refusal while it is not, and nothing at all to a fetch that signed in with
+/// nothing.
 #[tokio::test]
 async fn a_domains_url_addresses_a_landing_this_emulator_serves() {
     let emulator = Emulator::new();
@@ -436,8 +486,8 @@ async fn a_domains_url_addresses_a_landing_this_emulator_serves() {
     ];
 
     // Every create is served first, so the whole table waits out ONE provisioning span
-    // rather than one each, and every domain's address is observed before it is serving.
-    let mut created: Vec<(&str, String, String, bool)> = Vec::new();
+    // rather than one each.
+    let mut created: Vec<(&str, &str, String, String, bool)> = Vec::new();
     for (case, region, extra) in &rows {
         let mut extra = (*extra).clone();
         for (member, value) in placement().as_object().expect("an object") {
@@ -497,20 +547,50 @@ async fn a_domains_url_addresses_a_landing_this_emulator_serves() {
             "case {case:?}: the listing reports the minted Url, got {listed}"
         );
 
+        // A fetch that signed in with NOTHING learns nothing: Studio is reached by signing
+        // in, so the address answers the sign-in reason and reports no member of the domain —
+        // whatever status or settings that domain carries.
+        let (status, body) = emulator.fetch(&url).await;
+        assert_eq!(
+            status, 403,
+            "case {case:?}: an address fetched with no grant serves no Studio, got {status} \
+             {body:?}"
+        );
+        for withheld in [domain_id.as_str(), case] {
+            assert!(
+                !body.contains(withheld),
+                "case {case:?}: a fetch that did not sign in must learn nothing about the \
+                 domain, got {body:?}"
+            );
+        }
+
         let admits_studio = extra
             .get("DefaultUserSettings")
             .and_then(|settings| settings.get("StudioWebPortal"))
             .and_then(Value::as_str)
             .is_none_or(|portal| portal == "ENABLED");
+        created.push((*case, *region, domain_id, url, admits_studio));
+    }
+
+    for (case, region, domain_id, url, admits_studio) in &created {
+        let described = wait_for_in_service(&emulator, case, domain_id).await;
+        // A domain whose members authenticate against IAM Identity Center signs nobody in
+        // this way ("This operation can only be called when the authentication mode equals
+        // IAM"), so there is no grant to reach its landing with and the anonymous answer
+        // above is all this address serves.
+        if str_field(&described, "AuthMode") != "IAM" {
+            continue;
+        }
+        let grant = sign_in(&emulator, region, domain_id).await;
 
         // The address serves no Studio while the domain is still being provisioned, and the
         // answer says which status stands in the way — unless the domain does not admit
-        // Studio at all, which no status of the domain changes. The move into service is
-        // owed from the instant the create answered, so the status that stands in the way is
-        // seeded on the record rather than raced for.
-        hold_off_the_move_into_service(&emulator, &domain_id);
-        let (status, body) = emulator.fetch(&url).await;
-        if admits_studio {
+        // Studio at all, which no status of the domain changes. The move into service is the
+        // clock's, so the status that stands in the way is seeded on the record rather than
+        // raced for.
+        hold_off_the_move_into_service(&emulator, domain_id);
+        let (status, body) = signed_in_fetch(&emulator, url, &grant).await;
+        if *admits_studio {
             assert_eq!(
                 status, 503,
                 "case {case:?}: a domain that is not serving yet opens no landing, got \
@@ -527,14 +607,10 @@ async fn a_domains_url_addresses_a_landing_this_emulator_serves() {
                  {status} {body:?}"
             );
         }
-        give_the_move_back_to_the_clock(&emulator, &domain_id);
-
-        created.push((*case, domain_id, url, admits_studio));
-    }
-
-    for (case, domain_id, url, admits_studio) in &created {
+        give_the_move_back_to_the_clock(&emulator, domain_id);
         let described = wait_for_in_service(&emulator, case, domain_id).await;
-        let (status, body) = emulator.fetch(url).await;
+
+        let (status, body) = signed_in_fetch(&emulator, url, &grant).await;
         if !*admits_studio {
             // A domain whose settings do not admit Studio serves no Studio to land on,
             // however far its own provisioning got.
@@ -547,8 +623,8 @@ async fn a_domains_url_addresses_a_landing_this_emulator_serves() {
         }
         assert_eq!(
             status, 200,
-            "case {case:?}: fetching the published Url must open the domain's landing, got \
-             {status} {body:?}"
+            "case {case:?}: a signed-in fetch of the published Url must open the domain's \
+             landing, got {status} {body:?}"
         );
         let landing: Value = serde_json::from_str(&body)
             .unwrap_or_else(|error| panic!("case {case:?}: the landing must be JSON, got {body:?}: {error}"));
@@ -574,9 +650,20 @@ async fn a_domains_url_addresses_a_landing_this_emulator_serves() {
                 "case {case:?}: the landing reports the domain's own {member}, got {landing}"
             );
         }
+        // And WHO it signed in: the profile the grant belongs to.
+        assert!(
+            landing
+                .get("ResourceArn")
+                .and_then(Value::as_str)
+                .is_some_and(|arn| arn.ends_with(&format!(
+                    "user-profile/{domain_id}/{SIGN_IN_PROFILE}"
+                ))),
+            "case {case:?}: the landing names the profile it signed in, got {landing}"
+        );
     }
 
-    // An address naming a domain this account does not hold lands nowhere.
+    // An address naming a domain this account does not hold holds no grant either, so it
+    // serves the same sign-in reason rather than disclosing that no domain is there.
     let (status, body) = emulator
         .fetch(&format!(
             "{}/_aws/sagemaker/domain/d-000000000000/studio",
@@ -584,15 +671,16 @@ async fn a_domains_url_addresses_a_landing_this_emulator_serves() {
         ))
         .await;
     assert_eq!(
-        status, 404,
-        "case \"an address of no domain\": expected 404, got {status} {body:?}"
+        status, 403,
+        "case \"an address of no domain\": expected 403, got {status} {body:?}"
     );
 }
 
 /// RULE: a space is reached THROUGH its domain, so the `Url` a space publishes is its
 /// domain's own landing address with the space on it — and this emulator serves that address
-/// too: a fetch reports the space under its domain once the space is serving, refuses while
-/// it is not, and lands nowhere for a space the domain does not hold.
+/// too, to a fetch that signed in with its domain's grant: it reports the space under its
+/// domain once the space is serving, refuses while it is not, lands nowhere for a space the
+/// domain does not hold, and serves nothing at all to a fetch that signed in with nothing.
 #[tokio::test]
 async fn a_spaces_url_addresses_a_landing_this_emulator_serves() {
     let emulator = Emulator::new();
@@ -605,6 +693,9 @@ async fn a_spaces_url_addresses_a_landing_this_emulator_serves() {
     // A domain admits members only once its own provisioning has settled, which is the
     // clock's: wait for the CONDITION.
     wait_for_in_service(&emulator, "spaces", &domain_id).await;
+    // The grant every fetch below presents: a space is reached through its domain, so the
+    // domain's own sign-in is what reaches the addresses under it.
+    let grant = sign_in(&emulator, "us-east-1", &domain_id).await;
 
     // Rows differ along the `SpaceName` shape the address carries: one character, a
     // hyphenated name, and the 63-character maximum `SpaceName`'s length admits.
@@ -627,11 +718,23 @@ async fn a_spaces_url_addresses_a_landing_this_emulator_serves() {
         );
 
         // The address serves nothing while the space is still launching.
-        let (status, body) = emulator.fetch(&url).await;
+        let (status, body) = signed_in_fetch(&emulator, &url, &grant).await;
         assert_eq!(
             status, 503,
             "case {name:?}: a space that is not serving yet opens no landing, got {status} \
              {body:?}"
+        );
+        // And nothing at all to a fetch that signed in with nothing.
+        let (status, body) = emulator.fetch(&url).await;
+        assert_eq!(
+            status, 403,
+            "case {name:?}: an address fetched with no grant serves no Studio, got {status} \
+             {body:?}"
+        );
+        assert!(
+            !body.contains(domain_id.as_str()) && !body.starts_with('{'),
+            "case {name:?}: a fetch that did not sign in must learn nothing about the space, \
+             got {body:?}"
         );
         spaces.push((name, url));
     }
@@ -652,11 +755,11 @@ async fn a_spaces_url_addresses_a_landing_this_emulator_serves() {
             tokio::time::sleep(POLL_INTERVAL).await;
         }
 
-        let (status, body) = emulator.fetch(url).await;
+        let (status, body) = signed_in_fetch(&emulator, url, &grant).await;
         assert_eq!(
             status, 200,
-            "case {name:?}: fetching the published Url must open the space's landing, got \
-             {status} {body:?}"
+            "case {name:?}: a signed-in fetch of the published Url must open the space's \
+             landing, got {status} {body:?}"
         );
         let landing: Value = serde_json::from_str(&body).unwrap_or_else(|error| {
             panic!("case {name:?}: the landing must be JSON, got {body:?}: {error}")
@@ -674,10 +777,10 @@ async fn a_spaces_url_addresses_a_landing_this_emulator_serves() {
         }
     }
 
-    // An address naming a space the domain does not hold lands nowhere.
-    let (status, body) = emulator
-        .fetch(&format!("{domain_url}/space/no-such-space"))
-        .await;
+    // An address naming a space the domain does not hold lands nowhere, for a fetch that did
+    // sign in to the domain it names.
+    let (status, body) =
+        signed_in_fetch(&emulator, &format!("{domain_url}/space/no-such-space"), &grant).await;
     assert_eq!(
         status, 404,
         "case \"an address of no space\": expected 404, got {status} {body:?}"

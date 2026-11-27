@@ -129,54 +129,56 @@ pub async fn offline_store_status(
     Some(active)
 }
 
-/// How SageMaker words the reason a feature group's creation FAILED because its offline store
-/// could not be set up: the fact the model documents — "The `FeatureGroup` could not be created
-/// in the `OfflineStore`" (`DescribeFeatureGroup$FailureReason`) — then the three facts a client
-/// repairs it with: the role the store is written as, the permission it is missing and the
+/// How SageMaker words a `CreateFeatureGroup` it REFUSES because the role it was handed may
+/// not write the offline store the request asks for: the Amazon S3 access-denied cause,
+/// naming the role the store would be written as, the permission it is missing and the
 /// location it is missing it on.
 ///
-/// Every variable part is taken from the REQUEST that created the group: the `RoleArn` it
-/// supplied and the `S3Uri` it named, as the caller spelled them, which is how every other
-/// report of an Amazon S3 location this service could not reach words it
-/// ([`could_not_access_model_data`]). The action is the one an object write is authorized under
+/// SageMaker probes the offline-store location WITH that role before it admits the group, so
+/// this travels as the refusal of the call rather than on a resource: the caller is told at
+/// the call site, which is where an application reports it and fails fast.
+///
+/// Every variable part is taken from the REQUEST: the `RoleArn` it supplied and the `S3Uri`
+/// it named, as the caller spelled them, which is how every other report of an Amazon S3
+/// location this service could not reach words it ([`could_not_access_model_data`]). The
+/// action is the one an object write is authorized under
 /// (`::service_common::feature_store_offline_store::WRITE_ACTION`), so the sentence names the
-/// permission a client actually grants.
+/// permission a client actually grants. The per-call assumed-role SESSION name and the Amazon
+/// S3 request ids the real service's text also carries are values of one run, so the sentence
+/// states the cause and omits them rather than inventing any.
 #[must_use]
-pub fn offline_store_creation_failure(role_arn: &str, s3_uri: &str) -> String {
+pub fn offline_store_access_denied(role_arn: &str, s3_uri: &str) -> String {
     format!(
-        "The FeatureGroup could not be created in the OfflineStore: the IAM role {role_arn} \
-         does not have permission to perform {} on the OfflineStore location {s3_uri}.",
+        "The FeatureGroup could not be created in the OfflineStore: AccessDenied — the IAM \
+         role {role_arn} is not authorized to perform: {} on the OfflineStore location \
+         {s3_uri}. Grant the role that permission and create the FeatureGroup again.",
         ::service_common::feature_store_offline_store::WRITE_ACTION
     )
 }
 
-/// Why the offline store an `OfflineStoreConfig` asks for could NOT be created — the
-/// `FailureReason` the group then carries, and the reason its `FeatureGroupStatus` settles
-/// `CreateFailed` — or `None` when nothing establishes that.
+/// Why the offline store an `OfflineStoreConfig` asks for could NOT be created — the sentence
+/// `CreateFeatureGroup` is REFUSED with ([`offline_store_access_denied`]) — or `None` when
+/// nothing establishes that.
 ///
 /// "The Amazon Resource Name (ARN) of the IAM execution role used to persist data into the
-/// OfflineStore if an OfflineStoreConfig is provided" (`RoleArn`): the store is set up and
-/// written AS that role, so a location that role may not write backs no offline store, and the
-/// group it was asked for FAILS rather than coming up healthy — which is the modelled outcome,
-/// since `DescribeFeatureGroup$FailureReason` is documented as "the reason that the
-/// `FeatureGroup` failed to be replicated in the `OfflineStore`. This is failure can occur
-/// because: the `FeatureGroup` could not be created in the `OfflineStore`", and
-/// `FeatureGroupStatus` carries `CreateFailed` for it. The call itself is ACCEPTED: recorded
-/// SageMaker answers the create and reports the failure on the resource. A create that names no
-/// offline store asks for no replication and fails for nothing here.
+/// OfflineStore if an OfflineStoreConfig is provided" (`RoleArn`): the store is SET UP as that
+/// role before the group is admitted, so a location that role may not write backs no offline
+/// store and there is nothing to create — the create is refused SYNCHRONOUSLY, with the
+/// access-denied cause, and nothing is stored. A create that names no offline store asks for no
+/// replication and is refused for nothing here.
 ///
 /// The question is the shared one for this store
 /// ([`::service_common::feature_store_offline_store::write_is_withheld`]) — the one the group's
 /// `OfflineStoreStatus` is reported from ([`offline_store_status`]) and the one the data plane
-/// makes each record write under — so the reason a group failed, the status it reports and the
-/// objects its store holds cannot disagree.
+/// makes each record write under — so the permission that refuses a create, the status a group
+/// reports and the objects its store holds cannot disagree.
 ///
-/// Only what IAM and Amazon S3 ESTABLISHED fails a group: a role this emulator's IAM holds
-/// nothing under, and a bucket carrying no policy, establish nothing, so such a group is created
-/// healthy.
+/// Only what IAM and Amazon S3 ESTABLISHED refuses a create: a role this emulator's IAM holds
+/// nothing under, and a bucket carrying no policy, establish nothing, so such a group is
+/// admitted.
 ///
 /// Nothing is written and no store guard is held: the questions are awaited.
-pub async fn offline_store_creation_failure_reason(
+pub async fn offline_store_admission_refusal(
     ctx: &smithy_server_runtime::OperationContext<'_>,
     region: &str,
     offline_store_config: Option<&crate::ops::types::OfflineStoreConfig>,
@@ -205,7 +207,7 @@ pub async fn offline_store_creation_failure_reason(
         &key,
     )
     .await
-    .then(|| offline_store_creation_failure(role_arn, &storage.s3_uri))
+    .then(|| offline_store_access_denied(role_arn, &storage.s3_uri))
 }
 
 /// The `ThroughputMode` a feature group runs under when its create stated no
@@ -301,11 +303,14 @@ pub struct FeatureGroup {
     pub description: Option<String>,
     pub tags: Vec<Tag>,
     pub status: String,
-    /// Why this group's offline store could not be created, recorded by the create that
-    /// resolved it ([`offline_store_creation_failure_reason`]); `None` for a group whose
-    /// store nothing failed. It is what the group's `FailureReason` reports and what makes
-    /// its status settle `CreateFailed` rather than `Created`
-    /// ([`FeatureGroup::settle_status`]).
+    /// Why a group's provisioning failed, i.e. the `FailureReason` a reader reports beside
+    /// the status. `None` for every group this emulator admits: the one failure it
+    /// establishes — an offline store the group's role may not write — is settled BEFORE the
+    /// group is stored, and refuses the create
+    /// ([`offline_store_admission_refusal`]), so no healthy-looking group is left behind for
+    /// it. The member is kept because `FeatureGroupStatus` carries `CreateFailed` and
+    /// `DescribeFeatureGroup` reports the reason beside it, which is what
+    /// [`FeatureGroup::settle_status`] materialises for a group that does carry one.
     pub failure_reason: Option<String>,
     pub creation_time: SystemTime,
     pub last_modified_time: SystemTime,

@@ -27,6 +27,9 @@
 use std::time::Duration;
 
 use serde_json::{json, Value};
+use service_com_amazonaws_sagemaker_sagemaker::state::{
+    ComAmazonawsSagemakerSagemakerState, FEATURE_GROUP_STATUS_CREATE_FAILED,
+};
 
 use crate::inference_deployment_lifecycle::{
     error_code, f64_field, message, str_field, Emulator, ACCOUNT,
@@ -824,6 +827,70 @@ async fn additions_accumulate_in_order_up_to_the_modelled_maximum_and_no_further
         "case one feature past the maximum: expected 400 ResourceLimitExceeded, got \
          {status} with {body}"
     );
+}
+
+/// RULE: a feature group whose provisioning FAILED holds no provisioned schema or store, so
+/// `DescribeFeatureGroup` reports the modelled `CreateFailed` status with the `FailureReason`
+/// beside it and `UpdateFeatureGroup` is refused naming that status — the remedy is to delete
+/// the group and create it again.
+///
+/// Nothing this emulator serves leaves a group in that status: the one failure it establishes
+/// — an offline store the group's role may not write — refuses the create before anything is
+/// stored (`state::offline_store_admission_refusal`, exercised end to end by
+/// `feature_group_offline_store_admission`). So the status is reached here the way a test
+/// reaches any clock- or provisioning-owed state it cannot drive from the wire: by seeding the
+/// record the handlers read, which is what keeps the modelled state's own reporting and
+/// refusal under test.
+#[tokio::test]
+async fn a_feature_group_whose_provisioning_failed_reports_it_and_takes_no_update() {
+    let emulator = Emulator::new();
+    let name = "failedgroup";
+    created_group(&emulator, name, json!({})).await;
+
+    // The reason such a group carries, worded as the model documents the member: "the reason
+    // that the FeatureGroup failed to be replicated in the OfflineStore".
+    let reason = "The FeatureGroup could not be created in the OfflineStore.";
+    {
+        let store = emulator
+            .engine
+            .state::<ComAmazonawsSagemakerSagemakerState>();
+        let mut store = store.lock();
+        let group = store
+            .feature_groups
+            .get_mut(name)
+            .unwrap_or_else(|| panic!("the created group {name} must be stored"));
+        group.status = FEATURE_GROUP_STATUS_CREATE_FAILED.to_string();
+        group.failure_reason = Some(reason.to_string());
+    }
+
+    let described = described(&emulator, name).await;
+    assert_eq!(
+        (
+            described.get("FeatureGroupStatus").and_then(Value::as_str),
+            described.get("FailureReason").and_then(Value::as_str)
+        ),
+        (Some(FEATURE_GROUP_STATUS_CREATE_FAILED), Some(reason)),
+        "case a failed group: expected the status and the reason beside it, got {described}"
+    );
+
+    let (status, refused) = update(
+        &emulator,
+        name,
+        &json!({ "ThroughputConfig": { "ThroughputMode": "OnDemand" } }),
+    )
+    .await;
+    assert_eq!(
+        (status, error_code(&refused).as_str()),
+        (400, "ValidationException"),
+        "case a failed group: expected the update refused, got {status} with {refused}"
+    );
+    let refusal = message(&refused);
+    for expected in [name, &FEATURE_GROUP_STATUS_CREATE_FAILED.to_uppercase()] {
+        assert!(
+            refusal.contains(expected),
+            "case a failed group: expected the refusal to name {expected:?}, got {refusal:?}"
+        );
+    }
 }
 
 /// The `FeatureName`s a `DescribeFeatureGroup` response reports, in order.

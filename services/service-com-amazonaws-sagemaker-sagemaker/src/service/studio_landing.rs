@@ -6,32 +6,45 @@
 //!
 //! A domain's `Url` is "the URL to the created domain" — an address whose whole point is
 //! that the caller FOLLOWS it — so it has to lead back to THIS emulator: a Studio DNS name
-//! of AWS's own (`d-<id>.studio.<region>.sagemaker.aws`) resolves to nothing a client of
-//! the emulator can reach, so the Studio flow would fail with a name or network error
+//! of AWS's own (`studio-d-<id>.studio.<region>.sagemaker.aws`) resolves to nothing a client
+//! of the emulator can reach, so the Studio flow would fail with a name or network error
 //! instead of landing anywhere. `CreateDomain` therefore addresses it on the endpoint the
-//! request arrived on ([`crate::state::studio_domain_url`]) and this module serves it, and a
+//! request arrived on, with the DOMAIN's own half of the address in its PATH
+//! ([`crate::state::studio_domain_url`]), and this module serves it, and a
 //! space's own address — derived from its domain's ([`crate::state::studio_space_url`]) — is
-//! served the same way:
+//! served the same way.
 //!
-//! * a `GET` of a live domain's landing address reports where that domain lands a user —
-//!   its id, its name, the status it is in, how its members authenticate and the default
-//!   experience its resolved settings name;
-//! * a `GET` of a space's address reports that space under its domain;
-//! * a domain or space this account does not hold is `404`, a domain whose resolved settings
-//!   do not admit Studio at all is `403` ("If this value is set to `DISABLED`, the user
-//!   cannot access Studio"), and a resource the service has not finished provisioning is
-//!   `503`, because Studio is not serving for it yet.
+//! Studio is reached by SIGNING IN, so this plane serves nothing to a fetch that carries no
+//! live presigned-URL grant of the domain it addresses — the grant
+//! `CreatePresignedDomainUrl` recorded, which the hand-off that operation's address answers
+//! brings here in the query ([`crate::service::presigned_session`]). Real Studio answers a
+//! domain URL opened with no session with a sign-in challenge rather than with the domain's
+//! configuration, and this route declares no auth scheme ([`ErasedOperation::auth_schemes`]
+//! answers an empty list) because a browser following the URL signs nothing: the grant IS the
+//! credential this surface verifies for itself.
+//!
+//! * a `GET` carrying no live grant of the domain it addresses is `403`, with a one-line
+//!   sign-in reason and NOTHING about the domain, the space or the session in it — which is
+//!   also what an address naming a domain this account does not hold is answered with, since
+//!   no grant of it can exist;
+//! * a `GET` carrying one reports where that domain lands the user it signs in — its id, its
+//!   name, the status it is in, how its members authenticate, the default experience its
+//!   resolved settings name, the profile the grant signs in as and when that session stops
+//!   authenticating — and, for a space address, that space under its domain;
+//! * a space the domain does not hold is `404`, a domain whose resolved settings do not admit
+//!   Studio at all is `403` ("If this value is set to `DISABLED`, the user cannot access
+//!   Studio"), and a resource the service has not finished provisioning is `503`, because
+//!   Studio is not serving for it yet.
 //!
 //! The model binds no operation to that path — a landing page is not an API call, it is
 //! what the API's URL points at — so it is claimed through
 //! [`smithy_server_runtime::Service::override_operation`] rather than through the generated
-//! routing table, and it is served however it arrives ([`ErasedOperation::auth_schemes`]
-//! answers an empty list): the address is opened by a browser, which signs nothing.
+//! routing table.
 //!
 //! What it answers is read off the stored domain, so a landing fetch and a `DescribeDomain`
 //! or `DescribeSpace` of the same resource cannot disagree. The one write is the transition
 //! the clock already owed that resource, which was due at its stored instant whether or not
-//! anybody fetched the address.
+//! anybody fetched the address — and it is made only for a fetch the grant authenticated.
 
 use std::sync::Arc;
 
@@ -39,7 +52,7 @@ use aws_smithy_runtime_api::http::{Request as RtRequest, Response as RtResponse}
 use smithy_server_runtime::{BoxFuture, ErasedOperation, OperationContext, Service};
 
 use super::published_address::{
-    answer, decoded_segments, FETCH_METHOD, JSON_MEDIA_TYPE, PLAIN_MEDIA_TYPE,
+    answer, decoded_segments, query_field, FETCH_METHOD, JSON_MEDIA_TYPE, PLAIN_MEDIA_TYPE,
 };
 
 /// The method a landing address is opened on: a browser following the domain's `Url`.
@@ -48,9 +61,17 @@ const LANDING_METHOD: &str = FETCH_METHOD;
 /// The media type the landing report is served in.
 const LANDING_MEDIA_TYPE: &str = JSON_MEDIA_TYPE;
 
-/// What a fetch addressing a domain this account does not hold is answered with. The
-/// address is opened by a browser rather than by an AWS SDK, so the answer is the status
-/// itself with a one-line reason and no API error envelope.
+/// What a fetch that has not signed in is answered with: the one-line sign-in reason, and
+/// nothing about the domain, the space or the session — a fetch this surface did not
+/// authenticate learns nothing from it, including whether the address names a domain at all.
+/// The address is opened by a browser rather than by an AWS SDK, so the answer is the status
+/// itself with that line and no API error envelope.
+const NOT_SIGNED_IN: &str =
+    "this address serves Studio only to a signed-in session: open the presigned domain URL \
+     CreatePresignedDomainUrl mints\n";
+
+/// What a fetch addressing a domain this account does not hold is answered with, once it HAS
+/// signed in — a domain released between the mint and the fetch.
 const NO_DOMAIN: &str = "no Studio domain is served at this address\n";
 
 /// What a fetch addressing a space the domain does not hold is answered with.
@@ -90,10 +111,38 @@ impl<Eng: Send + Sync + 'static> StudioLandingRoute<Eng> {
             return answer(404, PLAIN_MEDIA_TYPE, NO_DOMAIN);
         };
         let Some(state) = crate::state::service_state(&*self.engine) else {
-            return answer(500, PLAIN_MEDIA_TYPE, NO_DOMAIN);
+            return answer(500, PLAIN_MEDIA_TYPE, NOT_SIGNED_IN);
         };
         let now = std::time::SystemTime::now();
         let mut store = state.lock();
+        // WHO the fetch is, settled BEFORE anything of the domain is read or written: Studio
+        // is reached by signing in, and the grant `CreatePresignedDomainUrl` recorded is the
+        // credential this surface verifies for itself — the token the hand-off brings here
+        // names a user profile of the domain this address names, and only while both windows
+        // that grant holds are still open. A fetch that carries none, carries one the clock
+        // has closed, or carries one of ANOTHER domain is answered the sign-in reason and
+        // nothing else: no status, no configuration, no session, and no transition
+        // materialised on a resource it never authenticated for.
+        let signed_in = query_field(req.uri(), crate::state::PRESIGNED_SESSION_TOKEN_FIELD)
+            .and_then(|token| {
+                let subject = store.domain_session_subject(addressed.domain_id(), &token)?;
+                match store.presigned_session(
+                    crate::state::USER_PROFILE_ARN_KIND,
+                    &subject,
+                    &token,
+                    now,
+                ) {
+                    crate::state::PresignedSession::Open {
+                        subject_arn,
+                        session_expires_at,
+                    } => Some((subject_arn, session_expires_at)),
+                    _ => None,
+                }
+            });
+        let Some(signed_in) = signed_in else {
+            drop(store);
+            return answer(403, PLAIN_MEDIA_TYPE, NOT_SIGNED_IN);
+        };
         // Resolved through the crate's one domain lookup, so a domain whose removal the
         // clock already completed is gone here exactly as it is for `DescribeDomain`.
         let Some(domain) = store.domain_mut(addressed.domain_id(), now) else {
@@ -162,7 +211,11 @@ impl<Eng: Send + Sync + 'static> StudioLandingRoute<Eng> {
                 &format!("this {subject} serves no Studio while it is in {status} status\n"),
             );
         }
-        answer(200, LANDING_MEDIA_TYPE, &reported.rendered(space.as_ref()))
+        answer(
+            200,
+            LANDING_MEDIA_TYPE,
+            &reported.rendered(space.as_ref(), &signed_in),
+        )
     }
 }
 
@@ -177,8 +230,10 @@ impl<Eng: Send + Sync + 'static> ErasedOperation for StudioLandingRoute<Eng> {
         Box::pin(async move { answer })
     }
 
-    /// Who may reach this address: whoever holds the URL. A domain's `Url` is opened by a
-    /// browser, which presents no SigV4 credential.
+    /// Who may reach this address: whoever holds a live presigned-URL grant of the domain it
+    /// names. A domain's `Url` is opened by a browser, which presents no SigV4 credential, so
+    /// the framework evaluates none — this route verifies the grant itself and serves nothing
+    /// but the sign-in reason without one (see [`Self::serve`]).
     fn auth_schemes(&self) -> Option<&'static [&'static str]> {
         Some(ANONYMOUS)
     }
@@ -199,9 +254,13 @@ struct Landing {
 }
 
 impl Landing {
-    /// The landing report, every member read off the stored domain — and off the stored
-    /// space where the address named one.
-    fn rendered(&self, space: Option<&(String, String)>) -> String {
+    /// The landing report, every member read off the stored domain — off the stored space
+    /// where the address named one, and off the GRANT the fetch signed in with.
+    fn rendered(
+        &self,
+        space: Option<&(String, String)>,
+        signed_in: &(String, std::time::SystemTime),
+    ) -> String {
         let mut reported = ::serde_json::json!({
             "DomainId": self.domain_id,
             "DomainName": self.domain_name,
@@ -214,6 +273,15 @@ impl Landing {
             reported["SpaceName"] = ::serde_json::Value::from(space_name.as_str());
             reported["SpaceStatus"] = ::serde_json::Value::from(space_status.as_str());
         }
+        // The session the holder signed in with: the profile the grant signs in as and the
+        // instant that session stops authenticating, both read off the grant.
+        let (subject_arn, session_expires_at) = signed_in;
+        let expires_at = session_expires_at
+            .duration_since(std::time::SystemTime::UNIX_EPOCH)
+            .map(|since_epoch| since_epoch.as_secs_f64())
+            .unwrap_or_default();
+        reported["ResourceArn"] = ::serde_json::Value::from(subject_arn.as_str());
+        reported["SessionExpiresAt"] = ::serde_json::Value::from(expires_at);
         reported.to_string()
     }
 }

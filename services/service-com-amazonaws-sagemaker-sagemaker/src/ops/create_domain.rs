@@ -354,18 +354,19 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     .unwrap_or_else(|| crate::state::DEFAULT_TAG_PROPAGATION.to_string()),
                 // A domain is STORED `Pending` and owes the clock either `InService` or, for
                 // a placement the account's network does not admit, `Failed` with the reason
-                // resolved above. This call has already resolved which of the two it will
-                // be, so nothing is left to compute and the transition is owed from the
-                // instant this call answers (`state::transition_owed_at`): the first request
-                // after it reports the settled domain, and a caller driving the documented
-                // poll-until-settled loop spends none of its polling interval on it.
+                // resolved above. WHICH of the two it will be is already resolved; WHEN it
+                // happens is the provisioning SageMaker does after this call has answered,
+                // so the move falls due a span later (`state::DOMAIN_IN_SERVICE_AFTER`): the
+                // requests that immediately follow this one still read `Pending` and the
+                // member-creates they make are refused, while a caller polling for the
+                // condition reaches `InService` without waiting a real provisioning out.
                 status: crate::state::DOMAIN_STATUS_PENDING.to_string(),
                 failure_reason: None,
                 creation_failure_reason,
                 tags: input.tags.unwrap_or_default(),
                 creation_time: now,
                 last_modified_time: now,
-                in_service_due_at: crate::state::transition_owed_at(now),
+                in_service_due_at: now + crate::state::DOMAIN_IN_SERVICE_AFTER,
                 // Nothing has asked for this domain's removal, so the clock owes none.
                 removal_due_at: None,
             },

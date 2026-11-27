@@ -251,6 +251,8 @@ async fn create_domain_round_trips_through_describe_domain() {
             expected_arn,
             "case {case}: DomainArn, got {created}"
         );
+        // The domain's landing address: this emulator's own published base and the domain's
+        // own landing path.
         let expected_url = format!(
             "{}/_aws/sagemaker/domain/{domain_id}/studio",
             smithy_server_runtime::UNSERVED_URL_BASE
@@ -461,10 +463,11 @@ async fn create_domain_refuses_a_name_outside_the_modelled_shape() {
     );
 }
 
-/// RULE: a domain owes its move to `InService` to the CLOCK, from the instant the create
-/// that decided it answers (`state::transition_owed_at`) — so the FIRST read after the
-/// create reports the settled domain through both readers, with no wait of any length, and
-/// a read never changes what a later caller sees.
+/// RULE: a domain owes its move to `InService` to the CLOCK, a span after the create that
+/// starts its provisioning (`state::DOMAIN_IN_SERVICE_AFTER`) — so the read that immediately
+/// follows the create still reports the transient `Pending` through both readers, a client
+/// that polls for the condition reads `InService`, and a read never changes what a later
+/// caller sees.
 #[tokio::test]
 async fn domain_status_moves_from_pending_to_in_service_on_the_clock() {
     let emulator = Emulator::new();
@@ -473,13 +476,13 @@ async fn domain_status_moves_from_pending_to_in_service_on_the_clock() {
     let domain_id = str_field(&created, "DomainId");
     let describe = json!({ "DomainId": domain_id });
 
-    // The create resolved what the provisioning comes to before it answered, so the very
-    // next request reports it, through both readers.
-    let settled = emulator.ok("DescribeDomain", &describe).await;
+    // The create leaves the domain provisioning, so the very next request still reports the
+    // transient status — through both readers.
+    let pending = emulator.ok("DescribeDomain", &describe).await;
     assert_eq!(
-        str_field(&settled, "Status"),
-        DOMAIN_STATUS_IN_SERVICE,
-        "case straight-after-create: DescribeDomain status, got {settled}"
+        str_field(&pending, "Status"),
+        DOMAIN_STATUS_PENDING,
+        "case straight-after-create: DescribeDomain status, got {pending}"
     );
     let listed = emulator.ok("ListDomains", &json!({})).await;
     assert_eq!(
@@ -490,13 +493,12 @@ async fn domain_status_moves_from_pending_to_in_service_on_the_clock() {
                 .iter()
                 .map(|details| str_field(details, "Status"))
                 .collect::<Vec<_>>()),
-        Some(vec![DOMAIN_STATUS_IN_SERVICE.to_string()]),
+        Some(vec![DOMAIN_STATUS_PENDING.to_string()]),
         "case straight-after-create: ListDomains status, got {listed}"
     );
 
-    // The status the create stored is the transient one, and it is the record's own
-    // starting point rather than anything a reader decides: a domain whose due instant is
-    // still ahead is reported `Pending` by the same reader.
+    // The move out of that status is the clock's and no reader decides it: a domain whose due
+    // instant is pushed ahead is reported `Pending` however often it is read.
     {
         let store = emulator
             .engine

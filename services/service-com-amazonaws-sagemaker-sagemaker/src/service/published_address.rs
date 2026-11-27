@@ -52,6 +52,32 @@ fn answered_status(code: u16) -> StatusCode {
     StatusCode::try_from(code).expect("a published address answers constant statuses")
 }
 
+/// The status a hand-off to another address of this emulator's answers with: "the requested
+/// resource resides temporarily under a different URI" (RFC 9110's `302 Found`), which is
+/// what a browser following a sign-in URL is redirected on.
+pub const HANDED_OFF: u16 = 302;
+
+/// One hand-off of such a route: the status above and the `Location` the client follows next,
+/// with the address also in the body so a client that reports the answer names where it was
+/// sent.
+///
+/// `None` when the address cannot be carried in a header at all — the setter is the
+/// NON-panicking one, for the reason [`answer`] gives — because a `302` with no `Location` is
+/// a redirect no client can follow: the caller answers what it would have answered without
+/// the hand-off instead.
+pub fn hand_off(location: &str) -> Option<RtResponse> {
+    let mut response = answer(
+        HANDED_OFF,
+        PLAIN_MEDIA_TYPE,
+        &format!("this URL signs you in at {location}\n"),
+    );
+    response
+        .headers_mut()
+        .try_insert("location", location.to_string())
+        .ok()?;
+    Some(response)
+}
+
 /// The path segments of `uri`, percent-decoded, empty segments dropped — the same view of a
 /// path the mint built the address from, so an identifier that had to be encoded names the
 /// same resource here as it does in the record.
