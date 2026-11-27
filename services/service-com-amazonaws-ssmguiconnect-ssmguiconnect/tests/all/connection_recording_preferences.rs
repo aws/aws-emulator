@@ -38,7 +38,8 @@ use std::sync::Arc;
 
 use service_com_amazonaws_ssmguiconnect_ssmguiconnect::state::{
     bucket_name_matches_model_pattern, idempotency_key, region_ceiling_message,
-    IdempotentOperation, BUCKET_NAME_PATTERN, MAX_CONFIGURED_REGIONS, MAX_IDEMPOTENCY_OUTCOMES,
+    IdempotentOperation, StoredResponse, BUCKET_NAME_PATTERN, MAX_CONFIGURED_REGIONS,
+    MAX_IDEMPOTENCY_OUTCOMES,
 };
 use service_com_amazonaws_ssmguiconnect_ssmguiconnect::{
     ComAmazonawsSsmguiconnectSsmguiconnectState, EmulatedService,
@@ -551,6 +552,251 @@ async fn replaying_a_delete_token_returns_the_first_outcome() {
             Some("another-token"),
             "case {replays:?} replays: expected the new token back, got {response:?}"
         );
+    }
+}
+
+/// An `@idempotent` call's outcome is keyed by ONE derivation —
+/// `state::idempotency_key(operation, Region, ClientToken)` — and both sides of that key
+/// go through it: the handler that looks a replay up, and the state API that records the
+/// outcome. A row per operation carrying an `@idempotencyToken`, so each side is driven
+/// end to end for both of them.
+///
+/// Each row asserts, for its operation: the outcome the call recorded is retained under
+/// exactly the key that constructor derives, and under no key differing in any ONE of
+/// the key's three parts; a replay of the same token is answered from that outcome and
+/// leaves the stored record exactly as the first call left it; and the SAME token under
+/// the OTHER `@idempotent` operation is a different key, so that operation runs for real.
+/// A lookup key spelled differently from the record key would miss, and both mutating
+/// operations would mutate a second time instead of replaying.
+#[tokio::test]
+async fn the_lookup_key_and_the_record_key_are_one_derivation() {
+    /// The token whose key both sides must derive the same way.
+    const TOKEN: &str = "one-derivation-token";
+    /// The token the Delete row's setup Update is written under — not the key under test.
+    const SETUP: &str = "one-derivation-setup";
+    /// A Region no call below is made in, so a key differing only in its Region part
+    /// names nothing.
+    const OTHER_REGION: &str = "eu-west-1";
+
+    let first = preferences("123456789012", "first-bucket", KEY_ARN);
+    let second = preferences("210987654321", "second-bucket", KEY_ARN);
+
+    for (case, op) in [
+        ("an Update's outcome", IdempotentOperation::Update),
+        ("a Delete's outcome", IdempotentOperation::Delete),
+    ] {
+        let other_op = match op {
+            IdempotentOperation::Update => IdempotentOperation::Delete,
+            IdempotentOperation::Delete => IdempotentOperation::Update,
+        };
+        let (router, engine) = enrolled_router_with_engine().await;
+
+        // The call whose outcome is recorded under TOKEN. A Delete has something to
+        // remove only once the singleton is configured, which its setup Update does
+        // under a token of its own.
+        match op {
+            IdempotentOperation::Update => {
+                let (status, body) = call(
+                    &router,
+                    "UpdateConnectionRecordingPreferences",
+                    serde_json::json!({
+                        "ConnectionRecordingPreferences": first.clone(),
+                        "ClientToken": TOKEN,
+                    }),
+                )
+                .await;
+                assert_eq!(
+                    status, 200,
+                    "case {case:?}: the recording call must answer 200, got {status:?} with \
+                     {body:?}"
+                );
+            }
+            IdempotentOperation::Delete => {
+                let (status, body) = call(
+                    &router,
+                    "UpdateConnectionRecordingPreferences",
+                    serde_json::json!({
+                        "ConnectionRecordingPreferences": first.clone(),
+                        "ClientToken": SETUP,
+                    }),
+                )
+                .await;
+                assert_eq!(
+                    status, 200,
+                    "case {case:?}: the setup Update must answer 200, got {status:?} with \
+                     {body:?}"
+                );
+                let (status, body) = call(
+                    &router,
+                    "DeleteConnectionRecordingPreferences",
+                    serde_json::json!({ "ClientToken": TOKEN }),
+                )
+                .await;
+                assert_eq!(
+                    status, 200,
+                    "case {case:?}: the recording call must answer 200, got {status:?} with \
+                     {body:?}"
+                );
+            }
+        }
+
+        // The WRITE side: the outcome is retained under exactly the shared derivation.
+        // The store guard lives in a block of its own, so no call below is made while it
+        // is held.
+        let held_before = {
+            let state = engine.state::<ComAmazonawsSsmguiconnectSsmguiconnectState>();
+            let store = state.lock();
+            let recorded = store.recorded_outcome(&idempotency_key(op, REGION, TOKEN));
+            let recorded_as_expected = match op {
+                IdempotentOperation::Update => matches!(recorded, Some(StoredResponse::Updated(_))),
+                IdempotentOperation::Delete => matches!(recorded, Some(StoredResponse::Deleted)),
+            };
+            assert!(
+                recorded_as_expected,
+                "case {case:?}: the call's outcome must be retained under \
+                 idempotency_key({op:?}, {REGION:?}, {TOKEN:?}), got {recorded:?}"
+            );
+
+            // …and under no key that differs in one of the key's parts, so none of the
+            // three is dropped from the derivation.
+            let perturbed = [
+                ("the operation", idempotency_key(other_op, REGION, TOKEN)),
+                ("the Region", idempotency_key(op, OTHER_REGION, TOKEN)),
+                (
+                    "the token",
+                    idempotency_key(op, REGION, &format!("{TOKEN}-other")),
+                ),
+            ];
+            for (part, key) in perturbed {
+                let held = store.recorded_outcome(&key);
+                assert!(
+                    held.is_none(),
+                    "case {case:?}: no outcome must be retained under a key differing in \
+                     {part}, got {held:?}"
+                );
+            }
+            store.preferences(REGION).cloned()
+        };
+
+        // The READ side: the handler finds that outcome under the key it derives for
+        // itself, so the replay is answered from the FIRST call and writes nothing.
+        match op {
+            IdempotentOperation::Update => {
+                let (status, replay) = call(
+                    &router,
+                    "UpdateConnectionRecordingPreferences",
+                    serde_json::json!({
+                        "ConnectionRecordingPreferences": second.clone(),
+                        "ClientToken": TOKEN,
+                    }),
+                )
+                .await;
+                assert_eq!(
+                    status, 200,
+                    "case {case:?}: the replay must answer 200, got {status:?} with {replay:?}"
+                );
+                assert_eq!(
+                    replay["ConnectionRecordingPreferences"]["RecordingDestinations"]
+                        ["S3Buckets"][0]["BucketName"]
+                        .as_str(),
+                    Some("first-bucket"),
+                    "case {case:?}: the replay must answer with the first outcome, got {replay:?}"
+                );
+            }
+            IdempotentOperation::Delete => {
+                let (status, replay) = call(
+                    &router,
+                    "DeleteConnectionRecordingPreferences",
+                    serde_json::json!({ "ClientToken": TOKEN }),
+                )
+                .await;
+                assert_eq!(
+                    status, 200,
+                    "case {case:?}: the replay must answer 200, got {status:?} with {replay:?}"
+                );
+                assert_eq!(
+                    replay["ClientToken"].as_str(),
+                    Some(TOKEN),
+                    "case {case:?}: the replay must report the token it was made with, got \
+                     {replay:?}"
+                );
+            }
+        }
+        let held_after = engine
+            .state::<ComAmazonawsSsmguiconnectSsmguiconnectState>()
+            .lock()
+            .preferences(REGION)
+            .cloned();
+        assert_eq!(
+            held_after, held_before,
+            "case {case:?}: a replay must leave the stored record exactly as the first call \
+             left it, got {held_after:?}"
+        );
+
+        // The same token under the OTHER `@idempotent` operation is a different key — the
+        // operation is part of it — so that operation runs for real rather than answering
+        // from the outcome above.
+        match other_op {
+            IdempotentOperation::Update => {
+                let (status, body) = call(
+                    &router,
+                    "UpdateConnectionRecordingPreferences",
+                    serde_json::json!({
+                        "ConnectionRecordingPreferences": second.clone(),
+                        "ClientToken": TOKEN,
+                    }),
+                )
+                .await;
+                assert_eq!(
+                    status, 200,
+                    "case {case:?}: the other operation under the same token must answer 200, \
+                     got {status:?} with {body:?}"
+                );
+                let (status, got) = call(
+                    &router,
+                    "GetConnectionRecordingPreferences",
+                    serde_json::json!({}),
+                )
+                .await;
+                assert_eq!(
+                    status, 200,
+                    "case {case:?}: the Update under the same token must have run, got \
+                     {status:?} with {got:?}"
+                );
+                assert_eq!(
+                    got["ConnectionRecordingPreferences"]["RecordingDestinations"]["S3Buckets"]
+                        [0]["BucketName"]
+                        .as_str(),
+                    Some("second-bucket"),
+                    "case {case:?}: the Update under the same token must have written its own \
+                     request, got {got:?}"
+                );
+            }
+            IdempotentOperation::Delete => {
+                let (status, body) = call(
+                    &router,
+                    "DeleteConnectionRecordingPreferences",
+                    serde_json::json!({ "ClientToken": TOKEN }),
+                )
+                .await;
+                assert_eq!(
+                    status, 200,
+                    "case {case:?}: the other operation under the same token must answer 200, \
+                     got {status:?} with {body:?}"
+                );
+                let (status, got) = call(
+                    &router,
+                    "GetConnectionRecordingPreferences",
+                    serde_json::json!({}),
+                )
+                .await;
+                assert_eq!(
+                    status, 404,
+                    "case {case:?}: the Delete under the same token must have removed the \
+                     record, got {status:?} with {got:?}"
+                );
+            }
+        }
     }
 }
 

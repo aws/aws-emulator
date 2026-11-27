@@ -38,6 +38,9 @@
 //!   every record here is held under.
 //! * [`mint_client_token`] — the service-provided value for an `@idempotencyToken`
 //!   member the caller left unset.
+//! * [`idempotency_key`] — how an `@idempotent` call's outcome is keyed, which the
+//!   handler that LOOKS a replay up and the store that RECORDS the outcome both derive
+//!   here and nowhere else ([`IdempotencyKey`] admits no other constructor).
 //! * [`audit`] — the structured access record every operation emits, so a call to this
 //!   service (above all a state-changing one) leaves an attributable trail.
 
@@ -186,10 +189,45 @@ pub enum IdempotentOperation {
 /// The Region is part of the key because the resource the outcome describes is itself
 /// per-Region: a token replayed in another Region addresses another record, so it is a
 /// different call and has to run for real there.
-pub type IdempotencyKey = (IdempotentOperation, String, String);
+///
+/// Its parts are PRIVATE, so [`idempotency_key`] is the only way to build one: the key a
+/// handler looks a replay up under and the key this store records an outcome under are
+/// then the same derivation by construction, and changing that derivation (normalising
+/// the token, adding or dropping a part) is a compile error at every site rather than a
+/// lookup that silently stops matching.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct IdempotencyKey {
+    /// Which `@idempotent` operation the outcome belongs to.
+    operation: IdempotentOperation,
+    /// The Region the call was made in ([`request_region`]).
+    region: String,
+    /// The `ClientToken` the call carried.
+    client_token: String,
+}
+
+impl IdempotencyKey {
+    /// The operation this key is the key of.
+    #[must_use]
+    pub fn operation(&self) -> IdempotentOperation {
+        self.operation
+    }
+
+    /// The Region this key is the key of — the Region whose record the outcome it holds
+    /// describes.
+    #[must_use]
+    pub fn region(&self) -> &str {
+        &self.region
+    }
+
+    /// The `ClientToken` this key is the key of.
+    #[must_use]
+    pub fn client_token(&self) -> &str {
+        &self.client_token
+    }
+}
 
 /// The key an `@idempotent` call's outcome is recorded under — the one place the three
-/// parts of [`IdempotencyKey`] are put in order, so a handler and this store cannot
+/// parts of [`IdempotencyKey`] are put together, so a handler and this store cannot
 /// spell it differently.
 #[must_use]
 pub fn idempotency_key(
@@ -197,7 +235,11 @@ pub fn idempotency_key(
     region: &str,
     client_token: &str,
 ) -> IdempotencyKey {
-    (operation, region.to_string(), client_token.to_string())
+    IdempotencyKey {
+        operation,
+        region: region.to_string(),
+        client_token: client_token.to_string(),
+    }
 }
 
 /// The first outcome of an `@idempotent` call, replayed when the store is still in
@@ -275,8 +317,7 @@ impl ComAmazonawsSsmguiconnectSsmguiconnectState {
     /// answering from the cache would report a state the next reader does not see.
     pub fn replayable_outcome(&self, key: &IdempotencyKey) -> Option<&StoredResponse> {
         let outcome = self.recorded_outcome(key)?;
-        let (_, region, _) = key;
-        let held = self.preferences(region);
+        let held = self.preferences(key.region());
         let still_current = match outcome {
             StoredResponse::Updated(record) => held == Some(record),
             StoredResponse::Deleted => held.is_none(),
