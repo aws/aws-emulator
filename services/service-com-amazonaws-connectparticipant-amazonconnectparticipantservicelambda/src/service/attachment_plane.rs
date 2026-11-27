@@ -7,24 +7,36 @@
 //!
 //! Both members are documented as pre-signed URLs a caller follows directly with an HTTP
 //! client — one to upload the file, one to download it. Such a request carries no
-//! `X-Amz-Target`, names no modelled operation, and a pre-signed URL is followed with no
-//! credential of its own. Nothing in the generated routing table can name it, so it is
-//! reached through the two seams an emulated data plane uses:
+//! `X-Amz-Target` and names no modelled operation, so nothing in the generated routing table
+//! can name it and it is reached through the two seams an emulated data plane uses:
 //!
 //! * [`crate::service::EmulatedService::can_handle`] already claims it, because the
 //!   published path is inside this service's own modelled path space (see
 //!   [`crate::state::ATTACHMENT_PATH_PREFIX`]);
-//! * [`smithy_server_runtime::Service::override_routing_error`] serves it, and the router
-//!   reaches that seam BEFORE authentication — which is what lets the published URL be
-//!   followed unsigned, as a pre-signed URL is.
+//! * [`smithy_server_runtime::Service::override_operation`] names [`AttachmentPlane`] for it,
+//!   so the request is served as an operation of this service.
+//!
+//! # Who may follow a published URL
+//!
+//! [`AttachmentPlane`] declares no auth schemes of its own, which leaves the emulator's front
+//! door holding a request to this plane to the credential the published URL carries: a
+//! pre-signed URL carries its SigV4 credential in the QUERY rather than in an
+//! `Authorization` header, and the router verifies every request signature itself — the
+//! signature, its expiry, and the method and path it was signed for — before this plane runs.
+//! That is why both targets are signed through the framework's own signer
+//! ([`crate::state::attachment_url`]) and why this plane checks no credential itself:
+//! declaring an empty scheme list here, or answering from a seam the router reaches before
+//! authentication, is the one way a published URL's path could serve stored bytes to a caller
+//! the front door would refuse.
 //!
 //! # What is served
 //!
 //! `PUT /participant/attachments/<contact>/<attachment>` stores the request body as the
 //! file of the attachment the path names, and `GET` (or `HEAD`) hands those very bytes
-//! back, under the media type the upload declared. So the file a participant downloads is
-//! the file that was uploaded, and an attachment nothing uploaded to names no object at
-//! all: no bytes are invented for it.
+//! back, under the media type the upload declared and the disposition the published download
+//! URL names. So the file a participant downloads is the file that was uploaded, presented
+//! the way the call that published the URL asked for it, and an attachment nothing uploaded
+//! to names no object at all: no bytes are invented for it.
 //!
 //! Each half is served only inside the window of the URL that was published for it — the
 //! upload's own, and the longest one `GetAttachment` announced for the download — because
@@ -47,6 +59,50 @@
 
 use aws_smithy_runtime_api::http::{Request as RtRequest, Response as RtResponse, StatusCode};
 use aws_smithy_types::body::SdkBody;
+use smithy_server_runtime::{BoxFuture, ErasedOperation, OperationContext, Service};
+
+/// The attachment plane as the router runs it: the operation this service names for a request
+/// to a URL `StartAttachmentUpload` or `GetAttachment` published.
+///
+/// Holds the SAME shared engine the generated entry threads into every operation, so the file
+/// a request to a published URL stores and reads is the one the modelled operations hold.
+pub struct AttachmentPlane<Eng> {
+    engine: ::std::sync::Arc<Eng>,
+}
+
+impl<Eng> AttachmentPlane<Eng> {
+    /// Build the plane from the shared engine.
+    pub fn new(engine: ::std::sync::Arc<Eng>) -> Self {
+        Self { engine }
+    }
+}
+
+impl<Eng: Send + Sync + 'static> ErasedOperation for AttachmentPlane<Eng> {
+    fn run<'r>(
+        &'r self,
+        _svc: &'r dyn Service,
+        req: &'r RtRequest,
+        _ctx: &'r OperationContext<'r>,
+    ) -> BoxFuture<'r, RtResponse> {
+        Box::pin(async move {
+            // WHICH attachment the request names is read off the path by the one reader of
+            // that form, so the URL this service hands out and the request it serves back
+            // cannot disagree. A path that names none is the object this plane does not hold:
+            // `override_operation` named this plane for a path that parsed, so this is the
+            // honest answer rather than an unreachable branch.
+            let Some((contact_id, attachment_id)) =
+                crate::state::parse_attachment_path(::service_common::request_path(req.uri()))
+            else {
+                return refusal(404, "NoSuchKey", NO_SUCH_KEY_MESSAGE);
+            };
+            serve(&*self.engine, req, &contact_id, &attachment_id)
+        })
+    }
+
+    // No `auth_schemes` answer of its own, so this plane declares nothing about its own
+    // authentication and the emulator's front door holds a request to a published URL to the
+    // credential that URL carries. See this module's header.
+}
 
 /// The media type a refusal of this plane is stated in.
 const ERROR_CONTENT_TYPE: &str = "application/json";
@@ -100,7 +156,7 @@ const STORE_UNAVAILABLE_MESSAGE: &str = "The connectparticipant store is unavail
 /// WHICH attachment is named was already read off the path by
 /// [`crate::state::parse_attachment_path`], so this function decides only the method, the
 /// upload's size and window, and what the store holds.
-pub fn serve<Eng: Send + Sync + 'static>(
+fn serve<Eng: Send + Sync + 'static>(
     engine: &Eng,
     req: &RtRequest,
     contact_id: &str,
@@ -108,7 +164,16 @@ pub fn serve<Eng: Send + Sync + 'static>(
 ) -> RtResponse {
     match req.method() {
         "PUT" => upload(engine, req, contact_id, attachment_id),
-        "GET" | "HEAD" => download(engine, contact_id, attachment_id, req.method() == "GET"),
+        // How the file is presented is stated by the published download URL itself, so it is
+        // read off the request's own address rather than from the store: two URLs reported
+        // for one attachment can name different dispositions.
+        "GET" | "HEAD" => download(
+            engine,
+            contact_id,
+            attachment_id,
+            req.method() == "GET",
+            crate::state::content_disposition_of_url(req.uri()),
+        ),
         _ => refusal(405, "MethodNotAllowed", METHOD_NOT_ALLOWED_MESSAGE),
     }
 }
@@ -160,12 +225,14 @@ fn upload<Eng: Send + Sync + 'static>(
 }
 
 /// Hand back the file one attachment holds. `with_body` is false for a `HEAD`, which
-/// reports the object's metadata without its bytes.
+/// reports the object's metadata without its bytes, and `disposition` is the
+/// `Content-Disposition` the published URL asks the file to be served under.
 fn download<Eng: Send + Sync + 'static>(
     engine: &Eng,
     contact_id: &str,
     attachment_id: &str,
     with_body: bool,
+    disposition: &'static str,
 ) -> RtResponse {
     let Some(store) = crate::state::service_state(engine) else {
         return refusal(500, "InternalError", STORE_UNAVAILABLE_MESSAGE);
@@ -215,6 +282,11 @@ fn download<Eng: Send + Sync + 'static>(
     let _ = response
         .headers_mut()
         .try_insert("content-length", bytes.len().to_string());
+    // How a browser handles this file, as the URL that was published for it states: one of
+    // two fixed tokens, so nothing a caller wrote reaches a response header.
+    let _ = response
+        .headers_mut()
+        .try_insert("content-disposition", disposition);
     response
 }
 

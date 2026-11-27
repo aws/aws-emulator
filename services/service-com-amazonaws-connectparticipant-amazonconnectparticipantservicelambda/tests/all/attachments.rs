@@ -181,12 +181,13 @@ async fn post_answer(
     (status, error_type, decoded)
 }
 
-/// What a request to a published attachment URL answered: the status, the body and the
-/// `content-type` it was served under.
+/// What a request to a published attachment URL answered: the status, the body, and the
+/// `content-type` and `content-disposition` it was served under.
 struct Fetched {
     status: u16,
     body: Vec<u8>,
     content_type: Option<String>,
+    content_disposition: Option<String>,
 }
 
 impl Fetched {
@@ -219,10 +220,16 @@ async fn fetch(
         .get("content-type")
         .and_then(|value| value.to_str().ok())
         .map(str::to_string);
+    let content_disposition = response
+        .headers()
+        .get("content-disposition")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
     Fetched {
         status,
         body: response.into_body().to_vec(),
         content_type,
+        content_disposition,
     }
 }
 
@@ -418,6 +425,61 @@ async fn get_attachment(
         body["UrlExpiryInSeconds"] = json!(seconds);
     }
     post(router, "/participant/attachment", Some(connection_token), &body).await
+}
+
+/// `GetAttachment` for one attachment, with an optional `UrlContentDisposition`.
+async fn get_attachment_presented(
+    router: &MultiServiceRouter,
+    connection_token: &str,
+    attachment_id: &str,
+    url_content_disposition: Option<&str>,
+) -> (u16, Value) {
+    let mut body = json!({"AttachmentId": attachment_id});
+    if let Some(disposition) = url_content_disposition {
+        body["UrlContentDisposition"] = json!(disposition);
+    }
+    post(router, "/participant/attachment", Some(connection_token), &body).await
+}
+
+/// Start, upload and confirm one file, answering the attachment it minted: the state every
+/// case that reads a file back needs, driven over the wire exactly as a client drives it.
+async fn stored_attachment(
+    router: &MultiServiceRouter,
+    connection_token: &str,
+    file: &File,
+    client_token: &str,
+) -> Started {
+    let started = start(
+        router,
+        connection_token,
+        file.case,
+        file.name,
+        file.content_type,
+        file.size,
+        client_token,
+    )
+    .await;
+    let uploaded = fetch(router, "PUT", &started.url, &started.headers, file.bytes()).await;
+    assert_eq!(
+        uploaded.status,
+        200,
+        "case {:?}: the upload to the published target got {:?}",
+        file.case,
+        uploaded.json()
+    );
+    let (status, body) = complete(
+        router,
+        connection_token,
+        &started.attachment_id,
+        &format!("{client_token}-complete"),
+    )
+    .await;
+    assert_eq!(
+        status, 200,
+        "case {:?}: CompleteAttachmentUpload got {body:?}",
+        file.case
+    );
+    started
 }
 
 /// One file an upload is started for. The rows differ along what the rule generalises over:
@@ -1626,5 +1688,437 @@ async fn an_instance_that_stops_sharing_attachments_stops_serving_its_chats_atta
         Some(11),
         "case \"the stored attachment once its instance shares attachments again\": expected \
          the declared size 11, got {body:?}"
+    );
+}
+
+/// Every `ContentDisposition` a download may be asked for, with the `Content-Disposition` the
+/// file is then served under, plus the absent member — which the model documents as
+/// downloading the file. The values are `CONTENT_DISPOSITION_VALUES`, every value the member
+/// declares.
+const DISPOSITIONS: &[(&str, Option<&str>, &str)] = &[
+    ("no disposition asked for", None, "attachment"),
+    ("the downloading disposition", Some("ATTACHMENT"), "attachment"),
+    ("the displaying disposition", Some("INLINE"), "inline"),
+];
+
+#[tokio::test]
+async fn a_download_presents_the_file_the_way_the_request_asked_for() {
+    // The rule: the pre-signed download URL `GetAttachment` reports carries the disposition
+    // the request's `UrlContentDisposition` names — downloading the file when it names none —
+    // and the request that follows that URL is served the file under exactly that
+    // `Content-Disposition`, with its bytes and its media type unchanged.
+    let router = router();
+    let connection_token = connect(&router, "participant-content-disposition").await;
+
+    // Driven over the whole file table as well as the disposition: how a file is presented is
+    // independent of its media type, its name and its size.
+    for (index, file) in FILES.iter().enumerate() {
+        let started = stored_attachment(
+            &router,
+            &connection_token,
+            file,
+            &format!("disposition-{index}"),
+        )
+        .await;
+
+        for (case, requested, expected) in DISPOSITIONS {
+            let case = format!("{} / {case}", file.case);
+            let (status, body) = get_attachment_presented(
+                &router,
+                &connection_token,
+                &started.attachment_id,
+                *requested,
+            )
+            .await;
+            assert_eq!(status, 200, "case {case:?}: GetAttachment got {body:?}");
+            let url = body["Url"]
+                .as_str()
+                .unwrap_or_else(|| panic!("case {case:?}: no Url in {body:?}"))
+                .to_string();
+            assert_eq!(
+                query_param(&url, "response-content-disposition").as_deref(),
+                Some(*expected),
+                "case {case:?}: expected the published URL to carry the disposition \
+                 {expected:?}, got {url:?}"
+            );
+
+            // A `HEAD` reports the same presentation as the `GET` that carries the bytes.
+            for method in ["GET", "HEAD"] {
+                let fetched = fetch(&router, method, &url, &[], Vec::new()).await;
+                assert_eq!(
+                    fetched.status,
+                    200,
+                    "case {case:?}: {method} of the published URL got {:?}",
+                    fetched.json()
+                );
+                assert_eq!(
+                    fetched.content_disposition.as_deref(),
+                    Some(*expected),
+                    "case {case:?}: expected {method} to serve the file as {expected:?}, got {:?}",
+                    fetched.content_disposition
+                );
+                assert_eq!(
+                    fetched.content_type.as_deref(),
+                    Some(file.content_type),
+                    "case {case:?}: expected the stored media type {:?} from {method}, got {:?}",
+                    file.content_type,
+                    fetched.content_type
+                );
+                let expected_body = if method == "GET" {
+                    file.bytes()
+                } else {
+                    Vec::new()
+                };
+                assert_eq!(
+                    fetched.body.len(),
+                    expected_body.len(),
+                    "case {case:?}: expected {} bytes from {method}, got {}",
+                    expected_body.len(),
+                    fetched.body.len()
+                );
+                assert!(
+                    fetched.body == expected_body,
+                    "case {case:?}: the bytes {method} served are not the bytes that were \
+                     uploaded"
+                );
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_disposition_the_member_does_not_declare_is_refused() {
+    // The same rule from the other side: only a value `ContentDisposition` declares names a
+    // presentation, so anything else is refused — the modelled value set of the member — and
+    // no URL is published for it. Each of these satisfies the member's own shape (a string)
+    // and is not one of its two values.
+    let router = router();
+    let connection_token = connect(&router, "participant-content-disposition-refusal").await;
+    let started = stored_attachment(
+        &router,
+        &connection_token,
+        &FILES[0],
+        "disposition-refusal",
+    )
+    .await;
+
+    for requested in [
+        "inline",
+        "Attachment",
+        "DOWNLOAD",
+        "ATTACHMENT ",
+        "attachment; filename=\"note.txt\"",
+        "",
+    ] {
+        let (status, body) = get_attachment_presented(
+            &router,
+            &connection_token,
+            &started.attachment_id,
+            Some(requested),
+        )
+        .await;
+        assert_eq!(
+            (status, error_type(&body).as_str()),
+            (400, "ValidationException"),
+            "case {requested:?}: expected GetAttachment to refuse a disposition the member \
+             does not declare, got {body:?}"
+        );
+        let message = body["message"].as_str().unwrap_or_default();
+        assert!(
+            message.contains("urlContentDisposition") && message.contains("enum value set"),
+            "case {requested:?}: expected the refusal to report the member's value set, got \
+             {message:?}"
+        );
+    }
+}
+
+/// The base URL the authenticating harness below is reached at, so every URL this service
+/// publishes there leads back to it.
+const BASE_URL: &str = "https://participant.connect.us-east-1.amazonaws.com";
+
+/// The Region every signed call of that harness is signed for, the one [`HOST`] names.
+const REGION: &str = "us-east-1";
+
+/// This service's SigV4 signing name, which the emulator verifies a request to it under.
+const SIGNING_NAME: &str = "execute-api";
+
+/// The query field a pre-signed URL carries its own signature in.
+const SIGNATURE_FIELD: &str = "X-Amz-Signature";
+
+/// A harness that VERIFIES every request signature — the `--auth on` path a developer runs the
+/// emulator on — so a request to a published attachment URL is held to the credential that
+/// URL carries.
+fn authenticating_harness() -> Harness {
+    let engine: Arc<engine::InMemoryEngine> = Arc::new(engine::InMemoryEngine::new());
+    let mut router = MultiServiceRouter::new();
+    router.set_request_authentication(true);
+    router.set_url_base(
+        smithy_server_runtime::EndpointUrl::parse(BASE_URL)
+            .expect("the harness base URL must parse"),
+    );
+    router.register_service(participant::EmulatedService::new(engine.clone()));
+    Harness { router, engine }
+}
+
+/// One modelled call, SigV4-signed with the keys this emulator process publishes — what an
+/// authenticating router verifies a request against.
+async fn signed_post(
+    router: &MultiServiceRouter,
+    path: &str,
+    bearer: &str,
+    body: &Value,
+) -> (u16, Value) {
+    let mut request = http::Request::builder()
+        .method("POST")
+        .uri(format!("{BASE_URL}{path}"))
+        .header("host", HOST)
+        .header("content-type", "application/json")
+        .header("x-amz-bearer", bearer)
+        .body(serde_json::to_vec(body).expect("serialize the request body"))
+        .expect("build the request");
+    let keys = ::emulator_server::request_authentication::SigV4Authenticator::for_this_process();
+    ::service_common::in_process_sigv4::sign_in_process_request_as(
+        &mut request,
+        SIGNING_NAME,
+        REGION,
+        &keys.access_key_id,
+        &keys.secret_access_key,
+    )
+    .await
+    .expect("the test request must sign");
+    let (parts, body) = request.into_parts();
+    let response = router
+        .dispatch(http::Request::from_parts(parts, Bytes::from(body)))
+        .await;
+    let status = response.status().as_u16();
+    let bytes = response.into_body();
+    let decoded = if bytes.is_empty() {
+        Value::Null
+    } else {
+        serde_json::from_slice(&bytes).unwrap_or(Value::Null)
+    };
+    (status, decoded)
+}
+
+/// The request target of `url` — its path with the query behind it — which is what a caller
+/// following a published URL sends.
+fn target_of(url: &str) -> String {
+    let rest = url.split_once("://").map_or(url, |(_, rest)| rest);
+    rest.find('/')
+        .map_or_else(|| "/".to_string(), |index| rest[index..].to_string())
+}
+
+/// `url` with its whole query string dropped: the path alone, which is no credential.
+fn without_query(url: &str) -> String {
+    format!(
+        "{BASE_URL}{}",
+        target_of(url)
+            .split_once('?')
+            .map_or_else(|| target_of(url), |(path, _)| path.to_string())
+    )
+}
+
+/// `url` with query field `name` removed altogether, every other pair left byte-identical.
+fn without_field(url: &str, name: &str) -> String {
+    let target = target_of(url);
+    let (path, query) = target.split_once('?').unwrap_or((target.as_str(), ""));
+    let kept: Vec<&str> = query
+        .split('&')
+        .filter(|pair| pair.split_once('=').map(|(field, _)| field) != Some(name))
+        .collect();
+    format!("{BASE_URL}{path}?{}", kept.join("&"))
+}
+
+/// `url` with the first digit of its signature rewritten: still a signature of the same form,
+/// and not this request's.
+fn with_tampered_signature(url: &str) -> String {
+    let target = target_of(url);
+    let (path, query) = target.split_once('?').unwrap_or((target.as_str(), ""));
+    let pairs: Vec<String> = query
+        .split('&')
+        .map(|pair| match pair.split_once('=') {
+            Some((field, value)) if field == SIGNATURE_FIELD => {
+                let rewritten: String = value
+                    .chars()
+                    .enumerate()
+                    .map(|(index, digit)| match (index, digit) {
+                        (0, '0') => '1',
+                        (0, _) => '0',
+                        (_, kept) => kept,
+                    })
+                    .collect();
+                format!("{field}={rewritten}")
+            }
+            _ => pair.to_string(),
+        })
+        .collect();
+    format!("{BASE_URL}{path}?{}", pairs.join("&"))
+}
+
+#[tokio::test]
+async fn a_published_attachment_url_is_served_only_to_the_signature_it_carries() {
+    // The rule: an address an operation hands the caller to follow later is a PRE-SIGNED one
+    // — its credential travels in the query string rather than in an `Authorization` header —
+    // so the plane serving it declares no scheme of its own and the emulator holds a request
+    // to that signature: the address exactly as published serves the file, and one whose
+    // signature is absent or does not verify over the request presented serves nothing. A
+    // path alone is never a credential, however unguessable it looks.
+    let harness = authenticating_harness();
+    let participant_token = "participant-presigned-plane";
+    harness.start_chat(participant_token);
+    let (status, body) = signed_post(
+        &harness,
+        "/participant/connection",
+        participant_token,
+        &json!({"Type": ["CONNECTION_CREDENTIALS"]}),
+    )
+    .await;
+    assert_eq!(status, 200, "CreateParticipantConnection got {body:?}");
+    let connection_token = body["ConnectionCredentials"]["ConnectionToken"]
+        .as_str()
+        .unwrap_or_else(|| panic!("no ConnectionToken in {body:?}"))
+        .to_string();
+
+    let file = &FILES[1];
+    let (status, body) = signed_post(
+        &harness,
+        "/participant/start-attachment-upload",
+        &connection_token,
+        &json!({
+            "AttachmentName": file.name,
+            "AttachmentSizeInBytes": file.size as i64,
+            "ContentType": file.content_type,
+            "ClientToken": "presigned-plane",
+        }),
+    )
+    .await;
+    assert_eq!(status, 200, "StartAttachmentUpload got {body:?}");
+    let attachment_id = body["AttachmentId"]
+        .as_str()
+        .unwrap_or_else(|| panic!("no AttachmentId in {body:?}"))
+        .to_string();
+    let upload_url = body["UploadMetadata"]["Url"]
+        .as_str()
+        .unwrap_or_else(|| panic!("no UploadMetadata.Url in {body:?}"))
+        .to_string();
+    let upload_headers: Vec<(String, String)> = body["UploadMetadata"]["HeadersToInclude"]
+        .as_object()
+        .unwrap_or_else(|| panic!("no HeadersToInclude in {body:?}"))
+        .iter()
+        .map(|(name, value)| {
+            (
+                name.clone(),
+                value.as_str().unwrap_or_default().to_string(),
+            )
+        })
+        .collect();
+    assert!(
+        upload_url.contains(SIGNATURE_FIELD),
+        "the published upload target must be pre-signed, got {upload_url:?}"
+    );
+
+    // An upload presented at an address whose signature is absent or does not verify stores
+    // nothing: the rows differ along HOW the presented address differs from the published one.
+    // An address carrying NO credential at all names no service either — the router resolves
+    // which service serves a request from the credential it presents — so that row is answered
+    // by the router, ahead of this service, and the others by the signature check.
+    for (case, address, expected) in [
+        ("the whole query dropped", without_query(&upload_url), 404),
+        (
+            "the signature field dropped",
+            without_field(&upload_url, SIGNATURE_FIELD),
+            403,
+        ),
+        (
+            "one digit of the signature rewritten",
+            with_tampered_signature(&upload_url),
+            403,
+        ),
+    ] {
+        let refused = fetch(&harness, "PUT", &address, &upload_headers, file.bytes()).await;
+        assert_eq!(
+            refused.status, expected,
+            "case {case:?}: expected the upload to be refused with HTTP {expected}, got {:?}",
+            refused.json()
+        );
+    }
+
+    // The address exactly as published is the one that stores the file.
+    let stored = fetch(
+        &harness,
+        "PUT",
+        &upload_url,
+        &upload_headers,
+        file.bytes(),
+    )
+    .await;
+    assert_eq!(
+        stored.status,
+        200,
+        "the published upload target must take the file, got {:?}",
+        stored.json()
+    );
+
+    let (status, body) = signed_post(
+        &harness,
+        "/participant/complete-attachment-upload",
+        &connection_token,
+        &json!({"AttachmentIds": [attachment_id], "ClientToken": "presigned-plane-complete"}),
+    )
+    .await;
+    assert_eq!(status, 200, "CompleteAttachmentUpload got {body:?}");
+
+    let (status, body) = signed_post(
+        &harness,
+        "/participant/attachment",
+        &connection_token,
+        &json!({"AttachmentId": attachment_id, "UrlExpiryInSeconds": 300}),
+    )
+    .await;
+    assert_eq!(status, 200, "GetAttachment got {body:?}");
+    let download_url = body["Url"]
+        .as_str()
+        .unwrap_or_else(|| panic!("no Url in {body:?}"))
+        .to_string();
+
+    // The same three rows for the download, each of which must serve no stored byte.
+    for (case, address, expected) in [
+        ("the whole query dropped", without_query(&download_url), 404),
+        (
+            "the signature field dropped",
+            without_field(&download_url, SIGNATURE_FIELD),
+            403,
+        ),
+        (
+            "one digit of the signature rewritten",
+            with_tampered_signature(&download_url),
+            403,
+        ),
+    ] {
+        let refused = fetch(&harness, "GET", &address, &[], Vec::new()).await;
+        assert_eq!(
+            refused.status, expected,
+            "case {case:?}: expected the download to be refused with HTTP {expected}, got {:?}",
+            refused.json()
+        );
+        assert!(
+            refused.body != file.bytes(),
+            "case {case:?}: a refused download must serve no stored byte"
+        );
+    }
+
+    // And the published address itself serves the file that was uploaded.
+    let served = fetch(&harness, "GET", &download_url, &[], Vec::new()).await;
+    assert_eq!(
+        served.status,
+        200,
+        "the published download URL must serve the file, got {:?}",
+        served.json()
+    );
+    assert!(
+        served.body == file.bytes(),
+        "the published download URL must serve the {} uploaded bytes, got {}",
+        file.size,
+        served.body.len()
     );
 }

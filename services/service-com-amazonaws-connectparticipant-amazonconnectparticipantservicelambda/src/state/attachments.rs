@@ -70,6 +70,67 @@ pub const MAX_URL_EXPIRY_SECONDS: i64 = 300;
 /// when the request names none.
 pub const DEFAULT_URL_EXPIRY: Duration = Duration::from_secs(MAX_URL_EXPIRY_SECONDS as u64);
 
+/// `ContentDisposition$ATTACHMENT`, from `CONTENT_DISPOSITION_VALUES`: the value
+/// `GetAttachmentRequest$UrlContentDisposition` documents as downloading the file, and as
+/// "the default behavior" when the request names none.
+pub const CONTENT_DISPOSITION_ATTACHMENT: &str = "ATTACHMENT";
+
+/// `ContentDisposition$INLINE`, from `CONTENT_DISPOSITION_VALUES`: the value that displays
+/// the file in the browser instead of downloading it.
+pub const CONTENT_DISPOSITION_INLINE: &str = "INLINE";
+
+/// The field a published download URL carries the disposition its file is served under in,
+/// as a pre-signed URL of the store this target stands in for names a response override.
+///
+/// ONE place states the field, so the URL `GetAttachment` hands out and the request the
+/// attachment plane serves back cannot disagree about it (see
+/// [`content_disposition_of_url`]).
+pub const RESPONSE_CONTENT_DISPOSITION_FIELD: &str = "response-content-disposition";
+
+/// The `Content-Disposition` header value that downloads the file.
+pub const DISPOSITION_ATTACHMENT: &str = "attachment";
+
+/// The `Content-Disposition` header value that displays the file in the browser.
+pub const DISPOSITION_INLINE: &str = "inline";
+
+/// The header value a `ContentDisposition` names, or `None` for a string that is not one of
+/// the values the enum declares.
+///
+/// The member says how a browser handles the file at the URL, which a response states in its
+/// `Content-Disposition`, so each modelled value maps to that header's own token.
+#[must_use]
+pub fn content_disposition_header(value: &str) -> Option<&'static str> {
+    match value {
+        CONTENT_DISPOSITION_ATTACHMENT => Some(DISPOSITION_ATTACHMENT),
+        CONTENT_DISPOSITION_INLINE => Some(DISPOSITION_INLINE),
+        _ => None,
+    }
+}
+
+/// The disposition the file at a published download URL is served under: the one the URL's
+/// own [`RESPONSE_CONTENT_DISPOSITION_FIELD`] names, and otherwise the documented default,
+/// which downloads the file.
+///
+/// Only a field naming a disposition this service publishes is honoured, and the answer is
+/// one of two fixed tokens: a URL's query is caller-controlled text, so nothing from it is
+/// echoed into a response header.
+#[must_use]
+pub fn content_disposition_of_url(uri: &str) -> &'static str {
+    let Some((_, query)) = uri.split_once('?') else {
+        return DISPOSITION_ATTACHMENT;
+    };
+    query
+        .split('&')
+        .filter_map(|field| field.split_once('='))
+        .find(|(name, _)| *name == RESPONSE_CONTENT_DISPOSITION_FIELD)
+        .and_then(|(_, value)| match value {
+            DISPOSITION_INLINE => Some(DISPOSITION_INLINE),
+            DISPOSITION_ATTACHMENT => Some(DISPOSITION_ATTACHMENT),
+            _ => None,
+        })
+        .unwrap_or(DISPOSITION_ATTACHMENT)
+}
+
 /// One attachment of one chat: what the upload declared, how far its lifecycle has got,
 /// the upload target that was published for it and the bytes that arrived there.
 #[derive(Debug, Clone)]
@@ -242,7 +303,10 @@ pub fn parse_attachment_path(path: &str) -> Option<(String, String)> {
 /// one and one this emulator ANSWERS: it signs for the emulator's current base URL, so the
 /// announced host is the host the caller reached this service on rather than a host only AWS
 /// serves. `bound_content_type` binds the media type the caller must declare into the
-/// signature, which is how an upload target states the type of the file it accepts.
+/// signature, which is how an upload target states the type of the file it accepts, and
+/// `response_disposition` (a header value from [`content_disposition_header`]) is carried in
+/// the URL's own [`RESPONSE_CONTENT_DISPOSITION_FIELD`], which is how a pre-signed URL states
+/// how the response that serves the file must present it.
 ///
 /// `None` only when the request cannot be signed at all, which the caller reports as a
 /// server-side failure rather than handing out an address nothing answers.
@@ -252,6 +316,7 @@ pub fn attachment_url(
     contact_id: &str,
     attachment_id: &str,
     bound_content_type: Option<&str>,
+    response_disposition: Option<&str>,
     expires_in: Duration,
 ) -> Option<smithy_server_runtime::SignedUrl> {
     let path = attachment_object_path(contact_id, attachment_id);
@@ -262,6 +327,9 @@ pub fn attachment_url(
     );
     if let Some(content_type) = bound_content_type {
         request = request.header(http::header::CONTENT_TYPE.as_str(), content_type);
+    }
+    if let Some(disposition) = response_disposition {
+        request = request.query(RESPONSE_CONTENT_DISPOSITION_FIELD, disposition);
     }
     ctx.url_signer().sign(request, expires_in).ok()
 }

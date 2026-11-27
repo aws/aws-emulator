@@ -43,7 +43,8 @@
 //! One data plane is mounted here as well: the pre-signed attachment URLs
 //! `StartAttachmentUpload` and `GetAttachment` publish name no modelled operation, so they
 //! are claimed by `can_handle` (their path is inside this service's own modelled path
-//! space) and served by [`Service::override_routing_error`]. See [`attachment_plane`].
+//! space) and named as an operation of this service by [`Service::override_operation`], which
+//! the router authenticates like any other. See [`attachment_plane`].
 //!
 //! A sixth seam is taken as well: `override_protocol`, for the ONE thing about this
 //! service's wire the generic renderer cannot express — the body member a modelled failure
@@ -103,13 +104,11 @@ fn can_handle_parts(parts: &http::request::Parts) -> bool {
 /// router builds one shared engine and hands it to `new`.
 pub struct EmulatedService<Eng: Send + Sync + 'static> {
     entry: crate::ServiceDefinition<Eng>,
-    /// The SAME shared engine the generated entry threads into every operation.
-    ///
-    /// Held here because the attachment plane is served from
-    /// [`Service::override_routing_error`], which is not an operation and so has no
-    /// `self.engine` of its own; it must read and write the one store the operations use,
-    /// not a second copy.
-    engine: Arc<Eng>,
+    /// The attachment plane, over the SAME shared engine the generated entry threads into
+    /// every operation: a request to a published attachment URL names no modelled operation,
+    /// so it is served by this one instead, and it must read and write the one store the
+    /// operations use rather than a second copy.
+    attachments: attachment_plane::AttachmentPlane<Eng>,
     /// This service's wire protocol: the model's own `restJson1`, with the error document
     /// of [`wire`]. Built once here because [`Service::override_protocol`] hands back a
     /// borrow and must never build one per request.
@@ -123,7 +122,7 @@ impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
     pub fn new(engine: Arc<Eng>) -> Self {
         Self {
             entry: crate::ServiceDefinition::new(Arc::clone(&engine)),
-            engine,
+            attachments: attachment_plane::AttachmentPlane::new(engine),
             protocol: wire::ParticipantRestJson::new(),
         }
     }
@@ -144,7 +143,7 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
         //
         // That claim also covers a request to an ATTACHMENT URL this service published,
         // because the published path is inside this service's own modelled path space
-        // (`crate::state::ATTACHMENT_PATH_PREFIX`); `override_routing_error` serves it.
+        // (`crate::state::ATTACHMENT_PATH_PREFIX`); `override_operation` serves it.
         can_handle_parts(parts)
     }
 
@@ -153,11 +152,19 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
         req: &aws_smithy_runtime_api::http::Request,
     ) -> Option<&dyn ErasedOperation> {
         // Return `Some(op)` to serve a request the model's routing key cannot name
-        // correctly; `None` (the default) lets the generated routing table resolve
-        // it. `req` is the whole request, so a decision that depends on the body —
-        // the `Action` form field on a query protocol, say — is reachable here.
-        let _ = req;
-        None
+        // correctly; `None` lets the generated routing table resolve it. `req` is the whole
+        // request, so a decision that depends on the body is reachable here.
+        //
+        // A request to an ATTACHMENT URL this service published is exactly that case by
+        // construction — the path is not in the model — so this is where the documented
+        // upload and download of an attachment are served. The PATH decides, read by the one
+        // reader of that form (`crate::state::parse_attachment_path`), so the URL this
+        // service hands out and the request it serves back cannot disagree about which
+        // attachment is named. Naming an OPERATION for it is also what puts the request
+        // through the router's own authentication, which is what holds a published URL to the
+        // credential it carries. See `attachment_plane`.
+        crate::state::parse_attachment_path(::service_common::request_path(req.uri()))
+            .map(|_| &self.attachments as &dyn ErasedOperation)
     }
 
     fn override_refusal(&self, refusal: &Refusal) -> Option<Refused> {
@@ -193,20 +200,12 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
         // default for this service's envelope (query -> 400 InvalidAction text/xml,
         // awsJson -> 404, rpcv2Cbor -> 404, rest -> 501).
         //
-        // A request to an ATTACHMENT URL this service published is exactly that case by
-        // construction — the path is not in the model — so this is where the documented
-        // upload and download of an attachment are served. The PATH decides, and WHICH
-        // attachment it names is read by the one reader of that form
-        // (`crate::state::parse_attachment_path`), so the URL this service hands out and
-        // the request it serves back cannot disagree. See `attachment_plane`.
-        let (contact_id, attachment_id) =
-            crate::state::parse_attachment_path(::service_common::request_path(req.uri()))?;
-        Some(attachment_plane::serve(
-            &*self.engine,
-            req,
-            &contact_id,
-            &attachment_id,
-        ))
+        // A request to a published attachment URL is NOT answered here: `override_operation`
+        // above names an operation for it, so the router authenticates it before it is
+        // served. The router reaches THIS seam before authentication, so a data plane
+        // answered from it would serve stored bytes to a caller the front door would refuse.
+        let _ = req;
+        None
     }
 
     fn override_framework_error(

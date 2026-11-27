@@ -17,6 +17,7 @@ pub struct GetAttachmentInput {
     pub attachment_id: String,
     pub connection_token: String,
     pub url_expiry_in_seconds: Option<i32>,
+    pub url_content_disposition: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.connectparticipant#GetAttachmentResponse")]

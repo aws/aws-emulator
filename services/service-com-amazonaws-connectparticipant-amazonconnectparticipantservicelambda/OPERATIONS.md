@@ -61,7 +61,7 @@ contents — read that shape in the model above when you need its own members.
 ## GetAttachment
 
 - **Route:** `POST /participant/attachment -> 200`
-- **Input:** `AttachmentId` (string, len 1..256, required), `ConnectionToken` (string, len 1..1000, @httpHeader(X-Amz-Bearer), required), `UrlExpiryInSeconds` (integer, range 5..300)
+- **Input:** `AttachmentId` (string, len 1..256, required), `ConnectionToken` (string, len 1..1000, @httpHeader(X-Amz-Bearer), required), `UrlExpiryInSeconds` (integer, range 5..300), `UrlContentDisposition` (ContentDisposition, one of: ATTACHMENT | INLINE)
 - **Output:** `Url` (string, len 1..2000), `UrlExpiry` (string), `AttachmentSizeInBytes` (long, range 1.., default 0, required)
 - **Errors:** `AccessDeniedException (HTTP 403)`, `InternalServerException (HTTP 500)`, `ThrottlingException (HTTP 429)`, `ValidationException (HTTP 400)`
 

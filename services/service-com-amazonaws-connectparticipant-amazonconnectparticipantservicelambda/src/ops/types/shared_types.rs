@@ -59,6 +59,10 @@ pub const CHAT_ITEM_TYPE_VALUES: &[&str] = &["ATTACHMENT", "CHAT_ENDED", "CONNEC
 pub const CONNECTION_TYPE_VALUES: &[&str] = &["CONNECTION_CREDENTIALS", "WEBRTC_CONNECTION", "WEBSOCKET"];
 
 
+/// The values `ContentDisposition` accepts on the wire.
+pub const CONTENT_DISPOSITION_VALUES: &[&str] = &["ATTACHMENT", "INLINE"];
+
+
 /// The values `MeetingFeatureStatus` accepts on the wire.
 pub const MEETING_FEATURE_STATUS_VALUES: &[&str] = &["AVAILABLE", "UNAVAILABLE"];
 

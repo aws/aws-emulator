@@ -256,6 +256,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             &contact_id,
             &attachment_id,
             Some(&input.content_type),
+            // An upload target states the type of the file it accepts, not how a response
+            // serving that file is presented: the disposition is the download URL's, and
+            // `GetAttachment` is the only call that carries a member for it.
+            None,
             crate::state::DEFAULT_URL_EXPIRY,
         ) else {
             return Err(StartAttachmentUploadErrorModeled::InternalServerException(

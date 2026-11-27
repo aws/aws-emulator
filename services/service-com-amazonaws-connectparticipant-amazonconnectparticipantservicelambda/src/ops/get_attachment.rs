@@ -61,6 +61,9 @@
 //! * `UrlExpiryInSeconds` (URLExpiryInSeconds, range 5..300) — The expiration time of the URL
 //!   in ISO timestamp. It's specified in ISO 8601 format: yyyy-MM-ddThh:mm:ss.SSSZ. For
 //!   example, 2019-11-08T02:41:28.172Z.
+//! * `UrlContentDisposition` (ContentDisposition, one of: ATTACHMENT | INLINE) — Specifies how
+//!   a browser handles the file at the pre-signed URL. INLINE displays the file in the
+//!   browser; ATTACHMENT downloads it, which is the default behavior.
 //!
 //! ## Output
 //!
@@ -228,6 +231,19 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             attachment.size_in_bytes,
         );
 
+        // "Specifies how a browser handles the file at the pre-signed URL": the disposition
+        // the caller asked for, or the one `UrlContentDisposition` documents as "the default
+        // behavior" when it asked for none. The member's modelled value set is enforced
+        // before this handler runs, so the fallback keeps the signed URL on that documented
+        // default whatever reaches here.
+        let disposition = crate::state::content_disposition_header(
+            input
+                .url_content_disposition
+                .as_deref()
+                .unwrap_or(crate::state::CONTENT_DISPOSITION_ATTACHMENT),
+        )
+        .unwrap_or(crate::state::DISPOSITION_ATTACHMENT);
+
         // "The expiration time of the URL": the window the caller asked for, or the longest
         // one the member allows when it asked for none. The modelled range is already
         // enforced before this handler runs; the clamp keeps the signed window inside it
@@ -247,6 +263,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             &contact_id,
             &attachment_id,
             None,
+            Some(disposition),
             std::time::Duration::from_secs(expiry_seconds as u64),
         ) else {
             return Err(GetAttachmentErrorModeled::InternalServerException(
