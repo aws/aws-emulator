@@ -15,6 +15,7 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-autoscaling-autoscaling
 #[derive(Debug, Clone, Default)]
 pub struct DescribeAutoScalingInstancesInput {
     pub instance_ids: Option<Vec<String>>,
+    pub include_managed_resources: Option<bool>,
     pub max_records: Option<i32>,
     pub next_token: Option<String>,
 }

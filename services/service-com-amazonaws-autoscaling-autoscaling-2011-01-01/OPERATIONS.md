@@ -158,14 +158,14 @@ contents — read that shape in the model above when you need its own members.
 ## DescribeAutoScalingGroups
 
 - **Traits:** @paginated(inputToken=NextToken, outputToken=NextToken, items=AutoScalingGroups)
-- **Input:** `AutoScalingGroupNames` (list<string>), `IncludeInstances` (boolean), `NextToken` (string, pattern ^[\u0020-\uD7FF\uE000-\uFFFD\uD800\uDC00-\uDBFF\uDFFF\r\n\t]*$), `MaxRecords` (integer), `Filters` (list<Filter>)
+- **Input:** `AutoScalingGroupNames` (list<string>), `IncludeInstances` (boolean), `IncludeManagedResources` (boolean), `NextToken` (string, pattern ^[\u0020-\uD7FF\uE000-\uFFFD\uD800\uDC00-\uDBFF\uDFFF\r\n\t]*$), `MaxRecords` (integer), `Filters` (list<Filter>)
 - **Output:** `AutoScalingGroups` (list<AutoScalingGroup>, required), `NextToken` (string, pattern ^[\u0020-\uD7FF\uE000-\uFFFD\uD800\uDC00-\uDBFF\uDFFF\r\n\t]*$)
 - **Errors:** `InvalidNextToken (HTTP 400)`, `ResourceContentionFault (HTTP 500)`
 
 ## DescribeAutoScalingInstances
 
 - **Traits:** @paginated(inputToken=NextToken, outputToken=NextToken, items=AutoScalingInstances)
-- **Input:** `InstanceIds` (list<string>), `MaxRecords` (integer), `NextToken` (string, pattern ^[\u0020-\uD7FF\uE000-\uFFFD\uD800\uDC00-\uDBFF\uDFFF\r\n\t]*$)
+- **Input:** `InstanceIds` (list<string>), `IncludeManagedResources` (boolean), `MaxRecords` (integer), `NextToken` (string, pattern ^[\u0020-\uD7FF\uE000-\uFFFD\uD800\uDC00-\uDBFF\uDFFF\r\n\t]*$)
 - **Output:** `AutoScalingInstances` (list<AutoScalingInstanceDetails>), `NextToken` (string, pattern ^[\u0020-\uD7FF\uE000-\uFFFD\uD800\uDC00-\uDBFF\uDFFF\r\n\t]*$)
 - **Errors:** `InvalidNextToken (HTTP 400)`, `ResourceContentionFault (HTTP 500)`
 
@@ -224,21 +224,21 @@ contents — read that shape in the model above when you need its own members.
 ## DescribeNotificationConfigurations
 
 - **Traits:** @paginated(inputToken=NextToken, outputToken=NextToken, items=NotificationConfigurations)
-- **Input:** `AutoScalingGroupNames` (list<string>), `NextToken` (string, pattern ^[\u0020-\uD7FF\uE000-\uFFFD\uD800\uDC00-\uDBFF\uDFFF\r\n\t]*$), `MaxRecords` (integer)
+- **Input:** `AutoScalingGroupNames` (list<string>), `IncludeManagedResources` (boolean), `NextToken` (string, pattern ^[\u0020-\uD7FF\uE000-\uFFFD\uD800\uDC00-\uDBFF\uDFFF\r\n\t]*$), `MaxRecords` (integer)
 - **Output:** `NotificationConfigurations` (list<NotificationConfiguration>, required), `NextToken` (string, pattern ^[\u0020-\uD7FF\uE000-\uFFFD\uD800\uDC00-\uDBFF\uDFFF\r\n\t]*$)
 - **Errors:** `InvalidNextToken (HTTP 400)`, `ResourceContentionFault (HTTP 500)`
 
 ## DescribePolicies
 
 - **Traits:** @paginated(inputToken=NextToken, outputToken=NextToken, items=ScalingPolicies)
-- **Input:** `AutoScalingGroupName` (string, len 1..255, pattern ^[\u0020-\uD7FF\uE000-\uFFFD\uD800\uDC00-\uDBFF\uDFFF\r\n\t]*$), `PolicyNames` (list<string>), `PolicyTypes` (list<string>), `NextToken` (string, pattern ^[\u0020-\uD7FF\uE000-\uFFFD\uD800\uDC00-\uDBFF\uDFFF\r\n\t]*$), `MaxRecords` (integer)
+- **Input:** `AutoScalingGroupName` (string, len 1..255, pattern ^[\u0020-\uD7FF\uE000-\uFFFD\uD800\uDC00-\uDBFF\uDFFF\r\n\t]*$), `PolicyNames` (list<string>), `PolicyTypes` (list<string>), `IncludeManagedResources` (boolean), `NextToken` (string, pattern ^[\u0020-\uD7FF\uE000-\uFFFD\uD800\uDC00-\uDBFF\uDFFF\r\n\t]*$), `MaxRecords` (integer)
 - **Output:** `ScalingPolicies` (list<ScalingPolicy>), `NextToken` (string, pattern ^[\u0020-\uD7FF\uE000-\uFFFD\uD800\uDC00-\uDBFF\uDFFF\r\n\t]*$)
 - **Errors:** `InvalidNextToken (HTTP 400)`, `ResourceContentionFault (HTTP 500)`, `ServiceLinkedRoleFailure (HTTP 500)`
 
 ## DescribeScalingActivities
 
 - **Traits:** @paginated(inputToken=NextToken, outputToken=NextToken, items=Activities)
-- **Input:** `ActivityIds` (list<string>), `AutoScalingGroupName` (string, len 1..255, pattern ^[\u0020-\uD7FF\uE000-\uFFFD\uD800\uDC00-\uDBFF\uDFFF\r\n\t]*$), `IncludeDeletedGroups` (boolean), `MaxRecords` (integer), `NextToken` (string, pattern ^[\u0020-\uD7FF\uE000-\uFFFD\uD800\uDC00-\uDBFF\uDFFF\r\n\t]*$), `Filters` (list<Filter>)
+- **Input:** `ActivityIds` (list<string>), `AutoScalingGroupName` (string, len 1..255, pattern ^[\u0020-\uD7FF\uE000-\uFFFD\uD800\uDC00-\uDBFF\uDFFF\r\n\t]*$), `IncludeDeletedGroups` (boolean), `IncludeManagedResources` (boolean), `MaxRecords` (integer), `NextToken` (string, pattern ^[\u0020-\uD7FF\uE000-\uFFFD\uD800\uDC00-\uDBFF\uDFFF\r\n\t]*$), `Filters` (list<Filter>)
 - **Output:** `Activities` (list<Activity>, required), `NextToken` (string, pattern ^[\u0020-\uD7FF\uE000-\uFFFD\uD800\uDC00-\uDBFF\uDFFF\r\n\t]*$)
 - **Errors:** `InvalidNextToken (HTTP 400)`, `ResourceContentionFault (HTTP 500)`
 
@@ -251,14 +251,14 @@ contents — read that shape in the model above when you need its own members.
 ## DescribeScheduledActions
 
 - **Traits:** @paginated(inputToken=NextToken, outputToken=NextToken, items=ScheduledUpdateGroupActions)
-- **Input:** `AutoScalingGroupName` (string, len 1..255, pattern ^[\u0020-\uD7FF\uE000-\uFFFD\uD800\uDC00-\uDBFF\uDFFF\r\n\t]*$), `ScheduledActionNames` (list<string>), `StartTime` (timestamp), `EndTime` (timestamp), `NextToken` (string, pattern ^[\u0020-\uD7FF\uE000-\uFFFD\uD800\uDC00-\uDBFF\uDFFF\r\n\t]*$), `MaxRecords` (integer)
+- **Input:** `AutoScalingGroupName` (string, len 1..255, pattern ^[\u0020-\uD7FF\uE000-\uFFFD\uD800\uDC00-\uDBFF\uDFFF\r\n\t]*$), `ScheduledActionNames` (list<string>), `StartTime` (timestamp), `EndTime` (timestamp), `IncludeManagedResources` (boolean), `NextToken` (string, pattern ^[\u0020-\uD7FF\uE000-\uFFFD\uD800\uDC00-\uDBFF\uDFFF\r\n\t]*$), `MaxRecords` (integer)
 - **Output:** `ScheduledUpdateGroupActions` (list<ScheduledUpdateGroupAction>), `NextToken` (string, pattern ^[\u0020-\uD7FF\uE000-\uFFFD\uD800\uDC00-\uDBFF\uDFFF\r\n\t]*$)
 - **Errors:** `InvalidNextToken (HTTP 400)`, `ResourceContentionFault (HTTP 500)`
 
 ## DescribeTags
 
 - **Traits:** @paginated(inputToken=NextToken, outputToken=NextToken, items=Tags)
-- **Input:** `Filters` (list<Filter>), `NextToken` (string, pattern ^[\u0020-\uD7FF\uE000-\uFFFD\uD800\uDC00-\uDBFF\uDFFF\r\n\t]*$), `MaxRecords` (integer)
+- **Input:** `Filters` (list<Filter>), `IncludeManagedResources` (boolean), `NextToken` (string, pattern ^[\u0020-\uD7FF\uE000-\uFFFD\uD800\uDC00-\uDBFF\uDFFF\r\n\t]*$), `MaxRecords` (integer)
 - **Output:** `Tags` (list<TagDescription>), `NextToken` (string, pattern ^[\u0020-\uD7FF\uE000-\uFFFD\uD800\uDC00-\uDBFF\uDFFF\r\n\t]*$)
 - **Errors:** `InvalidNextToken (HTTP 400)`, `ResourceContentionFault (HTTP 500)`
 

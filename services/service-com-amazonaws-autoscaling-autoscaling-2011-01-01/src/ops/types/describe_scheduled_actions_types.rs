@@ -18,6 +18,7 @@ pub struct DescribeScheduledActionsInput {
     pub scheduled_action_names: Option<Vec<String>>,
     pub start_time: Option<::aws_smithy_types::DateTime>,
     pub end_time: Option<::aws_smithy_types::DateTime>,
+    pub include_managed_resources: Option<bool>,
     pub next_token: Option<String>,
     pub max_records: Option<i32>,
 }

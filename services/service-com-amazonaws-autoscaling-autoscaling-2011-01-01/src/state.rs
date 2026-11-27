@@ -287,6 +287,12 @@ pub mod availability_zone_ids;
 
 pub use availability_zone_ids::{zone_id_of, zone_ids_of, zone_names_of};
 
+/// The groups another service MANAGES, and whether a read reports them and the resources
+/// that hang off them — the one reading of `IncludeManagedResources` every such read takes.
+pub mod managed_resources;
+
+pub use managed_resources::{includes_managed, DEFAULT_INCLUDE_MANAGED_RESOURCES};
+
 /// The members of a group the SERVICE decides when the request leaves them out: the
 /// option sets every group carries, each at the default its own documentation states.
 pub mod group_defaults;

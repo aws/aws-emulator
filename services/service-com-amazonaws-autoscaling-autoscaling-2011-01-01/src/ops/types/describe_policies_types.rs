@@ -17,6 +17,7 @@ pub struct DescribePoliciesInput {
     pub auto_scaling_group_name: Option<String>,
     pub policy_names: Option<Vec<String>>,
     pub policy_types: Option<Vec<String>>,
+    pub include_managed_resources: Option<bool>,
     pub next_token: Option<String>,
     pub max_records: Option<i32>,
 }

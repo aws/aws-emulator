@@ -17,6 +17,7 @@ pub struct DescribeScalingActivitiesInput {
     pub activity_ids: Option<Vec<String>>,
     pub auto_scaling_group_name: Option<String>,
     pub include_deleted_groups: Option<bool>,
+    pub include_managed_resources: Option<bool>,
     pub max_records: Option<i32>,
     pub next_token: Option<String>,
     pub filters: Option<Vec<Filter>>,

@@ -79,6 +79,9 @@
 //!   regardless of the value specified. Status - …
 //! * `IncludeDeletedGroups` (IncludeDeletedGroups) — Indicates whether to include scaling
 //!   activity from deleted Auto Scaling groups.
+//! * `IncludeManagedResources` (IncludeManagedResources) — Specifies whether to include
+//!   scaling activities for managed Auto Scaling groups in the response. When set to true
+//!   (default), the response includes scaling activities for managed Auto Scaling groups.
 //! * `MaxRecords` (MaxRecords) — The maximum number of items to return with this call. The
 //!   default value is 100 and the maximum value is 100.
 //! * `NextToken` (XmlString, pattern
@@ -265,6 +268,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // groups" (`IncludeDeletedGroups`): the activities of a group the account no
         // longer holds are reported only when the request asks for them.
         let include_deleted_groups = input.include_deleted_groups.unwrap_or(false);
+        // The scaling activities of a group another service manages are reported only by a
+        // read that asked for the managed resources, which is what a read stating nothing asks
+        // for ([`crate::state::managed_resources`]).
+        let include_managed = crate::state::includes_managed(input.include_managed_resources);
 
         let state = &*state;
 
@@ -281,6 +288,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 group_name
                     .as_deref()
                     .is_none_or(|name| activity.auto_scaling_group_name == name)
+            })
+            .filter(|activity| {
+                state.reports_group_resources(&activity.auto_scaling_group_name, include_managed)
             })
             // "If unknown activity IDs are requested, they are ignored with no error":
             // the ids select, they do not have to resolve.

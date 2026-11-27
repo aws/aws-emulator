@@ -53,6 +53,9 @@
 //! * `AutoScalingGroupName` (XmlStringMaxLen255, len 1..255, pattern
 //!   ^[\u0020-\uD7FF\uE000-\uFFFD\uD800\uDC00-\uDBFF\uDFFF\r\n\t]*$) — The name of the Auto
 //!   Scaling group.
+//! * `IncludeManagedResources` (IncludeManagedResources) — Specifies whether to include
+//!   scaling policies for managed Auto Scaling groups in the response. When set to true
+//!   (default), the response includes scaling policies for managed Auto Scaling groups.
 //! * `MaxRecords` (MaxRecords) — The maximum number of items to be returned with each call.
 //!   The default value is 50 and the maximum value is 100.
 //! * `NextToken` (XmlString, pattern
@@ -171,6 +174,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         let wanted_names = input.policy_names.unwrap_or_default();
         let wanted_types = input.policy_types.unwrap_or_default();
+        // The scaling policies of a group another service manages are reported only by a read
+        // that asked for the managed resources, which is what a read stating nothing asks for
+        // ([`crate::state::managed_resources`]).
+        let include_managed = crate::state::includes_managed(input.include_managed_resources);
 
         let mut state = store.lock();
         state.materialize_due(&*self.engine, ::std::time::SystemTime::now());
@@ -216,9 +223,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // policy name, it is ignored with no error."
         // (`smithy_query(query="doc",shape="DescribePoliciesType",member="PolicyNames")`):
         // a name nothing answers to selects nothing rather than refusing the read.
+        let state = &*state;
         let matching: Vec<ScalingPolicy> = state
             .scaling_policies
             .iter()
+            .filter(|(key, _)| {
+                state.reports_group_resources(&key.auto_scaling_group_name, include_managed)
+            })
             .filter(|(key, _)| {
                 input
                     .auto_scaling_group_name

@@ -51,6 +51,10 @@
 //! ## Input
 //!
 //! * `AutoScalingGroupNames` (AutoScalingGroupNames) — The name of the Auto Scaling group.
+//! * `IncludeManagedResources` (IncludeManagedResources) — Specifies whether to include
+//!   notification configurations for managed Auto Scaling groups in the response. When set to
+//!   true (default), the response includes notification configurations for managed Auto
+//!   Scaling groups.
 //! * `MaxRecords` (MaxRecords) — The maximum number of items to return with this call. The
 //!   default value is 50 and the maximum value is 100.
 //! * `NextToken` (XmlString, pattern
@@ -196,6 +200,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // narrow to, and a name no group answers to simply selects nothing rather than
         // refusing the read.
         let wanted = input.auto_scaling_group_names.unwrap_or_default();
+        // The notification configurations of a group another service manages are reported only
+        // by a read that asked for the managed resources, which is what a read stating nothing
+        // asks for ([`crate::state::managed_resources`]).
+        let include_managed = crate::state::includes_managed(input.include_managed_resources);
 
         let mut state = store.lock();
         state.materialize_due(&*self.engine, ::std::time::SystemTime::now());
@@ -206,6 +214,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .groups
             .values()
             .filter(|group| wanted.is_empty() || wanted.contains(&group.name))
+            .filter(|group| group.is_reported(include_managed))
             .flat_map(|group| {
                 group
                     .notification_configurations

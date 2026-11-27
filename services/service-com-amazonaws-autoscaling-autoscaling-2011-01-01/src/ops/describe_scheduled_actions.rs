@@ -61,6 +61,9 @@
 //!   Scaling group.
 //! * `EndTime` (TimestampType) — The latest scheduled start time to return. If scheduled
 //!   action names are provided, this property is ignored.
+//! * `IncludeManagedResources` (IncludeManagedResources) — Specifies whether to include
+//!   scheduled actions for managed Auto Scaling groups in the response. When set to true
+//!   (default), the response includes scheduled actions for managed Auto Scaling groups.
 //! * `MaxRecords` (MaxRecords) — The maximum number of items to return with this call. The
 //!   default value is 50 and the maximum value is 100.
 //! * `NextToken` (XmlString, pattern
@@ -175,6 +178,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         };
 
         let wanted_names = input.scheduled_action_names.unwrap_or_default();
+        // The scheduled actions of a group another service manages are reported only by a
+        // read that asked for the managed resources, which is what a read stating nothing asks
+        // for ([`crate::state::managed_resources`]).
+        let include_managed = crate::state::includes_managed(input.include_managed_resources);
 
         let mut state = store.lock();
         state.materialize_due(&*self.engine, ::std::time::SystemTime::now());
@@ -246,6 +253,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     .as_deref()
                     .is_none_or(|group_name| group.name == group_name)
             })
+            .filter(|group| group.is_reported(include_managed))
             .flat_map(|group| {
                 group
                     .scheduled_actions

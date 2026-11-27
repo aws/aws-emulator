@@ -670,7 +670,7 @@ pub const METRIC_STATISTIC_VALUES: &[&str] = &["Average", "Maximum", "Minimum", 
 
 
 /// The values `MetricType` accepts on the wire.
-pub const METRIC_TYPE_VALUES: &[&str] = &["ALBRequestCountPerTarget", "ASGAverageCPUUtilization", "ASGAverageNetworkIn", "ASGAverageNetworkOut"];
+pub const METRIC_TYPE_VALUES: &[&str] = &["ALBRequestCountPerTarget", "ASGAverageCPUUtilization", "ASGAverageCPUUtilizationHighResolution", "ASGAverageNetworkIn", "ASGAverageNetworkOut"];
 
 
 /// The values `PredefinedLoadMetricType` accepts on the wire.

@@ -15,6 +15,7 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-autoscaling-autoscaling
 #[derive(Debug, Clone, Default)]
 pub struct DescribeTagsInput {
     pub filters: Option<Vec<Filter>>,
+    pub include_managed_resources: Option<bool>,
     pub next_token: Option<String>,
     pub max_records: Option<i32>,
 }

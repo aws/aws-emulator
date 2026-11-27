@@ -63,6 +63,9 @@
 //! * `IncludeInstances` (IncludeInstances) — Specifies whether to include information about
 //!   Amazon EC2 instances in the response. When set to true (default), the response includes
 //!   instance details.
+//! * `IncludeManagedResources` (IncludeManagedResources) — Specifies whether to include
+//!   managed Auto Scaling groups in the response. When set to true (default), the response
+//!   includes managed Auto Scaling groups.
 //! * `MaxRecords` (MaxRecords) — The maximum number of items to return with this call. The
 //!   default value is 50 and the maximum value is 100.
 //! * `NextToken` (XmlString, pattern
@@ -264,6 +267,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         }
         // The model documents `IncludeInstances` as defaulting to true.
         let include_instances = input.include_instances.unwrap_or(true);
+        // A group another service manages is reported only by a read that asked for the
+        // managed groups, which is what a read stating nothing asks for
+        // ([`crate::state::managed_resources`]).
+        let include_managed = crate::state::includes_managed(input.include_managed_resources);
 
         let mut state = state.lock();
         state.materialize_due(&*self.engine, ::std::time::SystemTime::now());
@@ -272,6 +279,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .groups
             .values()
             .filter(|group| wanted.is_empty() || wanted.contains(&group.name))
+            .filter(|group| group.is_reported(include_managed))
             .filter(|group| filters.iter().all(|filter| matches_filter(group, filter)))
             .map(|group| group_view(group, include_instances))
             .collect();

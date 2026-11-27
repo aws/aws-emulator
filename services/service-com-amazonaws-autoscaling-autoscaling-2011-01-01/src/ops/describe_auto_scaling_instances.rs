@@ -52,6 +52,9 @@
 //! * `InstanceIds` (InstanceIds) — The IDs of the instances. If you omit this property, all
 //!   Auto Scaling instances are described. If you specify an ID that does not exist, it is
 //!   ignored with no error. Array Members: Maximum number of 50 items.
+//! * `IncludeManagedResources` (IncludeManagedResources) — Specifies whether to include
+//!   managed Auto Scaling instances in the response. When set to true (default), the response
+//!   includes managed Auto Scaling instances.
 //! * `MaxRecords` (MaxRecords) — The maximum number of items to return with this call. The
 //!   default value is 50 and the maximum value is 50.
 //! * `NextToken` (XmlString, pattern
@@ -227,6 +230,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // the request's length for every instance the account holds.
         let wanted: ::std::collections::BTreeSet<&str> =
             requested.iter().map(String::as_str).collect();
+        // The instances of a group another service manages are reported only by a read that
+        // asked for the managed resources, which is what a read stating nothing asks for
+        // ([`crate::state::managed_resources`]).
+        let include_managed = crate::state::includes_managed(input.include_managed_resources);
         // How many entries this page holds, which is also how many instances this call
         // projects: the work one request makes is the page it is served, not the account's
         // whole inventory.
@@ -254,6 +261,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     .chain(group.warm_pool_instances())
                     .map(move |instance| (group, instance))
             })
+            .filter(|(group, _)| group.is_reported(include_managed))
             .filter(|(_, instance)| {
                 wanted.is_empty() || wanted.contains(instance.instance_id.as_str())
             })

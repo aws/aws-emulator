@@ -16,6 +16,7 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-autoscaling-autoscaling
 pub struct DescribeAutoScalingGroupsInput {
     pub auto_scaling_group_names: Option<Vec<String>>,
     pub include_instances: Option<bool>,
+    pub include_managed_resources: Option<bool>,
     pub next_token: Option<String>,
     pub max_records: Option<i32>,
     pub filters: Option<Vec<Filter>>,
