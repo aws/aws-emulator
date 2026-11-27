@@ -34,7 +34,7 @@ const OFFERED: &str = "S3_BUCKET_VERSIONING_ENABLED";
 /// itself evaluate: an identifier Config offers is written whether or not the emulator
 /// has an implementation for it, because the list Config offers holds hundreds of
 /// entries and only the ones it has WITHDRAWN are refused.
-const OFFERED_AND_NOT_EVALUATED: &str = "CLOUD_TRAIL_ENABLED";
+const OFFERED_AND_NOT_EVALUATED: &str = "ROOT_ACCOUNT_MFA_ENABLED";
 
 /// The owners a rule's `Source` can carry, from
 /// `smithy_query(query="shape", shape="Owner")`: `CUSTOM_LAMBDA`, `AWS`,

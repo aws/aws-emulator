@@ -15,10 +15,10 @@
 //!   the configuration items a pass records for this account's roles;
 //! * [`observed_iam_policies`] is the same for the account's customer managed policies,
 //!   each with the entities it is attached to as the item's RELATIONSHIPS;
-//! * [`observed_account`] is the ACCOUNT's own configuration, which an account-wide
-//!   managed rule is evaluated against (`super::account_rule`) rather than recorded as a
-//!   resource — Config evaluates such a rule against the account pseudo-resource, and the
-//!   account is not a resource any recorder discovers.
+//! * [`observed_iam_account`] is what IAM reports about the ACCOUNT itself, which an
+//!   account-wide managed rule is evaluated against (`super::account_rule`) rather than
+//!   recorded as a resource — Config evaluates such a rule against the account
+//!   pseudo-resource, and the account is not a resource any recorder discovers.
 
 use std::collections::BTreeMap;
 use std::time::SystemTime;
@@ -536,9 +536,10 @@ fn attachment(
     })
 }
 
-/// The account's own configuration, as an account-wide rule is evaluated against it.
+/// What IAM reports about the ACCOUNT itself — the part of the account's own
+/// configuration ([`super::ObservedAccount`]) that IAM owns.
 #[derive(Debug, Clone, Default)]
-pub struct ObservedAccount {
+pub struct ObservedIamAccount {
     /// The account's password policy, or `None` for an account that has NONE — which is
     /// a fact about the account ("The request was rejected because it referenced a
     /// resource entity that does not exist", which is how IAM answers a read of a policy
@@ -573,22 +574,22 @@ pub struct ObservedPasswordPolicy {
     pub password_reuse_prevention: Option<i32>,
 }
 
-/// The account's own configuration as IAM reports it, or `None` when IAM could not be
-/// read at all — which is not the same as an account that has set nothing.
+/// What IAM reports about this account, or `None` when IAM could not be read at all —
+/// which is not the same as an account that has set nothing.
 ///
 /// `GetAccountPasswordPolicy` answers the policy in force, and answers `NoSuchEntity` for
 /// an account that has never set one; both are facts the account's rules are evaluated
 /// against, so they are told apart here and only a read that FAILED leaves the account
 /// unobserved.
-pub async fn observed_account(
+pub async fn observed_iam_account(
     callback: &smithy_server_runtime::EmbeddedEmulator,
     region: &str,
-) -> Option<ObservedAccount> {
+) -> Option<ObservedIamAccount> {
     let client = ::service_common::iam_client::iam_client_through(callback, region);
     match client.get_account_password_policy().send().await {
         Ok(answer) => {
             let policy = answer.password_policy?;
-            Some(ObservedAccount {
+            Some(ObservedIamAccount {
                 password_policy: Some(ObservedPasswordPolicy {
                     minimum_password_length: policy.minimum_password_length,
                     require_symbols: policy.require_symbols,
@@ -607,7 +608,7 @@ pub async fn observed_account(
                 .as_service_error()
                 .is_some_and(|service| service.is_no_such_entity_exception())
             {
-                return Some(ObservedAccount {
+                return Some(ObservedIamAccount {
                     password_policy: None,
                 });
             }

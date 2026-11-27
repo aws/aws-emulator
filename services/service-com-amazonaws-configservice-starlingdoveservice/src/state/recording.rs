@@ -828,11 +828,11 @@ async fn run_recording_pass<Eng: Send + Sync + 'static>(
     };
     let observed = observed_resources(callback, region, now, resource_types).await;
     // The ACCOUNT's own configuration, read only while this account holds a rule whose
-    // subject is the account: a rule nothing asks about costs no read, and an account
-    // whose configuration could not be read leaves those rules unevaluated rather than
-    // placed at a verdict nothing computed.
+    // subject is the account: a rule nothing asks about costs no read, and the part of that
+    // configuration whose own service could not be read leaves the rules about it
+    // unevaluated rather than placed at a verdict nothing computed.
     let account = if state.lock().evaluates_account_rules() {
-        super::observed_iam::observed_account(callback, region).await
+        Some(super::account_rule::observed_account(callback, region).await)
     } else {
         None
     };

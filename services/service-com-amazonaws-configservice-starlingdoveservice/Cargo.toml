@@ -52,6 +52,11 @@ aws-sdk-ec2 = { version = "1", default-features = false }
 # managed rule reads the account's password policy from it (`state::observed_iam`), so
 # neither is read from another crate's state.
 aws-sdk-iam = { version = "1", default-features = false }
+# The AWS SDK for AWS CloudTrail, driven over the same in-process callback: an
+# account-wide managed rule about the account's audit trail is evaluated against the trails
+# CloudTrail itself reports and the logging state it reports for each
+# (`state::observed_cloudtrail`), so neither is read from another crate's state.
+aws-sdk-cloudtrail = { version = "1", default-features = false }
 # The AWS SDK for AWS Lambda, driven over the same callback: a Config Custom Lambda rule is
 # evaluated by the function the account points the rule at, so Config INVOKES that function
 # and the function delivers its verdict back with `PutEvaluations`
