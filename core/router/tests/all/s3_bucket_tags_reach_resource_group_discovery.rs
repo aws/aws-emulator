@@ -19,7 +19,7 @@
 //! resolved resource as a DEFAULT
 //! (standalone) component named by that resource's own ARN, unmonitored, so
 //! `DescribeComponentConfiguration` for that ARN answers 200 with `Monitor` false, `Tier`
-//! DEFAULT and an empty configuration; `UpdateComponentConfiguration` stores what it is
+//! DEFAULT and no configuration content; `UpdateComponentConfiguration` stores what it is
 //! given; and a later describe reports exactly that back. A component the application
 //! really does not hold is the modelled `ResourceNotFoundException`.
 //!
@@ -1118,8 +1118,8 @@ fn a_tag_query_group_onboards_each_tagged_bucket_as_a_component() {
             );
 
             for (at, arn) in expected.iter().enumerate() {
-                // Unconfigured: unmonitored, in the DEFAULT tier, with an empty
-                // configuration document.
+                // Unconfigured: unmonitored, in the DEFAULT tier, with no
+                // configuration document stored for it.
                 let described = describe_configuration(&router, &runtime, row.group, arn);
                 assert_eq!(
                     described.status, 200,
@@ -1132,7 +1132,7 @@ fn a_tag_query_group_onboards_each_tagged_bucket_as_a_component() {
                         described.body["Tier"].clone(),
                         described.body["ComponentConfiguration"].clone(),
                     ),
-                    (json!(false), json!("DEFAULT"), json!("{}")),
+                    (json!(false), json!("DEFAULT"), json!("")),
                     "case {:?} / {arn}: an onboarded component is unmonitored, in the \
                      DEFAULT tier, with nothing configured, got {:?}",
                     row.case,

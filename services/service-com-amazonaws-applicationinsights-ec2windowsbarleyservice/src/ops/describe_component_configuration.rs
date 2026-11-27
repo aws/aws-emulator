@@ -4,7 +4,7 @@
 //! IMPLEMENTED: reports the monitoring configuration one component of the
 //! addressed application carries in [`crate::state`] — whether it is monitored,
 //! its stack tier, and the escaped JSON configuration the last
-//! `UpdateComponentConfiguration` stored (absent for a component nothing has
+//! `UpdateComponentConfiguration` stored (empty for a component nothing has
 //! configured yet).
 //!
 //! ## Shape of an operation
@@ -206,8 +206,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         Ok(DescribeComponentConfigurationOutput {
             monitor: Some(component.monitor),
             tier: Some(component.tier.clone()),
-            // Always reported: the escaped JSON last stored for this component, or the
-            // empty document for one nothing has configured
+            // The escaped JSON last stored for this component, and no
+            // configuration content at all for one nothing has configured
             // ([`crate::state::Component::reported_configuration`]).
             component_configuration: Some(component.reported_configuration()),
         })

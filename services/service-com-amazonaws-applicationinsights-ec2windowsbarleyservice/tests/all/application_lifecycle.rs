@@ -1277,9 +1277,9 @@ async fn a_component_configuration_round_trips() {
             configuration: None,
             expected_monitor: false,
             expected_tier: "DEFAULT",
-            // A component nothing has configured reports the EMPTY configuration
-            // document rather than no member at all.
-            expected_configuration: Some("{}"),
+            // A component nothing has configured carries no configuration
+            // document, so the read reports no configuration content.
+            expected_configuration: Some(""),
         },
         Row {
             case: "monitoring, a tier and a configuration together",
@@ -1522,7 +1522,7 @@ async fn a_configuration_the_service_cannot_apply_is_refused() {
     );
     assert_eq!(
         read.get("ComponentConfiguration").and_then(Value::as_str),
-        Some("{}"),
+        Some(""),
         "a refused configuration must store no document, got {read:?}"
     );
 }
@@ -1584,4 +1584,236 @@ async fn a_configuration_reaches_only_the_component_it_names() {
         right, "NOT_CONFIGURED",
         "the untouched application must stay NOT_CONFIGURED, got {right:?}"
     );
+}
+
+/// `ComponentConfiguration` mirrors the configuration the service HOLDS for the
+/// component: the escaped JSON the last configuration call wrote, and no
+/// configuration content at all for a component no call has configured — never a
+/// document the service composed itself. The value is "the escaped JSON of the
+/// configuration"
+/// (`smithy_query(query="operation",operation="DescribeComponentConfiguration")`),
+/// so an unconfigured component stays distinguishable from one configured with an
+/// empty document.
+///
+/// The rows span what the rule generalises over: whether a configuration was
+/// stored at all, which OTHER members a call wrote while storing none, and the
+/// form and the size of the document when there is one (an empty object, a
+/// nested object, a list, and the longest value the member admits).
+#[tokio::test]
+async fn the_configuration_member_mirrors_the_stored_configuration() {
+    /// The longest `ComponentConfiguration` the model admits (length 1..10000).
+    const MAX_CONFIGURATION: usize = 10_000;
+
+    // A document of exactly the modelled maximum length: `{"logs":"…"}` is 11
+    // characters around its padding.
+    let longest = format!("{{\"logs\":\"{}\"}}", "c".repeat(MAX_CONFIGURATION - 11));
+    assert_eq!(
+        longest.chars().count(),
+        MAX_CONFIGURATION,
+        "setup: the longest row must sit exactly on the modelled maximum"
+    );
+
+    /// One row: the component it configures, what the configuration call carries
+    /// (nothing at all when every member is absent), and the configuration the
+    /// read must report — EMPTY where no call stored one.
+    struct Row {
+        case: &'static str,
+        component: &'static str,
+        monitor: Option<bool>,
+        tier: Option<&'static str>,
+        configuration: Option<String>,
+        expected: String,
+    }
+
+    // The tiers below are members of the model's `Tier` enum
+    // (`smithy_query(query="shape",shape="Tier")`).
+    let rows = [
+        Row {
+            case: "nothing has configured the component",
+            component: "untouched",
+            monitor: None,
+            tier: None,
+            configuration: None,
+            expected: String::new(),
+        },
+        Row {
+            case: "monitoring turned on without a configuration",
+            component: "monitored-only",
+            monitor: Some(true),
+            tier: None,
+            configuration: None,
+            expected: String::new(),
+        },
+        Row {
+            case: "a tier set without a configuration",
+            component: "tiered-only",
+            monitor: None,
+            tier: Some("DOT_NET_CORE"),
+            configuration: None,
+            expected: String::new(),
+        },
+        Row {
+            case: "monitoring and a tier together, still without a configuration",
+            component: "monitored-tiered",
+            monitor: Some(true),
+            tier: Some("JAVA_JMX"),
+            configuration: None,
+            expected: String::new(),
+        },
+        Row {
+            case: "an empty JSON object",
+            component: "empty-doc",
+            monitor: None,
+            tier: None,
+            configuration: Some("{}".to_string()),
+            expected: "{}".to_string(),
+        },
+        Row {
+            case: "a nested document",
+            component: "nested-doc",
+            monitor: Some(true),
+            tier: Some("SQL_SERVER"),
+            configuration: Some(
+                "{\"alarmMetrics\":[{\"alarmMetricName\":\"CPUUtilization\"}],\"logs\":[]}"
+                    .to_string(),
+            ),
+            expected: "{\"alarmMetrics\":[{\"alarmMetricName\":\"CPUUtilization\"}],\"logs\":[]}"
+                .to_string(),
+        },
+        Row {
+            case: "a JSON list",
+            component: "list-doc",
+            monitor: None,
+            tier: None,
+            configuration: Some("[]".to_string()),
+            expected: "[]".to_string(),
+        },
+        Row {
+            case: "the longest document the member admits",
+            component: "longest-doc",
+            monitor: None,
+            tier: None,
+            configuration: Some(longest.clone()),
+            expected: longest.clone(),
+        },
+    ];
+
+    let router = router();
+    let group = "mirrored-rg";
+    let components: Vec<&str> = rows.iter().map(|row| row.component).collect();
+    application_with_components(&router, group, &components).await;
+
+    for row in &rows {
+        if row.monitor.is_some() || row.tier.is_some() || row.configuration.is_some() {
+            let mut request = json!({ "ResourceGroupName": group, "ComponentName": row.component });
+            let members = request
+                .as_object_mut()
+                .expect("the request is a JSON object");
+            if let Some(monitor) = row.monitor {
+                members.insert("Monitor".to_string(), json!(monitor));
+            }
+            if let Some(tier) = row.tier {
+                members.insert("Tier".to_string(), json!(tier));
+            }
+            if let Some(configuration) = &row.configuration {
+                members.insert("ComponentConfiguration".to_string(), json!(configuration));
+            }
+            let (status, body) = call(&router, "UpdateComponentConfiguration", request).await;
+            assert_eq!(
+                status, 200,
+                "case {:?}: UpdateComponentConfiguration gave {body:?}",
+                row.case
+            );
+        }
+
+        let (status, read) = call(
+            &router,
+            "DescribeComponentConfiguration",
+            json!({ "ResourceGroupName": group, "ComponentName": row.component }),
+        )
+        .await;
+        assert_eq!(
+            status, 200,
+            "case {:?}: DescribeComponentConfiguration gave {read:?}",
+            row.case
+        );
+
+        let actual = read
+            .get("ComponentConfiguration")
+            .and_then(Value::as_str)
+            .unwrap_or_else(|| {
+                panic!(
+                    "case {:?}: ComponentConfiguration must be reported as text, got {read:?}",
+                    row.case
+                )
+            });
+        assert_eq!(
+            actual, row.expected,
+            "case {:?}: expected the configuration the store holds, got {actual:?}",
+            row.case
+        );
+        // Whatever is reported is the stored document itself, so it never
+        // outgrows what the member admits.
+        let reported = actual.chars().count();
+        assert!(
+            reported <= MAX_CONFIGURATION,
+            "case {:?}: a reported configuration must fit the modelled maximum \
+             of {MAX_CONFIGURATION}, got {reported} characters",
+            row.case
+        );
+
+        // The read reports the component's monitoring either way: an unwritten
+        // configuration is not an unanswered read. Each row owns a component of
+        // its own, created unmonitored, so what it wrote is what it must read.
+        assert_eq!(
+            read.get("Monitor").and_then(Value::as_bool),
+            Some(row.monitor.unwrap_or(false)),
+            "case {:?}: expected Monitor {:?}, got {read:?}",
+            row.case,
+            row.monitor.unwrap_or(false)
+        );
+    }
+
+    // The point of mirroring the store: a component nothing has configured does
+    // not read like one configured with an empty document.
+    let unconfigured = configuration_of(&router, group, "untouched").await;
+    let empty_document = configuration_of(&router, group, "empty-doc").await;
+    assert_ne!(
+        unconfigured, empty_document,
+        "an unconfigured component must not report the same configuration as one \
+         configured with an empty document, both read {unconfigured:?}"
+    );
+
+    // A read writes nothing: the component nothing configured still reports no
+    // configuration however often it is read, and configuring every other
+    // component of the application left it alone.
+    for look in 1..=2 {
+        let reported = configuration_of(&router, group, "untouched").await;
+        assert_eq!(
+            reported, "",
+            "look {look}: reading an unconfigured component must not give it a \
+             configuration, got {reported:?}"
+        );
+    }
+}
+
+/// The `ComponentConfiguration` `DescribeComponentConfiguration` reports for one
+/// component.
+async fn configuration_of(router: &MultiServiceRouter, group: &str, component: &str) -> String {
+    let (status, read) = call(
+        router,
+        "DescribeComponentConfiguration",
+        json!({ "ResourceGroupName": group, "ComponentName": component }),
+    )
+    .await;
+    assert_eq!(
+        status, 200,
+        "DescribeComponentConfiguration({group:?}, {component:?}): {read:?}"
+    );
+    read.get("ComponentConfiguration")
+        .and_then(Value::as_str)
+        .unwrap_or_else(|| {
+            panic!("DescribeComponentConfiguration({group:?}, {component:?}): {read:?}")
+        })
+        .to_string()
 }

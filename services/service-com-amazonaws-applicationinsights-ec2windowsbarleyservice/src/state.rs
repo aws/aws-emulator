@@ -396,36 +396,27 @@ impl Component {
     }
 
     /// The `ComponentConfiguration` a read of this component's monitoring
-    /// configuration reports: the escaped JSON the last `UpdateComponentConfiguration`
-    /// stored, and the EMPTY DOCUMENT for a component nothing has configured.
+    /// configuration reports: the escaped JSON the last
+    /// `UpdateComponentConfiguration` stored, and NO CONFIGURATION CONTENT — an
+    /// empty value — for a component nothing has configured.
     ///
-    /// The member is ALWAYS reported, because every component has a configuration to
-    /// report — an onboarded one simply has nothing in it — so a caller reads the
-    /// configuration the same way whether or not anything has written one, instead of
-    /// having to tell an absent member from an empty configuration. The value is "the
-    /// escaped JSON of the configuration"
-    /// (`smithy_query(query="shape",shape="DescribeComponentConfigurationResponse")`),
-    /// which is why an empty configuration is reported as the empty JSON OBJECT and not
-    /// as empty text: a configuration this service would refuse on the way in
-    /// (`UpdateComponentConfiguration` refuses a value that is not a JSON document) is
-    /// not one it hands back.
-    ///
-    /// The empty document is this emulator's own convention, not a modelled value: what
-    /// Application Insights reports for a component nothing has configured is the
-    /// RECOMMENDED configuration for that component's type and tier, which is what
-    /// `DescribeComponentConfigurationRecommendation` computes — a later slice, still
-    /// answering 501 here, so there is no recommendation to report and nothing is
-    /// invented in its place.
+    /// The value is "the escaped JSON of the configuration"
+    /// (`smithy_query(query="operation",operation="DescribeComponentConfiguration")`),
+    /// so it is whatever a configuration call wrote and nothing else: a component
+    /// with no stored configuration has no configuration document to report, and
+    /// reporting one anyway would make an unconfigured component indistinguishable
+    /// from one configured with an empty document. The recommended configuration
+    /// an unconfigured component could be given is a different read
+    /// (`DescribeComponentConfigurationRecommendation`), not a value this one
+    /// composes. Reporting the member with no content, rather than leaving it
+    /// out, is what the recorded wire response for an unconfigured component
+    /// carries: the member is present and empty there, even though the shape
+    /// constrains the value to a minimum length of one, so a read of an
+    /// unconfigured component reports no content instead of no member.
     pub fn reported_configuration(&self) -> String {
-        self.component_configuration
-            .clone()
-            .unwrap_or_else(|| EMPTY_CONFIGURATION.to_string())
+        self.component_configuration.clone().unwrap_or_default()
     }
 }
-
-/// The configuration a component nothing has configured reports: the empty JSON
-/// document. See [`Component::reported_configuration`].
-pub const EMPTY_CONFIGURATION: &str = "{}";
 
 /// The longest `ComponentName` the model admits (length 1..1011), which a
 /// discovered component's name — the resource's own ARN — has to fit: a resource
