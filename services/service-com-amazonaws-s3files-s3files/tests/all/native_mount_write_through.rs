@@ -374,6 +374,16 @@ impl Aws {
             .await
             .map_err(|error| format!("{error:?}"))
     }
+
+    /// The user metadata the object at `key` carries, read through that same `GetObject`: a
+    /// key the store does not serve is a failed case rather than an empty map.
+    async fn object_metadata(&self, bucket: &str, key: &str) -> BTreeMap<String, String> {
+        let read = self
+            .object(bucket, key)
+            .await
+            .unwrap_or_else(|error| panic!("the bucket must serve {key:?}, got {error:?}"));
+        metadata_of(&read)
+    }
 }
 
 /// The tree of ONE machine, as the client programs of a data plane reach it: the same seam the
@@ -461,6 +471,14 @@ fn metadata_of(read: &::aws_sdk_s3::operation::get_object::GetObjectOutput) -> B
 /// What `metadata` holds under `name`, or the empty text when it holds nothing there.
 fn entry(metadata: &BTreeMap<String, String>, name: &str) -> String {
     metadata.get(name).cloned().unwrap_or_default()
+}
+
+/// The instant `stamped` names, as the POSIX second since the epoch it counts — and `None`
+/// for text that is no such count at all. The timestamps an object carries for the entry it
+/// was written from are raw POSIX ones, the form the owner, the group and the mode beside them
+/// carry.
+fn stamped_second(stamped: &str) -> Option<u64> {
+    stamped.parse().ok()
 }
 
 /// RULE: a file written through a mount of a file system is an object of the bucket the file
@@ -629,9 +647,9 @@ async fn a_file_written_through_a_mount_is_an_object_of_the_backing_bucket() {
             let stamped = entry(&metadata, name);
             // The POSIX timestamp of the entry: the second it was written at, in the raw
             // form the owner, group and permissions beside it carry.
-            let second = stamped.parse::<u64>();
+            let second = stamped_second(&stamped);
             assert!(
-                second.as_ref().is_ok_and(|at| stamped_window.contains(at)),
+                second.is_some_and(|second| stamped_window.contains(&second)),
                 "case {case:?}: expected {name} to carry the file's own POSIX timestamp in \
                  seconds since the epoch, naming a second inside {stamped_window:?}, got \
                  {stamped:?}"
@@ -920,6 +938,143 @@ async fn only_an_available_mount_target_of_the_clients_own_vpc_serves_the_file_s
             );
         }
     }
+}
+
+/// RULE: the POSIX timestamps the object a mount write materialises carries are the ENTRY's
+/// own: the entry was created by the first write of its path and last written by this one, so
+/// a later write of the same file carries the same creation instant, the same entry identity
+/// and a modification instant that never moves backwards — while a file created again at a
+/// path whose file was removed is a new entry.
+#[tokio::test]
+async fn a_mount_write_stamps_the_entrys_own_posix_timestamps() {
+    let aws = Aws::new();
+    let (subnet_id, vpc_id) = aws.account_subnet().await;
+    let bucket = "s3files-posix-timestamps";
+    let bucket_arn = aws.bucket(bucket).await;
+    let file_system_id = aws.file_system(&bucket_arn, "").await;
+    aws.mount_target(&file_system_id, &subnet_id).await;
+
+    let client = aws.client(SystemTime::now(), Some(&vpc_id));
+    let mut machine = Machine::new();
+    assert_eq!(
+        run(
+            &*client,
+            &mut machine,
+            &format!("mount -t s3files {file_system_id}:/ {MOUNT_POINT}")
+        ),
+        SUCCESS,
+        "the mount of file system {file_system_id} must succeed"
+    );
+
+    // The second the writes below start at, which is what pins the UNIT the stamps are kept
+    // in: a stamp in any other unit cannot lie in the window from here to a generously later
+    // second. Nothing waits for that window to pass.
+    let writing_from = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .expect("the clock is past the epoch")
+        .as_secs();
+    let stamped_window = writing_from..=writing_from.saturating_add(STAMP_WINDOW.as_secs());
+
+    // The rows differ in the bytes the entry holds and in how deep under the mount point it
+    // lies, which is what the rule generalises over: the stamps are the ENTRY's, whatever the
+    // entry holds and wherever it is.
+    let rows = [
+        ("an entry at the mount root", "stamped.txt", "first bytes"),
+        ("an entry one directory down", "day/stamped.txt", ""),
+        (
+            "an entry two directories down",
+            "day/hour/stamped.bin",
+            "a longer run of bytes than the row above it holds",
+        ),
+    ];
+
+    // What each row's object reported for the entry: its creation second, its modification
+    // second and the identity the file system stamped on it.
+    let mut written_entries: Vec<(&str, u64, u64, String)> = Vec::new();
+    for (case, path, payload) in rows {
+        let written = format!("{MOUNT_POINT}/{path}");
+        if let Some(directory) = ::service_common::posix_shell_volume::parent_path(&written) {
+            assert!(
+                machine.make_directories(&directory),
+                "case {case:?}: the directories above {written:?} must be creatable"
+            );
+        }
+        assert!(
+            machine.write(&written, payload),
+            "case {case:?}: the write of {written:?} through the mount must happen"
+        );
+        let metadata = aws.object_metadata(bucket, path).await;
+        let mut seconds = Vec::new();
+        for name in [
+            state::FILE_BIRTH_TIME_METADATA,
+            state::FILE_ACCESS_TIME_METADATA,
+            state::FILE_MODIFIED_TIME_METADATA,
+        ] {
+            let stamped = entry(&metadata, name);
+            let second = stamped_second(&stamped);
+            assert!(
+                second.is_some_and(|second| stamped_window.contains(&second)),
+                "case {case:?}: expected {name} to name a POSIX second inside \
+                 {stamped_window:?}, got {stamped:?}"
+            );
+            seconds.push(second.unwrap_or_default());
+        }
+        assert!(
+            seconds[2] >= seconds[0],
+            "case {case:?}: expected the entry to be written at or after it was created, got \
+             {metadata:?}"
+        );
+        written_entries.push((
+            case,
+            seconds[0],
+            seconds[2],
+            entry(&metadata, state::FILE_SYSTEM_METADATA),
+        ));
+    }
+
+    // A later write of the SAME file is a write of that entry, not the creation of one: the
+    // creation instant and the identity stay as they were, and the modification instant never
+    // moves backwards.
+    let (first_case, born, modified, identity) = written_entries[0].clone();
+    let rewritten = format!("{MOUNT_POINT}/{}", rows[0].1);
+    assert!(
+        machine.write(&rewritten, "second bytes"),
+        "the second write of {rewritten:?} through the mount must happen"
+    );
+    let metadata = aws.object_metadata(bucket, rows[0].1).await;
+    let case = format!("a second write of the entry first written by {first_case:?}");
+    assert_eq!(
+        (
+            stamped_second(&entry(&metadata, state::FILE_BIRTH_TIME_METADATA)),
+            entry(&metadata, state::FILE_SYSTEM_METADATA),
+        ),
+        (Some(born), identity.clone()),
+        "case {case:?}: expected the entry created at {born} with the identity {identity:?} to \
+         keep both, got {metadata:?}"
+    );
+    assert!(
+        stamped_second(&entry(&metadata, state::FILE_MODIFIED_TIME_METADATA))
+            .is_some_and(|second| second >= modified && stamped_window.contains(&second)),
+        "case {case:?}: expected a modification second at or after {modified}, got {metadata:?}"
+    );
+
+    // A file created again where one was REMOVED is a new entry of the file system, so it
+    // carries an identity of its own rather than the removed file's.
+    assert!(
+        machine.remove(&rewritten),
+        "the removal of {rewritten:?} through the mount must happen"
+    );
+    assert!(
+        machine.write(&rewritten, "bytes of the file created again"),
+        "the write that creates {rewritten:?} again must happen"
+    );
+    let metadata = aws.object_metadata(bucket, rows[0].1).await;
+    let created_again = entry(&metadata, state::FILE_SYSTEM_METADATA);
+    assert_ne!(
+        created_again, identity,
+        "case \"a file created again where one was removed\": expected an identity of its own, \
+         got the removed entry's {identity:?}"
+    );
 }
 
 /// RULE: what is reached through a mount is the file system's ONE tree, so what one client

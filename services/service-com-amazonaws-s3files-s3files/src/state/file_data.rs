@@ -37,7 +37,10 @@
 //! POSIX timestamps, the file system that wrote it (with the generation and inode of the
 //! entry) and the agent that performed the write. They are the provenance a
 //! permission-preserving restore reads back off the object, so they are stamped from the
-//! tree's own record of the entry rather than from anything a caller stated.
+//! tree's own record of the entry rather than from anything a caller stated. The entry's
+//! CREATION instant and its inode number are the ones its first write minted
+//! ([`EntryTable`]), so a second write of the same file reports the same entry, created when
+//! it was created and written when it was written.
 //!
 //! # What the write-through does NOT carry
 //!
@@ -105,7 +108,8 @@ pub const FILE_GROUP_METADATA: &str = "file-group";
 pub const FILE_PERMISSIONS_METADATA: &str = "file-permissions";
 
 /// ... when the file was created, last read and last written, each as the POSIX timestamp of
-/// the entry: seconds since the epoch.
+/// the entry: seconds since the epoch ([`posix_timestamp`]). The creation time is the instant
+/// the entry came into being, which a later write of the same file does not move.
 pub const FILE_BIRTH_TIME_METADATA: &str = "file-btime";
 pub const FILE_ACCESS_TIME_METADATA: &str = "file-atime";
 pub const FILE_MODIFIED_TIME_METADATA: &str = "file-mtime";
@@ -240,23 +244,40 @@ pub struct BucketWriteThrough {
     /// per file system, derived from its id, so two file systems never stamp the same
     /// identity on their entries.
     generation: u64,
-    /// The INODE number each path of the tree holds ([`InodeTable`]).
-    inodes: Mutex<InodeTable>,
+    /// The IDENTITY each path of the tree holds: its inode number and the instant the entry
+    /// was created ([`EntryTable`]).
+    entries: Mutex<EntryTable>,
 }
 
-/// Which INODE number each path of one file system holds, assigned in write order from the
-/// first number after the root's.
+/// What one ENTRY of a file system is, across every write of it: the inode number its path
+/// holds and the instant the entry was created.
+#[derive(Debug, Clone, Copy)]
+struct EntryIdentity {
+    /// The inode number, assigned on the first write of the path.
+    inode: u64,
+    /// When the entry came into being, which is the first write of it: a `btime` is the
+    /// creation of the file, so a later write of the same file does not move it.
+    born_at: SystemTime,
+}
+
+/// Which IDENTITY each path of one file system holds, the inode numbers assigned in write
+/// order from the first number after the root's.
 ///
-/// An entry keeps its number across every later write of it, which is what makes the identity
-/// an object carries the identity of the FILE rather than of the write. The table is BOUNDED
-/// by how many entries the file system itself holds ([`FILE_SYSTEM_LIMITS`]) — the paths
-/// written are a program's, so the table must not grow with the writes a program makes — and
-/// past that ceiling the number assigned longest ago is forgotten: a path written again after
-/// that takes a fresh number, exactly as a path this file system had never held does.
+/// An entry keeps its number and its birth instant across every later write of it, which is
+/// what makes the identity an object carries the identity of the FILE rather than of the
+/// write. A path REMOVED through the mount is forgotten ([`Self::forget`]): a file created
+/// again at that path is a new entry, with its own number and its own creation instant, as it
+/// is in a POSIX file system.
+///
+/// The table is BOUNDED by how many entries the file system itself holds
+/// ([`FILE_SYSTEM_LIMITS`]) — the paths written are a program's, so the table must not grow
+/// with the writes a program makes — and past that ceiling the entry assigned longest ago is
+/// forgotten: a path written again after that takes a fresh identity, exactly as a path this
+/// file system had never held does.
 #[derive(Debug, Default)]
-struct InodeTable {
-    /// The number each path holds.
-    numbers: BTreeMap<String, u64>,
+struct EntryTable {
+    /// The identity each path holds.
+    identities: BTreeMap<String, EntryIdentity>,
     /// The paths in the order they were assigned, so the oldest is the one forgotten at the
     /// ceiling.
     order: ::std::collections::VecDeque<String>,
@@ -264,22 +285,33 @@ struct InodeTable {
     assigned: u64,
 }
 
-impl InodeTable {
-    /// The number `path` holds, assigning the next one for a path this table does not hold.
-    fn number_of(&mut self, path: &str) -> u64 {
-        if let Some(held) = self.numbers.get(path) {
+impl EntryTable {
+    /// The identity `path` holds, minting one for a path this table does not hold: the next
+    /// inode number, and `written_at` as the instant that entry came into being.
+    fn identity_of(&mut self, path: &str, written_at: SystemTime) -> EntryIdentity {
+        if let Some(held) = self.identities.get(path) {
             return *held;
         }
         while self.order.len() >= FILE_SYSTEM_LIMITS.files {
             if let Some(oldest) = self.order.pop_front() {
-                self.numbers.remove(&oldest);
+                self.identities.remove(&oldest);
             }
         }
         self.assigned = self.assigned.saturating_add(1);
-        let assigned = ROOT_INODE.saturating_add(self.assigned);
-        self.numbers.insert(path.to_string(), assigned);
+        let minted = EntryIdentity {
+            inode: ROOT_INODE.saturating_add(self.assigned),
+            born_at: written_at,
+        };
+        self.identities.insert(path.to_string(), minted);
         self.order.push_back(path.to_string());
-        assigned
+        minted
+    }
+
+    /// Forget the entry at `path`, which is what its REMOVAL leaves behind: the next file
+    /// created there is a new entry rather than the one that was taken away.
+    fn forget(&mut self, path: &str) {
+        self.identities.remove(path);
+        self.order.retain(|held| held != path);
     }
 }
 
@@ -313,7 +345,7 @@ impl BucketWriteThrough {
             kms_key_id: file_system.kms_key_id.clone(),
             generation: generation_of(&file_system.file_system_id),
             file_system_id: file_system.file_system_id.clone(),
-            inodes: Mutex::new(InodeTable::default()),
+            entries: Mutex::new(EntryTable::default()),
         }))
     }
 
@@ -323,38 +355,42 @@ impl BucketWriteThrough {
         format!("{}{}", self.prefix, path.trim_start_matches('/'))
     }
 
-    /// The inode number the entry at `path` holds, assigning the next one for an entry this
-    /// file system has not written before ([`InodeTable`]).
-    fn inode_of(&self, path: &str) -> u64 {
-        self.inodes
+    /// The identity the entry at `path` holds, minting one for an entry this file system has
+    /// not written before ([`EntryTable`]).
+    fn identity_of(&self, path: &str, written_at: SystemTime) -> EntryIdentity {
+        self.entries
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .number_of(path)
+            .identity_of(path, written_at)
     }
 
     /// The user metadata the object written from `written` carries: the file-system
     /// attributes of the file itself, and the agent that performed the write.
+    ///
+    /// The three timestamps are the entry's own: it was CREATED when the first write of that
+    /// path made it ([`EntryTable`]) and last WRITTEN by this write, and this tree records one
+    /// read instant per entry — the write that left it as it is — so the access time this
+    /// write stamps is that same instant.
     fn stamped_metadata(&self, written: &FileWritten<'_>) -> BTreeMap<String, String> {
         let (uid, gid) = written.owner.unwrap_or(DEFAULT_OWNER);
         let mode = REGULAR_FILE_MODE | written.mode.unwrap_or(DEFAULT_PERMISSIONS);
+        let entry = self.identity_of(written.path, written.written_at);
         let at = posix_timestamp(written.written_at);
         BTreeMap::from([
             (FILE_OWNER_METADATA.to_string(), uid.to_string()),
             (FILE_GROUP_METADATA.to_string(), gid.to_string()),
             (FILE_PERMISSIONS_METADATA.to_string(), format!("0{mode:o}")),
-            // The three POSIX timestamps of the entry. This tree records one instant per
-            // entry — the write that left it as it is — which is the instant the file was
-            // created, last read and last written as of this write.
-            (FILE_BIRTH_TIME_METADATA.to_string(), at.clone()),
+            (
+                FILE_BIRTH_TIME_METADATA.to_string(),
+                posix_timestamp(entry.born_at),
+            ),
             (FILE_ACCESS_TIME_METADATA.to_string(), at.clone()),
             (FILE_MODIFIED_TIME_METADATA.to_string(), at),
             (
                 FILE_SYSTEM_METADATA.to_string(),
                 format!(
                     "{}:{}:{}",
-                    self.file_system_id,
-                    self.generation,
-                    self.inode_of(written.path)
+                    self.file_system_id, self.generation, entry.inode
                 ),
             ),
             (
@@ -405,7 +441,15 @@ impl FileWrites for BucketWriteThrough {
     /// The deletion is the object store's own, so a versioned bucket takes the delete MARKER
     /// such a delete lays and an unversioned one takes the key away, exactly as a
     /// `DeleteObject` naming no version does.
+    ///
+    /// The entry itself is forgotten with it ([`EntryTable::forget`]): a file created again at
+    /// that path is a new entry, so it carries its own identity and its own creation instant
+    /// rather than those of the file that was taken away.
     fn removed(&self, path: &str) {
+        self.entries
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .forget(path);
         let key = self.key_of(path);
         let mut store = self.objects.lock();
         store.remove_object(&self.bucket, &key);
@@ -422,12 +466,113 @@ fn generation_of(file_system_id: &str) -> u64 {
 }
 
 /// `at` as a POSIX timestamp of a file: SECONDS since the epoch, the unit a file's own
-/// timestamps are kept in (`st_atime`, `st_mtime` and the birth time beside them) — the same
+/// timestamps are counted in (`st_atime`, `st_mtime` and the birth time beside them) — the same
 /// RAW POSIX form the owner, the group and the permissions beside it carry, so one restore
 /// reads the whole set the same way.
+///
+/// The second is the one the instant LIES IN: a count of seconds is truncated towards the
+/// epoch, never rounded up, so a stamp never names a second the entry had not reached. An
+/// instant before the epoch names no POSIX second at all and is stamped as the epoch itself.
 fn posix_timestamp(at: SystemTime) -> String {
     at.duration_since(SystemTime::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs()
         .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::{Duration, SystemTime};
+
+    use super::{posix_timestamp, EntryTable, ROOT_INODE};
+
+    /// RULE: a file's timestamp is stamped as the POSIX second the instant lies in — the
+    /// second it reached, never the next one.
+    #[test]
+    fn a_posix_timestamp_names_the_second_the_instant_lies_in() {
+        // The rows span the sub-second part of the instant, which is what the rule generalises
+        // over: none at all, the first nanosecond of the second, one past half a second (so a
+        // stamp that rounded up would be told apart from one that does not) and the last
+        // nanosecond below the next second.
+        let rows = [
+            ("a whole second", 1_700_000_000_u64, 0_u32, "1700000000"),
+            (
+                "one nanosecond past the second",
+                1_700_000_000,
+                1,
+                "1700000000",
+            ),
+            (
+                "one nanosecond past half a second",
+                1_700_000_000,
+                500_000_001,
+                "1700000000",
+            ),
+            (
+                "the last nanosecond below the next second",
+                1_700_000_000,
+                999_999_999,
+                "1700000000",
+            ),
+            ("the epoch itself", 0, 0, "0"),
+        ];
+        for (case, seconds, nanoseconds, expected) in rows {
+            let at = SystemTime::UNIX_EPOCH + Duration::new(seconds, nanoseconds);
+            let stamped = posix_timestamp(at);
+            assert_eq!(
+                stamped, expected,
+                "case {case:?}: expected the stamp {expected:?}, got {stamped:?}"
+            );
+        }
+    }
+
+    /// RULE: an instant BEFORE the epoch names no POSIX second, so it is stamped as the epoch
+    /// rather than as a count no reader of this set can take.
+    #[test]
+    fn an_instant_before_the_epoch_is_stamped_as_the_epoch() {
+        let stamped = posix_timestamp(SystemTime::UNIX_EPOCH - Duration::from_nanos(1));
+        assert_eq!(
+            stamped, "0",
+            "case \"an instant before the epoch\": expected the epoch's own stamp, got \
+             {stamped:?}"
+        );
+    }
+
+    /// RULE: a path's entry keeps its inode number and its BIRTH instant across every later
+    /// write of it — a write of a file is not the creation of one — while another path is
+    /// another entry, and a path whose file was removed is a new entry when it is written
+    /// again.
+    #[test]
+    fn an_entry_keeps_its_identity_and_its_birth_instant_across_writes() {
+        let born = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        let later = born + Duration::from_secs(60);
+        let mut table = EntryTable::default();
+
+        let first = table.identity_of("/report.txt", born);
+        assert!(
+            first.inode > ROOT_INODE && first.born_at == born,
+            "case \"the first write of a path\": expected an inode past the root's \
+             ({ROOT_INODE}) and the instant of that write, got {first:?}"
+        );
+        let rewritten = table.identity_of("/report.txt", later);
+        assert!(
+            rewritten.inode == first.inode && rewritten.born_at == born,
+            "case \"a later write of the same path\": expected the entry {first:?} to keep its \
+             identity, got {rewritten:?}"
+        );
+        let other = table.identity_of("/exports/report.txt", later);
+        assert!(
+            other.inode != first.inode && other.born_at == later,
+            "case \"another path of the same file system\": expected an entry of its own, got \
+             {other:?}"
+        );
+
+        table.forget("/report.txt");
+        let created_again = table.identity_of("/report.txt", later);
+        assert!(
+            created_again.inode != first.inode && created_again.born_at == later,
+            "case \"a path created again after its file was removed\": expected a new entry, \
+             got {created_again:?}"
+        );
+    }
 }
