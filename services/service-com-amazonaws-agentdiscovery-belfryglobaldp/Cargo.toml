@@ -21,6 +21,10 @@ bytes = { workspace = true }
 http = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
+# The shared home for the free-text match over a record's stored text
+# (`document_text_search`) and for the authenticated, opaque pagination cursor a
+# paginated read mints (`page_tokens`).
+service-common = { path = "../common" }
 
 [build-dependencies]
 emulator-core-build-support = { workspace = true }

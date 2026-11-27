@@ -1,15 +1,6 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op SearchPublicRecords
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `SearchPublicRecords`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
-//!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`SearchPublicRecords::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
 //!
 //! ## Shape of an operation
 //!
@@ -95,6 +86,11 @@
 #[allow(unused_imports)]
 use super::types::*;
 
+use crate::state::{identifier_value, invalid_argument, store_unavailable};
+use ::aws_smithy_types::Document;
+use ::service_common::document_text_search::{query_terms, SearchableText};
+use ::service_common::page_tokens::{page_cursor, page_token, scope_digest, PageTokenKey};
+
 // `#[operation_error]` below expands to an invocation of the LOCAL declarative
 // `smithy!` macro, which this line is what emits into the module. Without it the
 // expansion fails with `cannot find macro 'smithy' in this scope` and the
@@ -165,18 +161,576 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `SearchPublicRecords` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(SearchPublicRecordsErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("SearchPublicRecords"))
+        // A public search carries no resource of its own and no member of this request
+        // is bound outside the body, so nothing of the request metadata is read here.
+        let _ = ctx;
+
+        // The page size and the filter expression are decided from the REQUEST alone,
+        // before any record is read: whether a request is well formed never depends on
+        // what the index happens to hold.
+        let max_results = page_size(input.max_results)?;
+        let filters = filter_expression(input.filters.as_ref());
+        if let Some(expression) = filters {
+            validate_filter(expression).map_err(filter_refusal)?;
+        }
+        let terms = query_terms(input.search_query.as_deref().unwrap_or_default());
+
+        // The sequence a `nextToken` names is the ordered result set ONE set of criteria
+        // produces, so the token carries that sequence's identity: a token replayed
+        // against other criteria names no position in the set being walked and is refused
+        // rather than seeking into a different one.
+        let criteria = criteria_scope(input.search_query.as_deref(), filters, max_results);
+
+        let Some(state) = crate::state::service_state(&*self.engine) else {
+            return Err(SearchPublicRecordsErrorModeled::InternalServerException(
+                store_unavailable(),
+            )
+            .into());
+        };
+        // `@readonly`: the index is read through the guard, never written here. What
+        // publishes a record is the ingest seam (`insert_record`), not a search.
+        let index = state.lock();
+        let key = index.page_token_key();
+        let resume_at = match input.next_token.as_deref() {
+            Some(token) => resume_offset(token, &key, &criteria)?,
+            None => FIRST_PAGE,
+        };
+
+        // The whole result set, most relevant first: every record the filter admits and
+        // the query matches, ranked by the most specific text the query was found in and,
+        // within one rank, in the order the index holds — so every page of one search is
+        // cut from the same order and no record is repeated or skipped across pages.
+        let mut matching: Vec<(usize, &PublicRecord)> = Vec::new();
+        for record in index.records() {
+            if let Some(expression) = filters {
+                if !evaluate_filter(expression, record).map_err(filter_refusal)? {
+                    continue;
+                }
+            }
+            if let Some(rank) = relevance(record, &terms) {
+                matching.push((rank, record));
+            }
+        }
+        matching.sort_by_key(|(rank, _)| *rank);
+
+        // `records` is `@required`, so a search that matches nothing serializes an empty
+        // list rather than omitting the member.
+        let records: Vec<PublicRecord> = matching
+            .iter()
+            .skip(resume_at)
+            .take(max_results)
+            .map(|(_, record)| (*record).clone())
+            .collect();
+
+        // A token ONLY while a match remains past this page: the final page omits it,
+        // which is how a caller walking the pages knows to stop.
+        let served = resume_at.saturating_add(records.len());
+        let next_token =
+            (served < matching.len()).then(|| page_token(&key, &page_position(&criteria, served)));
+
+        Ok(SearchPublicRecordsOutput {
+            records,
+            next_token,
+        })
     }
+}
+
+/// The position the first page of a search is cut at.
+const FIRST_PAGE: usize = 0;
+
+/// `SearchPublicRecordsRequest$maxResults` is modelled `@range{min:1,max:100}`, and its
+/// own documentation says "Max records per page. Default 20, max 100."
+const MIN_MAX_RESULTS: usize = 1;
+const MAX_MAX_RESULTS: usize = 100;
+const DEFAULT_MAX_RESULTS: usize = 20;
+
+/// How many records one page carries: the documented default when the caller names no
+/// page size, and the requested value when the documented range admits it.
+///
+/// The modelled `@range` already refuses a value outside it at the boundary; the check
+/// is restated here so the page this handler cuts is bounded by the documented numbers
+/// wherever the value came from.
+fn page_size(requested: Option<i32>) -> Result<usize, SearchPublicRecordsError> {
+    let Some(requested) = requested else {
+        return Ok(DEFAULT_MAX_RESULTS);
+    };
+    match usize::try_from(requested) {
+        Ok(page) if (MIN_MAX_RESULTS..=MAX_MAX_RESULTS).contains(&page) => Ok(page),
+        _ => Err(SearchPublicRecordsErrorModeled::ValidationException(invalid_argument(
+            format!(
+                "maxResults: {requested} is outside the valid range {MIN_MAX_RESULTS} through {MAX_MAX_RESULTS}."
+            ),
+        ))
+        .into()),
+    }
+}
+
+/// A 400 `ValidationException` refusing the request's `filters` member, naming the
+/// member and the rule the expression broke, in this service's own modelled error shape
+/// and with the `errorCode` the ARD surface requires.
+fn filter_refusal(message: String) -> SearchPublicRecordsError {
+    SearchPublicRecordsErrorModeled::ValidationException(invalid_argument(format!(
+        "filters: {message}"
+    )))
+    .into()
+}
+
+/// How many conditions one filter expression may carry: the `filters` member documents
+/// "at most 10 conditions". It bounds the breadth of the walk as well — a `$and` / `$or`
+/// cannot carry more branches than the whole expression may carry conditions.
+const MAX_CONDITIONS: usize = 10;
+
+/// How many values `$in` takes: the `filters` member documents "`$in` takes 1-25 values".
+const MIN_IN_VALUES: usize = 1;
+const MAX_IN_VALUES: usize = 25;
+
+/// How long a filter value may be: the `filters` member documents "values are strings of
+/// 1-512 characters".
+const MIN_VALUE_CHARS: usize = 1;
+const MAX_VALUE_CHARS: usize = 512;
+
+/// The fields a filter may name, from the `filters` member's own documentation: "Fields
+/// are `identifier`, `domain`, `recordType`, `descriptorType`, `provenance` and
+/// `recordVersion`".
+const FIELD_IDENTIFIER: &str = "identifier";
+const FIELD_DOMAIN: &str = "domain";
+const FIELD_RECORD_TYPE: &str = "recordType";
+const FIELD_DESCRIPTOR_TYPE: &str = "descriptorType";
+const FIELD_PROVENANCE: &str = "provenance";
+const FIELD_RECORD_VERSION: &str = "recordVersion";
+
+/// Those fields, in the order a refusal lists them.
+const FILTERABLE_FIELDS: &[&str] = &[
+    FIELD_IDENTIFIER,
+    FIELD_DOMAIN,
+    FIELD_RECORD_TYPE,
+    FIELD_DESCRIPTOR_TYPE,
+    FIELD_PROVENANCE,
+    FIELD_RECORD_VERSION,
+];
+
+/// The comparison operators the `filters` member documents: "`$eq`, `$ne` and `$in` on a
+/// field … and `identifier` also takes `$prefix`".
+const OPERATOR_EQ: &str = "$eq";
+const OPERATOR_NE: &str = "$ne";
+const OPERATOR_IN: &str = "$in";
+const OPERATOR_PREFIX: &str = "$prefix";
+
+/// The logical operators it documents: "with `$and` or `$or` over single-condition
+/// objects, never nested".
+const OPERATOR_AND: &str = "$and";
+const OPERATOR_OR: &str = "$or";
+
+/// The operators any field takes, and the ones `identifier` takes.
+const FIELD_OPERATORS: &[&str] = &[OPERATOR_EQ, OPERATOR_NE, OPERATOR_IN];
+const IDENTIFIER_OPERATORS: &[&str] = &[OPERATOR_EQ, OPERATOR_NE, OPERATOR_IN, OPERATOR_PREFIX];
+
+/// The operators the field a condition names admits.
+fn operators_of(field: &str) -> &'static [&'static str] {
+    if field == FIELD_IDENTIFIER {
+        IDENTIFIER_OPERATORS
+    } else {
+        FIELD_OPERATORS
+    }
+}
+
+/// The filter expression the request carries, or `None` when it names none — an absent
+/// member and an explicit JSON `null` alike narrow nothing.
+fn filter_expression(filters: Option<&Document>) -> Option<&Document> {
+    match filters {
+        None | Some(Document::Null) => None,
+        Some(expression) => Some(expression),
+    }
+}
+
+/// Where in a filter expression a term sits: the expression the request carries, or one
+/// BRANCH of a `$and` / `$or`, which the grammar admits only as a single condition and
+/// never as another logical operator ("never nested").
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Position {
+    Expression,
+    Branch,
+}
+
+/// One walk of a filter expression: it refuses what the documented grammar does not
+/// admit, and — when a record is given — answers whether that record satisfies it.
+///
+/// Validating and evaluating in ONE walk is what keeps the grammar stated once: a term
+/// the walk cannot evaluate is a term it refuses, so no filter can be accepted by the
+/// check and then read differently by the match.
+#[derive(Debug)]
+struct Filter<'a> {
+    /// The record under test, or `None` when the expression is only being validated.
+    record: Option<&'a PublicRecord>,
+    /// How many conditions the walk has seen, which is what [`MAX_CONDITIONS`] bounds.
+    conditions: usize,
+}
+
+impl Filter<'_> {
+    /// Walk one expression: an object whose keys are fields or logical operators, read
+    /// conjunctively — several keys in one object all have to hold.
+    fn expression(&mut self, document: &Document, position: Position) -> Result<bool, String> {
+        let Document::Object(entries) = document else {
+            return Err("a filter must be an object naming conditions.".to_string());
+        };
+        if position == Position::Branch && entries.len() != 1 {
+            return Err(format!(
+                "{OPERATOR_AND} and {OPERATOR_OR} take single-condition objects, got one naming {} fields.",
+                entries.len()
+            ));
+        }
+        let mut holds = true;
+        for (key, value) in entries {
+            holds &= match key.as_str() {
+                OPERATOR_AND | OPERATOR_OR if position == Position::Branch => {
+                    return Err(format!(
+                        "{key} cannot be nested inside {OPERATOR_AND} or {OPERATOR_OR}."
+                    ))
+                }
+                operator @ (OPERATOR_AND | OPERATOR_OR) => {
+                    let mut all = operator == OPERATOR_AND;
+                    for branch in branches(operator, value)? {
+                        let satisfied = self.expression(branch, Position::Branch)?;
+                        if operator == OPERATOR_AND {
+                            all &= satisfied;
+                        } else {
+                            all |= satisfied;
+                        }
+                    }
+                    all
+                }
+                field => self.condition(field, value, position)?,
+            };
+        }
+        Ok(holds)
+    }
+
+    /// Walk one field's condition object — `{"$eq": "AGENT"}` and the other operators —
+    /// refusing a field the grammar does not name and an operator that field does not
+    /// take.
+    fn condition(
+        &mut self,
+        field: &str,
+        value: &Document,
+        position: Position,
+    ) -> Result<bool, String> {
+        if !FILTERABLE_FIELDS.contains(&field) {
+            return Err(format!(
+                "'{field}' is not a filterable field; name one of {}.",
+                FILTERABLE_FIELDS.join(", ")
+            ));
+        }
+        let admitted = operators_of(field).join(", ");
+        let Document::Object(operators) = value else {
+            return Err(format!("'{field}' takes an object naming one of {admitted}."));
+        };
+        if operators.is_empty() || (position == Position::Branch && operators.len() != 1) {
+            return Err(format!(
+                "'{field}' takes an object naming one of {admitted}, got one naming {}.",
+                operators.len()
+            ));
+        }
+        // The values the record holds for this field: a single-valued member carries one
+        // or none, and a set-valued one — its descriptor slots, its provenance — carries
+        // as many as it has.
+        let held = self.record.map(|record| field_values(record, field));
+        let mut holds = true;
+        for (operator, operand) in operators {
+            self.conditions += 1;
+            if self.conditions > MAX_CONDITIONS {
+                return Err(format!(
+                    "a filter names at most {MAX_CONDITIONS} conditions."
+                ));
+            }
+            holds &= match operator.as_str() {
+                OPERATOR_EQ => {
+                    let wanted = text_operand(operator, operand)?;
+                    carries(held.as_deref(), |value| value == wanted)
+                }
+                OPERATOR_NE => {
+                    let unwanted = text_operand(operator, operand)?;
+                    held.as_deref()
+                        .is_some_and(|values| !values.iter().any(|value| value == unwanted))
+                }
+                OPERATOR_IN => {
+                    let wanted = in_operands(operand)?;
+                    carries(held.as_deref(), |value| wanted.contains(&value))
+                }
+                OPERATOR_PREFIX if field != FIELD_IDENTIFIER => {
+                    return Err(format!(
+                        "{OPERATOR_PREFIX} applies only to '{FIELD_IDENTIFIER}'; '{field}' takes one of {}.",
+                        FIELD_OPERATORS.join(", ")
+                    ))
+                }
+                OPERATOR_PREFIX => {
+                    let prefix = text_operand(operator, operand)?;
+                    carries(held.as_deref(), |value| value.starts_with(prefix.as_str()))
+                }
+                unsupported => {
+                    return Err(format!(
+                        "'{unsupported}' is not a supported operator; use one of {admitted}."
+                    ))
+                }
+            };
+        }
+        Ok(holds)
+    }
+}
+
+/// Whether any value the record holds for a field satisfies `predicate`.
+///
+/// A field the record does not carry holds NO value, so it satisfies none of `$eq`,
+/// `$in` and `$prefix` — and satisfies `$ne`, which is why that operator is the one
+/// written against the values directly.
+fn carries(held: Option<&[String]>, predicate: impl Fn(&String) -> bool) -> bool {
+    held.is_some_and(|values| values.iter().any(predicate))
+}
+
+/// The branches of a `$and` / `$or`: a bounded array of single-condition objects.
+fn branches<'a>(operator: &str, value: &'a Document) -> Result<&'a Vec<Document>, String> {
+    let Document::Array(branches) = value else {
+        return Err(format!(
+            "{operator} takes an array of single-condition objects."
+        ));
+    };
+    if branches.is_empty() || branches.len() > MAX_CONDITIONS {
+        return Err(format!(
+            "{operator} takes between 1 and {MAX_CONDITIONS} single-condition objects, got {}.",
+            branches.len()
+        ));
+    }
+    Ok(branches)
+}
+
+/// The one string `$eq`, `$ne` and `$prefix` compare against: a filter value is a string
+/// of [`MIN_VALUE_CHARS`] to [`MAX_VALUE_CHARS`] characters, counted in characters
+/// because that is the unit the documented limit is stated in.
+fn text_operand<'a>(operator: &str, operand: &'a Document) -> Result<&'a String, String> {
+    let Document::String(text) = operand else {
+        return Err(format!("{operator} takes a string value."));
+    };
+    let characters = text.chars().count();
+    if !(MIN_VALUE_CHARS..=MAX_VALUE_CHARS).contains(&characters) {
+        return Err(format!(
+            "{operator} takes a value of {MIN_VALUE_CHARS} to {MAX_VALUE_CHARS} characters, got {characters}."
+        ));
+    }
+    Ok(text)
+}
+
+/// The values `$in` tests membership of: a bounded array of filter values.
+fn in_operands(operand: &Document) -> Result<Vec<&String>, String> {
+    let Document::Array(candidates) = operand else {
+        return Err(format!("{OPERATOR_IN} takes an array of string values."));
+    };
+    if !(MIN_IN_VALUES..=MAX_IN_VALUES).contains(&candidates.len()) {
+        return Err(format!(
+            "{OPERATOR_IN} takes between {MIN_IN_VALUES} and {MAX_IN_VALUES} values, got {}.",
+            candidates.len()
+        ));
+    }
+    candidates
+        .iter()
+        .map(|candidate| text_operand(OPERATOR_IN, candidate))
+        .collect()
+}
+
+/// The values `record` holds for the field a condition names.
+///
+/// Four of the fields are single-valued members of `PublicRecord` and carry one value or
+/// none. Two are set-valued: `descriptorType` carries the record's descriptor slot keys
+/// (`DescriptorMap`'s own keys), and `provenance` carries what each `ProvenanceLink` of
+/// each trust manifest publishes — its `relation` and the `sourceId` it names.
+fn field_values(record: &PublicRecord, field: &str) -> Vec<String> {
+    match field {
+        FIELD_IDENTIFIER => vec![identifier_value(&record.identifier).to_string()],
+        FIELD_DOMAIN => record.domain.clone().into_iter().collect(),
+        FIELD_RECORD_TYPE => vec![record.record_type.clone()],
+        FIELD_RECORD_VERSION => record.record_version.clone().into_iter().collect(),
+        FIELD_DESCRIPTOR_TYPE => record
+            .descriptors
+            .iter()
+            .flatten()
+            .map(|(slot, _)| slot.clone())
+            .collect(),
+        FIELD_PROVENANCE => record
+            .trust_manifests
+            .iter()
+            .flatten()
+            .flat_map(|manifest| manifest.provenance.iter().flatten())
+            .flat_map(|link| [link.relation.clone(), link.source_id.clone()])
+            .collect(),
+        // Unreachable: a field the grammar does not name is refused before this is
+        // reached.
+        _ => Vec::new(),
+    }
+}
+
+/// Refuse a filter expression the documented grammar does not admit, reading no record:
+/// whether a request is well formed never depends on what the index holds.
+fn validate_filter(expression: &Document) -> Result<(), String> {
+    let mut filter = Filter {
+        record: None,
+        conditions: 0,
+    };
+    filter.expression(expression, Position::Expression)?;
+    if filter.conditions == 0 {
+        return Err(format!(
+            "a filter names between 1 and {MAX_CONDITIONS} conditions; this one names none."
+        ));
+    }
+    Ok(())
+}
+
+/// Whether `record` satisfies a filter expression [`validate_filter`] has admitted.
+fn evaluate_filter(expression: &Document, record: &PublicRecord) -> Result<bool, String> {
+    Filter {
+        record: Some(record),
+        conditions: 0,
+    }
+    .expression(expression, Position::Expression)
+}
+
+/// The record texts a free-text query is matched against: the record's `displayName`,
+/// its `description` and its `domain`, most specific first.
+const SEARCHABLE_FIELDS: usize = 3;
+
+/// How relevant `record` is to a query naming `terms` (lower is more relevant), or
+/// `None` when the query does not match it at all.
+///
+/// A record matches when EVERY term of the query occurs in its searchable text, in any
+/// order and not necessarily adjacently, so a multi-word query matches the record it
+/// describes rather than only one quoting the whole phrase. The rank is the position of
+/// the most specific text a term occurs in, which is what puts the records a query names
+/// by display name ahead of the ones it only touches through their description or domain.
+/// A query naming no term at all matches every record, all at one rank, so the index's
+/// own order is what a search with no query reports.
+fn relevance(record: &PublicRecord, terms: &[String]) -> Option<usize> {
+    if terms.is_empty() {
+        return Some(0);
+    }
+    let searchable: [Option<SearchableText>; SEARCHABLE_FIELDS] = [
+        Some(SearchableText::new(&record.display_name)),
+        record.description.as_deref().map(SearchableText::new),
+        record.domain.as_deref().map(SearchableText::new),
+    ];
+    let carried = |term: &String| {
+        searchable
+            .iter()
+            .flatten()
+            .any(|text| text.carries(term.as_str()))
+    };
+    if !terms.iter().all(carried) {
+        return None;
+    }
+    searchable.iter().position(|text| {
+        text.as_ref()
+            .is_some_and(|text| terms.iter().any(|term| text.carries(term.as_str())))
+    })
+}
+
+/// What separates the components of the criteria a cursor belongs to.
+const UNIT_SEPARATOR: char = '\u{1f}';
+
+/// The sequence identity a `nextToken` of this search carries: a fixed-width digest of
+/// the criteria that produced the result set — the free-text query, the filter
+/// expression and the page size.
+///
+/// The filter arrives as a `document`, whose object members carry no order of their own,
+/// so the digest is taken over a canonical rendering ([`append_document`]): two requests
+/// naming the same filter identify the same sequence however their JSON was spelled.
+fn criteria_scope(
+    search_query: Option<&str>,
+    filters: Option<&Document>,
+    max_results: usize,
+) -> String {
+    let mut scope = String::new();
+    append_text(&mut scope, search_query.unwrap_or_default());
+    scope.push(UNIT_SEPARATOR);
+    match filters {
+        Some(expression) => append_document(&mut scope, expression),
+        None => scope.push_str("none"),
+    }
+    scope.push(UNIT_SEPARATOR);
+    scope.push_str(&max_results.to_string());
+    scope_digest(&scope)
+}
+
+/// One text inside a scope, written with its byte length ahead of it, so no value a
+/// caller supplies can spell the boundary between two components of the scope.
+fn append_text(scope: &mut String, text: &str) {
+    scope.push_str(&text.len().to_string());
+    scope.push(':');
+    scope.push_str(text);
+}
+
+/// One document inside a scope, with object members in key order — the canonical
+/// rendering two spellings of one filter agree on.
+fn append_document(scope: &mut String, document: &Document) {
+    match document {
+        Document::Null => scope.push_str("null"),
+        Document::Bool(flag) => scope.push_str(if *flag { "true" } else { "false" }),
+        Document::Number(number) => scope.push_str(&match number {
+            ::aws_smithy_types::Number::PosInt(value) => value.to_string(),
+            ::aws_smithy_types::Number::NegInt(value) => value.to_string(),
+            ::aws_smithy_types::Number::Float(value) => value.to_string(),
+        }),
+        Document::String(text) => append_text(scope, text),
+        Document::Array(items) => {
+            scope.push('[');
+            for item in items {
+                append_document(scope, item);
+                scope.push(',');
+            }
+            scope.push(']');
+        }
+        Document::Object(entries) => {
+            let ordered: ::std::collections::BTreeMap<&String, &Document> =
+                entries.iter().collect();
+            scope.push('{');
+            for (key, value) in ordered {
+                append_text(scope, key);
+                scope.push('=');
+                append_document(scope, value);
+                scope.push(',');
+            }
+            scope.push('}');
+        }
+    }
+}
+
+/// The cursor a `nextToken` carries: the sequence it names, and the position in that
+/// sequence the next page resumes at.
+fn page_position(criteria: &str, offset: usize) -> String {
+    format!("{criteria}:{offset}")
+}
+
+/// The position a `nextToken` resumes at, or the modelled refusal for a value this
+/// service did not issue for these criteria.
+///
+/// One refusal for every way a token can fail to name a position — not minted under
+/// this store's key, not shaped like a cursor, minted for other criteria — because they
+/// are one failure to the caller: the token does not name a page of the search it was
+/// handed back with.
+fn resume_offset(
+    token: &str,
+    key: &PageTokenKey,
+    criteria: &str,
+) -> Result<usize, SearchPublicRecordsError> {
+    let refused = || -> SearchPublicRecordsError {
+        SearchPublicRecordsErrorModeled::ValidationException(invalid_argument(
+            "nextToken: the token is not one this service issued for these search criteria.",
+        ))
+        .into()
+    };
+    let Some(cursor) = page_cursor(key, token) else {
+        return Err(refused());
+    };
+    let Some((sequence, offset)) = cursor.split_once(':') else {
+        return Err(refused());
+    };
+    if sequence != criteria {
+        return Err(refused());
+    }
+    offset.parse::<usize>().map_err(|_| refused())
 }
