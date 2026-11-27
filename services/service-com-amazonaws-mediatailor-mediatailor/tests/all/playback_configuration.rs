@@ -56,12 +56,24 @@ impl Reply {
         self.get(pointer).as_str().unwrap_or_default().to_string()
     }
 
-    /// The refusal's text. Every error body of this service — the modelled
-    /// `BadRequestException` and the service's own not-found and
-    /// not-implemented envelopes alike — carries it under one wire key,
-    /// AWS's lowercase `message`.
+    /// The refusal's text, read under whichever member the error shape that
+    /// answered declares for it — the sibling suite's
+    /// [`crate::channel_lifecycle::Reply::message`] states the rule and the
+    /// `error_envelope` suite pins which shape declares which.
     pub(crate) fn message(&self) -> String {
-        self.string("/message")
+        match self
+            .get(&format!(
+                "/{}",
+                crate::channel_lifecycle::MODELLED_ERROR_MESSAGE_MEMBER
+            ))
+            .as_str()
+        {
+            Some(text) => text.to_string(),
+            None => self.string(&format!(
+                "/{}",
+                crate::channel_lifecycle::SYNTHETIC_ERROR_MESSAGE_MEMBER
+            )),
+        }
     }
 }
 

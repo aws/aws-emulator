@@ -3,11 +3,17 @@
 //! The envelope every refusal of this service travels in, end to end over HTTP.
 //!
 //! The rule under test: every error response this service returns carries, in
-//! its restJson1 body, the refusal's text under the one wire key `message` and
-//! a `requestId` naming that response — whichever operation was called,
-//! whichever error shape answers it (the modelled `BadRequestException`, the
-//! service's own not-found envelope, or the scaffold's not-implemented signal)
-//! and whatever status it carries.
+//! its restJson1 body, the refusal's text under the member the error shape that
+//! answered declares for it, and a `requestId` naming that response —
+//! whichever operation was called, whichever error shape answers it (the
+//! modelled `BadRequestException`, the service's own not-found envelope, or the
+//! scaffold's not-implemented signal) and whatever status it carries.
+//!
+//! The codec keys a member by its `@jsonName` or else by its member name, so
+//! that member is a property of the SHAPE and not of the operation: the
+//! modelled `BadRequestException` declares `Message` and no `@jsonName`, and
+//! the shapes this service synthesises for what its model declares no error for
+//! declare `message`.
 //!
 //! The table spans the class the rule generalises over: both HTTP methods that
 //! refuse with a body, each of the three error shapes and each status they
@@ -25,8 +31,8 @@ use serde_json::{json, Value};
 
 use crate::channel_lifecycle::{
     encode, Emulator, Reply, CHANNEL_ALREADY_EXISTS_MESSAGE, CHANNEL_NOT_FOUND_MESSAGE,
-    MAX_TIME_SHIFT_SECONDS, MIN_TIME_SHIFT_SECONDS, NOT_FOUND_CODE, NOT_FOUND_STATUS,
-    RESOURCE_NOT_FOUND_MESSAGE,
+    MAX_TIME_SHIFT_SECONDS, MIN_TIME_SHIFT_SECONDS, MODELLED_ERROR_MESSAGE_MEMBER, NOT_FOUND_CODE,
+    NOT_FOUND_STATUS, RESOURCE_NOT_FOUND_MESSAGE, SYNTHETIC_ERROR_MESSAGE_MEMBER,
 };
 
 /// The wire error code of the one client error this service's model declares
@@ -39,9 +45,14 @@ const NOT_IMPLEMENTED_CODE: &str = "NotImplemented";
 const NOT_IMPLEMENTED_STATUS: u16 = 501;
 
 /// The three members an error body of this service carries: the error code the
-/// restJson1 envelope discriminates on, the refusal's text, and the id naming
-/// the response.
-pub(crate) const ERROR_BODY_MEMBERS: [&str; 3] = ["__type", "message", "requestId"];
+/// restJson1 envelope discriminates on, the refusal's text under the member the
+/// error shape declares for it, and the id naming the response.
+pub(crate) fn error_body_members(message_member: &str) -> BTreeSet<String> {
+    ["__type", message_member, "requestId"]
+        .iter()
+        .map(|member| (*member).to_string())
+        .collect()
+}
 
 /// `PercentEnabled`'s documented maximum ("Valid values: 0 - 100"), the limit
 /// the configure-logs refusal names.
@@ -58,6 +69,9 @@ struct Row {
     /// The sentence the body must carry, or `None` where the row only requires
     /// that one is there (the scaffold signal words itself).
     message: Option<String>,
+    /// The member the error shape that answers this row carries that sentence
+    /// in.
+    message_member: &'static str,
 }
 
 /// A channel request that is accepted, so a row can collide with it or read it
@@ -105,7 +119,7 @@ fn assert_envelope(row: &Row, reply: &Reply) -> String {
     );
 
     // The body carries exactly the envelope's three members: the text travels
-    // under `message`, and under no second key.
+    // under the member the error shape declares, and under no second key.
     let members: BTreeSet<String> = reply
         .body
         .as_object()
@@ -113,10 +127,7 @@ fn assert_envelope(row: &Row, reply: &Reply) -> String {
         .unwrap_or_default();
     assert_eq!(
         members,
-        ERROR_BODY_MEMBERS
-            .iter()
-            .map(|member| (*member).to_string())
-            .collect::<BTreeSet<String>>(),
+        error_body_members(row.message_member),
         "case {case:?}: expected the error body's members, got {:?}",
         reply.body
     );
@@ -144,7 +155,7 @@ fn assert_envelope(row: &Row, reply: &Reply) -> String {
 }
 
 #[tokio::test]
-async fn every_refusal_carries_its_text_under_message_and_names_its_request() {
+async fn every_refusal_carries_its_text_and_names_its_request() {
     let emulator = Emulator::new();
 
     // The resources the rows address: one channel that is held, one whose ARN
@@ -183,6 +194,7 @@ async fn every_refusal_carries_its_text_under_message_and_names_its_request() {
             status: 400,
             code: BAD_REQUEST_CODE,
             message: Some(CHANNEL_ALREADY_EXISTS_MESSAGE.to_string()),
+            message_member: MODELLED_ERROR_MESSAGE_MEMBER,
         },
         Row {
             case: "a create whose LINEAR channel names no filler slate",
@@ -197,6 +209,7 @@ async fn every_refusal_carries_its_text_under_message_and_names_its_request() {
             message: Some(
                 "FillerSlate is required for a channel using the LINEAR PlaybackMode".to_string(),
             ),
+            message_member: MODELLED_ERROR_MESSAGE_MEMBER,
         },
         Row {
             case: "a create whose time delay is one second past the published maximum",
@@ -216,6 +229,7 @@ async fn every_refusal_carries_its_text_under_message_and_names_its_request() {
                  {MAX_TIME_SHIFT_SECONDS} seconds: {}",
                 MAX_TIME_SHIFT_SECONDS + 1
             )),
+            message_member: MODELLED_ERROR_MESSAGE_MEMBER,
         },
         Row {
             case: "a read of a channel the account does not hold",
@@ -225,6 +239,7 @@ async fn every_refusal_carries_its_text_under_message_and_names_its_request() {
             status: NOT_FOUND_STATUS,
             code: NOT_FOUND_CODE,
             message: Some(CHANNEL_NOT_FOUND_MESSAGE.to_string()),
+            message_member: SYNTHETIC_ERROR_MESSAGE_MEMBER,
         },
         Row {
             case: "a start of a channel the account does not hold",
@@ -234,6 +249,7 @@ async fn every_refusal_carries_its_text_under_message_and_names_its_request() {
             status: NOT_FOUND_STATUS,
             code: NOT_FOUND_CODE,
             message: Some(CHANNEL_NOT_FOUND_MESSAGE.to_string()),
+            message_member: SYNTHETIC_ERROR_MESSAGE_MEMBER,
         },
         Row {
             case: "a configure-logs call above the documented maximum",
@@ -245,6 +261,7 @@ async fn every_refusal_carries_its_text_under_message_and_names_its_request() {
             message: Some(format!(
                 "PercentEnabled must not exceed {MAX_PERCENT_ENABLED}"
             )),
+            message_member: MODELLED_ERROR_MESSAGE_MEMBER,
         },
         Row {
             case: "a configure-logs call for a configuration the account does not hold",
@@ -256,6 +273,7 @@ async fn every_refusal_carries_its_text_under_message_and_names_its_request() {
             // The playback-configuration sentence carries the name the request
             // addressed.
             message: Some("PlaybackConfiguration never-created not found".to_string()),
+            message_member: SYNTHETIC_ERROR_MESSAGE_MEMBER,
         },
         Row {
             case: "a tag of an ARN whose channel was deleted",
@@ -265,6 +283,7 @@ async fn every_refusal_carries_its_text_under_message_and_names_its_request() {
             status: NOT_FOUND_STATUS,
             code: NOT_FOUND_CODE,
             message: Some(RESOURCE_NOT_FOUND_MESSAGE.to_string()),
+            message_member: SYNTHETIC_ERROR_MESSAGE_MEMBER,
         },
         Row {
             case: "a read of the tags of an ARN whose channel was deleted",
@@ -274,6 +293,7 @@ async fn every_refusal_carries_its_text_under_message_and_names_its_request() {
             status: NOT_FOUND_STATUS,
             code: NOT_FOUND_CODE,
             message: Some(RESOURCE_NOT_FOUND_MESSAGE.to_string()),
+            message_member: SYNTHETIC_ERROR_MESSAGE_MEMBER,
         },
         Row {
             case: "an operation this emulator has not implemented",
@@ -286,6 +306,7 @@ async fn every_refusal_carries_its_text_under_message_and_names_its_request() {
             // operation is still a stub; implementing `ListChannels` means
             // pointing it at another one rather than dropping it.
             message: None,
+            message_member: SYNTHETIC_ERROR_MESSAGE_MEMBER,
         },
     ];
 
@@ -412,5 +433,145 @@ async fn a_retried_refusal_repeats_its_text_under_a_fresh_request_id() {
                  before"
             );
         }
+    }
+}
+
+/// A tag key one character past AWS's documented tagging limit of 128
+/// characters, so the tagging write below is refused with this service's one
+/// modelled client error.
+fn an_oversized_tag_key() -> String {
+    "k".repeat(129)
+}
+
+/// A tagging write carrying that one oversized key.
+fn an_oversized_tag_write() -> Value {
+    let mut tags = serde_json::Map::new();
+    tags.insert(an_oversized_tag_key(), json!("v"));
+    json!({ "tags": tags })
+}
+
+#[tokio::test]
+async fn the_member_a_refusal_states_its_text_in_is_the_one_its_error_shape_declares() {
+    let emulator = Emulator::new();
+    assert_eq!(
+        emulator.create("held", &a_channel()).await.status,
+        200,
+        "the channel a collision needs must be created"
+    );
+    let tagged = emulator.create("tagged", &a_channel()).await;
+    assert_eq!(tagged.status, 200, "the channel to tag must be created");
+    let arn = tagged.string("/Arn");
+    assert_eq!(
+        emulator
+            .request("PUT", "/playbackConfiguration", Some(json!({ "Name": "pc" })))
+            .await
+            .status,
+        200,
+        "the configuration the configure-logs row addresses must be created"
+    );
+
+    // The rows span the operations whose refusal is each error shape: four
+    // routes that raise the modelled `BadRequestException` — a collision, a
+    // member the service's own rule rejects, a stored-size bound and a numeric
+    // bound, on three different resources — and two that answer a shape this
+    // service synthesises. The member the text travels in follows the SHAPE,
+    // not the operation.
+    let rows: Vec<Row> = vec![
+        Row {
+            case: "a channel create under a name the account already holds",
+            method: "POST",
+            uri: "/channel/held".to_string(),
+            body: Some(a_channel()),
+            status: 400,
+            code: BAD_REQUEST_CODE,
+            message: Some(CHANNEL_ALREADY_EXISTS_MESSAGE.to_string()),
+            message_member: MODELLED_ERROR_MESSAGE_MEMBER,
+        },
+        Row {
+            case: "a playback configuration whose name carries the path separator",
+            method: "PUT",
+            uri: "/playbackConfiguration".to_string(),
+            body: Some(json!({ "Name": "with/separator" })),
+            status: 400,
+            code: BAD_REQUEST_CODE,
+            message: Some(
+                "Name must be a non-empty identifier that contains no '/': with/separator"
+                    .to_string(),
+            ),
+            message_member: MODELLED_ERROR_MESSAGE_MEMBER,
+        },
+        Row {
+            case: "a tag write whose key is past the documented length",
+            method: "POST",
+            uri: format!("/tags/{}", encode(&arn)),
+            body: Some(an_oversized_tag_write()),
+            status: 400,
+            code: BAD_REQUEST_CODE,
+            message: Some(format!(
+                "a tag key is at most 128 characters: {}",
+                an_oversized_tag_key()
+            )),
+            message_member: MODELLED_ERROR_MESSAGE_MEMBER,
+        },
+        Row {
+            case: "a configure-logs call below the documented minimum",
+            method: "PUT",
+            uri: "/configureLogs/playbackConfiguration".to_string(),
+            body: Some(configure_logs_request("pc", -1)),
+            status: 400,
+            code: BAD_REQUEST_CODE,
+            message: Some("PercentEnabled must not be less than 0".to_string()),
+            message_member: MODELLED_ERROR_MESSAGE_MEMBER,
+        },
+        Row {
+            case: "a read of a channel the account does not hold",
+            method: "GET",
+            uri: "/channel/never-created".to_string(),
+            body: None,
+            status: NOT_FOUND_STATUS,
+            code: NOT_FOUND_CODE,
+            message: Some(CHANNEL_NOT_FOUND_MESSAGE.to_string()),
+            message_member: SYNTHETIC_ERROR_MESSAGE_MEMBER,
+        },
+        Row {
+            case: "an operation this emulator has not implemented",
+            method: "GET",
+            uri: "/channels".to_string(),
+            body: None,
+            status: NOT_IMPLEMENTED_STATUS,
+            code: NOT_IMPLEMENTED_CODE,
+            message: None,
+            message_member: SYNTHETIC_ERROR_MESSAGE_MEMBER,
+        },
+    ];
+
+    for row in &rows {
+        let reply = emulator
+            .request(row.method, &row.uri, row.body.clone())
+            .await;
+        let case = row.case;
+        assert_envelope(row, &reply);
+        // The sentence is under the member its shape declares, and under no
+        // other spelling of it.
+        let other = if row.message_member == MODELLED_ERROR_MESSAGE_MEMBER {
+            SYNTHETIC_ERROR_MESSAGE_MEMBER
+        } else {
+            MODELLED_ERROR_MESSAGE_MEMBER
+        };
+        assert!(
+            reply
+                .get(&format!("/{}", row.message_member))
+                .as_str()
+                .is_some_and(|text| !text.is_empty()),
+            "case {case:?}: expected the refusal's text under {:?}, got {:?}",
+            row.message_member,
+            reply.body
+        );
+        assert_eq!(
+            reply.get(&format!("/{other}")),
+            &Value::Null,
+            "case {case:?}: expected no second spelling of the text under {other:?}, got {:?}",
+            reply.body
+        );
     }
 }

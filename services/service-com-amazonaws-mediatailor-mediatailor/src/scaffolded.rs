@@ -45,17 +45,22 @@ use aws_smithy_schema::serde::{SerdeError, SerializableStruct, ShapeSerializer};
 use aws_smithy_schema::{Schema, ShapeId, ShapeType};
 use smithy_server_runtime::OperationError;
 
-/// The wire key every error body of this service carries its explanatory text
-/// under.
+/// The wire key the error shapes this service SYNTHESISES carry their
+/// explanatory text under.
 ///
 /// The JSON codecs key a struct member by its `@jsonName` or else by its member
-/// name, and this service's one modelled client error spells that member
-/// `Message` with no `@jsonName`, so a model-derived error shape would put
-/// `Message` on the wire while every synthetic shape below put `message` — two
-/// keys for one thing. This service answers one: the key an SDK surfaces as the
-/// exception's user-facing text, so a caller reading "why was this refused"
-/// finds the sentence whichever error it got. It is written once, here, so no
-/// error shape of this service can drift from the others.
+/// name, so the key is a property of the SHAPE. The shapes below are in no
+/// model — this service's model declares one error only — so this is where their
+/// member is named, once, and it is the lowercase `message` the framework's own
+/// pre-dispatch renderer writes for a request it refused before any handler ran,
+/// so a caller reading "why was this refused" finds the sentence under the same
+/// key for every failure this crate words itself.
+///
+/// It is NOT the key of the one error the model DOES declare: that shape spells
+/// its member `Message` and carries no `@jsonName`, so the generated codec puts
+/// it on the wire under `Message`, and a service crate cannot rename a member
+/// the model names without diverging from the contract a client is generated
+/// from.
 ///
 /// The other member of this service's error envelope, the `requestId` naming the
 /// response, belongs to the RESPONSE rather than to any of these shapes: it is

@@ -58,8 +58,6 @@ pub struct PutPlaybackConfigurationOutput {
     pub insertion_mode: String,
     pub live_pre_roll_configuration: Option<LivePreRollConfiguration>,
     pub log_configuration: Option<LogConfiguration>,
-    pub live_ad_buffet_mode: Option<String>,
-    pub vod_ad_buffet_mode: Option<String>,
     pub manifest_processing_rules: Option<ManifestProcessingRules>,
     pub name: Option<String>,
     pub personalization_threshold_seconds: Option<i32>,

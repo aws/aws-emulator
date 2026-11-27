@@ -40,7 +40,7 @@ use serde_json::{json, Value};
 use crate::channel_lifecycle::{
     encode, table, Emulator, Reply, CHANNEL_NOT_FOUND_MESSAGE, NOT_FOUND_CODE, NOT_FOUND_STATUS,
 };
-use crate::error_envelope::ERROR_BODY_MEMBERS;
+use crate::error_envelope::error_body_members;
 
 /// The two calls under test. `ChannelState`'s modelled values are `RUNNING |
 /// STOPPED` (`shared_types::CHANNEL_STATE_VALUES`), and the operations' own
@@ -373,7 +373,7 @@ fn assert_channel_miss(case: &str, which: Call, name: &str, reply: &Reply) -> St
     );
 
     // The body carries exactly the envelope's members, so the text travels
-    // under `message` and under no second key.
+    // under the member the not-found shape declares and under no second key.
     let members: BTreeSet<String> = reply
         .body
         .as_object()
@@ -381,10 +381,7 @@ fn assert_channel_miss(case: &str, which: Call, name: &str, reply: &Reply) -> St
         .unwrap_or_default();
     assert_eq!(
         members,
-        ERROR_BODY_MEMBERS
-            .iter()
-            .map(|member| (*member).to_string())
-            .collect::<BTreeSet<String>>(),
+        error_body_members(crate::channel_lifecycle::SYNTHETIC_ERROR_MESSAGE_MEMBER),
         "case {case:?}: expected {which:?} on {name:?} to carry the error body's members, got \
          {:?}",
         reply.body

@@ -19,8 +19,12 @@
 //!   in either order, no strategy at all, and the two interaction-log settings.
 //! * The members MediaTailor reports for every configuration are always
 //!   present: the tag map under the wire key `tags`, as an empty object when
-//!   the configuration carries no tags, and the two ad-buffet modes. The table
-//!   spans tag counts from none to several.
+//!   the configuration carries no tags. And a read reports NOTHING ELSE than
+//!   the members its output shape declares, the same set through all three
+//!   projections of one configuration. The table spans tag counts from none to
+//!   several and configurations that carry other members or none.
+
+use std::collections::BTreeSet;
 
 use serde_json::{json, Value};
 
@@ -40,9 +44,44 @@ const PERCENT_BOUNDS: [i64; 2] = [0, 100];
 /// chooses, so one stored log configuration cannot grow without bound.
 const MAX_EVENT_TYPES_PER_LIST: usize = 100;
 
-/// The ad-buffet mode a configuration that never set one reports, for live and
-/// for VOD alike.
-const AD_BUFFET_MODE: &str = "INSERT_ALL";
+/// The members a read of a playback configuration may report: every member
+/// `PutPlaybackConfigurationResponse`, `GetPlaybackConfigurationResponse` and
+/// the `PlaybackConfiguration` list item declare — the same set on all three —
+/// under the key the codec puts it on the wire under, which is `Tags`'
+/// `@jsonName` `tags` and each other member's own name
+/// (`smithy_query(query="shape",shape="PutPlaybackConfigurationResponse,\
+/// GetPlaybackConfigurationResponse,PlaybackConfiguration")`).
+const REPORTED_MEMBERS: [&str; 29] = [
+    "AdConditioningConfiguration",
+    "AdDecisionServerConfiguration",
+    "AdDecisionServerUrl",
+    "AdsPersonalizationConcurrency",
+    "AdsPersonalizationTimeouts",
+    "AvailSuppression",
+    "BeaconingConfiguration",
+    "Bumper",
+    "CdnConfiguration",
+    "ConfigurationAliases",
+    "DashConfiguration",
+    "DualStackPlaybackEndpointPrefix",
+    "DualStackSessionInitializationEndpointPrefix",
+    "FunctionMapping",
+    "HlsConfiguration",
+    "InsertionMode",
+    "LivePreRollConfiguration",
+    "LogConfiguration",
+    "ManifestProcessingRules",
+    "Name",
+    "PersonalizationThresholdSeconds",
+    "PlaybackConfigurationArn",
+    "PlaybackEndpointPrefix",
+    "SessionInitializationEndpointPrefix",
+    "SlateAdUrl",
+    "TranscodeProfileName",
+    "VideoContentSourceUrl",
+    "YieldOptimizationConfiguration",
+    "tags",
+];
 
 /// `PUT /configureLogs/playbackConfiguration` for one configuration.
 pub(crate) async fn configure_logs(emulator: &Emulator, name: &str, settings: &Value) -> Reply {
@@ -403,28 +442,51 @@ async fn a_value_a_request_names_twice_round_trips_as_sent() {
     }
 }
 
+/// The keys `body` carries, as a sorted set.
+fn reported_keys(body: &Value) -> BTreeSet<String> {
+    body.as_object()
+        .map(|object| object.keys().cloned().collect())
+        .unwrap_or_default()
+}
+
 #[tokio::test]
-async fn every_read_reports_the_tag_map_and_both_ad_buffet_modes() {
+async fn every_read_reports_the_tag_map_and_only_members_the_model_declares() {
     let emulator = Emulator::new();
 
     // The rows differ in how many tags the configuration carries, from none to
-    // several: the `tags` key is present either way.
-    for (case, tags) in [
-        ("no Tags member at all", None),
-        ("an empty tag map", Some(json!({}))),
-        ("one tag", Some(json!({ "Env": "dev" }))),
+    // several, and in whether it carries any other member at all: the `tags`
+    // key is present either way, and no row's answer carries a key the output
+    // shape does not declare.
+    for (case, tags, extra) in [
+        ("no Tags member at all", None, None),
+        ("an empty tag map", Some(json!({})), None),
+        ("one tag", Some(json!({ "Env": "dev" })), None),
         (
             "three tags",
             Some(json!({ "Env": "prod", "Team": "video", "Cost-Center": "1234" })),
+            None,
+        ),
+        (
+            "one tag and several other members",
+            Some(json!({ "Env": "staging" })),
+            Some(json!({
+                "AdDecisionServerUrl": "https://ads.example.com/vast",
+                "VideoContentSourceUrl": "https://origin.example.com/out/v1",
+                "SlateAdUrl": "https://origin.example.com/slate.m3u8",
+                "PersonalizationThresholdSeconds": 3,
+            })),
         ),
     ] {
         let name = format!("tagged-{}", case.replace([' ', ','], "-"));
         let mut request = json!({ "Name": name });
+        let members = request.as_object_mut().expect("an object");
         if let Some(tags) = tags.clone() {
-            request
-                .as_object_mut()
-                .expect("an object")
-                .insert("tags".to_string(), tags);
+            members.insert("tags".to_string(), tags);
+        }
+        if let Some(extra) = extra {
+            for (member, value) in extra.as_object().expect("an object") {
+                members.insert(member.clone(), value.clone());
+            }
         }
         let created = emulator.put(&request).await;
         assert_eq!(
@@ -436,25 +498,43 @@ async fn every_read_reports_the_tag_map_and_both_ad_buffet_modes() {
         let expected_tags = tags.unwrap_or_else(|| json!({}));
         let got = emulator.get(&name).await;
         let item = listed_item(&emulator, &name).await;
-        for (source, body) in [
+        let readings = [
             ("the write", &created.body),
             ("the read", &got.body),
             ("the list item", &item),
-        ] {
+        ];
+        for (source, body) in readings {
             assert_eq!(
                 body.get("tags"),
                 Some(&expected_tags),
                 "case {case:?}: expected {source} to report the tag map {expected_tags:?}, got {:?}",
                 body.get("tags")
             );
-            for member in ["LiveAdBuffetMode", "VodAdBuffetMode"] {
-                assert_eq!(
-                    body.get(member),
-                    Some(&json!(AD_BUFFET_MODE)),
-                    "case {case:?}: expected {source} to report {member}, got {:?}",
-                    body.get(member)
-                );
-            }
+            // A key the output shape does not declare is a member no client
+            // generated from the model can read, so no read reports one.
+            let declared: BTreeSet<String> =
+                REPORTED_MEMBERS.iter().map(|m| (*m).to_string()).collect();
+            let undeclared: BTreeSet<String> = reported_keys(body)
+                .difference(&declared)
+                .cloned()
+                .collect();
+            assert!(
+                undeclared.is_empty(),
+                "case {case:?}: expected {source} to report only members the output shape \
+                 declares, got the undeclared {undeclared:?} in {body:?}"
+            );
+        }
+        // One stored configuration viewed through three shapes that declare the
+        // same members: the three readings report the same key set.
+        let keys = reported_keys(readings[0].1);
+        for (source, body) in &readings[1..] {
+            assert_eq!(
+                reported_keys(body),
+                keys,
+                "case {case:?}: expected {source} to report the same members as the write \
+                 {keys:?}, got {:?}",
+                reported_keys(body)
+            );
         }
     }
 

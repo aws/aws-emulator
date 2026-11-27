@@ -41,7 +41,7 @@ use crate::channel_lifecycle::{
     encode, Emulator, Reply, CHANNEL_NOT_FOUND_MESSAGE, NOT_FOUND_CODE, NOT_FOUND_STATUS,
 };
 use crate::channel_response_projection::configure_logs;
-use crate::error_envelope::ERROR_BODY_MEMBERS;
+use crate::error_envelope::error_body_members;
 
 /// `LogType`'s modelled values, as the generated `ops::types::LOG_TYPE_VALUES`
 /// enumerates them (`smithy_query(query="shape",shape="LogType")`), so the row
@@ -170,8 +170,8 @@ fn assert_channel_miss(case: &str, call: &str, reply: &Reply) -> String {
     );
 
     // The body carries the envelope's members and no other key — in particular
-    // the text travels under the lowercase `message` AWS words it under, and
-    // under no second spelling.
+    // the text travels under the member the not-found shape this service
+    // synthesises declares, and under no second spelling.
     let members: BTreeSet<String> = reply
         .body
         .as_object()
@@ -179,10 +179,7 @@ fn assert_channel_miss(case: &str, call: &str, reply: &Reply) -> String {
         .unwrap_or_default();
     assert_eq!(
         members,
-        ERROR_BODY_MEMBERS
-            .iter()
-            .map(|member| (*member).to_string())
-            .collect::<BTreeSet<String>>(),
+        error_body_members(crate::channel_lifecycle::SYNTHETIC_ERROR_MESSAGE_MEMBER),
         "case {case:?}: expected {call} to answer the error body's members, got {:?}",
         reply.body
     );

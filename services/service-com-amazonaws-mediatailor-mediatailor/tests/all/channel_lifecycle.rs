@@ -63,6 +63,18 @@ pub(crate) const CHANNEL_NOT_FOUND_MESSAGE: &str = "The specified channel doesn'
 /// with — fixed text too, and distinct from the channel sentence.
 pub(crate) const RESOURCE_NOT_FOUND_MESSAGE: &str = "Resource was not found";
 
+/// The member this service's one MODELLED error carries its text in:
+/// `BadRequestException$Message`, as the shape declares it in this crate's
+/// `smithy-model/` document (no `@jsonName`, so the restJson1 codec keys it by
+/// that member name).
+pub(crate) const MODELLED_ERROR_MESSAGE_MEMBER: &str = "Message";
+
+/// The member the error shapes this service SYNTHESISES carry their text in —
+/// the not-found envelope and the scaffold's not-implemented signal, neither of
+/// which the model declares — and the member the framework's own pre-handler
+/// refusal writes.
+pub(crate) const SYNTHETIC_ERROR_MESSAGE_MEMBER: &str = "message";
+
 /// One dispatched request's answer.
 pub(crate) struct Reply {
     pub(crate) status: u16,
@@ -81,12 +93,27 @@ impl Reply {
         self.get(pointer).as_str().unwrap_or_default().to_string()
     }
 
-    /// The refusal's text. Every error body of this service — the modelled
-    /// `BadRequestException` and the service's own not-found and
-    /// not-implemented envelopes alike — carries it under one wire key,
-    /// AWS's lowercase `message`.
+    /// The refusal's text, read under whichever key the error shape that
+    /// answered spells it.
+    ///
+    /// The restJson1 codec keys a member by its `@jsonName` or else by the
+    /// member name the model declares, so the key is a property of the error
+    /// SHAPE: this service's one modelled error spells its member `Message` and
+    /// declares no `@jsonName` ([`MODELLED_ERROR_MESSAGE_MEMBER`]), while the
+    /// shapes this service synthesises for the failures its model declares none
+    /// for — its not-found envelope, the scaffold's not-implemented signal — and
+    /// the framework's own pre-handler refusal spell it
+    /// [`SYNTHETIC_ERROR_MESSAGE_MEMBER`]. An error body carries exactly one of
+    /// the two (the `error_envelope` suite pins which, per shape), so reading
+    /// the one that is there reads the refusal's text whichever refused.
     pub(crate) fn message(&self) -> String {
-        self.string("/message")
+        match self
+            .get(&format!("/{MODELLED_ERROR_MESSAGE_MEMBER}"))
+            .as_str()
+        {
+            Some(text) => text.to_string(),
+            None => self.string(&format!("/{SYNTHETIC_ERROR_MESSAGE_MEMBER}")),
+        }
     }
 
     /// The `requestId` the error body names its response by, or the empty

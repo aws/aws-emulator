@@ -23,6 +23,7 @@ pub struct PutFunctionInput {
     pub concurrent_executor_configuration: Option<ConcurrentExecutorConfiguration>,
     pub sequential_executor_configuration: Option<SequentialExecutorConfiguration>,
     pub vast_request_configuration: Option<VastRequestConfiguration>,
+    pub hls_tag_processor_configuration: Option<HlsTagProcessorConfiguration>,
     pub tags: Option<std::collections::HashMap<String, String>>,
 }
 
@@ -38,6 +39,7 @@ pub struct PutFunctionOutput {
     pub concurrent_executor_configuration: Option<ConcurrentExecutorConfiguration>,
     pub sequential_executor_configuration: Option<SequentialExecutorConfiguration>,
     pub vast_request_configuration: Option<VastRequestConfiguration>,
+    pub hls_tag_processor_configuration: Option<HlsTagProcessorConfiguration>,
     pub tags: Option<std::collections::HashMap<String, String>>,
     pub arn: Option<String>,
 }

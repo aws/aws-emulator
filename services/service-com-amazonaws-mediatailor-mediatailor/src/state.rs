@@ -155,22 +155,6 @@ pub const MAX_AD_DECISION_SERVER_URL_LENGTH: usize = 25_000;
 /// characters."
 pub const MAX_VIDEO_CONTENT_SOURCE_URL_LENGTH: usize = 512;
 
-/// The ad-buffet mode a playback configuration reports for live and for VOD
-/// streams.
-///
-/// `LiveAdBuffetMode` and `VodAdBuffetMode` are projected on every read of a
-/// playback configuration, and no operation this service models carries them in
-/// a request, so every configuration this emulator holds reports the service's
-/// own default for both and there is no per-configuration value to persist.
-///
-/// The value is the one the service reports for a configuration that never set
-/// a mode. It lives here rather than in the model because the model this crate
-/// is generated from declares no such member and so no default for it either:
-/// should a later revision of that model carry the members, their declared
-/// default replaces this constant, and an operation that lets a request choose
-/// a mode makes it a field of [`PlaybackConfigurationRecord`] instead.
-pub const DEFAULT_AD_BUFFET_MODE: &str = "INSERT_ALL";
-
 /// The number of event types one log-configuration list names.
 ///
 /// `EnabledLoggingStrategies`, the interaction-log event-type lists and a
@@ -494,12 +478,9 @@ macro_rules! impl_playback_configuration_view {
                     dual_stack_session_initialization_endpoint_prefix: Some(
                         record.dual_stack_session_initialization_endpoint_prefix.clone(),
                     ),
-                    // Always present: the tag map (empty for an untagged
-                    // configuration) and the two ad-buffet modes, which every
-                    // read of a playback configuration reports.
+                    // Always present: the tag map, empty for an untagged
+                    // configuration.
                     tags: Some(tags),
-                    live_ad_buffet_mode: Some(DEFAULT_AD_BUFFET_MODE.to_string()),
-                    vod_ad_buffet_mode: Some(DEFAULT_AD_BUFFET_MODE.to_string()),
                 }
             }
         })+

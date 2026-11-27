@@ -100,10 +100,22 @@ impl Reply {
         self.body.pointer(pointer).unwrap_or(&Value::Null)
     }
 
-    /// The refusal's text, under the one wire key every error body of this
-    /// service carries it under.
+    /// The refusal's text, read under whichever member the error shape that
+    /// answered declares for it.
+    ///
+    /// The restJson1 codec keys a member by its `@jsonName` or else by the
+    /// member name the model declares, so the member is a property of the error
+    /// SHAPE: this service's one modelled error spells it `Message` and carries
+    /// no `@jsonName`, while the shapes the service synthesises for the
+    /// failures its model declares none for — its not-found envelope, the
+    /// scaffold's not-implemented signal — spell it `message`. An error body
+    /// carries exactly one of the two, so reading the one that is there reads
+    /// the refusal's text whichever refused.
     fn message(&self) -> String {
-        self.get("/message").as_str().unwrap_or_default().to_string()
+        match self.get("/Message").as_str() {
+            Some(text) => text.to_string(),
+            None => self.get("/message").as_str().unwrap_or_default().to_string(),
+        }
     }
 
     /// The `AlertCode` of each reported alert, in the order they were reported.
