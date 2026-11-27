@@ -31,7 +31,10 @@
 //!   instance surface, whose options carry an instance type, the Aurora and RDS database
 //!   surface, whose catalog row records the database's own configuration, the Amazon EBS volume
 //!   surface, whose recommendation carries the volume's own configuration, the utilization
-//!   observed on it and the configuration its option would move it to, and the Amazon ECS
+//!   observed on it and the configuration its option would move it to, the AWS Lambda function
+//!   surface, whose recommendation carries the version analysed, the function's own
+//!   configuration, the utilization observed on it and the memory size its option would move
+//!   it to, and the Amazon ECS
 //!   service surface, whose recommendation is computed from the Amazon ECS inventory and the
 //!   utilization published for it rather than recorded in that catalog at all — the row is built
 //!   from the observation the reader reports the recommendation from rather than from that
@@ -72,17 +75,19 @@ use super::{
     external_metric_status, look_back_period_in_days, parse_resource_arn,
     percentage_of, round_hundredths, stated_architectures, AnalysedResource, AnalyzedAutoScalingGroup,
     ComAmazonawsComputeoptimizerComputeoptimizerserviceState, EffectivePreferences, ExportJob,
-    GroupConfiguration, IdleResourceAnalysis, InstanceConfiguration, ObservedInstance,
-    ObservedLicensedInstance, ObservedVolume, CURRENCY_USD, IDLE_FALSE, IDLE_TRUE,
-    RESOURCE_TYPE_AUTO_SCALING_GROUP, RESOURCE_TYPE_EBS_VOLUME, RESOURCE_TYPE_EC2_INSTANCE,
+    GroupConfiguration, IdleResourceAnalysis, InstanceConfiguration, ObservedFunction,
+    ObservedInstance, ObservedLicensedInstance, ObservedVolume, CURRENCY_USD, IDLE_FALSE,
+    IDLE_TRUE, LAMBDA_FINDING_UNAVAILABLE, RESOURCE_TYPE_AUTO_SCALING_GROUP,
+    RESOURCE_TYPE_EBS_VOLUME, RESOURCE_TYPE_EC2_INSTANCE,
     RESOURCE_TYPE_ECS_SERVICE, RESOURCE_TYPE_IDLE, RESOURCE_TYPE_LAMBDA_FUNCTION,
     RESOURCE_TYPE_LICENSE, RESOURCE_TYPE_RDS_DB_INSTANCE, SAVINGS_ESTIMATION_SOURCE,
 };
 use crate::ops::types::{
     DBStorageConfiguration, EBSUtilizationMetric, ECSServiceRecommendation,
-    MemorySizeConfiguration, RDSDBRecommendation, RDSDBUtilizationMetric, SavingsOpportunity, Tag,
-    VolumeConfiguration, VolumeRecommendation, EXPORTABLE_AUTO_SCALING_GROUP_FIELD_VALUES,
-    EXPORTABLE_IDLE_FIELD_VALUES, EXPORTABLE_INSTANCE_FIELD_VALUES,
+    LambdaFunctionRecommendation, MemorySizeConfiguration, RDSDBRecommendation,
+    RDSDBUtilizationMetric, SavingsOpportunity, Tag, VolumeConfiguration, VolumeRecommendation,
+    EXPORTABLE_AUTO_SCALING_GROUP_FIELD_VALUES, EXPORTABLE_IDLE_FIELD_VALUES,
+    EXPORTABLE_INSTANCE_FIELD_VALUES, EXPORTABLE_LAMBDA_FUNCTION_FIELD_VALUES,
     EXPORTABLE_R_D_S_D_B_FIELD_VALUES, EXPORTABLE_VOLUME_FIELD_VALUES,
     EXPORTABLE_E_C_S_SERVICE_FIELD_VALUES,
 };
@@ -224,11 +229,15 @@ pub struct ExportPlan {
     /// which no volume row belongs to.
     pub analysed_volumes: Vec<ObservedVolume>,
     /// The Lambda function versions the account held an analysis for when the export was
-    /// created ([`super::analysed_functions`]): the versions of its own AWS Lambda inventory.
-    /// They are resolved with the plan, for the same reason the databases are, so an exported
-    /// file holds exactly the functions `GetLambdaFunctionRecommendations` reported at that
-    /// moment. Empty for every other resource type's export, which no function row belongs to.
-    pub analysed_functions: Vec<AnalysedResource>,
+    /// created ([`super::analysed_functions`]): the versions of its own AWS Lambda inventory,
+    /// each with the memory it is configured with and the observations a recommendation for it
+    /// is computed from. They are resolved with the plan, for the same reason the databases
+    /// are, so an exported file holds exactly the functions
+    /// `GetLambdaFunctionRecommendations` reported at that moment. The OBSERVATION is held
+    /// rather than the findings-catalog projection of it, because a function's recommendation
+    /// carries members that catalog row does not ([`ObservedFunction::to_recommendation`]).
+    /// Empty for every other resource type's export, which no function row belongs to.
+    pub analysed_functions: Vec<ObservedFunction>,
 }
 
 /// The two objects an export job has computed but not yet written: the export file and its
@@ -645,15 +654,12 @@ pub fn create_export_job<Eng: Send + Sync + 'static, F: ExportFilter>(
             Vec::new()
         },
         // The Lambda function versions the account holds an analysis for, resolved through the
-        // ONE rule every Lambda function surface of this service reads them by, under the
-        // look-back period in force for them — so an export and a read of the same moment
-        // cannot differ on which functions the account has or on what each one's analysis
-        // found.
+        // ONE rule every Lambda function surface of this service reads them by — so an export
+        // and a read of the same moment cannot differ on which functions the account has or on
+        // what each one's analysis found. Each function's recommendation is derived from the
+        // observation when the rows are built ([`ObservedFunction::to_recommendation`]), under
+        // the look-back period in force, exactly as the reader derives it.
         analysed_functions: if request.resource_type == RESOURCE_TYPE_LAMBDA_FUNCTION {
-            let look_back_period = guard.effective_look_back_period(
-                RESOURCE_TYPE_LAMBDA_FUNCTION,
-                ::engine::emulator_account_id(),
-            );
             super::analysed_functions(
                 &**engine,
                 &guard,
@@ -661,9 +667,6 @@ pub fn create_export_job<Eng: Send + Sync + 'static, F: ExportFilter>(
                 ::engine::emulator_account_id(),
                 now,
             )
-            .iter()
-            .filter_map(|function| function.to_analysed_resource(&look_back_period))
-            .collect()
         } else {
             Vec::new()
         },
@@ -1100,13 +1103,15 @@ impl ComAmazonawsComputeoptimizerComputeoptimizerserviceState {
             RESOURCE_TYPE_EBS_VOLUME => {
                 self.volume_export_rows(&plan.analysed_volumes, &plan.region, last_refresh)
             }
-            // The account's analysed function versions, which the plan resolved: a function
-            // row carries the columns the findings-catalog row records, exactly as a row of a
-            // resource type the catalog does hold rows for does.
-            RESOURCE_TYPE_LAMBDA_FUNCTION => self.rows_of_analysed_resources(
-                &plan.analysed_functions.iter().collect::<Vec<_>>(),
-                RESOURCE_TYPE_LAMBDA_FUNCTION,
+            // The account's analysed function versions, which the plan resolved: a function's
+            // recommendation carries the version analysed, the memory and timeout it is
+            // configured with, the utilization observed on it and the memory size its option
+            // would move it to — none of which is a column of the findings-catalog row — so the
+            // rows are built from that recommendation.
+            RESOURCE_TYPE_LAMBDA_FUNCTION => self.lambda_function_export_rows(
+                &plan.analysed_functions,
                 &plan.region,
+                &plan.filters,
                 last_refresh,
             ),
             resource_type => {
@@ -1255,34 +1260,23 @@ impl ComAmazonawsComputeoptimizerComputeoptimizerserviceState {
         by_type
             .get(resource_type)
             .map(|resources| {
-                self.rows_of_analysed_resources(resources, resource_type, region, last_refresh)
+                resources
+                    .iter()
+                    .map(|resource| {
+                        let arn = resource.arn_in(region);
+                        let preferences =
+                            self.effective_preferences_for(&arn, resource_type, account_id);
+                        analysed_resource_row(
+                            resource,
+                            resource_type,
+                            &arn,
+                            &preferences,
+                            last_refresh,
+                        )
+                    })
+                    .collect()
             })
             .unwrap_or_default()
-    }
-
-    /// The export rows of a given set of analysed resources of one resource type: one row per
-    /// resource, carrying the columns its catalog row records ([`analysed_resource_row`]).
-    ///
-    /// The rows a surface hands in are its own selection — the findings catalog's
-    /// ([`Self::analysed_resource_export_rows`]) or the account's own inventory, for a resource
-    /// type whose analysis is computed over another service's store — so one projection serves
-    /// both and no two of them can state a resource's columns differently.
-    fn rows_of_analysed_resources(
-        &self,
-        resources: &[&AnalysedResource],
-        resource_type: &str,
-        region: &str,
-        last_refresh: Option<f64>,
-    ) -> Vec<ExportRow> {
-        let account_id = ::engine::emulator_account_id();
-        resources
-            .iter()
-            .map(|resource| {
-                let arn = resource.arn_in(region);
-                let preferences = self.effective_preferences_for(&arn, resource_type, account_id);
-                analysed_resource_row(resource, resource_type, &arn, &preferences, last_refresh)
-            })
-            .collect()
     }
 
     /// The export rows of the Amazon Aurora and RDS database analysis: one per analysed
@@ -1362,6 +1356,70 @@ impl ComAmazonawsComputeoptimizerComputeoptimizerserviceState {
                     last_refresh_timestamp,
                 );
                 volume_row(&recommendation, last_refresh)
+            })
+            .collect()
+    }
+
+    /// The export rows of the AWS Lambda function analysis: one per analysed function version,
+    /// carrying the members `GetLambdaFunctionRecommendations` reports for it
+    /// ([`lambda_function_row`]).
+    ///
+    /// A function's recommendation carries the version analysed, the memory it is configured
+    /// with, how often it ran, the duration and memory observed on it and the memory size its
+    /// option would move it to with the durations that option projects — none of which is a
+    /// column of the findings-catalog row every other findings reader shares, so this surface
+    /// builds its rows from the recommendation itself rather than from that row.
+    ///
+    /// `functions` are the observed function versions the plan resolved
+    /// ([`ExportPlan::analysed_functions`]), which is the SAME selection
+    /// `GetLambdaFunctionRecommendations` reads, and each recommendation is derived under the
+    /// look-back period in force for the account's functions — the one that reader resolves —
+    /// so a file and a read of that moment hold the same functions with the same analysis
+    /// behind every cell.
+    ///
+    /// "Functions with a finding of unavailable are not returned unless you specify the filter
+    /// parameter with a value of `Unavailable`": a function the analysis reached no finding for
+    /// is withheld from the file by the very rule the reader withholds it by
+    /// ([`super::lambda_filters_name_unavailable`]), so an export carrying that filter holds
+    /// the row the reader answers it with, and one carrying any other filter holds no row for a
+    /// recommendation the reader does not report.
+    fn lambda_function_export_rows(
+        &self,
+        functions: &[ObservedFunction],
+        region: &str,
+        filters: &[(String, Vec<String>)],
+        last_refresh: Option<f64>,
+    ) -> Vec<ExportRow> {
+        let account_id = ::engine::emulator_account_id();
+        let look_back_period =
+            self.effective_look_back_period(RESOURCE_TYPE_LAMBDA_FUNCTION, account_id);
+        let last_refresh_timestamp = last_refresh.map(::aws_smithy_types::DateTime::from_secs_f64);
+        let include_unavailable = super::lambda_filters_name_unavailable(
+            filters
+                .iter()
+                .map(|(name, values)| (name.as_str(), values.as_slice())),
+        );
+        functions
+            .iter()
+            .filter_map(|function| {
+                // The savings members net of discounts are in the file exactly where the reader
+                // reports them: only once the account activated the preference that activates
+                // them, resolved the way the reader resolves it.
+                let after_discounts = self.reports_savings_after_discounts(
+                    &function.function_arn(region),
+                    RESOURCE_TYPE_LAMBDA_FUNCTION,
+                    account_id,
+                );
+                let recommendation = function.to_recommendation(
+                    region,
+                    &look_back_period,
+                    after_discounts,
+                    last_refresh_timestamp,
+                );
+                let unavailable =
+                    recommendation.finding.as_deref() == Some(LAMBDA_FINDING_UNAVAILABLE);
+                (include_unavailable || !unavailable)
+                    .then(|| lambda_function_row(function, &recommendation, last_refresh))
             })
             .collect()
     }
@@ -2431,6 +2489,189 @@ fn put_modelled_tags(row: &mut ExportRow, tags: Option<&[Tag]>) {
         .collect();
     put_list(row, "Tags", &pairs);
 }
+
+/// One AWS Lambda function recommendation as an export row: the value of every
+/// `ExportableLambdaFunctionField` the recommendation carries, taken from the member that field
+/// names.
+///
+/// `recommendation` is the one `GetLambdaFunctionRecommendations` reports for the same observed
+/// function version, so an exported row and that reader's response cannot disagree about any
+/// column — including the look-back period in force, which decides the finding, the invocations
+/// counted, the utilization reported and the memory size the option names.
+///
+/// The TIMEOUT and the four COST columns name no member of a `LambdaFunctionRecommendation`:
+/// the recommendation reports what adopting its option saves rather than what either
+/// configuration costs, and carries the memory a version is configured with but not the time
+/// one of its invocations may run. So they are taken from the observation the recommendation
+/// itself was derived from ([`ObservedFunction`]) — the configured timeout, what the analysed
+/// period's invocations cost at the memory in force, the mean cost of one of its days, and what
+/// the same invocations would cost at the recommended memory size at the shortest and the
+/// longest invocation observed, under the one price table the savings themselves are computed
+/// from.
+fn lambda_function_row(
+    function: &ObservedFunction,
+    recommendation: &LambdaFunctionRecommendation,
+    last_refresh: Option<f64>,
+) -> ExportRow {
+    let text = |member: &Option<String>| member.clone().unwrap_or_default();
+    let mut row = ExportRow::new();
+    put(&mut row, ACCOUNT_ID_COLUMN, text(&recommendation.account_id));
+    put(
+        &mut row,
+        arn_field_of(RESOURCE_TYPE_LAMBDA_FUNCTION),
+        text(&recommendation.function_arn),
+    );
+    put(
+        &mut row,
+        "FunctionVersion",
+        text(&recommendation.function_version),
+    );
+    put(&mut row, "Finding", text(&recommendation.finding));
+    put_list(
+        &mut row,
+        "FindingReasonCodes",
+        recommendation
+            .finding_reason_codes
+            .as_deref()
+            .unwrap_or_default(),
+    );
+    put(
+        &mut row,
+        "CurrentPerformanceRisk",
+        text(&recommendation.current_performance_risk),
+    );
+    put(
+        &mut row,
+        "NumberOfInvocations",
+        recommendation.number_of_invocations.to_string(),
+    );
+    // The window every figure below was derived over: the one the recommendation itself
+    // reports, so the file's cost columns are of the period the reader's own members are of.
+    let look_back_days = recommendation.lookback_period_in_days;
+    put_number(&mut row, "LookbackPeriodInDays", look_back_days);
+    put(
+        &mut row,
+        "CurrentConfigurationMemorySize",
+        recommendation.current_memory_size.to_string(),
+    );
+    put(
+        &mut row,
+        "CurrentConfigurationTimeout",
+        function.configured_timeout_seconds.to_string(),
+    );
+    for metric in recommendation.utilization_metrics.iter().flatten() {
+        let (Some(name), Some(statistic)) = (metric.name.as_deref(), metric.statistic.as_deref())
+        else {
+            continue;
+        };
+        put_number(
+            &mut row,
+            &utilization_field(
+                EXPORTABLE_LAMBDA_FUNCTION_FIELD_VALUES,
+                "UtilizationMetrics",
+                name,
+                statistic,
+            ),
+            metric.value,
+        );
+    }
+    put_number(
+        &mut row,
+        "CurrentCostTotal",
+        function.analysed_cost(look_back_days),
+    );
+    put_number(
+        &mut row,
+        "CurrentCostAverage",
+        function.average_daily_cost(look_back_days),
+    );
+
+    // The memory size option: the memory the analysis would move the function to, the durations
+    // it then projects and what adopting it saves. Each `RecommendationOptions*` field names ONE
+    // option, and this analysis reports one option per function, so its columns go in the row of
+    // the function it is of. A function the analysis reached no finding for has no option at all
+    // — "Compute Optimizer was unable to generate a recommendation" for it — so every one of
+    // these columns is empty for it, exactly as the reader reports no option.
+    if let Some(option) = recommendation
+        .memory_size_recommendation_options
+        .iter()
+        .flatten()
+        .next()
+    {
+        put(
+            &mut row,
+            "RecommendationOptionsConfigurationMemorySize",
+            option.memory_size.to_string(),
+        );
+        for metric in option.projected_utilization_metrics.iter().flatten() {
+            let (Some(name), Some(statistic)) =
+                (metric.name.as_deref(), metric.statistic.as_deref())
+            else {
+                continue;
+            };
+            put_number(
+                &mut row,
+                &utilization_field(
+                    EXPORTABLE_LAMBDA_FUNCTION_FIELD_VALUES,
+                    "RecommendationOptionsProjectedUtilizationMetrics",
+                    name,
+                    statistic,
+                ),
+                metric.value,
+            );
+        }
+        let (low, high) = function.recommended_cost_bounds(look_back_days);
+        put_number(&mut row, "RecommendationOptionsCostLow", low);
+        put_number(&mut row, "RecommendationOptionsCostHigh", high);
+        put_savings(&mut row, FUNCTION_OPTION, option.savings_opportunity.as_ref());
+        if let Some(after) = &option.savings_opportunity_after_discounts {
+            put_savings_after_discounts(
+                &mut row,
+                FUNCTION_OPTION,
+                after.savings_opportunity_percentage,
+                after
+                    .estimated_monthly_savings
+                    .as_ref()
+                    .map(|savings| (savings.currency.clone().unwrap_or_default(), savings.value)),
+            );
+        }
+    }
+
+    // The preferences the recommendation was generated under, as the recommendation itself
+    // reports them: a `LambdaEffectiveRecommendationPreferences` carries one member, and the
+    // field set declares one column for it.
+    if let Some(preferences) = &recommendation.effective_recommendation_preferences {
+        put(
+            &mut row,
+            "EffectiveRecommendationPreferencesSavingsEstimationMode",
+            preferences
+                .savings_estimation_mode
+                .as_ref()
+                .map(|mode| text(&mode.source))
+                .unwrap_or_default(),
+        );
+    }
+    put_modelled_tags(&mut row, recommendation.tags.as_deref());
+    // "The timestamp of when the function recommendation was last generated": the instant the
+    // recommendation reports, and otherwise the instant this account's analysis was last
+    // refreshed, which is what every other export file of this service states. The instant the
+    // recommendation itself carries is stated FROM that value ([`timestamp_of`]), so the cell
+    // and the reader's own number denote one instant.
+    let refreshed = recommendation
+        .last_refresh_timestamp
+        .as_ref()
+        .map(timestamp_of)
+        .or_else(|| last_refresh.map(timestamp));
+    if let Some(stated) = refreshed {
+        put(&mut row, "LastRefreshTimestamp", stated);
+    }
+    row
+}
+
+/// The `ExportableLambdaFunctionField` prefix the columns of ONE memory size recommendation
+/// option carry, named for the member of `LambdaFunctionRecommendation` that option is reported
+/// in.
+const FUNCTION_OPTION: &str = "RecommendationOptions";
 
 /// One commercial software license recommendation as an export row: the members
 /// `LicenseRecommendation` reports, each computed from the stored observation the same way

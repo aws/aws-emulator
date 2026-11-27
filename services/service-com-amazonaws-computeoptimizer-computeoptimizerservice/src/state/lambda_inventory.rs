@@ -192,6 +192,7 @@ pub fn analysed_functions<Eng: Send + Sync + 'static>(
                 function_version: candidate.function_version,
                 account_id: account_id.to_string(),
                 configured_memory_mb: candidate.configured_memory_mb,
+                configured_timeout_seconds: candidate.configured_timeout_seconds,
                 tags: candidate.tags,
                 samples,
                 memory_reports,
@@ -211,6 +212,9 @@ struct AnalysedCandidate {
     /// "The amount of memory, in MB, that's allocated to the current function" — the memory
     /// THAT version is configured with.
     configured_memory_mb: i32,
+    /// The `Timeout` that version is configured with, in seconds: how long one of its
+    /// invocations may run.
+    configured_timeout_seconds: i32,
     /// The function's tags, as AWS Lambda holds them.
     tags: Vec<(String, String)>,
     /// The log group the function's run reports are delivered to.
@@ -247,14 +251,16 @@ fn analysed_candidates(
         let versions = ::std::iter::once((
             LATEST_FUNCTION_VERSION.to_string(),
             record.config.memory_size,
+            record.config.timeout,
         ))
-        .chain(
-            record
-                .versions
-                .values()
-                .map(|published| (published.version.to_string(), published.config.memory_size)),
-        );
-        for (function_version, configured_memory_mb) in versions {
+        .chain(record.versions.values().map(|published| {
+            (
+                published.version.to_string(),
+                published.config.memory_size,
+                published.config.timeout,
+            )
+        }));
+        for (function_version, configured_memory_mb, configured_timeout_seconds) in versions {
             // The ceiling of the sweep: whatever the inventory holds, one analysis builds at
             // most this many rows, so the work behind a read is a number this service states.
             if candidates.len() >= MAX_ANALYSED_FUNCTION_VERSIONS {
@@ -264,6 +270,7 @@ fn analysed_candidates(
                 function_name: record.config.name.clone(),
                 function_version,
                 configured_memory_mb,
+                configured_timeout_seconds,
                 tags: tags.clone(),
                 log_group: log_group.clone(),
             });

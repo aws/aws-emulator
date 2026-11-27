@@ -207,6 +207,12 @@ pub struct ObservedFunction {
     /// (`LambdaFunctionRecommendation$currentMemorySize`) — the memory AWS Lambda holds this
     /// version configured with.
     pub configured_memory_mb: i32,
+    /// How long an invocation of this version may run before AWS Lambda stops it, in seconds —
+    /// the `Timeout` that service holds the version configured with. No member of a
+    /// `LambdaFunctionRecommendation` carries it, and the `CurrentConfigurationTimeout`
+    /// exportable field is a column of the function's own configuration, so it is observed with
+    /// the memory size beside it.
+    pub configured_timeout_seconds: i32,
     /// The function's tags, as key/value pairs, in the order Lambda reports them.
     pub tags: Vec<(String, String)>,
     /// The `AWS/Lambda` samples observed for this version, oldest first.
@@ -491,16 +497,79 @@ impl ObservedFunction {
         self.invocations(look_back_days) as f64 / look_back_days * days_per_month()
     }
 
-    /// What a month of this function costs in USD at `memory_mb` with a mean invocation of
-    /// `duration_ms`: the GB-seconds that many invocations of that length at that memory
-    /// bill, plus the per-request charge, both at [`LAMBDA_PRICE_PER_GB_SECOND`].
-    pub fn monthly_cost(&self, memory_mb: i32, duration_ms: f64, look_back_days: f64) -> f64 {
-        let invocations = self.monthly_invocations(look_back_days);
+    /// What `invocations` invocations of `duration_ms` at `memory_mb` bill in USD: the
+    /// GB-seconds that many invocations of that length at that memory bill, plus the
+    /// per-request charge, at [`LAMBDA_PRICE_PER_GB_SECOND`] and
+    /// [`LAMBDA_PRICE_PER_REQUEST`].
+    ///
+    /// The ONE costing of this analysis, so the monthly figures a recommendation's savings are
+    /// computed from and the analysed period's own cost cannot price the same run differently.
+    fn cost_of(invocations: f64, memory_mb: i32, duration_ms: f64) -> f64 {
+        let invocations = invocations.max(0.0);
         let gb_seconds = invocations
             * (duration_ms.max(0.0) / MILLISECONDS_PER_SECOND)
             * (f64::from(memory_mb.max(0)) / MB_PER_GB);
         round_hundredths(
             gb_seconds * LAMBDA_PRICE_PER_GB_SECOND + invocations * LAMBDA_PRICE_PER_REQUEST,
+        )
+    }
+
+    /// What a month of this function costs in USD at `memory_mb` with a mean invocation of
+    /// `duration_ms`: the invocations a month holds at the observed rate, costed by
+    /// [`Self::cost_of`].
+    pub fn monthly_cost(&self, memory_mb: i32, duration_ms: f64, look_back_days: f64) -> f64 {
+        Self::cost_of(
+            self.monthly_invocations(look_back_days),
+            memory_mb,
+            duration_ms,
+        )
+    }
+
+    /// What the function cost over the WHOLE analysed period as it is configured today, in
+    /// USD: the invocations that period observed, at the memory the version is configured with
+    /// and the mean duration they took.
+    ///
+    /// The period's total rather than a month's, because it is the cost of what was actually
+    /// observed; the savings a recommendation option reports stay the monthly figures the
+    /// modelled `EstimatedMonthlySavings` is.
+    pub fn analysed_cost(&self, look_back_days: f64) -> f64 {
+        Self::cost_of(
+            self.invocations(look_back_days) as f64,
+            self.configured_memory_mb,
+            self.average_duration_ms(look_back_days),
+        )
+    }
+
+    /// The mean cost of ONE DAY of the analysed period, in USD: the period's own cost
+    /// ([`Self::analysed_cost`]) spread over the days it covers, and nothing for a period of
+    /// no days at all.
+    pub fn average_daily_cost(&self, look_back_days: f64) -> f64 {
+        if look_back_days <= 0.0 {
+            return 0.0;
+        }
+        round_hundredths(self.analysed_cost(look_back_days) / look_back_days)
+    }
+
+    /// What the analysed period's invocations would have cost at the memory size this service
+    /// recommends, at the SHORTEST and at the LONGEST invocation that period observed: the
+    /// range the option's cost falls in, bracketing the cost its savings are computed from.
+    ///
+    /// The bounds are the durations the option's own projected metrics report
+    /// ([`Self::projected_utilization_metrics`]), so the range and those metrics are two
+    /// readings of one observation.
+    pub fn recommended_cost_bounds(&self, look_back_days: f64) -> (f64, f64) {
+        let memory_mb = self.recommended_memory_mb(look_back_days);
+        let invocations = self.invocations(look_back_days) as f64;
+        let cost = |observed_ms: f64| {
+            Self::cost_of(
+                invocations,
+                memory_mb,
+                self.projected_duration_ms(observed_ms),
+            )
+        };
+        (
+            cost(self.trough(look_back_days, |sample| sample.duration_ms_minimum)),
+            cost(self.peak(look_back_days, |sample| sample.duration_ms_maximum)),
         )
     }
 
@@ -759,12 +828,25 @@ pub fn lambda_recommendation_matches_filters(
 /// request" (`LambdaFunctionRecommendation$finding`), so the reader withholds them from
 /// every other request rather than reporting a recommendation that does not exist.
 pub fn lambda_filters_ask_for_unavailable(filters: &[LambdaFunctionRecommendationFilter]) -> bool {
-    filters.iter().any(|filter| {
-        filter.name.as_deref() == Some(LAMBDA_FILTER_FINDING)
-            && filter
-                .values
+    lambda_filters_name_unavailable(filters.iter().map(|filter| {
+        (
+            filter.name.as_deref().unwrap_or_default(),
+            filter.values.as_deref().unwrap_or_default(),
+        )
+    }))
+}
+
+/// [`lambda_filters_ask_for_unavailable`] over the (name, values) pairs a filter list reduces
+/// to, so the EXPORT of these recommendations — which carries the filters of any surface as
+/// such pairs ([`super::export::ExportPlan::filters`]) — withholds the functions the analysis
+/// reached no finding for by the very rule the reader withholds them by.
+pub(super) fn lambda_filters_name_unavailable<'a>(
+    filters: impl IntoIterator<Item = (&'a str, &'a [String])>,
+) -> bool {
+    filters.into_iter().any(|(name, values)| {
+        name == LAMBDA_FILTER_FINDING
+            && values
                 .iter()
-                .flatten()
                 .any(|value| value == LAMBDA_FINDING_UNAVAILABLE)
     })
 }
