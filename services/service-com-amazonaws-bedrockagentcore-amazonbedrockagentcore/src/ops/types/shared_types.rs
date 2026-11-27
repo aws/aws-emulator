@@ -41,12 +41,88 @@ pub struct UnauthorizedException {
     pub message: Option<String>,
 }
 
+/// The modelled 400 for a refusal a request MEMBER is at fault for, which is what
+/// `reason` classifies and `fieldList` names: the whole shape, as the model declares it.
 #[smithy_macros::smithy(shape = "com.amazonaws.bedrockagentcore#ValidationException")]
 #[derive(Debug, Clone, Default)]
 pub struct ValidationException {
     pub message: String,
     pub reason: String,
     pub field_list: Option<Vec<ValidationExceptionField>>,
+}
+
+/// The same modelled `ValidationException`, for a refusal NO request member is at fault
+/// for: the resource the request addresses is in a state that no longer permits the call.
+///
+/// `reason` classifies WHICH member failed its constraints (`ValidationExceptionReason` =
+/// CannotParse | FieldValidationFailed | IdempotentParameterMismatchException |
+/// EventInOtherSession | ResourceConflict, source: `smithy_query(query="shape",
+/// shape="ValidationExceptionReason")`) and `fieldList` names those members, so a refusal
+/// over a resource's state carries neither: every member of such a request is well formed,
+/// and a client reading `FieldValidationFailed` would re-validate input that was never at
+/// fault instead of taking the recovery the state calls for. Both members are therefore
+/// declared unsupported, which keeps them out of this shape's schema and so out of the body
+/// the framework writes — `reason` is `@required`, so the whole shape above cannot leave it
+/// out. Everything else is the model's: the same shape id, the same `message` member, so
+/// the status (400), the error code and the message are unchanged.
+#[smithy_macros::smithy(
+    shape = "com.amazonaws.bedrockagentcore#ValidationException",
+    unsupported = ["reason", "fieldList"]
+)]
+#[derive(Debug, Clone, Default)]
+pub struct ResourceStateValidationException {
+    pub message: String,
+}
+
+/// Which of the two bodies above a modelled `ValidationException` this service raises goes
+/// on the wire as — the payload of the `ValidationException` variant of an operation whose
+/// refusals can be of either class.
+///
+/// The variant, the error code (`ValidationException`) and the status (400) are the same
+/// for both; only the members beyond `message` differ, and which class a refusal belongs to
+/// is the handler's statement about WHAT it refused, never about the operation it refused
+/// it in.
+#[derive(Debug, Clone)]
+pub enum ValidationRefusal {
+    /// A request member is at fault: `reason`, and a `fieldList` wherever the member can be
+    /// named, travel with the message.
+    Field(ValidationException),
+    /// No request member is at fault — the addressed resource's state refused the call — so
+    /// the body carries `message` alone.
+    ResourceState(ResourceStateValidationException),
+}
+
+impl ValidationRefusal {
+    /// The refusal of a call the addressed resource's state does not permit, carrying
+    /// `message` alone.
+    pub fn resource_state(message: impl Into<String>) -> Self {
+        Self::ResourceState(ResourceStateValidationException {
+            message: message.into(),
+        })
+    }
+}
+
+impl ::std::fmt::Display for ValidationRefusal {
+    fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+        match self {
+            Self::Field(refusal) => refusal.fmt(f),
+            Self::ResourceState(refusal) => refusal.fmt(f),
+        }
+    }
+}
+
+impl ::std::error::Error for ValidationRefusal {}
+
+impl ::aws_smithy_schema::serde::SerializableStruct for ValidationRefusal {
+    fn serialize_members(
+        &self,
+        serializer: &mut dyn ::aws_smithy_schema::serde::ShapeSerializer,
+    ) -> ::std::result::Result<(), ::aws_smithy_schema::serde::SerdeError> {
+        match self {
+            Self::Field(refusal) => refusal.serialize_members(serializer),
+            Self::ResourceState(refusal) => refusal.serialize_members(serializer),
+        }
+    }
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.bedrockagentcore#ValidationExceptionField")]

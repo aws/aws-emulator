@@ -137,7 +137,7 @@ pub enum InvokeBrowserErrorModeled {
     ResourceNotFoundException(ResourceNotFoundException),
     ServiceQuotaExceededException(ServiceQuotaExceededException),
     ThrottlingException(ThrottlingException),
-    ValidationException(ValidationException),
+    ValidationException(ValidationRefusal),
 }
 
 /// This operation's error channel, as the generated `impl Operation` names it
@@ -155,20 +155,15 @@ impl From<InvokeBrowserErrorModeled> for InvokeBrowserError {
     }
 }
 
-/// This operation's own modelled 400 `ValidationException`, for a request member that no
-/// longer addresses a session an action can be performed on.
+/// This operation's own modelled 400 `ValidationException`, for a session an action can no
+/// longer be performed on.
 ///
-/// `reason` is `ValidationExceptionReason`'s `FieldValidationFailed` (source:
-/// smithy_query query="shape" shape="ValidationExceptionReason", values CannotParse |
-/// FieldValidationFailed | IdempotentParameterMismatchException | EventInOtherSession |
-/// ResourceConflict), which is the member-level failure this is — the same reading the
-/// sibling tools plane makes of the identical condition.
-fn validation(message: impl Into<String>) -> InvokeBrowserErrorModeled {
-    InvokeBrowserErrorModeled::ValidationException(ValidationException {
-        message: message.into(),
-        reason: "FieldValidationFailed".to_string(),
-        field_list: None,
-    })
+/// The body carries `message` alone ([`ValidationRefusal::resource_state`]): the request's
+/// members are all well formed — the session they address has stopped — so there is no
+/// member for `reason` to classify or for `fieldList` to name. The sibling tools plane
+/// reports the identical condition the same way.
+fn session_not_active(message: impl Into<String>) -> InvokeBrowserErrorModeled {
+    InvokeBrowserErrorModeled::ValidationException(ValidationRefusal::resource_state(message))
 }
 
 /// The modelled 404 for a resource this emulator does not hold.
@@ -357,7 +352,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // run out, is `TERMINATED` and cannot be restarted, so the `sessionId` no longer
         // addresses anything an action can be performed on.
         if session.status_as_of(now) == crate::state::BROWSER_SESSION_TERMINATED {
-            return Err(validation(crate::state::browser_session_not_active(
+            return Err(session_not_active(crate::state::browser_session_not_active(
                 &input.session_id,
             ))
             .into());

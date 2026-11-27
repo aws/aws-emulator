@@ -151,7 +151,7 @@ pub enum InvokeCodeInterpreterErrorModeled {
     ResourceNotFoundException(ResourceNotFoundException),
     ServiceQuotaExceededException(ServiceQuotaExceededException),
     ThrottlingException(ThrottlingException),
-    ValidationException(ValidationException),
+    ValidationException(ValidationRefusal),
 }
 
 /// How long one script may run before the engine's interrupt handler stops it.
@@ -243,11 +243,26 @@ const MILLISECONDS_PER_SECOND: f64 = 1_000.0;
 /// FieldValidationFailed | IdempotentParameterMismatchException | EventInOtherSession |
 /// ResourceConflict), which is the member-level failure every case here is.
 fn validation(message: impl Into<String>) -> InvokeCodeInterpreterErrorModeled {
-    InvokeCodeInterpreterErrorModeled::ValidationException(ValidationException {
-        message: message.into(),
-        reason: "FieldValidationFailed".to_string(),
-        field_list: None,
-    })
+    InvokeCodeInterpreterErrorModeled::ValidationException(ValidationRefusal::Field(
+        ValidationException {
+            message: message.into(),
+            reason: crate::service::validation::FIELD_VALIDATION_FAILED.to_string(),
+            field_list: None,
+        },
+    ))
+}
+
+/// This operation's own modelled 400 `ValidationException`, for a session a tool can no
+/// longer run in.
+///
+/// The body carries `message` alone ([`ValidationRefusal::resource_state`]): the request's
+/// members are all well formed — the session they address has stopped — so there is no
+/// member for `reason` to classify or for `fieldList` to name. The sibling browser plane
+/// reports the identical condition the same way.
+fn session_not_active(message: impl Into<String>) -> InvokeCodeInterpreterErrorModeled {
+    InvokeCodeInterpreterErrorModeled::ValidationException(ValidationRefusal::resource_state(
+        message,
+    ))
 }
 
 fn internal(message: impl Into<String>) -> InvokeCodeInterpreterErrorModeled {
@@ -350,7 +365,7 @@ impl<Eng: Send + Sync + 'static> InvokeCodeInterpreter<Eng> {
                     // resolve and retry.
                     let status = session.status_as_of(now);
                     if status == crate::state::CODE_INTERPRETER_SESSION_TERMINATED {
-                        return Err(validation(
+                        return Err(session_not_active(
                             crate::state::code_interpreter_session_not_active(named),
                         ));
                     }
