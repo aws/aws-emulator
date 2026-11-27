@@ -49,6 +49,16 @@
 //!   `AWS::Serverless::LayerVersion` an `AWS::Lambda::LayerVersion` and
 //!   `AWS::Serverless::StateMachine` an `AWS::StepFunctions::StateMachine` (plus its
 //!   execution role).
+//! * `AWS::Serverless::WebSocketApi` becomes an `AWS::ApiGatewayV2::Api` of the `WEBSOCKET`
+//!   protocol plus the `AWS::ApiGatewayV2::Stage` it is deployed to, and one route per entry of
+//!   its `Routes` — with the integration and the invoke permission the function that entry
+//!   names needs. A WebSocket api routes a
+//!   MESSAGE rather than a request path, so there is no OpenAPI definition to generate for it
+//!   ("to import an HTTP API, you must specify a Body or BodyS3Location" — importing a
+//!   definition is HTTP-only): what the declaration states about the api travels as the
+//!   `CreateApi` members beside it ([`WEBSOCKET_API_PASSTHROUGH`]), the route-selection
+//!   expression that type requires included, and each route is wired to the function it names
+//!   as that api's own `AWS_PROXY` integration ([`websocket_route`]).
 //!
 //! ## A deployment's logical id carries a content hash
 //!
@@ -97,7 +107,10 @@
 //! The expansion is driven by a template body that is already bounded
 //! ([`super::template::parse`] refuses an over-long body, too many nodes and too much
 //! nesting before this module sees it), and it adds a bounded number of resources per
-//! declaration, so no caller-controlled input can make it loop or recurse unboundedly: the
+//! declaration — a fixed few, plus a fixed few per entry of a declared collection that
+//! itself came out of that bounded body (the events routed through an api, the routes a
+//! WEBSOCKET api declares) — so no caller-controlled input can make it loop or recurse
+//! unboundedly: the
 //! one recursive walk here ([`canonical`], over a value being hashed) carries its own depth
 //! bound. The documented per-template resource quota is applied to the EXPANDED template,
 //! which is the one CloudFormation validates.
@@ -152,9 +165,49 @@ pub const TRANSFORM: &str = "AWS::Serverless-2016-10-31";
 const FUNCTION: &str = "AWS::Serverless::Function";
 const API: &str = "AWS::Serverless::Api";
 const HTTP_API: &str = "AWS::Serverless::HttpApi";
+const WEBSOCKET_API: &str = "AWS::Serverless::WebSocketApi";
 const SIMPLE_TABLE: &str = "AWS::Serverless::SimpleTable";
 const LAYER_VERSION: &str = "AWS::Serverless::LayerVersion";
 const STATE_MACHINE: &str = "AWS::Serverless::StateMachine";
+
+/// The `ProtocolType` the api a WEBSOCKET declaration becomes is created with
+/// (`CreateApi$ProtocolType`, "one of: HTTP | WEBSOCKET"), read from the one place this crate
+/// spells it so the expansion and the `Ref`/`Fn::GetAtt` rules that read a v2 api's protocol
+/// cannot disagree.
+const WEBSOCKET_PROTOCOL: &str = super::template::APIGATEWAYV2_WEBSOCKET_PROTOCOL;
+
+/// `CreateApi$RouteSelectionExpression` — "the route selection expression for the API … This
+/// property is required for WebSocket APIs" — which is why a WEBSOCKET declaration that states
+/// none is a document the macro cannot expand ([`validation`]).
+pub(super) const ROUTE_SELECTION_EXPRESSION: &str = "RouteSelectionExpression";
+
+/// The members an `AWS::Serverless::WebSocketApi` and the `AWS::ApiGatewayV2::Api` it becomes
+/// spell the same way: every `CreateApi` member that configures the api ITSELF, less the
+/// `ProtocolType` the declaration's own type fixes and the quick-create and OpenAPI-definition
+/// members, which `ImportApi` is "supported only for HTTP APIs".
+///
+/// `Tags` is carried beside them, since the declaration states them as the same map the target
+/// type takes.
+const WEBSOCKET_API_PASSTHROUGH: &[&str] = &[
+    "ApiKeySelectionExpression",
+    "Description",
+    "DisableExecuteApiEndpoint",
+    "DisableSchemaValidation",
+    "IpAddressType",
+    "Name",
+    ROUTE_SELECTION_EXPRESSION,
+    "Version",
+];
+
+/// The members an `AWS::Serverless::WebSocketApi`'s STAGE takes from the declaration, spelled
+/// the same way by `AWS::ApiGatewayV2::Stage`.
+const WEBSOCKET_STAGE_PASSTHROUGH: &[&str] = &[
+    "AccessLogSettings",
+    "DefaultRouteSettings",
+    "Description",
+    "RouteSettings",
+    "StageVariables",
+];
 
 /// The type a CONNECTOR between two resources is declared as, which the macro validates
 /// ([`connector`]) and this emulator leaves as declared.
@@ -577,6 +630,20 @@ fn expanded_resources(
                     &mut added,
                     (logical_id, declaration, &properties),
                     &api_definition_paths(&events, logical_id, false),
+                );
+            }
+            // A WEBSOCKET api is the one v2 api that is not imported from a definition: its
+            // declaration states the api's own members, and the stage beside it is what
+            // deploys the api.
+            Some(WEBSOCKET_API) => {
+                expand_websocket_api(
+                    &mut primary,
+                    &mut added,
+                    (
+                        logical_id,
+                        declaration,
+                        &declaration.get("Properties").cloned().unwrap_or(Value::Null),
+                    ),
                 );
             }
             Some(SIMPLE_TABLE) => {
@@ -1724,6 +1791,266 @@ fn expand_http_api(
     );
 }
 
+/// Expand one `AWS::Serverless::WebSocketApi` into the api and the stage it is deployed to.
+///
+/// A WEBSOCKET api selects a route by evaluating its `RouteSelectionExpression` over each
+/// inbound MESSAGE, so nothing about it is written as an OpenAPI document — "to import an HTTP
+/// API, you must specify a Body or BodyS3Location" is HTTP-only, and `CreateApi` takes every
+/// member such an api carries directly. The expansion is therefore the declaration's own
+/// members re-stated on an `AWS::ApiGatewayV2::Api` of that protocol
+/// ([`WEBSOCKET_API_PASSTHROUGH`]), whose `Ref` is the `ApiId` API Gateway v2 minted — the api a
+/// client reads back through that service's own control plane.
+///
+/// An api answers no message until a stage of it is deployed, so the expansion deploys it the
+/// way it deploys an HTTP api: one `AWS::ApiGatewayV2::Stage` that auto-deploys, on the stage
+/// name the declaration states or [`HTTP_DEFAULT_STAGE`] where it states none.
+///
+/// `Name` is what identifies the api in that control plane and `CreateApi` requires it, so a
+/// declaration that states none is named by its own logical id — the only name such a
+/// declaration carries.
+///
+/// Each entry of the declaration's `Routes` is one route of that api, keyed by the route key a
+/// message selects it with: the function behind it becomes the api's `AWS_PROXY` integration,
+/// the entry becomes the `AWS::ApiGatewayV2::Route` wired to it, and API Gateway is granted
+/// permission to invoke that function ([`websocket_route`]), which is what makes the route
+/// answer rather than merely exist.
+fn expand_websocket_api(
+    primary: &mut Map<String, Value>,
+    added: &mut Map<String, Value>,
+    declared: (&String, &Value, &Value),
+) {
+    let (logical_id, declaration, properties) = declared;
+    let condition = declaration.get("Condition");
+    let mut api = Map::new();
+    api.insert("ProtocolType".to_string(), json!(WEBSOCKET_PROTOCOL));
+    copy_through(&mut api, properties, WEBSOCKET_API_PASSTHROUGH);
+    api.entry("Name".to_string())
+        .or_insert_with(|| json!(logical_id));
+    if let Some(tags) = properties.get("Tags") {
+        api.insert("Tags".to_string(), tags.clone());
+    }
+    primary.insert(
+        logical_id.clone(),
+        carried_over(declaration, "AWS::ApiGatewayV2::Api", api),
+    );
+
+    let stage_name = properties
+        .get(STAGE_NAME_PROPERTY)
+        .cloned()
+        .unwrap_or_else(|| json!(HTTP_DEFAULT_STAGE));
+    let mut stage = Map::new();
+    stage.insert("ApiId".to_string(), json!({ "Ref": logical_id }));
+    stage.insert("StageName".to_string(), stage_name.clone());
+    stage.insert("AutoDeploy".to_string(), json!(true));
+    copy_through(&mut stage, properties, WEBSOCKET_STAGE_PASSTHROUGH);
+    if let Some(tags) = properties.get("Tags") {
+        stage.insert("Tags".to_string(), tags.clone());
+    }
+    // The `$default` stage's name is not a logical-id fragment, so its stage carries the same
+    // suffix the default stage of an HTTP api does.
+    let suffix = match stage_name.as_str() {
+        Some(HTTP_DEFAULT_STAGE) | None => HTTP_DEFAULT_STAGE_SUFFIX.to_string(),
+        Some(name) => format!("{}Stage", logical_fragment(name)),
+    };
+    added.insert(
+        format!("{logical_id}{suffix}"),
+        conditioned(resource("AWS::ApiGatewayV2::Stage", stage), condition),
+    );
+
+    let declared_routes = object(properties.get(WEBSOCKET_ROUTES_PROPERTY));
+    let fragments = route_fragments(&declared_routes);
+    for (route_key, route) in &declared_routes {
+        websocket_route(
+            added,
+            logical_id,
+            condition,
+            (route_key, fragments.get(route_key).map_or("", String::as_str)),
+            route,
+            properties
+                .get(WEBSOCKET_AUTH_PROPERTY)
+                .and_then(|auth| auth.get(WEBSOCKET_AUTH_TYPE)),
+        );
+    }
+}
+
+/// The logical-id fragment each declared route key contributes, keyed by that route key.
+///
+/// A route key is the caller's own text and a logical id "must be alphanumeric", so the
+/// fragment is the key's alphanumeric characters ([`logical_fragment`]) — which two distinct
+/// keys can share (`$connect` and `connect`, `sendMessage` and `send-Message`). A logical id is
+/// what separates one expanded route from another, so a fragment two or more declared keys
+/// would collapse to carries a digest of the key itself: every declared route key then expands
+/// into resources of its own instead of one displacing another's.
+fn route_fragments(routes: &Map<String, Value>) -> BTreeMap<String, String> {
+    let mut shared: BTreeMap<String, usize> = BTreeMap::new();
+    for route_key in routes.keys() {
+        *shared
+            .entry(capitalized(&logical_fragment(route_key)))
+            .or_insert(0) += 1;
+    }
+    routes
+        .keys()
+        .map(|route_key| {
+            let fragment = capitalized(&logical_fragment(route_key));
+            let unique = match shared.get(&fragment) {
+                Some(count) if *count > 1 => {
+                    format!("{fragment}{}", digest(&json!(route_key)))
+                }
+                _ => fragment,
+            };
+            (route_key.clone(), unique)
+        })
+        .collect()
+}
+
+/// The property one WEBSOCKET declaration states its AUTHORIZATION under, and the member of it
+/// that names the authorization type.
+const WEBSOCKET_AUTH_PROPERTY: &str = "Auth";
+const WEBSOCKET_AUTH_TYPE: &str = "AuthType";
+
+/// The route key of the request that OPENS a WebSocket connection: "$connect", the route whose
+/// authorization decides whether the connection is opened at all.
+///
+/// A WEBSOCKET api authorizes the CONNECTION rather than each message — API Gateway accepts an
+/// authorization type on this route of such an api, and the routes that carry messages over a
+/// connection already opened are reached only through it — so what the declaration states about
+/// authorization is stated on this route (`Route$AuthorizationType`: "the authorization type
+/// for the route … NONE for open access, AWS_IAM for using AWS IAM permissions").
+const WEBSOCKET_CONNECT_ROUTE_KEY: &str = "$connect";
+
+/// The property one WEBSOCKET declaration states its routes under, keyed by the ROUTE KEY each
+/// is selected by — `$connect`, `$default` and the keys a message's own selection expression
+/// evaluates to.
+const WEBSOCKET_ROUTES_PROPERTY: &str = "Routes";
+
+/// The member one route entry names the function behind it with.
+const WEBSOCKET_ROUTE_FUNCTION_ARN: &str = "FunctionArn";
+
+/// Expand ONE entry of a WEBSOCKET api's `Routes` into the resources that make that route
+/// answer: the api's `AWS_PROXY` integration with the function the entry names, the route under
+/// its own key wired to that integration, and the grant that lets API Gateway invoke the
+/// function.
+///
+/// A route is wired to its integration by `Target`, which "names the integration it is wired to
+/// as `integrations/<IntegrationId>`" — an identifier API Gateway v2 mints, so the value is
+/// composed around a reference to the integration rather than written out.
+///
+/// The integration addresses the function through the path form an `AWS_PROXY` integration of a
+/// WEBSOCKET api carries (`arn:<partition>:apigateway:<region>:lambda:path/2015-03-31/functions/
+/// <function-arn>/invocations`), with the ARN the entry states substituted in: that ARN is not
+/// known until the function exists, so it travels as the expression the declaration wrote.
+///
+/// The grant is the one API Gateway needs on the function (`lambda:InvokeFunction` for
+/// `apigateway.amazonaws.com`), narrowed to this ROUTE's own `execute-api` ARN —
+/// `<api-id>/<stage>/<route-key>` — with the stage left open so it holds for whichever stage of
+/// the api serves the route. Without it the function refuses the invocation and the route
+/// answers an error instead of the function's response.
+///
+/// `authorization_type`, where the declaration states one, is stated on the CONNECT route
+/// ([`WEBSOCKET_CONNECT_ROUTE_KEY`]) and on no other.
+///
+/// An entry that names NO function states a route key and no backend for it, which is a route
+/// of the api all the same — `CreateRoute` takes a route with no `Target` — so the route is
+/// expanded with nothing wired to it rather than the declared key being dropped from the api.
+/// There is nothing to grant and nothing to proxy to, so neither the integration nor the
+/// permission is synthesized for it.
+///
+/// `declared` is the entry's route key and the logical-id fragment it was given
+/// ([`route_fragments`]), which is unique among the keys of the declaration it came from.
+fn websocket_route(
+    added: &mut Map<String, Value>,
+    api: &str,
+    condition: Option<&Value>,
+    declared: (&str, &str),
+    route: &Value,
+    authorization_type: Option<&Value>,
+) {
+    let (route_key, fragment) = declared;
+    let function_arn = route.get(WEBSOCKET_ROUTE_FUNCTION_ARN);
+    let integration_id = format!("{api}{fragment}Integration");
+
+    if let Some(function_arn) = function_arn {
+        let mut integration = Map::new();
+        integration.insert("ApiId".to_string(), json!({ "Ref": api }));
+        integration.insert("IntegrationType".to_string(), json!("AWS_PROXY"));
+        integration.insert(
+            "IntegrationUri".to_string(),
+            json!({ "Fn::Sub": [
+                arn(
+                    "apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/\
+                     ${__FunctionArn__}/invocations",
+                ),
+                { "__FunctionArn__": function_arn.clone() },
+            ]}),
+        );
+        added.insert(
+            integration_id.clone(),
+            conditioned(
+                resource("AWS::ApiGatewayV2::Integration", integration),
+                condition,
+            ),
+        );
+    }
+
+    let mut route_resource = Map::new();
+    route_resource.insert("ApiId".to_string(), json!({ "Ref": api }));
+    route_resource.insert("RouteKey".to_string(), json!(route_key));
+    if function_arn.is_some() {
+        route_resource.insert(
+            "Target".to_string(),
+            json!({ "Fn::Join": ["/", ["integrations", { "Ref": integration_id }]] }),
+        );
+    }
+    if let Some(authorization_type) = authorization_type {
+        if route_key == WEBSOCKET_CONNECT_ROUTE_KEY {
+            route_resource.insert(
+                "AuthorizationType".to_string(),
+                authorization_type.clone(),
+            );
+        }
+    }
+    added.insert(
+        format!("{api}{fragment}Route"),
+        conditioned(resource("AWS::ApiGatewayV2::Route", route_resource), condition),
+    );
+
+    let Some(function_arn) = function_arn else {
+        return;
+    };
+    let mut permission = Map::new();
+    permission.insert("Action".to_string(), json!("lambda:InvokeFunction"));
+    permission.insert("FunctionName".to_string(), function_arn.clone());
+    permission.insert("Principal".to_string(), json!("apigateway.amazonaws.com"));
+    permission.insert(
+        "SourceArn".to_string(),
+        json!({ "Fn::Sub": [
+            arn(
+                "execute-api:${AWS::Region}:${AWS::AccountId}:\
+                 ${__ApiId__}/${__Stage__}/${__RouteKey__}",
+            ),
+            {
+                "__ApiId__": { "Ref": api },
+                "__Stage__": "*",
+                "__RouteKey__": route_key,
+            },
+        ]}),
+    );
+    added.insert(
+        format!("{api}{fragment}Permission"),
+        conditioned(resource("AWS::Lambda::Permission", permission), condition),
+    );
+}
+
+/// A logical-id fragment with its first character upper-cased, so the ids the expansion builds
+/// out of one read as the CamelCase a logical id is written in.
+fn capitalized(fragment: &str) -> String {
+    let mut characters = fragment.chars();
+    match characters.next() {
+        Some(first) => format!("{}{}", first.to_ascii_uppercase(), characters.as_str()),
+        None => String::new(),
+    }
+}
+
 /// The implicit API the `Api` (or `HttpApi`) events that named no API of their own are
 /// routed through, where the template has any.
 fn implicit_api(
@@ -2147,7 +2474,7 @@ fn rename_references(node: &mut Value, renamed: &BTreeMap<String, String>, depth
                     // "Ref returns the value of the specified … resource", and "DependsOn
                     // … specif[ies] that the creation of a specific resource follows
                     // another": both name a resource by its logical id alone.
-                    REF | DEPENDS_ON => rename_named(member, renamed),
+                    REF | DEPENDS_ON => rename_named(member, renamed, depth + 1),
                     // "Fn::GetAtt returns the value of an attribute from a resource in the
                     // template": the resource is the first argument, or everything before
                     // the first dot of the short form.
@@ -2167,7 +2494,14 @@ fn rename_references(node: &mut Value, renamed: &BTreeMap<String, String>, depth
 
 /// Re-point a reference that names a resource by its logical id alone — one name, or a list
 /// of them, which is the form `DependsOn` also takes.
-fn rename_named(member: &mut Value, renamed: &BTreeMap<String, String>) {
+///
+/// Bounded by [`MAX_TEMPLATE_DEPTH`], like every other walk over a caller-supplied document:
+/// the value a `Ref` or a `DependsOn` carries is the submitted template's, so its NESTING is
+/// the caller's to choose and cannot be allowed to decide how deep this recurses.
+fn rename_named(member: &mut Value, renamed: &BTreeMap<String, String>, depth: usize) {
+    if depth > MAX_TEMPLATE_DEPTH {
+        return;
+    }
     match member {
         Value::String(name) => {
             if let Some(expanded) = renamed.get(name.as_str()) {
@@ -2176,7 +2510,7 @@ fn rename_named(member: &mut Value, renamed: &BTreeMap<String, String>) {
         }
         Value::Array(items) => {
             for item in items.iter_mut() {
-                rename_named(item, renamed);
+                rename_named(item, renamed, depth + 1);
             }
         }
         _ => {}

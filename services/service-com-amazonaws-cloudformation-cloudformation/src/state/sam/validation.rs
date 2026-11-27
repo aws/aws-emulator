@@ -28,7 +28,9 @@
 //!
 //! ## What is judged here, and what is not
 //!
-//! Only the rules whose violation the macro cannot expand PAST are judged: a `Policies` entry
+//! Only the rules whose violation the macro cannot expand PAST are judged: a declaration
+//! stating none of a property whose value the expansion could not supply
+//! ([`REQUIRED_PROPERTIES`]), a `Policies` entry
 //! that is none of the three things the property accepts, a `Zip` function with no runtime or
 //! no handler to run, an `Events` entry naming no event source type (on the two types that
 //! take one), a `SimpleTable` whose stated primary key says nothing about its type, an
@@ -36,7 +38,10 @@
 //! authorizer the api does not declare, and a CONNECTOR asking for a permission the profile of
 //! the pair it runs between does not publish ([`super::connector`]). Everything else a
 //! declaration carries is expanded as written and judged where it lands — by the service that
-//! owns the resource the expansion produced, which is where the real macro leaves it too.
+//! owns the resource the expansion produced, which is where the real macro leaves it too: the
+//! code a function runs, the definition a state machine runs and the members one `Events` entry
+//! states are all judged by the resource each becomes, so a declaration missing one of them is
+//! refused there rather than here.
 //!
 //! At most ONE fault per declaration, which is how the validator reports them: the first thing
 //! it finds wrong with a resource is what that resource is invalid for, so the count is the
@@ -55,7 +60,7 @@ use super::*;
 /// define is a type nothing recognises.
 const SERVERLESS_NAMESPACE: &str = "AWS::Serverless::";
 
-/// The types the macro DEFINES, as the AWS SAM resource reference lists them. The six
+/// The types the macro DEFINES, as the AWS SAM resource reference lists them. The seven
 /// [`super`] expands, plus the three it leaves as declared — an application resolved from the
 /// AWS Serverless Application Repository, a connector, and a GraphQL API — which are
 /// declarations the macro accepts even where this emulator expands nothing for them.
@@ -63,6 +68,7 @@ const SERVERLESS_TYPES: &[&str] = &[
     FUNCTION,
     API,
     HTTP_API,
+    WEBSOCKET_API,
     SIMPLE_TABLE,
     LAYER_VERSION,
     STATE_MACHINE,
@@ -70,6 +76,19 @@ const SERVERLESS_TYPES: &[&str] = &[
     CONNECTOR,
     "AWS::Serverless::GraphQLApi",
 ];
+
+/// The properties the macro cannot expand a declaration PAST being without, per type: the
+/// members the resource a declaration becomes is created from that have no value the expansion
+/// could supply, so a declaration stating none describes no resource at all.
+///
+/// One entry today: an `AWS::Serverless::WebSocketApi` becomes a WEBSOCKET
+/// `AWS::ApiGatewayV2::Api`, and `CreateApi$RouteSelectionExpression` — "the route selection
+/// expression for the API … This property is required for WebSocket APIs" — is the member that
+/// api could not be created without, there being no default for a protocol whose routes are
+/// matched against a message. Every other property of every type the macro expands either has
+/// a documented default, is supplied by the expansion itself, or is judged by the service that
+/// owns the resource it lands on, which is where the real macro leaves it too.
+const REQUIRED_PROPERTIES: &[(&str, &[&str])] = &[(WEBSOCKET_API, &[ROUTE_SELECTION_EXPRESSION])];
 
 /// The `PackageType` a function whose code is a deployment package carries, which is also the
 /// default: "Zip".
@@ -177,6 +196,10 @@ fn unrecognised_types(resources: &Map<String, Value>) -> Vec<String> {
 
 /// What ONE declaration is invalid for, or `None` for one the macro can expand.
 ///
+/// A property the declaration's type cannot be expanded without is weighed first
+/// ([`missing_property_fault`]), because the resource is built from its properties before
+/// anything else about it is judged.
+///
 /// The properties are read with `Globals` resolved into them, exactly as the expansion reads
 /// them ([`super::expanded_resources`]): a runtime or a handler the template states once for
 /// every function is stated for each of them, so a declaration is judged on what it really
@@ -189,7 +212,13 @@ fn fault_in(
     globals: &Value,
     resources: &Map<String, Value>,
 ) -> Option<String> {
-    match resource_type(declaration)? {
+    let declared = resource_type(declaration)?;
+    // The resource is BUILT from its properties before anything else about it is judged, so a
+    // property it could not be built without is the first fault reported for it.
+    if let Some(fault) = missing_property_fault(declared, declaration.get("Properties")) {
+        return Some(fault);
+    }
+    match declared {
         FUNCTION => function_fault(&merged(
             globals.get("Function"),
             declaration.get("Properties"),
@@ -439,6 +468,31 @@ fn table_fault(properties: &Value) -> Option<String> {
         .filter(|stated| !stated.is_null())
         .is_none()
         .then(|| PRIMARY_KEY_TYPE_REQUIRED.to_string())
+}
+
+/// `Some(detail)` for a declaration that states none of a property its type cannot be expanded
+/// without, in the words the validator reports a missing property in: `Missing required
+/// property '<name>'.`, naming the member the SAM schema requires.
+///
+/// The properties are read off the declaration ITSELF, since no type in the roster has a
+/// `Globals` section to inherit one from ("properties that you specify in the Globals section"
+/// are published for functions, APIs and simple tables).
+///
+/// A property stated as `null` states nothing, so it reads as an absent one — the same reading
+/// every other rule here takes of a null property.
+fn missing_property_fault(resource_type: &str, properties: Option<&Value>) -> Option<String> {
+    let required = REQUIRED_PROPERTIES
+        .iter()
+        .find(|(declared, _)| *declared == resource_type)
+        .map(|(_, properties)| *properties)?;
+    required
+        .iter()
+        .find(|property| {
+            properties
+                .and_then(|properties| properties.get(**property))
+                .is_none_or(Value::is_null)
+        })
+        .map(|property| format!("Missing required property '{property}'."))
 }
 
 #[cfg(test)]

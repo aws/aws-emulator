@@ -1099,6 +1099,7 @@ pub const AWS_RESOURCE_TYPES: &[&str] = &[
     "AWS::Serverless::LayerVersion",
     "AWS::Serverless::SimpleTable",
     "AWS::Serverless::StateMachine",
+    "AWS::Serverless::WebSocketApi",
     // AWS Service Catalog
     "AWS::ServiceCatalog::CloudFormationProduct",
     "AWS::ServiceCatalog::Portfolio",
