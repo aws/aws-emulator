@@ -46,7 +46,7 @@ use smithy_server_runtime::MultiServiceRouter;
 
 /// Keep this at or above `boot_serve.rs`'s stack: assembling the whole router is what
 /// every test below does first.
-const BOOT_STACK_SIZE: usize = 64 * 1024 * 1024;
+pub(crate) const BOOT_STACK_SIZE: usize = 64 * 1024 * 1024;
 
 /// The Region every request below is signed for. `us-east-1` is the Region a bucket is
 /// created in without a location constraint, so the setup names one Region only.
@@ -57,7 +57,7 @@ const REGION: &str = "us-east-1";
 const HEALTH_AGENT: &str = "health-agent";
 
 /// The SigV4 signing name Amazon S3 is routed on.
-const S3: &str = "s3";
+pub(crate) const S3: &str = "s3";
 
 /// The bucket every job of this suite is configured to write into.
 const BUCKET: &str = "clinic-insights-wire";
@@ -66,8 +66,8 @@ const BUCKET: &str = "clinic-insights-wire";
 /// prefix: the summary its `insightsOutput.uri` addresses and the processing metadata its
 /// `statusDetails` reports. RECORDED behaviour, stated here rather than read off the
 /// service.
-const SUMMARY_OBJECT: &str = "summary.json";
-const PROCESSING_METADATA_OBJECT: &str = "processing-metadata.json";
+pub(crate) const SUMMARY_OBJECT: &str = "summary.json";
+pub(crate) const PROCESSING_METADATA_OBJECT: &str = "processing-metadata.json";
 
 /// How long a poll keeps LOOKING for a condition before it gives up: many times over the
 /// spans this emulator's own lifecycles take, so a loaded host has room while a fast one
@@ -81,16 +81,21 @@ const BETWEEN_READS: Duration = Duration::from_millis(20);
 
 /// What one call answered: the HTTP status, the body's bytes and the body parsed as JSON
 /// (`Value::Null` for a body that is empty or not JSON).
+///
+/// `pub(crate)` with the harness around it (`send`, `connecthealth`, `assembled`, `domain`,
+/// `job_body`, `poll_until_terminal`), so the sibling suite that tears a configured output
+/// bucket down (`s3_bucket_teardown_after_delivered_job_output`) drives this pair of
+/// services exactly as this one does rather than keeping another copy of them.
 #[derive(Debug)]
-struct Answer {
-    status: u16,
-    bytes: Vec<u8>,
-    body: Value,
+pub(crate) struct Answer {
+    pub(crate) status: u16,
+    pub(crate) bytes: Vec<u8>,
+    pub(crate) body: Value,
 }
 
 impl Answer {
     /// A string member the answer must carry.
-    fn string_at(&self, member: &str) -> String {
+    pub(crate) fn string_at(&self, member: &str) -> String {
         self.body
             .get(member)
             .and_then(Value::as_str)
@@ -101,7 +106,7 @@ impl Answer {
 
 /// Dispatch one request addressed to `signing_name` in [`REGION`], the way a signed SDK
 /// call is: the credential scope is what names the service.
-fn send(
+pub(crate) fn send(
     router: &MultiServiceRouter,
     runtime: &tokio::runtime::Runtime,
     signing_name: &str,
@@ -143,7 +148,7 @@ fn send(
 }
 
 /// One connecthealth operation, over the restJson1 routes that model publishes.
-fn connecthealth(
+pub(crate) fn connecthealth(
     router: &MultiServiceRouter,
     runtime: &tokio::runtime::Runtime,
     method: &str,
@@ -166,7 +171,7 @@ fn connecthealth(
 
 /// The router every test of this suite drives, with request authentication off (the
 /// credential scope still names the service).
-fn assembled() -> (MultiServiceRouter, tokio::runtime::Runtime) {
+pub(crate) fn assembled() -> (MultiServiceRouter, tokio::runtime::Runtime) {
     let engine: Arc<InMemoryEngine> = Arc::new(InMemoryEngine::new());
     let mut router = build_router(engine);
     router.set_request_authentication(false);
@@ -179,7 +184,7 @@ fn assembled() -> (MultiServiceRouter, tokio::runtime::Runtime) {
 
 /// A `Domain` created through connecthealth's own `CreateDomain`, and the body that create
 /// answered.
-fn domain(
+pub(crate) fn domain(
     router: &MultiServiceRouter,
     runtime: &tokio::runtime::Runtime,
     name: &str,
@@ -195,7 +200,7 @@ fn domain(
 
 /// A `StartPatientInsightsJob` body: the patient the job runs for, `sources` S3 input
 /// sources and the output path it is configured with.
-fn job_body(patient_id: &str, sources: usize, s3_output_path: &str) -> Value {
+pub(crate) fn job_body(patient_id: &str, sources: usize, s3_output_path: &str) -> Value {
     let s3_sources: Vec<Value> = (0..sources)
         .map(|index| json!({ "uri": format!("s3://clinic-input/chart-{index}.json") }))
         .collect();
@@ -250,7 +255,7 @@ fn is_uuid_form(job_id: &str) -> bool {
 /// The CONDITION is what is waited for, never an interval: a transition is owed at an
 /// instant, so looking again is how a caller observes it. The pause between reads is only
 /// so the loop does not saturate a core while it waits; it bounds nothing.
-fn poll_until_terminal(
+pub(crate) fn poll_until_terminal(
     router: &MultiServiceRouter,
     runtime: &tokio::runtime::Runtime,
     case: &str,
