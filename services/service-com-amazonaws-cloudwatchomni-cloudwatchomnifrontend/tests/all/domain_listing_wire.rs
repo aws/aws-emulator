@@ -150,7 +150,10 @@ impl Wire {
 ///
 /// A map arrives written either with its member count or indefinitely, terminated by a
 /// break; both are valid CBOR and an encoder picks.
-fn top_level_members(case: &str, body: &[u8]) -> Vec<String> {
+///
+/// `pub(crate)`: every suite of this crate that reads which members a wire body carries
+/// reads them here, so the tree holds ONE reading of a response body's top level.
+pub(crate) fn top_level_members(case: &str, body: &[u8]) -> Vec<String> {
     let mut decoder = aws_smithy_cbor::Decoder::new(body);
     let declared = decoder.map().unwrap_or_else(|error| {
         panic!("case {case:?}: the response body is not a CBOR map: {error}")
