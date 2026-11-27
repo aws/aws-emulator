@@ -32,7 +32,8 @@ use std::time::Duration;
 use serde_json::{json, Value};
 
 use crate::environment_lifecycle::{
-    call, create, emulator, error_type, vlans_with_prefix, Emulator,
+    call, create, emulator, error_type, poll_environment_created, vlans_with_prefix, Emulator,
+    POLL_DEADLINE, POLL_INTERVAL,
 };
 
 /// An environment id that is well formed (`^(env-[a-zA-Z0-9]{10})$`) and names no
@@ -90,7 +91,9 @@ async fn a_host_is_added_to_a_deployed_environment_and_read_back_by_list() {
         ("hostState", json!("CREATING")),
         // The management address comes out of the environment's own vmkManagement VLAN
         // subnet (10.0.0.0/28 here), whose first usable address is its fifth: AWS
-        // reserves the first four addresses of a subnet.
+        // reserves the first four addresses of a subnet. The host's own address is the
+        // one its ACTIVE interface holds; its standby interface holds the next one, both
+        // being interfaces of that subnet (`NetworkInterface` doc).
         ("ipAddress", json!("10.0.0.4")),
     ] {
         assert_eq!(
@@ -106,7 +109,7 @@ async fn a_host_is_added_to_a_deployed_environment_and_read_back_by_list() {
         body["environmentSummary"]["environmentId"]
     );
 
-    // The read-back, and a second host taking the next address of the same block.
+    // The read-back, and a second host taking the next free address of the same block.
     let (status, body) = call(
         &router,
         "CreateEnvironmentHost",
@@ -116,8 +119,9 @@ async fn a_host_is_added_to_a_deployed_environment_and_read_back_by_list() {
     assert_eq!(status, 200, "second host: got {status} {body}");
     assert_eq!(
         body["host"]["ipAddress"],
-        json!("10.0.0.5"),
-        "second host: expected the next usable address of the block, got {}",
+        json!("10.0.0.6"),
+        "second host: expected the next address of the block no interface of the first host \
+         holds, got {}",
         body["host"]["ipAddress"]
     );
 
@@ -172,26 +176,40 @@ async fn a_host_is_added_to_a_deployed_environment_and_read_back_by_list() {
         page["environmentHosts"][0]["hostName"]
     );
 
-    // The build the clock owes the host comes due.
-    std::thread::sleep(PAST_THE_TRANSITION);
-    let (status, body) = call(
-        &router,
-        "ListEnvironmentHosts",
-        &json!({ "environmentId": environment }),
-    )
-    .await;
-    assert_eq!(status, 200, "list after the transition: got {status} {body}");
-    for host in body["environmentHosts"]
-        .as_array()
-        .unwrap_or_else(|| panic!("list after the transition: no environmentHosts in {body}"))
-    {
-        assert_eq!(
-            host["hostState"],
-            json!("CREATED"),
-            "after the transition: expected CREATED, got {}",
-            host["hostState"]
+    // The build the clock owes each host comes due: looked for again and again until every
+    // host IS `CREATED`, with generous room, rather than waiting a span a loaded host
+    // measures differently.
+    let deadline = std::time::Instant::now() + POLL_DEADLINE;
+    let listed = loop {
+        let (status, body) = call(
+            &router,
+            "ListEnvironmentHosts",
+            &json!({ "environmentId": environment }),
+        )
+        .await;
+        assert_eq!(status, 200, "list after the transition: got {status} {body}");
+        let hosts = body["environmentHosts"]
+            .as_array()
+            .unwrap_or_else(|| panic!("list after the transition: no environmentHosts in {body}"))
+            .clone();
+        if !hosts.is_empty()
+            && hosts
+                .iter()
+                .all(|host| host["hostState"] == json!("CREATED"))
+        {
+            break hosts;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "after the transition: every host must reach CREATED; last read {body}"
         );
-    }
+        ::tokio::time::sleep(POLL_INTERVAL).await;
+    };
+    assert_eq!(
+        listed.len(),
+        2,
+        "after the transition: expected the two hosts, got {listed:?}"
+    );
 }
 
 #[tokio::test]
@@ -370,13 +388,17 @@ async fn every_host_precondition_is_refused_with_a_validation_exception() {
 
 #[tokio::test]
 async fn the_vmk_management_subnet_bounds_how_many_hosts_an_environment_holds() {
-    // An ESX host's management interface lives on the `vmkManagement` VLAN, so that
-    // subnet's usable range is what bounds the host count. AWS leaves the first four
-    // addresses and the last address of a subnet unusable (Amazon VPC User Guide,
-    // subnet sizing), so a /<prefix> block holds 2^(32-prefix) - 5 hosts.
+    // An ESX host's interfaces live on the `vmkManagement` VLAN, so that subnet's usable
+    // range is what bounds the host count. AWS leaves the first four addresses and the
+    // last address of a subnet unusable (Amazon VPC User Guide, subnet sizing), so a
+    // /<prefix> block has 2^(32-prefix) - 5 usable addresses — and each host takes one per
+    // elastic network interface Amazon EVS provisions for it: "Amazon EVS provisions two
+    // identically configured ENIs in the VMkernel management subnet during host creation"
+    // (`NetworkInterface` doc), and no two interfaces of a subnet can hold one address. So
+    // the block holds (2^(32-prefix) - 5) / 2 hosts.
     //
     // Each row is a different block size, which is what the rule generalises over.
-    let rows: [(u8, usize); 2] = [(28, 11), (27, 27)];
+    let rows: [(u8, usize); 2] = [(28, 5), (27, 13)];
     for (prefix_len, expected_hosts) in rows {
         let router = emulator();
         let mut request = router.create_request(Some("host-bound"));
@@ -390,7 +412,9 @@ async fn the_vmk_management_subnet_bounds_how_many_hosts_an_environment_holds() 
             .as_str()
             .unwrap_or_else(|| panic!("case /{prefix_len}: no environmentId in {body}"))
             .to_string();
-        std::thread::sleep(PAST_THE_TRANSITION);
+        // The deployment the clock owes the environment, waited for through the crate's
+        // own poll-until helper, so a host can be added to it.
+        poll_environment_created(&router, &format!("/{prefix_len}"), &environment).await;
 
         let mut admitted = 0usize;
         let mut addresses: Vec<String> = Vec::new();

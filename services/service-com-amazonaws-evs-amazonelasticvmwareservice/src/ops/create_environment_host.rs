@@ -359,16 +359,18 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                  must be unique across environments",
             ));
         }
-        // The management address the host takes, out of the environment's own
-        // `vmkManagement` VLAN subnet: `None` means that subnet is full, which is what
-        // bounds how many hosts one environment can hold.
-        let ip_address = environment.next_host_ip();
-        if ip_address.is_none() {
+        // The addresses the host takes out of the environment's own `vmkManagement` VLAN
+        // subnet: its management address, and one more for each further elastic network
+        // interface Amazon EVS provisions for it, because no two interfaces of a subnet can
+        // hold one address. `None` means that subnet has fewer addresses left than a host
+        // needs, which is what bounds how many hosts one environment can hold.
+        let addresses = environment.next_host_ips();
+        if addresses.is_none() {
             failures.push(crate::state::field_failure(
                 "host",
                 &format!(
                     "cannot be added: the environment's {} VLAN subnet has no address left \
-                     for another host",
+                     for every network interface of another host",
                     crate::state::VMK_MANAGEMENT_FUNCTION
                 ),
             ));
@@ -379,8 +381,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             )
             .into());
         }
-        // Reached only with an address, because its absence is one of the failures above.
-        let Some(ip_address) = ip_address else {
+        // Reached only with addresses, because their absence is one of the failures above.
+        let Some(addresses) = addresses else {
             return Err(CreateEnvironmentHostErrorModeled::InternalServerException(
                 InternalServerException {
                     message: "No management address could be assigned to the host.".to_string(),
@@ -410,7 +412,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     region: &region,
                     instance_type: &input.host.instance_type,
                     key_name: &input.host.key_name,
-                    management_ip: &ip_address,
+                    management_ip: &addresses.management,
+                    // …and the addresses the host's other interfaces hold, so each is a
+                    // real interface of that subnet rather than one sharing an address.
+                    standby_ips: &addresses.secondary,
                     management_subnet_id: &vlan.subnet_id,
                     service_access_subnet_id: &environment.service_access_subnet_id,
                     // Where the request placed the host, resolved above: the instance
@@ -434,7 +439,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         });
         let host = crate::state::StoredHost::creating(
             &input.host,
-            ip_address,
+            addresses,
             esx_version,
             created_at_ms,
             ec2,

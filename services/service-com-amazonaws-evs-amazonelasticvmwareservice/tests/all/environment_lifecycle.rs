@@ -623,7 +623,45 @@ pub(crate) async fn create_settled(router: &Emulator, name: Option<&str>) -> Str
 pub(crate) const POLL_DEADLINE: Duration = Duration::from_secs(60);
 
 /// How long it waits between two looks.
-const POLL_INTERVAL: Duration = Duration::from_millis(10);
+pub(crate) const POLL_INTERVAL: Duration = Duration::from_millis(10);
+
+/// Look at the environment `environment_id` again and again, through `GetEnvironment`,
+/// until it reports the `CREATED` state its resources can be addressed in — "this action
+/// can only be used after the Amazon EVS environment is deployed"
+/// (`CreateEnvironmentHost` doc).
+///
+/// The environment counterpart of [`poll_connector_until`], and how a suite that builds
+/// its OWN router — and so holds no engine to [`settle`] through — waits for the
+/// deployment the clock owes a new environment: it waits for the state to BE what it waits
+/// for, with [`POLL_DEADLINE`] of room, rather than for a span of wall clock that a faster
+/// or busier host measures differently. `case` names the case in the timeout message.
+pub(crate) async fn poll_environment_created(
+    router: &MultiServiceRouter,
+    case: &str,
+    environment_id: &str,
+) {
+    let deadline = std::time::Instant::now() + POLL_DEADLINE;
+    loop {
+        let (status, body) = call(
+            router,
+            "GetEnvironment",
+            &json!({ "environmentId": environment_id }),
+        )
+        .await;
+        assert_eq!(
+            status, 200,
+            "case {case:?}: GetEnvironment expected 200, got {status} {body}"
+        );
+        if body["environment"]["environmentState"] == json!("CREATED") {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "case {case:?}: the environment never reached CREATED; last read {body}"
+        );
+        ::tokio::time::sleep(POLL_INTERVAL).await;
+    }
+}
 
 /// Look at the connectors of one environment again and again, through
 /// `ListEnvironmentConnectors`, until `holds` is true of the connector `connector_id`, and

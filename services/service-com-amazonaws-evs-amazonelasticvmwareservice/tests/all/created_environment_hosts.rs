@@ -30,7 +30,7 @@
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 use service_com_amazonaws_ec2_amazonec2 as ec2;
@@ -39,7 +39,7 @@ use smithy_server_runtime::MultiServiceRouter;
 
 use crate::environment_lifecycle::{
     call, error_type, register_key_pair, register_network, vlans_with_prefix, HOST_KEY_PAIR_NAME,
-    REGION, ZONE,
+    POLL_DEADLINE, POLL_INTERVAL, REGION, ZONE,
 };
 // The ec2Query client and the XML readers the sibling EC2-facing suites already own:
 // this suite asks Amazon EC2 the same questions they do.
@@ -53,6 +53,21 @@ const PAST_THE_TRANSITION: Duration = Duration::from_millis(900);
 /// where every `vmkManagement` block below starts: AWS reserves the first four addresses
 /// of a subnet, so the hosts of a create take `10.0.0.4` upwards in request order.
 const FIRST_HOST_ADDRESS: u8 = 4;
+
+/// How many addresses of that block ONE host takes: one per elastic network interface
+/// Amazon EVS provisions for it — "Amazon EVS provisions two identically configured ENIs
+/// in the VMkernel management subnet during host creation" (`NetworkInterface` doc) —
+/// since no two interfaces of a subnet can hold one address.
+const ADDRESSES_PER_HOST: usize = 2;
+
+/// The management address the host at `position` of a create's `hosts` takes: the first
+/// usable address of the block, moved on by the addresses the hosts before it hold.
+fn host_address(position: usize) -> String {
+    format!(
+        "10.0.0.{}",
+        FIRST_HOST_ADDRESS as usize + position * ADDRESSES_PER_HOST
+    )
+}
 
 /// One emulator serving BOTH services off one shared engine.
 struct Emulator {
@@ -130,24 +145,52 @@ impl Emulator {
             .to_string()
     }
 
-    /// Every host of the environment, as `ListEnvironmentHosts` reports them (stable
-    /// `hostName` order).
-    async fn hosts(&self, case: &str, environment: &str) -> Vec<Value> {
-        let (status, body) = call(
-            &self.router,
-            "ListEnvironmentHosts",
-            &json!({ "environmentId": environment }),
-        )
-        .await;
-        assert_eq!(
-            status, 200,
-            "case {case:?}: ListEnvironmentHosts expected HTTP 200, got {status} ({}) {body}",
-            error_type(&body)
-        );
-        body["environmentHosts"]
-            .as_array()
-            .unwrap_or_else(|| panic!("case {case:?}: no environmentHosts in {body}"))
-            .clone()
+    /// `ListEnvironmentHosts` again and again until the environment reports `expected`
+    /// hosts and every one of them has reached `CREATED`.
+    ///
+    /// How this suite waits for the build the clock owes each host of a create: it waits
+    /// for the state to BE what it waits for, with [`POLL_DEADLINE`] of room, rather than
+    /// for a span of wall clock that a faster or busier host measures differently.
+    async fn hosts_once_created(
+        &self,
+        case: &str,
+        environment: &str,
+        expected: usize,
+    ) -> Vec<Value> {
+        let deadline = Instant::now() + POLL_DEADLINE;
+        loop {
+            // A list addressed to an environment that is still initializing is REFUSED
+            // (`tests/all/list_while_initializing.rs` owns that rule), so the poll looks
+            // again at that answer too rather than failing the case on it.
+            let (status, body) = call(
+                &self.router,
+                "ListEnvironmentHosts",
+                &json!({ "environmentId": environment }),
+            )
+            .await;
+            let listed: Vec<Value> = if status == 200 {
+                body["environmentHosts"]
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_default()
+            } else {
+                Vec::new()
+            };
+            if status == 200
+                && listed.len() == expected
+                && listed
+                    .iter()
+                    .all(|host| host["hostState"] == json!("CREATED"))
+            {
+                return listed;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "case {case:?}: expected {expected} host(s), every one CREATED; last read \
+                 {status} {body}"
+            );
+            ::tokio::time::sleep(POLL_INTERVAL).await;
+        }
     }
 
     /// The `subnetId` of the environment's `vmkManagement` VLAN, as
@@ -462,8 +505,11 @@ async fn a_create_that_carries_hosts_adds_them_to_the_environment() {
             );
         }
 
-        std::thread::sleep(PAST_THE_TRANSITION);
-        let listed = emulator.hosts(case, &environment).await;
+        // The move to CREATED the clock owes each host comes due: looked for again and
+        // again until the environment reports them all built ([`Emulator::hosts_once_created`]).
+        let listed = emulator
+            .hosts_once_created(case, &environment, row.expected_hosts)
+            .await;
         assert_eq!(
             listed.len(),
             row.expected_hosts,
@@ -516,8 +562,9 @@ async fn a_create_that_carries_hosts_adds_them_to_the_environment() {
                 host["hostState"]
             );
             // The management address comes out of the environment's own vmkManagement
-            // VLAN subnet, in request order from its first usable address.
-            let expected_address = format!("10.0.0.{}", FIRST_HOST_ADDRESS as usize + position);
+            // VLAN subnet, in request order from its first usable address, each host
+            // taking one address per interface ([`host_address`]).
+            let expected_address = host_address(position);
             assert_eq!(
                 host["ipAddress"],
                 json!(expected_address),
@@ -594,7 +641,7 @@ async fn a_create_that_carries_hosts_adds_them_to_the_environment() {
             "case {case:?}: a fresh host name must be accepted, got {status} ({}) {body}",
             error_type(&body)
         );
-        let expected_address = format!("10.0.0.{}", FIRST_HOST_ADDRESS as usize + listed.len());
+        let expected_address = host_address(listed.len());
         assert_eq!(
             body["host"]["ipAddress"],
             json!(expected_address),

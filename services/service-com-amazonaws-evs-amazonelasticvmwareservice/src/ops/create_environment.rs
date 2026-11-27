@@ -1019,18 +1019,19 @@ fn add_requested_hosts<Eng: Send + Sync + 'static>(
         if environment.host(&host.host_name).is_some() {
             continue;
         }
-        // The host's management address, out of the environment's own `vmkManagement`
-        // VLAN subnet ([`crate::state::StoredEnvironment::next_host_ip`]) — the rule that
-        // also bounds how many hosts one environment holds. No address left, or no such
-        // VLAN, leaves the host unaddressable, so it is not added rather than stored with
-        // an address no subnet of the environment covers.
-        let Some(ip_address) = environment.next_host_ip() else {
-            break;
-        };
+        // The addresses the host takes out of the environment's own `vmkManagement` VLAN
+        // subnet ([`crate::state::StoredEnvironment::next_host_ips`]) — its management
+        // address and one more per further elastic network interface Amazon EVS provisions
+        // for it, the rule that also bounds how many hosts one environment holds. Too few
+        // addresses left, or no such VLAN, leaves the host unaddressable, so it is not added
+        // rather than stored with an address no subnet of the environment covers.
         let Some(management_subnet_id) = environment
             .vmk_management_vlan()
             .map(|vlan| vlan.subnet_id.clone())
         else {
+            break;
+        };
+        let Some(addresses) = environment.next_host_ips() else {
             break;
         };
         // "An ESX host that runs on an Amazon EC2 bare metal instance" (`Host` doc): the
@@ -1043,7 +1044,10 @@ fn add_requested_hosts<Eng: Send + Sync + 'static>(
                 region: &region,
                 instance_type: &host.instance_type,
                 key_name: &host.key_name,
-                management_ip: &ip_address,
+                management_ip: &addresses.management,
+                // …and the addresses its other interfaces hold, as the single-host path
+                // passes them.
+                standby_ips: &addresses.secondary,
                 management_subnet_id: &management_subnet_id,
                 service_access_subnet_id: &service_access_subnet_id,
                 // Where the entry placed the host, which the instance records just as the
@@ -1058,7 +1062,7 @@ fn add_requested_hosts<Eng: Send + Sync + 'static>(
         transitions_due.push(pending.due_at);
         environment.insert_host(crate::state::StoredHost::creating(
             host,
-            ip_address,
+            addresses,
             esx_version.clone(),
             created_at_ms,
             ec2,

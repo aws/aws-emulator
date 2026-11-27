@@ -43,7 +43,10 @@
 //!   [`launch_host_instance`] puts that instance in EC2's own store through EC2's own
 //!   state API, and the host reports the id EC2 minted for it — with the placement the
 //!   request named recorded on that instance, so the one store both services read cannot
-//!   disagree about where the host runs;
+//!   disagree about where the host runs; the two ENIs "Amazon EVS provisions … in the
+//!   VMkernel management subnet during host creation" (`NetworkInterface` doc) are created
+//!   by that same write, each in that subnet and holding an address of it, so every id the
+//!   host reports names an interface `DescribeNetworkInterfaces` resolves;
 //!   [`terminate_host_instance`] ends it again when the host is deleted from its
 //!   environment, so no instance of a host no environment holds is left running;
 //! * Amazon EVS "provisions the VLAN subnets" of an environment inside the VPC the
@@ -527,7 +530,10 @@ pub struct HostEc2Resources {
     /// The `InstanceId` of the EC2 instance the host runs on, as EC2's own store minted
     /// it: the id `DescribeInstances` answers for.
     pub instance_id: String,
-    /// The `NetworkInterfaceId` of each ENI attached to the host, in attachment order.
+    /// The `NetworkInterfaceId` of each ENI attached to the host, in attachment order, as
+    /// the account's own Amazon EC2 store minted them: the ids
+    /// `DescribeNetworkInterfaces` answers for, and the ones the instance's own report
+    /// names as its interfaces.
     pub network_interface_ids: Vec<String>,
 }
 
@@ -545,8 +551,14 @@ pub struct HostLaunch<'a> {
     /// The SSH key pair the request named.
     pub key_name: &'a str,
     /// The host's management IP address, taken out of the `vmkManagement` VLAN subnet:
-    /// the instance's primary private IPv4 address, because that address IS the host's.
+    /// the instance's primary private IPv4 address, because that address IS the host's,
+    /// and the address the ACTIVE elastic network interface holds.
     pub management_ip: &'a str,
+    /// The addresses the host's OTHER elastic network interfaces hold, out of that same
+    /// VLAN subnet — the standby interface's
+    /// ([`crate::state::StoredEnvironment::next_host_ips`] sets one aside per interface
+    /// beside the active one), because no two interfaces of a subnet can hold one address.
+    pub standby_ips: &'a [String],
     /// The `vmkManagement` VLAN subnet the host's ENIs live in.
     pub management_subnet_id: &'a str,
     /// The environment's service access subnet, read for the Availability Zone the
@@ -594,12 +606,23 @@ pub fn instance_type_cores(instance_type: &str) -> Option<u64> {
 /// the members EC2 records a launch's placement in, so the Dedicated Host reports the
 /// instance running on it.
 ///
+/// The host's elastic network interfaces are resources of that same store and are created
+/// in it by that same write: a launch that NAMES the interfaces of its instance stores
+/// them with it ([`ec2::ComAmazonawsEc2Amazonec2State::insert_launched_instance`], the
+/// writer `insert_instance` is that call with none), so the two the host reports are real
+/// interface records of the account — [`HOST_NETWORK_INTERFACES`] of them, in the VMkernel
+/// management subnet, each holding an address of that subnet's own block — and the ids
+/// reported are the ids EC2 minted, read back off the instance. `DescribeNetworkInterfaces`
+/// therefore answers for each id the host names, and the instance's own report names those
+/// same interfaces.
+///
 /// `None` — no instance launched, so the host reports neither `ec2InstanceId` nor
 /// `networkInterfaces` rather than naming resources that do not exist — when the EC2
 /// store cannot be read at all (the same "evidence of nothing" answer every function in
-/// this module gives for that case), when that store is at a ceiling of its own, or when
-/// no Availability Zone can be named for the environment ([`environment_zone`]), which is
-/// no zone to place an instance in.
+/// this module gives for that case), when that store is at a ceiling of its own, when no
+/// Availability Zone can be named for the environment ([`environment_zone`]), which is no
+/// zone to place an instance in, or when that store holds no VMkernel management subnet to
+/// put the host's interfaces in.
 ///
 /// The caller holds this service's own store while this runs. That nesting is safe in
 /// one direction only, and this is it: Amazon EC2's handlers never read Amazon EVS
@@ -616,9 +639,9 @@ pub fn launch_host_instance<Eng: Send + Sync + 'static>(
     // same single zone the environment's subnets are in, so one answer serves both — and a
     // zone that cannot be named leaves nothing to place an instance in, so nothing is
     // launched rather than an instance being stored with a `placement_az` no
-    // `DescribeAvailabilityZones` lists. The zone's ID is a subnet's member and no
-    // instance's, so the launch keeps only the name.
-    let (availability_zone, _zone_id) =
+    // `DescribeAvailabilityZones` lists. The zone's ID is no member of an instance, but it
+    // IS one of a network interface, so the launch keeps both.
+    let (availability_zone, zone_id) =
         environment_zone(&store, launch.region, launch.service_access_subnet_id)?;
 
     // WHERE the launch put the instance, in the members EC2 records a placement on an
@@ -659,6 +682,34 @@ pub fn launch_host_instance<Eng: Send + Sync + 'static>(
     {
         return None;
     }
+    // …and the same question about the interfaces this launch creates, asked on EC2's own
+    // interface ceilings — both of the ones that make its interface writer refuse, so this
+    // pre-check admits exactly the launches that writer can store: a host's instance and
+    // its ENIs are stored together or not at all, and there is no host whose reported
+    // interfaces the store never took.
+    let interface_ceiling = ec2::MAX_NETWORK_INTERFACES.min(ec2::MAX_STORED_RECORDS_PER_STORE);
+    if store.network_interfaces.len() + HOST_NETWORK_INTERFACES > interface_ceiling {
+        return None;
+    }
+
+    // WHERE the host's ENIs live: "Amazon EVS provisions two identically configured ENIs in
+    // the VMkernel management subnet during host creation" (`NetworkInterface` doc), and
+    // that subnet is the `vmkManagement` VLAN subnet this service provisioned in the
+    // account's own EC2 store ([`provision_vlan_subnets`]). Every fact an interface of it
+    // carries is read off that subnet's OWN record under this one lock — its VPC, its zone
+    // and the block its addresses come out of — so the host's interfaces cannot be placed
+    // anywhere the subnet is not. A store that holds no such subnet has nowhere to put them,
+    // so nothing is launched at all, the answer an unnameable zone gets.
+    let management_subnet = store.subnets.get(launch.management_subnet_id)?;
+    let management_vpc_id = management_subnet.vpc_id.clone().unwrap_or_default();
+    let interface_zone = management_subnet
+        .availability_zone
+        .clone()
+        .unwrap_or_else(|| availability_zone.clone());
+    let interface_zone_id = management_subnet
+        .availability_zone_id
+        .clone()
+        .unwrap_or_else(|| zone_id.clone());
 
     // One host is one instance, so it is its own reservation, the way a Spot Instance
     // launch is.
@@ -675,7 +726,7 @@ pub fn launch_host_instance<Eng: Send + Sync + 'static>(
     // host is no burstable performance instance, so it has none, and a type that did would
     // take its family's default in this Region — the same answer `RunInstances` resolves.
     let cpu_credits = store.launched_cpu_credits(launch.region, launch.instance_type, None);
-    store.insert_instance(ec2::InstanceRecord {
+    let launched = ec2::InstanceRecord {
         instance_id: instance_id.clone(),
         reservation_id,
         // The ESX image Amazon EVS boots a host from is published by Amazon EVS, and
@@ -770,7 +821,67 @@ pub fn launch_host_instance<Eng: Send + Sync + 'static>(
         // Not a Spot Instance: an ESX host is launched on demand.
         spot_instance_request_id: None,
         cpu_credits,
-    });
+    };
+    // The host's two ENIs, as the launch gives them to its instance: both in the VMkernel
+    // management subnet and identically configured, differing only in the address each
+    // holds and the device index each is attached at. "A primary network interface has a
+    // device index of 0" (`InstanceNetworkInterfaceSpecification$DeviceIndex`), so the
+    // ACTIVE interface — the one carrying the host's management address — is the instance's
+    // primary interface and the standby one is attached beside it, on the same network card.
+    // Each is deleted with the instance it belongs to, because an ESX host's interfaces are
+    // the host's: nothing outlives the instance an ESX host IS
+    // ([`terminate_host_instance`]).
+    //
+    // The groups are the ones EC2 itself gives an interface of a launch that named none —
+    // its VPC's own default group, through EC2's one reading of that default
+    // ([`ec2::ComAmazonawsEc2Amazonec2State::default_security_group_of_vpc`]) — so a host's
+    // interface is in the same group as one of any other launch that named no group, and
+    // nothing about it is this service's invention.
+    let groups: Vec<ec2_types::GroupIdentifier> = store
+        .default_security_group_of_vpc(&management_vpc_id)
+        .into_iter()
+        .collect();
+    // The ADDRESSES the interfaces hold are the host's own, out of the VLAN subnet they
+    // live in: the ACTIVE interface holds the host's management address, because that
+    // address IS the host's, and each other interface holds one of the further addresses
+    // the environment set aside for this host
+    // ([`crate::state::StoredEnvironment::next_host_ips`]) — no two interfaces of one
+    // subnet can hold one address, so a host needs one address per interface.
+    let interfaces: Vec<ec2::LaunchedInterface> = ::std::iter::once(launch.management_ip)
+        .chain(launch.standby_ips.iter().map(String::as_str))
+        .enumerate()
+        .map(|(index, address)| ec2::LaunchedInterface {
+            device_index: ec2::PRIMARY_NETWORK_INTERFACE_DEVICE_INDEX
+                + i32::try_from(index).unwrap_or_default(),
+            network_card_index: 0,
+            // Both are interfaces this launch CREATES, so neither attaches one the account
+            // already holds.
+            network_interface_id: None,
+            subnet_id: launch.management_subnet_id.to_string(),
+            vpc_id: management_vpc_id.clone(),
+            availability_zone: interface_zone.clone(),
+            availability_zone_id: interface_zone_id.clone(),
+            region: launch.region.to_string(),
+            // AWS reports an empty description for an interface nothing described.
+            description: String::new(),
+            interface_type: ec2::NETWORK_INTERFACE_TYPE_INTERFACE.to_string(),
+            groups: groups.clone(),
+            private_ip_addresses: vec![address.to_string()],
+            delete_on_termination: true,
+            // A host is reached over the VLAN subnets, never over a public address, which
+            // is why the instance carries none either.
+            associate_public_ip_address: false,
+            // ENA Express and a queue count are settings a launch asks for; this one asks
+            // for neither.
+            ena_srd_specification: None,
+            ena_queue_count: None,
+        })
+        .collect();
+    // The instance AND the interfaces it was given go in through EC2's own launch writer —
+    // the one body every launch path of that service stores an instance and the interfaces
+    // it named through — so each is a record the account's own EC2 store holds, minted and
+    // indexed exactly as `RunInstances` would have left it.
+    store.insert_launched_instance(launched, &interfaces);
     // The Dedicated Host this launch put the instance on now reports it: a host's
     // `Instances` FOLLOWS from where the account's instances were launched, so it is
     // recomputed through EC2's own recompute of that derived member
@@ -778,13 +889,15 @@ pub fn launch_host_instance<Eng: Send + Sync + 'static>(
     // written beside the instance record — the same call EC2's own launch path makes, which
     // is what makes a host carrying a running ESX host refuse to be released under it.
     store.resync_dedicated_host_instances();
-    // The ENIs. EC2 holds no network interface store yet (every `…NetworkInterface`
-    // operation is still a scaffold stub), so the ids are minted from EC2's OWN id
-    // counter — `eni-` + 17 hex digits, the form `ec2::network_interface_id_is_well_formed`
-    // reads — and are therefore unique among the account's EC2 ids, ready to be inserted
-    // into that store on the day it lands.
-    let network_interface_ids = (0..HOST_NETWORK_INTERFACES)
-        .map(|_| store.next_id("eni"))
+    // The ids the host REPORTS are the ids EC2 minted for those interfaces, read back off
+    // the instance through EC2's own reading of which interfaces an instance holds
+    // ([`ec2::ComAmazonawsEc2Amazonec2State::instance_network_interfaces`], in device index
+    // order, so the active interface comes first). Read back rather than predicted: the host
+    // then names the interfaces that store holds, and nothing else.
+    let network_interface_ids = store
+        .instance_network_interfaces(&instance_id)
+        .into_iter()
+        .filter_map(|interface| interface.network_interface_id)
         .collect();
     Some(HostEc2Resources {
         instance_id,

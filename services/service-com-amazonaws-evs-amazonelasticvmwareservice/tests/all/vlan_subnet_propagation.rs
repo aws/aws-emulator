@@ -163,6 +163,19 @@ pub(crate) fn elements(xml: &str, name: &str) -> Vec<String> {
     found
 }
 
+/// The text of `<child>` inside the FIRST `<parent>` block of an XML body — an
+/// interface's `attachment/deviceIndex`, a subnet's association, and so on: a member whose
+/// name is only unambiguous inside the block that carries it.
+///
+/// Beside [`element`] and [`elements`], so the suites that ask Amazon EC2 what it holds
+/// read one nested member one way.
+pub(crate) fn nested(xml: &str, parent: &str, child: &str) -> Option<String> {
+    let open = format!("<{parent}>");
+    let start = xml.find(&open)? + open.len();
+    let end = xml[start..].find(&format!("</{parent}>"))? + start;
+    element(&xml[start..end], child)
+}
+
 /// One `<item>` of a `DescribeSubnets` `subnetSet`, as the raw XML of that subnet. The
 /// lists nested inside a subnet (`tagSet`, the IPv6 association set) are empty for the
 /// subnets under test, so splitting on the item tag gives one chunk per subnet. The tag

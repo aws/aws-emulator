@@ -173,7 +173,7 @@ pub const RESOURCE_TYPE_ENVIRONMENT: &str = "environment";
 /// The `functionName` of the VLAN that carries ESX host management traffic — the
 /// `initialVlans.vmkManagement` member's own name, which is the form the `Vlan` doc
 /// gives ("a VLAN with a `functionName` of `hcx`"). It is the subnet a host's
-/// management IP comes out of ([`StoredEnvironment::next_host_ip`]).
+/// management IP comes out of ([`StoredEnvironment::next_host_ips`]).
 pub const VMK_MANAGEMENT_FUNCTION: &str = "vmkManagement";
 
 /// The `functionName` of the VLAN that carries VMware HCX traffic, and the ONE value
@@ -1206,14 +1206,39 @@ impl StoredEntitlement {
     }
 }
 
+/// The addresses of an environment's `vmkManagement` VLAN subnet one host occupies: one
+/// per elastic network interface Amazon EVS provisions for it.
+///
+/// They are chosen together ([`StoredEnvironment::next_host_ips`]) because a host that
+/// cannot be given one address per interface cannot be built at all — "Amazon EVS
+/// provisions two identically configured ENIs in the VMkernel management subnet during
+/// host creation" (`NetworkInterface` doc) — so they travel together into the host record
+/// and into the launch that creates those interfaces.
+#[derive(Debug, Clone)]
+pub struct HostAddresses {
+    /// The host's management address: the one its ACTIVE interface holds, and the one
+    /// `Host$ipAddress` reports.
+    pub management: String,
+    /// The addresses the host's other interfaces hold, in interface order.
+    pub secondary: Vec<String>,
+}
+
 /// One ESX host of an environment, as `CreateEnvironmentHost` stored it.
 #[derive(Debug, Clone)]
 pub struct StoredHost {
     /// The DNS hostname the request gave the host, unique across environments.
     pub host_name: String,
     /// The management IP address the host took out of the environment's
-    /// `vmkManagement` VLAN subnet ([`StoredEnvironment::next_host_ip`]).
+    /// `vmkManagement` VLAN subnet ([`StoredEnvironment::next_host_ips`]) — the address
+    /// its ACTIVE elastic network interface holds.
     pub ip_address: String,
+    /// The further addresses of that same subnet this host holds: one per elastic network
+    /// interface Amazon EVS provisions for it beside the active one
+    /// ([`ec2_resources::HOST_NETWORK_INTERFACES`] in all), because no two interfaces of a
+    /// subnet can hold one address. Reported by nothing — the `Host` shape reports the
+    /// host's own address and the interfaces, not the address of each — but held here,
+    /// because an address a host's interface holds is not free for another host either.
+    pub secondary_ips: Vec<String>,
     /// The SSH key the host is reached with.
     pub key_name: String,
     /// The EC2 bare metal instance type the host runs on.
@@ -1252,9 +1277,12 @@ pub struct StoredHost {
 impl StoredHost {
     /// A new host, as `CreateEnvironmentHost` mints one: `CREATING` until the build the
     /// clock owes it comes due.
+    ///
+    /// `addresses` is what the environment set aside for the host
+    /// ([`StoredEnvironment::next_host_ips`]), management address first.
     pub fn creating(
         host: &crate::ops::types::HostInfoForCreate,
-        ip_address: String,
+        addresses: HostAddresses,
         esx_version: Option<String>,
         created_at_ms: i64,
         ec2: Option<ec2_resources::HostEc2Resources>,
@@ -1262,7 +1290,8 @@ impl StoredHost {
     ) -> Self {
         Self {
             host_name: host.host_name.clone(),
-            ip_address,
+            ip_address: addresses.management,
+            secondary_ips: addresses.secondary,
             key_name: host.key_name.clone(),
             instance_type: host.instance_type.clone(),
             placement_group_id: host.placement_group_id.clone(),
@@ -1274,6 +1303,17 @@ impl StoredHost {
             ec2,
             pending: Some(pending),
         }
+    }
+
+    /// Every address of the `vmkManagement` VLAN subnet this host holds: its management
+    /// address and the ones its other interfaces hold.
+    ///
+    /// What makes an address unavailable to another host, read in one place so the
+    /// allocation ([`StoredEnvironment::next_host_ips`]) and the record cannot disagree
+    /// about what a host occupies.
+    pub fn held_addresses(&self) -> impl Iterator<Item = &str> {
+        ::std::iter::once(self.ip_address.as_str())
+            .chain(self.secondary_ips.iter().map(String::as_str))
     }
 
     /// Apply the owed state change if `now` has reached its due instant — the host
@@ -1652,7 +1692,7 @@ pub struct StoredEnvironment {
     /// is addressed by, and unique across environments. A `BTreeMap` so
     /// `ListEnvironmentHosts` has one stable order to page over; bounded by the usable
     /// addresses of the environment's own `vmkManagement` VLAN subnet
-    /// ([`Self::next_host_ip`]).
+    /// ([`Self::next_host_ips`]).
     ///
     /// Written by the two operations that ADD a host: `CreateEnvironment`, for the hosts
     /// its `hosts` member asked Amazon EVS to add while installing VCF, and
@@ -1850,7 +1890,7 @@ impl StoredEnvironment {
 
     /// The VLAN that carries ESX host management traffic, the one every host of this
     /// environment is addressed and attached on: its subnet is where a host's management
-    /// address comes from ([`Self::next_host_ip`]) and where the host's ENIs live
+    /// address comes from ([`Self::next_host_ips`]) and where the host's ENIs live
     /// ("Amazon EVS provisions two identically configured ENIs in the VMkernel
     /// management subnet during host creation", `NetworkInterface` doc).
     pub fn vmk_management_vlan(&self) -> Option<&StoredVlan> {
@@ -1933,30 +1973,42 @@ impl StoredEnvironment {
         Ok(&mut self.vlans[index])
     }
 
-    /// The management IP address the next host of this environment takes: the lowest
-    /// usable address of the `vmkManagement` VLAN subnet that no host of this
-    /// environment already holds.
+    /// The addresses of the `vmkManagement` VLAN subnet the next host of this environment
+    /// takes: the lowest usable addresses of that subnet no host of this environment
+    /// already holds, one for each elastic network interface Amazon EVS provisions for a
+    /// host ([`ec2_resources::HOST_NETWORK_INTERFACES`] of them).
     ///
     /// An ESX host's management interface lives on the `vmkManagement` VLAN — that is
-    /// the traffic type the VLAN carries (`Vlan$functionName` doc) — so the address is
-    /// COMPUTED from the environment's own VLAN plan rather than invented, and the
-    /// subnet's usable range is therefore also what bounds how many hosts one
-    /// environment can hold: `None` means the subnet is full and a further host cannot
-    /// be addressed.
+    /// the traffic type the VLAN carries (`Vlan$functionName` doc) — and so does the
+    /// standby interface beside it: "Amazon EVS provisions two identically configured
+    /// ENIs in the VMkernel management subnet during host creation" (`NetworkInterface`
+    /// doc), and no two interfaces of one subnet can hold one address. So a host takes
+    /// ONE address per interface, COMPUTED from the environment's own VLAN plan rather
+    /// than invented, and the subnet's usable range is therefore also what bounds how
+    /// many hosts one environment can hold: `None` means the subnet has fewer addresses
+    /// left than a further host needs, so that host cannot be addressed at all — the
+    /// addresses are reported together or not at all, because a host whose interfaces
+    /// cannot all be addressed is not a host this service can build.
     ///
     /// An address is held by the hosts that still OCCUPY the environment
-    /// ([`Self::live_hosts`]): a host that has reached the terminal `DELETED` state is
-    /// gone, its management interface with it, so the address it used is free for the
-    /// next host — the record is kept for reporting only.
-    pub fn next_host_ip(&self) -> Option<String> {
+    /// ([`Self::live_hosts`], each through [`StoredHost::held_addresses`]): a host that
+    /// has reached the terminal `DELETED` state is gone, its interfaces with it, so every
+    /// address it used is free for the next host — the record is kept for reporting only.
+    pub fn next_host_ips(&self) -> Option<HostAddresses> {
         let vmk = self.vmk_management_vlan()?;
-        let taken: Vec<&str> = self
-            .live_hosts()
-            .map(|host| host.ip_address.as_str())
-            .collect();
-        Ipv4Cidr::parse(&vmk.cidr)?
+        let taken: Vec<&str> = self.live_hosts().flat_map(StoredHost::held_addresses).collect();
+        let mut free = Ipv4Cidr::parse(&vmk.cidr)?
             .usable_addresses()
-            .find(|address| !taken.contains(&address.as_str()))
+            .filter(|address| !taken.contains(&address.as_str()));
+        let management = free.next()?;
+        let secondary: Vec<String> = free.take(ec2_resources::HOST_NETWORK_INTERFACES - 1).collect();
+        if secondary.len() + 1 < ec2_resources::HOST_NETWORK_INTERFACES {
+            return None;
+        }
+        Some(HostAddresses {
+            management,
+            secondary,
+        })
     }
 
     /// The hosts that still OCCUPY this environment: every stored host whose
@@ -2478,7 +2530,7 @@ pub const MAX_CONNECTORS_PER_ENVIRONMENT: usize = 64;
 ///
 /// The LIVE population is bounded by the environment's own `vmkManagement` VLAN subnet,
 /// since every host takes a management address out of it
-/// ([`StoredEnvironment::next_host_ip`]); what needs a cap is the records
+/// ([`StoredEnvironment::next_host_ips`]); what needs a cap is the records
 /// `DeleteEnvironmentHost` has finished with, because the name and the address of a
 /// deleted host are free again and a create/delete loop would otherwise keep every one
 /// of those records. The retention rule is the one [`MAX_ENVIRONMENTS`] states: at the
@@ -3511,7 +3563,7 @@ impl ComAmazonawsEvsAmazonelasticvmwareserviceState {
     /// A name is carried by the hosts that still OCCUPY their environment
     /// ([`StoredEnvironment::live_hosts`]): a host that has reached the terminal
     /// `DELETED` state is gone from VCF, so its DNS hostname is free for a new host, the
-    /// same reading [`StoredEnvironment::next_host_ip`] takes of its address.
+    /// same reading [`StoredEnvironment::next_host_ips`] takes of its address.
     /// A DNS hostname is compared as a DNS name ([`same_dns_name`]), so two spellings
     /// that differ only in case are ONE hostname and the second of them names a host
     /// that cannot be added.
