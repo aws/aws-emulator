@@ -58,6 +58,8 @@ pub struct Target {
     pub input: Option<String>,
     pub ecs_parameters: Option<EcsParameters>,
     pub event_bridge_parameters: Option<EventBridgeParameters>,
+    pub event_bridge_put_events_v2_parameters: Option<EventBridgePutEventsV2Parameters>,
+    pub event_bridge_put_raw_events_parameters: Option<EventBridgePutRawEventsParameters>,
     pub kinesis_parameters: Option<KinesisParameters>,
     pub sage_maker_pipeline_parameters: Option<SageMakerPipelineParameters>,
     pub sqs_parameters: Option<SqsParameters>,
@@ -136,6 +138,19 @@ pub struct PlacementStrategy {
 pub struct EventBridgeParameters {
     pub detail_type: String,
     pub source: String,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.scheduler#EventBridgePutEventsV2Parameters")]
+#[derive(Debug, Clone, Default)]
+pub struct EventBridgePutEventsV2Parameters {
+    pub detail_type: String,
+    pub source: String,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.scheduler#EventBridgePutRawEventsParameters")]
+#[derive(Debug, Clone, Default)]
+pub struct EventBridgePutRawEventsParameters {
+    pub metadata: Option<std::collections::HashMap<String, String>>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.scheduler#KinesisParameters")]

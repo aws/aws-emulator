@@ -111,6 +111,7 @@
 //!   request.
 //! * `ResourceNotFoundException` (HTTP 404) — The request references a resource which does
 //!   not exist.
+//! * `ServiceQuotaExceededException` (HTTP 402) — The request exceeds a service quota.
 //! * `ThrottlingException` (HTTP 429) — The request was denied due to request throttling.
 //! * `ValidationException` (HTTP 400) — The input fails to satisfy the constraints specified
 //!   by an AWS service.
@@ -135,6 +136,7 @@ pub enum UpdateScheduleErrorModeled {
     ConflictException(ConflictException),
     InternalServerException(InternalServerException),
     ResourceNotFoundException(ResourceNotFoundException),
+    ServiceQuotaExceededException(ServiceQuotaExceededException),
     ThrottlingException(ThrottlingException),
     ValidationException(ValidationException),
 }

@@ -106,14 +106,14 @@
 use std::collections::BTreeMap;
 use std::time::{Duration, SystemTime};
 
-use crate::ops::types::{EventBridgeParameters, FlexibleTimeWindow, Target};
+use crate::ops::types::{FlexibleTimeWindow, Target};
 
 use super::dead_letter::{
     dead_letter_attributes, failure_of, failure_of_entry, withheld, Attempt, Exhaustion, Failure,
     Report, RetryBounds, ACCESS_DENIED_CODE, AUTHORIZATION_ERROR_CODE, QUERY_ACCESS_DENIED_CODE,
     RETRY_INTERVAL,
 };
-use super::event_bridge_target::{names_event_bus, EVENTS_ARN_NAMESPACE};
+use super::event_bridge_target::{event_identity, names_event_bus, EventIdentity, EVENTS_ARN_NAMESPACE};
 use super::schedule_metrics::{
     ScheduleMetrics, INVOCATIONS_FAILED_TO_BE_SENT_TO_DEAD_LETTER_COUNT,
     INVOCATIONS_SENT_TO_DEAD_LETTER_COUNT, INVOCATION_ATTEMPT_COUNT, INVOCATION_DROPPED_COUNT,
@@ -1351,12 +1351,9 @@ async fn failed_event(
             // as the event's own detail.
             let mut entry = ::serde_json::Map::new();
             entry.insert(EVENT_BUS_NAME_MEMBER.to_string(), text(arn));
-            if let Some(parameters) = target.event_bridge_parameters.as_ref() {
-                entry.insert(SOURCE_MEMBER.to_string(), text(&parameters.source));
-                entry.insert(
-                    DETAIL_TYPE_MEMBER.to_string(),
-                    text(&parameters.detail_type),
-                );
+            if let Some(identity) = event_identity(target) {
+                entry.insert(SOURCE_MEMBER.to_string(), text(identity.source));
+                entry.insert(DETAIL_TYPE_MEMBER.to_string(), text(identity.detail_type));
             }
             entry.insert(DETAIL_MEMBER.to_string(), text(payload));
             request.insert(
@@ -1561,7 +1558,7 @@ async fn deliver(
                 callback,
                 region,
                 arn,
-                target.event_bridge_parameters.as_ref(),
+                event_identity(target),
                 body,
             )
             .await
@@ -1585,7 +1582,8 @@ const RETRYABLE_ENTRY_CODES: [&str; 2] = ["InternalFailure", "ThrottlingExceptio
 /// `PutEvents` API operation", so the invocation is that call carrying ONE entry: the
 /// bus the target's ARN names (`PutEventsRequestEntry$EventBusName` is "the name or ARN
 /// of the event bus to receive the event", so the ARN addresses it directly), the
-/// `Source` and `DetailType` the target's parameters state, and the invocation's own
+/// `Source` and `DetailType` the target's parameters state — read from whichever block
+/// states them ([`event_identity`]) — and the invocation's own
 /// payload as `Detail` — the event's JSON object, which is why `Target$Input` "must be
 /// a well-formed JSON" for this kind of target.
 ///
@@ -1596,16 +1594,16 @@ async fn put_events(
     callback: &::smithy_server_runtime::EmbeddedEmulator,
     region: &str,
     bus_arn: &str,
-    parameters: Option<&EventBridgeParameters>,
+    identity: Option<EventIdentity<'_>>,
     body: &str,
 ) -> Attempt {
     let mut entry = ::aws_sdk_eventbridge::types::PutEventsRequestEntry::builder()
         .event_bus_name(bus_arn)
         .detail(body);
-    if let Some(parameters) = parameters {
+    if let Some(identity) = identity {
         entry = entry
-            .source(&parameters.source)
-            .detail_type(&parameters.detail_type);
+            .source(identity.source)
+            .detail_type(identity.detail_type);
     }
     let answer = ::service_common::eventbridge_client::eventbridge_client(callback, region)
         .put_events()

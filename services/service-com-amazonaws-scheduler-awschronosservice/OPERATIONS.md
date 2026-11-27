@@ -49,8 +49,8 @@ contents — read that shape in the model above when you need its own members.
 
 - **Route:** `POST /schedules/{Name} -> 200`
 - **Traits:** @idempotent
-- **Input:** `Name` (string, len 1..64, pattern ^[0-9a-zA-Z-_.]+$, @httpLabel, required), `GroupName` (string, len 1..64, pattern ^[0-9a-zA-Z-_.]+$), `ScheduleExpression` (string, len 1..256, required), `StartDate` (timestamp), `EndDate` (timestamp), `Description` (string, len 0..512), `ScheduleExpressionTimezone` (string, len 1..50), `State` (string, one of: DISABLED | ENABLED), `KmsKeyArn` (string, len 1..2048, pattern ^arn:aws(-[a-z]+)?:kms:[a-z0-9\-]+:\d{12}:(key|alias)\/[0-9a-zA-Z-_]*$), `Target` (Target, required), `FlexibleTimeWindow` (FlexibleTimeWindow, required), `ClientToken` (string, len 1..64, pattern ^[a-zA-Z0-9-_]+$, @idempotencyToken), `ActionAfterCompletion` (string, one of: DELETE | NONE)
-- **Output:** `ScheduleArn` (string, len 1..1224, pattern ^arn:aws(-[a-z]+)?:scheduler:[a-z0-9\-]+:\d{12}:schedule\/[0-9a-zA-Z-_.]+\/[0-9a-zA-Z-_.]+$, required)
+- **Input:** `Name` (string, len 1..64, pattern ^[0-9a-zA-Z-_.]+$, @httpLabel, required), `GroupName` (string, len 1..64, pattern ^[0-9a-zA-Z-_.]+$), `ScheduleExpression` (string, len 1..256, required), `StartDate` (timestamp), `EndDate` (timestamp), `Description` (string, len 0..512), `ScheduleExpressionTimezone` (string, len 1..50), `State` (string, one of: DISABLED | ENABLED), `KmsKeyArn` (string, len 1..2048, pattern ^arn:aws[a-z-]*:kms:[a-z0-9\-]+:\d{12}:(key|alias)\/[0-9a-zA-Z-_]*$), `Target` (Target, required), `FlexibleTimeWindow` (FlexibleTimeWindow, required), `ClientToken` (string, len 1..64, pattern ^[a-zA-Z0-9-_]+$, @idempotencyToken), `ActionAfterCompletion` (string, one of: DELETE | NONE)
+- **Output:** `ScheduleArn` (string, len 1..1224, pattern ^arn:aws[a-z-]*:scheduler:[a-z0-9\-]+:\d{12}:schedule\/[0-9a-zA-Z-_.]+\/[0-9a-zA-Z-_.]+$, required)
 - **Errors:** `ConflictException (HTTP 409)`, `InternalServerException (HTTP 500)`, `ResourceNotFoundException (HTTP 404)`, `ServiceQuotaExceededException (HTTP 402)`, `ThrottlingException (HTTP 429)`, `ValidationException (HTTP 400)`
 
 ## GetSchedule
@@ -58,16 +58,16 @@ contents — read that shape in the model above when you need its own members.
 - **Route:** `GET /schedules/{Name} -> 200`
 - **Traits:** @readonly
 - **Input:** `Name` (string, len 1..64, pattern ^[0-9a-zA-Z-_.]+$, @httpLabel, required), `GroupName` (string, len 1..64, pattern ^[0-9a-zA-Z-_.]+$, @httpQuery(groupName))
-- **Output:** `Arn` (string, len 1..1224, pattern ^arn:aws(-[a-z]+)?:scheduler:[a-z0-9\-]+:\d{12}:schedule\/[0-9a-zA-Z-_.]+\/[0-9a-zA-Z-_.]+$), `GroupName` (string, len 1..64, pattern ^[0-9a-zA-Z-_.]+$), `Name` (string, len 1..64, pattern ^[0-9a-zA-Z-_.]+$), `ScheduleExpression` (string, len 1..256), `StartDate` (timestamp), `EndDate` (timestamp), `Description` (string, len 0..512), `ScheduleExpressionTimezone` (string, len 1..50), `State` (string, one of: DISABLED | ENABLED), `CreationDate` (timestamp), `LastModificationDate` (timestamp), `KmsKeyArn` (string, len 1..2048, pattern ^arn:aws(-[a-z]+)?:kms:[a-z0-9\-]+:\d{12}:(key|alias)\/[0-9a-zA-Z-_]*$), `Target` (Target), `FlexibleTimeWindow` (FlexibleTimeWindow), `ActionAfterCompletion` (string, one of: DELETE | NONE)
-- **Errors:** `InternalServerException (HTTP 500)`, `ResourceNotFoundException (HTTP 404)`, `ThrottlingException (HTTP 429)`, `ValidationException (HTTP 400)`
+- **Output:** `Arn` (string, len 1..1224, pattern ^arn:aws[a-z-]*:scheduler:[a-z0-9\-]+:\d{12}:schedule\/[0-9a-zA-Z-_.]+\/[0-9a-zA-Z-_.]+$), `GroupName` (string, len 1..64, pattern ^[0-9a-zA-Z-_.]+$), `Name` (string, len 1..64, pattern ^[0-9a-zA-Z-_.]+$), `ScheduleExpression` (string, len 1..256), `StartDate` (timestamp), `EndDate` (timestamp), `Description` (string, len 0..512), `ScheduleExpressionTimezone` (string, len 1..50), `State` (string, one of: DISABLED | ENABLED), `CreationDate` (timestamp), `LastModificationDate` (timestamp), `KmsKeyArn` (string, len 1..2048, pattern ^arn:aws[a-z-]*:kms:[a-z0-9\-]+:\d{12}:(key|alias)\/[0-9a-zA-Z-_]*$), `Target` (Target), `FlexibleTimeWindow` (FlexibleTimeWindow), `ActionAfterCompletion` (string, one of: DELETE | NONE)
+- **Errors:** `InternalServerException (HTTP 500)`, `ResourceNotFoundException (HTTP 404)`, `ServiceQuotaExceededException (HTTP 402)`, `ThrottlingException (HTTP 429)`, `ValidationException (HTTP 400)`
 
 ## UpdateSchedule
 
 - **Route:** `PUT /schedules/{Name} -> 200`
 - **Traits:** @idempotent
-- **Input:** `Name` (string, len 1..64, pattern ^[0-9a-zA-Z-_.]+$, @httpLabel, required), `GroupName` (string, len 1..64, pattern ^[0-9a-zA-Z-_.]+$), `ScheduleExpression` (string, len 1..256, required), `StartDate` (timestamp), `EndDate` (timestamp), `Description` (string, len 0..512), `ScheduleExpressionTimezone` (string, len 1..50), `State` (string, one of: DISABLED | ENABLED), `KmsKeyArn` (string, len 1..2048, pattern ^arn:aws(-[a-z]+)?:kms:[a-z0-9\-]+:\d{12}:(key|alias)\/[0-9a-zA-Z-_]*$), `Target` (Target, required), `FlexibleTimeWindow` (FlexibleTimeWindow, required), `ClientToken` (string, len 1..64, pattern ^[a-zA-Z0-9-_]+$, @idempotencyToken), `ActionAfterCompletion` (string, one of: DELETE | NONE)
-- **Output:** `ScheduleArn` (string, len 1..1224, pattern ^arn:aws(-[a-z]+)?:scheduler:[a-z0-9\-]+:\d{12}:schedule\/[0-9a-zA-Z-_.]+\/[0-9a-zA-Z-_.]+$, required)
-- **Errors:** `ConflictException (HTTP 409)`, `InternalServerException (HTTP 500)`, `ResourceNotFoundException (HTTP 404)`, `ThrottlingException (HTTP 429)`, `ValidationException (HTTP 400)`
+- **Input:** `Name` (string, len 1..64, pattern ^[0-9a-zA-Z-_.]+$, @httpLabel, required), `GroupName` (string, len 1..64, pattern ^[0-9a-zA-Z-_.]+$), `ScheduleExpression` (string, len 1..256, required), `StartDate` (timestamp), `EndDate` (timestamp), `Description` (string, len 0..512), `ScheduleExpressionTimezone` (string, len 1..50), `State` (string, one of: DISABLED | ENABLED), `KmsKeyArn` (string, len 1..2048, pattern ^arn:aws[a-z-]*:kms:[a-z0-9\-]+:\d{12}:(key|alias)\/[0-9a-zA-Z-_]*$), `Target` (Target, required), `FlexibleTimeWindow` (FlexibleTimeWindow, required), `ClientToken` (string, len 1..64, pattern ^[a-zA-Z0-9-_]+$, @idempotencyToken), `ActionAfterCompletion` (string, one of: DELETE | NONE)
+- **Output:** `ScheduleArn` (string, len 1..1224, pattern ^arn:aws[a-z-]*:scheduler:[a-z0-9\-]+:\d{12}:schedule\/[0-9a-zA-Z-_.]+\/[0-9a-zA-Z-_.]+$, required)
+- **Errors:** `ConflictException (HTTP 409)`, `InternalServerException (HTTP 500)`, `ResourceNotFoundException (HTTP 404)`, `ServiceQuotaExceededException (HTTP 402)`, `ThrottlingException (HTTP 429)`, `ValidationException (HTTP 400)`
 
 ## DeleteSchedule
 
@@ -75,7 +75,7 @@ contents — read that shape in the model above when you need its own members.
 - **Traits:** @idempotent
 - **Input:** `Name` (string, len 1..64, pattern ^[0-9a-zA-Z-_.]+$, @httpLabel, required), `GroupName` (string, len 1..64, pattern ^[0-9a-zA-Z-_.]+$, @httpQuery(groupName)), `ClientToken` (string, len 1..64, pattern ^[a-zA-Z0-9-_]+$, @idempotencyToken, @httpQuery(clientToken))
 - **Output:** (no members)
-- **Errors:** `ConflictException (HTTP 409)`, `InternalServerException (HTTP 500)`, `ResourceNotFoundException (HTTP 404)`, `ThrottlingException (HTTP 429)`, `ValidationException (HTTP 400)`
+- **Errors:** `ConflictException (HTTP 409)`, `InternalServerException (HTTP 500)`, `ResourceNotFoundException (HTTP 404)`, `ServiceQuotaExceededException (HTTP 402)`, `ThrottlingException (HTTP 429)`, `ValidationException (HTTP 400)`
 
 ## ListSchedules
 
@@ -90,7 +90,7 @@ contents — read that shape in the model above when you need its own members.
 - **Route:** `POST /schedule-groups/{Name} -> 200`
 - **Traits:** @idempotent
 - **Input:** `Name` (string, len 1..64, pattern ^[0-9a-zA-Z-_.]+$, @httpLabel, required), `Tags` (list<Tag>, len 0..200), `ClientToken` (string, len 1..64, pattern ^[a-zA-Z0-9-_]+$, @idempotencyToken)
-- **Output:** `ScheduleGroupArn` (string, len 1..1224, pattern ^arn:aws(-[a-z]+)?:scheduler:[a-z0-9\-]+:\d{12}:schedule-group\/[0-9a-zA-Z-_.]+$, required)
+- **Output:** `ScheduleGroupArn` (string, len 1..1224, pattern ^arn:aws[a-z-]*:scheduler:[a-z0-9\-]+:\d{12}:schedule-group\/[0-9a-zA-Z-_.]+$, required)
 - **Errors:** `ConflictException (HTTP 409)`, `InternalServerException (HTTP 500)`, `ServiceQuotaExceededException (HTTP 402)`, `ThrottlingException (HTTP 429)`, `ValidationException (HTTP 400)`
 
 ## GetScheduleGroup
@@ -98,7 +98,7 @@ contents — read that shape in the model above when you need its own members.
 - **Route:** `GET /schedule-groups/{Name} -> 200`
 - **Traits:** @readonly
 - **Input:** `Name` (string, len 1..64, pattern ^[0-9a-zA-Z-_.]+$, @httpLabel, required)
-- **Output:** `Arn` (string, len 1..1224, pattern ^arn:aws(-[a-z]+)?:scheduler:[a-z0-9\-]+:\d{12}:schedule-group\/[0-9a-zA-Z-_.]+$), `Name` (string, len 1..64, pattern ^[0-9a-zA-Z-_.]+$), `State` (string, one of: ACTIVE | DELETING), `CreationDate` (timestamp), `LastModificationDate` (timestamp)
+- **Output:** `Arn` (string, len 1..1224, pattern ^arn:aws[a-z-]*:scheduler:[a-z0-9\-]+:\d{12}:schedule-group\/[0-9a-zA-Z-_.]+$), `Name` (string, len 1..64, pattern ^[0-9a-zA-Z-_.]+$), `State` (string, one of: ACTIVE | DELETING), `CreationDate` (timestamp), `LastModificationDate` (timestamp)
 - **Errors:** `InternalServerException (HTTP 500)`, `ResourceNotFoundException (HTTP 404)`, `ThrottlingException (HTTP 429)`, `ValidationException (HTTP 400)`
 
 ## DeleteScheduleGroup
