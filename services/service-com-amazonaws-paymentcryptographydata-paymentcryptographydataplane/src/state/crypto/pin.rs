@@ -169,7 +169,8 @@ impl PinBlockFormat {
     }
 
     /// This format's modelled name, for a refusal to state.
-    fn name(self) -> &'static str {
+    #[must_use]
+    pub fn name(self) -> &'static str {
         match self {
             Self::Iso0 => "ISO_FORMAT_0",
             Self::Iso1 => "ISO_FORMAT_1",

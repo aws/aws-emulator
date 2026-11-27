@@ -1,15 +1,34 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op TranslatePinData
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `TranslatePinData`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`TranslatePinData::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! Translates one ISO 9564 PIN block into another: the PIN travels in under the PIN
+//! encryption key `IncomingKeyIdentifier` names, in the format
+//! `IncomingTranslationAttributes` names, and travels back out under the key
+//! `OutgoingKeyIdentifier` names, in the format `OutgoingTranslationAttributes` names.
+//!
+//! "PIN block translation occurs entirely within the HSM boundary and PIN data never
+//! enters or leaves Amazon Web Services Payment Cryptography in clear text" (this
+//! operation's own documentation): the PIN is read out of the incoming block and
+//! re-encrypted into the outgoing one inside this call ([`crate::state::crypto::pin`]),
+//! so the only PIN-bearing value in the response is a block encrypted under the
+//! outgoing key, and nothing of the PIN is kept here between calls.
+//!
+//! Each format is a function from a PIN to a block and back, so a translation preserves
+//! the PIN and nothing else: a block translated from one key and format to another and
+//! back again carries the same PIN, and the key the answer reports is the OUTGOING one,
+//! as that is the key the block it carries is encrypted under.
+//!
+//! Two translations the model admits are refused rather than served wrongly:
+//!
+//! * a format that binds the account number cannot be translated into one that does
+//!   not — "PIN block format that requires PAN (example, formats 0,3,4) cannot be
+//!   translated to a format (format 1) that does not require a PAN for generation"
+//!   (this operation's own documentation) — which is the modelled `ValidationException`;
+//! * a DUKPT derived PIN encryption key, the AS2805 derived one, and a key presented as
+//!   a `WrappedKeyBlock` by the dynamic-key or ECDH flows are keys this slice does not
+//!   derive, so a request naming one answers 501 rather than a PIN block protected by a
+//!   key nothing derived.
 //!
 //! ## Shape of an operation
 //!
@@ -140,6 +159,7 @@
 
 #[allow(unused_imports)]
 use super::types::*;
+use crate::state::crypto::pin;
 
 // `#[operation_error]` below expands to an invocation of the LOCAL declarative
 // `smithy!` macro, which this line is what emits into the module. Without it the
@@ -213,18 +233,249 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `TranslatePinData` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(TranslatePinDataErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("TranslatePinData"))
+        // IAM decides ahead of the service, so this is asked before anything about the
+        // request is read, and for BOTH keys the call uses: a caller whose policies do
+        // not allow this action on either of them learns nothing about either key.
+        for identifier in [
+            &input.incoming_key_identifier,
+            &input.outgoing_key_identifier,
+        ] {
+            crate::service::authorization::authorize(&*self.engine, ctx, Self::NAME, identifier)
+                .map_err(denied)?;
+        }
+        // A key presented as a TR-31 `WrappedKeyBlock` — the dynamic-key flow, and the
+        // ECDH flow whose derived key protects the block — is established outside this
+        // service's key store, which this slice does not serve.
+        if input.incoming_wrapped_key.is_some() || input.outgoing_wrapped_key.is_some() {
+            return Err(crate::scaffolded::Scaffolded::not_implemented(
+                "TranslatePinData with a WrappedKey carrying a dynamic or ECDH established PIN \
+                 encryption key",
+            ));
+        }
+        if input.incoming_dukpt_attributes.is_some() || input.outgoing_dukpt_attributes.is_some() {
+            return Err(crate::scaffolded::Scaffolded::not_implemented(
+                "TranslatePinData with a PIN block encrypted under a DUKPT derived key",
+            ));
+        }
+        if input.incoming_as2805_attributes.is_some() {
+            return Err(crate::scaffolded::Scaffolded::not_implemented(
+                "TranslatePinData with an AS2805 derived PIN encryption key",
+            ));
+        }
+        let incoming = translation(&input.incoming_translation_attributes, Leg::Incoming)?;
+        let outgoing = translation(&input.outgoing_translation_attributes, Leg::Outgoing)?;
+        // "PIN block format that requires PAN (example, formats 0,3,4) cannot be
+        // translated to a format (format 1) that does not require a PAN for generation"
+        // (this operation's own documentation): the account number a block binds is part
+        // of what it carries, so a translation that would drop it is refused.
+        if incoming.format.binds_account_number() && !outgoing.format.binds_account_number() {
+            return Err(invalid(format!(
+                "A PIN block in PinBlockFormat {} cannot be translated to PinBlockFormat {}.",
+                incoming.format.name(),
+                outgoing.format.name()
+            )));
+        }
+
+        // "The keyARN of the encryption key under which incoming PIN block data is
+        // encrypted" (`IncomingKeyIdentifier`): with no derivation attributes naming
+        // another key, that is the PEK the block is READ under, which is the key's
+        // Decrypt mode.
+        let incoming_key =
+            crate::state::resolve_key(&*self.engine, &input.incoming_key_identifier)
+                .map_err(refused)?;
+        pin_encryption_key(&incoming_key, Leg::Incoming)?;
+        // "The keyARN of the encryption key for encrypting outgoing PIN block data"
+        // (`OutgoingKeyIdentifier`): the PEK the translated block is written under, which
+        // is that key's Encrypt mode.
+        let outgoing_key =
+            crate::state::resolve_key(&*self.engine, &input.outgoing_key_identifier)
+                .map_err(refused)?;
+        pin_encryption_key(&outgoing_key, Leg::Outgoing)?;
+
+        let pin = pin::decrypt_pin_block(
+            incoming.format,
+            &incoming_key.key_algorithm,
+            incoming_key.material(),
+            &input.encrypted_pin_block,
+            incoming.account_number,
+        )
+        .map_err(refused_pin)?;
+        let pin_block = pin::encrypt_pin_block(
+            outgoing.format,
+            &outgoing_key.key_algorithm,
+            outgoing_key.material(),
+            &pin,
+            outgoing.account_number,
+        )
+        .map_err(refused_pin)?;
+
+        Ok(TranslatePinDataOutput {
+            pin_block,
+            // "The keyARN of the encryption key that Amazon Web Services Payment
+            // Cryptography uses to encrypt outgoing PIN block data after translation"
+            // (`KeyArn`), and that key's own check value: the OUTGOING key, whatever
+            // identifier named it.
+            key_arn: outgoing_key.key_arn,
+            key_check_value: outgoing_key.key_check_value,
+        })
+    }
+}
+
+/// Which leg of the translation one attribute set and one key serve: the INCOMING block
+/// is read under its key, and the OUTGOING one is written under its own.
+#[derive(Debug, Clone, Copy)]
+enum Leg {
+    Incoming,
+    Outgoing,
+}
+
+impl Leg {
+    /// The mode of use this leg puts its key to, as the control plane's `KeyModesOfUse`
+    /// spells it: reading the incoming block is a Decrypt, writing the outgoing one an
+    /// Encrypt.
+    fn mode(self) -> &'static str {
+        match self {
+            Self::Incoming => crate::state::MODE_DECRYPT,
+            Self::Outgoing => crate::state::MODE_ENCRYPT,
+        }
+    }
+
+    /// Whether `key` carries that mode.
+    fn held_by(self, key: &crate::state::ResolvedKey) -> bool {
+        match self {
+            Self::Incoming => key.modes.decrypt(),
+            Self::Outgoing => key.modes.encrypt(),
+        }
+    }
+
+    /// How this leg's members are spelled, so a refusal says which attribute set it is
+    /// about.
+    fn member_prefix(self) -> &'static str {
+        match self {
+            Self::Incoming => "Incoming",
+            Self::Outgoing => "Outgoing",
+        }
+    }
+}
+
+/// What one `TranslationIsoFormats` names: the ISO 9564 PIN block format of one leg of
+/// the translation, and the account number a format that binds one carries.
+#[derive(Debug)]
+struct Translation<'a> {
+    format: pin::PinBlockFormat,
+    /// The `PrimaryAccountNumber` that leg's own attributes carry, which every member
+    /// but `IsoFormat1` requires — and which that one carries none of, since a format 1
+    /// block binds no account number at all.
+    account_number: Option<&'a str>,
+}
+
+/// The format and account number `attributes` names, or the reason this slice serves no
+/// translation of it.
+///
+/// `leg` names which side of the translation is being read, so a refusal says which of
+/// the two attribute sets it is about. The members are the modelled
+/// `TranslationIsoFormats` ones (`smithy_query(query="shape",shape="TranslationIsoFormats")`:
+/// IsoFormat0, IsoFormat1, IsoFormat3, IsoFormat4, As2805Format0), each the PIN block
+/// format of the same number.
+fn translation<'a>(
+    attributes: &'a TranslationIsoFormats,
+    leg: Leg,
+) -> Result<Translation<'a>, TranslatePinDataError> {
+    let (format, account_number) = match attributes {
+        TranslationIsoFormats::IsoFormat0(set) => (
+            pin::PinBlockFormat::Iso0,
+            Some(set.primary_account_number.as_str()),
+        ),
+        TranslationIsoFormats::IsoFormat1(_) => (pin::PinBlockFormat::Iso1, None),
+        TranslationIsoFormats::IsoFormat3(set) => (
+            pin::PinBlockFormat::Iso3,
+            Some(set.primary_account_number.as_str()),
+        ),
+        TranslationIsoFormats::IsoFormat4(set) => (
+            pin::PinBlockFormat::Iso4,
+            Some(set.primary_account_number.as_str()),
+        ),
+        // The AS2805 format 0 block is the Australian standard's own, whose PIN
+        // encryption key this slice does not derive.
+        TranslationIsoFormats::As2805Format0(_) => {
+            return Err(crate::scaffolded::Scaffolded::not_implemented(&format!(
+                "TranslatePinData with {}TranslationAttributes naming the AS2805 format 0 PIN \
+                 block",
+                leg.member_prefix()
+            )))
+        }
+    };
+    Ok(Translation {
+        format,
+        account_number,
+    })
+}
+
+/// Judge one leg's key: a PIN block travels under a PIN ENCRYPTION key, carrying the mode
+/// of use that leg puts it to.
+fn pin_encryption_key(
+    key: &crate::state::ResolvedKey,
+    leg: Leg,
+) -> Result<(), TranslatePinDataError> {
+    if key.key_usage != crate::state::KEY_USAGE_PIN_ENCRYPTION {
+        return Err(invalid(format!(
+            "KeyUsage {} is not valid for this operation.",
+            key.key_usage
+        )));
+    }
+    if !leg.held_by(key) {
+        return Err(invalid(crate::state::missing_mode(
+            &key.key_arn,
+            leg.mode(),
+        )));
+    }
+    Ok(())
+}
+
+/// A request the calling principal's IAM policies do not allow: the modelled
+/// `AccessDeniedException` (HTTP 403), worded by [`crate::service::authorization`].
+fn denied(exception: AccessDeniedException) -> TranslatePinDataError {
+    TranslatePinDataErrorModeled::AccessDeniedException(exception).into()
+}
+
+/// A request this operation cannot serve as asked: the modelled `ValidationException`.
+fn invalid(message: String) -> TranslatePinDataError {
+    TranslatePinDataErrorModeled::ValidationException(ValidationException {
+        message,
+        field_list: None,
+    })
+    .into()
+}
+
+/// The refusal a PIN computation answered, in this operation's own error channel.
+///
+/// A PIN block that carries no PIN of the named format is an inadmissible REQUEST here —
+/// this operation verifies nothing, so there is no failed verification to report — and so
+/// is refused with the reason, as every other refusal of a request is.
+fn refused_pin(refusal: pin::PinRefusal) -> TranslatePinDataError {
+    match refusal {
+        pin::PinRefusal::Invalid(message) | pin::PinRefusal::Unreadable(message) => {
+            invalid(message)
+        }
+    }
+}
+
+/// The refusal [`crate::state::resolve_key`] answered, in this operation's own error
+/// channel.
+fn refused(refusal: crate::state::KeyRefusal) -> TranslatePinDataError {
+    match refusal {
+        crate::state::KeyRefusal::NotFound(identifier) => {
+            TranslatePinDataErrorModeled::ResourceNotFoundException(ResourceNotFoundException {
+                resource_id: Some(identifier),
+            })
+            .into()
+        }
+        crate::state::KeyRefusal::NotUsable(message) => invalid(message),
+        crate::state::KeyRefusal::Unavailable(message) => {
+            TranslatePinDataErrorModeled::InternalServerException(InternalServerException {
+                message: Some(message),
+            })
+            .into()
+        }
     }
 }

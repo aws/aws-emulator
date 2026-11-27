@@ -4,7 +4,7 @@
 //! end over the wire: `EncryptData`, `DecryptData`, `ReEncryptData`, `GenerateMac`,
 //! `VerifyMac`, `GenerateCardValidationData`, `VerifyCardValidationData`,
 //! `GenerateAuthRequestCryptogram`, `VerifyAuthRequestCryptogram`, `GeneratePinData`,
-//! `VerifyPinData`.
+//! `VerifyPinData`, `TranslatePinData`.
 //!
 //! Every call goes through the real `MultiServiceRouter`, and the keys these cases use
 //! are minted by the CONTROL plane's own `CreateKey` / `CreateAlias` on the SAME
@@ -32,6 +32,12 @@
 //! `EncryptionDecryptionAttributes` and of `ReEncryptionAttributes` is served, and the
 //! tables below span every modelled `DukptDerivationType`, `DukptKeyVariant`,
 //! `DukptEncryptionMode`, `EmvEncryptionMode` and `PaddingType` as well.
+//!
+//! `TranslatePinData` is the same rule over a PIN rather than over data: a translation
+//! reads the PIN out of the incoming block under the incoming key and the incoming ISO
+//! 9564 format and writes that same PIN into a block of the outgoing format under the
+//! outgoing key, so the table below spans every ordered PAIR of the modelled
+//! `TranslationIsoFormats` ISO members and asserts the PIN survived each one.
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -2230,13 +2236,7 @@ async fn pin_keys(
     encryption_algorithm: &str,
     verification_usage: &str,
 ) -> (Key, Key) {
-    let encryption = create_key(
-        router,
-        encryption_algorithm,
-        USAGE_PIN_ENCRYPTION,
-        encrypt_decrypt(),
-    )
-    .await;
+    let encryption = pin_encryption_key(router, encryption_algorithm).await;
     let verification = create_key(router, "TDES_2KEY", verification_usage, generate_verify()).await;
     (encryption, verification)
 }
@@ -4052,6 +4052,561 @@ async fn a_derived_key_request_the_scheme_does_not_admit_is_refused_as_invalid()
             (501, "NotImplemented"),
             "case {case:?}: a dynamic key nothing here establishes must say so, got \
              {status} {parsed}"
+        );
+    }
+}
+
+/// `POST /pindata/translate`, the URI the model binds `TranslatePinData` to.
+const TRANSLATE_PIN_DATA_URI: &str = "/pindata/translate";
+
+/// The `TranslationIsoFormats` member that names each ISO 9564 format, with the
+/// `PinBlockFormatForPinData` value the PIN data operations name that same format by and
+/// the `KeyAlgorithm` a PIN encryption key must carry for it.
+///
+/// Read off [`pin_block_formats`], which already owns that pairing, so one table serves
+/// both halves of this suite.
+fn translation_formats() -> Vec<(&'static str, &'static str, &'static str)> {
+    pin_block_formats()
+        .into_iter()
+        .map(|(format, key_algorithm)| (translation_member(format), format, key_algorithm))
+        .collect()
+}
+
+/// The `TranslationIsoFormats` member for one `PinBlockFormatForPinData` value: each ISO
+/// member is the format of the same number.
+///
+/// Source: the modelled union's own members
+/// (`smithy_query(query="shape",shape="TranslationIsoFormats")`: IsoFormat0, IsoFormat1,
+/// IsoFormat3, IsoFormat4, As2805Format0) — the last names the Australian standard's own
+/// block, which the scaffold case below covers rather than this table.
+fn translation_member(format: &str) -> &'static str {
+    match format {
+        "ISO_FORMAT_0" => "IsoFormat0",
+        "ISO_FORMAT_1" => "IsoFormat1",
+        "ISO_FORMAT_3" => "IsoFormat3",
+        "ISO_FORMAT_4" => "IsoFormat4",
+        other => panic!("no TranslationIsoFormats member names PIN block format {other:?}"),
+    }
+}
+
+/// The `TranslationIsoFormats` value for `member`: every ISO member but `IsoFormat1`
+/// requires the account number, and `IsoFormat1`'s own structure has no member at all,
+/// since a format 1 block binds no account number.
+fn translation_attributes(member: &str) -> Value {
+    if member == "IsoFormat1" {
+        json!({member: {}})
+    } else {
+        json!({member: {"PrimaryAccountNumber": PIN_DATA_PAN}})
+    }
+}
+
+/// The `TranslatePinData` request body.
+fn translate_pin_data_body(
+    incoming_key: &str,
+    outgoing_key: &str,
+    incoming_member: &str,
+    outgoing_member: &str,
+    encrypted_pin_block: &str,
+) -> Value {
+    json!({
+        "IncomingKeyIdentifier": incoming_key,
+        "OutgoingKeyIdentifier": outgoing_key,
+        "IncomingTranslationAttributes": translation_attributes(incoming_member),
+        "OutgoingTranslationAttributes": translation_attributes(outgoing_member),
+        "EncryptedPinBlock": encrypted_pin_block,
+    })
+}
+
+/// A PIN encryption key of `key_algorithm` that may both read and write a PIN block.
+async fn pin_encryption_key(router: &MultiServiceRouter, key_algorithm: &str) -> Key {
+    create_key(
+        router,
+        key_algorithm,
+        USAGE_PIN_ENCRYPTION,
+        encrypt_decrypt(),
+    )
+    .await
+}
+
+/// Whether a block of `incoming` may be translated into one of `outgoing`: "PIN block
+/// format that requires PAN (example, formats 0,3,4) cannot be translated to a format
+/// (format 1) that does not require a PAN for generation" (`TranslatePinData`'s own
+/// documentation).
+fn translatable(incoming: &str, outgoing: &str) -> bool {
+    outgoing != "ISO_FORMAT_1" || incoming == "ISO_FORMAT_1"
+}
+
+/// One row of the translation-refusal table: the two identifiers, the incoming format
+/// member, the block the request carries, and the refusal it must answer.
+struct TranslationRefusal {
+    case: &'static str,
+    incoming: String,
+    outgoing: String,
+    incoming_member: &'static str,
+    carried: String,
+    status: u16,
+    code: &'static str,
+    /// The sentence the refusal states, or empty where the case asserts only the class.
+    message: String,
+}
+
+#[tokio::test]
+async fn a_pin_block_translates_between_every_pair_of_modelled_iso_formats() {
+    let router = emulator();
+    // The table spans the ISO members of the modelled `TranslationIsoFormats`, which are
+    // the same four formats `PinBlockFormatForPinData` names: a format the model gains
+    // later fails this assertion rather than going untested.
+    let covered: BTreeSet<&str> = translation_formats()
+        .iter()
+        .map(|(_, format, _)| *format)
+        .collect();
+    assert_eq!(
+        covered,
+        PIN_BLOCK_FORMAT_FOR_PIN_DATA_VALUES
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>(),
+        "the translation table must span the modelled format catalog, which is \
+         {PIN_BLOCK_FORMAT_FOR_PIN_DATA_VALUES:?}"
+    );
+
+    let pvk = create_key(
+        &router,
+        "TDES_2KEY",
+        USAGE_VISA_PIN_VERIFICATION,
+        generate_verify(),
+    )
+    .await;
+    for (incoming_member, incoming_format, incoming_algorithm) in translation_formats() {
+        for (outgoing_member, outgoing_format, outgoing_algorithm) in translation_formats() {
+            if !translatable(incoming_format, outgoing_format) {
+                continue;
+            }
+            // Both published bounds of the PIN a block carries (`IntegerRangeBetween4And12`
+            // on `PinDataLength`): the block carries the PIN's own length, so a
+            // translation has to preserve it whatever it is.
+            for length in [4i64, 12] {
+                let case = format!(
+                    "{incoming_format} under {incoming_algorithm} to {outgoing_format} under \
+                     {outgoing_algorithm}, PIN of {length} digits"
+                );
+                let incoming_key = pin_encryption_key(&router, incoming_algorithm).await;
+                let outgoing_key = pin_encryption_key(&router, outgoing_algorithm).await;
+                // The PIN this case works with: drawn by `GeneratePinData`, which answers
+                // it inside a block encrypted under the incoming key and the Visa PIN
+                // verification value of that very PIN.
+                let generated = ok_data(
+                    &router,
+                    GENERATE_PIN_DATA_URI,
+                    &generate_pin_data_body(
+                        &pvk.arn,
+                        &incoming_key.arn,
+                        visa_pin(),
+                        incoming_format,
+                        Some(length),
+                    ),
+                )
+                .await;
+                let block = string(&generated, "EncryptedPinBlock").to_string();
+                let (_, verification_value) = pin_data_member(&generated);
+
+                let translated = ok_data(
+                    &router,
+                    TRANSLATE_PIN_DATA_URI,
+                    &translate_pin_data_body(
+                        &incoming_key.arn,
+                        &outgoing_key.arn,
+                        incoming_member,
+                        outgoing_member,
+                        &block,
+                    ),
+                )
+                .await;
+                assert_eq!(
+                    string(&translated, "KeyArn"),
+                    outgoing_key.arn,
+                    "case {case}: the answer names the OUTGOING key's canonical ARN, got \
+                     {translated}"
+                );
+                assert_eq!(
+                    string(&translated, "KeyCheckValue"),
+                    outgoing_key.key_check_value,
+                    "case {case}: the answer names the outgoing key's own check value, got \
+                     {translated}"
+                );
+                let outgoing_block = string(&translated, "PinBlock").to_string();
+                assert!(
+                    outgoing_block.len() == pin_block_characters(outgoing_format)
+                        && outgoing_block.chars().all(|c| c.is_ascii_hexdigit()),
+                    "case {case}: expected {} hexadecimal characters of outgoing PIN block, \
+                     got {outgoing_block:?}",
+                    pin_block_characters(outgoing_format)
+                );
+                assert_ne!(
+                    outgoing_block, block,
+                    "case {case}: a block encrypted under another key is not the block it \
+                     was translated from, got {translated}"
+                );
+
+                // The PIN survived the translation: the value the generation answered is
+                // the Visa PIN verification value of the PIN the TRANSLATED block carries,
+                // read under the outgoing key in the outgoing format.
+                let verified = ok_data(
+                    &router,
+                    VERIFY_PIN_DATA_URI,
+                    &verify_pin_data_body(
+                        &pvk.arn,
+                        &outgoing_key.arn,
+                        json!({"VisaPin": {
+                            "PinVerificationKeyIndex": PIN_VERIFICATION_KEY_INDEX,
+                            "VerificationValue": verification_value,
+                        }}),
+                        outgoing_format,
+                        &outgoing_block,
+                    ),
+                )
+                .await;
+                assert_eq!(
+                    string(&verified, "EncryptionKeyArn"),
+                    outgoing_key.arn,
+                    "case {case}: the verification runs under the outgoing key, got {verified}"
+                );
+
+                // And back the other way, wherever the return leg is a translation the
+                // service performs: the PIN is still the one the first block carried.
+                if translatable(outgoing_format, incoming_format) {
+                    let returned = ok_data(
+                        &router,
+                        TRANSLATE_PIN_DATA_URI,
+                        &translate_pin_data_body(
+                            &outgoing_key.arn,
+                            &incoming_key.arn,
+                            outgoing_member,
+                            incoming_member,
+                            &outgoing_block,
+                        ),
+                    )
+                    .await;
+                    let returned_block = string(&returned, "PinBlock").to_string();
+                    let reverified = ok_data(
+                        &router,
+                        VERIFY_PIN_DATA_URI,
+                        &verify_pin_data_body(
+                            &pvk.arn,
+                            &incoming_key.arn,
+                            json!({"VisaPin": {
+                                "PinVerificationKeyIndex": PIN_VERIFICATION_KEY_INDEX,
+                                "VerificationValue": verification_value,
+                            }}),
+                            incoming_format,
+                            &returned_block,
+                        ),
+                    )
+                    .await;
+                    assert_eq!(
+                        string(&reverified, "EncryptionKeyArn"),
+                        incoming_key.arn,
+                        "case {case}: translating back answers a block the incoming key \
+                         reads the same PIN out of, got {reverified}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_translation_that_would_drop_the_account_number_is_refused() {
+    let router = emulator();
+    // Every format that binds the account number, translated to the one that does not.
+    for (incoming_member, incoming_format, incoming_algorithm) in translation_formats() {
+        if translatable(incoming_format, "ISO_FORMAT_1") {
+            continue;
+        }
+        let case = format!("{incoming_format} to ISO_FORMAT_1");
+        let incoming_key = pin_encryption_key(&router, incoming_algorithm).await;
+        let outgoing_key = pin_encryption_key(&router, "TDES_2KEY").await;
+        let pvk = create_key(
+            &router,
+            "TDES_2KEY",
+            USAGE_VISA_PIN_VERIFICATION,
+            generate_verify(),
+        )
+        .await;
+        let block = generated_pin_block(
+            &router,
+            &pvk.arn,
+            &incoming_key.arn,
+            visa_pin(),
+            incoming_format,
+            None,
+        )
+        .await;
+        let (status, parsed) = data(
+            &router,
+            TRANSLATE_PIN_DATA_URI,
+            &translate_pin_data_body(
+                &incoming_key.arn,
+                &outgoing_key.arn,
+                incoming_member,
+                "IsoFormat1",
+                &block,
+            ),
+        )
+        .await;
+        assert_eq!(
+            (status, error_code(&parsed).as_str()),
+            (400, "ValidationException"),
+            "case {case}: a translation that drops the account number must be refused, got \
+             {status} {parsed}"
+        );
+        assert_eq!(
+            error_message(&parsed),
+            format!(
+                "A PIN block in PinBlockFormat {incoming_format} cannot be translated to \
+                 PinBlockFormat ISO_FORMAT_1."
+            ),
+            "case {case}: the refusal must state the two formats, got {parsed}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn the_translation_keys_are_pin_encryption_keys_that_read_and_write_a_block() {
+    let router = emulator();
+    let pvk = create_key(
+        &router,
+        "TDES_2KEY",
+        USAGE_VISA_PIN_VERIFICATION,
+        generate_verify(),
+    )
+    .await;
+    let incoming_key = pin_encryption_key(&router, "TDES_2KEY").await;
+    let outgoing_key = pin_encryption_key(&router, "TDES_2KEY").await;
+    let block = generated_pin_block(
+        &router,
+        &pvk.arn,
+        &incoming_key.arn,
+        visa_pin(),
+        "ISO_FORMAT_0",
+        None,
+    )
+    .await;
+    // A PIN encryption key that may only write a block, and one that may only read one.
+    let write_only = create_key(
+        &router,
+        "TDES_2KEY",
+        USAGE_PIN_ENCRYPTION,
+        json!({"Encrypt": true}),
+    )
+    .await;
+    let read_only = create_key(
+        &router,
+        "TDES_2KEY",
+        USAGE_PIN_ENCRYPTION,
+        json!({"Decrypt": true}),
+    )
+    .await;
+    let aes = pin_encryption_key(&router, "AES_128").await;
+
+    let rows = vec![
+        TranslationRefusal {
+            case: "an incoming key that is not a PIN encryption key",
+            incoming: pvk.arn.clone(),
+            outgoing: outgoing_key.arn.clone(),
+            incoming_member: "IsoFormat0",
+            carried: block.clone(),
+            status: 400,
+            code: "ValidationException",
+            message: format!(
+                "KeyUsage {USAGE_VISA_PIN_VERIFICATION} is not valid for this operation."
+            ),
+        },
+        TranslationRefusal {
+            case: "an outgoing key that is not a PIN encryption key",
+            incoming: incoming_key.arn.clone(),
+            outgoing: pvk.arn.clone(),
+            incoming_member: "IsoFormat0",
+            carried: block.clone(),
+            status: 400,
+            code: "ValidationException",
+            message: format!(
+                "KeyUsage {USAGE_VISA_PIN_VERIFICATION} is not valid for this operation."
+            ),
+        },
+        TranslationRefusal {
+            case: "an incoming key whose modes of use cannot read a block",
+            incoming: write_only.arn.clone(),
+            outgoing: outgoing_key.arn.clone(),
+            incoming_member: "IsoFormat0",
+            carried: block.clone(),
+            status: 400,
+            code: "ValidationException",
+            message: format!(
+                "The KeyModesOfUse of key {} do not include Decrypt.",
+                write_only.arn
+            ),
+        },
+        TranslationRefusal {
+            case: "an outgoing key whose modes of use cannot write a block",
+            incoming: incoming_key.arn.clone(),
+            outgoing: read_only.arn.clone(),
+            incoming_member: "IsoFormat0",
+            carried: block.clone(),
+            status: 400,
+            code: "ValidationException",
+            message: format!(
+                "The KeyModesOfUse of key {} do not include Encrypt.",
+                read_only.arn
+            ),
+        },
+        TranslationRefusal {
+            case: "an incoming key whose algorithm names no cipher for the format",
+            incoming: aes.arn.clone(),
+            outgoing: outgoing_key.arn.clone(),
+            incoming_member: "IsoFormat0",
+            carried: block.clone(),
+            status: 400,
+            code: "ValidationException",
+            message: "KeyAlgorithm AES_128 is not valid for PinBlockFormat ISO_FORMAT_0."
+                .to_string(),
+        },
+        TranslationRefusal {
+            case: "a block of another format's length",
+            incoming: aes.arn.clone(),
+            outgoing: outgoing_key.arn.clone(),
+            incoming_member: "IsoFormat4",
+            carried: block.clone(),
+            status: 400,
+            code: "ValidationException",
+            message: "An encrypted PIN block in PinBlockFormat ISO_FORMAT_4 carries 32 \
+                      hexadecimal characters, not 16."
+                .to_string(),
+        },
+        TranslationRefusal {
+            case: "a block that carries no PIN field of the incoming format",
+            incoming: incoming_key.arn.clone(),
+            outgoing: outgoing_key.arn.clone(),
+            incoming_member: "IsoFormat0",
+            carried: hex_data(8),
+            status: 400,
+            code: "ValidationException",
+            message: "The PIN block does not carry a PIN in PinBlockFormat ISO_FORMAT_0."
+                .to_string(),
+        },
+        TranslationRefusal {
+            case: "an incoming identifier that names no key",
+            incoming: "alias/no-such-pin-key".to_string(),
+            outgoing: outgoing_key.arn.clone(),
+            incoming_member: "IsoFormat0",
+            carried: block.clone(),
+            status: 404,
+            code: "ResourceNotFoundException",
+            message: String::new(),
+        },
+        TranslationRefusal {
+            case: "an outgoing identifier that names no key",
+            incoming: incoming_key.arn.clone(),
+            outgoing: "alias/no-such-pin-key".to_string(),
+            incoming_member: "IsoFormat0",
+            carried: block.clone(),
+            status: 404,
+            code: "ResourceNotFoundException",
+            message: String::new(),
+        },
+    ];
+    for row in rows {
+        let case = row.case;
+        let (status, parsed) = data(
+            &router,
+            TRANSLATE_PIN_DATA_URI,
+            &translate_pin_data_body(
+                &row.incoming,
+                &row.outgoing,
+                row.incoming_member,
+                "IsoFormat0",
+                &row.carried,
+            ),
+        )
+        .await;
+        assert_eq!(
+            (status, error_code(&parsed).as_str()),
+            (row.status, row.code),
+            "case {case:?}: expected {} {}, got {status} {parsed}",
+            row.status,
+            row.code
+        );
+        if !row.message.is_empty() {
+            assert_eq!(
+                error_message(&parsed),
+                row.message,
+                "case {case:?}: the refusal must state the rule it broke, got {parsed}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn the_translation_forms_this_slice_does_not_serve_still_say_so() {
+    let router = emulator();
+    let pvk = create_key(
+        &router,
+        "TDES_2KEY",
+        USAGE_VISA_PIN_VERIFICATION,
+        generate_verify(),
+    )
+    .await;
+    let incoming_key = pin_encryption_key(&router, "TDES_2KEY").await;
+    let outgoing_key = pin_encryption_key(&router, "TDES_2KEY").await;
+    let block = generated_pin_block(
+        &router,
+        &pvk.arn,
+        &incoming_key.arn,
+        visa_pin(),
+        "ISO_FORMAT_0",
+        None,
+    )
+    .await;
+    let base = translate_pin_data_body(
+        &incoming_key.arn,
+        &outgoing_key.arn,
+        "IsoFormat0",
+        "IsoFormat0",
+        &block,
+    );
+    let wrapped = json!({
+        "WrappedKeyMaterial": {"Tr31KeyBlock": "B0096P0TB00S0100KS1800604B120F9292800000A1B2C3D4"},
+    });
+    let dukpt = json!({"KeySerialNumber": "FFFF9876543210E00001"});
+    // Each member of the input that names a key this slice does not derive, or a block
+    // format it does not build: one request each, otherwise the one the round trip serves.
+    let rows: Vec<(&str, &str, Value)> = vec![
+        ("an incoming DUKPT derived key", "IncomingDukptAttributes", dukpt.clone()),
+        ("an outgoing DUKPT derived key", "OutgoingDukptAttributes", dukpt),
+        ("an incoming dynamic or ECDH key", "IncomingWrappedKey", wrapped.clone()),
+        ("an outgoing dynamic or ECDH key", "OutgoingWrappedKey", wrapped),
+        (
+            "an AS2805 derived key",
+            "IncomingAs2805Attributes",
+            json!({"SystemTraceAuditNumber": "123456", "TransactionAmount": "000000010000"}),
+        ),
+        (
+            "the AS2805 format 0 block",
+            "OutgoingTranslationAttributes",
+            json!({"As2805Format0": {"PrimaryAccountNumber": PIN_DATA_PAN}}),
+        ),
+    ];
+    for (case, member, value) in rows {
+        let mut body = base.clone();
+        if let Value::Object(target) = &mut body {
+            target.insert(member.to_string(), value);
+        }
+        let (status, parsed) = data(&router, TRANSLATE_PIN_DATA_URI, &body).await;
+        assert_eq!(
+            (status, error_code(&parsed).as_str()),
+            (501, "NotImplemented"),
+            "case {case:?}: a key or block nothing here derives must say so, got {status} \
+             {parsed}"
         );
     }
 }
