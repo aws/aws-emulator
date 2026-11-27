@@ -226,11 +226,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         {
             return Err(AssociateCertificateErrorModeled::ValidationException(
                 ValidationException {
-                    message: format!(
-                        "clientToken {} was already used for a {} request with different parameters",
-                        input.client_token,
-                        Self::NAME,
-                    ),
+                    message: crate::state::token_mismatch_message(Self::NAME, &input.client_token),
                 },
             )
             .into());

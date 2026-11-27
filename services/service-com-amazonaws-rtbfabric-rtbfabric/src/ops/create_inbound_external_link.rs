@@ -222,40 +222,40 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // for, which would name the link under a zone the gateway does not answer on.
         let gateway_region = gateway.region.clone();
 
-        // See `create_requester_gateway` for the `@idempotencyToken` contract; the
-        // token is scoped to this operation, so it never collides with a create of
-        // another resource.
-        let fingerprint = crate::state::parameter_fingerprint(&format!(
-            "gatewayId={:?}|attributes={:?}|logSettings={:?}|tags={}",
-            input.gateway_id,
-            input.attributes,
-            input.log_settings,
-            crate::state::canonical_tags(input.tags.as_ref()),
-        ));
-        let token = crate::state::idempotency_key(Self::NAME, &input.client_token);
-        if let Some(prior) = store.idempotency.get(&token).cloned() {
-            if prior.fingerprint != fingerprint {
+        // The `@idempotencyToken` replay decision is this service's one statement of
+        // it (`crate::state::ClientToken`); the token is scoped to this operation, so
+        // it never collides with a create of another resource. What this create states
+        // for itself is the parameters a retry has to repeat and the stored link it
+        // answers with.
+        let token = crate::state::ClientToken::presented(
+            Self::NAME,
+            &input.client_token,
+            &format!(
+                "gatewayId={:?}|attributes={:?}|logSettings={:?}|tags={}",
+                input.gateway_id,
+                input.attributes,
+                input.log_settings,
+                crate::state::canonical_tags(input.tags.as_ref()),
+            ),
+        );
+        match token.classify(&store) {
+            crate::state::CreateRetry::Mismatch(message) => {
                 return Err(CreateInboundExternalLinkErrorModeled::ValidationException(
-                    ValidationException {
-                        message: format!(
-                            "clientToken {} was already used for a {} request with different parameters",
-                            input.client_token,
-                            Self::NAME,
-                        ),
-                    },
+                    ValidationException { message },
                 )
                 .into());
             }
-            if let Some(link) =
-                store.find_inbound_external_link(&input.gateway_id, &prior.resource_id)
-            {
-                return Ok(CreateInboundExternalLinkOutput {
-                    gateway_id: link.gateway_id.clone(),
-                    link_id: link.link_id.clone(),
-                    status: link.status.clone(),
-                    domain_name: link.domain_name.clone(),
-                });
+            crate::state::CreateRetry::Replay(link_id) => {
+                if let Some(link) = store.find_inbound_external_link(&input.gateway_id, &link_id) {
+                    return Ok(CreateInboundExternalLinkOutput {
+                        gateway_id: link.gateway_id.clone(),
+                        link_id: link.link_id.clone(),
+                        status: link.status.clone(),
+                        domain_name: link.domain_name.clone(),
+                    });
+                }
             }
+            crate::state::CreateRetry::Fresh => {}
         }
 
         // The store's own bounds, checked before the insert. A link of any kind
@@ -273,15 +273,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 .into(),
             );
         }
-        if store.idempotency.len() >= crate::state::IDEMPOTENCY_QUOTA {
+        if let Some(message) = crate::state::client_token_quota_refusal(&store) {
             return Err(
                 CreateInboundExternalLinkErrorModeled::ServiceQuotaExceededException(
-                    ServiceQuotaExceededException {
-                        message: format!(
-                            "this emulator holds its limit of {} client-token records",
-                            crate::state::IDEMPOTENCY_QUOTA
-                        ),
-                    },
+                    ServiceQuotaExceededException { message },
                 )
                 .into(),
             );
@@ -336,13 +331,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         store
             .inbound_external_links
             .insert((input.gateway_id, link_id.clone()), link);
-        store.idempotency.insert(
-            token,
-            crate::state::IdempotentCreate {
-                resource_id: link_id,
-                fingerprint,
-            },
-        );
+        token.retain(&mut store, link_id);
         Ok(output)
     }
 }

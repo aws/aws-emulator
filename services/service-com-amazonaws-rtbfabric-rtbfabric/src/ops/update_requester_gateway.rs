@@ -214,10 +214,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             crate::state::Retry::Mismatch => {
                 return Err(UpdateRequesterGatewayErrorModeled::ValidationException(
                     ValidationException {
-                        message: format!(
-                            "clientToken {} was already used for a {} request with different parameters",
-                            input.client_token,
+                        message: crate::state::token_mismatch_message(
                             Self::NAME,
+                            &input.client_token,
                         ),
                     },
                 )

@@ -253,49 +253,51 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .into());
         }
 
-        // See `create_requester_gateway` for the `@idempotencyToken` contract; the
-        // token is scoped to this operation, so the two creates never collide.
-        let fingerprint = crate::state::parameter_fingerprint(&format!(
-            "vpcId={:?}|subnetIds={:?}|securityGroupIds={:?}|domainName={:?}|port={:?}\
-             |protocol={:?}|listenerConfig={:?}|trustStore={:?}|managedEndpoint={:?}\
-             |gatewayType={:?}|clientRoutingPolicy={:?}|description={:?}|tags={}",
-            input.vpc_id,
-            input.subnet_ids,
-            input.security_group_ids,
-            input.domain_name,
-            input.port,
-            input.protocol,
-            input.listener_config,
-            input.trust_store_configuration,
-            input.managed_endpoint_configuration,
-            input.gateway_type,
-            input.client_routing_policy,
-            input.description,
-            crate::state::canonical_tags(input.tags.as_ref()),
-        ));
-        let token = crate::state::idempotency_key(Self::NAME, &input.client_token);
-        if let Some(prior) = store.idempotency.get(&token).cloned() {
-            if prior.fingerprint != fingerprint {
+        // The `@idempotencyToken` replay decision is this service's one statement of
+        // it (`crate::state::ClientToken`); the token is scoped to this operation, so
+        // the two creates never collide. What this create states for itself is the
+        // parameters a retry has to repeat and the stored gateway it answers with.
+        let token = crate::state::ClientToken::presented(
+            Self::NAME,
+            &input.client_token,
+            &format!(
+                "vpcId={:?}|subnetIds={:?}|securityGroupIds={:?}|domainName={:?}|port={:?}\
+                 |protocol={:?}|listenerConfig={:?}|trustStore={:?}|managedEndpoint={:?}\
+                 |gatewayType={:?}|clientRoutingPolicy={:?}|description={:?}|tags={}",
+                input.vpc_id,
+                input.subnet_ids,
+                input.security_group_ids,
+                input.domain_name,
+                input.port,
+                input.protocol,
+                input.listener_config,
+                input.trust_store_configuration,
+                input.managed_endpoint_configuration,
+                input.gateway_type,
+                input.client_routing_policy,
+                input.description,
+                crate::state::canonical_tags(input.tags.as_ref()),
+            ),
+        );
+        match token.classify(&store) {
+            crate::state::CreateRetry::Mismatch(message) => {
                 return Err(CreateResponderGatewayErrorModeled::ValidationException(
-                    ValidationException {
-                        message: format!(
-                            "clientToken {} was already used for a {} request with different parameters",
-                            input.client_token,
-                            Self::NAME,
-                        ),
-                    },
+                    ValidationException { message },
                 )
                 .into());
             }
-            if let Some(gateway) = store.responder_gateways.get(&prior.resource_id) {
-                return Ok(CreateResponderGatewayOutput {
-                    gateway_id: gateway.gateway_id.clone(),
-                    status: gateway.status.clone(),
-                    listener_config: gateway.listener_config.clone(),
-                    external_inbound_endpoint: gateway.external_inbound_endpoint.clone(),
-                    client_routing_policy: gateway.client_routing_policy.clone(),
-                });
+            crate::state::CreateRetry::Replay(gateway_id) => {
+                if let Some(gateway) = store.responder_gateways.get(&gateway_id) {
+                    return Ok(CreateResponderGatewayOutput {
+                        gateway_id: gateway.gateway_id.clone(),
+                        status: gateway.status.clone(),
+                        listener_config: gateway.listener_config.clone(),
+                        external_inbound_endpoint: gateway.external_inbound_endpoint.clone(),
+                        client_routing_policy: gateway.client_routing_policy.clone(),
+                    });
+                }
             }
+            crate::state::CreateRetry::Fresh => {}
         }
 
         // The store's own bound: see `create_requester_gateway`.
@@ -310,14 +312,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             )
             .into());
         }
-        if store.idempotency.len() >= crate::state::IDEMPOTENCY_QUOTA {
+        if let Some(message) = crate::state::client_token_quota_refusal(&store) {
             return Err(CreateResponderGatewayErrorModeled::ServiceQuotaExceededException(
-                ServiceQuotaExceededException {
-                    message: format!(
-                        "this emulator holds its limit of {} client-token records",
-                        crate::state::IDEMPOTENCY_QUOTA
-                    ),
-                },
+                ServiceQuotaExceededException { message },
             )
             .into());
         }
@@ -384,13 +381,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             client_routing_policy: gateway.client_routing_policy.clone(),
         };
         store.responder_gateways.insert(gateway_id.clone(), gateway);
-        store.idempotency.insert(
-            token,
-            crate::state::IdempotentCreate {
-                resource_id: gateway_id,
-                fingerprint,
-            },
-        );
+        token.retain(&mut store, gateway_id);
         Ok(output)
     }
 }

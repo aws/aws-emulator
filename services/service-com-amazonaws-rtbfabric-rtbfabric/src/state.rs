@@ -20,6 +20,8 @@ mod certificates;
 /// The two external-link surfaces' records: the outbound links a requester gateway
 /// opens and the inbound links a responder gateway takes.
 mod external_links;
+/// The ONE replay decision this service's creates take on an `@idempotencyToken`.
+mod idempotent_creates;
 /// The one encoding this service's paginated reads state a page boundary in.
 mod page_tokens;
 /// The one page walk this service's paginated reads take over their records.
@@ -42,6 +44,10 @@ pub use external_links::{
     inbound_external_link_domain_name, InboundExternalLink, OutboundExternalLink,
     CONNECTIVITY_TYPE_EXTERNAL_INBOUND, CONNECTIVITY_TYPE_PUBLIC_EGRESS,
     INBOUND_EXTERNAL_LINK_EXTERNAL_ONLY_MESSAGE,
+};
+pub use idempotent_creates::{
+    canonical_tags, client_token_quota_refusal, idempotency_key, parameter_fingerprint,
+    token_mismatch_message, ClientToken, CreateRetry, IdempotentCreate,
 };
 pub use page_tokens::{
     decode_next_token, encode_next_token, token_refusal, PageTokenKey, TokenRefusal, Walk,
@@ -517,20 +523,6 @@ impl Link {
     }
 }
 
-/// What the first call carrying an `@idempotencyToken` minted, so a retry with
-/// the same token answers with the same resource instead of a second one.
-///
-/// Fixed size: see [`IDEMPOTENCY_QUOTA`] for the retention rule.
-#[derive(Debug, Clone)]
-pub struct IdempotentCreate {
-    /// The id the first call minted.
-    pub resource_id: String,
-    /// A digest of that call's other parameters: the documented contract is that
-    /// a retry of the same token with DIFFERENT parameters fails rather than
-    /// silently answering the first call's resource.
-    pub fingerprint: [u8; 32],
-}
-
 /// The number of links a gateway is an end of, by status. Every member is
 /// derived by scanning [`ComAmazonawsRtbfabricRtbfabricState::links`].
 #[derive(Debug, Default, Clone, Copy)]
@@ -999,71 +991,6 @@ impl ComAmazonawsRtbfabricRtbfabricState {
 /// The modelled timestamp for an instant held in state.
 pub fn timestamp(at: SystemTime) -> ::aws_smithy_types::DateTime {
     ::aws_smithy_types::DateTime::from(at)
-}
-
-/// The digest an idempotency record is keyed by: the operation the token was
-/// presented to, and the token itself. Hashing both keeps the retained key a
-/// fixed 32 bytes however long a `clientToken` the caller chose — the model
-/// bounds neither its length nor its content.
-pub fn idempotency_key(operation: &str, client_token: &str) -> [u8; 32] {
-    digest(&[operation.as_bytes(), client_token.as_bytes()])
-}
-
-/// The digest of a create's parameters, which an `@idempotencyToken` retry is
-/// compared against. Fixed size, so a retained record never grows with the
-/// request it came from.
-pub fn parameter_fingerprint(rendering: &str) -> [u8; 32] {
-    digest(&[rendering.as_bytes()])
-}
-
-/// SHA-256 over `parts`, each length-prefixed so two different splits of the
-/// same bytes cannot collide.
-fn digest(parts: &[&[u8]]) -> [u8; 32] {
-    use sha2::{Digest, Sha256};
-
-    let mut hasher = Sha256::new();
-    for part in parts {
-        hasher.update((part.len() as u64).to_be_bytes());
-        hasher.update(part);
-    }
-    hasher.finalize().into()
-}
-
-/// A tag map rendered canonically (sorted by key), so the same tags in a
-/// different iteration order fingerprint identically while two DIFFERENT maps
-/// never render alike.
-///
-/// Each key and each value is written with its own byte length in front of it,
-/// which is what [`digest`] does to the parts it hashes and for the same reason:
-/// a modelled tag value carries no pattern at all and a tag key admits `=`, so
-/// any separator this rendering could choose is a character the tags themselves
-/// may contain. With the lengths in the rendering, where one pair ends and the
-/// next begins is read off it rather than guessed, so `{"a": "b,c=d"}` and
-/// `{"a": "b", "c": "d"}` are the two distinct maps they are.
-///
-/// A map stating no pairs renders as the empty string, the same as no tags at
-/// all: a create holds the tags it was given and neither form gives it any.
-///
-/// A fingerprint is only ever compared with one computed by the same build in
-/// the same process, so the rest of a request can be rendered with `Debug`,
-/// which quotes and escapes every string it writes; a `HashMap` cannot, because
-/// its iteration order varies between two calls that carry identical tags.
-pub fn canonical_tags(tags: Option<&HashMap<String, String>>) -> String {
-    use std::fmt::Write as _;
-
-    let mut pairs: Vec<(&str, &str)> = tags
-        .map(|tags| {
-            tags.iter()
-                .map(|(key, value)| (key.as_str(), value.as_str()))
-                .collect()
-        })
-        .unwrap_or_default();
-    pairs.sort_unstable();
-    let mut rendered = String::new();
-    for (key, value) in &pairs {
-        let _ = write!(rendered, "{}:{key}{}:{value}", key.len(), value.len());
-    }
-    rendered
 }
 
 /// One DNS label, from arbitrary text: lowercase, only `[a-z0-9-]`, and never

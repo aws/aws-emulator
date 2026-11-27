@@ -218,41 +218,40 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .into());
         }
 
-        // See `create_requester_gateway` for the `@idempotencyToken` contract; the
-        // token is scoped to this operation, so it never collides with a create of
-        // another resource.
-        let fingerprint = crate::state::parameter_fingerprint(&format!(
-            "gatewayId={:?}|linkId={:?}|priority={:?}|conditions={:?}|tags={}",
-            input.gateway_id,
-            input.link_id,
-            input.priority,
-            input.conditions,
-            crate::state::canonical_tags(input.tags.as_ref()),
-        ));
-        let token = crate::state::idempotency_key(Self::NAME, &input.client_token);
-        if let Some(prior) = store.idempotency.get(&token).cloned() {
-            if prior.fingerprint != fingerprint {
+        // The `@idempotencyToken` replay decision is this service's one statement of
+        // it (`crate::state::ClientToken`); the token is scoped to this operation, so
+        // it never collides with a create of another resource. What this create states
+        // for itself is the parameters a retry has to repeat and the stored rule it
+        // answers with.
+        let token = crate::state::ClientToken::presented(
+            Self::NAME,
+            &input.client_token,
+            &format!(
+                "gatewayId={:?}|linkId={:?}|priority={:?}|conditions={:?}|tags={}",
+                input.gateway_id,
+                input.link_id,
+                input.priority,
+                input.conditions,
+                crate::state::canonical_tags(input.tags.as_ref()),
+            ),
+        );
+        match token.classify(&store) {
+            crate::state::CreateRetry::Mismatch(message) => {
                 return Err(CreateLinkRoutingRuleErrorModeled::ValidationException(
-                    ValidationException {
-                        message: format!(
-                            "clientToken {} was already used for a {} request with different parameters",
-                            input.client_token,
-                            Self::NAME,
-                        ),
-                    },
+                    ValidationException { message },
                 )
                 .into());
             }
-            if let Some(rule) = store
-                .routing_rules
-                .get(&(link_id.clone(), prior.resource_id.clone()))
-            {
-                return Ok(CreateLinkRoutingRuleOutput {
-                    rule_id: rule.rule_id.clone(),
-                    status: rule.status.clone(),
-                    created_at: crate::state::timestamp(rule.created_at),
-                });
+            crate::state::CreateRetry::Replay(rule_id) => {
+                if let Some(rule) = store.routing_rules.get(&(link_id.clone(), rule_id)) {
+                    return Ok(CreateLinkRoutingRuleOutput {
+                        rule_id: rule.rule_id.clone(),
+                        status: rule.status.clone(),
+                        created_at: crate::state::timestamp(rule.created_at),
+                    });
+                }
             }
+            crate::state::CreateRetry::Fresh => {}
         }
 
         // Nothing is stored for a link that has finished: the rule would claim to
@@ -296,15 +295,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 .into(),
             );
         }
-        if store.idempotency.len() >= crate::state::IDEMPOTENCY_QUOTA {
+        if let Some(message) = crate::state::client_token_quota_refusal(&store) {
             return Err(
                 CreateLinkRoutingRuleErrorModeled::ServiceQuotaExceededException(
-                    ServiceQuotaExceededException {
-                        message: format!(
-                            "this emulator holds its limit of {} client-token records",
-                            crate::state::IDEMPOTENCY_QUOTA
-                        ),
-                    },
+                    ServiceQuotaExceededException { message },
                 )
                 .into(),
             );
@@ -343,13 +337,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             created_at: crate::state::timestamp(rule.created_at),
         };
         store.routing_rules.insert((link_id, rule_id.clone()), rule);
-        store.idempotency.insert(
-            token,
-            crate::state::IdempotentCreate {
-                resource_id: rule_id,
-                fingerprint,
-            },
-        );
+        token.retain(&mut store, rule_id);
         Ok(output)
     }
 }
