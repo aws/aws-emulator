@@ -195,48 +195,24 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         }
 
         let memberships = store.memberships_in_order(&group_key);
-        // The model declares `MaxResults` `@default: 100` with range 1..100, so an
-        // absent member asks for the largest page the service answers with.
-        let page_size = input
-            .max_results
-            .unwrap_or(crate::state::DEFAULT_MAX_RESULTS)
-            .clamp(1, crate::state::MAX_MAX_RESULTS) as usize;
-
-        // A `NextToken` is this service's own opaque cursor: it names the membership
-        // the next page starts at. One this service did not mint, or one naming a
-        // membership this group no longer has, is refused rather than silently
-        // restarting the walk.
-        let start = match input.next_token.as_deref() {
-            None => 0,
-            Some(token) => {
-                let resume_at = crate::state::decode_cursor(token).and_then(|membership_id| {
-                    memberships
-                        .iter()
-                        .position(|membership| membership.membership_id == membership_id)
-                });
-                resume_at.ok_or_else(|| {
-                    ListGroupMembershipsErrorModeled::ValidationException(
-                        crate::state::validation(
-                            "NextToken is not a cursor this service issued for this group",
-                        ),
-                    )
-                })?
-            }
-        };
-
-        let group_memberships: Vec<GroupMembership> = memberships[start..]
-            .iter()
-            .take(page_size)
-            .map(|membership| membership.to_group_membership(&store.identity_store_id))
-            .collect();
-        // A `NextToken` only when something is left: the item the next page starts at.
-        let next_token = memberships
-            .get(start + group_memberships.len())
-            .map(|membership| crate::state::encode_cursor(&membership.membership_id));
+        // How `MaxResults` bounds a page, how a `NextToken` resumes one and when the next
+        // cursor is minted are the SAME rule for every listing of this service, so the
+        // walk is the shared one ([`crate::state::page_of`]); what is this operation's own
+        // is the records it walks, the id a cursor into it names, how a membership
+        // renders, and the sentence a token this listing cannot resume at is refused with.
+        let page = crate::state::page_of(
+            &memberships,
+            input.max_results,
+            input.next_token.as_deref(),
+            "NextToken is not a cursor this service issued for this group",
+            |membership| membership.membership_id.as_str(),
+            |membership| membership.to_group_membership(&store.identity_store_id),
+        )
+        .map_err(ListGroupMembershipsErrorModeled::ValidationException)?;
 
         Ok(ListGroupMembershipsOutput {
-            group_memberships,
-            next_token,
+            group_memberships: page.items,
+            next_token: page.next_token,
         })
     }
 }

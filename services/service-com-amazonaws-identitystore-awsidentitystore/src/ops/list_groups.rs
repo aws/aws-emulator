@@ -213,52 +213,24 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             })
             .collect();
 
-        // The model declares `MaxResults` `@default: 100` with range 1..100, so an
-        // absent member asks for the largest page the service answers with. A value
-        // outside that range is refused rather than coerced into it: the modelled
-        // constraint is checked before this handler runs, so this cannot be reached
-        // from the wire today, and refusing keeps it a refusal rather than a silently
-        // resized page if it ever is.
-        let requested = input.max_results.unwrap_or(crate::state::DEFAULT_MAX_RESULTS);
-        if !(1..=crate::state::MAX_MAX_RESULTS).contains(&requested) {
-            return Err(ListGroupsErrorModeled::ValidationException(
-                crate::state::validation(format!(
-                    "MaxResults must be between 1 and {}, got {requested}",
-                    crate::state::MAX_MAX_RESULTS
-                )),
-            )
-            .into());
-        }
-        let page_size = requested as usize;
+        // How `MaxResults` bounds a page, how a `NextToken` resumes one and when the next
+        // cursor is minted are the SAME rule for every listing of this service, so the
+        // walk is the shared one ([`crate::state::page_of`]); what is this operation's own
+        // is the records it walks, the id a cursor into it names, how a group renders, and
+        // the sentence a token this listing cannot resume at is refused with.
+        let page = crate::state::page_of(
+            &matching,
+            input.max_results,
+            input.next_token.as_deref(),
+            "NextToken is not a cursor this service issued for this listing",
+            |group| group.group_id.as_str(),
+            |group| group.to_group(&store.identity_store_id),
+        )
+        .map_err(ListGroupsErrorModeled::ValidationException)?;
 
-        // A `NextToken` is this service's own opaque cursor: it names the group the
-        // next page starts at. One this service did not mint, or one naming a group
-        // this listing no longer reports, is refused rather than silently restarting
-        // the walk.
-        let start = match input.next_token.as_deref() {
-            None => 0,
-            Some(token) => {
-                let resume_at = crate::state::decode_cursor(token).and_then(|group_id| {
-                    matching.iter().position(|group| group.group_id == group_id)
-                });
-                resume_at.ok_or_else(|| {
-                    ListGroupsErrorModeled::ValidationException(crate::state::validation(
-                        "NextToken is not a cursor this service issued for this listing",
-                    ))
-                })?
-            }
-        };
-
-        let groups: Vec<Group> = matching[start..]
-            .iter()
-            .take(page_size)
-            .map(|group| group.to_group(&store.identity_store_id))
-            .collect();
-        // A `NextToken` only when something is left: the group the next page starts at.
-        let next_token = matching
-            .get(start + groups.len())
-            .map(|group| crate::state::encode_cursor(&group.group_id));
-
-        Ok(ListGroupsOutput { groups, next_token })
+        Ok(ListGroupsOutput {
+            groups: page.items,
+            next_token: page.next_token,
+        })
     }
 }

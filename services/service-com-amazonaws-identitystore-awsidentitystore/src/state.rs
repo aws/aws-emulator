@@ -1404,6 +1404,12 @@ pub fn decode_cursor(token: &str) -> Option<String> {
     String::from_utf8(::hex::decode(token).ok()?).ok()
 }
 
+/// The paged WALK that codec serves, shared by every list operation of this service: a
+/// submodule because bounding a page, resuming one at a cursor and minting the next are
+/// one concern of their own, and the same one for every listing.
+mod pagination;
+pub use pagination::{page_of, Page};
+
 /// Now, in nanoseconds since the Unix epoch — only an id-minting seed.
 fn now_nanos() -> u128 {
     SystemTime::now()

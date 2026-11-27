@@ -177,64 +177,31 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             account_stores.unwrap_or_else(|| state.recorded_store_keys()),
         );
 
-        // `MaxResults` is "the maximum number of results to return per request … If you
-        // don't specify a value, the operation uses a default page size", and this
-        // operation's member carries no `@default` of its own, so an absent one asks for
-        // this service's default page ([`crate::state::DEFAULT_MAX_RESULTS`]). A value
-        // outside the modelled 1..100 is refused rather than coerced into it: the
-        // constraint is checked before this handler runs, so this cannot be reached from
-        // the wire today, and refusing keeps it a refusal rather than a silently resized
-        // page if it ever is.
-        let requested = input.max_results.unwrap_or(crate::state::DEFAULT_MAX_RESULTS);
-        if !(1..=crate::state::MAX_MAX_RESULTS).contains(&requested) {
-            return Err(ListIdentityStoresErrorModeled::ValidationException(
-                crate::state::validation(format!(
-                    "MaxResults must be between 1 and {}, got {requested}",
-                    crate::state::MAX_MAX_RESULTS
-                )),
-            )
-            .into());
-        }
-        let page_size = requested as usize;
-
-        // A `NextToken` is this service's own opaque cursor: it names the identity store
-        // the next page starts at, the way every other paged read of this service names
-        // the resource its next page starts at. One this service did not mint, or one
-        // naming a store this listing no longer reports, is refused rather than silently
-        // restarting the walk.
-        let start = match input.next_token.as_deref() {
-            None => 0,
-            Some(token) => {
-                let resume_at = crate::state::decode_cursor(token)
-                    .and_then(|store_key| store_keys.iter().position(|held| *held == store_key));
-                resume_at.ok_or_else(|| {
-                    ListIdentityStoresErrorModeled::ValidationException(crate::state::validation(
-                        "NextToken is not a cursor this service issued for this listing",
-                    ))
-                })?
-            }
-        };
-
-        // Both members of an `IdentityStore` are required, and the ARN is DERIVED from the
-        // id through the one builder every answer of this service builds a store ARN with,
-        // so a store's two identifiers cannot disagree.
-        let identity_stores: Vec<IdentityStore> = store_keys
-            .iter()
-            .skip(start)
-            .take(page_size)
-            .map(|store_key| IdentityStore {
+        // How `MaxResults` bounds a page, how a `NextToken` resumes one and when the next
+        // cursor is minted are the SAME rule for every listing of this service, so the
+        // walk is the shared one ([`crate::state::page_of`]). This operation's member
+        // declares no `@default` of its own, so an absent one asks for the default page
+        // that walk uses. What is this operation's own is the records it walks — the
+        // store keys — and how one renders: both members of an `IdentityStore` are
+        // required, and the ARN is DERIVED from the id through the one builder every
+        // answer of this service builds a store ARN with, so a store's two identifiers
+        // cannot disagree.
+        let page = crate::state::page_of(
+            &store_keys,
+            input.max_results,
+            input.next_token.as_deref(),
+            "NextToken is not a cursor this service issued for this listing",
+            |store_key| store_key.as_str(),
+            |store_key| IdentityStore {
                 identity_store_id: store_key.clone(),
                 identity_store_arn: crate::state::identity_store_arn(store_key),
-            })
-            .collect();
-        // A `NextToken` only when something is left: the store the next page starts at.
-        let next_token = store_keys
-            .get(start + identity_stores.len())
-            .map(|store_key| crate::state::encode_cursor(store_key));
+            },
+        )
+        .map_err(ListIdentityStoresErrorModeled::ValidationException)?;
 
         Ok(ListIdentityStoresOutput {
-            identity_stores,
-            next_token,
+            identity_stores: page.items,
+            next_token: page.next_token,
         })
     }
 }

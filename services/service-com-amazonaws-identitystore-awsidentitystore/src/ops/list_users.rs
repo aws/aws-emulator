@@ -222,53 +222,24 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             })
             .collect();
 
-        // The model declares `MaxResults` `@default: 100` with range 1..100, so an
-        // absent member asks for the largest page the service answers with. A value
-        // outside that range is refused rather than coerced into it, as `ListGroups`
-        // does: the modelled constraint is checked before this handler runs, so this
-        // cannot be reached from the wire today, and refusing keeps it a refusal rather
-        // than a silently resized page if it ever is.
-        let requested = input.max_results.unwrap_or(crate::state::DEFAULT_MAX_RESULTS);
-        if !(1..=crate::state::MAX_MAX_RESULTS).contains(&requested) {
-            return Err(ListUsersErrorModeled::ValidationException(
-                crate::state::validation(format!(
-                    "MaxResults must be between 1 and {}, got {requested}",
-                    crate::state::MAX_MAX_RESULTS
-                )),
-            )
-            .into());
-        }
-        let page_size = requested as usize;
-
-        // A `NextToken` is this service's own opaque cursor: it names the user the next
-        // page starts at. One this service did not mint, or one naming a user this
-        // listing does not reach, is refused rather than silently restarting the walk.
-        let start = match input.next_token.as_deref() {
-            None => 0,
-            Some(token) => {
-                let resume_at = crate::state::decode_cursor(token)
-                    .and_then(|user_id| users.iter().position(|user| user.user_id == user_id));
-                resume_at.ok_or_else(|| {
-                    ListUsersErrorModeled::ValidationException(crate::state::validation(
-                        "NextToken is not a cursor this service issued for this listing",
-                    ))
-                })?
-            }
-        };
-
-        let page: Vec<User> = users[start..]
-            .iter()
-            .take(page_size)
-            .map(|user| user.to_user(&store.identity_store_id, input.extensions.as_deref()))
-            .collect();
-        // A `NextToken` only when something is left: the item the next page starts at.
-        let next_token = users
-            .get(start + page.len())
-            .map(|user| crate::state::encode_cursor(&user.user_id));
+        // How `MaxResults` bounds a page, how a `NextToken` resumes one and when the next
+        // cursor is minted are the SAME rule for every listing of this service, so the
+        // walk is the shared one ([`crate::state::page_of`]); what is this operation's own
+        // is the records it walks, the id a cursor into it names, how a user renders, and
+        // the sentence a token this listing cannot resume at is refused with.
+        let page = crate::state::page_of(
+            &users,
+            input.max_results,
+            input.next_token.as_deref(),
+            "NextToken is not a cursor this service issued for this listing",
+            |user| user.user_id.as_str(),
+            |user| user.to_user(&store.identity_store_id, input.extensions.as_deref()),
+        )
+        .map_err(ListUsersErrorModeled::ValidationException)?;
 
         Ok(ListUsersOutput {
-            users: page,
-            next_token,
+            users: page.items,
+            next_token: page.next_token,
         })
     }
 }

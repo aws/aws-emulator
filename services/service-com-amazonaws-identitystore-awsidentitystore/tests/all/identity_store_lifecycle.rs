@@ -1815,3 +1815,269 @@ async fn a_name_the_model_does_not_reserve_names_a_user_or_a_group() {
         "case {case:?}: expected the rename to be applied, got {described}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// The ONE paged walk every listing of this service answers from.
+//
+// `ListUsers`, `ListGroups`, `ListGroupMemberships`, `ListGroupMembershipsForMember` and
+// `ListIdentityStores` are all `@paginated` over the same three members — `MaxResults`
+// (range 1..100), an opaque `NextToken` in and the same `NextToken` out — so they answer
+// one rule, and the cases below drive that one walk through EACH of them.
+// ---------------------------------------------------------------------------
+
+/// One listing, as the walk below drives it: the operation, the output member its items
+/// arrive in, the member that identifies one item, the request that addresses it, the
+/// items it must report, and the sentence a `NextToken` it cannot resume at is refused
+/// with — the only request-visible difference between the listings.
+struct Listing {
+    case: &'static str,
+    operation: &'static str,
+    items_member: &'static str,
+    id_member: &'static str,
+    request: Value,
+    expected: BTreeSet<String>,
+    unresumable_token_message: &'static str,
+}
+
+/// Every item `listing` reports, in page order, walked at `max_results` items per page.
+///
+/// Each page is judged as it arrives: it carries no more items than it was asked for, a
+/// `NextToken` only ever follows a FULL page and satisfies the modelled `NextToken`
+/// pattern (`^[-a-zA-Z0-9+=/:_]*$`), nothing is reported twice, and the walk terminates.
+async fn walk_listing(
+    router: &MultiServiceRouter,
+    listing: &Listing,
+    max_results: Option<i64>,
+    case: &str,
+) -> Vec<String> {
+    let page_size = max_results.unwrap_or(MAX_RESULTS_MAX) as usize;
+    let mut walked: Vec<String> = Vec::new();
+    let mut seen: BTreeSet<String> = BTreeSet::new();
+    let mut token: Option<String> = None;
+    // A page reports at least one item, so a walk needs no more pages than the listing
+    // holds items, plus the page that carries no cursor.
+    let page_budget = listing.expected.len() + 1;
+    for page_number in 1..=page_budget {
+        let row = format!("{case}, page {page_number}");
+        let mut request = listing.request.clone();
+        if let Some(size) = max_results {
+            request["MaxResults"] = json!(size);
+        }
+        if let Some(token) = &token {
+            request["NextToken"] = json!(token);
+        }
+        let page = ok(router, listing.operation, request, &row).await;
+        let items = page[listing.items_member]
+            .as_array()
+            .cloned()
+            .unwrap_or_else(|| {
+                panic!(
+                    "case {row:?}: expected the required {} list, got {page}",
+                    listing.items_member
+                )
+            });
+        assert!(
+            items.len() <= page_size,
+            "case {row:?}: expected at most {page_size} items on a page, got {}",
+            items.len()
+        );
+        for item in &items {
+            let id = string(item, listing.id_member, &row);
+            assert!(
+                seen.insert(id.clone()),
+                "case {row:?}: expected every item exactly once, saw {id} twice"
+            );
+            walked.push(id);
+        }
+        match page.get("NextToken").and_then(Value::as_str) {
+            None => return walked,
+            Some(next) => {
+                assert_eq!(
+                    items.len(),
+                    page_size,
+                    "case {row:?}: expected a NextToken only after a full page of \
+                     {page_size}, got {} items beside {next:?}",
+                    items.len()
+                );
+                assert!(
+                    next.bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || b"-+=/:_".contains(&byte)),
+                    "case {row:?}: expected a NextToken matching the modelled \
+                     ^[-a-zA-Z0-9+=/:_]*$ pattern, got {next:?}"
+                );
+                token = Some(next.to_string());
+            }
+        }
+    }
+    panic!("case {case:?}: the paged walk did not finish within {page_budget} pages: {walked:?}")
+}
+
+/// Every listing of this service reports its whole set once, in an order its page size
+/// does not change, and refuses a `NextToken` it cannot resume at with its own sentence.
+///
+/// The rows are the five listings — one for each handler that used to carry its own copy
+/// of this walk — and the inner rows are page sizes, including both published `MaxResults`
+/// bounds and an absent one.
+#[tokio::test]
+async fn every_listing_pages_through_the_one_shared_walk() {
+    let router = emulator();
+    let case = "shared walk";
+
+    // Users, groups and memberships enough that every listing holds several items: the
+    // member of the first group is also a member of every other group, so the member's
+    // own listing and the group's listing report different sets.
+    let mut users: Vec<String> = Vec::new();
+    for index in 0..5 {
+        users.push(create_user(&router, STORE, &user_name(case, index), case).await);
+    }
+    let mut groups: Vec<String> = Vec::new();
+    for index in 0..3 {
+        groups.push(create_group(&router, STORE, &format!("{case}-group-{index}"), case).await);
+    }
+    let mut group_memberships: Vec<String> = Vec::new();
+    for user in &users {
+        let created = create_membership(&router, STORE, &groups[0], user, case).await;
+        group_memberships.push(string(&created, "MembershipId", case));
+    }
+    // The first user's membership of the first group is in BOTH membership listings; the
+    // other users' memberships of that group are in the group's listing only, and this
+    // user's memberships of the other groups are in the member's listing only.
+    let mut member_memberships: Vec<String> = vec![group_memberships[0].clone()];
+    for group in &groups[1..] {
+        let created = create_membership(&router, STORE, group, &users[0], case).await;
+        member_memberships.push(string(&created, "MembershipId", case));
+    }
+    // `ListIdentityStores` reports the stores this emulator holds a record of, so two
+    // more stores are written to, leaving three for its walk.
+    let mut stores: BTreeSet<String> = BTreeSet::new();
+    stores.insert(STORE.to_string());
+    for index in 0..2u32 {
+        let store = format!("d-{:010x}", 0xd0 + index);
+        create_group(&router, &store, &format!("{case}-marker-{index}"), case).await;
+        stores.insert(store);
+    }
+
+    let listings = [
+        Listing {
+            case: "ListUsers",
+            operation: "ListUsers",
+            items_member: "Users",
+            id_member: "UserId",
+            request: json!({ "IdentityStoreId": STORE }),
+            expected: users.iter().cloned().collect(),
+            unresumable_token_message:
+                "NextToken is not a cursor this service issued for this listing",
+        },
+        Listing {
+            case: "ListGroups",
+            operation: "ListGroups",
+            items_member: "Groups",
+            id_member: "GroupId",
+            request: json!({ "IdentityStoreId": STORE }),
+            expected: groups.iter().cloned().collect(),
+            unresumable_token_message:
+                "NextToken is not a cursor this service issued for this listing",
+        },
+        Listing {
+            case: "ListGroupMemberships",
+            operation: "ListGroupMemberships",
+            items_member: "GroupMemberships",
+            id_member: "MembershipId",
+            request: json!({ "IdentityStoreId": STORE, "GroupId": groups[0] }),
+            expected: group_memberships.iter().cloned().collect(),
+            unresumable_token_message:
+                "NextToken is not a cursor this service issued for this group",
+        },
+        Listing {
+            case: "ListGroupMembershipsForMember",
+            operation: "ListGroupMembershipsForMember",
+            items_member: "GroupMemberships",
+            id_member: "MembershipId",
+            request: json!({ "IdentityStoreId": STORE, "MemberId": { "UserId": users[0] } }),
+            expected: member_memberships.iter().cloned().collect(),
+            unresumable_token_message:
+                "NextToken is not a cursor this service issued for this member",
+        },
+        Listing {
+            case: "ListIdentityStores",
+            operation: "ListIdentityStores",
+            items_member: "IdentityStores",
+            id_member: "IdentityStoreId",
+            request: json!({}),
+            expected: stores.clone(),
+            unresumable_token_message:
+                "NextToken is not a cursor this service issued for this listing",
+        },
+    ];
+
+    for listing in &listings {
+        // One unpaged walk is the reference: the whole set, once.
+        let whole = walk_listing(&router, listing, None, listing.case).await;
+        assert_eq!(
+            whole.iter().cloned().collect::<BTreeSet<String>>(),
+            listing.expected,
+            "case {:?}: expected the listing to report exactly what the store holds, got {whole:?}",
+            listing.case
+        );
+
+        // Rows differ along the page size asked for: both published bounds of the
+        // modelled range, and the sizes that split the set across several pages.
+        for size in [MAX_RESULTS_MIN, 2, 3, MAX_RESULTS_MAX] {
+            let row = format!("{} at {size} per page", listing.case);
+            let paged = walk_listing(&router, listing, Some(size), &row).await;
+            assert_eq!(
+                paged, whole,
+                "case {row:?}: expected the paged walk to report the same items in the \
+                 same order as the unpaged one, got {paged:?} against {whole:?}"
+            );
+        }
+
+        // A `NextToken` this listing cannot resume at is refused with this listing's own
+        // sentence. Rows differ along HOW the token is wrong; each still satisfies the
+        // modelled `NextToken` pattern, so the refusal is the handler's own.
+        let foreign = hex::encode(b"0123abcd-4567-89ab-cdef-0123456789ab");
+        for (row_case, token) in [
+            ("a token this service did not mint", "not-a-cursor".to_string()),
+            ("a well-formed token naming nothing", "deadbeef".to_string()),
+            ("a cursor naming a resource outside this listing", foreign),
+        ] {
+            let row = format!("{}, {row_case}", listing.case);
+            let mut request = listing.request.clone();
+            request["NextToken"] = json!(token);
+            let body = refused(
+                &router,
+                listing.operation,
+                request,
+                INVALID_REQUEST,
+                "ValidationException",
+                &row,
+            )
+            .await;
+            let message = error_message(&body);
+            assert_eq!(
+                message, listing.unresumable_token_message,
+                "case {row:?}: expected the listing's own cursor refusal, got {message:?}"
+            );
+        }
+
+        // And one `MaxResults` past either published bound is refused, for every listing:
+        // the modelled range is 1..100 and a value outside it is not coerced into it.
+        for (row_case, size) in [
+            ("a MaxResults below the modelled minimum", MAX_RESULTS_MIN - 1),
+            ("a MaxResults above the modelled maximum", MAX_RESULTS_MAX + 1),
+        ] {
+            let row = format!("{}, {row_case}", listing.case);
+            let mut request = listing.request.clone();
+            request["MaxResults"] = json!(size);
+            refused(
+                &router,
+                listing.operation,
+                request,
+                INVALID_REQUEST,
+                "ValidationException",
+                &row,
+            )
+            .await;
+        }
+    }
+}
