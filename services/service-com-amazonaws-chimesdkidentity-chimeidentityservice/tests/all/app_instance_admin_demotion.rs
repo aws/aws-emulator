@@ -15,11 +15,13 @@
 //! of times the demotion is requested, and an app instance that does not exist; the tail of
 //! the test covers the deleted app instance, which only a delete can reach.
 //!
-//! The two tests after it pin the OTHER way a promotion ends: the app instance that scoped
-//! it is deleted. The rule they pin is that a promotion lasts exactly as long as the app
-//! instance granting it — `DeleteAppInstance` drops every promotion of that instance from
-//! the shared directory, and no read of one is served from a record a delete left behind,
-//! whether the delete ran before the read or concurrently with it.
+//! The tests after it pin the OTHER ways a promotion ends: a promotion is a record of one
+//! identity administering one app instance, so DELETING either side drops it. The rule they
+//! pin is that a promotion lasts exactly as long as both sides of it — `DeleteAppInstance`
+//! drops every promotion of that instance from the shared directory and no read of one is
+//! served from a record a delete left behind, whether the delete ran before the read or
+//! concurrently with it, and deleting the promoted identity drops the promotions held for
+//! it.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -27,6 +29,7 @@ use std::sync::Arc;
 use serde_json::{json, Value};
 use service_common::chime_app_instance_admins::AppInstanceAdminDirectory;
 
+use crate::app_instance_bots::bot;
 use crate::app_instance_lifecycle::{uri_encode, Emulator};
 
 /// The one sentence this service's `ForbiddenException` carries, as AWS words it for a
@@ -672,5 +675,184 @@ async fn demoting_an_app_instance_admin_drops_only_its_promotion() {
         refused_body["Message"].as_str(),
         Some(FORBIDDEN_MESSAGE),
         "wrong Message demoting under a deleted app instance, body {refused_body:?}"
+    );
+}
+
+/// Which identity kind a row promotes and then deletes. Both kinds are identities of an
+/// app instance and both may be promoted (`CreateAppInstanceAdmin`), so both must take
+/// their promotion with them.
+#[derive(Debug, Clone, Copy)]
+enum IdentityKind {
+    User,
+    Bot,
+}
+
+impl IdentityKind {
+    /// The collection route the kind's own resource hangs off, as the model binds it:
+    /// `/app-instance-users/{AppInstanceUserArn}` and
+    /// `/app-instance-bots/{AppInstanceBotArn}`.
+    fn collection(self) -> &'static str {
+        match self {
+            IdentityKind::User => "/app-instance-users",
+            IdentityKind::Bot => "/app-instance-bots",
+        }
+    }
+}
+
+/// Mint an identity of `instance` of this kind and answer its ARN.
+async fn mint_identity(
+    emulator: &Emulator,
+    instance: &str,
+    kind: IdentityKind,
+    id: &str,
+) -> String {
+    match kind {
+        IdentityKind::User => emulator.user(instance, id, &format!("{id}-token")).await,
+        IdentityKind::Bot => bot(emulator, instance, &format!("{id}-token"), id).await,
+    }
+}
+
+/// The identity's own `DELETE`, addressed by ARN.
+async fn delete_identity(emulator: &Emulator, kind: IdentityKind, arn: &str) -> (u16, Value) {
+    emulator
+        .call(
+            "DELETE",
+            &format!("{}/{}", kind.collection(), uri_encode(arn)),
+            None,
+        )
+        .await
+}
+
+/// The identity's own `GET`, addressed by ARN.
+async fn describe_identity(emulator: &Emulator, kind: IdentityKind, arn: &str) -> (u16, Value) {
+    emulator
+        .call(
+            "GET",
+            &format!("{}/{}", kind.collection(), uri_encode(arn)),
+            None,
+        )
+        .await
+}
+
+/// RULE: a recorded promotion is a record OF the identity it names, so it cannot outlive
+/// it — deleting the identity drops every promotion held for it, leaving the pair
+/// unreadable and the ARN unlisted, while every other promotion of the same app instance
+/// stands.
+#[tokio::test]
+async fn deleting_a_promoted_identity_drops_its_promotion() {
+    // Rows span the identity kinds that can be promoted at all, each deleted through its
+    // own operation: `DeleteAppInstanceUser` and `DeleteAppInstanceBot`.
+    let cases = [
+        (
+            "a promoted AppInstanceUser deleted by DeleteAppInstanceUser",
+            IdentityKind::User,
+        ),
+        (
+            "a promoted AppInstanceBot deleted by DeleteAppInstanceBot",
+            IdentityKind::Bot,
+        ),
+    ];
+
+    let emulator = Emulator::new();
+    let instance = emulator
+        .app_instance("deleted-admins", "deleted-admins-token")
+        .await;
+    // A bystander administrator no row deletes: deleting one identity must drop only that
+    // identity's promotion.
+    let bystander = emulator
+        .user(&instance, "bystander", "bystander-token")
+        .await;
+    let (promoted_bystander, bystander_body) = promote(&emulator, &instance, &bystander).await;
+    assert_eq!(
+        promoted_bystander, 201,
+        "promoting the bystander must answer 201, got {promoted_bystander} {bystander_body:?}"
+    );
+
+    for (index, (label, kind)) in cases.iter().enumerate() {
+        let identity = mint_identity(&emulator, &instance, *kind, &format!("subject{index}")).await;
+        let (promoted, promoted_body) = promote(&emulator, &instance, &identity).await;
+        assert_eq!(
+            promoted, 201,
+            "case {label:?}: the setup promotion must answer 201, got {promoted} {promoted_body:?}"
+        );
+        let (described, described_body) = describe_admin(&emulator, &instance, &identity).await;
+        assert_eq!(
+            described, 200,
+            "case {label:?}: the setup promotion must be readable, got {described} {described_body:?}"
+        );
+        let listed = listed_admins(&emulator, &instance).await;
+        assert!(
+            listed.contains(&identity),
+            "case {label:?}: the setup promotion must be listed, got {listed:?}"
+        );
+
+        let (deleted, deleted_body) = delete_identity(&emulator, *kind, &identity).await;
+        assert_eq!(
+            deleted, 204,
+            "case {label:?}: deleting the identity must answer 204, got {deleted} {deleted_body:?}"
+        );
+
+        // The identity is gone, which is what makes its promotion a record of nothing.
+        let (read_back, read_body) = describe_identity(&emulator, *kind, &identity).await;
+        assert_ne!(
+            read_back, 200,
+            "case {label:?}: the deleted identity must not be readable, got {read_back} {read_body:?}"
+        );
+
+        // So the promotion is gone too: nothing is left in the shared directory for any
+        // reader of the role to be served from, here or in the sibling that honours it.
+        let recorded = recorded_admins(&emulator, &instance);
+        assert!(
+            !recorded.contains(&identity),
+            "case {label:?}: expected no promotion left for the deleted identity, got {recorded:?}"
+        );
+        assert!(
+            recorded.contains(&bystander),
+            "case {label:?}: expected the bystander's promotion kept, got {recorded:?}"
+        );
+        // And the reader holds no grant for the pair, which is the service's one answer for
+        // a grant it does not hold.
+        let (after, after_body) = describe_admin(&emulator, &instance, &identity).await;
+        assert_eq!(
+            (
+                after,
+                after_body["Code"].as_str(),
+                after_body["Message"].as_str()
+            ),
+            (403, Some("Forbidden"), Some(FORBIDDEN_MESSAGE)),
+            "case {label:?}: a deleted identity must not be readable as an admin, got {after} {after_body:?}"
+        );
+        let listed = listed_admins(&emulator, &instance).await;
+        assert!(
+            !listed.contains(&identity),
+            "case {label:?}: a deleted identity must not be listed as an admin, got {listed:?}"
+        );
+        assert!(
+            listed.contains(&bystander),
+            "case {label:?}: the bystander admin must still be listed, got {listed:?}"
+        );
+        let (bystander_read, bystander_read_body) =
+            describe_admin(&emulator, &instance, &bystander).await;
+        assert_eq!(
+            bystander_read, 200,
+            "case {label:?}: the bystander admin must still be readable, got {bystander_read} {bystander_read_body:?}"
+        );
+    }
+
+    // The record was DROPPED, not hidden behind the identity's absence: an
+    // `AppInstanceUser` re-created under the same id answers to the same ARN, and it is
+    // not an administrator until it is promoted again.
+    let revived = emulator
+        .user(&instance, "subject0", "subject0-revival-token")
+        .await;
+    let (revived_admin, revived_body) = describe_admin(&emulator, &instance, &revived).await;
+    assert_eq!(
+        revived_admin, 403,
+        "a re-created identity must not inherit the deleted one's promotion, got {revived_admin} {revived_body:?}"
+    );
+    let listed = listed_admins(&emulator, &instance).await;
+    assert!(
+        !listed.contains(&revived),
+        "a re-created identity must not be listed as an admin, got {listed:?}"
     );
 }

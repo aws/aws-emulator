@@ -711,6 +711,11 @@ pub fn service_state<Eng: Send + Sync + 'static>(
 /// than in a copy inside [`ComAmazonawsChimesdkidentityChimeidentityserviceState`],
 /// which the messaging service could not see.
 ///
+/// A promotion names one identity and one app instance, both resources of THIS service, so
+/// every operation that promotes, demotes or DELETES either side keeps the directory in
+/// step with this store: a promotion of a deleted identity, or of a deleted app instance,
+/// would report an administrator that no longer exists.
+///
 /// LOCK ORDER: a writer takes [`service_state`] first and this directory second, and no
 /// reader holds this one while taking another store, so the order cannot invert.
 ///

@@ -189,6 +189,16 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 message: Some("the Chime identity name directory is unavailable".to_string()),
             })
         })?;
+        // Nor does a deleted identity administer anything: the promotion the family's
+        // shared app-instance ADMIN directory holds for it is a record OF that identity, so
+        // the directory is resolved before the delete and the record dropped with the
+        // resource.
+        let admin_directory = crate::state::app_instance_admins(&*self.engine).ok_or_else(|| {
+            DeleteAppInstanceBotErrorModeled::ServiceFailureException(ServiceFailureException {
+                code: Some("ServiceFailure".to_string()),
+                message: Some("the AppInstanceAdmin directory is unavailable".to_string()),
+            })
+        })?;
         let mut state = state.lock();
 
         if state.remove_bot(&input.app_instance_bot_arn).is_none() {
@@ -217,6 +227,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .lock()
             .withdraw(&input.app_instance_bot_arn, class, message);
         name_directory.lock().forget(&input.app_instance_bot_arn);
+        // A promotion cannot outlive the identity it was given to, so every record the
+        // directory holds for this ARN goes: `DescribeAppInstanceAdmin` stops answering for
+        // the pair and `ListAppInstanceAdmins` stops listing it. How many there were is
+        // deliberately discarded — the answer is 204 whether the identity administered
+        // anything or not.
+        let _demoted = admin_directory
+            .lock()
+            .demote_identity(&input.app_instance_bot_arn);
 
         Ok(DeleteAppInstanceBotOutput)
     }

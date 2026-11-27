@@ -23,6 +23,12 @@
 //! It is also BOUNDED — see [`MAX_REGISTERED_ADMINS`] — so a caller looping on promote
 //! cannot grow it without end; the oldest registration is dropped first, which keeps the
 //! promotions a live workflow just made readable.
+//!
+//! A promotion belongs to the identity it names and to the app instance it scopes, so the
+//! service that owns those resources keeps the directory in step with them on every write:
+//! a demotion, a deleted identity ([`AppInstanceAdminDirectory::demote_identity`]) and a
+//! deleted app instance ([`AppInstanceAdminDirectory::forget_admins_of`]) each leave no
+//! promotion behind.
 
 use std::collections::{BTreeMap, VecDeque};
 
@@ -122,6 +128,29 @@ impl AppInstanceAdminDirectory {
         self.admins.remove(&key).is_some()
     }
 
+    /// Drop every promotion the directory holds FOR the identity `admin_arn`, and answer
+    /// how many were dropped — what the service that owns the identity calls when the
+    /// identity itself is deleted.
+    ///
+    /// A promotion is a record OF one identity, so it exists only for as long as that
+    /// identity does: once the identity is gone, the role it was given is gone with it,
+    /// here as well as in the store that owns the identity. The directory is keyed by app
+    /// instance AND identity, so every record naming this identity goes, whatever app
+    /// instance scoped it. Without that the reader of the role would keep reporting a
+    /// deleted identity as an administrator.
+    pub fn demote_identity(&mut self, admin_arn: &str) -> usize {
+        let dropped: Vec<(String, String)> = self
+            .admins
+            .keys()
+            .filter(|(_, admin)| admin == admin_arn)
+            .cloned()
+            .collect();
+        for (instance, admin) in &dropped {
+            self.demote(instance, admin);
+        }
+        dropped.len()
+    }
+
     /// Drop every promotion recorded over `app_instance_arn`, and answer how many were
     /// dropped — what the service that owns the app instance calls when the instance
     /// itself is deleted.
@@ -153,8 +182,9 @@ impl AppInstanceAdminDirectory {
 #[cfg(test)]
 mod tests {
     //! The directory over what a promotion's LIFETIME generalises over: a promotion
-    //! recorded and read back, one demoted on its own, and the cascade a deleted app
-    //! instance owes — which reaches every promotion that instance scoped and no other's.
+    //! recorded and read back, one demoted on its own, the cascade a deleted app instance
+    //! owes — which reaches every promotion that instance scoped and no other's — and the
+    //! drop a deleted IDENTITY owes, which reaches every promotion held for it.
 
     use super::*;
 
@@ -235,6 +265,109 @@ mod tests {
             assert_eq!(
                 again, 0,
                 "case {case:?}: expected nothing left to drop, got {again}"
+            );
+        }
+    }
+
+    /// One promotion of each identity kind under [`INSTANCE`], plus one under
+    /// [`OTHER_INSTANCE`] that no row of the identity table names.
+    fn populated() -> AppInstanceAdminDirectory {
+        let mut directory = AppInstanceAdminDirectory::default();
+        for (instance, segment, id) in [
+            (INSTANCE, "user", "u1"),
+            (INSTANCE, "bot", "b1"),
+            (OTHER_INSTANCE, "user", "u4"),
+        ] {
+            directory.promote(instance, &identity(instance, segment, id), 1_700_000_000_000);
+        }
+        directory
+    }
+
+    #[test]
+    fn deleting_an_identity_drops_every_promotion_held_for_it_and_no_other() {
+        // Rows: the two identity kinds that can be promoted at all.
+        for (case, segment, id) in [
+            ("a promoted AppInstanceUser", "user", "u1"),
+            ("a promoted AppInstanceBot", "bot", "b1"),
+        ] {
+            let mut directory = populated();
+            let admin = identity(INSTANCE, segment, id);
+            let dropped = directory.demote_identity(&admin);
+            assert_eq!(
+                dropped, 1,
+                "case {case:?}: expected the one promotion held for it dropped, got {dropped}"
+            );
+            assert!(
+                !directory.administers(INSTANCE, &admin),
+                "case {case:?}: expected {admin} to administer nothing, it still does"
+            );
+            let remaining = directory.registered_admins();
+            assert_eq!(
+                remaining, 2,
+                "case {case:?}: expected the other two promotions kept, got {remaining}"
+            );
+            let elsewhere = identity(OTHER_INSTANCE, "user", "u4");
+            assert!(
+                directory.administers(OTHER_INSTANCE, &elsewhere),
+                "case {case:?}: expected another identity's promotion kept, it was dropped"
+            );
+            // The drop is a removal from a SET: an identity the directory holds no
+            // promotion for drops none.
+            let again = directory.demote_identity(&admin);
+            assert_eq!(
+                again, 0,
+                "case {case:?}: expected nothing left to drop the second time, got {again}"
+            );
+        }
+
+        let mut directory = populated();
+        let never_promoted = identity(INSTANCE, "user", "never");
+        let none = directory.demote_identity(&never_promoted);
+        assert_eq!(
+            none, 0,
+            "case {:?}: expected nothing to drop, got {none}",
+            "an identity the directory never held a promotion for"
+        );
+    }
+
+    #[test]
+    fn a_dropped_promotion_frees_its_place_in_the_eviction_order() {
+        let mut directory = AppInstanceAdminDirectory::default();
+        for index in 0..MAX_REGISTERED_ADMINS {
+            directory.promote(
+                INSTANCE,
+                &identity(INSTANCE, "user", &format!("u{index:06}")),
+                1_700_000_000_000,
+            );
+        }
+        let oldest = identity(INSTANCE, "user", "u000000");
+        let dropped = directory.demote_identity(&oldest);
+        assert_eq!(
+            dropped, 1,
+            "case {:?}: expected the oldest promotion dropped, got {dropped}",
+            "a full directory"
+        );
+
+        // The freed place is what the next promotion takes, so no OTHER record is evicted
+        // to make room for it.
+        let fresh = identity(INSTANCE, "user", "fresh");
+        directory.promote(INSTANCE, &fresh, 1_700_000_000_001);
+        let held = directory.registered_admins();
+        assert_eq!(
+            held, MAX_REGISTERED_ADMINS,
+            "case {:?}: expected the directory back at its bound, got {held}",
+            "a full directory"
+        );
+        for (case, admin) in [
+            ("the promotion that took the freed place", &fresh),
+            (
+                "the promotion that was second-oldest",
+                &identity(INSTANCE, "user", "u000001"),
+            ),
+        ] {
+            assert!(
+                directory.administers(INSTANCE, admin),
+                "case {case:?}: expected {admin} still an administrator, it is not"
             );
         }
     }
