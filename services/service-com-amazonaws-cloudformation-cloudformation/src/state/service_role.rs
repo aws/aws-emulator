@@ -49,12 +49,15 @@
 //! permit. A boundary whose document this emulator does not hold is a ceiling it cannot read,
 //! and so applies to nothing.
 //!
-//! Nothing else is judged: a stack with no `RoleARN` runs with the caller's own permissions
-//! ("CloudFormation uses a temporary session that's generated from your user credentials"), an
-//! ARN the IAM store holds no role for may belong to another account, a role carrying an
-//! attachment whose document this emulator does not hold carries a grant that cannot be read,
-//! a role carrying no readable document at all is one whose permissions this emulator cannot
-//! establish, and a document it cannot read as a policy is evidence of nothing.
+//! Nothing else about the ROLE is judged: an ARN the IAM store holds no role for may belong to
+//! another account, a role carrying an attachment whose document this emulator does not hold
+//! carries a grant that cannot be read, a role carrying no readable document at all is one whose
+//! permissions this emulator cannot establish, and a document it cannot read as a policy is
+//! evidence of nothing. A stack with no `RoleARN` has no role to judge at all: it is carried out
+//! with the caller's own permissions ("CloudFormation uses a temporary session that's generated
+//! from your user credentials"), which is the principal [`super::pass_role::deploying_principal`]
+//! holds and [`refusal`] decides such a deployment's calls against — the same decision, over the
+//! other identity.
 //!
 //! A call CLOUDFORMATION ITSELF makes on a resource the TEMPLATE names reaches the same
 //! decision through [`refusal_without_a_grant`], over the action the service being emulated
@@ -335,18 +338,42 @@ pub async fn on_resource<F: ::std::future::Future>(resource: String, calls: F) -
     TARGET.scope(resource, calls).await
 }
 
-/// The refusal the service role in force answers a call of `operation` on `signing_name`
-/// with, or `None` where nothing refuses it.
+/// The refusal the identity the deployment is carried out AS answers a call of `operation` on
+/// `signing_name` with, or `None` where nothing refuses it.
 ///
 /// `signing_name` is the service the call is signed for and `operation` the API operation it
 /// invokes, which together are the IAM action it asks for: an action is
 /// `<service prefix>:<operation name>`, and the prefix is the name the service signs under.
 /// A call made outside a deployment, or about no resource, is judged by nothing: there is no
-/// role in scope to judge it on.
+/// identity in scope to judge it on.
+///
+/// WHICH identity is what the stack's `RoleARN` decides, and the decision is the same one either
+/// way — the identity-based documents in force and the boundary capping them, evaluated by the
+/// workspace's one evaluation of policy documents:
+///
+/// * a stack that NAMES a role makes its calls with that role's credentials ("CloudFormation
+///   uses the role's credentials to make calls on your behalf"), which is the role in scope here;
+/// * a stack that names NONE is carried out with the CALLER's ("CloudFormation uses a temporary
+///   session that's generated from your user credentials"), so the call is decided against the
+///   principal that asked for the deployment ([`super::pass_role::deploying_principal`]) —
+///   exactly as the owning service would have decided it had the client made the call itself.
+///
+/// Only one of the two ever answers: a deployment acting as a service role carries a principal
+/// that names nobody and refuses nothing, and one acting as the caller carries no role.
+///
+/// The caller half reaches only the deployments that put a principal in scope
+/// ([`super::pass_role::as_principal`]) — the operations that deploy a revision. A walk started
+/// by another operation (a delete, a rollback, a continued rollback, a signal, an owed revert)
+/// scopes the stack's recorded ROLE but no principal, so for a stack naming none its calls are
+/// still judged by nothing; closing that is the business of those operations resolving the
+/// caller the same way a deploy does, and until they do, what this answers for them is unchanged.
 pub fn refusal(signing_name: &str, operation: &str) -> Option<String> {
     let role = ROLE.try_with(Arc::clone).ok()?;
     let resource = TARGET.try_with(String::clone).ok()?;
-    role.refusal(signing_name, operation, &resource)
+    role.refusal(signing_name, operation, &resource).or_else(|| {
+        super::pass_role::deploying_principal()?
+            .unauthorized_message(&reported_action(signing_name, operation), &resource)
+    })
 }
 
 /// The refusal the service role in force answers a call of `action` on `resource` with when

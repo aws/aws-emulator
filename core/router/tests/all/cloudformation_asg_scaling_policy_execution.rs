@@ -22,9 +22,10 @@
 //!
 //! The rows differ along what the rule generalises over: the policy's type (`SimpleScaling`
 //! and `StepScaling`), the adjustment type the declaration states (`ChangeInCapacity` and
-//! `ExactCapacity`), the sign of the adjustment, how the execution NAMES the policy (the
-//! identifier the stack publishes for it, or the ARN the owning service minted, with and
-//! without the group beside it), and the capacity the group is left maintaining.
+//! `ExactCapacity`), the sign of the adjustment, how the execution NAMES the policy (the name
+//! the stack publishes for it with the group beside it, the ARN the owning service minted, or
+//! the identifier the stack publishes — which IS that ARN, so it names the policy on its own),
+//! and the capacity the group is left maintaining.
 //!
 //! Every expected value is computed here from what the row declares, never read back out of
 //! the answer being checked — except the identities the owning services mint (the policy's
@@ -62,12 +63,14 @@ const INSTANCE_TYPE: &str = "t3.micro";
 /// (`ExecutePolicyType$PolicyName`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Named {
-    /// The identifier the stack publishes for the resource, with the group beside it.
-    PublishedIdWithGroup,
+    /// The policy's NAME, as the stack publishes it through `Fn::GetAtt`, with the group
+    /// beside it — which a name needs, being unique only within its group.
+    PublishedNameWithGroup,
     /// The ARN Amazon EC2 Auto Scaling minted, with the group beside it.
     ArnWithGroup,
-    /// That ARN alone, which names the policy wherever it lives.
-    ArnAlone,
+    /// The identifier the stack publishes for the resource, ALONE: "Ref returns the Amazon
+    /// Resource Name (ARN) of the scaling policy", so it names the policy wherever it lives.
+    PublishedIdAlone,
 }
 
 /// One row: the estate one stack declares, how its policy is performed, and the capacity the
@@ -122,13 +125,13 @@ fn step_scale_in() -> Value {
 
 const ROWS: &[Row] = &[
     Row {
-        case: "a SimpleScaling policy adding one instance, performed by the identifier the \
-               stack published",
+        case: "a SimpleScaling policy adding one instance, performed by the name the stack \
+               published",
         stack: "asg-policy-scale-out",
         sizes: ("1", "3", "1"),
         policy: simple_scale_out,
         graded: &[],
-        named: Named::PublishedIdWithGroup,
+        named: Named::PublishedNameWithGroup,
         expected_capacity: "2",
     },
     Row {
@@ -142,13 +145,13 @@ const ROWS: &[Row] = &[
         expected_capacity: "3",
     },
     Row {
-        case: "a StepScaling policy removing one instance, performed by that ARN alone and \
-               graded by a metric value past its breach threshold",
+        case: "a StepScaling policy removing one instance, performed by the identifier the \
+               stack published alone and graded by a metric value past its breach threshold",
         stack: "asg-policy-step-in",
         sizes: ("0", "4", "2"),
         policy: step_scale_in,
         graded: &[("MetricValue", "70"), ("BreachThreshold", "50")],
-        named: Named::ArnAlone,
+        named: Named::PublishedIdAlone,
         expected_capacity: "1",
     },
 ];
@@ -285,6 +288,7 @@ fn template(row: &Row) -> Value {
         "Outputs": {
             "AutoScalingGroupName": { "Value": { "Ref": "Fleet" } },
             "ScalingPolicyId": { "Value": { "Ref": "ScalePolicy" } },
+            "ScalingPolicyName": { "Value": { "Fn::GetAtt": ["ScalePolicy", "PolicyName"] } },
         },
     })
 }
@@ -405,15 +409,16 @@ async fn a_deployed_scaling_policy_is_readable_executable_and_removable() {
 
         let group = published(case, &described, "AutoScalingGroupName");
         let policy_id = published(case, &described, "ScalingPolicyId");
+        let policy_name = published(case, &described, "ScalingPolicyName");
 
         // The policy the stack published resolves in the service that owns it, carrying the
         // configuration the declaration stated.
         let policies = described_policies(&router, case, &group).await;
         assert_eq!(
             elements(&policies, "PolicyName"),
-            vec![policy_id.clone()],
-            "case {case:?}: expected Auto Scaling to report exactly the policy {policy_id:?} for \
-             {group:?}, got {policies}"
+            vec![policy_name.clone()],
+            "case {case:?}: expected Auto Scaling to report exactly the policy {policy_name:?} \
+             for {group:?}, got {policies}"
         );
         let declared = (row.policy)();
         for member in ["PolicyType", "AdjustmentType"] {
@@ -435,27 +440,37 @@ async fn a_deployed_scaling_policy_is_readable_executable_and_removable() {
         );
         let policy_arn = element(&policies, "PolicyARN");
         assert!(
-            policy_arn.contains(":autoscaling:") && policy_arn.contains(&policy_id),
+            policy_arn.contains(":autoscaling:") && policy_arn.contains(&policy_name),
             "case {case:?}: expected the reported ARN to be the policy's own, got \
              {policy_arn:?} in {policies}"
+        );
+        // "Ref returns the Amazon Resource Name (ARN) of the scaling policy": the identifier
+        // the stack publishes for the resource is that ARN, not the policy's name.
+        assert_eq!(
+            policy_id, policy_arn,
+            "case {case:?}: expected the identifier the stack publishes for the policy to be the \
+             ARN {policy_arn:?} the owning service minted, got {policy_id:?}"
         );
 
         // Performing it applies the policy's own adjustment to the group's capacity.
         let mut members: Vec<(&str, &str)> = match row.named {
-            Named::PublishedIdWithGroup => {
-                vec![("AutoScalingGroupName", &group), ("PolicyName", &policy_id)]
+            Named::PublishedNameWithGroup => {
+                vec![
+                    ("AutoScalingGroupName", &group),
+                    ("PolicyName", &policy_name),
+                ]
             }
             Named::ArnWithGroup => {
                 vec![("AutoScalingGroupName", &group), ("PolicyName", &policy_arn)]
             }
-            Named::ArnAlone => vec![("PolicyName", &policy_arn)],
+            Named::PublishedIdAlone => vec![("PolicyName", &policy_id)],
         };
         members.extend(row.graded.iter().copied());
         let (status, body) = autoscaling(&router, "ExecutePolicy", &members).await;
         assert_eq!(
             status, 200,
-            "case {case:?}: expected HTTP 200 from ExecutePolicy({policy_id}), got {status} with \
-             body {body}"
+            "case {case:?}: expected HTTP 200 from ExecutePolicy({policy_name}), got {status} \
+             with body {body}"
         );
         let held = desired_capacity(&router, case, &group).await;
         assert_eq!(

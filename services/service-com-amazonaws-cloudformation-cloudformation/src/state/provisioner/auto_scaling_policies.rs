@@ -19,11 +19,15 @@
 //! [`query_members`]. Two members are the arm's own:
 //!
 //! * `PolicyName`, which the type does not publish: CloudFormation decides the policy's name,
-//!   and the name it decided is this resource's physical id, so the policy is created under
-//!   that id and no identifier is taken over;
+//!   and the name it decided is the name the policy is created under — carried on the record as
+//!   its `Name`, because it is NOT this resource's physical id;
 //! * the policy's ARN, which Amazon EC2 Auto Scaling mints and the arm reads back from that
 //!   service rather than computing — the read that also makes the create's success a resource
-//!   that service really holds.
+//!   that service really holds. That ARN is this resource's physical id: "Ref returns the
+//!   Amazon Resource Name (ARN) of the scaling policy"
+//!   (`AWS::AutoScaling::ScalingPolicy`, Return values), so what the stack publishes for the
+//!   resource is the value `ExecutePolicy` and `DeletePolicy` resolve to a policy by on their
+//!   own, with no group beside it.
 
 use super::*;
 
@@ -58,25 +62,35 @@ const PUT_SCALING_POLICY_MEMBERS: &[(&str, QueryMember)] = &[
 
 /// The `AWS::AutoScaling::ScalingPolicy` property the walk does NOT turn into a
 /// `PutScalingPolicy` member: the policy's own name, which CloudFormation decides and which
-/// the arm sets from this resource's physical id.
+/// the arm sets from the name on this resource's record ([`declared_name`]) rather than from its
+/// physical id, that being the policy's ARN.
 const SCALING_POLICY_PROPERTIES_NOT_SENT: &[&str] = &["PolicyName"];
 
 /// The attribute this type publishes the policy's ARN under through `Fn::GetAtt`.
 const POLICY_ARN_ATTRIBUTE: &str = "Arn";
 
-/// The attribute it publishes the policy's NAME under.
+/// The attribute it publishes the policy's NAME under, which is also where the record carries
+/// the name the policy was created under ([`declared_name`]): the physical id is the ARN, so
+/// every later call that addresses the policy by name reads it from here.
 const POLICY_NAME_ATTRIBUTE: &str = "PolicyName";
+
+/// The attribute the uniform return-value convention carries a resource's name under, which is
+/// what [`declared_name`] reads for a type whose physical id is not that name.
+const NAME_ATTRIBUTE: &str = "Name";
 
 /// The member `PutScalingPolicy` and `DescribePolicies` report a policy's ARN under.
 const POLICY_ARN_MEMBER: &str = "PolicyARN";
 
 /// Put the scaling policy an `AWS::AutoScaling::ScalingPolicy` declares, in Amazon EC2 Auto
-/// Scaling, and report the ARN that service minted for it.
+/// Scaling, and report the ARN that service minted for it as this resource's identity.
 ///
-/// The policy is created under this resource's own physical id as its `PolicyName`, and read
-/// back through that service's own `DescribePolicies`: a create this arm reports as succeeded
-/// is a policy a client resolves, so nothing is reported created that the owning service does
-/// not hold.
+/// The policy is created under the name CloudFormation decided for it, and read back through
+/// that service's own `DescribePolicies`: a create this arm reports as succeeded is a policy a
+/// client resolves, so nothing is reported created that the owning service does not hold. The
+/// identity the stack publishes for it is the ARN that read answered — "Ref returns the Amazon
+/// Resource Name (ARN) of the scaling policy" — so a policy the owning service minted no ARN
+/// for is a resource with no identity to publish, which is a failed create rather than a
+/// success.
 pub(super) async fn put_scaling_policy(
     ctx: &smithy_server_runtime::OperationContext<'_>,
     region: &str,
@@ -109,15 +123,26 @@ pub(super) async fn put_scaling_policy(
                  named {name}"
             ),
         })?;
-    let mut attributes = BTreeMap::from([(POLICY_NAME_ATTRIBUTE.to_string(), name)]);
-    if let Some(arn) = reported
+    let policy_arn = reported
         .get(POLICY_ARN_MEMBER)
         .and_then(Value::as_str)
         .filter(|arn| !arn.is_empty())
-    {
-        attributes.insert(POLICY_ARN_ATTRIBUTE.to_string(), arn.to_string());
-    }
-    Ok(Created::attributes(attributes))
+        .ok_or_else(|| Refusal {
+            code: UNIDENTIFIED_FAILURE.to_string(),
+            message: format!(
+                "Amazon EC2 Auto Scaling reported no {POLICY_ARN_MEMBER} for the scaling policy \
+                 {name}, which is what a reference to this resource resolves to"
+            ),
+        })?
+        .to_string();
+    Ok(Created {
+        physical_resource_id: Some(policy_arn.clone()),
+        attributes: BTreeMap::from([
+            (POLICY_NAME_ATTRIBUTE.to_string(), name.clone()),
+            (NAME_ATTRIBUTE.to_string(), name),
+            (POLICY_ARN_ATTRIBUTE.to_string(), policy_arn),
+        ]),
+    })
 }
 
 /// Apply a CHANGED `AWS::AutoScaling::ScalingPolicy` declaration to the policy that exists,
@@ -160,7 +185,8 @@ pub(super) async fn update_scaling_policy(
 }
 
 /// Delete the scaling policy a stack created, addressed by the group it belongs to and the
-/// name it was created under — this resource's physical id.
+/// name it was created under — the name this resource's record carries ([`declared_name`]),
+/// since its physical id is the policy's ARN.
 ///
 /// A policy Amazon EC2 Auto Scaling no longer holds is already in the state the delete asks
 /// for, which is read from that service's own report of the policy rather than from the

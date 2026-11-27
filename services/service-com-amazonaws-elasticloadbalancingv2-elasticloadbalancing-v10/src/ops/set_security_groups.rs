@@ -235,9 +235,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // specified a security group for the load balancer when you created it."
         if family == crate::state::LoadBalancerFamily::Network && carried_groups.is_empty() {
             return Err(invalid_configuration(
-                "Security groups cannot be set on a network load balancer that was created \
-                 without one"
-                    .to_string(),
+                NO_SECURITY_GROUPS_AT_CREATION.to_string(),
             ));
         }
 
@@ -322,6 +320,18 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 /// is made on rather than anything about one value.
 const PRIVATE_LINK_SETTING_UNAVAILABLE: &str = "This security group setting for PrivateLink \
      traffic is only available for Network Load Balancers with security groups";
+
+/// The refusal of this operation on a Network Load Balancer that was created with no security
+/// group at all.
+///
+/// The boundary is the one this operation's own documentation states in prose — "you can't
+/// perform this operation on a Network Load Balancer unless you specified a security group for
+/// the load balancer when you created it" — and the VALUE is the sentence Elastic Load Balancing
+/// answers that boundary with, as recorded. Entirely fixed text: it names neither the load
+/// balancer nor a value the request carried, because what the caller has to fix is which load
+/// balancer the call is made on.
+const NO_SECURITY_GROUPS_AT_CREATION: &str = "You cannot set security groups on a Network \
+     Load Balancer which was created without any security groups.";
 
 /// The modelled refusal for an ARN this store holds no load balancer for, with the
 /// message every operation addressing one load balancer answers

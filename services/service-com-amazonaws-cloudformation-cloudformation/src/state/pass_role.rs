@@ -97,6 +97,24 @@ pub async fn as_principal<F: ::std::future::Future>(
     PRINCIPAL.scope(principal, deployment).await
 }
 
+/// The principal the deployment running in this task is carried out AS, where one is in scope.
+///
+/// A stack that names no `RoleARN` makes its calls with the CALLER's own credentials, so a call
+/// CloudFormation itself makes about a resource the template names — one whose action is the
+/// documented action of the service being emulated and whose resource is the ARN the template
+/// supplies — is decided against that principal exactly as the owning service would decide it
+/// ([`Caller::unauthorized_message`]). That is the same position [`refusal`] puts `iam:PassRole`
+/// in; this hands the principal itself to the arm that knows which other call its resource's
+/// create depends on.
+///
+/// The `Caller` a deployment acting as a SERVICE ROLE carries names nobody and refuses nothing
+/// ([`principal_of`]) — what that role may do is [`super::service_role`]'s gate — and a
+/// deployment with no principal in scope answers `None`.
+#[must_use]
+pub fn deploying_principal() -> Option<Arc<Caller>> {
+    PRINCIPAL.try_with(Arc::clone).ok()
+}
+
 /// The refusal the create of a resource carrying `properties` is answered with, or `None`
 /// where nothing refuses it.
 ///

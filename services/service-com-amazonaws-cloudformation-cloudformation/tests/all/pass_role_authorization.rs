@@ -317,14 +317,33 @@ const ROWS: &[Row] = &[
     },
 ];
 
-/// Create an IAM user carrying one inline policy — the CloudFormation grant every row needs to
-/// reach the operation, plus the row's own `iam:PassRole` statements — and answer the access
-/// key id a request of that user signs with.
+/// The grants every row needs beside its own `iam:PassRole` statements: the CloudFormation
+/// operation itself, and the creates the templates' own resources make in the services that OWN
+/// them.
+///
+/// A stack that names no `RoleARN` is carried out with the CALLER's credentials, so those creates
+/// are decided against this same principal — a principal that may not make one of them fails that
+/// resource for THAT reason, which is not what these rows decide. No `iam:` action is granted
+/// here: what each row states about `iam:PassRole` is the whole of what it holds over IAM.
+fn grants_the_templates_need() -> Vec<Value> {
+    vec![
+        json!({"Effect": "Allow", "Action": "cloudformation:*", "Resource": "*"}),
+        json!({
+            "Effect": "Allow",
+            "Action": ["lambda:*", "states:*", "sns:*"],
+            "Resource": "*",
+        }),
+    ]
+}
+
+/// Create an IAM user carrying one inline policy — the grants every row needs to reach the
+/// operation and deploy its template ([`grants_the_templates_need`]), plus the row's own
+/// `iam:PassRole` statements — and answer the access key id a request of that user signs with.
 async fn caller_for(router: &MultiServiceRouter, row: &Row) -> String {
-    let statements: Vec<Value> =
-        std::iter::once(json!({"Effect": "Allow", "Action": "cloudformation:*", "Resource": "*"}))
-            .chain((row.pass_role)().as_array().cloned().unwrap_or_default())
-            .collect();
+    let statements: Vec<Value> = grants_the_templates_need()
+        .into_iter()
+        .chain((row.pass_role)().as_array().cloned().unwrap_or_default())
+        .collect();
     let document = json!({"Version": "2012-10-17", "Statement": statements}).to_string();
     user_with_inline_policy(
         router,

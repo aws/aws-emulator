@@ -56,8 +56,12 @@ const VALIDATION_ERROR: &str = "ValidationError";
 
 /// The refusal a request carrying the PrivateLink security group setting earns when the
 /// load balancer it names is not one that setting is available on.
-const PRIVATE_LINK_SETTING_UNAVAILABLE: &str = "This security group setting for PrivateLink \
-     traffic is only available for Network Load Balancers with security groups";
+///
+/// `pub(crate)`: the suite that pins the SENTENCE of the other boundary of the same operation
+/// (`network_load_balancer_security_group_sentence`) is held to this same wording, so the
+/// crate's tests hold one copy of it.
+pub(crate) const PRIVATE_LINK_SETTING_UNAVAILABLE: &str = "This security group setting for \
+     PrivateLink traffic is only available for Network Load Balancers with security groups";
 
 /// One row of the operation table: the case name, the action, and the fields it carries
 /// beside `LoadBalancerArn`.
