@@ -25,6 +25,10 @@
 //! traversal naming a step the evaluation does not cover yet is answered HTTP 501 rather
 //! than with a result nothing computed. Explaining a query needs no evaluation, and
 //! `tests/all/gremlin_explain.rs` covers that endpoint.
+//!
+//! A third rule is under test in the `index_rebuild` submodule beside this file: the INDEX
+//! REBUILD endpoints (`StartIndexRebuild`, `GetIndexRebuildStatus`, `CancelIndexRebuild`)
+//! compute every answer from the one rebuild record the start wrote.
 
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
@@ -38,6 +42,17 @@ use service_com_amazonaws_neptunedata_amazonneptunedataplane::state::{
 };
 use service_com_amazonaws_neptunedata_amazonneptunedataplane::EmulatedService;
 use smithy_server_runtime::MultiServiceRouter;
+
+/// The INDEX REBUILD endpoints, which answer from the rebuild registry rather than from the
+/// engine record or either query registry, are a suite of their own beside this one. It is a
+/// submodule so that it reaches the engine, the router and the request helpers above.
+///
+/// The `#[path]` is what points the declaration into `all/neptune_data_plane/`: this file is
+/// itself declared with a `#[path]` from `tests/all.rs`, so a bare `mod` here would resolve
+/// against `tests/all/` — where a file is a test suite of its own and has to be declared in
+/// `tests/all.rs` instead.
+#[path = "neptune_data_plane/index_rebuild.rs"]
+mod index_rebuild;
 
 /// A SigV4 credential scope naming this service. `neptune-db` is neptunedata's sigv4
 /// signing name, and it is what routes a request to this service.

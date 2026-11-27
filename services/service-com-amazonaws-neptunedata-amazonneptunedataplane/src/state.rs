@@ -21,6 +21,10 @@
 //! * [`LoaderJobRecord`] — one per bulk-load job the engine has admitted, keyed by load
 //!   id, carrying what that load READ ([`LoadRun`]). `ListLoaderJobs` reports the load ids
 //!   of the active ones and `GetLoaderJobStatus` reports one job's own run.
+//! * [`IndexRebuildRecord`] — one per index rebuild the storage layer has admitted, keyed
+//!   by rebuild id (see [`index_rebuild`]). `StartIndexRebuild` admits one,
+//!   `GetIndexRebuildStatus` reports how far it has got, and `CancelIndexRebuild` stops one
+//!   the storage layer is still busy with.
 //! * [`PropertyGraph`] — the graph's own data: the nodes and relationships the
 //!   openCypher endpoints read and write (see [`open_cypher`]). `ExecuteFastReset`
 //!   empties it, because that is what a database reset leaves behind.
@@ -71,6 +75,7 @@ mod engine_status;
 mod graph_summary;
 mod gremlin_eval;
 mod gremlin_plan;
+mod index_rebuild;
 mod loader;
 mod ml;
 mod open_cypher;
@@ -82,6 +87,7 @@ pub use engine_status::*;
 pub use graph_summary::*;
 pub use gremlin_eval::*;
 pub use gremlin_plan::*;
+pub use index_rebuild::*;
 pub use loader::*;
 pub use ml::*;
 pub use open_cypher::*;
@@ -474,6 +480,9 @@ pub struct ComAmazonawsNeptunedataAmazonneptunedataplaneState {
     pub graph: PropertyGraph,
     /// The Neptune ML resources this engine holds, which the ML endpoints read and write.
     pub ml: MlRegistry,
+    /// Every index rebuild the storage layer has admitted, keyed by rebuild id. The three
+    /// index-rebuild endpoints read and write this one.
+    pub index_rebuilds: IndexRebuildRegistry,
     /// The DFE statistics this engine holds for the property graph, which the
     /// property-graph statistics endpoints read and write. `None` while the engine keeps
     /// no statistics state for that data — before any management call has started one, and

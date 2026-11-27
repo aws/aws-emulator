@@ -20,6 +20,8 @@ handler returns an error, so it never has to construct a value.
 
 // SKIPPED: DeleteSparqlStatistics — unsupported shape construct: operation 'DeleteSparqlStatistics' has a Unit/absent input, which the generator does not emit yet
 // SKIPPED: GetSparqlStatistics — unsupported shape construct: operation 'GetSparqlStatistics' has a Unit/absent input, which the generator does not emit yet
+// SKIPPED: GetStorageInfo — unsupported shape construct: operation 'GetStorageInfo' has a Unit/absent input, which the generator does not emit yet
+// SKIPPED: ListIndexRebuilds — unsupported shape construct: operation 'ListIndexRebuilds' has a Unit/absent input, which the generator does not emit yet
 
 Hand-authored since: `GetEngineStatus` was declined here for the same reason (a
 Unit/absent input) and is now hand-written in `ops/get_engine_status.rs`, which
@@ -27,4 +29,12 @@ declares its own input type and schema. `GetPropertygraphStatistics` and
 `DeletePropertygraphStatistics` were declined for that reason too and are now
 hand-written in `ops/get_propertygraph_statistics.rs` and
 `ops/delete_propertygraph_statistics.rs`. Use any of them as the pattern for the
-two above.
+four above.
+
+`GetStorageInfo` and `ListIndexRebuilds` arrived with the storage endpoints a
+later model refresh added, and were declined for that same reason. The three
+index-rebuild operations that refresh added WITH a typed input —
+`StartIndexRebuild`, `GetIndexRebuildStatus` and `CancelIndexRebuild` — are
+implemented in their own files and answer from the rebuild registry in
+`src/state/index_rebuild.rs`, which is what a hand-authored `ListIndexRebuilds`
+would list.

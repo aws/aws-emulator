@@ -80,6 +80,10 @@
 //!
 //! * `BadRequestException` (HTTP 400) — Raised when a request is submitted that cannot be
 //!   processed.
+//! * `CancelledByMaintenanceException` (HTTP 500) — Raised when a request is cancelled
+//!   because the storage layer entered maintenance mode. This typically happens during a
+//!   customer-initiated operation such as an index rebuild. It should be treated like
+//!   ConcurrentModificationException.
 //! * `CancelledByUserException` (HTTP 500) — Raised when a user cancelled a request.
 //! * `ClientTimeoutException` (HTTP 408) — Raised when a request timed out in the client.
 //! * `ConcurrentModificationException` (HTTP 500) — Raised when a request attempts to modify
@@ -131,6 +135,7 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-neptunedata-amazonneptu
 #[derive(Debug)]
 pub enum ExecuteGremlinProfileQueryErrorModeled {
     BadRequestException(BadRequestException),
+    CancelledByMaintenanceException(CancelledByMaintenanceException),
     CancelledByUserException(CancelledByUserException),
     ClientTimeoutException(ClientTimeoutException),
     ConcurrentModificationException(ConcurrentModificationException),

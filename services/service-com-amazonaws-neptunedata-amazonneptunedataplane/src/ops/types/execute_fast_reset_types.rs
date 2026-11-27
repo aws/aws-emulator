@@ -31,19 +31,3 @@ pub struct FastResetToken {
     pub token: Option<String>,
 }
 
-neptune_error_shape!(
-    MethodNotAllowedException,
-    SCHEMA_METHOD_NOT_ALLOWED_EXCEPTION,
-    "com.amazonaws.neptunedata#MethodNotAllowedException",
-    "com.amazonaws.neptunedata",
-    "MethodNotAllowedException",
-);
-
-neptune_error_shape!(
-    ServerShutdownException,
-    SCHEMA_SERVER_SHUTDOWN_EXCEPTION,
-    "com.amazonaws.neptunedata#ServerShutdownException",
-    "com.amazonaws.neptunedata",
-    "ServerShutdownException",
-);
-
