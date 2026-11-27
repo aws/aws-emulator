@@ -252,6 +252,11 @@ pub struct Subject {
 
 /// The username a `ServiceAccount` subject stands for, which is the username
 /// Kubernetes authenticates a service account as.
+///
+/// `pub(super)` so the authentication of a token a service account was issued one
+/// under reads it from here ([`super::kubernetes_service_account_tokens`]): the name
+/// a binding's subject is matched against and the name such a request is served as
+/// are one value.
 pub(super) fn service_account_username(namespace: &str, name: &str) -> String {
     format!("system:serviceaccount:{namespace}:{name}")
 }

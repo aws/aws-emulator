@@ -73,10 +73,6 @@ const DISCOVERY_API_VERSION: &str = "v1";
 /// words an allow in.
 const ALLOWED_BY_RBAC: &str = "RBAC: allowed by the permissions of the requesting user";
 
-/// The `status.reason` of a review the authorizer did not allow: Kubernetes' RBAC
-/// authorizer reports that no rule it holds allowed the request.
-const NOT_ALLOWED_BY_RBAC: &str = "RBAC: no rule allowed the requested action";
-
 /// One `GroupVersionForDiscovery` of this group.
 fn group_version() -> ::serde_json::Value {
     ::serde_json::json!({
@@ -157,6 +153,20 @@ pub fn self_subject_access_review(
         .get("spec")
         .cloned()
         .unwrap_or_else(|| ::serde_json::json!({}));
+    let mut status = ::serde_json::Map::new();
+    status.insert("allowed".to_string(), ::serde_json::json!(allowed));
+    // "Denied is true if the action would be denied, otherwise false": the
+    // authorizer of this server either allows an action or holds no rule that allows
+    // it, which is not the same as an explicit deny.
+    status.insert("denied".to_string(), ::serde_json::json!(false));
+    // "Reason is optional. It indicates why a request was allowed or denied": the
+    // authorizer states the permissions that ALLOWED an action, and has nothing to
+    // say about one no rule of it allowed — a client renders the reason after the
+    // decision it reports, so a sentence on a denial would be read as the authorizer
+    // having given one.
+    if allowed {
+        status.insert("reason".to_string(), ::serde_json::json!(ALLOWED_BY_RBAC));
+    }
     ::serde_json::json!({
         "kind": SELF_SUBJECT_ACCESS_REVIEW_KIND,
         "apiVersion": AUTHORIZATION_API_VERSION,
@@ -164,14 +174,7 @@ pub fn self_subject_access_review(
         // "Spec holds information about the request being evaluated": echoed back as
         // the client wrote it, which is what the API server answers with.
         "spec": spec,
-        "status": {
-            "allowed": allowed,
-            // "Denied is true if the action would be denied, otherwise false": the
-            // authorizer of this server either allows an action or holds no rule
-            // that allows it, which is not the same as an explicit deny.
-            "denied": false,
-            "reason": if allowed { ALLOWED_BY_RBAC } else { NOT_ALLOWED_BY_RBAC },
-        },
+        "status": ::serde_json::Value::Object(status),
     })
 }
 

@@ -361,6 +361,34 @@ pub(crate) async fn dial_bytes(
     authorization: Option<&str>,
     payload: &[u8],
 ) -> ApiAnswer {
+    dial_bytes_with_headers(
+        config,
+        case,
+        method,
+        path,
+        content_type,
+        authorization,
+        &[],
+        payload,
+    )
+    .await
+}
+
+/// The same request once more, carrying the extra `headers` the client set beside
+/// the ones every request carries — what a client that names the identity it asks to
+/// be served as sends (`Impersonate-User` and the `Impersonate-Group` headers beside
+/// it).
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn dial_bytes_with_headers(
+    config: &Kubeconfig,
+    case: &str,
+    method: &str,
+    path: &str,
+    content_type: &str,
+    authorization: Option<&str>,
+    headers: &[(&str, &str)],
+    payload: &[u8],
+) -> ApiAnswer {
     let authority = config
         .endpoint
         .strip_prefix("https://")
@@ -395,8 +423,12 @@ pub(crate) async fn dial_bytes(
     let credential = authorization
         .map(|header| format!("Authorization: {header}\r\n"))
         .unwrap_or_default();
+    let extra: String = headers
+        .iter()
+        .map(|(name, value)| format!("{name}: {value}\r\n"))
+        .collect();
     let head = format!(
-        "{method} {path} HTTP/1.1\r\nHost: {authority}\r\n{credential}Content-Type: \
+        "{method} {path} HTTP/1.1\r\nHost: {authority}\r\n{credential}{extra}Content-Type: \
          {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
         payload.len()
     );

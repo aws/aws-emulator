@@ -254,6 +254,11 @@ impl ClusterObjects {
         let name = manifest_name(manifest, resource.kind())?;
         let body = body_from_manifest(resource, manifest)?;
         let resource_version = self.versions.next();
+        // A namespaced object is created in a namespace that takes new content: one a
+        // delete has reached takes none ([`ClusterObjects::namespace_for_create`]).
+        if let Some(namespace) = namespace.filter(|_| resource.is_namespaced()) {
+            self.namespace_for_create(namespace, resource.resource(), &name)?;
+        }
         let scope = self.rbac_scope_mut(resource, namespace)?;
         if scope.contains_key(&(resource, name.clone())) {
             return Err(ApiRefusal::already_exists(resource.resource(), &name));

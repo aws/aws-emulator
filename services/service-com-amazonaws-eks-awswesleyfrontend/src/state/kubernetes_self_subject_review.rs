@@ -131,19 +131,38 @@ const AUTHENTICATOR_UID_PREFIX: &str = "aws-iam-authenticator";
 /// `sessionName` the assumed-role session the credential was minted for — empty for a
 /// long-term credential, which names none. Nothing of the CREDENTIAL itself is
 /// reported.
+///
+/// Both are reported exactly when an IAM principal authenticated the request. A
+/// request a service account token of the cluster's own authenticated
+/// ([`super::kubernetes_service_account_tokens`]) was authenticated by the cluster
+/// itself, and one served as the identity it asked to act as
+/// ([`super::kubernetes_impersonation`]) by neither — so there is no authority to
+/// report for it, and an empty ARN with a uid built from one would name a principal
+/// that does not exist.
 #[must_use]
 pub fn user_info(identity: &SubjectIdentity) -> ::serde_json::Value {
-    ::serde_json::json!({
-        "username": identity.username,
-        "uid": subject_uid(identity),
-        "groups": identity.groups.iter().collect::<Vec<&String>>(),
-        "extra": {
-            "arn": [identity.principal_arn],
-            "canonicalArn": [identity.principal_arn],
-            "principalId": [identity.principal_id],
-            "sessionName": [identity.session_name.clone().unwrap_or_default()],
-        },
-    })
+    let mut info = ::serde_json::Map::new();
+    info.insert(
+        "username".to_string(),
+        ::serde_json::json!(identity.username),
+    );
+    info.insert(
+        "groups".to_string(),
+        ::serde_json::json!(identity.groups.iter().collect::<Vec<&String>>()),
+    );
+    if !identity.principal_arn.is_empty() {
+        info.insert("uid".to_string(), ::serde_json::json!(subject_uid(identity)));
+        info.insert(
+            "extra".to_string(),
+            ::serde_json::json!({
+                "arn": [identity.principal_arn],
+                "canonicalArn": [identity.principal_arn],
+                "principalId": [identity.principal_id],
+                "sessionName": [identity.session_name.clone().unwrap_or_default()],
+            }),
+        );
+    }
+    ::serde_json::Value::Object(info)
 }
 
 /// The `uid` of [`user_info`]: the authenticator's name, the account the principal

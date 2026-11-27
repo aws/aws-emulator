@@ -417,10 +417,7 @@ impl ClusterObjects {
         let spec = admitted_workload_spec(resource, &name, manifest)?;
         let metadata = ObjectMetadata::from_manifest(resource.kind(), &name, manifest)?;
         let resource_version = self.versions.next();
-        let held = self
-            .namespaces
-            .get_mut(namespace)
-            .ok_or_else(|| ApiRefusal::not_found("namespaces", namespace))?;
+        let held = self.namespace_for_create(namespace, resource.resource(), &name)?;
         if held.workloads.contains_key(&(resource, name.clone())) {
             return Err(ApiRefusal::already_exists(resource.resource(), &name));
         }

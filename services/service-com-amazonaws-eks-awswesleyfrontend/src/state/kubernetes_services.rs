@@ -394,10 +394,7 @@ impl ClusterObjects {
         // nothing wherever it was addressed — and only then is the namespace
         // resolved: an object cannot be created in a namespace that does not
         // exist.
-        let held = self
-            .namespaces
-            .get_mut(namespace)
-            .ok_or_else(|| ApiRefusal::not_found("namespaces", namespace))?;
+        let held = self.namespace_for_create(namespace, SERVICES_RESOURCE, &name)?;
         if held.services.contains_key(&name) {
             return Err(ApiRefusal::already_exists(SERVICES_RESOURCE, &name));
         }

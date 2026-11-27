@@ -19,7 +19,8 @@
 use super::kubernetes_lists::{listed, ListRequest};
 use super::kubernetes_metadata::{invalid_member, string_value_map, ObjectMetadata};
 use super::kubernetes_objects::{
-    manifest_name, new_object_uid, ApiRefusal, ClusterObjects, CORE_API_VERSION,
+    deleted_status_json, manifest_name, new_object_uid, ApiRefusal, ClusterObjects,
+    CORE_API_VERSION,
 };
 use super::kubernetes_resource_versions::admits_write;
 use super::*;
@@ -125,10 +126,7 @@ impl ClusterObjects {
         // nothing wherever it was addressed — and only then is the namespace
         // resolved: an object cannot be created in a namespace that does not
         // exist.
-        let held = self
-            .namespaces
-            .get_mut(namespace)
-            .ok_or_else(|| ApiRefusal::not_found("namespaces", namespace))?;
+        let held = self.namespace_for_create(namespace, CONFIG_MAPS_RESOURCE, &name)?;
         if held.config_maps.contains_key(&name) {
             return Err(ApiRefusal::already_exists(CONFIG_MAPS_RESOURCE, &name));
         }
@@ -249,6 +247,26 @@ impl ClusterObjects {
         Ok(listed("ConfigMapList", &names, request, |name| {
             self.config_map_json(namespace, name).ok()
         }))
+    }
+
+    /// `DELETE /api/v1/namespaces/{namespace}/configmaps/{name}`: give the
+    /// ConfigMap up, answered with the `Status` a delete is answered with.
+    ///
+    /// What read the ConfigMap keeps what it read: a workload is configured by the
+    /// values it was given, and removing the object does not reach back into it.
+    pub fn delete_config_map(
+        &mut self,
+        namespace: &str,
+        name: &str,
+    ) -> Result<::serde_json::Value, ApiRefusal> {
+        let held = self
+            .namespaces
+            .get_mut(namespace)
+            .ok_or_else(|| ApiRefusal::not_found("namespaces", namespace))?;
+        held.config_maps
+            .remove(name)
+            .ok_or_else(|| ApiRefusal::not_found(CONFIG_MAPS_RESOURCE, name))?;
+        Ok(deleted_status_json(CONFIG_MAPS_RESOURCE, name, None))
     }
 }
 

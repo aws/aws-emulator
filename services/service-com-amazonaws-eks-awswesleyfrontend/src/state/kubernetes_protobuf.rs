@@ -25,6 +25,7 @@
 //! exactly as it is left unread in a JSON body.
 
 use ::k8s_pb::api::authentication::v1 as authentication_v1;
+use ::k8s_pb::api::authorization::v1 as authorization_v1;
 use ::k8s_pb::api::core::v1 as core_v1;
 use ::k8s_pb::api::rbac::v1 as rbac_v1;
 use ::k8s_pb::apimachinery::pkg::api::resource::Quantity;
@@ -36,6 +37,7 @@ use ::std::collections::BTreeMap;
 
 use super::kubernetes_objects::{ApiRefusal, AUTHENTICATION_API_VERSION, CORE_API_VERSION};
 use super::kubernetes_rbac::RBAC_API_VERSION;
+use super::kubernetes_subject_access_review::AUTHORIZATION_API_VERSION;
 
 /// The media type a client states when it wrote the body in this encoding.
 pub const PROTOBUF_MEDIA_TYPE: &str = "application/vnd.kubernetes.protobuf";
@@ -205,6 +207,45 @@ fn object_document(
         (AUTHENTICATION_API_VERSION, "SelfSubjectReview") => {
             let object: authentication_v1::SelfSubjectReview = decoded(raw)?;
             Ok(metadata_document(object.metadata.as_ref()))
+        }
+        // The reviews a client asks the authorizer with: what the review ASKS about
+        // is its `spec`, which is what the decision is taken over
+        // ([`super::kubernetes_subject_access_review`]).
+        (AUTHORIZATION_API_VERSION, "SelfSubjectAccessReview") => {
+            let object: authorization_v1::SelfSubjectAccessReview = decoded(raw)?;
+            let mut document = metadata_document(object.metadata.as_ref());
+            if let Some(spec) = object.spec {
+                let mut projected = Map::new();
+                if let Some(resource) = spec.resource_attributes {
+                    let mut asked = Map::new();
+                    put_text(&mut asked, "namespace", resource.namespace.as_deref());
+                    put_text(&mut asked, "verb", resource.verb.as_deref());
+                    put_text(&mut asked, "group", resource.group.as_deref());
+                    put_text(&mut asked, "version", resource.version.as_deref());
+                    put_text(&mut asked, "resource", resource.resource.as_deref());
+                    put_text(&mut asked, "subresource", resource.subresource.as_deref());
+                    put_text(&mut asked, "name", resource.name.as_deref());
+                    projected.insert("resourceAttributes".to_string(), Value::Object(asked));
+                }
+                if let Some(non_resource) = spec.non_resource_attributes {
+                    let mut asked = Map::new();
+                    put_text(&mut asked, "path", non_resource.path.as_deref());
+                    put_text(&mut asked, "verb", non_resource.verb.as_deref());
+                    projected.insert("nonResourceAttributes".to_string(), Value::Object(asked));
+                }
+                document.insert("spec".to_string(), Value::Object(projected));
+            }
+            Ok(document)
+        }
+        (AUTHORIZATION_API_VERSION, "SelfSubjectRulesReview") => {
+            let object: authorization_v1::SelfSubjectRulesReview = decoded(raw)?;
+            let mut document = metadata_document(object.metadata.as_ref());
+            if let Some(spec) = object.spec {
+                let mut projected = Map::new();
+                put_text(&mut projected, "namespace", spec.namespace.as_deref());
+                document.insert("spec".to_string(), Value::Object(projected));
+            }
+            Ok(document)
         }
         _ => Err(ApiRefusal::bad_request(format!(
             "no kind \"{kind}\" is registered for version \"{api_version}\""

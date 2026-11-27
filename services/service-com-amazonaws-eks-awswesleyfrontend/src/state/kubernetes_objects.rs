@@ -69,6 +69,34 @@ pub const DEFAULT_SERVICE_ACCOUNT: &str = "default";
 /// is far above the handful a cluster of this emulator is driven with.
 pub const MAX_NAMESPACES_PER_CLUSTER: usize = 64;
 
+/// The `Namespace$status.phase` a namespace in use reports: "Active means the
+/// namespace is available for use".
+pub const NAMESPACE_PHASE_ACTIVE: &str = "Active";
+
+/// The phase a namespace a DELETE has been accepted for reports: "Terminating means
+/// the namespace is undergoing graceful termination".
+///
+/// A namespace is not given up by the call that deletes it — the objects inside it
+/// have to be cleared out first, which is what its finalizer
+/// ([`NAMESPACE_FINALIZER`]) stands for — so the delete is answered with the
+/// namespace in this phase, and the namespace is gone once that work has run.
+pub const NAMESPACE_PHASE_TERMINATING: &str = "Terminating";
+
+/// The finalizer every namespace carries: "kubernetes", the one the namespace
+/// controller clears once it has removed the content of a terminating namespace.
+pub const NAMESPACE_FINALIZER: &str = "kubernetes";
+
+/// How long a namespace reports [`NAMESPACE_PHASE_TERMINATING`] before it and the
+/// objects inside it are given up.
+///
+/// CHOSEN, not published: Kubernetes states no span for clearing a namespace out —
+/// it takes as long as the content takes — so this is the span this service owes its
+/// other asynchronous moves ([`POD_START_DELAY`]). It is non-zero, so a client that
+/// reads the namespace straight after deleting it sees the phase a namespace being
+/// torn down is in, and the due instant is stored on the namespace: nothing sleeps
+/// for it.
+pub const NAMESPACE_TERMINATION_DELAY: Duration = POD_START_DELAY;
+
 /// How many pods one namespace holds. CHOSEN, like [`MAX_NAMESPACES_PER_CLUSTER`]:
 /// a create past it is refused rather than letting one caller grow the store
 /// without end.
@@ -145,6 +173,15 @@ pub struct NamespaceObject {
     pub created_at: SystemTime,
     /// The revision the write that last stored this namespace was stamped with.
     pub resource_version: u64,
+    /// The instant a DELETE of this namespace was accepted, and `None` for one no
+    /// delete has reached.
+    ///
+    /// A namespace is not removed by the call that deletes it: the call records that
+    /// the namespace is going away — which is what it reports as
+    /// `metadata.deletionTimestamp` and the phase [`NAMESPACE_PHASE_TERMINATING`] —
+    /// and the namespace and everything inside it are given up once the work that
+    /// clearing it out is has run ([`NAMESPACE_TERMINATION_DELAY`]).
+    pub deleted_at: Option<SystemTime>,
     /// The labels and annotations the manifest carried.
     pub metadata: ObjectMetadata,
     /// The service accounts of this namespace, by name. Bounded by
@@ -190,6 +227,7 @@ impl NamespaceObject {
             uid: new_object_uid(),
             created_at: now,
             resource_version: versions.next(),
+            deleted_at: None,
             metadata,
             service_accounts: [(
                 DEFAULT_SERVICE_ACCOUNT.to_string(),
@@ -819,6 +857,30 @@ impl ClusterObjects {
         // back to the subnets they came out of
         // ([`super::kubernetes_pod_addressing`]).
         let mut freed: Vec<PodAddress> = Vec::new();
+        // The namespaces whose teardown is DUE. A delete of a namespace is a delete
+        // of everything inside it, and the pods of such a namespace give their
+        // addresses back like any other pod leaving its node does. The instant was
+        // stored by the call that accepted the delete, so this is work the clock
+        // already owed whether or not anybody called.
+        let torn_down: Vec<String> = self
+            .namespaces
+            .iter()
+            .filter(|(_, held)| {
+                held.deleted_at.is_some_and(|deleted_at| {
+                    deleted_at
+                        .checked_add(NAMESPACE_TERMINATION_DELAY)
+                        .is_some_and(|due| due <= now)
+                })
+            })
+            .map(|(name, _)| name.clone())
+            .collect();
+        for name in torn_down {
+            if let Some(mut held) = self.namespaces.remove(&name) {
+                for pod in held.pods.values_mut() {
+                    freed.extend(pod.unbind());
+                }
+            }
+        }
         for (namespace, held) in &mut self.namespaces {
             for (pod_name, pod) in &mut held.pods {
                 let was_bound = pod.node_name.is_some();
@@ -936,21 +998,74 @@ impl ClusterObjects {
     }
 
     /// `GET /api/v1/namespaces/{namespace}`.
+    ///
+    /// A namespace a delete has reached reports the instant that delete was accepted
+    /// and the phase a namespace being torn down is in
+    /// ([`NAMESPACE_PHASE_TERMINATING`]), which is what a client reads back from the
+    /// delete itself.
     pub fn namespace_json(&self, name: &str) -> Result<::serde_json::Value, ApiRefusal> {
         let namespace = self.namespace(name)?;
+        let mut metadata = namespace.metadata.render(
+            name,
+            None,
+            &namespace.uid,
+            namespace.created_at,
+            namespace.resource_version,
+        );
+        if let (Some(metadata), Some(deleted_at)) =
+            (metadata.as_object_mut(), namespace.deleted_at)
+        {
+            metadata.insert(
+                "deletionTimestamp".to_string(),
+                ::serde_json::json!(rfc3339_seconds(deleted_at)),
+            );
+        }
+        let phase = if namespace.deleted_at.is_some() {
+            NAMESPACE_PHASE_TERMINATING
+        } else {
+            NAMESPACE_PHASE_ACTIVE
+        };
         Ok(::serde_json::json!({
             "kind": "Namespace",
             "apiVersion": CORE_API_VERSION,
-            "metadata": namespace.metadata.render(
-                name,
-                None,
-                &namespace.uid,
-                namespace.created_at,
-                namespace.resource_version,
-            ),
-            "spec": {},
-            "status": { "phase": "Active" },
+            "metadata": metadata,
+            "spec": { "finalizers": [NAMESPACE_FINALIZER] },
+            "status": { "phase": phase },
         }))
+    }
+
+    /// `DELETE /api/v1/namespaces/{name}`: accept the delete of the namespace and
+    /// answer the namespace as it now stands — in the phase a namespace being torn
+    /// down is in.
+    ///
+    /// The namespace is not removed here, because the objects inside it have to be
+    /// cleared out first: the delete records the instant it was accepted, and the
+    /// namespace and its content are given up once that work is due
+    /// ([`NAMESPACE_TERMINATION_DELAY`], materialised by
+    /// [`Self::materialize_due_transitions`]). A second delete of a namespace already
+    /// being torn down keeps the first instant: the work was owed from then, and
+    /// asking again does not start it over.
+    pub fn delete_namespace(
+        &mut self,
+        name: &str,
+        now: SystemTime,
+    ) -> Result<::serde_json::Value, ApiRefusal> {
+        // The revision is taken only where it is STAMPED: a delete of a namespace
+        // this cluster does not hold, and a second delete of one already being torn
+        // down, write nothing and so spend no revision.
+        let stamps = self.namespaces.get(name).is_some_and(|held| held.deleted_at.is_none());
+        let resource_version = stamps.then(|| self.versions.next());
+        let namespace = self
+            .namespaces
+            .get_mut(name)
+            .ok_or_else(|| ApiRefusal::not_found("namespaces", name))?;
+        if let Some(resource_version) = resource_version {
+            namespace.deleted_at = Some(now);
+            // The namespace has been written: it stands at the revision of this
+            // write, like every other object this store stamps.
+            namespace.resource_version = resource_version;
+        }
+        self.namespace_json(name)
     }
 
     /// The namespaces this cluster holds, as the `NamespaceList` a client reads
@@ -975,10 +1090,7 @@ impl ClusterObjects {
         self.namespace(namespace)?;
         let metadata = ObjectMetadata::from_manifest("ServiceAccount", &name, manifest)?;
         let resource_version = self.versions.next();
-        let held = self
-            .namespaces
-            .get_mut(namespace)
-            .ok_or_else(|| ApiRefusal::not_found("namespaces", namespace))?;
+        let held = self.namespace_for_create(namespace, "serviceaccounts", &name)?;
         if held.service_accounts.contains_key(&name) {
             return Err(ApiRefusal::already_exists("serviceaccounts", &name));
         }
@@ -1043,6 +1155,68 @@ impl ClusterObjects {
         }))
     }
 
+    /// The namespace an object is CREATED in: the one `namespace` names, refused when
+    /// this cluster holds no such namespace and when a delete has reached it —
+    /// "unable to create new content in namespace … because it is being terminated",
+    /// which is what the API server answers a create addressed at a namespace that is
+    /// going away. `resource` and `name` are what the create addresses, which the
+    /// refusal names.
+    ///
+    /// `pub(super)` so every create of this plane resolves its namespace the same way,
+    /// whichever module holds the objects ([`super::kubernetes_config_maps`],
+    /// [`super::kubernetes_services`], [`super::kubernetes_workloads`],
+    /// [`super::kubernetes_rbac`]).
+    pub(super) fn namespace_for_create(
+        &mut self,
+        namespace: &str,
+        resource: &str,
+        name: &str,
+    ) -> Result<&mut NamespaceObject, ApiRefusal> {
+        let held = self
+            .namespaces
+            .get_mut(namespace)
+            .ok_or_else(|| ApiRefusal::not_found("namespaces", namespace))?;
+        if held.deleted_at.is_some() {
+            return Err(ApiRefusal::namespace_terminating(resource, name, namespace));
+        }
+        Ok(held)
+    }
+
+    /// Whether this cluster holds the service account `name` of `namespace`.
+    ///
+    /// What a token issued for that account is authenticated against: an account the
+    /// cluster no longer holds is an identity it no longer has
+    /// ([`super::kubernetes_service_account_tokens`]).
+    #[must_use]
+    pub fn holds_service_account(&self, namespace: &str, name: &str) -> bool {
+        self.namespaces
+            .get(namespace)
+            .is_some_and(|held| held.service_accounts.contains_key(name))
+    }
+
+    /// `DELETE /api/v1/namespaces/{namespace}/serviceaccounts/{name}`: give the
+    /// account up, answered with the `Status` a delete is answered with.
+    ///
+    /// The tokens the account was issued are not this store's: they live in the plane
+    /// that answers for a presented token ([`super::pod_identity_plane`]), and they
+    /// name an account this cluster no longer holds once it is gone — which is what
+    /// stops one of them from authenticating
+    /// ([`Self::holds_service_account`]).
+    pub fn delete_service_account(
+        &mut self,
+        namespace: &str,
+        name: &str,
+    ) -> Result<::serde_json::Value, ApiRefusal> {
+        let held = self
+            .namespaces
+            .get_mut(namespace)
+            .ok_or_else(|| ApiRefusal::not_found("namespaces", namespace))?;
+        held.service_accounts
+            .remove(name)
+            .ok_or_else(|| ApiRefusal::not_found("serviceaccounts", name))?;
+        Ok(deleted_status_json("serviceaccounts", name, None))
+    }
+
     /// `POST /api/v1/namespaces/{namespace}/pods`: create the pod object the
     /// manifest names and answer it with the `metadata.uid` this create minted —
     /// the uid a `TokenRequest`'s `boundObjectRef` names.
@@ -1081,10 +1255,7 @@ impl ClusterObjects {
         let spec = admitted_pod_spec(&name, manifest, &service_account_name)?;
         let metadata = ObjectMetadata::from_manifest("Pod", &name, manifest)?;
         let resource_version = self.versions.next();
-        let held = self
-            .namespaces
-            .get_mut(namespace)
-            .ok_or_else(|| ApiRefusal::not_found("namespaces", namespace))?;
+        let held = self.namespace_for_create(namespace, "pods", &name)?;
         if held.pods.contains_key(&name) {
             return Err(ApiRefusal::already_exists("pods", &name));
         }
@@ -1218,6 +1389,58 @@ impl ClusterObjects {
         }))
     }
 
+    /// `DELETE /api/v1/namespaces/{namespace}/pods/{name}`: give the pod up, and
+    /// answer it as it last stood — which is what the API server answers a delete of
+    /// one object with.
+    ///
+    /// The pod is removed rather than kept in a terminating state: a grace period
+    /// bounds how long the kubelet WAITS for a pod's containers to stop
+    /// ("terminationGracePeriodSeconds: optional duration in seconds the pod needs to
+    /// terminate gracefully"), and it is over as soon as they have stopped. Nothing is
+    /// executing inside a container of this cluster's pods at the instant a delete
+    /// reaches one — a container's program is performed once and what it did is
+    /// recorded ([`super::kubernetes_container_run`]) — so there is nothing to wait
+    /// for, which is what the answer reports as a grace period of none.
+    ///
+    /// The address the pod held goes back to the subnet it came out of, like the
+    /// address of any other pod that leaves its node
+    /// ([`super::kubernetes_pod_addressing`]). A pod a workload owns is replaced by
+    /// that workload's own reconciliation, which is what deleting one of a
+    /// Deployment's pods does.
+    pub fn delete_pod(
+        &mut self,
+        namespace: &str,
+        name: &str,
+        now: SystemTime,
+    ) -> Result<::serde_json::Value, ApiRefusal> {
+        // The object the answer carries is the pod as it stood, read before it is
+        // given up: a delete reports what it deleted.
+        let mut document = self.pod_json(namespace, name)?;
+        let held = self
+            .namespaces
+            .get_mut(namespace)
+            .ok_or_else(|| ApiRefusal::not_found("namespaces", namespace))?;
+        let mut pod = held
+            .pods
+            .remove(name)
+            .ok_or_else(|| ApiRefusal::not_found("pods", name))?;
+        self.released_addresses.extend(pod.unbind());
+        if let Some(metadata) = document
+            .get_mut("metadata")
+            .and_then(::serde_json::Value::as_object_mut)
+        {
+            metadata.insert(
+                "deletionTimestamp".to_string(),
+                ::serde_json::json!(rfc3339_seconds(now)),
+            );
+            metadata.insert(
+                "deletionGracePeriodSeconds".to_string(),
+                ::serde_json::json!(0),
+            );
+        }
+        Ok(document)
+    }
+
     /// What a `POST .../serviceaccounts/{name}/token` is to mint, resolved against
     /// the objects this cluster holds: the identity the token names, the pod it is
     /// bound to, and the window it is issued for.
@@ -1247,6 +1470,21 @@ impl ClusterObjects {
                     .collect()
             })
             .unwrap_or_default();
+        // "If no audiences are specified, the audience will default to the audience
+        // of the API server": a token asked for without one is a token for the API
+        // server itself, which is what then authenticates with it
+        // ([`super::kubernetes_service_account_tokens`]) — so the request is served
+        // with that audience rather than with none, and the `TokenRequest` the client
+        // reads back names it.
+        let audiences = if audiences.is_empty() {
+            super::kubernetes_service_account_tokens::API_SERVER_AUDIENCES
+                .iter()
+                .take(1)
+                .map(|audience| (*audience).to_string())
+                .collect()
+        } else {
+            audiences
+        };
         let lifetime = match spec
             .and_then(|spec| spec.get("expirationSeconds"))
             .and_then(::serde_json::Value::as_u64)
@@ -1525,6 +1763,22 @@ impl ApiRefusal {
             reason: "Forbidden",
             message: message.into(),
             resource,
+        }
+    }
+
+    /// The `Status` a create addressed at a namespace that is being torn down is
+    /// refused with: `403 Forbidden`, in the API server's own wording — a namespace
+    /// that is going away takes no new content.
+    #[must_use]
+    pub fn namespace_terminating(resource: &str, name: &str, namespace: &str) -> Self {
+        Self {
+            status: 403,
+            reason: "Forbidden",
+            message: format!(
+                "{resource} \"{name}\" is forbidden: unable to create new content in \
+                 namespace {namespace} because it is being terminated"
+            ),
+            resource: Some((resource.to_string(), name.to_string())),
         }
     }
 

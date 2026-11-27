@@ -25,6 +25,7 @@
 //! control-plane wire (`wire.rs`).
 
 use serde_json::json;
+use service_com_amazonaws_eks_awswesleyfrontend::state::kubernetes_service_account_tokens::API_SERVER_AUDIENCES;
 
 use crate::certificate_authority::{str_member, REGION};
 use crate::kubernetes_api::{
@@ -32,6 +33,11 @@ use crate::kubernetes_api::{
     Kubeconfig, PODS_AUDIENCE,
 };
 use crate::wire::{call, encode_label};
+
+/// The audience a `TokenRequest` that asks for none is served with: "if no audiences are
+/// specified, the audience will default to the audience of the API server"
+/// (`TokenRequestSpec$audiences`), which is the first of the ones this API server consumes.
+const API_SERVER_AUDIENCE: &str = API_SERVER_AUDIENCES[0];
 
 /// The namespace Kubernetes creates with a cluster, which every row runs in.
 const NAMESPACE: &str = "default";
@@ -79,7 +85,7 @@ fn rows() -> Vec<Row> {
             case: "no audience at all: the API server's own",
             service_account: "irsa-default",
             audiences: &[],
-            recorded_audience: PODS_AUDIENCE,
+            recorded_audience: API_SERVER_AUDIENCE,
         },
     ]
 }
@@ -202,7 +208,7 @@ async fn a_projected_token_names_the_issuer_its_cluster_announces() {
             claims.claim_str("sub")
         );
         let expected_audiences: Vec<&str> = if audiences.is_empty() {
-            vec![PODS_AUDIENCE]
+            vec![API_SERVER_AUDIENCE]
         } else {
             audiences.to_vec()
         };

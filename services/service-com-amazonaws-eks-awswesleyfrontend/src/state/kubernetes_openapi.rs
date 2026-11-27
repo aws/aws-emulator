@@ -868,17 +868,34 @@ fn schemas_of(group: &str, version: &str) -> Vec<(String, ::serde_json::Value)> 
                 let mut properties = ::serde_json::json!({
                     "selector": reference(&selector),
                     "template": reference(&template),
+                    // SOURCE: the members the `DeploymentSpec` and `DaemonSetSpec`
+                    // types declare beside the selector and the template. A client
+                    // validates the WHOLE manifest against the schema of its kind
+                    // and sends nothing when it carries a member no schema declares,
+                    // so every member of the kind is declared — the rollout strategy
+                    // among them, which is the member a rolling update states.
+                    "minReadySeconds": number_value(),
+                    "revisionHistoryLimit": number_value(),
                 });
                 // Only a workload that runs a NUMBER of replicas declares one, and
                 // it declares the count this server runs for a spec that names none
                 // and the most it serves — the bound a create past it is refused
                 // with.
-                if !resource.runs_on_every_node() {
+                if resource.runs_on_every_node() {
+                    // SOURCE: `DaemonSetSpec`, whose rollout member is named for the
+                    // set it updates.
+                    properties["updateStrategy"] = any_value();
+                } else {
                     properties["replicas"] = ::serde_json::json!({
                         "type": "integer",
                         "default": DEFAULT_REPLICAS,
                         "maximum": MAX_REPLICAS_PER_WORKLOAD,
                     });
+                    // SOURCE: the members `DeploymentSpec` declares beyond the ones
+                    // above.
+                    properties["strategy"] = any_value();
+                    properties["paused"] = flag_value();
+                    properties["progressDeadlineSeconds"] = number_value();
                 }
                 schemas.push((
                     spec_name.clone(),

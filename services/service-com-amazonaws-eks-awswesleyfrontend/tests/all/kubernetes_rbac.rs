@@ -686,10 +686,10 @@ async fn the_access_entry_and_the_rbac_objects_decide_every_request() {
                 "data": { "key": "value" },
             })),
             as_admin: 201,
-            // Created again in the second pass: the config map the first pass created
-            // is still there, so the name is taken — which is the conflict a create of
-            // one name twice is, and still an admitted request.
-            as_bound_group: 409,
+            // Created again in the second pass: the first pass gave the ConfigMap up
+            // again (the row below deletes it), so the name is free and the create is
+            // the create it was the first time.
+            as_bound_group: 201,
         },
         DecisionRow {
             case: "a verb the bound Role does not name",
@@ -698,8 +698,8 @@ async fn the_access_entry_and_the_rbac_objects_decide_every_request() {
             body: None,
             // The authorizer decides BEFORE the routing does, so the identity the
             // Role does not grant the verb to is refused 403 while the cluster admin
-            // reaches the routing and is told the resource serves no delete.
-            as_admin: 405,
+            // reaches the routing and the delete is served.
+            as_admin: 200,
             as_bound_group: 403,
         },
         DecisionRow {

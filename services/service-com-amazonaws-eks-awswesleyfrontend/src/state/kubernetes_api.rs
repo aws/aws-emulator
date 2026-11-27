@@ -50,7 +50,9 @@
 //!    own mapping for that principal — its ACCESS ENTRY, else the `aws-auth`
 //!    ConfigMap of a cluster whose mode includes `CONFIG_MAP` — is the Kubernetes
 //!    identity the request is served as ([`super::kubernetes_authentication`]); a
-//!    principal neither mapping names authenticates as nobody;
+//!    principal neither mapping names authenticates as nobody. A bearer token the
+//!    cluster itself issued for one of its service accounts is authenticated as that
+//!    account instead ([`super::kubernetes_service_account_tokens`]);
 //! 2. the cluster's RBAC objects and the access policies its entry associates decide
 //!    whether that identity may do what the request addresses
 //!    ([`super::kubernetes_rbac`]); one that may not is refused before anything is
@@ -94,6 +96,7 @@ use super::kubernetes_authentication::{self as authentication, ApiServerPrincipa
 use super::kubernetes_container_run;
 use super::kubernetes_events::EVENT_FIELD_SELECTORS;
 use super::kubernetes_image_pull;
+use super::kubernetes_impersonation as impersonation;
 use super::kubernetes_lists::ListRequest;
 use super::kubernetes_objects::{
     NAMESPACED_FIELD_SELECTORS, NAMESPACE_FIELD_SELECTORS, POD_FIELD_SELECTORS,
@@ -105,6 +108,7 @@ use super::kubernetes_pod_addressing;
 use super::kubernetes_protobuf;
 use super::kubernetes_rbac::{self as rbac, RbacResource};
 use super::kubernetes_self_subject_review as self_review;
+use super::kubernetes_service_account_tokens as service_account_tokens;
 use super::kubernetes_services::SERVICE_FIELD_SELECTORS;
 use super::kubernetes_subject_access_review as access_review;
 use super::kubernetes_version_info;
@@ -538,6 +542,22 @@ async fn answer(
     let cluster_id = header_value(cluster_id);
     let user_agent = header_value(::http::header::USER_AGENT);
     let accept = header_value(::http::header::ACCEPT);
+    // The identity the request asks to be SERVED AS, which is not the one its
+    // credential authenticates ([`super::kubernetes_impersonation`]): the user, and
+    // every group the request asks that identity to carry — a header a client may
+    // repeat, so all of its values are read.
+    let impersonate_user = header_value(::http::header::HeaderName::from_static(
+        super::kubernetes_impersonation::IMPERSONATE_USER_HEADER,
+    ));
+    let impersonate_groups: Vec<String> = request
+        .headers()
+        .get_all(::http::header::HeaderName::from_static(
+            super::kubernetes_impersonation::IMPERSONATE_GROUP_HEADER,
+        ))
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .map(str::to_string)
+        .collect();
     let query = request.uri().query().map(str::to_string);
     // The media type the client wrote its body in, which is what says how the
     // body is read ([`read_manifest`]).
@@ -558,6 +578,8 @@ async fn answer(
         });
     };
     let limited = Limited::new(request.into_body(), body_ceiling());
+    let impersonate_groups: Vec<&str> =
+        impersonate_groups.iter().map(String::as_str).collect();
     let served = ::tokio::time::timeout(request_deadline(), async move {
         // Held for the whole read and dispatch, and released with it.
         let _permit: OwnedSemaphorePermit = permit;
@@ -592,6 +614,8 @@ async fn answer(
                 user_agent: user_agent.as_deref(),
                 query: query.as_deref(),
                 accept: accept.as_deref(),
+                impersonate_user: impersonate_user.as_deref(),
+                impersonate_groups: &impersonate_groups,
                 content_type: &content_type,
                 body: &body,
             },
@@ -644,6 +668,13 @@ pub struct ApiRequest<'request> {
     /// published OpenAPI documents are negotiated by
     /// ([`super::kubernetes_openapi::negotiated`]).
     pub accept: Option<&'request str>,
+    /// The `Impersonate-User` header: the identity the request asks to be SERVED AS
+    /// rather than the one its own credential authenticates
+    /// ([`super::kubernetes_impersonation`]).
+    pub impersonate_user: Option<&'request str>,
+    /// The `Impersonate-Group` headers beside it: the groups that identity is to
+    /// carry. A request that names none asks to carry the identity's own.
+    pub impersonate_groups: &'request [&'request str],
     /// The media type the client wrote its body in, which is what says how the body is
     /// read.
     pub content_type: &'request str,
@@ -761,13 +792,68 @@ pub fn serve(
             let store = state.lock();
             authentication::authenticate(&store, key, &caller)
         }
-        // A credential this server cannot read, and one naming a session that has run
-        // out, both speak for nobody.
-        None => Err(ApiRefusal::unauthorized()),
+        // A bearer token that is not the AWS form presents the cluster's OWN
+        // credential: a service account token this cluster's API server issued, whose
+        // identity is the service account it was issued for
+        // ([`super::kubernetes_service_account_tokens`]). The account has to be one
+        // this cluster still HOLDS — a token issued for an account that has since
+        // been deleted names an identity the cluster no longer has. A request that
+        // presents neither — no token at all, a credential this server cannot read,
+        // one naming a session that has run out — speaks for nobody.
+        None => service_account_tokens::presented_bearer_token(request.authorization)
+            .and_then(|token| {
+                service_account_tokens::issued_service_account(
+                    auth,
+                    &key.1,
+                    token,
+                    received_at,
+                )
+            })
+            .filter(|(namespace, account)| {
+                let store = state.lock();
+                plane(&store, key)
+                    .is_ok_and(|plane| plane.objects.holds_service_account(namespace, account))
+            })
+            .map(|(namespace, account)| {
+                service_account_tokens::service_account_identity(&namespace, &account)
+            })
+            .ok_or_else(ApiRefusal::unauthorized),
     };
     let (identity, admitted, answer) = match authenticated {
         Err(refusal) => (None, false, Err(refusal)),
         Ok(identity) => {
+            // The identity the request asks to be SERVED AS, which the requester has
+            // to be permitted to act as ([`super::kubernetes_impersonation`]): the
+            // request is decided and answered as that identity, and a requester whose
+            // rules do not admit acting as it is refused before anything is read.
+            let acting = match impersonation::requested(
+                request.impersonate_user,
+                request.impersonate_groups,
+            ) {
+                None => Ok(identity.clone()),
+                Some(requested) => {
+                    let store = state.lock();
+                    plane(&store, key).and_then(|plane| {
+                        impersonation::impersonated(&plane.objects, &identity, &requested)
+                    })
+                }
+            };
+            let acting = match acting {
+                Ok(acting) => acting,
+                // The refusal names the REQUESTER, because it is the requester that
+                // may not act as the identity it asked for — and so does the record.
+                Err(refusal) => return answered(
+                    state,
+                    key,
+                    request,
+                    audit,
+                    attributes,
+                    Some(identity),
+                    false,
+                    Err(refusal),
+                    received_at,
+                ),
+            };
             // The decision, or the `Status` a cluster this store no longer holds is
             // answered with — the same refusal the handles read above answers, so a
             // cluster deleted at either instant is answered alike rather than as a
@@ -788,22 +874,53 @@ pub fn serve(
             // the store: it cannot grow with what a caller sends.
             let decided = {
                 let store = state.lock();
-                plane(&store, key)
-                    .map(|plane| rbac::admits(&plane.objects, &identity, &attributes))
+                plane(&store, key).map(|plane| rbac::admits(&plane.objects, &acting, &attributes))
             };
             match decided {
                 Ok(true) => {
-                    let answer = route(state, auth, key, request, &identity);
-                    (Some(identity), true, answer)
+                    let answer = route(state, auth, key, request, &acting);
+                    (Some(acting), true, answer)
                 }
                 Ok(false) => {
-                    let refusal = attributes.forbidden(&identity.username);
-                    (Some(identity), false, Err(refusal))
+                    let refusal = attributes.forbidden(&acting.username);
+                    (Some(acting), false, Err(refusal))
                 }
-                Err(refusal) => (Some(identity), false, Err(refusal)),
+                Err(refusal) => (Some(acting), false, Err(refusal)),
             }
         }
     };
+    answered(
+        state,
+        key,
+        request,
+        audit,
+        attributes,
+        identity,
+        admitted,
+        answer,
+        received_at,
+    )
+}
+
+/// One decided request, written as the answer the client reads and the record the
+/// cluster's audit log owes for it.
+///
+/// The tail of [`serve`], shared by the decisions that end it: the answer is the
+/// `Status` of a refusal or the document the routing produced, the record names the
+/// identity the request was served as and whether it was admitted, and the body is
+/// written in the encoding the client negotiated where this API negotiates one.
+#[allow(clippy::too_many_arguments)]
+fn answered(
+    state: &::engine::ServiceState<ServiceStore>,
+    key: &(String, String),
+    request: &ApiRequest<'_>,
+    audit: Option<ClusterAuditLog>,
+    attributes: rbac::RequestAttributes,
+    identity: Option<rbac::SubjectIdentity>,
+    admitted: bool,
+    answer: Result<(u16, ::serde_json::Value), ApiRefusal>,
+    received_at: SystemTime,
+) -> Served {
     let (status, document) = match answer {
         Ok((status, document)) => (status, document),
         Err(refusal) => (refusal.status, refusal.to_status_json()),
@@ -1205,6 +1322,13 @@ fn route(
         (method, ["namespaces", namespace]) if method == ::http::Method::GET.as_str() => {
             Ok((200, objects.namespace_json(namespace)?))
         }
+        // A delete of a namespace is a delete of everything inside it, which is
+        // work rather than an instant: the namespace is answered in the phase a
+        // namespace being torn down is in, and it and its objects are given up once
+        // that work is due ([`super::kubernetes_objects::NamespaceObject`]).
+        (method, ["namespaces", namespace]) if method == ::http::Method::DELETE.as_str() => {
+            Ok((200, objects.delete_namespace(namespace, now)?))
+        }
         (method, ["namespaces", namespace, "pods"]) if method == ::http::Method::POST.as_str() => {
             let document = read_manifest(content_type, body)?;
             Ok((201, objects.create_pod(namespace, &document, now, &capacity)?))
@@ -1222,6 +1346,11 @@ fn route(
             if method == ::http::Method::GET.as_str() =>
         {
             Ok((200, objects.pod_json(namespace, name)?))
+        }
+        (method, ["namespaces", namespace, "pods", name])
+            if method == ::http::Method::DELETE.as_str() =>
+        {
+            Ok((200, objects.delete_pod(namespace, name, now)?))
         }
         (method, ["namespaces", namespace, "configmaps"])
             if method == ::http::Method::POST.as_str() =>
@@ -1253,6 +1382,11 @@ fn route(
                 200,
                 objects.replace_config_map(namespace, name, &document)?,
             ))
+        }
+        (method, ["namespaces", namespace, "configmaps", name])
+            if method == ::http::Method::DELETE.as_str() =>
+        {
+            Ok((200, objects.delete_config_map(namespace, name)?))
         }
         // The SERVICES of a namespace: the objects that name a workload inside the
         // cluster, each on an address allocated out of the cluster's own service
@@ -1312,6 +1446,11 @@ fn route(
             if method == ::http::Method::GET.as_str() =>
         {
             Ok((200, objects.service_account_json(namespace, name)?))
+        }
+        (method, ["namespaces", namespace, "serviceaccounts", name])
+            if method == ::http::Method::DELETE.as_str() =>
+        {
+            Ok((200, objects.delete_service_account(namespace, name)?))
         }
         // The EVENTS of a namespace: what the cluster's own components recorded
         // about its objects ([`super::kubernetes_events`]). They are not objects a
@@ -1540,23 +1679,28 @@ fn core_api_resource_list() -> ::serde_json::Value {
     }
 
     let read = ["get", "list"];
-    let read_create = ["create", "get", "list"];
     // A Service is also DELETED through this server: its address goes back to the
     // cluster's block when it is ([`super::kubernetes_services`]).
     let read_create_delete = ["create", "delete", "get", "list"];
     // A ConfigMap is also UPDATED through this server: the mapping a cluster
     // authenticates through is kept in one (`super::kubernetes_aws_auth`), and a
     // client maintains it by replacing the object.
-    let read_create_update = ["create", "get", "list", "update"];
+    let read_create_update_delete = ["create", "delete", "get", "list", "update"];
     ::serde_json::json!({
         "kind": "APIResourceList",
         "apiVersion": super::kubernetes_objects::CORE_API_VERSION,
         "groupVersion": super::kubernetes_objects::CORE_API_VERSION,
         "resources": [
-            resource("namespaces", "Namespace", false, &["ns"], &read_create),
+            resource("namespaces", "Namespace", false, &["ns"], &read_create_delete),
             resource("nodes", "Node", false, &["no"], &read),
-            resource("pods", "Pod", true, &["po"], &read_create),
-            resource("configmaps", "ConfigMap", true, &["cm"], &read_create_update),
+            resource("pods", "Pod", true, &["po"], &read_create_delete),
+            resource(
+                "configmaps",
+                "ConfigMap",
+                true,
+                &["cm"],
+                &read_create_update_delete,
+            ),
             resource("services", "Service", true, &["svc"], &read_create_delete),
             // The events the cluster's own components record about its objects:
             // a client READS them, so the row names the verbs this server serves.
@@ -1566,7 +1710,7 @@ fn core_api_resource_list() -> ::serde_json::Value {
                 "ServiceAccount",
                 true,
                 &["sa"],
-                &read_create,
+                &read_create_delete,
             ),
             // The one subresource this server serves, addressed under the service
             // account it mints a token for.
