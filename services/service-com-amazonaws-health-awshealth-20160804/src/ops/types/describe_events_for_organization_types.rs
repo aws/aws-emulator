@@ -36,6 +36,7 @@ pub struct OrganizationEventFilter {
     pub event_type_categories: Option<Vec<String>>,
     pub event_status_codes: Option<Vec<String>>,
     pub personas: Option<Vec<String>>,
+    pub tags: Option<std::collections::HashMap<String, Vec<String>>>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.health#DescribeEventsForOrganizationResponse")]

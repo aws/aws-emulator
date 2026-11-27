@@ -17,13 +17,29 @@ pub struct DescribeAffectedAccountsForOrganizationInput {
     pub event_arn: String,
     pub next_token: Option<String>,
     pub max_results: Option<i32>,
+    pub filter: Option<AffectedAccountFilter>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.health#AffectedAccountFilter")]
+#[derive(Debug, Clone, Default)]
+pub struct AffectedAccountFilter {
+    pub event_arn: Option<String>,
+    pub tags: Option<std::collections::HashMap<String, Vec<String>>>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.health#DescribeAffectedAccountsForOrganizationResponse")]
 #[derive(Debug, Clone, Default)]
 pub struct DescribeAffectedAccountsForOrganizationOutput {
     pub affected_accounts: Option<Vec<String>>,
+    pub affected_account_entities: Option<Vec<AccountEntity>>,
     pub event_scope_code: Option<String>,
     pub next_token: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.health#AccountEntity")]
+#[derive(Debug, Clone, Default)]
+pub struct AccountEntity {
+    pub account_id: Option<String>,
+    pub account_tags: Option<std::collections::HashMap<String, String>>,
 }
 

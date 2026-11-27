@@ -16,6 +16,13 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-health-awshealth-201608
 pub struct DescribeEntityAggregatesForOrganizationInput {
     pub event_arns: Vec<String>,
     pub aws_account_ids: Option<Vec<String>>,
+    pub filter: Option<OrganizationEntityAggregateFilter>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.health#OrganizationEntityAggregateFilter")]
+#[derive(Debug, Clone, Default)]
+pub struct OrganizationEntityAggregateFilter {
+    pub tags: Option<std::collections::HashMap<String, Vec<String>>>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.health#DescribeEntityAggregatesForOrganizationResponse")]

@@ -34,7 +34,8 @@ pub struct AffectedEntity {
     pub aws_account_id: Option<String>,
     pub last_updated_time: Option<::aws_smithy_types::DateTime>,
     pub status_code: Option<String>,
-    pub tags: Option<std::collections::HashMap<String, String>>,
+    pub resource_tags: Option<std::collections::HashMap<String, String>>,
+    pub account_tags: Option<std::collections::HashMap<String, String>>,
     pub entity_metadata: Option<std::collections::HashMap<String, String>>,
 }
 
@@ -66,7 +67,7 @@ pub struct EventFilter {
     pub entity_arns: Option<Vec<String>>,
     pub entity_values: Option<Vec<String>>,
     pub event_type_categories: Option<Vec<String>>,
-    pub tags: Option<Vec<std::collections::HashMap<String, String>>>,
+    pub tags: Option<std::collections::HashMap<String, Vec<String>>>,
     pub event_status_codes: Option<Vec<String>>,
     pub personas: Option<Vec<String>>,
 }
@@ -95,6 +96,10 @@ pub struct EventDescription {
     pub latest_description: Option<String>,
 }
 
+/// The values `AccountTagType` accepts on the wire.
+pub const ACCOUNT_TAG_TYPE_VALUES: &[&str] = &["ACCOUNT_RESOURCE_TAG"];
+
+
 /// The values `EventActionability` accepts on the wire.
 pub const EVENT_ACTIONABILITY_VALUES: &[&str] = &["ACTION_MAY_BE_REQUIRED", "ACTION_REQUIRED", "INFORMATIONAL"];
 
@@ -109,6 +114,14 @@ pub const EVENT_TYPE_ACTIONABILITY_VALUES: &[&str] = &["ACTION_MAY_BE_REQUIRED",
 
 /// The values `EventTypePersona` accepts on the wire.
 pub const EVENT_TYPE_PERSONA_VALUES: &[&str] = &["BILLING", "OPERATIONS", "SECURITY"];
+
+
+/// The values `OrganizationTagType` accepts on the wire.
+pub const ORGANIZATION_TAG_TYPE_VALUES: &[&str] = &["ORGANIZATION_ACCOUNT_TAG", "ORGANIZATION_RESOURCE_TAG"];
+
+
+/// The values `TagKeyStatus` accepts on the wire.
+pub const TAG_KEY_STATUS_VALUES: &[&str] = &["ACTIVE", "PENDING"];
 
 
 /// The values `entityStatusCode` accepts on the wire.

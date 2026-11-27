@@ -12,8 +12,9 @@
 //! holding if the catalog grows, and they fail if a handler ever answers from
 //! anything other than the stored events.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 use smithy_server_runtime::MultiServiceRouter;
@@ -21,8 +22,9 @@ use smithy_server_runtime::MultiServiceRouter;
 /// The service's own `eventStatusCode` / `entityStatusCode` / `eventTypeCategory`
 /// value sets, as this crate's generated types expose them (the model's enums).
 use service_com_amazonaws_health_awshealth_20160804::ops::types::{
-    ENTITY_STATUS_CODE_VALUES, EVENT_AGGREGATE_FIELD_VALUES, EVENT_STATUS_CODE_VALUES,
-    EVENT_TYPE_CATEGORY_VALUES,
+    ACCOUNT_TAG_TYPE_VALUES, ENTITY_STATUS_CODE_VALUES, EVENT_AGGREGATE_FIELD_VALUES,
+    EVENT_STATUS_CODE_VALUES, EVENT_TYPE_CATEGORY_VALUES, ORGANIZATION_TAG_TYPE_VALUES,
+    TAG_KEY_STATUS_VALUES,
 };
 
 /// A router serving only this service, over one shared engine.
@@ -1324,5 +1326,737 @@ async fn reading_the_catalog_does_not_change_what_a_later_caller_sees() {
         before, after,
         "AWS Health is a reporting API: no Describe* call may change the catalog a \
          later caller sees"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Tag tracking: ConfigureTags, ConfigureTagsForOrganization, DescribeTags,
+// DescribeTagsForOrganization and the `tags` filter
+// ---------------------------------------------------------------------------
+
+/// The one `AccountTagType` the model declares, and the two `OrganizationTagType`
+/// values, as the readers below must label their rows. Each is checked against the
+/// crate's generated value set, so a model change that renames one fails here rather
+/// than silently.
+const ACCOUNT_RESOURCE_TAG: &str = "ACCOUNT_RESOURCE_TAG";
+const ORGANIZATION_RESOURCE_TAG: &str = "ORGANIZATION_RESOURCE_TAG";
+const ORGANIZATION_ACCOUNT_TAG: &str = "ORGANIZATION_ACCOUNT_TAG";
+
+/// A tag key matching the modelled `^[a-zA-Z0-9 _.:\/=+\-@]{1,127}$` pattern that
+/// nothing in the catalog carries, so configuring it tracks a key with no pair behind
+/// it.
+const UNUSED_TAG_KEY: &str = "NoSuchTagKey";
+
+/// A router plus the engine behind it, so a case can read the stored records its wire
+/// answers have to agree with instead of restating the catalog.
+fn health_router_and_engine() -> (MultiServiceRouter, Arc<engine::InMemoryEngine>) {
+    let engine: Arc<engine::InMemoryEngine> = Arc::new(engine::InMemoryEngine::new());
+    set_support_plan(&engine, Some(SUBSCRIBED_PLAN));
+    (health_router_over(Arc::clone(&engine)), engine)
+}
+
+/// Every resource tag pair the stored affected entities carry, whether or not the
+/// account currently tracks its key.
+fn stored_resource_tags(engine: &engine::InMemoryEngine) -> BTreeSet<(String, String)> {
+    let state = service_com_amazonaws_health_awshealth_20160804::state::service_state(engine)
+        .expect("the health store is reachable from the shared in-memory engine");
+    let store = state.lock();
+    store
+        .entities
+        .values()
+        .flatten()
+        .flat_map(|entity| {
+            entity
+                .resource_tags
+                .iter()
+                .map(|(key, value)| (key.clone(), value.clone()))
+        })
+        .collect()
+}
+
+/// The tags attached to the account those entities belong to.
+fn stored_account_tags(engine: &engine::InMemoryEngine) -> BTreeSet<(String, String)> {
+    let state = service_com_amazonaws_health_awshealth_20160804::state::service_state(engine)
+        .expect("the health store is reachable from the shared in-memory engine");
+    let store = state.lock();
+    store
+        .account_tags
+        .iter()
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect()
+}
+
+/// The distinct keys of a pair set, in a stable order.
+fn keys_of(pairs: &BTreeSet<(String, String)>) -> Vec<String> {
+    let mut keys: Vec<String> = pairs.iter().map(|(key, _)| key.clone()).collect();
+    keys.dedup();
+    keys
+}
+
+/// Configure one scope's tracked tag keys, through the wire path, and return the
+/// response.
+async fn configure_keys(router: &MultiServiceRouter, operation: &str, keys: &[String]) -> Value {
+    let tag_keys: Vec<Value> = keys.iter().map(|key| json!({"key": key})).collect();
+    call_ok(router, operation, json!({"tagKeys": tag_keys})).await
+}
+
+/// The `key` of each configured tag key a `Configure*` response reports, in order.
+fn configured_keys(body: &Value) -> Vec<String> {
+    body["configuredTagKeys"]
+        .as_array()
+        .map(|keys| keys.iter().map(|key| text(key, "key")).collect())
+        .unwrap_or_default()
+}
+
+/// One page-at-a-time walk of a paginated tag reader.
+async fn walk_tags(
+    router: &MultiServiceRouter,
+    operation: &str,
+    request: &Value,
+    page_size: usize,
+) -> Vec<Value> {
+    let mut walked = Vec::new();
+    let mut token: Option<String> = None;
+    loop {
+        let mut page_request = request.clone();
+        page_request["maxResults"] = json!(page_size);
+        if let Some(token) = &token {
+            page_request["nextToken"] = json!(token);
+        }
+        let body = call_ok(router, operation, page_request).await;
+        walked.extend(body["tags"].as_array().cloned().unwrap_or_default());
+        match body.get("nextToken").and_then(Value::as_str) {
+            Some(next) => token = Some(next.to_string()),
+            None => return walked,
+        }
+        assert!(
+            walked.len() < 1_000,
+            "the {operation} walk of {request} does not terminate"
+        );
+    }
+}
+
+/// The (key, value, type) triples a tag reader returned.
+fn tag_triples(tags: &[Value]) -> TagTriples {
+    tags.iter()
+        .map(|tag| (text(tag, "key"), text(tag, "value"), text(tag, "type")))
+        .collect()
+}
+
+/// A set of (key, value, type) tag rows, as a reader reports them.
+type TagTriples = BTreeSet<(String, String, String)>;
+
+/// The same triples, built from stored pairs and the type they must carry.
+fn expected_triples(
+    pairs: impl IntoIterator<Item = (String, String)>,
+    tag_type: &str,
+) -> TagTriples {
+    pairs
+        .into_iter()
+        .map(|(key, value)| (key, value, tag_type.to_string()))
+        .collect()
+}
+
+/// The resource tags one affected entity reports.
+fn entity_tags(entity: &Value) -> BTreeMap<String, String> {
+    entity["resourceTags"]
+        .as_object()
+        .map(|map| {
+            map.iter()
+                .map(|(key, value)| {
+                    (
+                        key.clone(),
+                        value.as_str().unwrap_or_default().to_string(),
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Every resource tag pair a set of affected entities reports.
+fn reported_entity_tags(entities: &[Value]) -> BTreeSet<(String, String)> {
+    entities
+        .iter()
+        .flat_map(|entity| entity_tags(entity).into_iter())
+        .collect()
+}
+
+/// RULE: `Configure*` replaces the whole tracked configuration with the keys the
+/// request names — a key it omits stops being tracked — reporting one entry per
+/// distinct key, in request order, with the `enabledForEventBridge` it was given and a
+/// modelled `TagKeyStatus`.
+///
+/// Rows span what the rule generalises over: how many keys are configured (one, two,
+/// the modelled maximum of ten), whether a key repeats, whether it is a key the
+/// catalog carries, whether `enabledForEventBridge` is sent, and a later call that
+/// shrinks the configuration. Both scopes are driven, because both operations state
+/// the same sentence.
+#[tokio::test]
+async fn configuring_tag_keys_replaces_the_whole_configuration() {
+    let (router, engine) = health_router_and_engine();
+    let catalog_keys = keys_of(&stored_resource_tags(&engine));
+    assert!(
+        catalog_keys.len() >= 2,
+        "the catalog must carry at least two distinct resource tag keys, got \
+         {catalog_keys:?}"
+    );
+    let ten: Vec<String> = (0..10).map(|index| format!("Key{index}")).collect();
+
+    // (case, the keys sent, the distinct keys that must be left configured)
+    let rows: Vec<(&str, Vec<String>, Vec<String>)> = vec![
+        (
+            "one key",
+            vec![catalog_keys[0].clone()],
+            vec![catalog_keys[0].clone()],
+        ),
+        (
+            "two keys, in request order",
+            vec![catalog_keys[0].clone(), catalog_keys[1].clone()],
+            vec![catalog_keys[0].clone(), catalog_keys[1].clone()],
+        ),
+        (
+            "a key named twice is one entry",
+            vec![catalog_keys[0].clone(), catalog_keys[0].clone()],
+            vec![catalog_keys[0].clone()],
+        ),
+        (
+            "a key the catalog does not carry",
+            vec![UNUSED_TAG_KEY.to_string()],
+            vec![UNUSED_TAG_KEY.to_string()],
+        ),
+        (
+            "the modelled maximum of ten keys",
+            ten.clone(),
+            ten.clone(),
+        ),
+        (
+            "back to one key: the configuration is replaced, not merged",
+            vec![catalog_keys[1].clone()],
+            vec![catalog_keys[1].clone()],
+        ),
+    ];
+
+    for operation in ["ConfigureTags", "ConfigureTagsForOrganization"] {
+        for (case, sent, expected) in &rows {
+            let body = configure_keys(&router, operation, sent).await;
+            let actual = configured_keys(&body);
+            assert_eq!(
+                &actual, expected,
+                "case {operation} {case:?}: expected the configuration {expected:?}, \
+                 got {actual:?} in {body}"
+            );
+            for key in body["configuredTagKeys"].as_array().unwrap_or(&Vec::new()) {
+                assert!(
+                    TAG_KEY_STATUS_VALUES.contains(&text(key, "status").as_str()),
+                    "case {operation} {case:?}: status must be a modelled TagKeyStatus, \
+                     got {key}"
+                );
+                assert_eq!(
+                    key["enabledForEventBridge"],
+                    json!(false),
+                    "case {operation} {case:?}: an unsent enabledForEventBridge is the \
+                     modelled default of false, got {key}"
+                );
+            }
+        }
+
+        // enabledForEventBridge is carried per key, as sent.
+        let body = call_ok(
+            &router,
+            operation,
+            json!({"tagKeys": [
+                {"key": catalog_keys[0].clone(), "enabledForEventBridge": true},
+                {"key": catalog_keys[1].clone(), "enabledForEventBridge": false},
+            ]}),
+        )
+        .await;
+        let flags: Vec<&Value> = body["configuredTagKeys"]
+            .as_array()
+            .map(|keys| {
+                keys.iter()
+                    .map(|key| &key["enabledForEventBridge"])
+                    .collect()
+            })
+            .unwrap_or_default();
+        assert_eq!(
+            flags,
+            vec![&json!(true), &json!(false)],
+            "case {operation} enabledForEventBridge: each key must report the flag it \
+             was configured with, got {body}"
+        );
+
+        // A configuration above the modelled maximum is refused before the handler.
+        let (status, refusal) = call(
+            &router,
+            operation,
+            json!({"tagKeys": (0..11)
+                .map(|index| json!({"key": format!("Key{index}")}))
+                .collect::<Vec<Value>>()}),
+        )
+        .await;
+        assert_eq!(
+            status, 400,
+            "case {operation} eleven keys: above the modelled maximum of ten, \
+             got {status}: {refusal}"
+        );
+    }
+}
+
+/// RULE: only a configured tag key appears in the event data this API reports — the
+/// `resourceTags` of an affected entity and the tags `DescribeTags` lists are the
+/// pairs the stored entities carry whose key the account tracks, and nothing else.
+///
+/// Rows vary the configuration: none at all (a new account), one key, every key the
+/// catalog carries, a key no entity carries, and a mix of the two.
+#[tokio::test]
+async fn only_configured_tag_keys_appear_in_the_event_data() {
+    let (router, engine) = health_router_and_engine();
+    let stored = stored_resource_tags(&engine);
+    let catalog_keys = keys_of(&stored);
+    let every_arn = arns(&whole_catalog(&router).await);
+    assert!(
+        ACCOUNT_TAG_TYPE_VALUES.contains(&ACCOUNT_RESOURCE_TAG),
+        "the modelled AccountTagType values must include {ACCOUNT_RESOURCE_TAG}, got \
+         {ACCOUNT_TAG_TYPE_VALUES:?}"
+    );
+
+    let mut rows: Vec<(&str, Vec<String>)> = vec![
+        // FIRST, before anything is configured: a new account tracks no key, so none
+        // of the pairs its entities carry is reported.
+        ("nothing configured", Vec::new()),
+        ("one key", vec![catalog_keys[0].clone()]),
+        ("a key no entity carries", vec![UNUSED_TAG_KEY.to_string()]),
+        ("every key the catalog carries", catalog_keys.clone()),
+    ];
+    let mut mixed = catalog_keys.clone();
+    mixed.push(UNUSED_TAG_KEY.to_string());
+    rows.push(("every key plus one no entity carries", mixed));
+
+    for (case, configured) in rows {
+        if !configured.is_empty() {
+            configure_keys(&router, "ConfigureTags", &configured).await;
+        }
+        let expected: BTreeSet<(String, String)> = stored
+            .iter()
+            .filter(|(key, _)| configured.contains(key))
+            .cloned()
+            .collect();
+
+        let tags = walk_tags(&router, "DescribeTags", &json!({}), 100).await;
+        assert_eq!(
+            tag_triples(&tags),
+            expected_triples(expected.iter().cloned(), ACCOUNT_RESOURCE_TAG),
+            "case {case:?}: DescribeTags must report exactly the tracked pairs the \
+             stored entities carry, got {tags:?}"
+        );
+
+        let entities = walk_entities(&router, &json!({"eventArns": every_arn.clone()}), 100).await;
+        assert_eq!(
+            reported_entity_tags(&entities),
+            expected,
+            "case {case:?}: an affected entity must report exactly its tracked tags, \
+             got {entities:?}"
+        );
+        for entity in &entities {
+            for key in entity_tags(entity).keys() {
+                assert!(
+                    configured.contains(key),
+                    "case {case:?}: {key} is not a configured tag key, got {entity}"
+                );
+            }
+        }
+    }
+}
+
+/// RULE: a `tags` filter member is a map of tag key to the values that key accepts; a
+/// tag matches when its key is in the map and its value is one of the values listed
+/// for that key, the comparison is case sensitive, and the filter matches when at
+/// least one key in the map matches. An untracked key matches nothing, and an absent
+/// map constrains nothing.
+///
+/// Asserted over the three operations that take such a member — `DescribeAffectedEntities`
+/// (the entities), `DescribeEvents` (the events those entities belong to) and
+/// `DescribeEntityAggregates` (their counts) — with rows differing along the number of
+/// keys in the map, the number of values listed for a key, whether a value matches,
+/// the case of the value, and whether the key is one the account tracks.
+#[tokio::test]
+async fn the_tags_filter_admits_a_record_whose_tracked_tag_matches_a_listed_value() {
+    let (router, engine) = health_router_and_engine();
+    let stored = stored_resource_tags(&engine);
+    let catalog_keys = keys_of(&stored);
+    configure_keys(&router, "ConfigureTags", &catalog_keys).await;
+
+    let catalog = whole_catalog(&router).await;
+    let every_arn = arns(&catalog);
+    let all = walk_entities(&router, &json!({"eventArns": every_arn.clone()}), 100).await;
+    let tagged: Vec<&Value> = all
+        .iter()
+        .filter(|entity| !entity_tags(entity).is_empty())
+        .collect();
+    assert!(
+        tagged.len() >= 2,
+        "the catalog must carry tagged entities for this rule, got {all:?}"
+    );
+
+    // A pair of each of the two keys, taken from the catalog itself.
+    let (key_a, value_a) = stored
+        .iter()
+        .find(|(key, _)| key == &catalog_keys[0])
+        .cloned()
+        .expect("a stored pair of the first key");
+    let (key_b, value_b) = stored
+        .iter()
+        .find(|(key, _)| key == &catalog_keys[1])
+        .cloned()
+        .expect("a stored pair of the second key");
+    let shouted = value_a.to_uppercase();
+    assert_ne!(
+        shouted, value_a,
+        "the case-sensitivity row needs a value whose upper case differs, got {value_a}"
+    );
+
+    type Admits = Box<dyn Fn(&BTreeMap<String, String>) -> bool>;
+    let a = (key_a.clone(), value_a.clone());
+    let b = (key_b.clone(), value_b.clone());
+    let rows: Vec<(String, Value, Admits)> = vec![
+        (
+            "no tags member at all".to_string(),
+            Value::Null,
+            Box::new(|_| true),
+        ),
+        (
+            format!("one key, one value: {key_a}={value_a}"),
+            json!({key_a.clone(): [value_a.clone()]}),
+            Box::new({
+                let a = a.clone();
+                move |tags| tags.get(&a.0) == Some(&a.1)
+            }),
+        ),
+        (
+            "one key, two values, one of them stored".to_string(),
+            json!({key_a.clone(): [value_a.clone(), "no-such-value"]}),
+            Box::new({
+                let a = a.clone();
+                move |tags| tags.get(&a.0) == Some(&a.1)
+            }),
+        ),
+        (
+            "one key, a value nothing carries".to_string(),
+            json!({key_a.clone(): ["no-such-value"]}),
+            Box::new(|_| false),
+        ),
+        (
+            "two keys: at least one matching is enough".to_string(),
+            json!({key_a.clone(): [value_a.clone()], key_b.clone(): [value_b.clone()]}),
+            Box::new({
+                let (a, b) = (a.clone(), b.clone());
+                move |tags| tags.get(&a.0) == Some(&a.1) || tags.get(&b.0) == Some(&b.1)
+            }),
+        ),
+        (
+            format!("the value in another case: {shouted}"),
+            json!({key_a.clone(): [shouted.clone()]}),
+            Box::new(|_| false),
+        ),
+        (
+            "a key no entity carries".to_string(),
+            json!({UNUSED_TAG_KEY: [value_a.clone()]}),
+            Box::new(|_| false),
+        ),
+    ];
+
+    for (case, tags, admits) in &rows {
+        let mut entity_filter = json!({"eventArns": every_arn.clone()});
+        let mut event_filter = json!({});
+        let mut aggregate_filter = json!({});
+        if !tags.is_null() {
+            entity_filter["tags"] = tags.clone();
+            event_filter["tags"] = tags.clone();
+            aggregate_filter["tags"] = tags.clone();
+        }
+
+        let expected: Vec<&Value> = all
+            .iter()
+            .filter(|entity| admits(&entity_tags(entity)))
+            .collect();
+        let expected_arns: BTreeSet<String> = expected
+            .iter()
+            .map(|entity| text(entity, "entityArn"))
+            .collect();
+
+        let got = walk_entities(&router, &entity_filter, 100).await;
+        let got_arns: BTreeSet<String> = got
+            .iter()
+            .map(|entity| text(entity, "entityArn"))
+            .collect();
+        assert_eq!(
+            got_arns, expected_arns,
+            "case {case:?}: DescribeAffectedEntities must serve exactly the entities \
+             the tag filter admits, got {got_arns:?}"
+        );
+
+        // The same member on DescribeEvents selects an event by the entities it
+        // affects: an event is admitted when at least one of its entities is.
+        let events = call_ok(&router, "DescribeEvents", json!({"filter": event_filter})).await
+            ["events"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        let mut expected_events: BTreeSet<String> = expected
+            .iter()
+            .map(|entity| text(entity, "eventArn"))
+            .collect();
+        if tags.is_null() {
+            expected_events = every_arn.iter().cloned().collect();
+        }
+        assert_eq!(
+            arns(&events).into_iter().collect::<BTreeSet<String>>(),
+            expected_events,
+            "case {case:?}: DescribeEvents must serve the events whose entities the tag \
+             filter admits, got {events:?}"
+        );
+
+        // And the aggregates count the same entities, event by event.
+        let mut aggregate_request = json!({"eventArns": every_arn.clone()});
+        if !tags.is_null() {
+            aggregate_request["filter"] = aggregate_filter.clone();
+        }
+        let aggregates = call_ok(&router, "DescribeEntityAggregates", aggregate_request).await;
+        for row in aggregates["entityAggregates"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+        {
+            let event_arn = text(&row, "eventArn");
+            let counted = expected
+                .iter()
+                .filter(|entity| text(entity, "eventArn") == event_arn)
+                .count();
+            assert_eq!(
+                row["count"].as_i64().unwrap_or(-1),
+                counted as i64,
+                "case {case:?}: the aggregate for {event_arn} must count the {counted} \
+                 entities the same filter admits, got {row}"
+            );
+        }
+    }
+
+    // The same filter, with the key no longer tracked: an untracked tag is not part of
+    // the event data the filter runs over, so it admits nothing.
+    configure_keys(&router, "ConfigureTags", std::slice::from_ref(&key_b)).await;
+    let got = walk_entities(
+        &router,
+        &json!({"eventArns": every_arn.clone(), "tags": {key_a.clone(): [value_a.clone()]}}),
+        100,
+    )
+    .await;
+    assert!(
+        got.is_empty(),
+        "case an untracked key: expected no entity, got {got:?}"
+    );
+}
+
+/// RULE: a tag key is `PENDING` until its configuration has propagated and `ACTIVE`
+/// from then on, and re-sending an unchanged configuration (both operations are
+/// `@idempotent`) neither restarts that propagation nor moves a key back to `PENDING`.
+#[tokio::test]
+async fn a_newly_configured_tag_key_is_pending_until_it_has_propagated() {
+    let (router, engine) = health_router_and_engine();
+    let keys = keys_of(&stored_resource_tags(&engine));
+    let first = vec![keys[0].clone()];
+
+    for operation in ["ConfigureTags", "ConfigureTagsForOrganization"] {
+        let body = configure_keys(&router, operation, &first).await;
+        assert_eq!(
+            text(&body["configuredTagKeys"][0], "status"),
+            "PENDING",
+            "case {operation}: a key just configured has not propagated yet, got {body}"
+        );
+
+        // Wait for the CONDITION: the same idempotent call reports the key active once
+        // its configuration has propagated.
+        let deadline = Instant::now() + Duration::from_secs(60);
+        loop {
+            let body = configure_keys(&router, operation, &first).await;
+            if text(&body["configuredTagKeys"][0], "status") == "ACTIVE" {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "case {operation}: the configuration never became ACTIVE, got {body}"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+
+        // Once active it stays active: the configuration is unchanged, so nothing
+        // restarts.
+        for round in 0..3 {
+            let body = configure_keys(&router, operation, &first).await;
+            assert_eq!(
+                text(&body["configuredTagKeys"][0], "status"),
+                "ACTIVE",
+                "case {operation} round {round}: re-sending an unchanged configuration \
+                 must keep the key ACTIVE, got {body}"
+            );
+        }
+
+        // A key added later is the one that is pending; the one already active is not.
+        let both = vec![keys[0].clone(), keys[1].clone()];
+        let body = configure_keys(&router, operation, &both).await;
+        assert_eq!(
+            [
+                text(&body["configuredTagKeys"][0], "status"),
+                text(&body["configuredTagKeys"][1], "status"),
+            ],
+            ["ACTIVE".to_string(), "PENDING".to_string()],
+            "case {operation}: only the newly configured key is pending, got {body}"
+        );
+    }
+}
+
+/// RULE: `DescribeTagsForOrganization` reports the tracked tags behind the
+/// organization's events, each labelled with the `OrganizationTagType` of where it is
+/// attached — a tag on an affected resource, or a tag on the account that owns it —
+/// and `filter.tagTypes` narrows the result to the types it lists. The organization's
+/// configuration is its own: the account-scoped one does not decide what this reader
+/// returns.
+#[tokio::test]
+async fn the_organization_tag_reader_reports_the_type_of_each_tracked_tag() {
+    let (router, engine) = health_router_and_engine();
+    let resource_tags = stored_resource_tags(&engine);
+    let account_tags = stored_account_tags(&engine);
+    assert!(
+        !account_tags.is_empty(),
+        "the account must carry tags for this rule, got none"
+    );
+    for tag_type in [ORGANIZATION_RESOURCE_TAG, ORGANIZATION_ACCOUNT_TAG] {
+        assert!(
+            ORGANIZATION_TAG_TYPE_VALUES.contains(&tag_type),
+            "the modelled OrganizationTagType values must include {tag_type}, got \
+             {ORGANIZATION_TAG_TYPE_VALUES:?}"
+        );
+    }
+
+    // Track every key behind either kind of tag — within the modelled maximum of ten.
+    let mut keys = keys_of(&resource_tags);
+    keys.extend(keys_of(&account_tags));
+    assert!(
+        keys.len() <= 10,
+        "this case configures one key per stored tag key, which must stay within the \
+         modelled maximum of ten, got {keys:?}"
+    );
+    configure_keys(&router, "ConfigureTagsForOrganization", &keys).await;
+
+    let resource_rows = expected_triples(resource_tags.iter().cloned(), ORGANIZATION_RESOURCE_TAG);
+    let account_rows = expected_triples(account_tags.iter().cloned(), ORGANIZATION_ACCOUNT_TAG);
+    let both: TagTriples = resource_rows.union(&account_rows).cloned().collect();
+
+    // (case, the tagTypes filter sent, the rows it must leave)
+    let rows: Vec<(&str, Value, &TagTriples)> = vec![
+        ("no filter at all", json!({}), &both),
+        (
+            "tagTypes: resource tags only",
+            json!({"filter": {"tagTypes": [ORGANIZATION_RESOURCE_TAG]}}),
+            &resource_rows,
+        ),
+        (
+            "tagTypes: account tags only",
+            json!({"filter": {"tagTypes": [ORGANIZATION_ACCOUNT_TAG]}}),
+            &account_rows,
+        ),
+        (
+            "tagTypes: both",
+            json!({"filter": {"tagTypes": [ORGANIZATION_RESOURCE_TAG, ORGANIZATION_ACCOUNT_TAG]}}),
+            &both,
+        ),
+    ];
+    for (case, request, expected) in rows {
+        let tags = walk_tags(&router, "DescribeTagsForOrganization", &request, 100).await;
+        assert_eq!(
+            &tag_triples(&tags),
+            expected,
+            "case {case:?}: expected {expected:?}, got {tags:?}"
+        );
+    }
+
+    // The two scopes are separate configurations: nothing has configured the account's,
+    // so its reader still reports nothing.
+    let account_view = walk_tags(&router, "DescribeTags", &json!({}), 100).await;
+    assert!(
+        account_view.is_empty(),
+        "the organization's configuration must not decide what the account reader \
+         returns, got {account_view:?}"
+    );
+}
+
+/// RULE: both tag readers page through one result set — the same rows whatever the page
+/// size — issue a token bound to the operation and request that produced it, refuse a
+/// token they did not issue with `InvalidPaginationToken`, and change nothing a later
+/// caller reads.
+#[tokio::test]
+async fn the_tag_readers_paginate_and_change_nothing() {
+    let (router, engine) = health_router_and_engine();
+    let mut keys = keys_of(&stored_resource_tags(&engine));
+    keys.extend(keys_of(&stored_account_tags(&engine)));
+    configure_keys(&router, "ConfigureTags", &keys).await;
+    configure_keys(&router, "ConfigureTagsForOrganization", &keys).await;
+
+    for operation in ["DescribeTags", "DescribeTagsForOrganization"] {
+        let whole = walk_tags(&router, operation, &json!({}), 100).await;
+        assert!(
+            whole.len() >= 2,
+            "case {operation}: this rule needs at least two rows to page, got {whole:?}"
+        );
+        for page_size in [1, 2, 3, 100] {
+            let paged = walk_tags(&router, operation, &json!({}), page_size).await;
+            assert_eq!(
+                paged, whole,
+                "case {operation} maxResults={page_size}: paging must not change the \
+                 rows, got {paged:?}"
+            );
+        }
+
+        // A token the reader never issued is refused rather than answered.
+        let (status, body) = call(&router, operation, json!({"nextToken": "zzzz"})).await;
+        assert_eq!(
+            status, 400,
+            "case {operation}: an invented token is refused, got {status}: {body}"
+        );
+        assert_eq!(
+            error_code(&body),
+            "InvalidPaginationToken",
+            "case {operation}: expected InvalidPaginationToken, got {body}"
+        );
+
+        // Reading twice gives the same rows: a reader changes nothing.
+        let again = walk_tags(&router, operation, &json!({}), 100).await;
+        assert_eq!(
+            again, whole,
+            "case {operation}: a second read must serve the same rows, got {again:?}"
+        );
+    }
+
+    // A token one reader issued does not continue the other's walk.
+    let first_page = call_ok(&router, "DescribeTags", json!({"maxResults": 1})).await;
+    let token = first_page
+        .get("nextToken")
+        .and_then(Value::as_str)
+        .expect("DescribeTags issues a token when more rows remain")
+        .to_string();
+    let (status, body) = call(
+        &router,
+        "DescribeTagsForOrganization",
+        json!({"nextToken": token}),
+    )
+    .await;
+    assert_eq!(
+        status, 400,
+        "a token is bound to the operation that issued it, got {status}: {body}"
+    );
+    assert_eq!(
+        error_code(&body),
+        "InvalidPaginationToken",
+        "expected InvalidPaginationToken for another operation's token, got {body}"
     );
 }

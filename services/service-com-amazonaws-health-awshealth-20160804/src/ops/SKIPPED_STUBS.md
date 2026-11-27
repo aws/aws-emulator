@@ -19,5 +19,13 @@ union can be declared as `{Op}Output`. A `@required` union member and a
 handler returns an error, so it never has to construct a value.
 
 // SKIPPED: DescribeHealthServiceStatusForOrganization — unsupported shape construct: operation 'DescribeHealthServiceStatusForOrganization' has a Unit/absent input, which the generator does not emit yet
+// SKIPPED: DescribeTagKeys — unsupported shape construct: operation 'DescribeTagKeys' has a Unit/absent input, which the generator does not emit yet
+// SKIPPED: DescribeTagKeysForOrganization — unsupported shape construct: operation 'DescribeTagKeysForOrganization' has a Unit/absent input, which the generator does not emit yet
+// SKIPPED: DescribeTagsOnboardingStatus — unsupported shape construct: operation 'DescribeTagsOnboardingStatus' has a Unit/absent input, which the generator does not emit yet
+// SKIPPED: DescribeTagsOnboardingStatusForOrganization — unsupported shape construct: operation 'DescribeTagsOnboardingStatusForOrganization' has a Unit/absent input, which the generator does not emit yet
 // SKIPPED: DisableHealthServiceAccessForOrganization — unsupported shape construct: operation 'DisableHealthServiceAccessForOrganization' has a Unit/absent input, which the generator does not emit yet
+// SKIPPED: DisableTags — unsupported shape construct: operation 'DisableTags' has a Unit/absent input, which the generator does not emit yet
+// SKIPPED: DisableTagsForOrganization — unsupported shape construct: operation 'DisableTagsForOrganization' has a Unit/absent input, which the generator does not emit yet
 // SKIPPED: EnableHealthServiceAccessForOrganization — unsupported shape construct: operation 'EnableHealthServiceAccessForOrganization' has a Unit/absent input, which the generator does not emit yet
+// SKIPPED: EnableTags — unsupported shape construct: operation 'EnableTags' has a Unit/absent input, which the generator does not emit yet
+// SKIPPED: EnableTagsForOrganization — unsupported shape construct: operation 'EnableTagsForOrganization' has a Unit/absent input, which the generator does not emit yet

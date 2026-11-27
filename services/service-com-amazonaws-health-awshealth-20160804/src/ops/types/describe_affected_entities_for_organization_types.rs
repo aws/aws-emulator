@@ -27,6 +27,7 @@ pub struct EntityAccountFilter {
     pub event_arn: String,
     pub aws_account_id: Option<String>,
     pub status_codes: Option<Vec<String>>,
+    pub tags: Option<std::collections::HashMap<String, Vec<String>>>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.health#DescribeAffectedEntitiesForOrganizationResponse")]

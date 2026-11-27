@@ -25,7 +25,8 @@
 //! the plans this service's documentation names ([`QUALIFYING_SUPPORT_PLANS`]) and
 //! `crate::service` reads ahead of every operation.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::time::{Duration, Instant};
 
 use sha2::{Digest, Sha256};
 
@@ -116,6 +117,125 @@ pub fn locale_supported(locale: Option<&str>) -> bool {
     locale.is_none_or(|l| l.eq_ignore_ascii_case(SUPPORTED_LOCALE))
 }
 
+// ---------------------------------------------------------------------------
+// Tag tracking
+// ---------------------------------------------------------------------------
+
+/// The modelled `TagKeyStatus` of a configuration that has finished propagating, and
+/// of one that has not (`ops::types::TAG_KEY_STATUS_VALUES`).
+pub const TAG_KEY_STATUS_ACTIVE: &str = "ACTIVE";
+pub const TAG_KEY_STATUS_PENDING: &str = "PENDING";
+
+/// The one `AccountTagType` the model declares, carried by every tag `DescribeTags`
+/// reports (`ops::types::ACCOUNT_TAG_TYPE_VALUES`).
+pub const ACCOUNT_RESOURCE_TAG: &str = "ACCOUNT_RESOURCE_TAG";
+
+/// The two `OrganizationTagType` values the model declares
+/// (`ops::types::ORGANIZATION_TAG_TYPE_VALUES`): a tag attached to an affected
+/// resource, and one attached to the account that owns it.
+pub const ORGANIZATION_RESOURCE_TAG: &str = "ORGANIZATION_RESOURCE_TAG";
+pub const ORGANIZATION_ACCOUNT_TAG: &str = "ORGANIZATION_ACCOUNT_TAG";
+
+/// How long a tag-key configuration takes to finish propagating, after which the key
+/// reports [`TAG_KEY_STATUS_ACTIVE`] instead of [`TAG_KEY_STATUS_PENDING`].
+///
+/// The model declares `PENDING` as a `TagKeyStatus`, so a freshly configured key is
+/// not immediately active; neither the model nor the documentation fixes how long that
+/// takes, so this span is the emulator's choice, short enough for a caller to wait out
+/// and long enough that a caller acting straight after `ConfigureTags` still sees the
+/// transient status.
+const TAG_KEY_ACTIVATION_SPAN: Duration = Duration::from_secs(3);
+
+/// One tag key configured for Health event tracking.
+///
+/// `ConfigureTags` owns the account's list of these and `ConfigureTagsForOrganization`
+/// the organization's. The keys in a list are the only ones the tags Health reports are
+/// drawn from, which is what both operations' documentation states: "Only configured
+/// tag keys will appear in Health event data."
+#[derive(Debug, Clone)]
+pub struct ConfiguredTagKey {
+    pub key: String,
+    pub enabled_for_event_bridge: bool,
+    /// The instant this key's configuration finishes propagating. STORED, never slept
+    /// on: [`Self::status`] derives the modelled status from it, so the key moves from
+    /// `PENDING` to `ACTIVE` when the clock says so and no read has to write for it.
+    active_at: Instant,
+}
+
+impl ConfiguredTagKey {
+    /// A key configured now, so its propagation is due one
+    /// [`TAG_KEY_ACTIVATION_SPAN`] from this call.
+    fn new(key: String, enabled_for_event_bridge: bool) -> Self {
+        Self {
+            key,
+            enabled_for_event_bridge,
+            active_at: Instant::now() + TAG_KEY_ACTIVATION_SPAN,
+        }
+    }
+
+    /// This key's modelled `TagKeyStatus`.
+    pub fn status(&self) -> &'static str {
+        if Instant::now() >= self.active_at {
+            TAG_KEY_STATUS_ACTIVE
+        } else {
+            TAG_KEY_STATUS_PENDING
+        }
+    }
+}
+
+/// Replace `current` with exactly the keys `requested` names, in the order requested.
+///
+/// The rule both `Configure*` operations state — "This operation replaces the existing
+/// configuration with the specified tag keys" — so a key the request omits stops being
+/// tracked. A key that was already configured keeps the propagation instant it already
+/// had, which is what makes the `@idempotent` call idempotent: re-sending an unchanged
+/// configuration neither restarts its clock nor moves an `ACTIVE` key back to
+/// `PENDING`. A configuration is a SET of keys, so a key named twice is one entry and
+/// the last `enabledForEventBridge` it was given wins.
+pub fn replace_tag_keys<'a>(
+    current: &mut Vec<ConfiguredTagKey>,
+    requested: impl IntoIterator<Item = (&'a str, bool)>,
+) {
+    let mut replaced: Vec<ConfiguredTagKey> = Vec::new();
+    for (key, enabled_for_event_bridge) in requested {
+        if let Some(already) = replaced.iter_mut().find(|entry| entry.key == key) {
+            already.enabled_for_event_bridge = enabled_for_event_bridge;
+            continue;
+        }
+        let mut entry = current
+            .iter()
+            .find(|entry| entry.key == key)
+            .cloned()
+            .unwrap_or_else(|| ConfiguredTagKey::new(key.to_string(), enabled_for_event_bridge));
+        entry.enabled_for_event_bridge = enabled_for_event_bridge;
+        replaced.push(entry);
+    }
+    *current = replaced;
+}
+
+/// The key names a configuration tracks.
+pub fn tracked_keys(configured: &[ConfiguredTagKey]) -> BTreeSet<&str> {
+    configured.iter().map(|entry| entry.key.as_str()).collect()
+}
+
+/// The pairs of `tags` whose key is one `tracked` names, deduplicated and ordered by
+/// key then value, so a paginated walk over them never repeats or skips a row.
+fn tracked_pairs<'a>(
+    tags: impl IntoIterator<Item = (&'a String, &'a String)>,
+    tracked: &BTreeSet<&str>,
+) -> Vec<(String, String)> {
+    let mut pairs: BTreeSet<(&str, &str)> = BTreeSet::new();
+    for (key, value) in tags {
+        if tracked.contains(key.as_str()) {
+            pairs.insert((key.as_str(), value.as_str()));
+        }
+    }
+    pairs
+        .into_iter()
+        .map(|(key, value)| (key.to_string(), value.to_string()))
+        .collect()
+}
+
 /// One stored Health event — the record every `Describe*` reports on.
 #[derive(Debug, Clone)]
 pub struct HealthEvent {
@@ -203,13 +323,24 @@ pub struct HealthEntity {
     pub last_updated_time: i64,
     /// One of `entityStatusCode`: `IMPAIRED` | `UNIMPAIRED` | `UNKNOWN` | `PENDING` | `RESOLVED`.
     pub status_code: String,
-    pub tags: BTreeMap<String, String>,
+    /// The resource tags attached to this entity — every one of them, whether or not
+    /// the account currently tracks its key. Which of them a caller SEES is decided
+    /// where the entity is projected ([`Self::to_affected_entity`]), so configuring a
+    /// tag key reveals the pairs that were always attached rather than inventing them.
+    pub resource_tags: BTreeMap<String, String>,
     pub entity_metadata: BTreeMap<String, String>,
 }
 
 impl HealthEntity {
-    /// This record projected onto the modelled `AffectedEntity` shape.
-    pub fn to_affected_entity(&self) -> AffectedEntity {
+    /// This record projected onto the modelled `AffectedEntity` shape, reporting only
+    /// the resource tags whose key is one of the `tracked` ones.
+    pub fn to_affected_entity(&self, tracked: &BTreeSet<&str>) -> AffectedEntity {
+        let resource_tags: HashMap<String, String> = self
+            .resource_tags
+            .iter()
+            .filter(|(key, _)| tracked.contains(key.as_str()))
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect();
         AffectedEntity {
             entity_arn: Some(self.entity_arn.clone()),
             event_arn: Some(self.event_arn.clone()),
@@ -220,7 +351,15 @@ impl HealthEntity {
                 self.last_updated_time,
             )),
             status_code: Some(self.status_code.clone()),
-            tags: Some(self.tags.iter().map(|(k, v)| (k.clone(), v.clone())).collect()),
+            // Absent rather than empty when the account tracks none of this entity's
+            // tag keys: there is no pair to report.
+            resource_tags: (!resource_tags.is_empty()).then_some(resource_tags),
+            // The `accountTags` doc: "This field is returned only by
+            // DescribeAffectedEntitiesForOrganization and is not populated by
+            // DescribeAffectedEntities." That organization reader is still a scaffold
+            // with its own issue, and this projection serves the account reader, so
+            // the member stays absent here.
+            account_tags: None,
             entity_metadata: Some(
                 self.entity_metadata
                     .iter()
@@ -249,6 +388,24 @@ pub struct ComAmazonawsHealthAwshealth20160804State {
     /// stored record is built from. [`Self::health_api_allowed`] is what the dispatch
     /// path reads.
     pub support_plan: Option<String>,
+    /// The resource tag keys this account has configured for Health event tracking,
+    /// as `ConfigureTags` last left them. EMPTY by default, which is what a new
+    /// account has: nothing has configured a key yet, so no tag appears in the event
+    /// data this API reports.
+    pub resource_tag_keys: Vec<ConfiguredTagKey>,
+    /// The same configuration at organization scope, as
+    /// `ConfigureTagsForOrganization` last left it. A separate list because the two
+    /// operations configure two scopes: one account's tracking and the
+    /// organization's.
+    pub organization_tag_keys: Vec<ConfiguredTagKey>,
+    /// The tags attached to the ACCOUNT the affected resources belong to — the
+    /// `ORGANIZATION_ACCOUNT_TAG` half of what `DescribeTagsForOrganization` reports.
+    ///
+    /// Seeded alongside the event catalog and for the same reason: this API reports an
+    /// account's tags, it models no operation that sets one (a tag on an account is
+    /// written where accounts are managed), so the only faithful stored value is a
+    /// deterministic one.
+    pub account_tags: BTreeMap<String, String>,
 }
 
 impl Default for ComAmazonawsHealthAwshealth20160804State {
@@ -257,6 +414,9 @@ impl Default for ComAmazonawsHealthAwshealth20160804State {
             events: BTreeMap::new(),
             entities: BTreeMap::new(),
             support_plan: ::std::env::var(SUPPORT_PLAN_ENV).ok(),
+            resource_tag_keys: Vec::new(),
+            organization_tag_keys: Vec::new(),
+            account_tags: BTreeMap::new(),
         };
         state.seed();
         state
@@ -398,15 +558,32 @@ impl ComAmazonawsHealthAwshealth20160804State {
         ];
 
         // The affected entities of each seeded event, as (event index, entity value,
-        // entityStatusCode, tags). A PUBLIC event whose blast radius is wider than any
-        // one resource still carries one entity saying so, which is what the
-        // DescribeAffectedEntities doc describes.
+        // entityStatusCode, resource tags). A PUBLIC event whose blast radius is wider
+        // than any one resource still carries one entity saying so, which is what the
+        // DescribeAffectedEntities doc describes. The tag rows span two keys with
+        // overlapping and distinct values, and entities carrying one, both or neither,
+        // so the tag filter and the tag readers have something real to narrow.
         let entity_rows: &[SeedEntityRow] = &[
             (0, "us-east-1", "UNKNOWN", &[]),
-            (1, "i-0a1b2c3d4e5f60718", "IMPAIRED", &[("Name", "web-1")]),
-            (1, "i-0a1b2c3d4e5f60719", "PENDING", &[("Name", "web-2")]),
+            (
+                1,
+                "i-0a1b2c3d4e5f60718",
+                "IMPAIRED",
+                &[("Name", "web-1"), ("Environment", "production")],
+            ),
+            (
+                1,
+                "i-0a1b2c3d4e5f60719",
+                "PENDING",
+                &[("Name", "web-2"), ("Environment", "staging")],
+            ),
             (1, "i-0a1b2c3d4e5f6071a", "RESOLVED", &[("Name", "web-3")]),
-            (2, "database-primary", "IMPAIRED", &[]),
+            (
+                2,
+                "database-primary",
+                "IMPAIRED",
+                &[("Environment", "production")],
+            ),
             (2, "database-replica", "UNIMPAIRED", &[]),
             (
                 3,
@@ -434,13 +611,21 @@ impl ComAmazonawsHealthAwshealth20160804State {
                     aws_account_id: ::engine::emulator_account_id().to_string(),
                     last_updated_time: event.last_updated_time,
                     status_code: (*status_code).to_string(),
-                    tags: tags
+                    resource_tags: tags
                         .iter()
                         .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
                         .collect(),
                     entity_metadata: BTreeMap::new(),
                 });
         }
+
+        // The tags of the account those entities belong to. Keys distinct from the
+        // resource ones above, so the `OrganizationTagType` a row carries is decided
+        // by where the tag is attached and not by its key.
+        self.account_tags = BTreeMap::from([
+            ("CostCenter".to_string(), "cc-1042".to_string()),
+            ("ManagedBy".to_string(), "platform-team".to_string()),
+        ]);
 
         for event in catalog {
             self.events.insert(event.arn.clone(), event);
@@ -526,10 +711,10 @@ impl ComAmazonawsHealthAwshealth20160804State {
         {
             return false;
         }
-        if !is_unconstrained(&filter.tags)
-            && !entities
-                .iter()
-                .any(|entity| entity_matches_tags(entity, filter.tags.as_deref()))
+        if !tag_filter_unconstrained(&filter.tags)
+            && !entities.iter().any(|entity| {
+                entity_matches_tag_filter(entity, filter.tags.as_ref(), &self.tracked_resource_tag_keys())
+            })
         {
             return false;
         }
@@ -555,6 +740,7 @@ impl ComAmazonawsHealthAwshealth20160804State {
     /// omit a row.
     pub fn matching_entities(&self, filter: &EntityFilter) -> Vec<&HealthEntity> {
         let mut matched: Vec<&HealthEntity> = Vec::new();
+        let tracked = self.tracked_resource_tag_keys();
         let mut visited: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
         for event_arn in &filter.event_arns {
             // Each named event contributes its entities once, so repeating an ARN in
@@ -570,7 +756,7 @@ impl ComAmazonawsHealthAwshealth20160804State {
                         &filter.last_updated_times,
                         Some(entity.last_updated_time),
                     )
-                    && entity_matches_tags(entity, filter.tags.as_deref())
+                    && entity_matches_tag_filter(entity, filter.tags.as_ref(), &tracked)
                 {
                     matched.push(entity);
                 }
@@ -630,22 +816,73 @@ impl ComAmazonawsHealthAwshealth20160804State {
         });
         types
     }
+
+    /// The resource tag keys this account tracks, as `ConfigureTags` left them.
+    pub fn tracked_resource_tag_keys(&self) -> BTreeSet<&str> {
+        tracked_keys(&self.resource_tag_keys)
+    }
+
+    /// The tag keys the organization tracks, as `ConfigureTagsForOrganization` left
+    /// them.
+    pub fn tracked_organization_tag_keys(&self) -> BTreeSet<&str> {
+        tracked_keys(&self.organization_tag_keys)
+    }
+
+    /// The distinct tracked resource tag pairs attached to the stored entities — "the
+    /// actual tag key-value pairs attached to affected entities", as the
+    /// `DescribeTags` doc puts it — ordered by key then value.
+    ///
+    /// Derived from the SAME stored entities `DescribeAffectedEntities` reports, so a
+    /// pair is listed exactly when some affected entity carries it and the account
+    /// tracks its key. One pair appears once however many entities carry it: it is one
+    /// tag of this account.
+    pub fn resource_tag_pairs(&self, tracked: &BTreeSet<&str>) -> Vec<(String, String)> {
+        tracked_pairs(
+            self.entities
+                .values()
+                .flatten()
+                .flat_map(|entity| entity.resource_tags.iter()),
+            tracked,
+        )
+    }
+
+    /// The tracked tag pairs attached to the account itself, ordered by key then
+    /// value.
+    pub fn account_tag_pairs(&self, tracked: &BTreeSet<&str>) -> Vec<(String, String)> {
+        tracked_pairs(self.account_tags.iter(), tracked)
+    }
 }
 
-/// Whether `entity` carries every pair of at least one of the requested tag sets.
-fn entity_matches_tags(
+/// Whether `entity` satisfies a `tags` filter member.
+///
+/// The rule every `tags` filter member of this service documents: the member is a map
+/// of tag key to the values that key accepts, "a tag matches when its key is in the map
+/// and its value is one of the values listed for that key", the comparison is case
+/// sensitive, and "the filter matches when at least one key in the map matches". An
+/// absent or empty map constrains nothing. Only a TRACKED key can match: an untracked
+/// key is not part of the event data the filter runs over, so it is not a tag the
+/// entity has as far as this API is concerned.
+pub fn entity_matches_tag_filter(
     entity: &HealthEntity,
-    tag_sets: Option<&[std::collections::HashMap<String, String>]>,
+    filter: Option<&HashMap<String, Vec<String>>>,
+    tracked: &BTreeSet<&str>,
 ) -> bool {
-    let Some(tag_sets) = tag_sets else { return true };
-    let required: Vec<_> = tag_sets.iter().filter(|set| !set.is_empty()).collect();
-    if required.is_empty() {
+    let Some(filter) = filter else { return true };
+    if filter.is_empty() {
         return true;
     }
-    required.iter().any(|set| {
-        set.iter()
-            .all(|(k, v)| entity.tags.get(k).is_some_and(|stored| stored == v))
+    filter.iter().any(|(key, accepted)| {
+        tracked.contains(key.as_str())
+            && entity
+                .resource_tags
+                .get(key)
+                .is_some_and(|stored| accepted.iter().any(|value| value == stored))
     })
+}
+
+/// Whether a `tags` filter member constrains nothing: absent, or present but empty.
+pub fn tag_filter_unconstrained(filter: &Option<HashMap<String, Vec<String>>>) -> bool {
+    filter.as_ref().is_none_or(HashMap::is_empty)
 }
 
 /// Whether a filter member constrains nothing: absent, or present but empty.
@@ -655,7 +892,7 @@ fn is_unconstrained<T>(list: &Option<Vec<T>>) -> bool {
 
 /// Whether `value` satisfies a filter member: trivially when the member
 /// constrains nothing, else by being one of its entries.
-fn matches_one_of(list: &Option<Vec<String>>, value: &str) -> bool {
+pub fn matches_one_of(list: &Option<Vec<String>>, value: &str) -> bool {
     match list {
         None => true,
         Some(values) if values.is_empty() => true,
@@ -834,22 +1071,23 @@ impl RequestDigest {
         self.list(name, Some(&rendered))
     }
 
-    /// A list-of-tag-maps member.
-    pub fn tag_sets(
-        self,
-        name: &str,
-        values: Option<&[std::collections::HashMap<String, String>]>,
-    ) -> Self {
+    /// A `tags` filter member: a map of tag key to the values that key accepts.
+    /// Hashed order-independently in both the map and each value list, so two
+    /// spellings of one filter continue the same walk.
+    pub fn tag_filter(self, name: &str, values: Option<&HashMap<String, Vec<String>>>) -> Self {
         let mut rendered: Vec<String> = values
-            .unwrap_or(&[])
-            .iter()
-            .map(|set| {
-                let mut pairs: Vec<String> =
-                    set.iter().map(|(k, v)| format!("{k}={v}")).collect();
-                pairs.sort_unstable();
-                pairs.join(",")
+            .map(|filter| {
+                filter
+                    .iter()
+                    .map(|(key, accepted)| {
+                        let mut sorted: Vec<&str> =
+                            accepted.iter().map(String::as_str).collect();
+                        sorted.sort_unstable();
+                        format!("{key}={}", sorted.join(","))
+                    })
+                    .collect()
             })
-            .collect();
+            .unwrap_or_default();
         rendered.sort_unstable();
         self.list(name, Some(&rendered))
     }
@@ -889,7 +1127,7 @@ pub fn event_filter_digest(filter: Option<&EventFilter>) -> RequestDigest {
         .list("entityArns", filter.entity_arns.as_deref())
         .list("entityValues", filter.entity_values.as_deref())
         .list("eventTypeCategories", filter.event_type_categories.as_deref())
-        .tag_sets("tags", filter.tags.as_deref())
+        .tag_filter("tags", filter.tags.as_ref())
         .list("eventStatusCodes", filter.event_status_codes.as_deref())
         .list("personas", filter.personas.as_deref())
 }

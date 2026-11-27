@@ -188,19 +188,22 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .list("entityArns", input.filter.entity_arns.as_deref())
             .list("entityValues", input.filter.entity_values.as_deref())
             .ranges("lastUpdatedTimes", input.filter.last_updated_times.as_deref())
-            .tag_sets("tags", input.filter.tags.as_deref())
+            .tag_filter("tags", input.filter.tags.as_ref())
             .list("statusCodes", input.filter.status_codes.as_deref())
             .finish();
 
         let paged = {
             let store = state.lock();
+            // The resource tag keys this account tracks: the only ones whose pairs
+            // appear in the event data this operation reports.
+            let tracked = store.tracked_resource_tag_keys();
             // The entities stored against the named events — the same records
             // `DescribeEntityAggregates` counts — narrowed by the filter's remaining
             // clauses and projected onto the modelled shape.
             let entities: Vec<AffectedEntity> = store
                 .matching_entities(&input.filter)
                 .into_iter()
-                .map(crate::state::HealthEntity::to_affected_entity)
+                .map(|entity| entity.to_affected_entity(&tracked))
                 .collect();
             crate::state::paginate(
                 &entities,

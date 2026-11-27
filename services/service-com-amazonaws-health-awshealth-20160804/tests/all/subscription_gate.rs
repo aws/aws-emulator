@@ -55,15 +55,27 @@ const ABSENT_EVENT_ARN: &str =
 /// is implemented (a subscribed account gets a 200) or still a scaffold (501).
 ///
 /// The operation names and their required members are the model's: see `OPERATIONS.md`,
-/// rendered from `smithy-model/com-amazonaws-health-awshealth-20160804.json`. The three
-/// operations whose input and output are both `Unit`
-/// (`DescribeHealthServiceStatusForOrganization`,
-/// `EnableHealthServiceAccessForOrganization`,
-/// `DisableHealthServiceAccessForOrganization`) are NOT in this crate's generated
-/// routing table at all, so they are not bound and are not listed here; that gap is
-/// its own issue.
+/// rendered from `smithy-model/com-amazonaws-health-awshealth-20160804.json`. The
+/// eleven operations whose input is `Unit` (the two `*HealthServiceAccess*` switches
+/// and `DescribeHealthServiceStatusForOrganization`, plus the tag switches and key
+/// readers — `DescribeTagKeys`, `DescribeTagKeysForOrganization`,
+/// `DescribeTagsOnboardingStatus`, `DescribeTagsOnboardingStatusForOrganization`,
+/// `EnableTags`, `EnableTagsForOrganization`, `DisableTags`,
+/// `DisableTagsForOrganization`) are NOT in this crate's generated routing table at
+/// all, so they are not bound and are not listed here; that gap is its own issue (see
+/// `src/ops/SKIPPED_STUBS.md`).
 fn every_bound_operation() -> Vec<(&'static str, Value, bool)> {
     vec![
+        (
+            "ConfigureTags",
+            json!({ "tagKeys": [{ "key": "Name" }] }),
+            true,
+        ),
+        (
+            "ConfigureTagsForOrganization",
+            json!({ "tagKeys": [{ "key": "Name" }] }),
+            true,
+        ),
         (
             "DescribeAffectedAccountsForOrganization",
             json!({ "eventArn": ABSENT_EVENT_ARN }),
@@ -108,6 +120,8 @@ fn every_bound_operation() -> Vec<(&'static str, Value, bool)> {
         ("DescribeEvents", json!({}), true),
         ("DescribeEventsForOrganization", json!({}), false),
         ("DescribeServiceLifecycle", json!({}), false),
+        ("DescribeTags", json!({}), true),
+        ("DescribeTagsForOrganization", json!({}), true),
     ]
 }
 

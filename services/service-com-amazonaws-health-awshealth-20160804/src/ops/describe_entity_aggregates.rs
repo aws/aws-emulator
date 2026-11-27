@@ -135,9 +135,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             Self::NAME,
         )?;
 
+        // `filter` is `EntityAggregateFilter`, whose one member is the `tags` map the
+        // model documents as "A map of tag keys to lists of tag values … Only entities
+        // whose tags match are included in the aggregates."
+        let tag_filter = input.filter.as_ref().and_then(|filter| filter.tags.as_ref());
+
         let mut entity_aggregates: Vec<EntityAggregate> = Vec::new();
         {
             let store = state.lock();
+            let tracked = store.tracked_resource_tag_keys();
             let mut seen: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
             for event_arn in input.event_arns.as_deref().unwrap_or_default() {
                 // `entityAggregates` carries one row per event, so a request that names
@@ -153,12 +159,19 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     continue;
                 }
                 // Counted from the SAME stored entity list `DescribeAffectedEntities`
-                // returns, so `count` always equals the number of entities a client can
-                // page through for this event.
-                let entities = store.entities_for(event_arn);
+                // returns, narrowed by the same tag rule, so `count` always equals the
+                // number of entities a client can page through for this event under
+                // that filter.
+                let entities: Vec<&crate::state::HealthEntity> = store
+                    .entities_for(event_arn)
+                    .iter()
+                    .filter(|entity| {
+                        crate::state::entity_matches_tag_filter(entity, tag_filter, &tracked)
+                    })
+                    .collect();
                 let mut statuses: std::collections::HashMap<String, i32> =
                     std::collections::HashMap::new();
-                for entity in entities {
+                for entity in &entities {
                     *statuses.entry(entity.status_code.clone()).or_insert(0) += 1;
                 }
                 entity_aggregates.push(EntityAggregate {

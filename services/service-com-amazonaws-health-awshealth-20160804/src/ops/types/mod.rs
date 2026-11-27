@@ -14,6 +14,8 @@
 //! here named after an operation would make that operation's own module name
 //! ambiguous inside `ops` (`E0659`).
 
+pub mod configure_tags_for_organization_types;
+pub mod configure_tags_types;
 pub mod describe_affected_accounts_for_organization_types;
 pub mod describe_affected_entities_for_organization_types;
 pub mod describe_affected_entities_types;
@@ -26,8 +28,14 @@ pub mod describe_event_types_types;
 pub mod describe_events_for_organization_types;
 pub mod describe_events_types;
 pub mod describe_service_lifecycle_types;
+pub mod describe_tags_for_organization_types;
+pub mod describe_tags_types;
 pub mod shared_types;
 
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use configure_tags_for_organization_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use configure_tags_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use describe_affected_accounts_for_organization_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
@@ -52,6 +60,10 @@ pub use describe_events_for_organization_types::*;
 pub use describe_events_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use describe_service_lifecycle_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use describe_tags_for_organization_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use describe_tags_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use shared_types::*;
 

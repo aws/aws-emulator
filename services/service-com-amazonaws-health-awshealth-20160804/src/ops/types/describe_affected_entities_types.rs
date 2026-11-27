@@ -27,7 +27,7 @@ pub struct EntityFilter {
     pub entity_arns: Option<Vec<String>>,
     pub entity_values: Option<Vec<String>>,
     pub last_updated_times: Option<Vec<DateTimeRange>>,
-    pub tags: Option<Vec<std::collections::HashMap<String, String>>>,
+    pub tags: Option<std::collections::HashMap<String, Vec<String>>>,
     pub status_codes: Option<Vec<String>>,
 }
 
