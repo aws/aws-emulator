@@ -160,7 +160,12 @@ pub(crate) async fn ecs(
 
 /// One awsJson call over the router: the single calling convention both services above are
 /// reached through, so neither spells the signing of a request twice.
-async fn json_call(
+///
+/// `pub(crate)` so a suite reaching a THIRD awsJson service through the same router — Amazon
+/// ECR, for the repository an `AWS::ECR::Repository` declares
+/// (`ecs_task_definition_image_round_trip.rs`) — signs its request through this one
+/// convention too rather than spelling it again.
+pub(crate) async fn json_call(
     router: &MultiServiceRouter,
     signing_name: &str,
     media_type: &str,

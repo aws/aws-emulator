@@ -29,23 +29,36 @@ pub(super) const MAX_REPOINTED_NESTING: usize = 64;
 ///
 /// The rule: a value another declaration STATES is that declaration's own, so adopting an
 /// identifier an owning service minted may only change the values a REFERENCE to that
-/// resource put there. Which pairs those are follows from what the stand-in IS:
+/// resource put there — and a declaration outside the reference relation
+/// ([`crate::state::template::direct_dependencies`]) reads nothing of the minted resource, so
+/// every value of its own stands exactly as written. (That relation is what the deployment is
+/// ORDERED by, so it counts a `DependsOn` beside the `Ref`, the `Fn::GetAtt` and the `Fn::Sub`
+/// variable a declaration really reads the resource through: a declaration that only waits for
+/// the resource is inside it too, which is as far as one relation can tell the two apart.)
+/// That holds whatever the stand-in IS: a
+/// stand-in an owning service's identifier is substituted into is often a value a template can
+/// compose for itself out of public parts — the account id, the Region, a name the declaration
+/// states — and two declarations that write the same string are indistinguishable once both are
+/// resolved, so whether the declaration reads the resource at all is the only thing that tells
+/// a reference from a value of a declaration's own. Without it, a template that writes such a
+/// string out itself (a container image on the registry host of this account and Region) is
+/// deployed carrying an address it never asked for.
 ///
-/// * a stand-in CloudFormation itself COMPUTED ([`Minted::composed`]) carries a digest drawn
-///   from the stack id and the logical id, so no declaration states one by accident: such a
-///   pair applies wherever its value turns up, which is how a name composed out of another
-///   resource's identifier is brought into step with it;
+/// HOW FAR along that relation a pair reaches follows from what the stand-in is, the same
+/// question [`Minted::composed`] answers for where inside a value it may be matched:
+///
+/// * a stand-in CloudFormation itself COMPUTED, or an attribute value the resource's own
+///   declaration does not state, is no value another declaration writes for itself, and a
+///   reference resolves to a value that was ITSELF composed — a metric filter naming the log
+///   group of the same stack carries the group's name, which was composed out of an identifier
+///   the API's own service minted. Such a pair therefore reaches every declaration that reads
+///   the resource, directly or through another resource of the same stack
+///   (`super::needed_by`, the one walk of that relation this module tree keeps);
 /// * a stand-in that is the NAME the declaration asked for is a value ANY declaration may
 ///   state — the stack name a bucket is named after, which the user pool of the same stack was
-///   also created under — so it applies only in the declarations that REFERENCE that resource.
-///   `dependencies` is what records that: a `Ref`, an `Fn::GetAtt` or an `Fn::Sub` variable
-///   naming a resource is exactly what the relation is built from
-///   ([`crate::state::template::direct_dependencies`]), so a resource absent from it reads
-///   nothing of the minted resource and every value of its own stands as written.
-///
-/// Without the second rule such a bucket is created under the identifier Amazon Cognito
-/// minted for the pool, and the policy of that bucket is written for a bucket that does not
-/// exist.
+///   also created under — so it reaches only the declarations that name that resource
+///   THEMSELVES. Otherwise such a bucket's policy is written for the identifier Amazon Cognito
+///   minted for the pool, which is a bucket that does not exist.
 pub(super) fn pairs_for(
     logical_id: &str,
     dependencies: &Dependencies,
@@ -54,12 +67,19 @@ pub(super) fn pairs_for(
     if minted.is_empty() {
         return Vec::new();
     }
-    let referenced = dependencies.get(logical_id);
+    let named = dependencies.get(logical_id);
+    // The closure is walked only where a pair asks for it, which most walks carry none of; a
+    // resource never reads ITSELF, whatever a cycle in the relation says.
+    let mut reads: BTreeSet<String> = BTreeSet::new();
+    if minted.iter().any(|minted| minted.composed) {
+        reads = super::needed_by(dependencies, logical_id);
+        reads.remove(logical_id);
+    }
     minted
         .iter()
-        .filter(|minted| {
-            minted.composed
-                || referenced.is_some_and(|referenced| referenced.contains(&minted.of))
+        .filter(|minted| match minted.composed {
+            true => reads.contains(&minted.of),
+            false => named.is_some_and(|named| named.contains(&minted.of)),
         })
         .cloned()
         .collect()
@@ -444,6 +464,112 @@ mod tests {
                 resource.physical_resource_id, row.expected,
                 "case {case:?}: expected the identity {:?}, got {:?}",
                 row.expected, resource.physical_resource_id
+            );
+        }
+    }
+
+    /// WHICH declarations a minted pair may re-point ([`pairs_for`]): the ones that READ the
+    /// resource it belongs to — directly for a stand-in that is the NAME the declaration asked
+    /// for, and through another resource of the same stack as well for one CloudFormation
+    /// itself computed.
+    ///
+    /// The rows span the two kinds of stand-in against the two directions of the rule and the
+    /// chain in between: a declaration that names the resource itself, one that names a
+    /// resource which names it, one further link along such a chain, and one that names
+    /// neither — whose own values are its own however much they look like another resource's
+    /// stand-in.
+    #[test]
+    fn only_a_declaration_that_reads_the_minted_resource_is_re_pointed_with_its_pair() {
+        struct Row {
+            case: &'static str,
+            /// The declaration asking to be re-pointed.
+            logical_id: &'static str,
+            /// Whether the pair's stand-in is one CloudFormation computed
+            /// ([`Minted::composed`]) rather than the name the declaration asked for.
+            composed: bool,
+            /// Whether the pair applies to that declaration.
+            applies: bool,
+        }
+        // Api is read by Group, Group by Filter, Filter by Alarm; Image reads nothing at all.
+        let dependencies: Dependencies = [
+            ("Group", ["Api"]),
+            ("Filter", ["Group"]),
+            ("Alarm", ["Filter"]),
+        ]
+        .into_iter()
+        .map(|(reader, reads)| {
+            (
+                reader.to_string(),
+                reads.iter().map(ToString::to_string).collect(),
+            )
+        })
+        .collect();
+        let rows = [
+            Row {
+                case: "a computed stand-in, in the declaration that names the resource",
+                logical_id: "Group",
+                composed: true,
+                applies: true,
+            },
+            Row {
+                case: "a declared name, in the declaration that names the resource",
+                logical_id: "Group",
+                composed: false,
+                applies: true,
+            },
+            Row {
+                case: "a computed stand-in, one link along the chain",
+                logical_id: "Filter",
+                composed: true,
+                applies: true,
+            },
+            Row {
+                case: "a declared name, one link along the chain",
+                logical_id: "Filter",
+                composed: false,
+                applies: false,
+            },
+            Row {
+                case: "a computed stand-in, two links along the chain",
+                logical_id: "Alarm",
+                composed: true,
+                applies: true,
+            },
+            Row {
+                case: "a computed stand-in, in a declaration that reads nothing",
+                logical_id: "Image",
+                composed: true,
+                applies: false,
+            },
+            Row {
+                case: "a declared name, in a declaration that reads nothing",
+                logical_id: "Image",
+                composed: false,
+                applies: false,
+            },
+            Row {
+                case: "the minted resource's own declaration",
+                logical_id: "Api",
+                composed: true,
+                applies: false,
+            },
+        ];
+        for row in rows {
+            let case = row.case;
+            let pairs = vec![Minted {
+                composed: row.composed,
+                ..minted("Api", "an-api", "abcdefghijklmnopqrstuvwxyz")
+            }];
+            let applied = pairs_for(row.logical_id, &dependencies, &pairs);
+            assert_eq!(
+                !applied.is_empty(),
+                row.applies,
+                "case {case:?}: expected the pair to {} {:?}, got {applied:?}",
+                match row.applies {
+                    true => "apply to",
+                    false => "be withheld from",
+                },
+                row.logical_id
             );
         }
     }
