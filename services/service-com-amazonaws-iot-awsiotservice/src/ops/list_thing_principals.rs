@@ -6,6 +6,13 @@
 //! relation this service keeps of those ([`crate::state::thing_principals`]) — a PURE
 //! read, so a later caller sees exactly what this one did.
 //!
+//! Beside `principals`, the answer reports WHICH of them hold the thing exclusively, read
+//! off the `ThingPrincipalType` each attachment was recorded under — a member the service
+//! reports on every answer and the on-disk model omits, which is why its schema is written
+//! out in `types/list_thing_principals_types.rs`. It carries an empty list when no
+//! attached principal holds the thing exclusively, because that is an answer rather than a
+//! missing one.
+//!
 //! A `thingName` the registry does not hold is the modelled `ResourceNotFoundException`
 //! (404) rather than an empty list: a thing that does not exist has no principals to report
 //! and the listing says so. The answer is `@paginated` on `nextToken`/`maxResults`, so one
@@ -204,12 +211,28 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             page_size,
         );
 
+        // WHICH of the principals this page reports hold the thing exclusively, read off the
+        // `ThingPrincipalType` each attachment was recorded under
+        // ([`crate::state::EXCLUSIVE_THING_PRINCIPAL_TYPE`]). Scoped to the page, so the two
+        // members of one answer describe the same principals; a thing none of whose attached
+        // principals holds it exclusively has nothing to report, which is an EMPTY list.
+        let exclusive = store.thing_principals_with_exclusive_attachment(&input.thing_name);
+        let principals_with_exclusive_attachment: Vec<String> = page
+            .iter()
+            .filter(|principal| exclusive.contains(principal))
+            .cloned()
+            .collect();
+
         Ok(ListThingPrincipalsOutput {
             // `Principals` carries no length constraint, so a thing with no attached
             // principal answers with an EMPTY list rather than an absent member: "nothing is
             // attached" is an answer, not a missing one.
             principals: Some(page),
             next_token,
+            // Reported on every answer, under the same rule: "nothing is exclusively
+            // attached" is an answer a client reads a list out of, so the member carries an
+            // empty list rather than being left off.
+            principals_with_exclusive_attachment: Some(principals_with_exclusive_attachment),
         })
     }
 }

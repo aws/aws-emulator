@@ -10,7 +10,9 @@
 //! without that tag and the resource has none — while an ARN naming no resource this
 //! account holds is refused `ResourceNotFoundException` (404) with that resource
 //! family's own sentence, and a `resourceArn` that addresses no resource of this
-//! service's namespace is refused `InvalidRequestException` (400).
+//! service's namespace is refused `InvalidRequestException` (400). A `tagKeys` that is
+//! present and EMPTY names no key to remove and is refused `InvalidRequestException`
+//! (400) on the input, ahead of the resource and of any write.
 //!
 //! ## Shape of an operation
 //!
@@ -150,6 +152,21 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             )
             .into());
         };
+
+        // `tagKeys` is `@required`, so this write STATES the keys it removes: a list that
+        // is there and holds nothing names no key to remove, and the collection is refused
+        // on the input — with the modelled `InvalidRequestException` (HTTP 400) and the
+        // sentence the tag plane states it in ([`crate::state::EMPTY_TAG_COLLECTION_MESSAGE`])
+        // — ahead of the resource the request addresses and of any write, so nothing of the
+        // account's state decides it and nothing changes.
+        if input.tag_keys.is_empty() {
+            return Err(UntagResourceErrorModeled::InvalidRequestException(
+                InvalidRequestException {
+                    message: Some(crate::state::EMPTY_TAG_COLLECTION_MESSAGE.to_string()),
+                },
+            )
+            .into());
+        }
 
         // The ARN is the only member naming the resource, and a value that addresses no
         // resource of this service's namespace is refused before the store is reached —

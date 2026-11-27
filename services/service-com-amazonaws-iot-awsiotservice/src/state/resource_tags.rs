@@ -240,6 +240,20 @@ fn untaggable_resource_message(resource_arn: &str) -> String {
     format!("Invalid ResourceArn: {resource_arn}")
 }
 
+/// The sentence a tag write whose `@required` collection arrived EMPTY is refused with.
+///
+/// `TagResource$tags` and `UntagResource$tagKeys` are both `@required`
+/// (`smithy_query(query="operation",operation="TagResource,UntagResource")`), so each
+/// write STATES the collection it acts with; a collection that is there and holds nothing
+/// states no tag to write and no key to remove, and AWS refuses it on the input rather
+/// than answering a success that changed nothing. The class is the modelled
+/// `InvalidRequestException` (HTTP 400) and the sentence is entirely fixed text — it names
+/// neither the member nor the resource — so it is a constant rather than a template.
+///
+/// The recorded refusal is `UntagResource`'s; the `TagResource` half is the same rule read
+/// on the other write's collection, which is the one both of them are validated by.
+pub const EMPTY_TAG_COLLECTION_MESSAGE: &str = "The validated collection is empty";
+
 impl TaggedResource {
     /// The tag set of the resource this names, or `None` when the account holds no such
     /// resource.

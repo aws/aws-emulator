@@ -12,7 +12,9 @@
 //! service's namespace is refused `InvalidRequestException` (400), and a request that
 //! would leave the resource carrying more than
 //! [`crate::state::MAX_RESOURCE_TAGS`] tags is refused `LimitExceededException` (410)
-//! and changes nothing.
+//! and changes nothing. A `tags` list that is present and EMPTY names no tag to write and
+//! is refused `InvalidRequestException` (400) on the input, ahead of the resource and of
+//! any write.
 //!
 //! ## Shape of an operation
 //!
@@ -153,6 +155,22 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             )
             .into());
         };
+
+        // `tags` is `@required`, so this write STATES the tags it adds: a list that is
+        // there and holds nothing names no tag to write, and the collection is refused on
+        // the input — with the modelled `InvalidRequestException` (HTTP 400) and the
+        // sentence the tag plane states it in
+        // ([`crate::state::EMPTY_TAG_COLLECTION_MESSAGE`]), the same refusal `UntagResource`
+        // states for its own empty `tagKeys` — ahead of the resource the request addresses
+        // and of any write.
+        if input.tags.is_empty() {
+            return Err(TagResourceErrorModeled::InvalidRequestException(
+                InvalidRequestException {
+                    message: Some(crate::state::EMPTY_TAG_COLLECTION_MESSAGE.to_string()),
+                },
+            )
+            .into());
+        }
 
         // WHICH resource the request acts on is read from the ARN alone — this operation
         // addresses its resource by no other member — and a value that addresses no

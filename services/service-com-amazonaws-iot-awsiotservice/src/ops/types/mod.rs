@@ -835,3 +835,28 @@ pub use update_topic_rule_destination_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use validate_security_profile_behaviors_types::*;
 
+/// One member schema of a structure whose schema is written out rather than derived: the
+/// member's shape id, its shape type, its wire name and its index in the member list —
+/// exactly what `#[smithy_macros::smithy(shape = ...)]` emits per member.
+///
+/// Written out is what a structure needs when the WIRE carries a member the on-disk model
+/// does not declare, because the derive admits exactly the model's member list (see
+/// [`get_topic_rule_types::TopicRule`] and
+/// [`list_thing_principals_types::ListThingPrincipalsOutput`]). It lives here, beside the
+/// modules that hold those structures, so the tree holds ONE reading of how such a member
+/// schema is built and two hand-written schemas cannot drift about it.
+pub const fn member_schema(
+    shape: &'static str,
+    namespace: &'static str,
+    wire_name: &'static str,
+    shape_type: ::aws_smithy_schema::ShapeType,
+    index: usize,
+) -> ::aws_smithy_schema::Schema {
+    ::aws_smithy_schema::Schema::new_member(
+        ::aws_smithy_schema::ShapeId::from_static(shape, namespace, wire_name),
+        shape_type,
+        wire_name,
+        index,
+    )
+}
+

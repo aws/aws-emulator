@@ -42,7 +42,8 @@ pub struct GetTopicRuleOutput {
 /// the constraint traits (the validating walk runs on operation INPUTS only, and this
 /// structure is output-only), the `@http` chain (baked on only for an operation's
 /// input) and `@jsonName` (no member declares one: each one's wire name IS its Smithy
-/// member name).
+/// member name). Each member schema is built by the one reading of that this crate has
+/// ([`super::member_schema`]).
 #[derive(Debug, Clone, Default)]
 pub struct TopicRule {
     pub rule_name: Option<String>,
@@ -58,56 +59,56 @@ pub struct TopicRule {
 
 #[allow(non_upper_case_globals)]
 impl TopicRule {
-    const M_RULE_NAME: ::aws_smithy_schema::Schema = topic_rule_member(
+    const M_RULE_NAME: ::aws_smithy_schema::Schema = super::member_schema(
         "com.amazonaws.iot#TopicRule$ruleName",
         "com.amazonaws.iot",
         "ruleName",
         ::aws_smithy_schema::ShapeType::String,
         0,
     );
-    const M_SQL: ::aws_smithy_schema::Schema = topic_rule_member(
+    const M_SQL: ::aws_smithy_schema::Schema = super::member_schema(
         "com.amazonaws.iot#TopicRule$sql",
         "com.amazonaws.iot",
         "sql",
         ::aws_smithy_schema::ShapeType::String,
         1,
     );
-    const M_DESCRIPTION: ::aws_smithy_schema::Schema = topic_rule_member(
+    const M_DESCRIPTION: ::aws_smithy_schema::Schema = super::member_schema(
         "com.amazonaws.iot#TopicRule$description",
         "com.amazonaws.iot",
         "description",
         ::aws_smithy_schema::ShapeType::String,
         2,
     );
-    const M_CREATED_AT: ::aws_smithy_schema::Schema = topic_rule_member(
+    const M_CREATED_AT: ::aws_smithy_schema::Schema = super::member_schema(
         "com.amazonaws.iot#TopicRule$createdAt",
         "com.amazonaws.iot",
         "createdAt",
         ::aws_smithy_schema::ShapeType::Timestamp,
         3,
     );
-    const M_ACTIONS: ::aws_smithy_schema::Schema = topic_rule_member(
+    const M_ACTIONS: ::aws_smithy_schema::Schema = super::member_schema(
         "com.amazonaws.iot#TopicRule$actions",
         "com.amazonaws.iot",
         "actions",
         ::aws_smithy_schema::ShapeType::List,
         4,
     );
-    const M_RULE_DISABLED: ::aws_smithy_schema::Schema = topic_rule_member(
+    const M_RULE_DISABLED: ::aws_smithy_schema::Schema = super::member_schema(
         "com.amazonaws.iot#TopicRule$ruleDisabled",
         "com.amazonaws.iot",
         "ruleDisabled",
         ::aws_smithy_schema::ShapeType::Boolean,
         5,
     );
-    const M_AWS_IOT_SQL_VERSION: ::aws_smithy_schema::Schema = topic_rule_member(
+    const M_AWS_IOT_SQL_VERSION: ::aws_smithy_schema::Schema = super::member_schema(
         "com.amazonaws.iot#TopicRule$awsIotSqlVersion",
         "com.amazonaws.iot",
         "awsIotSqlVersion",
         ::aws_smithy_schema::ShapeType::String,
         6,
     );
-    const M_ERROR_ACTION: ::aws_smithy_schema::Schema = topic_rule_member(
+    const M_ERROR_ACTION: ::aws_smithy_schema::Schema = super::member_schema(
         "com.amazonaws.iot#TopicRule$errorAction",
         "com.amazonaws.iot",
         "errorAction",
@@ -116,7 +117,7 @@ impl TopicRule {
     );
     /// The member the on-disk model does not declare; see this structure's note for
     /// why its shape id sits in a namespace of its own.
-    const M_PROPERTIES: ::aws_smithy_schema::Schema = topic_rule_member(
+    const M_PROPERTIES: ::aws_smithy_schema::Schema = super::member_schema(
         "com.amazonaws.iot.recorded#TopicRule$properties",
         "com.amazonaws.iot.recorded",
         "properties",
@@ -146,23 +147,6 @@ impl TopicRule {
 }
 
 pub static TOPIC_RULE_SCHEMA: &::aws_smithy_schema::Schema = &TopicRule::SCHEMA;
-
-/// One member schema of [`TopicRule`], as the derive emits one: the member's shape id,
-/// its shape type, its wire name and its index in the member list.
-const fn topic_rule_member(
-    shape: &'static str,
-    namespace: &'static str,
-    wire_name: &'static str,
-    shape_type: ::aws_smithy_schema::ShapeType,
-    index: usize,
-) -> ::aws_smithy_schema::Schema {
-    ::aws_smithy_schema::Schema::new_member(
-        ::aws_smithy_schema::ShapeId::from_static(shape, namespace, wire_name),
-        shape_type,
-        wire_name,
-        index,
-    )
-}
 
 impl ::aws_smithy_schema::serde::SerializableStruct for TopicRule {
     fn serialize_members(

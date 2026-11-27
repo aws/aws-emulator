@@ -70,6 +70,17 @@ pub const MAX_PRINCIPALS_PER_THING: usize = 10;
 /// [`super::DEFAULT_DYNAMIC_GROUP_QUERY_VERSION`] states for a dynamic group's query.
 pub const DEFAULT_THING_PRINCIPAL_TYPE: &str = "NON_EXCLUSIVE_THING";
 
+/// The `ThingPrincipalType` an attachment that holds the thing EXCLUSIVELY is recorded
+/// under.
+///
+/// The other of the two values the enum admits
+/// (`smithy_query(query="shape",shape="ThingPrincipalType")`), and the one
+/// [`DEFAULT_THING_PRINCIPAL_TYPE`] is not: `thingPrincipalType` is "The type of the
+/// relation you want to specify when you attach a principal to a thing", so an attachment
+/// recorded under this value is the one a reader of the relation reports as an exclusive
+/// attachment of the thing.
+pub const EXCLUSIVE_THING_PRINCIPAL_TYPE: &str = "EXCLUSIVE_THING";
+
 /// The resource type segment of a certificate ARN, as [`super::certificate_arn`] mints it.
 const CERTIFICATE_RESOURCE_TYPE: &str = "cert";
 
@@ -112,6 +123,18 @@ pub struct ThingPrincipalAttachment {
     /// The `ThingPrincipalType` the attachment was recorded under, which an attach naming
     /// none records at [`DEFAULT_THING_PRINCIPAL_TYPE`].
     pub principal_type: String,
+}
+
+impl ThingPrincipalAttachment {
+    /// Whether this attachment holds the thing EXCLUSIVELY — its recorded
+    /// `ThingPrincipalType` is [`EXCLUSIVE_THING_PRINCIPAL_TYPE`].
+    ///
+    /// Read from the RECORD rather than from a request, so what a listing reports about an
+    /// attachment is what the attach that made it asked for, whichever writer of the
+    /// relation made it.
+    pub fn is_exclusive(&self) -> bool {
+        self.principal_type == EXCLUSIVE_THING_PRINCIPAL_TYPE
+    }
 }
 
 /// A thing principal resolved against this account's state: everything an attachment or a
@@ -520,6 +543,30 @@ impl super::ComAmazonawsIotAwsiotserviceState {
                 thing
                     .principals
                     .values()
+                    .map(|attachment| attachment.reported.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+        reported.sort();
+        reported
+    }
+
+    /// The principals of the thing `thing_name` whose attachment is EXCLUSIVE
+    /// ([`ThingPrincipalAttachment::is_exclusive`]), in the same ASCENDING order of the
+    /// reported value [`Self::thing_principals`] reports the relation in.
+    ///
+    /// Derived from the attachments themselves — the type each one was recorded under —
+    /// rather than kept as a second relation beside them, so a principal cannot be
+    /// exclusively attached in one reader's view and not in another's.
+    pub fn thing_principals_with_exclusive_attachment(&self, thing_name: &str) -> Vec<String> {
+        let mut reported: Vec<String> = self
+            .things
+            .get(thing_name)
+            .map(|thing| {
+                thing
+                    .principals
+                    .values()
+                    .filter(|attachment| attachment.is_exclusive())
                     .map(|attachment| attachment.reported.clone())
                     .collect()
             })

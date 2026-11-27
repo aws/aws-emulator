@@ -3395,7 +3395,8 @@ pub use thing_principals::{
     attached_principals_thing_deletion_message, invalid_principal_type_message,
     listing_missing_principal_message, listing_missing_thing_message, ResolvedThingPrincipal,
     ThingPrincipal, ThingPrincipalAttachment, ThingPrincipalLookup, ThingPrincipalRefusal,
-    ThingPrincipalWrite, DEFAULT_THING_PRINCIPAL_TYPE, MAX_PRINCIPALS_PER_THING,
+    ThingPrincipalWrite, DEFAULT_THING_PRINCIPAL_TYPE, EXCLUSIVE_THING_PRINCIPAL_TYPE,
+    MAX_PRINCIPALS_PER_THING,
 };
 
 // What an UPDATE of a thing GROUP record changes — the properties the request carries,
@@ -3540,7 +3541,8 @@ pub use policy_evaluation::{
 // re-exported here so a handler reaches them as `crate::state::<name>`.
 pub mod resource_tags;
 pub use resource_tags::{
-    parse_tagged_resource, tags_of_tag_query, ResourceTagSet, TaggedResource, MAX_RESOURCE_TAGS,
+    parse_tagged_resource, tags_of_tag_query, ResourceTagSet, TaggedResource,
+    EMPTY_TAG_COLLECTION_MESSAGE, MAX_RESOURCE_TAGS,
 };
 
 // What a ROLE ALIAS is — the record one holds, the ARN minted for it and what every

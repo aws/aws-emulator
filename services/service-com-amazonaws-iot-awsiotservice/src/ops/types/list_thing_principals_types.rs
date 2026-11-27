@@ -19,10 +19,108 @@ pub struct ListThingPrincipalsInput {
     pub thing_name: String,
 }
 
-#[smithy_macros::smithy(shape = "com.amazonaws.iot#ListThingPrincipalsResponse")]
+/// What the listing of a thing's principals answers: the members
+/// `ListThingPrincipalsResponse` declares, in the model's own member order, and
+/// `principalsWithExclusiveAttachment` appended last.
+///
+/// Member set and order from
+/// `smithy_query(query="shape",shape="ListThingPrincipalsResponse")`, plus
+/// `principalsWithExclusiveAttachment` — a member the service reports on every answer and
+/// the on-disk model omits, which is why the schema and the serializer below are written
+/// out rather than derived: `#[smithy_macros::smithy(shape = ...)]` admits exactly the
+/// model's member list, so a field with no member behind it cannot be declared through it.
+/// The model's own members keep the indices and the order the model gives them, and the
+/// unmodelled one is appended LAST with its shape id in a namespace of its own, so it can
+/// neither claim to be modelled nor collide with a member the model may declare later —
+/// and a later model refresh only has to move it into place and put the derive back. The
+/// arrangement is the one this service already makes for `TopicRule$properties`
+/// (`types/get_topic_rule_types.rs`).
+///
+/// Deliberately absent, for the same reason the derive's output would be inert here: the
+/// constraint traits (the validating walk runs on operation INPUTS only, and this
+/// structure is output-only), the `@http` chain (baked on only for an operation's input)
+/// and `@jsonName` (no member declares one: each one's wire name IS its Smithy member
+/// name). Each member schema is built by the one reading of that this crate has
+/// ([`super::member_schema`]).
 #[derive(Debug, Clone, Default)]
 pub struct ListThingPrincipalsOutput {
     pub principals: Option<Vec<String>>,
     pub next_token: Option<String>,
+    pub principals_with_exclusive_attachment: Option<Vec<String>>,
 }
 
+#[allow(non_upper_case_globals)]
+impl ListThingPrincipalsOutput {
+    const M_PRINCIPALS: ::aws_smithy_schema::Schema = super::member_schema(
+        "com.amazonaws.iot#ListThingPrincipalsResponse$principals",
+        "com.amazonaws.iot",
+        "principals",
+        ::aws_smithy_schema::ShapeType::List,
+        0,
+    );
+    const M_NEXT_TOKEN: ::aws_smithy_schema::Schema = super::member_schema(
+        "com.amazonaws.iot#ListThingPrincipalsResponse$nextToken",
+        "com.amazonaws.iot",
+        "nextToken",
+        ::aws_smithy_schema::ShapeType::String,
+        1,
+    );
+    /// The member the on-disk model does not declare; see this structure's note for why
+    /// its shape id sits in a namespace of its own.
+    const M_PRINCIPALS_WITH_EXCLUSIVE_ATTACHMENT: ::aws_smithy_schema::Schema =
+        super::member_schema(
+            "com.amazonaws.iot.recorded#ListThingPrincipalsResponse$principalsWithExclusiveAttachment",
+            "com.amazonaws.iot.recorded",
+            "principalsWithExclusiveAttachment",
+            ::aws_smithy_schema::ShapeType::List,
+            2,
+        );
+
+    pub const SCHEMA: ::aws_smithy_schema::Schema = ::aws_smithy_schema::Schema::new_struct(
+        ::aws_smithy_schema::ShapeId::from_static(
+            "com.amazonaws.iot#ListThingPrincipalsResponse",
+            "com.amazonaws.iot",
+            "ListThingPrincipalsResponse",
+        ),
+        ::aws_smithy_schema::ShapeType::Structure,
+        &[
+            &Self::M_PRINCIPALS,
+            &Self::M_NEXT_TOKEN,
+            &Self::M_PRINCIPALS_WITH_EXCLUSIVE_ATTACHMENT,
+        ],
+    );
+}
+
+pub static LIST_THING_PRINCIPALS_OUTPUT_SCHEMA: &::aws_smithy_schema::Schema =
+    &ListThingPrincipalsOutput::SCHEMA;
+
+impl ::aws_smithy_schema::serde::SerializableStruct for ListThingPrincipalsOutput {
+    fn serialize_members(
+        &self,
+        s: &mut dyn ::aws_smithy_schema::serde::ShapeSerializer,
+    ) -> ::std::result::Result<(), ::aws_smithy_schema::serde::SerdeError> {
+        if let Some(principals) = self.principals.as_ref() {
+            s.write_list(&Self::M_PRINCIPALS, &|list| {
+                for principal in principals.iter() {
+                    list.write_string(&Self::M_PRINCIPALS, principal.as_str())?;
+                }
+                Ok(())
+            })?;
+        }
+        if let Some(next_token) = self.next_token.as_ref() {
+            s.write_string(&Self::M_NEXT_TOKEN, next_token.as_str())?;
+        }
+        if let Some(exclusive) = self.principals_with_exclusive_attachment.as_ref() {
+            s.write_list(&Self::M_PRINCIPALS_WITH_EXCLUSIVE_ATTACHMENT, &|list| {
+                for principal in exclusive.iter() {
+                    list.write_string(
+                        &Self::M_PRINCIPALS_WITH_EXCLUSIVE_ATTACHMENT,
+                        principal.as_str(),
+                    )?;
+                }
+                Ok(())
+            })?;
+        }
+        Ok(())
+    }
+}
