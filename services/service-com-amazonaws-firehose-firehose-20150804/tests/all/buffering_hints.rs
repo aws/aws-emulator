@@ -38,6 +38,12 @@
 #[path = "buffering_hints/hint_ceiling.rs"]
 mod hint_ceiling;
 
+/// What the destination's own `ListObjectsV2` reports about the object a delivered buffer
+/// became, for each way the buffering hints can be spelled. A child of THIS suite for the same
+/// reason as the module above.
+#[path = "buffering_hints/delivered_listing_entry.rs"]
+mod delivered_listing_entry;
+
 use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};

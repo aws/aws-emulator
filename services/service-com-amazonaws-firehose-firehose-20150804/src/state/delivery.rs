@@ -17,10 +17,11 @@
 //! * WHEN — `BufferingHints`, whose `SizeInMBs` and `IntervalInSeconds` decide when a
 //!   buffer is flushed ([`delivery_window`]): the interval is the stream's own flush
 //!   cadence, so each turn of it writes every record accepted since the previous turn
-//!   ([`next_flush_at`]). The interval a destination asks for is the wait it gets,
-//!   whatever its length, and a buffer that has reached `SizeInMBs` is flushed before the
-//!   interval it is still inside, because the first of the two conditions satisfied is what
-//!   flushes a buffer.
+//!   ([`next_flush_at`]). The interval a destination asks for is the wait it gets while
+//!   that interval is inside [`MAX_BUFFER_HOLD`]; a longer one is improved on, as the hints
+//!   the model declares them allow. A buffer that has reached `SizeInMBs` is flushed before
+//!   the interval it is still inside, because the first of the two conditions satisfied is
+//!   what flushes a buffer.
 //! * WHERE — the bucket of `BucketARN`, under `Prefix` with the automatic
 //!   `YYYY/MM/DD/HH` expansion ("The \"YYYY/MM/DD/HH\" time format prefix is
 //!   automatically used for delivered Amazon S3 files" — `Prefix`), or under the prefix
@@ -234,6 +235,30 @@ const DEFAULT_BUFFER_SIZE_IN_MIB: usize = 5;
 /// `BufferingHints$IntervalInSeconds` when the configuration names none: "The default
 /// value is 300."
 const DEFAULT_BUFFER_INTERVAL: Duration = Duration::from_secs(300);
+
+/// The longest this emulator holds a buffer, whatever interval the destination's hints ask
+/// for.
+///
+/// The buffering parameters are documented as hints rather than as a contract: "These
+/// options are treated as hints, and therefore Firehose might choose to use different
+/// values when it is optimal" (`BufferingHints`). `IntervalInSeconds` is therefore the
+/// longest a producer ASKS for its data to be held — an upper bound on the wait, which the
+/// service may improve on — and not a wait the service owes. An interval up to this span is
+/// honoured to the second; one longer than it is improved on, and the buffer is flushed at
+/// this span instead, so nothing a put accepted is held forever and a producer that writes
+/// through a stream and then reads the destination back to verify its own delivery finds its
+/// data there.
+///
+/// A CHOSEN span, bounded from both sides by what a client can observe. It sits well above
+/// the batching windows a configuration asks for in seconds or in a minute or two — those are
+/// honoured to the second, so a producer that asks for one gets exactly the batching and the
+/// latency it asked for, and a reader taking its first look well inside such a window finds
+/// the destination still empty. And it stays short enough to be WAITED OUT: a buffer's records
+/// are observable only once they are AT the destination, so a producer that puts a record and
+/// then polls the destination — and every pipeline whose records pass through a stream on
+/// their way to the consumer that checks them — has to find them there inside one such poll
+/// loop, which is minutes rather than the quarter of an hour the longest interval admits.
+pub const MAX_BUFFER_HOLD: Duration = Duration::from_secs(90);
 
 /// How long after a stream's buffer opens — the instant the oldest record it holds landed
 /// — the delivery comes due once the buffer holds at least `BufferingHints$SizeInMBs` of
@@ -922,10 +947,11 @@ fn buffer_limits(hints: Option<&BufferingHints>) -> (usize, Duration) {
 /// [`FULL_BUFFER_DELIVERY_SPAN`] instead, whichever interval was configured, because the
 /// first of the two conditions satisfied is what flushes a buffer. That span also floors
 /// the window: `IntervalInSeconds` admits 0, and a zero window would hand a caller a
-/// delivery its own put had not yet returned from. Nothing else shortens the window — the
-/// interval a destination asks for is the wait its records get, however many minutes it
-/// names, because a producer that asked to batch for that long observes its data at the
-/// destination no earlier.
+/// delivery its own put had not yet returned from. The one thing that shortens the window is
+/// [`MAX_BUFFER_HOLD`], which ceilings it: the hints are hints the service may improve on, so
+/// an interval inside that span is the wait its records get to the second, and a longer one is
+/// improved on rather than waited out, which is what keeps a buffer from being held past any
+/// window a producer verifying its own delivery can wait out.
 #[must_use]
 pub fn delivery_window(hints: Option<&BufferingHints>, buffered_bytes: usize) -> Duration {
     let (size, interval) = buffer_limits(hints);
@@ -934,7 +960,7 @@ pub fn delivery_window(hints: Option<&BufferingHints>, buffered_bytes: usize) ->
     } else {
         interval
     };
-    window.max(FULL_BUFFER_DELIVERY_SPAN)
+    window.clamp(FULL_BUFFER_DELIVERY_SPAN, MAX_BUFFER_HOLD)
 }
 
 /// The bucket name a `BucketARN` names, or `None` when the value carries none.

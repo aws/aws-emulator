@@ -335,6 +335,24 @@ impl Emulator {
             .collect()
     }
 
+    /// Every element of the whole-bucket `ListObjectsV2` listing of `bucket`, as
+    /// `(element name, text)` in document order.
+    ///
+    /// Beside [`Self::keys_under`], which reads the same answer for its keys alone: a suite
+    /// asserting what the page SAYS about the object a delivered buffer became — its counters
+    /// and the members of its one entry — reads it here rather than taking the listing again
+    /// for itself.
+    pub(crate) async fn listing_elements(&self, bucket: &str) -> Vec<(String, String)> {
+        let answer = self.s3("GET", &format!("/{bucket}?list-type=2")).await;
+        assert_eq!(
+            answer.status,
+            200,
+            "list {bucket}: got {}",
+            String::from_utf8_lossy(&answer.body)
+        );
+        elements(&answer.body)
+    }
+
     /// What a `/`-delimited `ListObjectsV2` at `prefix` reports: the keys it lists AT that
     /// level, and how many entries the page holds in all — `KeyCount`, which counts each
     /// rolled-up common prefix as one.

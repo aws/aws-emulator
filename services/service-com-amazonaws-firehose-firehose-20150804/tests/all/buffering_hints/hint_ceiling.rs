@@ -1,27 +1,32 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! What a destination asking for an interval at the CEILING of the published range gets: the
-//! wait it asked for, not a shorter one.
+//! window it asked for is not collapsed into its own put.
 //!
 //! The rule under test: `BufferingHints$IntervalInSeconds` is how long a destination's records
 //! are held before they are written — "buffer incoming data for the specified period of time,
 //! in seconds, before delivering it to the destination" — so the interval a destination
-//! configures is the wait its records get, whatever its length, and only the OTHER buffering
-//! condition can flush a buffer earlier ("Firehose buffers data up to 5 MB or for 5 minutes,
-//! whichever condition is satisfied first" — `CreateDeliveryStream`). A destination asking for
-//! minutes therefore still holds a handful of small records minutes later, while one asking
-//! for a window of seconds has them written at the end of that window: nothing is delivered
-//! before the destination's own hints are met. How a configuration is SPELLED makes no
-//! difference to that — the documented default interval stated explicitly is the same
-//! configuration as the member left out — and neither does a tag mutation on the stream,
-//! because `TagDeliveryStream` / `UntagDeliveryStream` carry no delivery semantics.
+//! configures is the wait its records get while that interval is inside the span this emulator
+//! holds data for, and only the OTHER buffering condition can flush a buffer earlier
+//! ("Firehose buffers data up to 5 MB or for 5 minutes, whichever condition is satisfied
+//! first" — `CreateDeliveryStream`). A destination asking for minutes therefore still holds a
+//! handful of small records a long time after the put, while one asking for a window of
+//! seconds has them written at the end of that window: nothing is delivered before the
+//! destination's own hints are met. How a configuration is SPELLED makes no difference to that
+//! — the documented default interval stated explicitly is the same configuration as the member
+//! left out — and neither does a tag mutation on the stream, because `TagDeliveryStream` /
+//! `UntagDeliveryStream` carry no delivery semantics.
 //!
 //! The parent suite [`crate::buffering_hints`] pins the same rule on the windows a case can
 //! wait out — the published minimum, a short non-zero one, and the size condition firing
 //! inside a long interval. What this child adds is the TOP of the published range: a
 //! destination whose interval is minutes away holds its records all through a window that the
-//! rows beside it show is far longer than any span this emulator would flush them at, so a
-//! window of minutes is not quietly shortened to one of seconds.
+//! rows beside it show is far longer than the span a prompt delivery takes, so a window of
+//! minutes is not quietly collapsed into the put that opened the buffer. Because the hints are
+//! hints the service may improve on, an interval longer than the span this emulator holds data
+//! for is flushed at the end of that span rather than waited out; that END of the window is the
+//! sibling suite [`super::delivered_listing_entry`], and every row here is read well inside the
+//! span, where it must hold nothing.
 //!
 //! No case here sleeps a window out or reads the wall clock. The control row, configured with
 //! the shortest interval its member admits, is polled until its object is there; the row whose
@@ -52,8 +57,10 @@ const TENS_OF_SECONDS: i64 = 25;
 /// How long the row whose interval is [`TENS_OF_SECONDS`] is waited for before the case fails.
 ///
 /// Generous beside that interval, so a loaded machine does not fail a case the clock would
-/// have served; it bounds nothing the case measures.
-const WAITED_OUT_DELIVERY_DEADLINE: Duration = Duration::from_secs(180);
+/// have served, and inside the span this emulator holds data for, so the rows asking for
+/// MINUTES are still holding their records at every reading taken while this one is waited
+/// for; it bounds nothing the case measures.
+const WAITED_OUT_DELIVERY_DEADLINE: Duration = Duration::from_secs(60);
 
 /// How long the control row's delivery — the one asking for the shortest interval its member
 /// admits — is waited for before the case fails.
@@ -75,8 +82,11 @@ enum Due {
 }
 
 /// What the stream's tags are made to do between the create and the put.
+///
+/// `pub(super)` so the sibling suite reading what the destination's listing says about the
+/// delivered object states its rows' tag mutations in the same terms.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Tagging {
+pub(super) enum Tagging {
     /// Nothing: the stream is never tagged.
     Untouched,
     /// Tagged, re-tagged with another value, and then stripped of its last tag — the
@@ -172,7 +182,7 @@ struct Leg {
 }
 
 #[tokio::test]
-async fn an_interval_of_minutes_is_waited_out_and_not_shortened() {
+async fn an_interval_of_minutes_is_not_collapsed_into_the_put_that_opened_the_buffer() {
     let emulator = Emulator::new();
     emulator.create_bucket(BUCKET).await;
 
@@ -267,7 +277,10 @@ fn destination(bucket: &str, prefix: &str, hints: Option<(i64, i64)>) -> Value {
 
 /// Tag `stream`, change that tag's value, and then remove the last tag it carries — a tag
 /// mutation that says nothing about delivery.
-async fn change_and_remove_tags(emulator: &Emulator, case: &str, stream: &str) {
+///
+/// `pub(super)` so the sibling suite reading what the destination's listing says about the
+/// delivered object mutates its streams' tags the same way rather than re-spelling the calls.
+pub(super) async fn change_and_remove_tags(emulator: &Emulator, case: &str, stream: &str) {
     for value in ["first", "second"] {
         emulator
             .firehose_ok(
