@@ -233,6 +233,21 @@ fn target_configuration() -> Value {
     })
 }
 
+/// The `WorkerSetting` a connector this suite created runs with, at `capacity`.
+///
+/// `WorkerSetting` carries a connector's capacity, "which plugins the connector uses" and
+/// "which worker configuration the connector uses", beside the flag that says whether it
+/// uses the default one (`smithy_query(query="shape", shape="WorkerSetting")`). Every
+/// connector here is created on one plugin at revision 1 and names no `workerConfiguration`,
+/// so it runs on the default worker configuration.
+fn worker_setting(capacity: Value, plugin_arn: &str) -> Value {
+    json!({
+        "capacity": capacity,
+        "plugins": [{"customPlugin": {"customPluginArn": plugin_arn, "revision": 1}}],
+        "useDefaultWorkerConfiguration": true,
+    })
+}
+
 /// The `CreateCustomPlugin` body for `name`.
 fn plugin_request(name: &str) -> Value {
     json!({
@@ -427,14 +442,14 @@ impl Kind {
 
     /// The `(origin, target)` settings pair the operation must report, behind the member
     /// each sits at: `None` for a kind of work that changes no setting.
-    fn settings_pair(self) -> Option<(&'static str, &'static str, Value, Value)> {
+    fn settings_pair(self, plugin_arn: &str) -> Option<(&'static str, &'static str, Value, Value)> {
         match self {
             Self::Restart => None,
             Self::UpdateCapacity => Some((
                 "originWorkerSetting",
                 "targetWorkerSetting",
-                json!({"capacity": created_capacity()}),
-                json!({"capacity": target_capacity()}),
+                worker_setting(created_capacity(), plugin_arn),
+                worker_setting(target_capacity(), plugin_arn),
             )),
             Self::UpdateConfiguration => Some((
                 "originConnectorConfiguration",
@@ -496,7 +511,7 @@ impl Kind {
 
 /// Assert `described` is the report of a `kind` operation against `connector_arn`, with
 /// the pair of settings and the step types that kind of work carries.
-fn assert_identity(kind: Kind, connector_arn: &str, described: &Value) {
+fn assert_identity(kind: Kind, connector_arn: &str, plugin_arn: &str, described: &Value) {
     assert_eq!(
         text(described, "connectorOperationType"),
         kind.operation_type(),
@@ -522,7 +537,7 @@ fn assert_identity(kind: Kind, connector_arn: &str, described: &Value) {
         "case {kind:?}: an operation nothing failed reports no errorInfo, got {described}"
     );
 
-    match kind.settings_pair() {
+    match kind.settings_pair(plugin_arn) {
         None => {
             for member in [
                 "originWorkerSetting",
@@ -595,7 +610,7 @@ async fn every_kind_of_stored_operation_describes_from_its_own_record() {
             "case {kind:?}: the report must name the operation that was asked for, got \
              {described}"
         );
-        assert_identity(kind, &connector_arn, &described);
+        assert_identity(kind, &connector_arn, &plugin_arn, &described);
 
         let state = text(&described, "connectorOperationState");
         assert!(
@@ -642,7 +657,7 @@ async fn every_kind_of_stored_operation_describes_from_its_own_record() {
             "case {kind:?}: the report must name the operation that was asked for, got \
              {described}"
         );
-        assert_identity(*kind, connector_arn, &described);
+        assert_identity(*kind, connector_arn, &plugin_arn, &described);
         assert_eq!(
             text(&described, "connectorOperationState"),
             kind.terminal_state(),

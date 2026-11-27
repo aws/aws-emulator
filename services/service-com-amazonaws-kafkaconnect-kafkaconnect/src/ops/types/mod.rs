@@ -36,7 +36,9 @@ pub mod list_connectors_types;
 pub mod list_custom_plugins_types;
 pub mod list_tags_for_resource_types;
 pub mod list_worker_configurations_types;
+pub mod pause_connector_types;
 pub mod restart_connector_types;
+pub mod resume_connector_types;
 pub mod shared_types;
 pub mod tag_resource_types;
 pub mod untag_resource_types;
@@ -73,7 +75,11 @@ pub use list_tags_for_resource_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use list_worker_configurations_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use pause_connector_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use restart_connector_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use resume_connector_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use shared_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]

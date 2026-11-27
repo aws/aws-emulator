@@ -51,6 +51,9 @@ aws-sdk-kafka = { version = "1", default-features = false, features = ["rt-tokio
 emulator-core-build-support = { workspace = true }
 
 [dev-dependencies]
+# Declares one suite per `tests/all/<name>.rs` from `tests/all/main.rs`, so a new
+# suite is a new file and nothing lists it.
+automod = { workspace = true }
 # Percent-encodes an `@httpLabel` ARN into one URI path segment in the tests,
 # with the same encoder the server side uses.
 percent-encoding = "2"

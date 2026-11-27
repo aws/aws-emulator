@@ -16,8 +16,12 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-kafkaconnect-kafkaconne
 pub struct UpdateConnectorInput {
     pub capacity: Option<CapacityUpdate>,
     pub connector_configuration: Option<std::collections::HashMap<String, String>>,
+    pub skip_health_validation: bool,
     pub connector_arn: String,
     pub current_version: String,
+    pub plugins: Option<Vec<PluginUpdate>>,
+    pub worker_configuration: Option<WorkerConfigurationUpdate>,
+    pub use_default_worker_configuration: bool,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.kafkaconnect#CapacityUpdate")]
@@ -55,6 +59,26 @@ pub struct ScaleOutPolicyUpdate {
 pub struct ProvisionedCapacityUpdate {
     pub mcu_count: i32,
     pub worker_count: i32,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.kafkaconnect#PluginUpdate")]
+#[derive(Debug, Clone, Default)]
+pub struct PluginUpdate {
+    pub custom_plugin: CustomPluginUpdate,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.kafkaconnect#CustomPluginUpdate")]
+#[derive(Debug, Clone, Default)]
+pub struct CustomPluginUpdate {
+    pub custom_plugin_arn: String,
+    pub revision: i64,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.kafkaconnect#WorkerConfigurationUpdate")]
+#[derive(Debug, Clone, Default)]
+pub struct WorkerConfigurationUpdate {
+    pub revision: i64,
+    pub worker_configuration_arn: String,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.kafkaconnect#UpdateConnectorResponse")]

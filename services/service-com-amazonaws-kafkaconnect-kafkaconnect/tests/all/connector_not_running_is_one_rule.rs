@@ -19,7 +19,7 @@
 //! handler running a gate of its own would fail here.
 //!
 //! The table spans what the rule generalises over: the `ConnectorState` the
-//! connector is in when the call lands — every state this service puts a
+//! connector is in when the call lands — the states this service puts a
 //! connector in that the gate does not accept (`CREATING` while its workers come
 //! up, `RESTARTING`, `UPDATING` and `DELETING`) — crossed with each call the gate
 //! guards, plus the `RUNNING` row where both calls are served. `ConnectorState`
@@ -27,7 +27,10 @@
 //! which a connector reaches only when its bring-up found no Apache Kafka
 //! cluster — asserted, with the gate over it, in the router's
 //! `kafkaconnect_connector_bring_up` suite, where Amazon MSK is mounted to
-//! answer that question.
+//! answer that question — and the `PAUSING`, `PAUSED` and `RESUMING` states the
+//! two calls that stop and start a connector's workers put it in, which the
+//! `connector_pause_and_resume` suite drives across both those calls' own
+//! accepted sets.
 //!
 //! The sibling suites' request helpers are private to their own modules, so this
 //! one carries its own copies of the few it needs.
@@ -443,8 +446,8 @@ async fn a_running_connector_serves_every_call_the_gate_guards() {
 /// set the gate decides by.
 ///
 /// The rows span what that part generalises over: the set these two operations
-/// accept (which names `PAUSED` beside `RUNNING`, though `ConnectorState` lists
-/// only the latter), a set of one state, and a set of three.
+/// accept (`RUNNING` and `PAUSED`, both states a connector's workers exist in), a
+/// set of one state, and a set of three.
 #[test]
 fn the_reason_renders_the_states_the_operation_accepts() {
     let rows: &[(&str, &[&str], &str)] = &[

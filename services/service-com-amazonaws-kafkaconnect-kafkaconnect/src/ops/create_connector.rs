@@ -262,14 +262,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         }
 
         // "You must specify a single-element list containing one customPlugin
-        // object" — the `plugins` member's own documentation. The model declares
-        // no list length, so the framework cannot refuse this one.
-        if input.plugins.len() != 1 {
+        // object" — the `plugins` member's own documentation, read through the
+        // one rule an update's own `plugins` answers to as well
+        // (`crate::state::plugins_list_refusal`).
+        if let Some(message) = crate::state::plugins_list_refusal(&input.plugins) {
             return Err(CreateConnectorErrorModeled::BadRequestException(BadRequestException {
-                message: Some(crate::state::invalid_parameter_because(
-                    "plugins",
-                    "Specify a single-element list containing one customPlugin object.",
-                )),
+                message: Some(message),
             })
             .into());
         }
@@ -333,16 +331,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .into());
         }
 
-        for plugin in &input.plugins {
-            let reference = &plugin.custom_plugin;
-            // A value that is not a kafkaconnect ARN at all names no plugin,
-            // so it is incorrect input rather than a plugin that is absent:
-            // the modelled 400, blaming the member that carried it.
-            if let Some(message) = crate::state::arn_syntax_refusal(
-                "customPluginArn",
-                &reference.custom_plugin_arn,
-                crate::state::ARN_SERVICE,
-            ) {
+        // Every plugin the connector is to run on: that the reference is an
+        // ARN of this service at all, that it names a plugin of the
+        // connector's own region, that the plugin is ACTIVE and that it is at
+        // the revision named. The ONE rule an update's plugins answer to as
+        // well (`crate::state::plugin_reference_refusal`); only which modelled
+        // error each refusal is lifted into is this operation's own.
+        match state.plugin_reference_refusal(&region, &input.plugins) {
+            None => {}
+            Some(crate::state::ReferenceRefusal::Incorrect(message)) => {
                 return Err(CreateConnectorErrorModeled::BadRequestException(
                     BadRequestException {
                         message: Some(message),
@@ -350,100 +347,34 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 )
                 .into());
             }
-            // A plugin lives in one region: a connector can only be backed by a
-            // plugin of its own region, so a `customPluginArn` minted elsewhere
-            // names no plugin this endpoint holds.
-            match state.custom_plugin_in(&region, &reference.custom_plugin_arn) {
-                Some(stored) if stored.state != crate::state::CUSTOM_PLUGIN_ACTIVE => {
-                    // A plugin the service has not finished taking on (or is
-                    // deleting) cannot back a connector: its content is not
-                    // usable yet, so the request is refused rather than stored
-                    // against a plugin that may never become usable.
-                    return Err(CreateConnectorErrorModeled::BadRequestException(
-                        BadRequestException {
-                            message: Some(crate::state::invalid_parameter_because(
-                                "customPluginArn",
-                                "The custom plugin is not ACTIVE.",
-                            )),
-                        },
-                    )
-                    .into());
-                }
-                Some(stored) if stored.revision == reference.revision => {}
-                Some(_) => {
-                    return Err(CreateConnectorErrorModeled::NotFoundException(NotFoundException {
-                        message: Some(crate::state::invalid_parameter_because(
-                            "revision",
-                            crate::state::RESOURCE_DOES_NOT_EXIST,
-                        )),
-                    })
-                    .into());
-                }
-                None => {
-                    return Err(CreateConnectorErrorModeled::NotFoundException(NotFoundException {
-                        message: Some(crate::state::invalid_parameter_because(
-                            "customPluginArn",
-                            crate::state::RESOURCE_DOES_NOT_EXIST,
-                        )),
-                    })
-                    .into());
-                }
+            Some(crate::state::ReferenceRefusal::Absent(message)) => {
+                return Err(CreateConnectorErrorModeled::NotFoundException(NotFoundException {
+                    message: Some(message),
+                })
+                .into());
             }
         }
 
         // A connector's `workerConfiguration` names a worker configuration of
-        // this account by ARN and revision. A reference the service never
-        // minted names no configuration, so it cannot back a connector: the
-        // create is refused rather than stored as a dangling reference the read
-        // operations would then echo back.
+        // this account by ARN and revision, read through that same shared rule
+        // (`crate::state::worker_configuration_reference_refusal`).
         if let Some(reference) = &input.worker_configuration {
-            // A value that is not a kafkaconnect ARN at all names no
-            // configuration, so it is incorrect input rather than a
-            // configuration that is absent: the modelled 400, blaming the
-            // member that carried it.
-            if let Some(message) = crate::state::arn_syntax_refusal(
-                "workerConfigurationArn",
-                &reference.worker_configuration_arn,
-                crate::state::ARN_SERVICE,
-            ) {
-                return Err(CreateConnectorErrorModeled::BadRequestException(
-                    BadRequestException {
-                        message: Some(message),
-                    },
-                )
-                .into());
-            }
-            match state.worker_configuration_in(&region, &reference.worker_configuration_arn) {
-                Some(stored) if stored.state != crate::state::WORKER_CONFIGURATION_ACTIVE => {
-                    // A configuration the service is deleting is on its way out
-                    // of the account, so a connector cannot take it on.
+            match state.worker_configuration_reference_refusal(&region, reference) {
+                None => {}
+                Some(crate::state::ReferenceRefusal::Incorrect(message)) => {
                     return Err(CreateConnectorErrorModeled::BadRequestException(
                         BadRequestException {
-                            message: Some(crate::state::invalid_parameter_because(
-                                "workerConfigurationArn",
-                                "The worker configuration is not ACTIVE.",
-                            )),
+                            message: Some(message),
                         },
                     )
                     .into());
                 }
-                Some(stored) if stored.revision == reference.revision => {}
-                Some(_) => {
-                    return Err(CreateConnectorErrorModeled::NotFoundException(NotFoundException {
-                        message: Some(crate::state::invalid_parameter_because(
-                            "revision",
-                            crate::state::RESOURCE_DOES_NOT_EXIST,
-                        )),
-                    })
-                    .into());
-                }
-                None => {
-                    return Err(CreateConnectorErrorModeled::NotFoundException(NotFoundException {
-                        message: Some(crate::state::invalid_parameter_because(
-                            "workerConfigurationArn",
-                            crate::state::RESOURCE_DOES_NOT_EXIST,
-                        )),
-                    })
+                Some(crate::state::ReferenceRefusal::Absent(message)) => {
+                    return Err(CreateConnectorErrorModeled::NotFoundException(
+                        NotFoundException {
+                            message: Some(message),
+                        },
+                    )
                     .into());
                 }
             }
@@ -490,6 +421,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             pending: Some(crate::state::PendingChange::in_a_moment(
                 crate::state::PendingKind::Settle,
             )),
+            // A create's bring-up rests in the state it decided, so the clock
+            // owes this connector no other state.
+            settling_to: None,
             // The clock owes a connector that has just been created no change
             // of settings: an update is refused until it is running.
             pending_update: None,

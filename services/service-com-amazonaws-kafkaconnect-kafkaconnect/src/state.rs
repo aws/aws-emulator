@@ -111,9 +111,31 @@ pub const CONNECTOR_RESTARTING: &str = "RESTARTING";
 /// not the next call, is what returns it to [`CONNECTOR_RUNNING`].
 pub const CONNECTOR_UPDATING: &str = "UPDATING";
 
+/// `ConnectorState` while a connector that was asked to pause is stopping its
+/// workers; one of [`CONNECTOR_STATE_VALUES`]. The clock, not the next call, is
+/// what brings it to [`CONNECTOR_PAUSED`].
+pub const CONNECTOR_PAUSING: &str = "PAUSING";
+
+/// `ConnectorState` a paused connector rests in: its workers are stopped and
+/// only a resume brings them back, so no further change is owed it.
+pub const CONNECTOR_PAUSED: &str = "PAUSED";
+
+/// `ConnectorState` while a paused connector that was asked to resume is
+/// bringing its workers back; one of [`CONNECTOR_STATE_VALUES`]. The clock, not
+/// the next call, is what returns it to the state its bring-up decided.
+pub const CONNECTOR_RESUMING: &str = "RESUMING";
+
 /// `ConnectorOperationType` of the operation a restart starts; one of
 /// [`CONNECTOR_OPERATION_TYPE_VALUES`].
 pub const CONNECTOR_OPERATION_RESTART: &str = "RESTART_CONNECTOR";
+
+/// `ConnectorOperationType` of the operation a pause starts; one of
+/// [`CONNECTOR_OPERATION_TYPE_VALUES`].
+pub const CONNECTOR_OPERATION_PAUSE: &str = "PAUSE_CONNECTOR";
+
+/// `ConnectorOperationType` of the operation a resume starts; one of
+/// [`CONNECTOR_OPERATION_TYPE_VALUES`].
+pub const CONNECTOR_OPERATION_RESUME: &str = "RESUME_CONNECTOR";
 
 /// `ConnectorOperationType` of the operation an update to a connector's
 /// capacity starts — capacity is the connector's worker setting, which is what
@@ -140,6 +162,32 @@ pub const CONNECTOR_OPERATION_RESTART_COMPLETE: &str = "RESTART_COMPLETE";
 pub const RESTART_PROGRESSION: &[&str] = &[
     CONNECTOR_OPERATION_RESTART_IN_PROGRESS,
     CONNECTOR_OPERATION_RESTART_COMPLETE,
+];
+
+/// `ConnectorOperationState` while a pause is running.
+pub const CONNECTOR_OPERATION_PAUSE_IN_PROGRESS: &str = "PAUSE_IN_PROGRESS";
+
+/// `ConnectorOperationState` a pause that finished ends in.
+pub const CONNECTOR_OPERATION_PAUSE_COMPLETE: &str = "PAUSE_COMPLETE";
+
+/// The states a pause passes through after [`CONNECTOR_OPERATION_PENDING`], in
+/// order: the model's own two pause states, the last of which is terminal.
+pub const PAUSE_PROGRESSION: &[&str] = &[
+    CONNECTOR_OPERATION_PAUSE_IN_PROGRESS,
+    CONNECTOR_OPERATION_PAUSE_COMPLETE,
+];
+
+/// `ConnectorOperationState` while a resume is running.
+pub const CONNECTOR_OPERATION_RESUME_IN_PROGRESS: &str = "RESUME_IN_PROGRESS";
+
+/// `ConnectorOperationState` a resume that finished ends in.
+pub const CONNECTOR_OPERATION_RESUME_COMPLETE: &str = "RESUME_COMPLETE";
+
+/// The states a resume passes through after [`CONNECTOR_OPERATION_PENDING`], in
+/// order: the model's own two resume states, the last of which is terminal.
+pub const RESUME_PROGRESSION: &[&str] = &[
+    CONNECTOR_OPERATION_RESUME_IN_PROGRESS,
+    CONNECTOR_OPERATION_RESUME_COMPLETE,
 ];
 
 /// `ConnectorOperationState` while an update is running.
@@ -753,14 +801,99 @@ impl CustomPluginRecord {
     }
 }
 
+/// A connector's WORKER SETTING: the members `WorkerSetting` carries — "the
+/// compute capacity settings of the connector", "which plugins the connector
+/// uses" and "which worker configuration the connector uses" — held as the
+/// shapes the connector itself stores, so one value of this struct is one
+/// complete worker setting rather than a patch.
+///
+/// `UpdateConnector` names "one or more of `capacity`, `plugins`,
+/// `workerConfiguration`, or `useDefaultWorkerConfiguration`" and a member it
+/// does not name leaves that part of the setting as it is, so the target of an
+/// update is the connector's current setting with the named members replaced
+/// ([`Self::with`]).
+#[derive(Debug, Clone, Default)]
+pub struct WorkerSettingValue {
+    /// `WorkerSetting$capacity`.
+    pub capacity: Capacity,
+    /// `WorkerSetting$plugins`.
+    pub plugins: Vec<Plugin>,
+    /// `WorkerSetting$workerConfiguration`: the custom worker configuration the
+    /// connector runs with, or `None` for one running on the default
+    /// configuration — which is what `useDefaultWorkerConfiguration` reports,
+    /// so the flag is derived from this member rather than stored beside it.
+    pub worker_configuration: Option<WorkerConfiguration>,
+}
+
+impl WorkerSettingValue {
+    /// This setting with the parts `change` names replaced, and every part it
+    /// does not name left as it is.
+    pub fn with(&self, change: WorkerSettingUpdate) -> Self {
+        Self {
+            capacity: change.capacity.unwrap_or_else(|| self.capacity.clone()),
+            plugins: change.plugins.unwrap_or_else(|| self.plugins.clone()),
+            // "If `true`, the connector stops using its custom worker
+            // configuration and uses the default worker configuration instead"
+            // (`UpdateConnector$useDefaultWorkerConfiguration`), and a request
+            // may not name that flag and a configuration at once, so the two
+            // can never disagree here.
+            worker_configuration: if change.use_default_worker_configuration {
+                None
+            } else {
+                change
+                    .worker_configuration
+                    .or_else(|| self.worker_configuration.clone())
+            },
+        }
+    }
+
+    /// This setting as `DescribeConnectorOperation` reports it.
+    pub fn description(&self) -> WorkerSetting {
+        WorkerSetting {
+            capacity: Some(capacity_description(&self.capacity)),
+            plugins: Some(plugin_descriptions(&self.plugins)),
+            worker_configuration: worker_configuration_description(
+                self.worker_configuration.as_ref(),
+            ),
+            // "Specifies whether the connector uses the default worker
+            // configuration instead of a custom worker configuration": a
+            // connector that holds no custom configuration is running on the
+            // default one.
+            use_default_worker_configuration: self.worker_configuration.is_none(),
+        }
+    }
+}
+
+/// The parts of a connector's worker setting one `UpdateConnector` call names:
+/// `None` (or, for the flag, `false`) is a part the request left alone.
+#[derive(Debug, Clone, Default)]
+pub struct WorkerSettingUpdate {
+    pub capacity: Option<Capacity>,
+    pub plugins: Option<Vec<Plugin>>,
+    pub worker_configuration: Option<WorkerConfiguration>,
+    pub use_default_worker_configuration: bool,
+}
+
+impl WorkerSettingUpdate {
+    /// Whether this names any part of a worker setting at all. A request that
+    /// names none is not a worker-setting update.
+    pub fn is_empty(&self) -> bool {
+        self.capacity.is_none()
+            && self.plugins.is_none()
+            && self.worker_configuration.is_none()
+            && !self.use_default_worker_configuration
+    }
+}
+
 /// The settings one `UpdateConnector` call moves a connector between: its
-/// capacity — the worker setting `WorkerSetting` carries — or its
-/// configuration. The operation's own documentation says a request names
-/// exactly one of the two, so one value of this enum is one update.
+/// worker setting or its connector configuration. The operation's own
+/// documentation says a request updates one or the other and "not both in the
+/// same request", so one value of this enum is one update.
 #[derive(Debug, Clone)]
 pub enum ConnectorSettings {
-    /// A connector's capacity (`UpdateConnector$capacity`).
-    Capacity(Capacity),
+    /// A connector's worker setting — `capacity`, `plugins` and the worker
+    /// configuration it runs with.
+    WorkerSetting(WorkerSettingValue),
     /// A connector's configuration (`UpdateConnector$connectorConfiguration`),
     /// the whole map rather than a patch: the member carries "the configuration
     /// for the connector", the same wording the create's own configuration
@@ -772,7 +905,7 @@ impl ConnectorSettings {
     /// The `ConnectorOperationType` an update to these settings runs under.
     pub fn operation_type(&self) -> &'static str {
         match self {
-            Self::Capacity(_) => CONNECTOR_OPERATION_UPDATE_WORKER_SETTING,
+            Self::WorkerSetting(_) => CONNECTOR_OPERATION_UPDATE_WORKER_SETTING,
             Self::Configuration(_) => CONNECTOR_OPERATION_UPDATE_CONFIGURATION,
         }
     }
@@ -781,9 +914,7 @@ impl ConnectorSettings {
     /// they are not a worker setting at all.
     pub fn worker_setting(&self) -> Option<WorkerSetting> {
         match self {
-            Self::Capacity(capacity) => Some(WorkerSetting {
-                capacity: Some(capacity_description(capacity)),
-            }),
+            Self::WorkerSetting(setting) => Some(setting.description()),
             Self::Configuration(_) => None,
         }
     }
@@ -792,7 +923,7 @@ impl ConnectorSettings {
     /// `None` when they are not a configuration at all.
     pub fn configuration(&self) -> Option<HashMap<String, String>> {
         match self {
-            Self::Capacity(_) => None,
+            Self::WorkerSetting(_) => None,
             Self::Configuration(configuration) => Some(configuration.clone()),
         }
     }
@@ -824,6 +955,92 @@ pub fn capacity_from_update(update: CapacityUpdate) -> Capacity {
                 worker_count: fixed.worker_count,
             }),
     }
+}
+
+/// The plugins an update names, as the shapes a connector stores.
+///
+/// `PluginUpdate` / `CustomPluginUpdate` mirror `Plugin` / `CustomPlugin`
+/// member for member, so the conversion keeps every value the request carried
+/// and invents none.
+pub fn plugins_from_update(update: Vec<PluginUpdate>) -> Vec<Plugin> {
+    update
+        .into_iter()
+        .map(|plugin| Plugin {
+            custom_plugin: CustomPlugin {
+                custom_plugin_arn: plugin.custom_plugin.custom_plugin_arn,
+                revision: plugin.custom_plugin.revision,
+            },
+        })
+        .collect()
+}
+
+/// The worker configuration an update names, as the shape a connector stores.
+///
+/// `WorkerConfigurationUpdate` mirrors `WorkerConfiguration` member for member.
+pub fn worker_configuration_from_update(update: WorkerConfigurationUpdate) -> WorkerConfiguration {
+    WorkerConfiguration {
+        revision: update.revision,
+        worker_configuration_arn: update.worker_configuration_arn,
+    }
+}
+
+/// `plugins` as the read operations report it.
+///
+/// A free function because two records report a connector's plugins: the
+/// connector its own ([`ConnectorRecord::plugin_descriptions`]) and a connector
+/// operation the plugins on each side of the update it applies.
+pub fn plugin_descriptions(plugins: &[Plugin]) -> Vec<PluginDescription> {
+    plugins
+        .iter()
+        .map(|plugin| PluginDescription {
+            custom_plugin: Some(CustomPluginDescription {
+                custom_plugin_arn: Some(plugin.custom_plugin.custom_plugin_arn.clone()),
+                revision: plugin.custom_plugin.revision,
+            }),
+        })
+        .collect()
+}
+
+/// `workerConfiguration` as the read operations report it; `None` for a
+/// connector running on the default worker configuration.
+pub fn worker_configuration_description(
+    worker: Option<&WorkerConfiguration>,
+) -> Option<WorkerConfigurationDescription> {
+    worker.map(|worker| WorkerConfigurationDescription {
+        revision: worker.revision,
+        worker_configuration_arn: Some(worker.worker_configuration_arn.clone()),
+    })
+}
+
+/// The message a refusal of a `plugins` list that is not the one list the
+/// service accepts carries, or `None` when the list is that one.
+///
+/// "You must specify a single-element list containing one `customPlugin`
+/// object" — the rule both `CreateConnectorRequest$plugins` and
+/// `UpdateConnectorRequest$plugins` document, worded once here so the create
+/// and the update cannot refuse the same list differently. The model declares
+/// no list length, so the framework cannot refuse this one.
+pub fn plugins_list_refusal(plugins: &[Plugin]) -> Option<String> {
+    (plugins.len() != 1).then(|| {
+        invalid_parameter_because(
+            "plugins",
+            "Specify a single-element list containing one customPlugin object.",
+        )
+    })
+}
+
+/// Which modelled failure a refusal of a reference to one of a connector's
+/// dependencies is answered with. The message is the refusal's own; only the
+/// kind of error the handler lifts it into differs.
+#[derive(Debug, Clone)]
+pub enum ReferenceRefusal {
+    /// The reference is not a value that could name such a resource at all, or
+    /// names one that is on its way in or out of the account: incorrect input,
+    /// the modelled 400.
+    Incorrect(String),
+    /// The reference resolves to no resource this region holds: the modelled
+    /// 404.
+    Absent(String),
 }
 
 /// `capacity` as the read operations report it.
@@ -915,6 +1132,11 @@ pub struct ConnectorRecord {
     pub creation_time: SystemTime,
     pub tags: HashMap<String, String>,
     pub pending: Option<PendingChange>,
+    /// The `ConnectorState` the clock leaves this connector in when the change
+    /// it owes comes due, when that is not the state its bring-up decided:
+    /// `PAUSED` for a connector that is pausing. `None` for every other
+    /// transient state, which rests in [`Self::resting_state`].
+    pub settling_to: Option<String>,
     /// The settings an update that is still running will leave this connector
     /// holding, kept here until that update's last step is done: a connector
     /// reports what it is RUNNING with, so the change lands with the move back
@@ -931,32 +1153,48 @@ impl ConnectorRecord {
     /// because a connector that is not running takes no further update.
     fn apply_update(&mut self, settings: ConnectorSettings) {
         match settings {
-            ConnectorSettings::Capacity(capacity) => self.capacity = capacity,
+            ConnectorSettings::WorkerSetting(setting) => {
+                self.capacity = setting.capacity;
+                self.plugins = setting.plugins;
+                self.worker_configuration = setting.worker_configuration;
+            }
             ConnectorSettings::Configuration(configuration) => self.configuration = configuration,
         }
         self.current_version = next_connector_version(&self.current_version);
     }
 
-    /// The message a call that only a running connector can serve is refused
-    /// with, or `None` when this connector is running and the call may proceed.
+    /// The worker setting this connector is running with: the three parts
+    /// `WorkerSetting` reports, read off the connector itself.
+    pub fn worker_setting(&self) -> WorkerSettingValue {
+        WorkerSettingValue {
+            capacity: self.capacity.clone(),
+            plugins: self.plugins.clone(),
+            worker_configuration: self.worker_configuration.clone(),
+        }
+    }
+
+    /// The message a call this connector's state does not admit is refused
+    /// with, or `None` when its state is one of `accepted` and the call may
+    /// proceed.
     ///
-    /// The ONE state gate every operation that starts work on a connector runs
-    /// (a restart and an update), so neither can differ from the other on which
-    /// `ConnectorState` admits such a call, on the member the refusal blames, or
-    /// on how it is worded: a connector still being created, already restarting
-    /// or updating, failed or being deleted has no running workers for the call
-    /// to act on. Only the modelled error VARIANT stays with the handler, since
-    /// the error enum is per-operation — the same shape as
-    /// [`capacity_refusal`] and
-    /// [`ComAmazonawsKafkaconnectKafkaconnectState::start_connector_operation`], the
-    /// other two rules these handlers share.
+    /// The ONE state gate every operation that starts work on a connector runs,
+    /// each naming the `ConnectorState` set its own work needs, so none can
+    /// differ from another on the member the refusal blames or on how it is
+    /// worded. Only the modelled error VARIANT stays with the handler, since
+    /// the error enum is per-operation — the same shape as [`capacity_refusal`]
+    /// and
+    /// [`ComAmazonawsKafkaconnectKafkaconnectState::start_connector_operation`],
+    /// the other two rules these handlers share.
+    pub fn state_refusal(&self, accepted: &[&str]) -> Option<String> {
+        (!accepted.contains(&self.state.as_str()))
+            .then(|| invalid_parameter_because("connectorArn", &only_valid_in_states(accepted)))
+    }
+
+    /// The message a call that only a connector with running workers can serve
+    /// is refused with, or `None` when the call may proceed: the gate a restart
+    /// and an update run ([`CALL_ACCEPTED_CONNECTOR_STATES`]).
     pub fn not_running_refusal(&self) -> Option<String> {
-        (!CALL_ACCEPTED_CONNECTOR_STATES.contains(&self.state.as_str())).then(|| {
-            invalid_parameter_because(
-                "connectorArn",
-                &only_valid_in_states(CALL_ACCEPTED_CONNECTOR_STATES),
-            )
-        })
+        self.state_refusal(CALL_ACCEPTED_CONNECTOR_STATES)
     }
 
     /// Whether this connector names the resource `arn` names among the
@@ -1050,25 +1288,12 @@ impl ConnectorRecord {
     /// This connector's stored worker configuration, as reported; `None` when
     /// the request named none.
     pub fn worker_configuration_description(&self) -> Option<WorkerConfigurationDescription> {
-        self.worker_configuration
-            .as_ref()
-            .map(|worker| WorkerConfigurationDescription {
-                revision: worker.revision,
-                worker_configuration_arn: Some(worker.worker_configuration_arn.clone()),
-            })
+        worker_configuration_description(self.worker_configuration.as_ref())
     }
 
-    /// The plugins this connector was created with, as reported.
+    /// The plugins this connector runs on, as reported.
     pub fn plugin_descriptions(&self) -> Vec<PluginDescription> {
-        self.plugins
-            .iter()
-            .map(|plugin| PluginDescription {
-                custom_plugin: Some(CustomPluginDescription {
-                    custom_plugin_arn: Some(plugin.custom_plugin.custom_plugin_arn.clone()),
-                    revision: plugin.custom_plugin.revision,
-                }),
-            })
-            .collect()
+        plugin_descriptions(&self.plugins)
     }
 
     /// This connector as `ListConnectors` reports it.
@@ -1161,6 +1386,42 @@ impl ConnectorOperationRecord {
                 states,
             )
         }
+    }
+
+    /// The operation a `PauseConnector` call against `connector_arn` starts:
+    /// `PENDING`, with the whole [`PAUSE_PROGRESSION`] still ahead of it.
+    pub fn pause(arn: String, connector_arn: String) -> Self {
+        Self::stopping_or_starting(arn, connector_arn, CONNECTOR_OPERATION_PAUSE, PAUSE_PROGRESSION)
+    }
+
+    /// The operation a `ResumeConnector` call against `connector_arn` starts:
+    /// `PENDING`, with the whole [`RESUME_PROGRESSION`] still ahead of it.
+    pub fn resume(arn: String, connector_arn: String) -> Self {
+        Self::stopping_or_starting(
+            arn,
+            connector_arn,
+            CONNECTOR_OPERATION_RESUME,
+            RESUME_PROGRESSION,
+        )
+    }
+
+    /// The operation a call that only stops or starts a connector's workers
+    /// records — a pause or a resume: neither changes the connector's worker
+    /// setting or its configuration, so there is no pair of settings to report,
+    /// and every value `ConnectorOperationStepType` lists names a step of an
+    /// UPDATE, so neither has a modelled step to report and none is invented
+    /// for it.
+    fn stopping_or_starting(
+        arn: String,
+        connector_arn: String,
+        operation_type: &str,
+        progression: &[&str],
+    ) -> Self {
+        let states: VecDeque<String> = progression
+            .iter()
+            .map(|state| (*state).to_string())
+            .collect();
+        Self::starting(arn, connector_arn, operation_type, Vec::new(), states)
     }
 
     /// The operation an `UpdateConnector` call starts: `PENDING`, with one step
@@ -1654,13 +1915,18 @@ impl ComAmazonawsKafkaconnectKafkaconnectState {
                 if let Some(settings) = connector.pending_update.take() {
                     connector.apply_update(settings);
                 }
-                // The state the clock owes THIS connector: what the bring-up its
-                // create started found ([`BringUp`]), which is `RUNNING` for a
-                // connector whose workers reached their Kafka cluster and
+                // The state the clock owes THIS connector: the one the work it
+                // is running was asked to reach, when that work names one — a
+                // pause leaves it `PAUSED` — and otherwise what the bring-up
+                // its create started found ([`BringUp`]), which is `RUNNING`
+                // for a connector whose workers reached their Kafka cluster and
                 // `FAILED` for one that had none to reach. A `FAILED` connector
                 // is at rest, so no further change is owed it and every call
                 // only a running connector serves is refused for it.
-                connector.state = connector.resting_state.clone();
+                connector.state = connector
+                    .settling_to
+                    .take()
+                    .unwrap_or_else(|| connector.resting_state.clone());
                 connector.pending = None;
                 // And the workers write that outcome where the connector's own
                 // `logDelivery` points, for the first call that can hand it over
@@ -1914,8 +2180,99 @@ impl ComAmazonawsKafkaconnectKafkaconnectState {
         }))
     }
 
-    /// The operations stored against the connector `connector_arn` names, each
-    /// behind the key it pages under ([`ConnectorOperationRecord::page_key`]),
+    /// The message a refusal of the custom plugins `plugins` references
+    /// carries, behind the modelled failure it is answered with, or `None` when
+    /// every reference resolves in `region` to a plugin a connector may run on.
+    ///
+    /// The ONE rule both operations that take a connector's plugins run (the
+    /// create and the update), so neither can accept a reference the other
+    /// refuses or word the refusal differently: a value that is not a
+    /// kafkaconnect ARN names no plugin at all, a plugin lives in exactly one
+    /// region, a plugin the service has not finished taking on (or is deleting)
+    /// cannot back a connector because its content is not usable, and a
+    /// revision the plugin is not at names nothing. Only the modelled error
+    /// VARIANT stays with the handler, since the error enum is per-operation.
+    pub fn plugin_reference_refusal(
+        &self,
+        region: &str,
+        plugins: &[Plugin],
+    ) -> Option<ReferenceRefusal> {
+        for plugin in plugins {
+            let reference = &plugin.custom_plugin;
+            if let Some(message) = arn_syntax_refusal(
+                "customPluginArn",
+                &reference.custom_plugin_arn,
+                ARN_SERVICE,
+            ) {
+                return Some(ReferenceRefusal::Incorrect(message));
+            }
+            match self.custom_plugin_in(region, &reference.custom_plugin_arn) {
+                Some(stored) if stored.state != CUSTOM_PLUGIN_ACTIVE => {
+                    return Some(ReferenceRefusal::Incorrect(invalid_parameter_because(
+                        "customPluginArn",
+                        "The custom plugin is not ACTIVE.",
+                    )));
+                }
+                Some(stored) if stored.revision == reference.revision => {}
+                Some(_) => {
+                    return Some(ReferenceRefusal::Absent(invalid_parameter_because(
+                        "revision",
+                        RESOURCE_DOES_NOT_EXIST,
+                    )));
+                }
+                None => {
+                    return Some(ReferenceRefusal::Absent(invalid_parameter_because(
+                        "customPluginArn",
+                        RESOURCE_DOES_NOT_EXIST,
+                    )));
+                }
+            }
+        }
+        None
+    }
+
+    /// The message a refusal of the worker configuration `reference` names
+    /// carries, behind the modelled failure it is answered with, or `None` when
+    /// it resolves in `region` to a configuration a connector may run with.
+    ///
+    /// The ONE rule both operations that take a connector's worker
+    /// configuration run, under the same reading as
+    /// [`Self::plugin_reference_refusal`]: a reference the service never minted
+    /// names no configuration, so it cannot back a connector — the call is
+    /// refused rather than stored as a dangling reference the read operations
+    /// would then echo back.
+    pub fn worker_configuration_reference_refusal(
+        &self,
+        region: &str,
+        reference: &WorkerConfiguration,
+    ) -> Option<ReferenceRefusal> {
+        if let Some(message) = arn_syntax_refusal(
+            "workerConfigurationArn",
+            &reference.worker_configuration_arn,
+            ARN_SERVICE,
+        ) {
+            return Some(ReferenceRefusal::Incorrect(message));
+        }
+        match self.worker_configuration_in(region, &reference.worker_configuration_arn) {
+            Some(stored) if stored.state != WORKER_CONFIGURATION_ACTIVE => {
+                Some(ReferenceRefusal::Incorrect(invalid_parameter_because(
+                    "workerConfigurationArn",
+                    "The worker configuration is not ACTIVE.",
+                )))
+            }
+            Some(stored) if stored.revision == reference.revision => None,
+            Some(_) => Some(ReferenceRefusal::Absent(invalid_parameter_because(
+                "revision",
+                RESOURCE_DOES_NOT_EXIST,
+            ))),
+            None => Some(ReferenceRefusal::Absent(invalid_parameter_because(
+                "workerConfigurationArn",
+                RESOURCE_DOES_NOT_EXIST,
+            ))),
+        }
+    }
+
+    /// The operations stored against the connector `connector_arn` names, each    /// behind the key it pages under ([`ConnectorOperationRecord::page_key`]),
     /// ready for [`page`].
     pub fn connector_operations_of(
         &self,
@@ -2212,6 +2569,34 @@ pub const INVALID_ARN: &str = "Invalid ARN.";
 /// provisioned", as the member's own documentation puts it.
 pub const ONE_CAPACITY_FORM: &str = "Specify exactly one of autoScaling or provisionedCapacity.";
 
+/// The reason an update naming both kinds of change, or neither, is refused
+/// with. "In the request body, you can update either the connector's worker
+/// setting or its connector configuration, but not both in the same request. To
+/// update the worker setting, specify one or more of `capacity`, `plugins`,
+/// `workerConfiguration`, or `useDefaultWorkerConfiguration`. To update the
+/// connector configuration, specify only `connectorConfiguration`" —
+/// `UpdateConnector`'s own documentation, which the model cannot express
+/// because it makes every one of those members optional.
+pub const ONE_UPDATE_TARGET: &str =
+    "Specify either the connector's worker setting \u{2014} one or more of capacity, plugins, \
+     workerConfiguration or useDefaultWorkerConfiguration \u{2014} or connectorConfiguration, and \
+     not both in the same request.";
+
+/// The reason an update naming a worker configuration AND the default worker
+/// configuration is refused with: "You can't specify both `workerConfiguration`
+/// and `useDefaultWorkerConfiguration` in the same request"
+/// (`UpdateConnector$workerConfiguration`).
+pub const ONE_WORKER_CONFIGURATION_FORM: &str =
+    "You can't specify both workerConfiguration and useDefaultWorkerConfiguration in the same \
+     request.";
+
+/// The reason an update of a paused connector that did not ask for the health
+/// checks to be skipped is refused with: "To update a connector that is in the
+/// PAUSED state, you must set this parameter to true"
+/// (`UpdateConnector$skipHealthValidation`).
+pub const PAUSED_NEEDS_SKIPPED_HEALTH_VALIDATION: &str =
+    "To update a connector that is in the PAUSED state, you must set this parameter to true.";
+
 /// The message a delete of a resource a connector this account holds still runs
 /// on is refused with: a connector is only stored against references that
 /// resolve to an ACTIVE resource, so the resource stays while the connector
@@ -2234,16 +2619,26 @@ pub fn resource_in_use_by_connector(resource: &str, connector_arn: &str) -> Stri
     )
 }
 
-/// The `ConnectorState` values an operation that starts work on a connector
-/// accepts, as its refusal names them ([`only_valid_in_states`]).
+/// The `ConnectorState` values an operation that starts work on a connector's
+/// workers accepts, as its refusal names them ([`only_valid_in_states`]).
 ///
-/// `RestartConnector` and `UpdateConnector` both act on a connector's RUNNING
-/// workers, and the service names both states its workers can be acted on in:
-/// the running one, and the PAUSED one it names in this refusal even though
-/// `ConnectorState` does not list it — a connector whose workers have been
-/// paused still has workers to restart or re-configure. The set is stated once,
-/// here, so the gate and the sentence that reports it cannot disagree.
-pub const CALL_ACCEPTED_CONNECTOR_STATES: &[&str] = &[CONNECTOR_RUNNING, "PAUSED"];
+/// `RestartConnector` and `UpdateConnector` both act on a connector's workers,
+/// and both states a connector's workers exist in are served: the running one
+/// and the paused one — a connector whose workers have been paused still has
+/// workers to restart or re-configure. The set is stated once, here, so the
+/// gate and the sentence that reports it cannot disagree.
+pub const CALL_ACCEPTED_CONNECTOR_STATES: &[&str] = &[CONNECTOR_RUNNING, CONNECTOR_PAUSED];
+
+/// The `ConnectorState` values `PauseConnector` accepts: only a connector whose
+/// workers are running has workers to pause — one still being created, already
+/// pausing, paused, resuming, restarting, updating, failed or being deleted has
+/// none.
+pub const PAUSE_ACCEPTED_CONNECTOR_STATES: &[&str] = &[CONNECTOR_RUNNING];
+
+/// The `ConnectorState` values `ResumeConnector` accepts: it "resumes the
+/// specified PAUSED connector", so a connector in any other state has nothing
+/// to resume.
+pub const RESUME_ACCEPTED_CONNECTOR_STATES: &[&str] = &[CONNECTOR_PAUSED];
 
 /// The reason a call is refused for a resource whose state the operation does not
 /// accept: it names the states that WOULD be served, which is what tells the

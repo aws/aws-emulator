@@ -106,7 +106,7 @@ impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
     /// method and path, whose answer for an absent `@required` member is this service's own
     /// client-input error (HTTP 400, see [`EmulatedService::override_refusal`]).
     ///
-    /// The model declares exactly two such members across this service's 19 operations —
+    /// The model declares exactly two such members across this service's 21 operations —
     /// `UpdateConnector$currentVersion` and `UntagResource$tagKeys`
     /// (`smithy_query(query="operation", operation="UpdateConnector,UntagResource")`) —
     /// which is why those two operations are the ones held here; every other operation
@@ -195,7 +195,7 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
         // required member, or a value outside a declared bound) to let this
         // service reword it. KafkaConnect models its own client-input error for
         // exactly that case, so name it rather than the framework's generic
-        // `ValidationException`: a client branches on the code, and ALL 19 of
+        // `ValidationException`: a client branches on the code, and ALL 21 of
         // this service's operations declare `BadRequestException` as "HTTP
         // Status Code 400: Bad request due to incorrect input. Correct your
         // request and then retry it." (checked against every `**Errors:**` line

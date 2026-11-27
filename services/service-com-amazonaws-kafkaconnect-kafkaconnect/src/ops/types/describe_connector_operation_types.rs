@@ -20,7 +20,8 @@ pub struct DescribeConnectorOperationInput {
 /// `creationTime` and `endTime` target `__timestampIso8601`
 /// (`@timestampFormat("date-time")`), so this shape's schema comes from
 /// `kc_schema_and_codec!` — see `types/date_time_wire.rs`. Member set, order and
-/// requiredness from `smithy_query(query="shape", shape="DescribeConnectorOperationResponse")`.
+/// requiredness from
+/// `smithy_query(query="shape", shape="DescribeConnectorOperationResponse")`.
 #[derive(Debug, Clone, Default)]
 pub struct DescribeConnectorOperationOutput {
     pub connector_arn: Option<String>,
@@ -61,7 +62,14 @@ kc_schema_and_codec!(
         opt,
         string
     ),
-    (M_OPERATION_STEPS, operation_steps, "operationSteps", 4, opt, list_of(ConnectorOperationStep)),
+    (
+        M_OPERATION_STEPS,
+        operation_steps,
+        "operationSteps",
+        4,
+        opt,
+        list_of(ConnectorOperationStep)
+    ),
     (
         M_ORIGIN_WORKER_SETTING,
         origin_worker_setting,
@@ -110,5 +118,8 @@ pub struct ConnectorOperationStep {
 #[derive(Debug, Clone, Default)]
 pub struct WorkerSetting {
     pub capacity: Option<CapacityDescription>,
+    pub plugins: Option<Vec<PluginDescription>>,
+    pub worker_configuration: Option<WorkerConfigurationDescription>,
+    pub use_default_worker_configuration: bool,
 }
 

@@ -223,6 +223,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         let connector_arn = connector.arn.clone();
         let connector_name = connector.name.clone();
+        // The state the connector is to be back in once the restart finishes:
+        // a restart brings a connector's workers back as they were, so a paused
+        // connector is still paused after it.
+        let state_before = connector.state.clone();
 
         // The ONE rule both handlers that start a connector operation run: the
         // per-connector operation meter, and the ARN the new operation is
@@ -255,6 +259,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         if let Some(connector) = state.connector_in_mut(&region, &connector_arn) {
             connector.state = crate::state::CONNECTOR_RESTARTING.to_string();
             connector.pending = Some(operation.connector_settle());
+            connector.settling_to = Some(state_before);
         }
         let output = RestartConnectorOutput {
             connector_arn: Some(connector_arn),

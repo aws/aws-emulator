@@ -60,9 +60,8 @@ pub struct UnauthorizedException {
 }
 
 /// `creationTime` targets `__timestampIso8601` (`@timestampFormat("date-time")`), so this
-/// shape's schema comes from `kc_schema_and_codec!` rather than
-/// `#[smithy_macros::smithy(shape = ...)]` — see `types/date_time_wire.rs`. Member set,
-/// order and requiredness from
+/// shape's schema comes from `kc_schema_and_codec!` — see `types/date_time_wire.rs`.
+/// Member set, order and requiredness from
 /// `smithy_query(query="shape", shape="WorkerConfigurationRevisionSummary")`.
 #[derive(Debug, Clone, Default)]
 pub struct WorkerConfigurationRevisionSummary {
@@ -245,7 +244,14 @@ kc_schema_and_codec!(
         opt,
         struct_of(CustomPluginFileDescription)
     ),
-    (M_LOCATION, location, "location", 4, opt, struct_of(CustomPluginLocationDescription)),
+    (
+        M_LOCATION,
+        location,
+        "location",
+        4,
+        opt,
+        struct_of(CustomPluginLocationDescription)
+    ),
     (M_REVISION, revision, "revision", 5, def, long),
 );
 
@@ -271,7 +277,7 @@ pub struct S3LocationDescription {
 }
 
 /// The values `ConnectorOperationState` accepts on the wire.
-pub const CONNECTOR_OPERATION_STATE_VALUES: &[&str] = &["PENDING", "RESTART_COMPLETE", "RESTART_FAILED", "RESTART_IN_PROGRESS", "ROLLBACK_COMPLETE", "ROLLBACK_FAILED", "ROLLBACK_IN_PROGRESS", "UPDATE_COMPLETE", "UPDATE_FAILED", "UPDATE_IN_PROGRESS"];
+pub const CONNECTOR_OPERATION_STATE_VALUES: &[&str] = &["PAUSE_COMPLETE", "PAUSE_FAILED", "PAUSE_IN_PROGRESS", "PENDING", "RESTART_COMPLETE", "RESTART_FAILED", "RESTART_IN_PROGRESS", "RESUME_COMPLETE", "RESUME_FAILED", "RESUME_IN_PROGRESS", "ROLLBACK_COMPLETE", "ROLLBACK_FAILED", "ROLLBACK_IN_PROGRESS", "UPDATE_COMPLETE", "UPDATE_FAILED", "UPDATE_IN_PROGRESS"];
 
 
 /// The values `ConnectorOperationStepState` accepts on the wire.
@@ -283,11 +289,11 @@ pub const CONNECTOR_OPERATION_STEP_TYPE_VALUES: &[&str] = &["FINALIZE_UPDATE", "
 
 
 /// The values `ConnectorOperationType` accepts on the wire.
-pub const CONNECTOR_OPERATION_TYPE_VALUES: &[&str] = &["ISOLATE_CONNECTOR", "RESTART_CONNECTOR", "RESTORE_CONNECTOR", "UPDATE_CONNECTOR_CONFIGURATION", "UPDATE_WORKER_SETTING"];
+pub const CONNECTOR_OPERATION_TYPE_VALUES: &[&str] = &["ISOLATE_CONNECTOR", "PAUSE_CONNECTOR", "RESTART_CONNECTOR", "RESTORE_CONNECTOR", "RESUME_CONNECTOR", "UPDATE_CONNECTOR_CONFIGURATION", "UPDATE_WORKER_SETTING"];
 
 
 /// The values `ConnectorState` accepts on the wire.
-pub const CONNECTOR_STATE_VALUES: &[&str] = &["CREATING", "DELETING", "FAILED", "RESTARTING", "RUNNING", "UPDATING"];
+pub const CONNECTOR_STATE_VALUES: &[&str] = &["CREATING", "DELETING", "FAILED", "PAUSED", "PAUSING", "RESTARTING", "RESUMING", "RUNNING", "UPDATING"];
 
 
 /// The values `CustomPluginContentType` accepts on the wire.

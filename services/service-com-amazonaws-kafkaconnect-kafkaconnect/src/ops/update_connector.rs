@@ -2,20 +2,27 @@
 
 //! @op UpdateConnector
 //! Records the asynchronous update of a stored connector: the connector moves to
-//! `UPDATING` and the clock leaves it `RUNNING` with the capacity or the configuration
-//! the request named, at the next version, and an `UPDATE_WORKER_SETTING` or
+//! `UPDATING` and the clock leaves it running the worker setting or the configuration the
+//! request named, at the next version, and an `UPDATE_WORKER_SETTING` or
 //! `UPDATE_CONNECTOR_CONFIGURATION` connector operation is stored, starting `PENDING`
 //! and walking the model's update states and steps on the clock. The answer carries the
 //! connector's ARN, its new state and the new operation's ARN, which
-//! `DescribeConnectorOperation` and `ListConnectorOperations` report from. A body naming
-//! both of the two settings or neither, a `capacity` naming neither or both of its two
-//! forms, or capacity counts the members' documentation does not admit (an `mcuCount`
-//! outside the documented value set, auto-scaling worker and task counts that do not
-//! bound each other) is a `BadRequestException`, as is a `currentVersion` that is not the
+//! `DescribeConnectorOperation` and `ListConnectorOperations` report from. A request
+//! names EITHER one or more parts of the connector's worker setting (`capacity`,
+//! `plugins`, `workerConfiguration`, `useDefaultWorkerConfiguration`) OR its
+//! `connectorConfiguration`, and a part of the worker setting it does not name is kept;
+//! a body naming both kinds of change or neither, naming both a worker configuration and
+//! the default one, a `plugins` list that is not a single-element one, a `capacity`
+//! naming neither or both of its two forms, capacity counts the members' documentation
+//! does not admit (an `mcuCount` outside the documented value set, auto-scaling worker
+//! and task counts that do not bound each other), a `currentVersion` that is not the
 //! current version of a connector this region holds — the gate the operation decides
 //! before it resolves the connector, so a well-formed `connectorArn` naming no connector
-//! is refused on `currentVersion` too — a connector that is not `RUNNING`, or a
-//! `connectorArn` that is not a well-formed ARN of this service.
+//! is refused on `currentVersion` too — a connector that has no workers to act on, a
+//! paused connector whose request did not ask for the health checks to be skipped, or a
+//! `connectorArn` that is not a well-formed ARN of this service is a
+//! `BadRequestException`, and a plugin or worker configuration this region does not hold
+//! at the named revision is a `NotFoundException`.
 //!
 //! ## Shape of an operation
 //!
@@ -55,8 +62,11 @@
 //! smithy_query(query="doc",shape="<Shape>",member="<Member>",model_path="services/service-com-amazonaws-kafkaconnect-kafkaconnect/smithy-model/com-amazonaws-kafkaconnect-kafkaconnect.json")
 //! ```
 //!
-//! Updates the specified connector. For request body, specify only one parameter: either
-//! capacity or connectorConfiguration.
+//! Updates the specified connector. In the request body, you can update either the
+//! connector's worker setting or its connector configuration, but not both in the same
+//! request. To update the worker setting, specify one or more of capacity, plugins,
+//! workerConfiguration, or useDefaultWorkerConfiguration. To update the connector
+//! configuration, specify only connectorConfiguration.
 //!
 //! ## Input
 //!
@@ -67,14 +77,28 @@
 //!   represent the configuration for the connector.
 //! * `currentVersion` (__string) **required** — The current version of the connector that you
 //!   want to update.
+//! * `plugins` (__listOfPluginUpdate) — Specifies which plugin to use for the connector. You
+//!   must specify a single-element list containing one customPlugin object. If you don't
+//!   specify this parameter, the connector keeps its current plugin.
+//! * `skipHealthValidation` (__boolean, default false) — Specifies whether the update bypasses
+//!   connector-level and task-level health checks. To update a connector that is in the
+//!   PAUSED state, you must set this parameter to true.
+//! * `useDefaultWorkerConfiguration` (__boolean, default false) — Specifies whether to switch
+//!   the connector to the default worker configuration that Amazon MSK Connect provides. You
+//!   can't specify both useDefaultWorkerConfiguration and workerConfiguration in the same
+//!   request.
+//! * `workerConfiguration` (WorkerConfigurationUpdate) — The worker configuration to use with
+//!   the connector. You can't specify both workerConfiguration and
+//!   useDefaultWorkerConfiguration in the same request. If you specify neither parameter, the
+//!   connector keeps its current worker configuration.
 //!
 //! ## Output
 //!
 //! * `connectorArn` (__string) — The Amazon Resource Name (ARN) of the connector.
 //! * `connectorOperationArn` (__string) — The Amazon Resource Name (ARN) of the connector
 //!   operation.
-//! * `connectorState` (ConnectorState, one of: CREATING | DELETING | FAILED | RESTARTING |
-//!   RUNNING | UPDATING) — The state of the connector.
+//! * `connectorState` (ConnectorState, one of: CREATING | DELETING | FAILED | PAUSED |
+//!   PAUSING | RESTARTING | RESUMING | RUNNING | UPDATING) — The state of the connector.
 //!
 //! ## Errors
 //!
@@ -203,48 +227,82 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .into());
         }
 
-        // "For request body, specify only one parameter: either capacity or
-        // connectorConfiguration" — this operation's own documentation. The
-        // model makes both members optional, so the framework cannot refuse a
-        // body that names both or neither.
-        let target = match (input.capacity, input.connector_configuration) {
-            (Some(capacity), None) => {
-                // The whole capacity rule, run by the one check a create's
-                // capacity answers to: exactly one of the two forms
-                // ("whether it is auto scaled or provisioned"), and the counts
-                // inside that form, whose own documentation states relations
-                // the model cannot — `mcuCount`'s valid value set and the
-                // auto-scaled worker window and task ceiling. An update's
-                // `AutoScalingUpdate` / `ProvisionedCapacityUpdate` mirror a
-                // create's shapes member for member, and the conversion maps
-                // each form with `Option::map`, so which forms the request
-                // named is the same before and after it.
-                let capacity = crate::state::capacity_from_update(capacity);
-                if let Some(message) = crate::state::capacity_refusal(&capacity) {
-                    return Err(UpdateConnectorErrorModeled::BadRequestException(
-                        BadRequestException {
-                            message: Some(message),
-                        },
-                    )
-                    .into());
-                }
-                crate::state::ConnectorSettings::Capacity(capacity)
-            }
-            (None, Some(configuration)) => {
-                crate::state::ConnectorSettings::Configuration(configuration)
-            }
-            (Some(_), Some(_)) | (None, None) => {
-                return Err(UpdateConnectorErrorModeled::BadRequestException(
-                    BadRequestException {
-                        message: Some(crate::state::invalid_parameter_because(
-                            "capacity",
-                            "Specify exactly one of capacity or connectorConfiguration.",
-                        )),
-                    },
-                )
-                .into());
-            }
+        // "In the request body, you can update either the connector's worker
+        // setting or its connector configuration, but not both in the same
+        // request. To update the worker setting, specify one or more of
+        // capacity, plugins, workerConfiguration, or
+        // useDefaultWorkerConfiguration. To update the connector
+        // configuration, specify only connectorConfiguration" — this
+        // operation's own documentation. The model makes every one of those
+        // members optional, so the framework cannot refuse a body that names
+        // both kinds of change or neither.
+        let named = crate::state::WorkerSettingUpdate {
+            capacity: input.capacity.map(crate::state::capacity_from_update),
+            plugins: input.plugins.map(crate::state::plugins_from_update),
+            worker_configuration: input
+                .worker_configuration
+                .map(crate::state::worker_configuration_from_update),
+            use_default_worker_configuration: input.use_default_worker_configuration,
         };
+        let worker_setting_named = !named.is_empty();
+        if worker_setting_named == input.connector_configuration.is_some() {
+            return Err(UpdateConnectorErrorModeled::BadRequestException(BadRequestException {
+                message: Some(crate::state::invalid_parameter_because(
+                    "connectorConfiguration",
+                    crate::state::ONE_UPDATE_TARGET,
+                )),
+            })
+            .into());
+        }
+
+        // "You can't specify both workerConfiguration and
+        // useDefaultWorkerConfiguration in the same request"
+        // (`UpdateConnector$workerConfiguration`): the two name the same part
+        // of the worker setting, one as a custom configuration and one as the
+        // default.
+        if named.worker_configuration.is_some() && named.use_default_worker_configuration {
+            return Err(UpdateConnectorErrorModeled::BadRequestException(BadRequestException {
+                message: Some(crate::state::invalid_parameter_because(
+                    "workerConfiguration",
+                    crate::state::ONE_WORKER_CONFIGURATION_FORM,
+                )),
+            })
+            .into());
+        }
+
+        // The whole capacity rule, run by the one check a create's capacity
+        // answers to: exactly one of the two forms ("whether it is auto scaled
+        // or provisioned"), and the counts inside that form, whose own
+        // documentation states relations the model cannot — `mcuCount`'s valid
+        // value set and the auto-scaled worker window and task ceiling. An
+        // update's `AutoScalingUpdate` / `ProvisionedCapacityUpdate` mirror a
+        // create's shapes member for member, and the conversion maps each form
+        // with `Option::map`, so which forms the request named is the same
+        // before and after it.
+        if let Some(message) = named
+            .capacity
+            .as_ref()
+            .and_then(crate::state::capacity_refusal)
+        {
+            return Err(UpdateConnectorErrorModeled::BadRequestException(BadRequestException {
+                message: Some(message),
+            })
+            .into());
+        }
+
+        // "You must specify a single-element list containing one customPlugin
+        // object" — read through the one rule a create's own `plugins` answers
+        // to (`crate::state::plugins_list_refusal`).
+        if let Some(message) = named
+            .plugins
+            .as_deref()
+            .and_then(crate::state::plugins_list_refusal)
+        {
+            return Err(UpdateConnectorErrorModeled::BadRequestException(BadRequestException {
+                message: Some(message),
+            })
+            .into());
+        }
 
         // "The current version of the connector that you want to update": the
         // version a client holds is the one the service handed it for a
@@ -270,11 +328,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .into());
         };
 
-        // Only a running connector has workers to move onto new settings; one
-        // still being created, already updating or restarting, or being
-        // deleted, has none. The ONE state gate both handlers that start work
-        // on a connector run, so only the modelled variant it is answered with
-        // is this operation's own.
+        // Only a connector that has workers takes them onto new settings; one
+        // still being created, already updating or restarting, failed, or being
+        // deleted has none. The ONE state gate every handler that starts work
+        // on a connector runs, so only the modelled variant it is answered
+        // with is this operation's own.
         if let Some(message) = connector.not_running_refusal() {
             return Err(UpdateConnectorErrorModeled::BadRequestException(BadRequestException {
                 message: Some(message),
@@ -282,19 +340,80 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .into());
         }
 
-        // The settings the connector holds now: the same kind as the ones the
-        // request named, so the operation reports a before and an after of one
-        // kind.
-        let origin = match &target {
-            crate::state::ConnectorSettings::Capacity(_) => {
-                crate::state::ConnectorSettings::Capacity(connector.capacity.clone())
-            }
-            crate::state::ConnectorSettings::Configuration(_) => {
-                crate::state::ConnectorSettings::Configuration(connector.configuration.clone())
+        // "To update a connector that is in the PAUSED state, you must set
+        // this parameter to true" (`UpdateConnector$skipHealthValidation`): a
+        // paused connector's workers are stopped, so the health checks the
+        // update otherwise runs — and rolls the update back on — cannot pass.
+        if connector.state == crate::state::CONNECTOR_PAUSED && !input.skip_health_validation {
+            return Err(UpdateConnectorErrorModeled::BadRequestException(BadRequestException {
+                message: Some(crate::state::invalid_parameter_because(
+                    "skipHealthValidation",
+                    crate::state::PAUSED_NEEDS_SKIPPED_HEALTH_VALIDATION,
+                )),
+            })
+            .into());
+        }
+
+        // The settings the connector holds now, and the ones it is to hold: the
+        // same kind as the ones the request named, so the operation reports a
+        // before and an after of one kind. A worker-setting update names "one
+        // or more of" that setting's parts, so the target is the setting the
+        // connector is running with, with the named parts replaced.
+        let (origin, target) = match input.connector_configuration {
+            Some(configuration) => (
+                crate::state::ConnectorSettings::Configuration(connector.configuration.clone()),
+                crate::state::ConnectorSettings::Configuration(configuration),
+            ),
+            None => {
+                let current = connector.worker_setting();
+                let target = current.with(named);
+                (
+                    crate::state::ConnectorSettings::WorkerSetting(current),
+                    crate::state::ConnectorSettings::WorkerSetting(target),
+                )
             }
         };
         let connector_arn = connector.arn.clone();
         let connector_name = connector.name.clone();
+        // The state the connector is to be back in once this update finishes:
+        // an update acts on a connector's workers without stopping or starting
+        // them, so a paused connector is still paused after it.
+        let state_before = connector.state.clone();
+
+        // Every reference the new worker setting carries has to resolve, in the
+        // connector's own region, to a resource it may run on — the ONE rule
+        // the create's own references answer to
+        // (`crate::state::plugin_reference_refusal` and
+        // `crate::state::worker_configuration_reference_refusal`), so an update
+        // cannot leave a connector holding a reference the create path refuses
+        // to store. Only which modelled error each refusal is lifted into is
+        // this operation's own.
+        if let crate::state::ConnectorSettings::WorkerSetting(setting) = &target {
+            let refusal = state
+                .plugin_reference_refusal(&region, &setting.plugins)
+                .or_else(|| {
+                    setting.worker_configuration.as_ref().and_then(|reference| {
+                        state.worker_configuration_reference_refusal(&region, reference)
+                    })
+                });
+            match refusal {
+                None => {}
+                Some(crate::state::ReferenceRefusal::Incorrect(message)) => {
+                    return Err(UpdateConnectorErrorModeled::BadRequestException(
+                        BadRequestException {
+                            message: Some(message),
+                        },
+                    )
+                    .into());
+                }
+                Some(crate::state::ReferenceRefusal::Absent(message)) => {
+                    return Err(UpdateConnectorErrorModeled::NotFoundException(NotFoundException {
+                        message: Some(message),
+                    })
+                    .into());
+                }
+            }
+        }
 
         // The ONE rule both handlers that start a connector operation run: the
         // per-connector operation meter, and the ARN the new operation is
@@ -336,6 +455,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             };
             connector.state = crate::state::CONNECTOR_UPDATING.to_string();
             connector.pending = Some(operation.connector_settle());
+            connector.settling_to = Some(state_before);
             connector.pending_update = Some(target);
             connector.state.clone()
         };
