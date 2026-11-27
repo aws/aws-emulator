@@ -5,11 +5,14 @@
 //!
 //! The rules under test:
 //!
-//! 1. `RepositoryMetadata.cloneUrlHttp` is the `https://` origin THIS emulator
-//!    serves the git transport at — the member is "the URL to use for cloning the
-//!    repository over HTTPS" — and that URL, not a rewritten one, is the address the
-//!    git transport answers on (`info/refs`, `git-upload-pack`, `git-receive-pack`),
-//!    dialled as it stands with a TLS handshake.
+//! 1. `RepositoryMetadata.cloneUrlHttp` is the origin THIS emulator serves the git
+//!    transport at, published as the half of that one address a client that was
+//!    given none of this emulator's trust material completes a request against — a
+//!    clone URL is handed to a client and DIALLED with the configuration it already
+//!    has — and that URL, not a rewritten one, is the address the git transport
+//!    answers on (`info/refs`, `git-upload-pack`, `git-receive-pack`), dialled as it
+//!    stands. The same address answers the TLS half in band for a client that holds
+//!    this emulator's certificate.
 //! 2. A push is stored as git objects and projected into the control plane: the
 //!    commits and tags a client pushes are readable through `GetBranch`/`GetFile`
 //!    at the ids the CLIENT computed.
@@ -174,8 +177,8 @@ pub(crate) async fn rpc(
 
 /// Assert that the clone URL `created` announced for `repository` is the address this
 /// emulator serves git at, in the FORM the announcement has to take — the git
-/// listener's own loopback authority under the `https` scheme the member is
-/// documented as, with the repository on the path — and that `GetRepository` reports
+/// listener's own loopback authority under the half of that address a client dials as
+/// it stands, with the repository on the path — and that `GetRepository` reports
 /// the same value.
 async fn assert_announced_git_url(
     router: &MultiServiceRouter,
@@ -187,9 +190,10 @@ async fn assert_announced_git_url(
         .split_once("://")
         .unwrap_or_else(|| panic!("case {label:?}: the clone URL names no origin: {clone_url:?}"));
     assert_eq!(
-        scheme, "https",
-        "case {label:?}: cloneUrlHttp is the URL to clone over HTTPS, so the announced \
-         origin carries that scheme: {clone_url:?}"
+        scheme, "http",
+        "case {label:?}: cloneUrlHttp is dialled by a client holding none of this \
+         emulator's trust material, so the announced origin is the half such a client \
+         completes a request against: {clone_url:?}"
     );
     let (authority, path) = rest
         .split_once('/')
@@ -3238,9 +3242,10 @@ async fn a_pushed_tag_is_no_branch_name_for_any_operation_that_needs_one() {
 // ------------------------------------------- the scheme the clone URL is announced on
 
 /// The announced clone URL, read for its parts: its origin, with the repository
-/// asserted on its path and the `https` scheme the member is documented as asserted on
-/// its origin. The returned value is `<scheme>://<authority>`.
-fn assert_https_git_origin(label: &str, announced: &str, repository: &str) -> String {
+/// asserted on its path and the half of the one announced address a client holding no
+/// trust material of this emulator's completes a request against asserted on its
+/// origin. The returned value is `<scheme>://<authority>`.
+fn assert_dialable_git_origin(label: &str, announced: &str, repository: &str) -> String {
     let (origin, path) = announced.split_once("/v1/repos/").unwrap_or_else(|| {
         panic!("case {label:?}: cloneUrlHttp carries the repository on a /v1/repos/ path, got {announced:?}")
     });
@@ -3249,10 +3254,11 @@ fn assert_https_git_origin(label: &str, announced: &str, repository: &str) -> St
         "case {label:?}: cloneUrlHttp must carry this repository on its path, got \
          {announced:?}"
     );
-    let authority = origin.strip_prefix("https://").unwrap_or_else(|| {
+    let authority = origin.strip_prefix("http://").unwrap_or_else(|| {
         panic!(
-            "case {label:?}: cloneUrlHttp is the URL to clone over HTTPS, so its origin \
-             carries the https scheme, got {announced:?}"
+            "case {label:?}: cloneUrlHttp is dialled by a client that was given none of \
+             this emulator's trust material, so the announced origin is the half such a \
+             client completes a request against, got {announced:?}"
         )
     });
     let (host, port) = authority.rsplit_once(':').unwrap_or_else(|| {
@@ -3272,7 +3278,7 @@ fn assert_https_git_origin(label: &str, announced: &str, repository: &str) -> St
 }
 
 #[tokio::test]
-async fn every_face_announces_the_clone_url_on_the_https_origin_the_transport_serves() {
+async fn every_face_announces_the_clone_url_on_the_origin_the_transport_serves() {
     let router = emulator();
     // The rows span what the announced value varies with: the repository name's length
     // and the characters `RepositoryName` admits — `[\w\.-]{1,100}`, read from the
@@ -3297,7 +3303,7 @@ async fn every_face_announces_the_clone_url_on_the_https_origin_the_transport_se
         )
         .await;
         let announced = string_at(&created, "/repositoryMetadata/cloneUrlHttp");
-        let origin = assert_https_git_origin(label, &announced, name);
+    let origin = assert_dialable_git_origin(label, &announced, name);
 
         // The value comes from the announced git endpoint, not from a serializer, so
         // every face that reports a RepositoryMetadata reports the same URL.
@@ -3366,7 +3372,7 @@ async fn every_face_announces_the_clone_url_on_the_https_origin_the_transport_se
     )
     .await;
     let announced = string_at(&read, "/repositoryMetadata/cloneUrlHttp");
-    let origin = assert_https_git_origin("a renamed repository", &announced, renamed);
+    let origin = assert_dialable_git_origin("a renamed repository", &announced, renamed);
     assert_eq!(
         origin, first,
         "case \"a renamed repository\": the announced origin is unchanged by a rename, \
@@ -3378,10 +3384,13 @@ async fn every_face_announces_the_clone_url_on_the_https_origin_the_transport_se
 trait Dialled: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send {}
 impl<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send> Dialled for T {}
 
-/// The client side of the TLS the announced `https://` origin is served under: the
-/// certificate is the one the core generated for its own listeners — self-signed, and
-/// this client is the emulator's own test dialling a port this very process opened — so
-/// there is no authority to check it against.
+/// The client side of the TLS the same address answers in band: the certificate is the
+/// one the core generated for its own listeners, so this models a client that WAS given
+/// this emulator's certificate — and this client is the emulator's own test dialling a
+/// port this very process opened. A client given none of it verifies by default and is
+/// refused in the handshake, which is what
+/// [`the_tls_half_of_the_announced_address_is_refused_by_a_client_given_no_trust_material`]
+/// pins and why the announced half is the clear one.
 #[derive(Debug)]
 struct AcceptTheEmulatorsCertificate(Arc<rustls::crypto::CryptoProvider>);
 
@@ -3435,7 +3444,15 @@ impl rustls::client::danger::ServerCertVerifier for AcceptTheEmulatorsCertificat
 ///
 /// The address dialled is this emulator's OWN: the announced authority is asserted to be
 /// the loopback address the core binds on before the socket is opened on it.
-async fn exchange(label: &str, authority: &str, encrypted: bool, request: &str) -> String {
+///
+/// Bytes rather than text, because a git request and its answer carry a packfile: the
+/// text form below is the same exchange read as a string.
+async fn exchange_bytes(
+    label: &str,
+    authority: &str,
+    encrypted: bool,
+    request: &[u8],
+) -> Vec<u8> {
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
     let (host, port) = authority
@@ -3479,7 +3496,7 @@ async fn exchange(label: &str, authority: &str, encrypted: bool, request: &str) 
     } else {
         Box::new(socket)
     };
-    conn.write_all(request.as_bytes())
+    conn.write_all(request)
         .await
         .unwrap_or_else(|error| panic!("case {label:?}: the request must be sent: {error}"));
     conn.flush()
@@ -3497,61 +3514,70 @@ async fn exchange(label: &str, authority: &str, encrypted: bool, request: &str) 
             Err(error) => panic!("case {label:?}: the answer must be read: {error}"),
         }
     }
+    answer
+}
+
+/// [`exchange_bytes`] for a request and an answer that are text.
+async fn exchange(label: &str, authority: &str, encrypted: bool, request: &str) -> String {
+    let answer = exchange_bytes(label, authority, encrypted, request.as_bytes()).await;
     String::from_utf8_lossy(&answer).to_string()
 }
 
 #[tokio::test]
-async fn the_announced_https_origin_serves_the_git_transport_it_names() {
+async fn the_announced_origin_serves_the_git_transport_it_names() {
     let router = emulator();
     let created = ok(
         &router,
         "CreateRepository",
-        &json!({ "repositoryName": "dialled-over-tls" }),
+        &json!({ "repositoryName": "dialled-as-announced" }),
     )
     .await;
     let announced = string_at(&created, "/repositoryMetadata/cloneUrlHttp");
-    let origin = assert_https_git_origin("the announced origin", &announced, "dialled-over-tls");
+    let origin =
+        assert_dialable_git_origin("the announced origin", &announced, "dialled-as-announced");
     let authority = origin
-        .strip_prefix("https://")
-        .expect("the announced origin carries the https scheme")
+        .strip_prefix("http://")
+        .expect("the announced origin is the half a client dials as it stands")
         .to_string();
 
     // The rows span which half of the ONE announced address the client dials (the
-    // `https://` origin the announcement names, and the clear half the same port still
-    // answers), which git service it asks for, and whether it presents git credentials
-    // yet — the three things the answer to a dialled clone URL varies with.
+    // origin the announcement names, which a client reaches with the configuration it
+    // already has, and the TLS half the same port answers for a client that holds this
+    // emulator's certificate), which git service it asks for, and whether it presents
+    // git credentials yet — the three things the answer to a dialled clone URL varies
+    // with.
     let cases: [(&str, bool, &str, bool, u16); 5] = [
         (
-            "a clone over the announced https origin",
-            true,
+            "a clone over the announced origin",
+            false,
             "git-upload-pack",
             true,
             200,
         ),
         (
-            "a push over the announced https origin",
-            true,
+            "a push over the announced origin",
+            false,
             "git-receive-pack",
             true,
             200,
         ),
         (
             "a clone over it presenting no credential",
-            true,
+            false,
             "git-upload-pack",
             false,
             401,
         ),
         (
-            "a clone over the clear half of the same address",
-            false,
+            "a clone over the TLS half of the same address",
+            true,
             "git-upload-pack",
             true,
             200,
         ),
         (
-            "a push over the clear half of the same address",
-            false,
+            "a push over the TLS half of the same address",
+            true,
             "git-receive-pack",
             true,
             200,
@@ -3559,7 +3585,7 @@ async fn the_announced_https_origin_serves_the_git_transport_it_names() {
     ];
     for (label, encrypted, service, authenticated, expected) in cases {
         let mut request = format!(
-            "GET /v1/repos/dialled-over-tls/info/refs?service={service} HTTP/1.1\r\n\
+            "GET /v1/repos/dialled-as-announced/info/refs?service={service} HTTP/1.1\r\n\
              Host: {authority}\r\nUser-Agent: git/2.43.0\r\nConnection: close\r\n"
         );
         if authenticated {
@@ -3586,4 +3612,793 @@ async fn the_announced_https_origin_serves_the_git_transport_it_names() {
             );
         }
     }
+}
+
+// ------------------- a whole git session over the address the announcement names
+
+#[tokio::test]
+async fn the_tls_half_of_the_announced_address_is_refused_by_a_client_given_no_trust_material() {
+    let router = emulator();
+    let repository = "no-trust-material";
+    let authority = announced_authority(&router, "the announced origin", repository).await;
+
+    // WHY the announced half is the one dialled in the clear: a client is handed the
+    // clone URL and nothing else, and it verifies a certificate the way it does by
+    // default — against the anchors it already holds, none of which is this emulator's
+    // own. That client is modelled here by the library's own verification over an empty
+    // anchor set, and the TLS half of the address must refuse its handshake, before any
+    // request is written. An origin it cannot complete a request against would not be
+    // an address at all, which is what the announcement may not name.
+    let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
+    let config = rustls::ClientConfig::builder_with_provider(Arc::clone(&provider))
+        .with_safe_default_protocol_versions()
+        .expect("the provider supports the default protocol versions")
+        .with_root_certificates(rustls::RootCertStore::empty())
+        .with_no_client_auth();
+    let connector = tokio_rustls::TlsConnector::from(Arc::new(config));
+    let port: u16 = authority
+        .rsplit_once(':')
+        .and_then(|(_host, port)| port.parse().ok())
+        .unwrap_or_else(|| panic!("the announced authority names no port: {authority:?}"));
+    let socket = tokio::net::TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, port))
+        .await
+        .unwrap_or_else(|error| panic!("{authority} must accept a connection: {error}"));
+    let server_name =
+        rustls::pki_types::ServerName::try_from("localhost").expect("localhost is a server name");
+    let handshake = tokio::time::timeout(ANSWER_DEADLINE, connector.connect(server_name, socket))
+        .await
+        .unwrap_or_else(|_| {
+            panic!("case \"a client given no trust material\": the handshake must be answered")
+        });
+    assert!(
+        handshake.is_err(),
+        "case \"a client given no trust material\": the TLS half of this address presents \
+         this emulator's own certificate, which such a client holds no anchor for, so its \
+         handshake cannot complete — had it completed, the announced half could have been \
+         the TLS one"
+    );
+
+    // And the half the announcement DOES name serves that same client: it dials the
+    // origin as it stands, with nothing but the credentials the account issued.
+    let answer = dialled(
+        "the announced origin",
+        &authority,
+        false,
+        DialledRequest::advertisement(repository, "git-upload-pack", Some(basic(&git_user()))),
+    )
+    .await;
+    assert_eq!(
+        answer.status, 200,
+        "the announced origin must serve the client the TLS half refuses, got {} with {:?}",
+        answer.status,
+        String::from_utf8_lossy(&answer.body)
+    );
+    assert!(
+        String::from_utf8_lossy(&answer.body).contains("# service=git-upload-pack"),
+        "the announced origin must answer the fetch advertisement, got {:?}",
+        String::from_utf8_lossy(&answer.body)
+    );
+}
+
+/// How long one dialled exchange may take before the announced address counts as
+/// having served nothing.
+///
+/// Generous for a loopback request this very process answers — the bound is here so
+/// an address that answers NOTHING fails the case instead of leaving a client
+/// waiting, which is the whole difference this suite is about; no case depends on
+/// how fast the host runs.
+const ANSWER_DEADLINE: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// One request a client writes on a connection it dialled the announced address with.
+struct DialledRequest {
+    method: &'static str,
+    /// The request target: the repository's path under `/v1/repos/`, plus the
+    /// transport endpoint and any query.
+    target: String,
+    content_type: Option<&'static str>,
+    /// The `Authorization` header the request carries, `None` for one that presents
+    /// no credential at all.
+    authorization: Option<String>,
+    body: Vec<u8>,
+}
+
+impl DialledRequest {
+    /// The ref advertisement a fetch or a push starts with.
+    fn advertisement(repository: &str, service: &str, authorization: Option<String>) -> Self {
+        Self {
+            method: "GET",
+            target: format!("/v1/repos/{repository}/info/refs?service={service}"),
+            content_type: None,
+            authorization,
+            body: Vec::new(),
+        }
+    }
+
+    /// The pack request a fetch or a push continues with.
+    fn pack(
+        repository: &str,
+        service: &str,
+        body: Vec<u8>,
+        authorization: Option<String>,
+    ) -> Self {
+        Self {
+            method: "POST",
+            target: format!("/v1/repos/{repository}/{service}"),
+            content_type: Some(match service {
+                "git-receive-pack" => "application/x-git-receive-pack-request",
+                _ => "application/x-git-upload-pack-request",
+            }),
+            authorization,
+            body,
+        }
+    }
+}
+
+/// One answer read off a dialled connection: its status, its header fields by
+/// lower-cased name, and its body bytes.
+struct DialledAnswer {
+    status: u16,
+    headers: BTreeMap<String, String>,
+    body: Vec<u8>,
+}
+
+impl DialledAnswer {
+    fn header(&self, name: &str) -> Option<&str> {
+        self.headers.get(name).map(String::as_str)
+    }
+
+    /// The same answer as a transport reply, so a dialled advertisement, fetch or
+    /// push is read by the same parsers as one driven through the router.
+    fn as_reply(&self) -> GitReply {
+        GitReply {
+            status: self.status,
+            content_type: self.header("content-type").unwrap_or_default().to_string(),
+            body: self.body.clone(),
+        }
+    }
+}
+
+/// Read one HTTP/1.1 answer: the status line, the header fields, and the body after
+/// the empty line that ends them.
+///
+/// The body is taken as the bytes after the headers, which is what this address's
+/// answers carry: every one of them is framed by `Content-Length`. A chunked answer is
+/// refused here rather than handed back with its chunk framing still in it, so a change
+/// of framing fails the case instead of corrupting what it parsed. Only the last value
+/// of a repeated field is kept, which no field read here is sent more than once.
+fn parse_answer(label: &str, answer: &[u8]) -> DialledAnswer {
+    let split = answer
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .unwrap_or_else(|| {
+            panic!(
+                "case {label:?}: the announced address must answer an HTTP response, got {:?}",
+                String::from_utf8_lossy(answer)
+            )
+        });
+    let head = String::from_utf8_lossy(&answer[..split]).to_string();
+    let mut lines = head.lines();
+    let status_line = lines
+        .next()
+        .unwrap_or_else(|| panic!("case {label:?}: the answer carries no status line"));
+    let status: u16 = status_line
+        .split_whitespace()
+        .nth(1)
+        .and_then(|code| code.parse().ok())
+        .unwrap_or_else(|| {
+            panic!("case {label:?}: the status line {status_line:?} names no status")
+        });
+    let headers: BTreeMap<String, String> = lines
+        .filter_map(|line| line.split_once(':'))
+        .map(|(name, value)| (name.trim().to_ascii_lowercase(), value.trim().to_string()))
+        .collect();
+    assert!(
+        !headers.contains_key("transfer-encoding"),
+        "case {label:?}: this reader takes the body as the bytes after the headers, so an \
+         answer framed any other way must fail the case: {headers:?}"
+    );
+    DialledAnswer {
+        status,
+        headers,
+        body: answer[split + 4..].to_vec(),
+    }
+}
+
+/// Send `request` on a connection dialled at `authority` — opening with a TLS
+/// handshake when `encrypted`, and in the clear, as the announcement names it,
+/// otherwise — and read the answer.
+///
+/// The request is written as a stock client writes one: the `Host` of the address it
+/// was handed, its own user agent, one request per connection, and the credentials it
+/// has (a git client sends none until it has been challenged).
+async fn dialled(
+    label: &str,
+    authority: &str,
+    encrypted: bool,
+    request: DialledRequest,
+) -> DialledAnswer {
+    let mut head = format!(
+        "{} {} HTTP/1.1\r\nHost: {authority}\r\nUser-Agent: git/2.43.0\r\nConnection: close\r\n",
+        request.method, request.target
+    );
+    if let Some(content_type) = request.content_type {
+        head.push_str(&format!("Content-Type: {content_type}\r\n"));
+    }
+    if let Some(authorization) = &request.authorization {
+        head.push_str(&format!("Authorization: {authorization}\r\n"));
+    }
+    head.push_str(&format!("Content-Length: {}\r\n\r\n", request.body.len()));
+    let mut wire = head.into_bytes();
+    wire.extend_from_slice(&request.body);
+    let answer = tokio::time::timeout(
+        ANSWER_DEADLINE,
+        exchange_bytes(label, authority, encrypted, &wire),
+    )
+    .await
+    .unwrap_or_else(|_| {
+        panic!(
+            "case {label:?}: the announced address must answer {} {} rather than leave a \
+             client waiting",
+            request.method, request.target
+        )
+    });
+    parse_answer(label, &answer)
+}
+
+/// The authority of the clone URL `repository` is announced under, with the form of
+/// that URL asserted: a client is handed this value and dials it as it stands.
+async fn announced_authority(
+    router: &MultiServiceRouter,
+    label: &str,
+    repository: &str,
+) -> String {
+    let created = ok(
+        router,
+        "CreateRepository",
+        &json!({ "repositoryName": repository }),
+    )
+    .await;
+    let announced = string_at(&created, "/repositoryMetadata/cloneUrlHttp");
+    let origin = assert_dialable_git_origin(label, &announced, repository);
+    origin
+        .split_once("://")
+        .map(|(_scheme, authority)| authority.to_string())
+        .unwrap_or_else(|| panic!("case {label:?}: the announced origin {origin:?} names none"))
+}
+
+/// Write `content` at `path` on `branch` through the API, on `parent` when the branch
+/// already stands somewhere, and answer the commit the write made.
+async fn put_file(
+    router: &MultiServiceRouter,
+    repository: &str,
+    branch: &str,
+    path: &str,
+    content: &[u8],
+    parent: Option<&str>,
+) -> String {
+    let mut input = json!({
+        "repositoryName": repository,
+        "branchName": branch,
+        "filePath": path,
+        "fileContent": base64(content),
+        "commitMessage": format!("write {path}"),
+    });
+    if let Some(parent) = parent {
+        input["parentCommitId"] = json!(parent);
+    }
+    string_at(&ok(router, "PutFile", &input).await, "/commitId")
+}
+
+/// The refs the announced address advertises for `service`, dialled as a client does.
+async fn dialled_refs(
+    label: &str,
+    authority: &str,
+    encrypted: bool,
+    repository: &str,
+    service: &str,
+    credentials: &str,
+) -> BTreeMap<String, String> {
+    let answer = dialled(
+        label,
+        authority,
+        encrypted,
+        DialledRequest::advertisement(repository, service, Some(credentials.to_string())),
+    )
+    .await;
+    assert_eq!(
+        answer.status, 200,
+        "case {label:?}: the announced address must serve the {service} advertisement, got \
+         {} with {:?}",
+        answer.status,
+        String::from_utf8_lossy(&answer.body)
+    );
+    parse_advertisement(service, &answer.as_reply()).0
+}
+
+#[tokio::test]
+async fn a_whole_git_session_on_the_dialled_announced_address_round_trips_through_the_api() {
+    let router = emulator();
+    // The rows span which half of the ONE announced address a client dials: the half
+    // the announcement names, which a client reaches with the configuration it already
+    // has, and the TLS half the same port answers for a client that was given this
+    // emulator's certificate. Everything else about the session is identical, because
+    // WHICH scheme a request arrived under decides nothing about what the transport
+    // serves.
+    let halves: [(&str, bool, &str); 2] = [
+        ("dialled as the announcement names it", false, "session.as-announced"),
+        (
+            "dialled over the TLS half of the same address",
+            true,
+            "session-tls",
+        ),
+    ];
+    for (label, encrypted, repository) in halves {
+        let authority = announced_authority(&router, label, repository).await;
+        let credentials = basic(&git_user());
+
+        // The API seeds the repository, exactly as a caller does before cloning it.
+        let seeded: Vec<u8> = b"seed\n".to_vec();
+        let seed_tip = put_file(&router, repository, "main", "README.md", &seeded, None).await;
+
+        // 1. A CLONE: the advertisement names the commit the API wrote, and the pack
+        //    request serves that commit's whole closure, so the content a client
+        //    checks out is the content the API seeded.
+        let refs = dialled_refs(
+            label,
+            &authority,
+            encrypted,
+            repository,
+            "git-upload-pack",
+            &credentials,
+        )
+        .await;
+        assert_eq!(
+            refs.get("refs/heads/main").map(String::as_str),
+            Some(seed_tip.as_str()),
+            "case {label:?}: the dialled advertisement must name the tip the API wrote, got \
+             {refs:?}"
+        );
+        let branch = ok(
+            &router,
+            "GetBranch",
+            &json!({ "repositoryName": repository, "branchName": "main" }),
+        )
+        .await;
+        assert_eq!(
+            string_at(&branch, "/branch/commitId"),
+            seed_tip,
+            "case {label:?}: the branch the API reports and the ref the address advertises \
+             are one reference"
+        );
+        let answer = dialled(
+            label,
+            &authority,
+            encrypted,
+            DialledRequest::pack(
+                repository,
+                "git-upload-pack",
+                fetch_body(std::slice::from_ref(&seed_tip), &[]),
+                Some(credentials.clone()),
+            ),
+        )
+        .await;
+        assert_eq!(
+            answer.status, 200,
+            "case {label:?}: a clone over the announced address must be served, got {} with \
+             {:?}",
+            answer.status,
+            String::from_utf8_lossy(&answer.body)
+        );
+        let (lines, packfile) = parse_fetch(&answer.body);
+        assert_eq!(
+            lines,
+            vec!["NAK\n".to_string()],
+            "case {label:?}: a NAK precedes the pack, got {lines:?}"
+        );
+        let served = unpack(&packfile);
+        assert!(
+            served.iter().any(|object| id_of(object) == seed_tip),
+            "case {label:?}: the clone must serve the commit the API seeded"
+        );
+        assert!(
+            served
+                .iter()
+                .any(|object| object.kind == "blob" && object.data == seeded),
+            "case {label:?}: the clone must serve the file content the API seeded"
+        );
+
+        // 2. A FETCH after a further API write: the advertisement moves to the new
+        //    commit, and the fetch that already has the old one is served only what it
+        //    is missing.
+        let appended: Vec<u8> = b"seed\nsecond\n".to_vec();
+        let next_tip = put_file(
+            &router,
+            repository,
+            "main",
+            "README.md",
+            &appended,
+            Some(&seed_tip),
+        )
+        .await;
+        let refs = dialled_refs(
+            label,
+            &authority,
+            encrypted,
+            repository,
+            "git-upload-pack",
+            &credentials,
+        )
+        .await;
+        assert_eq!(
+            refs.get("refs/heads/main").map(String::as_str),
+            Some(next_tip.as_str()),
+            "case {label:?}: a fetch must see the commit the later write created, got {refs:?}"
+        );
+        let answer = dialled(
+            label,
+            &authority,
+            encrypted,
+            DialledRequest::pack(
+                repository,
+                "git-upload-pack",
+                fetch_body(
+                    std::slice::from_ref(&next_tip),
+                    std::slice::from_ref(&seed_tip),
+                ),
+                Some(credentials.clone()),
+            ),
+        )
+        .await;
+        let (lines, packfile) = parse_fetch(&answer.body);
+        assert_eq!(
+            lines,
+            vec![format!("ACK {seed_tip}\n")],
+            "case {label:?}: the commit the client already has is acknowledged, got {lines:?}"
+        );
+        let served = unpack(&packfile);
+        assert!(
+            served
+                .iter()
+                .any(|object| object.kind == "blob" && object.data == appended),
+            "case {label:?}: the fetch must serve the content the later write created"
+        );
+
+        // 3. A PUSH of a new branch and an annotated tag, built by the CLIENT: both
+        //    refs are accepted and are then visible through the API and in the next
+        //    advertisement, at the ids the client computed.
+        let files = snapshot(&[("100644", "pushed.txt", b"pushed\n".to_vec())]);
+        let (root, mut objects) = snapshot_objects(&files);
+        let pushed = commit(&root, std::slice::from_ref(&next_tip), "pushed");
+        let pushed_id = id_of(&pushed);
+        objects.push(pushed);
+        let tag = annotated_tag(&pushed_id, "v1.0.0", "released\n");
+        let tag_id = id_of(&tag);
+        objects.push(tag);
+        let answer = dialled(
+            label,
+            &authority,
+            encrypted,
+            DialledRequest::pack(
+                repository,
+                "git-receive-pack",
+                push_body(
+                    &[
+                        command(NULL_ID, &pushed_id, "refs/heads/pushed", "report-status"),
+                        command(NULL_ID, &tag_id, "refs/tags/v1.0.0", ""),
+                    ],
+                    &objects,
+                ),
+                Some(credentials.clone()),
+            ),
+        )
+        .await;
+        assert_eq!(
+            answer.status, 200,
+            "case {label:?}: a push over the announced address must be answered with a status \
+             report, got {} with {:?}",
+            answer.status,
+            String::from_utf8_lossy(&answer.body)
+        );
+        let (report, _) = parse_pkts(&answer.body);
+        assert_eq!(
+            report,
+            vec![
+                "unpack ok\n".to_string(),
+                "ok refs/heads/pushed\n".to_string(),
+                "ok refs/tags/v1.0.0\n".to_string(),
+            ],
+            "case {label:?}: both refs must be accepted, got {report:?}"
+        );
+        let pushed_branch = ok(
+            &router,
+            "GetBranch",
+            &json!({ "repositoryName": repository, "branchName": "pushed" }),
+        )
+        .await;
+        assert_eq!(
+            string_at(&pushed_branch, "/branch/commitId"),
+            pushed_id,
+            "case {label:?}: the branch the push created must stand at the commit the client \
+             computed"
+        );
+        let listed = ok(
+            &router,
+            "ListBranches",
+            &json!({ "repositoryName": repository }),
+        )
+        .await;
+        let branches: Vec<String> = listed["branches"]
+            .as_array()
+            .unwrap_or(&Vec::new())
+            .iter()
+            .filter_map(|name| name.as_str().map(str::to_string))
+            .collect();
+        assert!(
+            branches.contains(&"pushed".to_string()),
+            "case {label:?}: a pushed branch must be listed, got {branches:?}"
+        );
+        let file = ok(
+            &router,
+            "GetFile",
+            &json!({
+                "repositoryName": repository,
+                "commitSpecifier": "pushed",
+                "filePath": "pushed.txt",
+            }),
+        )
+        .await;
+        assert_eq!(
+            content_of(&file),
+            b"pushed\n".to_vec(),
+            "case {label:?}: the file the push carried must be readable through the API"
+        );
+        let refs = dialled_refs(
+            label,
+            &authority,
+            encrypted,
+            repository,
+            "git-upload-pack",
+            &credentials,
+        )
+        .await;
+        assert_eq!(
+            refs.get("refs/tags/v1.0.0").map(String::as_str),
+            Some(tag_id.as_str()),
+            "case {label:?}: the annotated tag must be advertised at the tag object the \
+             client built, got {refs:?}"
+        );
+
+        // 4. A PUSH that DELETES that branch: accepted, and the reference is then gone
+        //    from both faces.
+        let answer = dialled(
+            label,
+            &authority,
+            encrypted,
+            DialledRequest::pack(
+                repository,
+                "git-receive-pack",
+                push_body(
+                    &[command(&pushed_id, NULL_ID, "refs/heads/pushed", "report-status")],
+                    &[],
+                ),
+                Some(credentials.clone()),
+            ),
+        )
+        .await;
+        let (report, _) = parse_pkts(&answer.body);
+        assert_eq!(
+            report,
+            vec![
+                "unpack ok\n".to_string(),
+                "ok refs/heads/pushed\n".to_string(),
+            ],
+            "case {label:?}: the deletion must be accepted, got {report:?}"
+        );
+        let code = error_code(
+            &router,
+            "GetBranch",
+            &json!({ "repositoryName": repository, "branchName": "pushed" }),
+            400,
+        )
+        .await;
+        assert_eq!(
+            code, "BranchDoesNotExistException",
+            "case {label:?}: a branch a push deleted must not resolve"
+        );
+        let refs = dialled_refs(
+            label,
+            &authority,
+            encrypted,
+            repository,
+            "git-upload-pack",
+            &credentials,
+        )
+        .await;
+        assert_eq!(
+            refs.get("refs/heads/pushed"),
+            None,
+            "case {label:?}: a deleted branch must not be advertised, got {refs:?}"
+        );
+        assert_eq!(
+            refs.get("refs/heads/main").map(String::as_str),
+            Some(next_tip.as_str()),
+            "case {label:?}: every other reference must stand where it stood, got {refs:?}"
+        );
+    }
+}
+
+/// The challenge the `401` of this transport carries, which is what makes a git client
+/// ask its credential helper for credentials and send the request again: the scheme a
+/// client presents git credentials under, and the realm CodeCommit names.
+const BASIC_CHALLENGE: &str = "Basic realm=\"CodeCommit\"";
+
+#[tokio::test]
+async fn the_dialled_announced_address_challenges_a_credential_the_account_did_not_issue() {
+    let (router, engine) = emulator_with_engine();
+    let repository = "challenged-on-the-wire";
+    let label = "the announced address";
+    let authority = announced_authority(&router, label, repository).await;
+    let tip = put_file(&router, repository, "main", "README.md", b"seed\n", None).await;
+
+    // POSITIVE CONTROL FIRST: the pair the account issued is served on this very
+    // address, dialled exactly as the announcement names it, so every refusal below is
+    // attributable to the half its row changed rather than to the address serving
+    // nothing at all.
+    let answer = dialled(
+        label,
+        &authority,
+        false,
+        DialledRequest::advertisement(repository, "git-upload-pack", Some(basic(&git_user()))),
+    )
+    .await;
+    assert_eq!(
+        answer.status, 200,
+        "the pair the account issued must be served on the announced address, got {} with {:?}",
+        answer.status,
+        String::from_utf8_lossy(&answer.body)
+    );
+
+    // The rows span HOW a presentation is not the pair the account issued: none at
+    // all, the right user name with a wrong password (longer, shorter and empty), and
+    // a user name the account holds no credential for.
+    let issued = crate::wire::GIT_SERVICE_PASSWORD;
+    let rows: Vec<(&str, Option<String>)> = vec![
+        ("no credential at all", None),
+        (
+            "the password with one more character",
+            Some(crate::wire::git_basic_credentials(
+                &git_user(),
+                &format!("{issued}x"),
+            )),
+        ),
+        (
+            "the password one character short",
+            Some(crate::wire::git_basic_credentials(
+                &git_user(),
+                &issued[..issued.len() - 1],
+            )),
+        ),
+        (
+            "no password at all",
+            Some(crate::wire::git_basic_credentials(&git_user(), "")),
+        ),
+        (
+            "a user name the account holds no credential for",
+            Some(crate::wire::git_basic_credentials(
+                &format!("Nobody-at-{}", engine::emulator_account_id()),
+                issued,
+            )),
+        ),
+    ];
+    for (case, authorization) in rows {
+        // Both endpoints of the transport: the advertisement a client starts with, and
+        // the pack request it would continue with.
+        for (endpoint, request) in [
+            (
+                "the fetch advertisement",
+                DialledRequest::advertisement(
+                    repository,
+                    "git-upload-pack",
+                    authorization.clone(),
+                ),
+            ),
+            (
+                "a push",
+                DialledRequest::pack(
+                    repository,
+                    "git-receive-pack",
+                    push_body(
+                        &[command(&tip, NULL_ID, "refs/heads/main", "report-status")],
+                        &[],
+                    ),
+                    authorization.clone(),
+                ),
+            ),
+        ] {
+            let case = format!("{case} at {endpoint}");
+            let answer = dialled(&case, &authority, false, request).await;
+            assert_eq!(
+                answer.status, 401,
+                "case {case:?}: a request the transport authenticates nobody for must be \
+                 refused 401, got {} with {:?}",
+                answer.status,
+                String::from_utf8_lossy(&answer.body)
+            );
+            assert_eq!(
+                answer.header("www-authenticate"),
+                Some(BASIC_CHALLENGE),
+                "case {case:?}: the 401 must carry the challenge a client re-presents \
+                 credentials under, got {:?}",
+                answer.header("www-authenticate")
+            );
+            assert!(
+                !String::from_utf8_lossy(&answer.body).contains("# service="),
+                "case {case:?}: nothing of the advertisement may be served, got {:?}",
+                String::from_utf8_lossy(&answer.body)
+            );
+        }
+    }
+
+    // Nothing any of those requests asked for happened: the reference stands where the
+    // API left it.
+    let branch = ok(
+        &router,
+        "GetBranch",
+        &json!({ "repositoryName": repository, "branchName": "main" }),
+    )
+    .await;
+    assert_eq!(
+        string_at(&branch, "/branch/commitId"),
+        tip,
+        "a refused push must leave the reference where it stood"
+    );
+
+    // And a credential the account no longer holds is in the same position as one it
+    // never issued, on the same address. The account's record is removed here because
+    // this suite's subject is the ADDRESS; that the MODELLED revocations really remove
+    // it — `DeleteServiceSpecificCredential`, a deactivation and a password reset,
+    // driven through IAM's own API — is pinned by
+    // `core/router/tests/all/codecommit_git_credentials_authenticate_only_what_iam_issued.rs`.
+    {
+        use service_com_amazonaws_iam_awsidentitymanagementv20100508::state as iam;
+
+        let state = iam::service_state(&*engine).expect("the engine carries the IAM store");
+        let mut store = state.lock();
+        let held: Vec<String> = store
+            .service_specific_credentials
+            .iter()
+            .filter(|(_, credential)| {
+                credential.service_user_name.as_deref() == Some(git_user().as_str())
+            })
+            .map(|(id, _)| id.clone())
+            .collect();
+        assert!(
+            !held.is_empty(),
+            "the account must hold the credential this suite presents before it is deleted"
+        );
+        for id in held {
+            store.service_specific_credentials.remove(&id);
+            store.service_specific_credential_secrets.remove(&id);
+        }
+    }
+    let case = "the credential the account deleted";
+    let answer = dialled(
+        case,
+        &authority,
+        false,
+        DialledRequest::advertisement(repository, "git-upload-pack", Some(basic(&git_user()))),
+    )
+    .await;
+    assert_eq!(
+        answer.status, 401,
+        "case {case:?}: a deleted credential authenticates nobody, got {} with {:?}",
+        answer.status,
+        String::from_utf8_lossy(&answer.body)
+    );
+    assert_eq!(
+        answer.header("www-authenticate"),
+        Some(BASIC_CHALLENGE),
+        "case {case:?}: the 401 must carry the challenge, got {:?}",
+        answer.header("www-authenticate")
+    );
 }

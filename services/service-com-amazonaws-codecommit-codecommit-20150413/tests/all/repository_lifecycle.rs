@@ -274,8 +274,10 @@ async fn a_written_repository_and_file_are_read_back_from_state() {
             "case {label:?}: accountId"
         );
         // The clone URL names an address of THIS emulator — the one its git transport
-        // answers on — not the public AWS git host, which is a different server. The
-        // member is the repository's HTTPS clone URL, so the scheme is `https`. This
+        // answers on — not the public AWS git host, which is a different server. A
+        // client is handed the value and dials it with the configuration it already
+        // has, and it has been given no trust material of this emulator's, so the
+        // announced half is the one such a client completes a request against. This
         // repository was created through `CreateRepository`, so that address is open:
         // the URL is the git listener's own loopback authority with this repository on
         // its path.
@@ -288,10 +290,11 @@ async fn a_written_repository_and_file_are_read_back_from_state() {
             "case {label:?}: cloneUrlHttp must carry the repository on its path, got \
              {clone_url_http:?}"
         );
-        let port = origin.strip_prefix("https://127.0.0.1:").unwrap_or_else(|| {
+        let port = origin.strip_prefix("http://127.0.0.1:").unwrap_or_else(|| {
             panic!(
-                "case {label:?}: cloneUrlHttp must be an https URL on this emulator's own \
-                 git address, got {clone_url_http:?}"
+                "case {label:?}: cloneUrlHttp must be an origin on this emulator's own git \
+                 address that a client holding none of its trust material completes a \
+                 request against, got {clone_url_http:?}"
             )
         });
         assert!(

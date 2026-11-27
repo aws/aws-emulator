@@ -1786,10 +1786,10 @@ pub struct ServingEndpoint {
     /// when it has an address of its own for it ([`git_endpoint`]): the origin
     /// `cloneUrlHttp` names, under the scheme that address answers.
     ///
-    /// A clone URL is dialled by a stock git client, and `cloneUrlHttp` is
-    /// contractually the HTTPS clone URL, so the git transport is announced on the
-    /// address opened for it — whose encryption the core negotiates in band, so the
-    /// one address answers an `https://` client — rather than on the one the asking
+    /// A clone URL is dialled by a stock git client with the configuration it
+    /// already has, so the git transport is announced on the address opened for it —
+    /// under the half of that address such a client completes a request against
+    /// ([`git_endpoint::GIT_SCHEME_CLEAR`]) — rather than on the one the asking
     /// request arrived at. `None` on an engine that vends no listener, where the
     /// announced URL falls back to the endpoint the request arrived at: the address
     /// this emulator is reached on is still the only one it answers git at.

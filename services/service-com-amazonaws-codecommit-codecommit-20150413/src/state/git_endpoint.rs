@@ -18,14 +18,21 @@
 //! method is read as it stands. ONE address therefore serves both schemes, and this
 //! service never touches a key or a certificate.
 //!
-//! The announced value is the TLS half of it,
-//! `https://host:port/v1/repos/<repositoryName>` — the same scheme and path form
-//! CodeCommit's own clone URL carries, because the member is contractually the HTTPS
-//! clone URL and the flows a client drives off it (its credential helper, a policy
-//! that refuses to send a secret to a non-TLS origin) only run on an `https://`
-//! origin. The clear half of the same address stays served, and is what is announced
-//! when this emulator could prepare no TLS at all: an origin whose handshake nothing
-//! would answer is not an address.
+//! WHICH half of that address is announced follows from the client, not from the
+//! member's name: the value is handed to a client that has been given no trust
+//! material of this emulator's — the only certificate behind any of its listeners is
+//! the core's own, which no default trust store holds — so a `https://` origin is one
+//! such a client refuses in the handshake, before a byte of git protocol, and an
+//! origin a client cannot complete a request against is not an address. The announced
+//! value is therefore the CLEAR half,
+//! `http://host:port/v1/repos/<repositoryName>`, carrying the `/v1/repos/<name>` path
+//! form CodeCommit's own clone URL carries; a published data plane of this emulator is
+//! announced in the clear for exactly that reason wherever one is dialled by a client
+//! of the calling process rather than by this tree's own code.
+//!
+//! The TLS half of the same address stays served, in band on the same port, for a
+//! client that was given this emulator's certificate and asks for encryption: nothing
+//! about the git transport changes with the half it arrived on.
 //!
 //! What a client sends to that port never leaves this machine: the interface is the
 //! CORE's (`EMULATOR_BIND_ADDRESS`, loopback unless the operator says otherwise, and
@@ -60,16 +67,17 @@ use ::http_body_util::{BodyExt as _, Full, Limited};
 use ::smithy_server_runtime::EmbeddedEmulator;
 use ::tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
-/// The scheme the announced git address is published under: `cloneUrlHttp` is "the
-/// URL to use for cloning the repository over HTTPS", so the announced origin is the
-/// TLS half of the address — the one the core's own TLS server terminates on this
-/// listener in band.
+/// The scheme the TLS half of the address is reached under: the one the core's own
+/// TLS server terminates on this listener in band, for a client that holds this
+/// emulator's certificate. It is not the announced half, because the certificate
+/// behind it is this emulator's own and a client that was given none of its trust
+/// material refuses that origin in the handshake.
 pub const GIT_SCHEME_TLS: &str = "https";
 
-/// The scheme the same address answers in the clear, and the one it is announced
-/// under when this emulator has no TLS server to lend the listener at all: nothing
-/// there would complete a handshake, so the TLS half would name an origin that
-/// answers nothing.
+/// The scheme the same address answers in the clear, and the one it is ANNOUNCED
+/// under: the half a client dials with the configuration it already has and
+/// completes a request against, which is what makes the announced value an address
+/// rather than a label.
 pub const GIT_SCHEME_CLEAR: &str = "http";
 
 /// How many git request BODIES this address reads at once: the core's own HTTP
@@ -93,10 +101,6 @@ pub struct GitEndpoint {
     /// The `host:port` a git client dials, which is the authority of every announced
     /// clone URL.
     authority: String,
-    /// The scheme the announced clone URL names on that authority: the TLS half
-    /// ([`GIT_SCHEME_TLS`]) whenever the core lent this listener its TLS server, and
-    /// the clear half ([`GIT_SCHEME_CLEAR`]) when it could not.
-    scheme: &'static str,
     /// The listener itself. Never read: it is held because dropping it closes the
     /// port.
     _listener: ::emulator_server::ResourceListener,
@@ -108,16 +112,18 @@ impl std::fmt::Debug for GitEndpoint {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("GitEndpoint")
             .field("authority", &self.authority)
-            .field("scheme", &self.scheme)
+            .field("scheme", &GIT_SCHEME_CLEAR)
             .finish()
     }
 }
 
 impl GitEndpoint {
     /// The `<scheme>://<host>:<port>` an announced clone URL is built on: the
-    /// `host:port` a git client dials, under the scheme that address is served under.
+    /// `host:port` a git client dials, under the half of that address a client holding
+    /// no trust material of this emulator's completes a request against
+    /// ([`GIT_SCHEME_CLEAR`]).
     pub fn origin(&self) -> String {
-        format!("{}://{}", self.scheme, self.authority)
+        format!("{GIT_SCHEME_CLEAR}://{}", self.authority)
     }
 }
 
@@ -147,15 +153,11 @@ pub async fn ensure_git_endpoint<Eng: Send + Sync + 'static>(
     let handler = GitFrontDoor {
         callback: callback.clone(),
         // The core's own TLS server, lent to this plaintext listener so the
-        // `https://` half of the address is terminated by the core rather than here.
-        // A listener this emulator could prepare none for serves the `http://` half
-        // alone, and is announced under that scheme.
+        // `https://` half of the address is terminated by the core rather than here,
+        // for a client that holds this emulator's certificate. A listener this
+        // emulator could prepare none for serves the clear half alone, which is the
+        // half announced either way.
         upgrader: listeners.tls_upgrader().ok(),
-    };
-    let scheme = if handler.upgrader.is_some() {
-        GIT_SCHEME_TLS
-    } else {
-        GIT_SCHEME_CLEAR
     };
     // Opened on a task of its OWN, so a runtime that cannot bind a socket at all —
     // one built with no IO driver, which is what a host driving this emulator in
@@ -174,7 +176,6 @@ pub async fn ensure_git_endpoint<Eng: Send + Sync + 'static>(
     }
     let endpoint = GitEndpoint {
         authority,
-        scheme,
         _listener: listener,
     };
     let origin = endpoint.origin();
