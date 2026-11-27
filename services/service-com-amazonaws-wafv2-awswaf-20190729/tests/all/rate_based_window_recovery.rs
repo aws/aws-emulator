@@ -14,6 +14,14 @@
 //! and is served. The same arithmetic decides what `GetRateBasedStatementManagedKeys`
 //! lists, so a key stops being reported at the instant the rule stops acting on it.
 //!
+//! WHEN that count is taken is the other half of the same member — "this setting doesn't
+//! determine how often WAF checks the rate, but how far back it looks each time it
+//! checks. WAF checks the rate about every 10 seconds" — so the edge acts on the rate
+//! the last CHECK arrived at, and every request inside one interval is decided on it.
+//! The rows below are about the WINDOW, so each one has the next check fall due before
+//! the request it asserts ([`due_rate_check`]); the interval itself is what
+//! `crate::rate_based_rate_checks` pins.
+//!
 //! TWO tables, because the window has two things to pin and they are measured against
 //! different instants:
 //!
@@ -47,6 +55,7 @@ use service_com_amazonaws_wafv2_awswaf_20190729::state::{
     self, ComAmazonawsWafv2Awswaf20190729State,
 };
 
+use crate::rate_based_rate_checks::due_rate_check;
 use crate::web_acl_lifecycle::{visibility, Waf, TEST_REGION};
 
 /// The `Scope` the web ACLs live in: an API Gateway stage is a REGIONAL protected
@@ -240,28 +249,32 @@ async fn a_rate_based_rule_serves_the_caller_again_once_its_window_has_passed() 
         )
         .await;
 
-        // Take the caller over the limit: every request up to it is served, and the one
-        // past it is not.
-        for sent in 1..=LIMIT {
+        // Take the caller over the limit: every request of the burst is served, because
+        // the rate in force is the one the check at its first request arrived at, and
+        // the rule acts on the caller at the first check past the limit.
+        for sent in 1..=LIMIT + 1 {
             assert!(
-                allowed(&engine, &resource_arn, "a request at or under the limit"),
-                "case a request at or under the limit at EvaluationWindowSec \
-                 {window_sec}: request {sent} of {LIMIT} must be served, it is not over \
-                 the limit yet"
+                allowed(&engine, &resource_arn, "a burst inside one check interval"),
+                "case a burst inside one check interval at EvaluationWindowSec \
+                 {window_sec}: request {sent} of {} must be served, the rate checked \
+                 for the caller is not over the limit yet",
+                LIMIT + 1
             );
         }
+        due_rate_check(&state, &web_acl_id);
         assert!(
             !allowed(
                 &engine,
                 &resource_arn,
-                "the request that takes the caller over the limit"
+                "the first request past the check that found the caller over the limit"
             ),
-            "case the request that takes the caller over the limit at \
-             EvaluationWindowSec {window_sec}: expected the rule to act on it"
+            "case the first request past the check that found the caller over the limit \
+             at EvaluationWindowSec {window_sec}: expected the rule to act on it"
         );
 
         for case in &cases(window_sec) {
             place_counts(&state, &web_acl_id, case.seconds_ago);
+            due_rate_check(&state, &web_acl_id);
 
             let keys = waf
                 .ok(

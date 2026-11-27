@@ -182,6 +182,31 @@ pub struct RateBucket {
     pub requests: u64,
 }
 
+/// What WAF's last rate CHECK made of one rate-based aggregation instance.
+///
+/// `RateBasedStatement$EvaluationWindowSec` states the two halves of a rate separately:
+/// the window is "the amount of time, in seconds, that WAF should include in its request
+/// counts, looking back from the current time", while "this setting doesn't determine
+/// how often WAF checks the rate, but how far back it looks each time it checks. WAF
+/// checks the rate about every 10 seconds." So the rate a rule acts on is not a property
+/// of the request being decided: it is the count the LAST check arrived at, and it stands
+/// until the next check replaces it ([`RATE_CHECK_INTERVAL_MILLIS`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RateEvaluation {
+    /// The instant the check ran at, in milliseconds since the Unix epoch.
+    pub checked_at: i64,
+    /// The requests it counted for the instance over the rule's evaluation window.
+    pub counted: u64,
+}
+
+/// How long a rate check's result stands before the rate is checked again.
+///
+/// AWS's own figure, from `RateBasedStatement$EvaluationWindowSec`: "WAF checks the rate
+/// about every 10 seconds." It is what decides when a stored [`RateEvaluation`] is
+/// replaced rather than read, and so how long after an aggregation instance's windowed
+/// count goes over a rule's `Limit` the rule begins acting on it.
+pub const RATE_CHECK_INTERVAL_MILLIS: i64 = 10_000;
+
 /// The most rate-based aggregation instances one rate-based rule keeps counts for.
 ///
 /// An emulator resource guard, NOT an AWS quota, and the one the REQUEST chooses: a
@@ -804,22 +829,19 @@ fn decided<Eng: Send + Sync + 'static>(
     };
     let now = crate::state::now_millis();
 
-    // The count one aggregation INSTANCE already holds over the window the rule asking
-    // looks back over, answered from the store at the moment the rule asks: a lookup of
-    // that one key and a sum over its buckets, under a shared lock held for no longer.
+    // The rate one aggregation INSTANCE is CHECKED at, answered from the store at the
+    // moment the rule asks ([`checked_rate`]): the count the last check of that instance
+    // arrived at, re-checked when the clock has made the next check due.
     //
-    // The counts are NOT copied out ahead of the evaluation: how many instances a
+    // The rates are NOT copied out ahead of the evaluation: how many instances a
     // rate-based rule holds is chosen by the REQUESTS (each distinct address, header value
     // or key combination is another one, up to
     // [`crate::state::MAX_RATE_INSTANCES_PER_RULE`] per rule), so a copy of them all would
     // make the work one request costs grow with the traffic that came before it. A request
     // needs exactly the instance it belongs to, per rate-based rule it reaches.
-    let counted_within = |key: &RateInstanceKey, window: i64| -> u64 {
-        let store = state.lock();
-        store
-            .rate_based_counts
-            .get(key)
-            .map_or(0, |buckets| count_within(buckets, now, window))
+    let checked = |key: &RateInstanceKey, window: i64| -> u64 {
+        let mut store = state.lock();
+        checked_rate(&mut store, key, window, now)
     };
 
     // PHASE 2, off the lock: the evaluation itself.
@@ -830,7 +852,7 @@ fn decided<Eng: Send + Sync + 'static>(
         scope: entry.scope.clone(),
         web_acl_id: entry.web_acl.id.clone(),
         now,
-        counted_within: &counted_within,
+        checked_rate: &checked,
     };
     let (decision, recorded, counted) = evaluation.run(&entry.web_acl);
 
@@ -892,13 +914,53 @@ fn decided<Eng: Send + Sync + 'static>(
     Some(decision)
 }
 
+/// The rate WAF has CHECKED for the aggregation instance `key` over `window`, checking
+/// it again when the clock has made the next check due.
+///
+/// "WAF checks the rate about every 10 seconds"
+/// (`RateBasedStatement$EvaluationWindowSec`), so the rate a rule acts on is the one the
+/// last check of that instance arrived at and every request decided inside the same
+/// interval is decided on it. A check counts the requests of the `window` milliseconds
+/// immediately preceding the instant it runs at — "looking back from the current time"
+/// — and its result is stored under `key` for the next
+/// [`RATE_CHECK_INTERVAL_MILLIS`].
+///
+/// The write is the check itself, which the clock had already made due; nothing about
+/// the request being decided enters it.
+pub fn checked_rate(
+    store: &mut ComAmazonawsWafv2Awswaf20190729State,
+    key: &RateInstanceKey,
+    window: i64,
+    now: i64,
+) -> u64 {
+    if let Some(evaluation) = store.rate_based_evaluations.get(key) {
+        if now.saturating_sub(evaluation.checked_at) < RATE_CHECK_INTERVAL_MILLIS {
+            return evaluation.counted;
+        }
+    }
+    let counted = store
+        .rate_based_counts
+        .get(key)
+        .map_or(0, |buckets| count_within(buckets, now, window));
+    store.rate_based_evaluations.insert(
+        key.clone(),
+        RateEvaluation {
+            checked_at: now,
+            counted,
+        },
+    );
+    counted
+}
+
 /// Release the aggregation instances nothing will count again.
 ///
 /// A rate-based rule's aggregation instances are chosen by the REQUEST — each distinct
 /// forwarded address, header value or key combination is another one, and each is held
 /// under the value the request chose — so how long each is held has to be this side's
 /// choice. An instance whose newest bucket is older than the longest window any rule can
-/// look back over can never be counted again, so it is dropped and its key released.
+/// look back over can never be counted again, so it is dropped and its key released —
+/// and with it the rate last checked for it, which nothing can read once the instance it
+/// belongs to is gone.
 ///
 /// Called ONCE per request that counted anything, not once per instance it counted.
 fn release_spent_rate_instances(store: &mut ComAmazonawsWafv2Awswaf20190729State, now: i64) {
@@ -908,6 +970,9 @@ fn release_spent_rate_instances(store: &mut ComAmazonawsWafv2Awswaf20190729State
     store
         .rate_based_counts
         .retain(|_, buckets| buckets.iter().any(|bucket| bucket.second >= oldest));
+    store
+        .rate_based_evaluations
+        .retain(|key, _| store.rate_based_counts.contains_key(key));
 }
 
 /// Make room, if there is none, for one more instance of the rate-based rule `key` belongs
@@ -946,6 +1011,7 @@ fn make_room_for_rate_instance(
     let evicting = of_rule.len() + 1 - MAX_RATE_INSTANCES_PER_RULE;
     for (held, _) in of_rule.into_iter().take(evicting) {
         store.rate_based_counts.remove(&held);
+        store.rate_based_evaluations.remove(&held);
     }
 }
 
@@ -1171,11 +1237,13 @@ struct Evaluation<'a> {
     /// The instant the request is being decided at, in milliseconds since the Unix
     /// epoch.
     now: i64,
-    /// The count one aggregation instance ALREADY holds over a window, answered from the
-    /// store by the entry point that owns the lock discipline ([`decide`]): a rate-based
-    /// rule asks for the one instance this request belongs to, so the work one request
-    /// costs does not grow with how many instances the traffic before it created.
-    counted_within: &'a dyn Fn(&RateInstanceKey, i64) -> u64,
+    /// The rate one aggregation instance is CHECKED at, answered from the store by the
+    /// entry point that owns the lock discipline ([`decide`]): a rate-based rule asks for
+    /// the one instance this request belongs to, so the work one request costs does not
+    /// grow with how many instances the traffic before it created. The rate is the one
+    /// the last check of that instance arrived at, not a count taken for this request —
+    /// see [`RateEvaluation`].
+    checked_rate: &'a dyn Fn(&RateInstanceKey, i64) -> u64,
 }
 
 /// What one rule made of the request.
@@ -1642,9 +1710,14 @@ impl Evaluation<'_> {
     /// "A rate-based rule counts incoming requests and rate limits requests when they
     /// are coming at too fast a rate": the request counts toward its aggregation
     /// instance when it satisfies the statement's `ScopeDownStatement` (every request
-    /// when there is none), and the rule MATCHES when that instance's count over the
-    /// `EvaluationWindowSec` immediately preceding now is already at the `Limit` —
-    /// this request being the one that takes it over.
+    /// when there is none), and the rule MATCHES when the rate WAF last CHECKED for that
+    /// instance ([`RateEvaluation`]) is over the statement's `Limit` — the action applies
+    /// "when the count of all requests… goes over the limit"
+    /// (`RateBasedStatement$AggregateKeyType`), and what WAF knows that count to be is
+    /// what its last check of the instance arrived at, since "WAF checks the rate about
+    /// every 10 seconds" (`RateBasedStatement$EvaluationWindowSec`) rather than once per
+    /// request. So the request being decided is counted for the checks to come, and is
+    /// itself decided on the rate already established.
     fn rate_based_matches(
         &self,
         rate: &RateBasedStatement,
@@ -1670,9 +1743,9 @@ impl Evaluation<'_> {
             aggregate_key,
         };
         let window = evaluation_window_millis(rate.evaluation_window_sec);
-        let already = (self.counted_within)(&key, window);
+        let checked = (self.checked_rate)(&key, window);
         counted.push(key);
-        already.saturating_add(1) > rate.limit.max(0) as u64
+        checked > rate.limit.max(0) as u64
     }
 
     /// The aggregation instance this request belongs to for `rate`, or `None` when the

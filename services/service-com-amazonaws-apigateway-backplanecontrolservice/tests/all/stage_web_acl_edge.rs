@@ -56,6 +56,9 @@ fn sampling_window() -> Value {
 /// One emulator with API Gateway and WAFv2 mounted on a single shared engine.
 struct Edge {
     router: MultiServiceRouter,
+    /// The engine both services were mounted on, kept so a case can reach the state WAF
+    /// keeps about its own data plane — see [`Edge::due_rate_check`].
+    engine: Arc<engine::InMemoryEngine>,
 }
 
 /// One answered request: its status, its headers and its body verbatim.
@@ -101,7 +104,27 @@ impl Edge {
         router.register_service(
             service_com_amazonaws_wafv2_awswaf_20190729::EmulatedService::new(Arc::clone(&engine)),
         );
-        Self { router }
+        Self { router, engine }
+    }
+
+    /// Put every rate check WAF has made a whole check interval behind the clock, so the
+    /// next request a rate-based rule decides re-checks the rate.
+    ///
+    /// "WAF checks the rate about every 10 seconds"
+    /// (`RateBasedStatement$EvaluationWindowSec`), so a rate-based rule acts on the rate
+    /// its last check arrived at. A suite can no more wait ten seconds for the next check
+    /// than it can wait for an evaluation window to pass, so the stored check is AGED,
+    /// which is what the passage of that much time does to when the next one falls due.
+    fn due_rate_check(&self) {
+        let state = service_com_amazonaws_wafv2_awswaf_20190729::state::service_state(
+            &*self.engine,
+        )
+        .expect("the wafv2 store is reachable from the shared engine");
+        let mut store = state.lock();
+        for evaluation in store.rate_based_evaluations.values_mut() {
+            evaluation.checked_at -=
+                service_com_amazonaws_wafv2_awswaf_20190729::service::edge::RATE_CHECK_INTERVAL_MILLIS;
+        }
     }
 
     /// One API Gateway control-plane call, answering its status and parsed body.
@@ -1651,9 +1674,12 @@ async fn a_managed_rule_group_decides_and_the_sample_names_the_rule_that_did() {
 }
 
 /// The rule over a RATE-BASED rule: requests are counted per aggregation instance over
-/// the rule's evaluation window, and the rule applies its action once an instance is
-/// over the `Limit` — and the keys that are currently over it are what
-/// `GetRateBasedStatementManagedKeys` reports.
+/// the rule's evaluation window, WAF checks each instance's rate periodically — "WAF
+/// checks the rate about every 10 seconds"
+/// (`RateBasedStatement$EvaluationWindowSec`) — and the rule applies its action to the
+/// requests it decides while the rate its last check found is OVER the `Limit`. So a
+/// burst sent inside one check interval is served to its end, and the keys a check found
+/// over the limit are what `GetRateBasedStatementManagedKeys` reports.
 #[tokio::test]
 async fn a_rate_based_rule_refuses_the_caller_past_its_limit_and_lists_its_key() {
     let edge = Edge::new();
@@ -1684,15 +1710,28 @@ async fn a_rate_based_rule_refuses_the_caller_past_its_limit_and_lists_its_key()
     .await;
     associate(&edge, &arn, &api.id, "rated").await;
 
-    // Every request up to the limit is admitted; the one that takes the instance over
-    // it is refused, and so is every later one in the same window.
+    // A burst sent inside ONE check interval: the rate in force is the one the check at
+    // its first request arrived at, so every request of it is served — the requests past
+    // the limit are what the NEXT check finds.
     for sent in 1..=LIMIT + 2 {
         let answered = edge.get(&api.id, "/rated/orders").await;
-        let expected = if sent <= LIMIT { 200 } else { 403 };
         assert_eq!(
-            answered.status, expected,
-            "case request {sent} of a limit of {LIMIT}: expected status {expected}, got \
-             {} with {:?}",
+            answered.status, 200,
+            "case request {sent} of a burst inside one check interval at a limit of \
+             {LIMIT}: expected status 200, got {} with {:?}",
+            answered.status, answered.body
+        );
+    }
+
+    // Once the next check falls due it finds the caller over the limit, and from there
+    // the rule acts on every request of the same aggregation instance.
+    edge.due_rate_check();
+    for sent in 1..=2 {
+        let answered = edge.get(&api.id, "/rated/orders").await;
+        assert_eq!(
+            answered.status, 403,
+            "case request {sent} past the check that found the caller over the limit of \
+             {LIMIT}: expected status 403, got {} with {:?}",
             answered.status, answered.body
         );
     }

@@ -1358,6 +1358,19 @@ pub struct ComAmazonawsWafv2Awswaf20190729State {
     /// [`crate::service::edge::RateBucket`] for why the counts are kept per second.
     pub rate_based_counts:
         HashMap<crate::service::edge::RateInstanceKey, Vec<crate::service::edge::RateBucket>>,
+    /// What WAF's last rate CHECK of each rate-based aggregation instance arrived at.
+    ///
+    /// `RateBasedStatement$EvaluationWindowSec` — "this setting doesn't determine how
+    /// often WAF checks the rate, but how far back it looks each time it checks. WAF
+    /// checks the rate about every 10 seconds" — so an instance's rate is not recomputed
+    /// for every request: the data plane reads the last check's result here and acts on
+    /// it, replacing it when the next check is due
+    /// ([`crate::service::edge::checked_rate`]). An entry lives exactly as long as the
+    /// instance it belongs to in [`Self::rate_based_counts`].
+    pub rate_based_evaluations: HashMap<
+        crate::service::edge::RateInstanceKey,
+        crate::service::edge::RateEvaluation,
+    >,
 }
 
 impl ComAmazonawsWafv2Awswaf20190729State {
