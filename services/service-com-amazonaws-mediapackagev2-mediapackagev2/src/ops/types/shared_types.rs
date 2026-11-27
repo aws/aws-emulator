@@ -228,6 +228,7 @@ pub struct CreateDashManifestConfiguration {
     pub program_information: Option<DashProgramInformation>,
     pub dvb_settings: Option<DashDvbSettings>,
     pub compactness: Option<String>,
+    pub bandwidth_reporting_mode: Option<String>,
     pub audio_timeline_pattern: Option<String>,
     pub subtitle_configuration: Option<DashSubtitleConfiguration>,
     pub uri_path_type: Option<String>,
@@ -373,6 +374,7 @@ pub struct GetDashManifestConfiguration {
     pub program_information: Option<DashProgramInformation>,
     pub dvb_settings: Option<DashDvbSettings>,
     pub compactness: Option<String>,
+    pub bandwidth_reporting_mode: Option<String>,
     pub audio_timeline_pattern: Option<String>,
     pub subtitle_configuration: Option<DashSubtitleConfiguration>,
     pub uri_path_type: Option<String>,
@@ -472,6 +474,10 @@ pub const CUSTOM_AD_TYPE_VALUES: &[&str] = &["ALTERNATE_CONTENT_OPPORTUNITY", "C
 
 /// The values `DashAudioTimelinePattern` accepts on the wire.
 pub const DASH_AUDIO_TIMELINE_PATTERN_VALUES: &[&str] = &["NONE", "PATTERNED"];
+
+
+/// The values `DashBandwidthReportingMode` accepts on the wire.
+pub const DASH_BANDWIDTH_REPORTING_MODE_VALUES: &[&str] = &["AVERAGE", "MAX"];
 
 
 /// The values `DashCompactness` accepts on the wire.

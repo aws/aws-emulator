@@ -169,6 +169,13 @@ pub const DEFAULT_MANIFEST_WINDOW_SECONDS: i32 = 60;
 /// carries the member: "If you don't specify a value, the default is `LEAF`."
 pub const DEFAULT_URI_PATH_TYPE: &str = "LEAF";
 
+/// The bandwidth reporting mode MediaPackage applies to a DASH manifest configuration
+/// that sends no `BandwidthReportingMode`. The model states the default inside the
+/// member's own value list, on both the create and the reported shape: "`AVERAGE` –
+/// MediaPackage reports the average bitrate of the source video track. This is the
+/// default", from the modelled `DashBandwidthReportingMode` enum (`AVERAGE` | `MAX`).
+pub const DEFAULT_DASH_BANDWIDTH_REPORTING_MODE: &str = "AVERAGE";
+
 /// The URI separator MediaPackage applies to an origin endpoint created without one —
 /// the value the recorded service reports for such an endpoint, from the modelled
 /// `UriSeparator` enum (`UNDERSCORE` | `HYPHEN`).
@@ -2838,8 +2845,9 @@ pub fn stored_low_latency_hls_manifest(
 }
 
 /// The stored form of a submitted DASH manifest. The window and the URI path type are
-/// the same server-applied settings the HLS families carry; everything else is reported
-/// only when it was configured.
+/// the same server-applied settings the HLS families carry, and the bandwidth reporting
+/// mode is the DASH family's own one ([`DEFAULT_DASH_BANDWIDTH_REPORTING_MODE`]);
+/// everything else is reported only when it was configured.
 pub fn stored_dash_manifest(
     submitted: CreateDashManifestConfiguration,
     at: ManifestLocation<'_>,
@@ -2866,6 +2874,11 @@ pub fn stored_dash_manifest(
         program_information: submitted.program_information,
         dvb_settings: submitted.dvb_settings,
         compactness: submitted.compactness,
+        bandwidth_reporting_mode: Some(
+            submitted
+                .bandwidth_reporting_mode
+                .unwrap_or_else(|| DEFAULT_DASH_BANDWIDTH_REPORTING_MODE.to_string()),
+        ),
         audio_timeline_pattern: submitted.audio_timeline_pattern,
         subtitle_configuration: submitted.subtitle_configuration,
         uri_path_type: Some(

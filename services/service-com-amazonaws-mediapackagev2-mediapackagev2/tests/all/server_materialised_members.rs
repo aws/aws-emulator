@@ -832,3 +832,258 @@ async fn a_value_past_a_modelled_bound_is_refused() {
         );
     }
 }
+
+/// DASH rows for the manifest member whose DEFAULT the model documents inside its own
+/// value list: `BandwidthReportingMode` ("`AVERAGE` – MediaPackage reports the average
+/// bitrate of the source video track. This is the default").
+///
+/// The catalogue is the model's own enum — AVERAGE | MAX
+/// (`smithy_query(query="shape", shape="DashBandwidthReportingMode")`) — and the rows
+/// cover it absent, named as the default, and named as the other value, alone and beside
+/// other DASH manifest members, over one manifest and over several at once, with the
+/// neighbouring families asserted too: only the DASH shapes model the member.
+fn dash_bandwidth_cases() -> Vec<Case> {
+    vec![
+        Case {
+            label: "a bare DASH manifest: no mode named, so the service applies its own",
+            body: || {
+                json!({
+                    "ContainerType": "CMAF",
+                    "DashManifests": [{"ManifestName": "dash"}],
+                })
+            },
+            expected: vec![("/DashManifests/0/BandwidthReportingMode", json!("AVERAGE"))],
+        },
+        Case {
+            label: "the default mode named explicitly",
+            body: || {
+                json!({
+                    "ContainerType": "CMAF",
+                    "DashManifests": [{
+                        "ManifestName": "dash",
+                        "BandwidthReportingMode": "AVERAGE",
+                    }],
+                })
+            },
+            expected: vec![("/DashManifests/0/BandwidthReportingMode", json!("AVERAGE"))],
+        },
+        Case {
+            label: "the peak-bitrate mode named",
+            body: || {
+                json!({
+                    "ContainerType": "CMAF",
+                    "DashManifests": [{
+                        "ManifestName": "dash",
+                        "BandwidthReportingMode": "MAX",
+                    }],
+                })
+            },
+            expected: vec![("/DashManifests/0/BandwidthReportingMode", json!("MAX"))],
+        },
+        Case {
+            label: "the mode beside the other DASH manifest settings",
+            body: || {
+                json!({
+                    "ContainerType": "CMAF",
+                    "DashManifests": [{
+                        "ManifestName": "dash",
+                        "BandwidthReportingMode": "MAX",
+                        "ManifestWindowSeconds": 120,
+                        "UriPathType": "ROOT",
+                        "Compactness": "NONE",
+                        "DrmSignaling": "INDIVIDUAL",
+                    }],
+                })
+            },
+            expected: vec![
+                ("/DashManifests/0/BandwidthReportingMode", json!("MAX")),
+                ("/DashManifests/0/ManifestWindowSeconds", json!(120)),
+                ("/DashManifests/0/UriPathType", json!("ROOT")),
+                ("/DashManifests/0/Compactness", json!("NONE")),
+                ("/DashManifests/0/DrmSignaling", json!("INDIVIDUAL")),
+            ],
+        },
+        Case {
+            label: "three DASH manifests: one bare, one default, one peak",
+            body: || {
+                json!({
+                    "ContainerType": "CMAF",
+                    "DashManifests": [
+                        {"ManifestName": "bare"},
+                        {"ManifestName": "avg", "BandwidthReportingMode": "AVERAGE"},
+                        {"ManifestName": "peak", "BandwidthReportingMode": "MAX"},
+                    ],
+                })
+            },
+            expected: vec![
+                ("/DashManifests/0/BandwidthReportingMode", json!("AVERAGE")),
+                ("/DashManifests/1/BandwidthReportingMode", json!("AVERAGE")),
+                ("/DashManifests/2/BandwidthReportingMode", json!("MAX")),
+            ],
+        },
+        Case {
+            label: "DASH beside the families that do not model the member",
+            body: || {
+                json!({
+                    "ContainerType": "CMAF",
+                    "HlsManifests": [{"ManifestName": "hls"}],
+                    "LowLatencyHlsManifests": [{"ManifestName": "ll"}],
+                    "DashManifests": [{"ManifestName": "dash"}],
+                })
+            },
+            expected: vec![
+                ("/DashManifests/0/BandwidthReportingMode", json!("AVERAGE")),
+                ("/HlsManifests/0/BandwidthReportingMode", Value::Null),
+                (
+                    "/LowLatencyHlsManifests/0/BandwidthReportingMode",
+                    Value::Null,
+                ),
+            ],
+        },
+    ]
+}
+
+/// RULE — a DASH manifest configuration reports a CONCRETE bandwidth reporting mode in
+/// every projection of the endpoint: the value the request named, and the service's own
+/// documented default when it named none. An update rewrites the whole configuration, so
+/// it materialises the member again.
+#[tokio::test]
+async fn a_dash_manifest_reports_the_bandwidth_reporting_mode_the_service_applied() {
+    let emulator = Emulator::new();
+
+    for (index, case) in dash_bandwidth_cases().into_iter().enumerate() {
+        let label = case.label;
+        let (group, channel) = parent_chain(&emulator, 700 + index).await;
+        let endpoint = format!("bandwidth-{index}");
+
+        let create_body = (case.body)();
+        let (status, created) = emulator
+            .create_endpoint(&group, &channel, &endpoint, create_body.clone())
+            .await;
+        assert_eq!(
+            status, 200,
+            "case {label:?}: CreateOriginEndpoint expected 200, got {status} {created}"
+        );
+
+        let (status, read) = emulator.get_endpoint(&group, &channel, &endpoint).await;
+        assert_eq!(
+            status, 200,
+            "case {label:?}: GetOriginEndpoint expected 200, got {status} {read}"
+        );
+
+        // The same body sent as an update: the member is materialised by the write, so
+        // the update's own response and the read after it report the same value.
+        let (status, updated) = emulator
+            .update_endpoint(&group, &channel, &endpoint, create_body, &[])
+            .await;
+        assert_eq!(
+            status, 200,
+            "case {label:?}: UpdateOriginEndpoint expected 200, got {status} {updated}"
+        );
+        let (status, read_after_update) = emulator.get_endpoint(&group, &channel, &endpoint).await;
+        assert_eq!(
+            status, 200,
+            "case {label:?}: GetOriginEndpoint after the update expected 200, got \
+             {status} {read_after_update}"
+        );
+
+        for (projection, body) in [
+            ("CreateOriginEndpoint", &created),
+            ("GetOriginEndpoint", &read),
+            ("UpdateOriginEndpoint", &updated),
+            ("GetOriginEndpoint after the update", &read_after_update),
+        ] {
+            for (pointer, expected) in &case.expected {
+                let actual = at(body, pointer);
+                assert_eq!(
+                    &actual, expected,
+                    "case {label:?}: {projection} {pointer} expected {expected}, got {actual}"
+                );
+            }
+        }
+    }
+}
+
+/// RULE (the write-side half) — an update that drops the member re-applies the service's
+/// default instead of leaving the previously stored value or an absent member, and a mode
+/// the enum does not list is refused with nothing stored.
+#[tokio::test]
+async fn an_update_re_materialises_the_dash_bandwidth_reporting_mode() {
+    let emulator = Emulator::new();
+    let (group, channel) = parent_chain(&emulator, 710).await;
+
+    // Created with the non-default mode, so the default a later update re-applies cannot
+    // be mistaken for a leftover of the create.
+    let (status, created) = emulator
+        .create_endpoint(
+            &group,
+            &channel,
+            "ep",
+            json!({
+                "ContainerType": "CMAF",
+                "DashManifests": [{
+                    "ManifestName": "dash",
+                    "BandwidthReportingMode": "MAX",
+                }],
+            }),
+        )
+        .await;
+    assert_eq!(status, 200, "case \"setup\": got {status} {created}");
+
+    let (status, updated) = emulator
+        .update_endpoint(
+            &group,
+            &channel,
+            "ep",
+            json!({
+                "ContainerType": "CMAF",
+                "DashManifests": [{"ManifestName": "dash"}],
+            }),
+            &[],
+        )
+        .await;
+    assert_eq!(
+        status, 200,
+        "case \"an update naming no mode\": expected 200, got {status} {updated}"
+    );
+    let (_, read) = emulator.get_endpoint(&group, &channel, "ep").await;
+    for (projection, body) in [("UpdateOriginEndpoint", &updated), ("GetOriginEndpoint", &read)] {
+        let actual = at(body, "/DashManifests/0/BandwidthReportingMode");
+        assert_eq!(
+            actual,
+            json!("AVERAGE"),
+            "case \"an update naming no mode\": {projection} expected AVERAGE, got {actual}"
+        );
+    }
+
+    // A mode outside the modelled enum is refused, and the stored endpoint keeps the mode
+    // the last accepted write materialised.
+    let (status, answer) = emulator
+        .update_endpoint(
+            &group,
+            &channel,
+            "ep",
+            json!({
+                "ContainerType": "CMAF",
+                "DashManifests": [{
+                    "ManifestName": "dash",
+                    "BandwidthReportingMode": "MAXIMUM",
+                }],
+            }),
+            &[],
+        )
+        .await;
+    assert_eq!(
+        status, 400,
+        "case \"a mode the enum does not list\": expected a 400 ValidationException, got \
+         {status} {answer}"
+    );
+    let (_, read) = emulator.get_endpoint(&group, &channel, "ep").await;
+    let actual = at(&read, "/DashManifests/0/BandwidthReportingMode");
+    assert_eq!(
+        actual,
+        json!("AVERAGE"),
+        "case \"a mode the enum does not list\": a refused update must store nothing, got \
+         {actual}"
+    );
+}
