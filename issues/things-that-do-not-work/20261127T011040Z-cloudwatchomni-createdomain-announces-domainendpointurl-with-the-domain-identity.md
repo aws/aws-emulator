@@ -1,0 +1,51 @@
+Issue-Source: trace-sweep-divergence
+Issue-Trace: cloudwatchomni-domain-and-space-singleton-lifecycle
+Issue-Step: task#2
+Issue-Severity: MEDIUM
+Issue-Corpus: simparity-wire-aws-v1
+Issue-Corpus-Kind: wire
+Issue-Trace-Ids: cloudwatchomni-domain-and-space-singleton-lifecycle
+Issue-Shape-Id: com.amazonaws.cloudwatchomni#CloudWatchOmniFrontend
+Issue-Key: cloudwatchomni|CreateDomain|2xx->2xx|$.domain.domainEndpointUrl
+Issue-Commit: f98bc22a818232f110aaa7fea3c9bbd8a6719a25
+
+# cloudwatchomni CreateDomain announces domainEndpointUrl with the domain identity in the PATH on a bare serving authority
+
+> _Note: this issue was identified against the code base at commit `f98bc22a818232f110aaa7fea3c9bbd8a6719a25`. If you are an issue fixer working on this, the code base you are currently working in can have drifted, so you might need to trace the issue back to the current code base._
+
+## Operation
+CreateDomain
+
+## Description
+Cause 1 of 1: CreateDomain answers 200 but the `domain.domainEndpointUrl` member it publishes has the wrong URL SHAPE — the domain identity is carried as a PATH segment under a reserved emulator namespace on the bare authority the request was reached at, instead of as the leftmost host label of the endpoint's hostname. The emulator currently composes the member as `https://<serving-host>[:<port>]/_aws/cloudwatch-omni/domain/<domainId>`, so the published URL has no per-domain host label at all and the only identity a client can recover sits in a path it does not know to read.
+
+  AWS: Smithy com.amazonaws.cloudwatchomni#CreateDomain takes name (String, required, @length 3..63, @pattern ^[a-z0-9]+(-[a-z0-9]+)*$), identityProviders (IdentityProviderList, required, @length 1..2, @uniqueItems), optional identityProviderConfiguration/tags/clientToken (@idempotencyToken) and returns the required output member `domain` (com.amazonaws.cloudwatchomni#Domain). Domain.domainEndpointUrl is a REQUIRED String documented "The HTTPS endpoint URL for accessing the domain"; Domain.customEndpointUrls is a StringList documented "Additional endpoint URLs derived from the domain name"; Domain.domainId is required with @pattern ^d-[0-9a-z]{1,25}$ and Domain.name is @length 3..63 @pattern ^[a-z0-9]+(-[a-z0-9]+)*$ — i.e. both identities are already single DNS labels. The model fixes no hostname, so the host shape is recorded behavior only: the recording shows CreateDomain answering 200 with an https URL whose LEFTMOST HOST LABEL is the domain id (and, for each customEndpointUrls entry, the domain name), both over ONE shared host suffix, with no identity in the path. The corpus does not assert the literal recorded value (expected is reported as '<shaped-not-asserted>'), so the concrete suffix, the generated domain id, the generated name and any port are per-environment values and are NOT the requirement; the requirement is the pairing — identity as the leftmost label over a single shared suffix, rooted on an address that actually serves the domain.
+
+  Emulator: the replayed step answered 200 (the expected status, so the divergence is purely in the member) with $.domain.domainEndpointUrl = 'https://127.0.0.1:43939/_aws/cloudwatch-omni/domain/d-5xz0535yurts3zntg0v8uk5at'. The comparator reports value_mismatch on $.domain.domainEndpointUrl against the shape it asserts: the hostname is the bare serving authority (here an IP literal, whose first label is a fragment of that address rather than the domain id) and the domain id appears only as the last path segment under the reserved `_aws/cloudwatch-omni/domain/` namespace. The source states this is deliberate: state/domain_endpoint.rs module docs declare the identity is carried in the PATH because the emulator answers only on the address it was reached at, and `domain_endpoint_path` / `announced_endpoint_url` / `domain_endpoint_url` build exactly that string, with `custom_endpoint_urls` doing the same via `domain-name/<name>`. This is the same shape defect already reported from the behavioral suite as open issue 20261126T111800Z-cloudwatchomni-domain-endpoint-urls-carry-the-identity-in.md (check cloudwatchomni.domain-rename-moves-its-custom-endpoint-url-only, CreateDomain); that issue carries no wire replay key, so this fixture step is not covered by it and is filed here. Open issue 20261125T083155Z-cloudwatchomni-getdomain-announces-domain-endpoint-urls-on-a.md owns the complementary half (the suffix must be an authority this emulator answers on) for the GetDomain read path and does not cover this CreateDomain step either.
+
+  Why: `domainEndpointUrl` is documented as an address a client OPENS, not an opaque label — a browser or deep-link flow dials it, a probe fetches it, a TLS or virtual-host matcher pins its leftmost host label, and a client recovers which domain an endpoint belongs to by reading that label. Against this emulator every one of those reads part of the serving host as the domain identity (or finds no identity in the host at all), so endpoint-derived routing, per-domain host matching, and any flow that derives a custom endpoint from a name are wrong even though the create returns 200. Clients that store the create response's endpoint also persist a URL whose form cannot be reproduced against real CloudWatch Omni.
+
+  Fix: the shared Domain endpoint projection in the cloudwatchomni service crate — the helpers that mint the two members and the single `Domain` projection that every create/read/update answer passes through, plus the inverse reader and the route that serves those addresses, which must move with the shape so what is advertised stays what is answered. Compose each member with the identity as the leftmost host label (domain id for domainEndpointUrl, domain name for each customEndpointUrls entry) over one shared suffix, keeping the authority one this emulator actually answers on.
+
+  Traces: cloudwatchomni-domain-and-space-singleton-lifecycle#task#2 (CreateDomain, expected 200, actual 200, $.domain.domainEndpointUrl value_mismatch).
+
+## Evidence
+Wire corpus simparity-wire-aws-v1, divergence key `service=cloudwatchomni|CreateDomain|status=200->200|keys=$.domain.domainEndpointUrl`, verdict `mismatch`, expected status 200, actual status 200. Cluster of 1 step: cloudwatchomni-domain-and-space-singleton-lifecycle#task#2. Not blocked by a stub (stub_path empty) and owned by no open issue (owned_by empty).
+
+Replay detail (representative step):
+  $.domain.domainEndpointUrl: value_mismatch (expected '<shaped-not-asserted>', got 'https://127.0.0.1:43939/_aws/cloudwatch-omni/domain/d-5xz0535yurts3zntg0v8uk5at')
+
+Expected (AWS): an https URL whose hostname's leftmost label is $.domain.domainId and whose remaining suffix is shared with every $.domain.customEndpointUrls entry (whose own leftmost label is $.domain.name), with no identity segment in the path — i.e. urlsplit(domainEndpointUrl).hostname.partition('.') == (<Domain.domainId>, <shared-suffix>).
+Actual (emulator): 'https://<serving-authority>/_aws/cloudwatch-omni/domain/<domainId>' — the hostname is the bare authority the request arrived on (an IP literal in this run, so its leftmost label is '127'), and the domain id is only a path segment. The literal host '127.0.0.1', the port 43939 and the generated domain id 'd-5xz0535yurts3zntg0v8uk5at' are per-run/per-environment values and are not part of the requirement; the recorded expectation is shape-asserted, not value-asserted.
+
+Smithy cited (services/service-com-amazonaws-cloudwatchomni-cloudwatchomnifrontend/smithy-model/com-amazonaws-cloudwatchomni-cloudwatchomnifrontend.json): CreateDomain input name (required, @length 3..63, @pattern ^[a-z0-9]+(-[a-z0-9]+)*$), identityProviders (required, @length 1..2, @uniqueItems), clientToken (@idempotencyToken, @length 1..64, @pattern ^[!-~]+$); output domain (Domain, required); errors AccessDeniedException 403 / ConflictException 409 / InternalServerException 500 / ServiceQuotaExceededException 402 / ThrottlingException 429 / ValidationException 400. Domain.domainEndpointUrl (String, required, "The HTTPS endpoint URL for accessing the domain"), Domain.customEndpointUrls (StringList, "Additional endpoint URLs derived from the domain name"), Domain.domainId (required, @pattern ^d-[0-9a-z]{1,25}$), Domain.name (@length 3..63, @pattern ^[a-z0-9]+(-[a-z0-9]+)*$). The hostname itself is not modeled — recorded behavior only.
+
+Emulator source (file/line citations only): services/service-com-amazonaws-cloudwatchomni-cloudwatchomnifrontend/src/state/domain_endpoint.rs:3-43 (module docs stating the deliberate path-carried identity), :56-61 DOMAIN_BY_ID_SEGMENT / DOMAIN_BY_NAME_SEGMENT, :72-78 `domain_endpoint_path`, :87-93 `domain_name_endpoint_path`, :110-122 `announced_authority`, :134-143 `announced_endpoint_url`, :147-153 `domain_endpoint_url`, :162-170 `custom_endpoint_urls`, :179-189 `announced_domain` (the single projection every Domain answer returns through), :212-234 `domain_endpoint_route` (the inverse reader that must move with the shape); services/service-com-amazonaws-cloudwatchomni-cloudwatchomnifrontend/src/ops/create_domain.rs:221-225 where CreateDomain fills the two members, and :194-196 where the idempotent replay re-announces them.
+
+## Steps to Reproduce
+1. Boot the emulator from this checkout and replay the wire corpus (replay_wire_corpus).
+2. Fixture 'cloudwatchomni-domain-and-space-singleton-lifecycle', step task#2: CreateDomain(name=<a name matching ^[a-z0-9]+(-[a-z0-9]+)*$>, identityProviders=['IAM'], clientToken=<token>).
+3. Read the 200 body's $.domain.domainEndpointUrl: it is 'https://<serving-host>[:<port>]/_aws/cloudwatch-omni/domain/<domainId>'. Split its hostname on the first '.': the leftmost label is a fragment of the serving host (e.g. '127' for a loopback literal), not $.domain.domainId, and the id appears only as a path segment.
+4. Same for $.domain.customEndpointUrls[0]: its path is '/_aws/cloudwatch-omni/domain-name/<name>' and its hostname carries no domain name label.
+5. Expected: both members are https URLs whose leftmost host label is the identity (domain id for domainEndpointUrl, domain name for each customEndpointUrls entry) over ONE shared suffix, rooted on an authority this emulator answers on, with no identity in the path.
+6. Re-replay cloudwatchomni-domain-and-space-singleton-lifecycle#task#2 after the fix.
