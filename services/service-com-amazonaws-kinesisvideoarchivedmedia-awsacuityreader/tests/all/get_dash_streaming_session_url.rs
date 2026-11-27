@@ -80,10 +80,11 @@ fn error_message(response: &http::Response<bytes::Bytes>) -> String {
 }
 
 /// RULE: a session is minted over the fragments the playback mode and selector
-/// select — the oldest in the requested range for ON_DEMAND and LIVE_REPLAY,
-/// the most recently ingested for LIVE — capped by `MaxManifestFragmentResults`
-/// (default 5 for LIVE / LIVE_REPLAY, 1,000 for ON_DEMAND), and the URL
-/// returned resolves to that recorded session.
+/// select — those of the requested range for ON_DEMAND and LIVE_REPLAY, the
+/// most recently ingested for LIVE — capped by `MaxManifestFragmentResults`
+/// (default 5 for LIVE / LIVE_REPLAY, 1,000 for ON_DEMAND), which at the MINT
+/// is filled from the start of the range for either range mode and from the
+/// stream head for LIVE. The URL returned resolves to that recorded session.
 ///
 /// The rows differ along what the rule generalises over: the playback mode, the
 /// timestamp the selector reads, whether the range is closed or open-ended, and
@@ -145,6 +146,9 @@ async fn a_minted_session_serves_the_fragments_its_mode_and_selector_select() {
             vec![0, 1, 2, 3, 4],
         ),
         (
+            // A LIVE_REPLAY playlist "starts by including fragments from a
+            // given start time", so its maximum is filled from the front of
+            // the range at the mint.
             "LIVE_REPLAY capped at three",
             serde_json::json!({
                 "StreamName": STREAM,

@@ -3876,6 +3876,469 @@ async fn a_growing_session_playlist_lists_fragments_ingested_after_the_mint() {
     }
 }
 
+/// The fragment numbers of the seeded fragments at `indices`, in that order.
+fn fragment_numbers(indices: &[u64]) -> Vec<String> {
+    indices.iter().copied().map(fragment_number).collect()
+}
+
+/// The stream the anchor rows select from: an archive whose fragments each play
+/// for [`SLOW_FRAGMENT_MILLIS`], so no replay can advance while the test runs.
+const ANCHOR_STREAM: &str = "anchor-stream";
+
+/// How many fragments [`ANCHOR_STREAM`] holds: one more than the live modes'
+/// documented default maximum, so a session over its whole range has a
+/// fragment the maximum leaves out.
+const ANCHOR_FRAGMENTS: u64 = 6;
+
+/// How long one fragment of [`ANCHOR_STREAM`] plays for: an hour, orders of
+/// magnitude longer than this suite can take, so the pace a replay advances at
+/// cannot move its playlist and the mint's own selection is what every
+/// assertion about that stream reads.
+const SLOW_FRAGMENT_MILLIS: u64 = 60 * 60 * 1000;
+
+/// Seed `stream` into an already-built harness, with `count` fragments spaced
+/// exactly as [`seeded`]'s own archive is but each playing for
+/// `duration_millis`, so a case can choose the pace its playback advances at.
+fn seed_stream_with_durations(
+    harness: &Harness,
+    stream: &str,
+    count: u64,
+    duration_millis: u64,
+) {
+    let archived = ArchivedStream::new(stream, REGION, from_epoch_millis(T0_SECS * 1000), 24);
+    register_stream(&harness.engine, &archived);
+    let state = service_state(&*harness.engine).expect("the service store");
+    let mut state = state.lock();
+    state.put_stream(archived);
+    for index in 0..count {
+        assert!(
+            state.append_fragment(
+                stream,
+                StoredFragment::new(
+                    fragment_number(index),
+                    from_epoch_millis(producer_secs(index) * 1000),
+                    from_epoch_millis(server_secs(index) * 1000),
+                    duration_millis,
+                    media(index),
+                ),
+            ),
+            "case seed {stream} fragment {index}: the stream must exist"
+        );
+    }
+}
+
+/// One row of the playlist-anchor table: a session over an archive that cannot
+/// advance while the test runs, and the fragments its document lists.
+struct AnchorRow {
+    case: &'static str,
+    /// The operation that mints the session, and the output member its URL is
+    /// reported in.
+    path: &'static str,
+    member: &'static str,
+    /// The minting request.
+    body: serde_json::Value,
+    /// The seeded fragments the document must list, by index.
+    listed: &'static [u64],
+    /// The `EXT-X-MEDIA-SEQUENCE` an HLS media playlist must declare; `None`
+    /// for an MPEG-DASH manifest, which declares no such tag.
+    sequence: Option<u64>,
+}
+
+/// RULE: which fragments of its window a session's maximum is filled from is
+/// the playback mode's — a range mode's playlist is ANCHORED at the start of
+/// the requested range ("it starts by including fragments from a given start
+/// time" for LIVE_REPLAY, "the oldest fragments are returned, up to this
+/// maximum number" for ON_DEMAND), so its first segment's media sequence number
+/// is 0 and the fragments the maximum leaves out are the LATER ones, while LIVE
+/// is filled from the stream head ("the most recent fragments are returned up to
+/// this value"), which puts the ones it leaves out in front of the playlist.
+///
+/// The rows differ along what the rule generalises over: the playback mode,
+/// where the maximum comes from (the mode's documented default or the request's
+/// own, at several values), a range left open and one carrying an end, and both
+/// playback protocols — the HLS media playlist and the MPEG-DASH manifest.
+#[tokio::test]
+async fn a_sessions_fragment_maximum_is_filled_from_the_end_its_mode_starts_at() {
+    let rows: Vec<AnchorRow> = vec![
+        AnchorRow {
+            // The documented default for the live modes is 5 fragments, one
+            // fewer than this archive holds.
+            case: "LIVE_REPLAY at its default maximum, over HLS",
+            path: "/getHLSStreamingSessionURL",
+            member: "HLSStreamingSessionURL",
+            body: serde_json::json!({
+                "StreamName": ANCHOR_STREAM,
+                "PlaybackMode": "LIVE_REPLAY",
+                "HLSFragmentSelector": {
+                    "FragmentSelectorType": "PRODUCER_TIMESTAMP",
+                    "TimestampRange": { "StartTimestamp": T0_SECS },
+                },
+            }),
+            listed: &[0, 1, 2, 3, 4],
+            sequence: Some(0),
+        },
+        AnchorRow {
+            case: "LIVE_REPLAY at its default maximum, over MPEG-DASH",
+            path: "/getDASHStreamingSessionURL",
+            member: "DASHStreamingSessionURL",
+            body: serde_json::json!({
+                "StreamName": ANCHOR_STREAM,
+                "PlaybackMode": "LIVE_REPLAY",
+                "DASHFragmentSelector": {
+                    "FragmentSelectorType": "PRODUCER_TIMESTAMP",
+                    "TimestampRange": { "StartTimestamp": T0_SECS },
+                },
+            }),
+            listed: &[0, 1, 2, 3, 4],
+            sequence: None,
+        },
+        AnchorRow {
+            case: "LIVE_REPLAY at a requested maximum of 2, over HLS",
+            path: "/getHLSStreamingSessionURL",
+            member: "HLSStreamingSessionURL",
+            body: serde_json::json!({
+                "StreamName": ANCHOR_STREAM,
+                "PlaybackMode": "LIVE_REPLAY",
+                "MaxMediaPlaylistFragmentResults": 2,
+                "HLSFragmentSelector": {
+                    "FragmentSelectorType": "PRODUCER_TIMESTAMP",
+                    "TimestampRange": { "StartTimestamp": T0_SECS },
+                },
+            }),
+            listed: &[0, 1],
+            sequence: Some(0),
+        },
+        AnchorRow {
+            // A range that carries an end holds the four fragments stamped at
+            // or before it, of which the maximum lists the first three.
+            case: "LIVE_REPLAY at a requested maximum of 3, over a range with an end, over \
+                   MPEG-DASH",
+            path: "/getDASHStreamingSessionURL",
+            member: "DASHStreamingSessionURL",
+            body: serde_json::json!({
+                "StreamName": ANCHOR_STREAM,
+                "PlaybackMode": "LIVE_REPLAY",
+                "MaxManifestFragmentResults": 3,
+                "DASHFragmentSelector": {
+                    "FragmentSelectorType": "PRODUCER_TIMESTAMP",
+                    "TimestampRange": {
+                        "StartTimestamp": T0_SECS,
+                        "EndTimestamp": T0_SECS + 35,
+                    },
+                },
+            }),
+            listed: &[0, 1, 2],
+            sequence: None,
+        },
+        AnchorRow {
+            // The static mode, anchored at the same end of the same range.
+            case: "ON_DEMAND at a requested maximum of 2, over HLS",
+            path: "/getHLSStreamingSessionURL",
+            member: "HLSStreamingSessionURL",
+            body: serde_json::json!({
+                "StreamName": ANCHOR_STREAM,
+                "PlaybackMode": "ON_DEMAND",
+                "MaxMediaPlaylistFragmentResults": 2,
+                "HLSFragmentSelector": {
+                    "FragmentSelectorType": "PRODUCER_TIMESTAMP",
+                    "TimestampRange": {
+                        "StartTimestamp": T0_SECS,
+                        "EndTimestamp": T0_SECS + 1000,
+                    },
+                },
+            }),
+            listed: &[0, 1],
+            sequence: Some(0),
+        },
+        AnchorRow {
+            // The mode filled from the OTHER end: the live stream holds seven
+            // fragments, two more than the default maximum, so the two oldest
+            // are the ones left out and the sequence starts past them.
+            case: "LIVE at its default maximum, over HLS",
+            path: "/getHLSStreamingSessionURL",
+            member: "HLSStreamingSessionURL",
+            body: serde_json::json!({ "StreamName": LIVE_STREAM, "PlaybackMode": "LIVE" }),
+            listed: &[2, 3, 4, 5, 6],
+            sequence: Some(2),
+        },
+        AnchorRow {
+            case: "LIVE at a requested maximum of 2, over MPEG-DASH",
+            path: "/getDASHStreamingSessionURL",
+            member: "DASHStreamingSessionURL",
+            body: serde_json::json!({
+                "StreamName": LIVE_STREAM,
+                "PlaybackMode": "LIVE",
+                "MaxManifestFragmentResults": 2,
+            }),
+            listed: &[5, 6],
+            sequence: None,
+        },
+    ];
+
+    for row in rows {
+        let case = row.case;
+        let harness = seeded();
+        seed_stream_with_durations(
+            &harness,
+            ANCHOR_STREAM,
+            ANCHOR_FRAGMENTS,
+            SLOW_FRAGMENT_MILLIS,
+        );
+        let url = minted_session_url(&harness, case, row.path, row.member, &row.body).await;
+
+        let document = listing_document(&harness, case, &url).await;
+        let listed = listed_fragment_numbers(&document);
+        assert_eq!(
+            listed,
+            fragment_numbers(row.listed),
+            "case {case}: expected the session to list {:?}, got {listed:?} from {document:?}",
+            fragment_numbers(row.listed)
+        );
+        if let Some(sequence) = row.sequence {
+            let declared = media_sequence(&document);
+            assert_eq!(
+                declared,
+                Some(sequence),
+                "case {case}: expected the playlist to declare media sequence {sequence}, got \
+                 {declared:?} from {document:?}"
+            );
+        }
+    }
+}
+
+/// How long a row of the advance table waits for the playlist to reach the
+/// selection the clock owes it: far longer than the fragment durations it
+/// paces at need, so a loaded host cannot fail it.
+const ADVANCE_DEADLINE: Duration = Duration::from_secs(120);
+
+/// How long a row waits between two looks at the playlist.
+const LOOK_AGAIN: Duration = Duration::from_millis(25);
+
+/// One row of the playlist-advance table: a LIVE_REPLAY session whose window
+/// holds more fragments than its maximum, and the selection its document
+/// settles on once the fragments in front of it have played.
+struct AdvanceRow {
+    case: &'static str,
+    /// The operation that mints the session, and the output member its URL is
+    /// reported in.
+    path: &'static str,
+    member: &'static str,
+    /// The minting request.
+    body: serde_json::Value,
+    /// The fragments the document lists at the MINT, stated only where the
+    /// window cannot have advanced yet — a window that holds no more fragments
+    /// than the maximum — so the assertion cannot race the pace.
+    minted: Option<&'static [u64]>,
+    /// Whether one more fragment is ingested into the window after the mint,
+    /// which is what gives a window at its maximum somewhere to advance to.
+    ingest: bool,
+    /// The fragments the document settles on, by index: the window can advance
+    /// no further than the newest fragment the archive holds.
+    settled: &'static [u64],
+    /// The `EXT-X-MEDIA-SEQUENCE` the HLS media playlist then declares; `None`
+    /// for an MPEG-DASH manifest, which declares no such tag.
+    sequence: Option<u64>,
+}
+
+/// RULE: a LIVE_REPLAY playlist ADVANCES over its range at the pace the
+/// fragments it lists play at — "fragments are added as the duration of the
+/// next fragment elapses. For example, if the fragments in the session are two
+/// seconds long, then a new fragment is added to the media playlist every two
+/// seconds" — so each fragment duration that goes by drops the fragment at the
+/// front of the playlist, raises the media sequence number of its first segment
+/// by one and takes in the next fragment of the range, a fragment ingested
+/// after the mint included; it advances no further than the newest fragment the
+/// archive holds, so the playlist keeps the size its maximum asks for.
+///
+/// The rows differ along what the rule generalises over: where the maximum
+/// comes from (the mode's documented default or the request's own), whether the
+/// fragment the playlist advances onto was ingested before or after the mint, a
+/// range left open and one carrying an end, how many durations have to elapse,
+/// and both playback protocols.
+///
+/// Each row waits for the CONDITION — the selection the clock owes the session
+/// — rather than for a span, under a deadline far longer than the archive's own
+/// fragment durations.
+#[tokio::test]
+async fn a_live_replay_playlist_advances_as_the_fragments_it_lists_play_out() {
+    let rows: Vec<AdvanceRow> = vec![
+        AdvanceRow {
+            // The documented default of five, which the seeded range holds
+            // exactly: nothing can leave the playlist until a sixth fragment
+            // is ingested, and then exactly one does.
+            case: "the default maximum, with a fragment ingested after the mint, over HLS",
+            path: "/getHLSStreamingSessionURL",
+            member: "HLSStreamingSessionURL",
+            body: serde_json::json!({
+                "StreamName": STREAM,
+                "PlaybackMode": "LIVE_REPLAY",
+                "HLSFragmentSelector": {
+                    "FragmentSelectorType": "PRODUCER_TIMESTAMP",
+                    "TimestampRange": { "StartTimestamp": T0_SECS },
+                },
+            }),
+            minted: Some(&[0, 1, 2, 3, 4]),
+            ingest: true,
+            settled: &[1, 2, 3, 4, 5],
+            sequence: Some(1),
+        },
+        AdvanceRow {
+            case: "the default maximum, with a fragment ingested after the mint, over MPEG-DASH",
+            path: "/getDASHStreamingSessionURL",
+            member: "DASHStreamingSessionURL",
+            body: serde_json::json!({
+                "StreamName": STREAM,
+                "PlaybackMode": "LIVE_REPLAY",
+                "DASHFragmentSelector": {
+                    "FragmentSelectorType": "PRODUCER_TIMESTAMP",
+                    "TimestampRange": { "StartTimestamp": T0_SECS },
+                },
+            }),
+            minted: Some(&[0, 1, 2, 3, 4]),
+            ingest: true,
+            settled: &[1, 2, 3, 4, 5],
+            sequence: None,
+        },
+        AdvanceRow {
+            // A maximum the archived range already exceeds by one: the playlist
+            // advances one fragment on the clock alone, nothing ingested.
+            case: "a requested maximum of 4 over a range of 5, over HLS",
+            path: "/getHLSStreamingSessionURL",
+            member: "HLSStreamingSessionURL",
+            body: serde_json::json!({
+                "StreamName": STREAM,
+                "PlaybackMode": "LIVE_REPLAY",
+                "MaxMediaPlaylistFragmentResults": 4,
+                "HLSFragmentSelector": {
+                    "FragmentSelectorType": "PRODUCER_TIMESTAMP",
+                    "TimestampRange": { "StartTimestamp": T0_SECS },
+                },
+            }),
+            minted: None,
+            ingest: false,
+            settled: &[1, 2, 3, 4],
+            sequence: Some(1),
+        },
+        AdvanceRow {
+            // Two durations' worth of advance, over a range that carries an
+            // end: it holds the four fragments stamped at or before it.
+            case: "a requested maximum of 2 over a range with an end, over MPEG-DASH",
+            path: "/getDASHStreamingSessionURL",
+            member: "DASHStreamingSessionURL",
+            body: serde_json::json!({
+                "StreamName": STREAM,
+                "PlaybackMode": "LIVE_REPLAY",
+                "MaxManifestFragmentResults": 2,
+                "DASHFragmentSelector": {
+                    "FragmentSelectorType": "PRODUCER_TIMESTAMP",
+                    "TimestampRange": {
+                        "StartTimestamp": T0_SECS,
+                        "EndTimestamp": T0_SECS + 35,
+                    },
+                },
+            }),
+            minted: None,
+            ingest: false,
+            settled: &[2, 3],
+            sequence: None,
+        },
+    ];
+
+    for row in rows {
+        let case = row.case;
+        // Each row runs on its own emulator, so one row's appended fragment
+        // cannot be what the next row observes.
+        let harness = seeded();
+        let url = minted_session_url(&harness, case, row.path, row.member, &row.body).await;
+
+        if let Some(minted) = row.minted {
+            let document = listing_document(&harness, case, &url).await;
+            let listed = listed_fragment_numbers(&document);
+            assert_eq!(
+                listed,
+                fragment_numbers(minted),
+                "case {case}: expected the minted session to list {:?}, got {listed:?} from \
+                 {document:?}",
+                fragment_numbers(minted)
+            );
+        }
+        let settled = fragment_numbers(row.settled);
+        if row.ingest {
+            // The fragment the playlist must advance onto, appended the way the
+            // ingest plane appends to the archive.
+            let ingested = ingest_another_fragment(&harness, STREAM);
+            assert!(
+                settled.contains(&ingested),
+                "case {case}: expected the settled playlist {settled:?} to be the one carrying \
+                 the ingested fragment {ingested}"
+            );
+        }
+
+        // The selection the clock owes this session, waited for by looking
+        // again rather than by sleeping a span.
+        let document = poll_until_listed(&harness, case, &url, &settled).await;
+        if let Some(sequence) = row.sequence {
+            let declared = media_sequence(&document);
+            assert_eq!(
+                declared,
+                Some(sequence),
+                "case {case}: expected the advanced playlist to declare media sequence \
+                 {sequence}, got {declared:?} from {document:?}"
+            );
+        }
+
+        // The media of the fragment the playlist advanced ONTO is served too,
+        // so what moved is the session rather than the text of its document.
+        let newest = settled
+            .last()
+            .unwrap_or_else(|| panic!("case {case}: the settled playlist names a fragment"));
+        let segment = referenced_resources(&document)
+            .into_iter()
+            .find(|resource| resource.contains(newest))
+            .unwrap_or_else(|| panic!("case {case}: the document must name {newest}"));
+        let served = harness.fetch(&sibling_url(&url, &segment)).await;
+        assert_eq!(
+            served.status().as_u16(),
+            200,
+            "case {case}: the media of {newest} must be served, got {} {:?}",
+            served.status(),
+            text_body(&served)
+        );
+        assert!(
+            !served.body().is_empty(),
+            "case {case}: the media of {newest} must carry bytes"
+        );
+    }
+}
+
+/// Look at the session's listing document again until it lists exactly
+/// `expected`, and answer that document.
+///
+/// Waits for the CONDITION, not for a span: a LIVE_REPLAY playlist advances as
+/// the fragments it lists play out, so the wait is bounded by
+/// [`ADVANCE_DEADLINE`], far longer than those durations need.
+async fn poll_until_listed(
+    harness: &Harness,
+    case: &str,
+    url: &str,
+    expected: &[String],
+) -> String {
+    let deadline = std::time::Instant::now() + ADVANCE_DEADLINE;
+    let mut document = String::new();
+    while std::time::Instant::now() < deadline {
+        document = listing_document(harness, case, url).await;
+        if listed_fragment_numbers(&document) == expected {
+            return document;
+        }
+        tokio::time::sleep(LOOK_AGAIN).await;
+    }
+    panic!(
+        "case {case}: expected the playlist to list {expected:?} before the deadline, got {:?} \
+         from {document:?}",
+        listed_fragment_numbers(&document)
+    );
+}
+
 /// RULE: a session's media fragment carries the frames the archive holds for that
 /// fragment and nothing else, in the container the session's `ContainerFormat`
 /// asks for; its initialization carries the track's own declaration and no media.

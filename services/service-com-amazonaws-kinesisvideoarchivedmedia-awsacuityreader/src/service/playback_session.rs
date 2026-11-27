@@ -256,7 +256,7 @@ fn resolved_session<Eng: Send + Sync + 'static>(
         .resolve_stream(engine, None, Some(&session.stream_name), None)
         .ok()?;
 
-    let playlist = session.playlist(&stream);
+    let playlist = session.playlist(&stream, now);
     let played: Vec<(&crate::state::StoredFragment, PlayedFragment)> = playlist
         .fragment_numbers
         .iter()

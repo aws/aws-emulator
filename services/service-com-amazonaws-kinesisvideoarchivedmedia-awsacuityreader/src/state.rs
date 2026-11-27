@@ -538,8 +538,8 @@ impl ResolvedStream<'_> {
 
     /// The manifest/playlist a streaming session over this stream serves from
     /// the archive AS IT STANDS: the fragment numbers `window` selects, at most
-    /// `max_fragments` of them, and where the first of them sits in that
-    /// selection.
+    /// `max_fragments` of them as `cap` spends that maximum, and where the
+    /// first of them sits in that selection.
     ///
     /// Read at every fetch of a session whose playlist grows
     /// ([`StreamingSession::grows`]), so a fragment ingested after the session
@@ -550,7 +550,8 @@ impl ResolvedStream<'_> {
     /// and an MPEG-DASH session over the same archive and the same parameters
     /// carry the same fragments. In EVERY playback mode the fragments that
     /// share one start timestamp are collapsed to the newest of them before the
-    /// cap is applied ([`collapse_shared_start_timestamps`]).
+    /// cap is applied ([`collapse_shared_start_timestamps`]), and in every mode
+    /// the cap is then spent on the end of the window [`PlaylistCap`] names.
     ///
     /// SELECTION alone: whether a session over this window exists at all is
     /// [`Self::minted_session_fragment_numbers`]'s question, because the
@@ -562,17 +563,17 @@ impl ResolvedStream<'_> {
         window: SessionWindow,
         origin: TimestampOrigin,
         max_fragments: usize,
+        cap: PlaylistCap,
     ) -> SessionPlaylist {
-        match window {
+        let selected = match window {
             SessionWindow::Live => {
-                // LIVE serves the most recently INGESTED fragments. The
-                // ordering is by server timestamp whatever
-                // `FragmentSelectorType` the request names, because that is
-                // what the selector's own documentation says of LIVE: "the most
-                // recently ingested fragments based on server timestamps are
-                // included" — "this means that even if fragments ingested in the
-                // past have producer timestamps with values now, they are not
-                // included".
+                // LIVE takes the whole archive as its window. The ordering is
+                // by server timestamp whatever `FragmentSelectorType` the
+                // request names, because that is what the selector's own
+                // documentation says of LIVE: "the most recently ingested
+                // fragments based on server timestamps are included" — "this
+                // means that even if fragments ingested in the past have
+                // producer timestamps with values now, they are not included".
                 // Collapsed FIRST, so the fragment that is kept is placed by
                 // its OWN server timestamp: it is the one the playlist carries,
                 // and LIVE serves the most recently ingested of what it
@@ -580,34 +581,34 @@ impl ResolvedStream<'_> {
                 let mut newest =
                     collapse_shared_start_timestamps(self.fragments.iter().collect(), origin);
                 newest.sort_by_key(|fragment| epoch_millis(fragment.server_timestamp));
-                let skip = newest.len().saturating_sub(max_fragments);
-                SessionPlaylist {
-                    fragment_numbers: newest
-                        .into_iter()
-                        .skip(skip)
-                        .map(|fragment| fragment.fragment_number.clone())
-                        .collect(),
-                    first_sequence: u64::try_from(skip).unwrap_or(u64::MAX),
-                }
+                newest
             }
-            // ON_DEMAND and LIVE_REPLAY serve the OLDEST fragments in the
-            // requested range, up to the maximum.
+            // ON_DEMAND and LIVE_REPLAY take the fragments of the requested
+            // range, in the order the archive holds them.
             SessionWindow::Range {
                 start_millis,
                 end_millis,
-            } => SessionPlaylist {
-                fragment_numbers: collapse_shared_start_timestamps(
-                    self.fragments_in_range(origin, start_millis, end_millis),
-                    origin,
-                )
+            } => collapse_shared_start_timestamps(
+                self.fragments_in_range(origin, start_millis, end_millis),
+                origin,
+            ),
+        };
+        // The maximum, spent the way this session's playback mode fills its
+        // playlist from the window: from the stream head, from the start of
+        // the range as playback elapses, or from the start of the range once
+        // and for all.
+        let skip = cap.skipped(&selected, max_fragments);
+        SessionPlaylist {
+            fragment_numbers: selected
                 .into_iter()
+                .skip(skip)
                 .take(max_fragments)
                 .map(|fragment| fragment.fragment_number.clone())
                 .collect(),
-                // The oldest fragment of the range is the first segment of the
-                // playlist, so nothing has slid out in front of it.
-                first_sequence: 0,
-            },
+            // Every fragment of the window dropped in FRONT of the first one
+            // listed has slid out of the playlist, so the first segment's media
+            // sequence number is exactly how many of them there are.
+            first_sequence: u64::try_from(skip).unwrap_or(u64::MAX),
         }
     }
 
@@ -642,12 +643,13 @@ impl ResolvedStream<'_> {
         window: SessionWindow,
         origin: TimestampOrigin,
         max_fragments: usize,
+        cap: PlaylistCap,
         now: SystemTime,
     ) -> Vec<String> {
         if matches!(window, SessionWindow::Live) && !self.holds_live_fragments(origin, now) {
             return Vec::new();
         }
-        self.session_playlist(window, origin, max_fragments)
+        self.session_playlist(window, origin, max_fragments, cap)
             .fragment_numbers
     }
 }
@@ -787,9 +789,10 @@ pub enum SessionWindow {
     /// head is fresh — a LIVE session over a stream with no fragment in the
     /// last [`LIVE_FRAGMENT_WINDOW`] serves nothing.
     Live,
-    /// `ON_DEMAND` / `LIVE_REPLAY`: the oldest fragments whose selected
-    /// timestamp falls in the inclusive requested range. An unset bound leaves
-    /// that end of the range open.
+    /// `ON_DEMAND` / `LIVE_REPLAY`: the fragments whose selected timestamp
+    /// falls in the inclusive requested range, of which the mode's
+    /// [`PlaylistCap`] keeps at most its maximum. An unset bound leaves that
+    /// end of the range open.
     Range {
         /// The inclusive start of the requested range, in epoch milliseconds.
         start_millis: i64,
@@ -816,6 +819,128 @@ pub struct SessionPlaylist {
     pub first_sequence: u64,
 }
 
+/// HOW a session's playlist spends its fragment maximum: which fragments of its
+/// window the maximum is filled from, and how that selection moves while the
+/// session lives.
+///
+/// The documented difference between the three playback modes, in the one place
+/// the selection reads it. The maximum-fragments member of either
+/// streaming-session input says "when the PlaybackMode is LIVE, the most recent
+/// fragments are returned up to this value. When the PlaybackMode is ON_DEMAND,
+/// the oldest fragments are returned, up to this maximum number", and
+/// `LIVE_REPLAY` is the mode between the two: its playlist "is updated
+/// similarly to how it is updated for LIVE mode except that it starts by
+/// including fragments from a given start time. Instead of fragments being
+/// added as they are ingested, fragments are added as the duration of the next
+/// fragment elapses."
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlaylistCap {
+    /// `LIVE`: the maximum is filled from the HEAD of the stream, so the
+    /// playlist carries the most recently ingested fragments and everything
+    /// older has slid out in front of them.
+    Head,
+    /// `LIVE_REPLAY`: the maximum is filled from the START of the requested
+    /// range and its front advances with the playback that has ELAPSED since
+    /// the session was minted — one fragment leaves the playlist for each
+    /// fragment duration gone by, so a fragment ingested later enters it once
+    /// the fragments in front of it have played.
+    Replay {
+        /// How long ago the session was minted, in milliseconds: the playback
+        /// time that has elapsed since its range began.
+        elapsed_millis: i64,
+    },
+    /// `ON_DEMAND`: the maximum is filled from the start of the requested range
+    /// and never moves, because the playlist of this mode is complete when it
+    /// is minted.
+    Fixed,
+}
+
+impl PlaylistCap {
+    /// How `playback_mode`'s playlist spends its maximum `elapsed` after the
+    /// session was minted.
+    ///
+    /// `ON_DEMAND` is the one mode whose playlist is complete at the mint — it
+    /// "is typically static for sessions with a PlaybackType of ON_DEMAND" —
+    /// `LIVE` is the one that plays the stream head, "continually updated with
+    /// the latest fragments as they become available", and `LIVE_REPLAY` is the
+    /// one that replays the archive from a given start time at the pace the
+    /// fragments themselves play at.
+    #[must_use]
+    pub fn of_playback_mode(playback_mode: &str, elapsed: Duration) -> Self {
+        match playback_mode {
+            ON_DEMAND_PLAYBACK_MODE => Self::Fixed,
+            LIVE_REPLAY_PLAYBACK_MODE => Self::Replay {
+                elapsed_millis: i64::try_from(elapsed.as_millis()).unwrap_or(i64::MAX),
+            },
+            // [`LIVE_PLAYBACK_MODE`], and with it the mode a request that names
+            // none asks for: "The default is LIVE".
+            _ => Self::Head,
+        }
+    }
+
+    /// How `playback_mode`'s playlist spends its maximum at the instant the
+    /// session is MINTED, where no playback has elapsed yet: a `LIVE_REPLAY`
+    /// playlist therefore "starts by including fragments from a given start
+    /// time".
+    #[must_use]
+    pub fn at_mint(playback_mode: &str) -> Self {
+        Self::of_playback_mode(playback_mode, Duration::ZERO)
+    }
+
+    /// Whether the playlist this maximum belongs to GROWS: whether re-reading
+    /// it can show a fragment it did not list before.
+    ///
+    /// True of the two selections that MOVE, false of the fixed one, because
+    /// that is the same fact about the playback mode: a complete playlist is
+    /// one whose fragments were chosen once.
+    #[must_use]
+    pub fn grows(self) -> bool {
+        !matches!(self, Self::Fixed)
+    }
+
+    /// How many of `selected` sit in FRONT of the fragments a playlist of at
+    /// most `max_fragments` carries — the ones that have left it, which is also
+    /// the media sequence number of its first segment.
+    ///
+    /// No selection advances past the end of what the archive holds: there is
+    /// no later fragment to fill the playlist with, so its front waits there
+    /// until one is ingested, which is what keeps a session's playlist the size
+    /// its maximum asks for.
+    #[must_use]
+    pub fn skipped(self, selected: &[&StoredFragment], max_fragments: usize) -> usize {
+        let furthest = selected.len().saturating_sub(max_fragments);
+        match self {
+            Self::Head => furthest,
+            Self::Fixed => 0,
+            Self::Replay { elapsed_millis } => played_out(selected, elapsed_millis).min(furthest),
+        }
+    }
+}
+
+/// How many of `fragments`, counted from the front, have finished playing
+/// `elapsed_millis` after playback started at the first of them.
+///
+/// The pace `LIVE_REPLAY` adds fragments at: "fragments are added as the
+/// duration of the next fragment elapses. For example, if the fragments in the
+/// session are two seconds long, then a new fragment is added to the media
+/// playlist every two seconds" — so one leaves the front of the playlist for
+/// each fragment duration that has gone by, at the durations the archive itself
+/// records.
+#[must_use]
+fn played_out(fragments: &[&StoredFragment], elapsed_millis: i64) -> usize {
+    let mut played = 0i64;
+    let mut count = 0usize;
+    for fragment in fragments {
+        played =
+            played.saturating_add(i64::try_from(fragment.duration_millis).unwrap_or(i64::MAX));
+        if played > elapsed_millis {
+            break;
+        }
+        count += 1;
+    }
+    count
+}
+
 /// `PlaybackMode` LIVE: the mode that plays the stream head, the only one that
 /// carries no timestamp range, and the value a request naming no mode means
 /// ("The default is LIVE").
@@ -824,6 +949,11 @@ pub const LIVE_PLAYBACK_MODE: &str = "LIVE";
 /// `PlaybackMode` ON_DEMAND: the mode that plays a closed range of the archive,
 /// so it is the one whose range must carry both bounds.
 pub const ON_DEMAND_PLAYBACK_MODE: &str = "ON_DEMAND";
+
+/// `PlaybackMode` LIVE_REPLAY: the mode that REPLAYS the archive from a given
+/// start time, "useful to be able to start playback from when an event is
+/// detected", and the one whose range may be left open at its end.
+pub const LIVE_REPLAY_PLAYBACK_MODE: &str = "LIVE_REPLAY";
 
 /// The bounds one streaming-session request's fragment selector asks for, in
 /// epoch milliseconds, with each bound present only when the request carried it.
@@ -1077,6 +1207,18 @@ pub struct StreamingSession {
 }
 
 impl StreamingSession {
+    /// How this session's playlist spends its fragment maximum at `now`: the
+    /// rule its playback mode fills that maximum by, with the playback that
+    /// has elapsed since the session was minted
+    /// ([`PlaylistCap::of_playback_mode`]).
+    #[must_use]
+    pub fn cap(&self, now: SystemTime) -> PlaylistCap {
+        PlaylistCap::of_playback_mode(
+            &self.playback_mode,
+            now.duration_since(self.created_at).unwrap_or(Duration::ZERO),
+        )
+    }
+
     /// Whether this session's playlist GROWS: whether the fragments it serves
     /// are re-selected from the archive on every fetch, so fragments ingested
     /// after it was minted appear in it.
@@ -1093,26 +1235,34 @@ impl StreamingSession {
     /// HLS media playlist is typically static for sessions with a PlaybackType
     /// of ON_DEMAND".
     ///
-    /// The ONE predicate for that difference, so what a playlist or manifest
-    /// ADVERTISES — an `EXT-X-ENDLIST`-closed VOD playlist, a `static`
+    /// The ONE predicate for that difference, read off the same rule the
+    /// SELECTION spends its maximum by ([`Self::cap`]), so what a playlist or
+    /// manifest ADVERTISES — an `EXT-X-ENDLIST`-closed VOD playlist, a `static`
     /// presentation — cannot drift from whether re-reading it can show anything
-    /// new.
+    /// new. WHICH rule a mode follows does not depend on the instant it is
+    /// asked at; only how far that rule has advanced does.
     #[must_use]
     pub fn grows(&self) -> bool {
-        self.playback_mode != ON_DEMAND_PLAYBACK_MODE
+        PlaylistCap::at_mint(&self.playback_mode).grows()
     }
 
-    /// What this session's playlist or manifest lists over `stream` right now.
+    /// What this session's playlist or manifest lists over `stream` at `now`.
     ///
     /// A growing session re-selects from the archive by its own recorded
-    /// selection — its window, its timestamp origin and its maximum fragment
-    /// count — so a fragment ingested since the mint is listed and one that
-    /// slid out of a LIVE window is not. A session that does not grow lists the
-    /// snapshot it was minted with.
+    /// selection — its window, its timestamp origin, its maximum fragment count
+    /// and the rule that maximum is filled by — so a fragment ingested since
+    /// the mint is listed once that rule reaches it, and one the selection has
+    /// moved past is not. A session that does not grow lists the snapshot it
+    /// was minted with.
     #[must_use]
-    pub fn playlist(&self, stream: &ResolvedStream<'_>) -> SessionPlaylist {
+    pub fn playlist(&self, stream: &ResolvedStream<'_>, now: SystemTime) -> SessionPlaylist {
         if self.grows() {
-            return stream.session_playlist(self.window, self.origin, self.max_fragments);
+            return stream.session_playlist(
+                self.window,
+                self.origin,
+                self.max_fragments,
+                self.cap(now),
+            );
         }
         SessionPlaylist {
             fragment_numbers: self.fragment_numbers.clone(),

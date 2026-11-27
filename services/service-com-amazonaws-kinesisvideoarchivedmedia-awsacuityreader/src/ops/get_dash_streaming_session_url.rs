@@ -212,9 +212,9 @@ use super::types::*;
 // on the media a session plays, classified by the one reader of this plane.
 use crate::service::media_requirements::{session_media_refusal, MediaRefusal};
 use crate::state::{
-    date_time_millis, service_state, session_parameters, session_url, SelectedTimestampRange,
-    SessionParameters, SessionProtocol, SessionRequest, StreamLookupError, StreamingSession,
-    TimestampOrigin, NO_DATA_RETENTION_MESSAGE, NO_FRAGMENTS_MESSAGE,
+    date_time_millis, service_state, session_parameters, session_url, PlaylistCap,
+    SelectedTimestampRange, SessionParameters, SessionProtocol, SessionRequest, StreamLookupError,
+    StreamingSession, TimestampOrigin, NO_DATA_RETENTION_MESSAGE, NO_FRAGMENTS_MESSAGE,
 };
 use std::time::SystemTime;
 
@@ -436,12 +436,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             }
 
             // The manifest the session starts from, by the one selection rule
-            // both streaming-session operations share. A session with nothing
-            // to serve does not exist.
+            // both streaming-session operations share — the maximum filled the
+            // way this mode fills it, with no playback elapsed yet. A session
+            // with nothing to serve does not exist.
             let selected = stream.minted_session_fragment_numbers(
                 window,
                 origin,
                 max_fragments,
+                PlaylistCap::at_mint(&playback_mode),
                 SystemTime::now(),
             );
             if selected.is_empty() {
