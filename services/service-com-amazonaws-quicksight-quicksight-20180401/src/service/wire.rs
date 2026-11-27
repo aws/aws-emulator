@@ -2,22 +2,23 @@
 
 //! How this service's `restJson1` answers report the request id of a FAILED call.
 //!
-//! RULE: a FAILURE of this service reports the request id of the call in the
-//! `x-amzn-RequestId` response header and NOWHERE in its document — the error document is
-//! the members the class fills (its `Message`, and the resource discriminator where the
-//! class sets one) and nothing else, which is what a recorded refusal of this service
-//! carries. Every exception shape of this model DECLARES a `RequestId` member
+//! RULE: EVERY failure of this service reports the request id of the call in the
+//! `x-amzn-RequestId` response header — this module's half of the rule, and the one place
+//! every refusal of every operation states it. Whether the error DOCUMENT states that same
+//! id beside the members the class fills depends on the surface the call was addressed to,
+//! and is owned by [`super::error_document_request_id`], at the seam that can see the
+//! request. Every exception shape of this model DECLARES a `RequestId` member
 //! (`smithy_query(query="shape",
 //! shape="ResourceNotFoundException,ResourceExistsException,LimitExceededException",
 //! model_path="services/service-com-amazonaws-quicksight-quicksight-20180401/smithy-model/com-amazonaws-quicksight-quicksight-20180401.json")`),
-//! and it is OPTIONAL in every one of them, so a refusal leaving it out is a document the
-//! model allows. A SUCCESS is the other half of the contract and is untouched here: an
-//! output shape declares `RequestId` as a body member and an answer that succeeds states it
-//! there.
+//! and it is OPTIONAL in every one of them, so a refusal stating it and a refusal leaving
+//! it out are both documents the model allows. A SUCCESS is the other half of the contract
+//! and is untouched here: an output shape declares `RequestId` as a body member and an
+//! answer that succeeds states it there.
 //!
 //! The framework's generic serializer writes the document — every member the handler set,
 //! the request id among them — and knows nothing of the header, and `vendor/` is read-only,
-//! so both halves of the rule live at the seam a service owns over the answers it
+//! so this half of the rule lives at the seam a service owns over the answers it
 //! writes: [`RequestIdMirroredRestJson`] is the protocol `service.rs` hands the dispatch
 //! sequence through [`smithy_server_runtime::Service::override_protocol`], so EVERY modelled
 //! failure of EVERY operation goes out the same way and no handler, shape declaration or
@@ -43,12 +44,16 @@ use aws_smithy_schema_server::protocol::{ProtocolError, ServerProtocol};
 use aws_smithy_schema_server::RestJsonServerProtocol;
 use aws_smithy_types::{BigDecimal, BigInteger, DateTime, Document};
 
-/// The response header AWS reports the request id of a FAILED call in, and the only place
-/// such an answer reports it.
-const REQUEST_ID_HEADER: &str = "x-amzn-RequestId";
+/// The response header AWS reports the request id of a FAILED call in, and the place EVERY
+/// such answer of this service reports it.
+///
+/// `pub(super)` because the document half of the rule restates the id this header reports
+/// rather than minting a second one ([`super::error_document_request_id`]).
+pub(super) const REQUEST_ID_HEADER: &str = "x-amzn-RequestId";
 
-/// The member this model's exception shapes declare the request id under.
-const REQUEST_ID_MEMBER: &str = "RequestId";
+/// The member this model's exception shapes declare the request id under — the one the
+/// document half of the rule states it in too.
+pub(super) const REQUEST_ID_MEMBER: &str = "RequestId";
 
 /// The error shape's request-id member, or `None` for a shape that declares none.
 ///
@@ -193,8 +198,12 @@ impl ShapeSerializer for Observing<'_> {
 }
 
 /// The `restJson1` codec that reports a failure's request id — the one the handler set on
-/// the member the model declares — in the `x-amzn-RequestId` response header instead of in
-/// the error document: the model's own protocol in every other respect.
+/// the member the model declares — in the `x-amzn-RequestId` response header rather than
+/// from the document it was written on: the model's own protocol in every other respect.
+///
+/// The document the id is taken off is what the header then reports, so a surface whose
+/// refusals DO state the id in their document restates this header's value
+/// ([`super::error_document_request_id`]) and the two can never name different ids.
 #[derive(Debug)]
 pub struct RequestIdMirroredRestJson {
     inner: RestJsonServerProtocol,

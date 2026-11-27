@@ -42,13 +42,15 @@
 //!
 //! A sixth seam, `override_protocol`, is one this service also takes, for one thing the
 //! generic renderer cannot express: a failure repeats the request id its error document
-//! states in the `x-amzn-RequestId` response header. See [`wire`].
+//! states in the `x-amzn-RequestId` response header. See [`wire`]. The other half of that
+//! rule — which surfaces also state that id in the error DOCUMENT — needs the REQUEST,
+//! which the codec seam is not handed, so it is taken in `override_operation`. See
+//! [`error_document_request_id`].
 
-use smithy_server_runtime::{
-    http, ErasedOperation, Refusal, Refused, Service,
-};
+use smithy_server_runtime::{http, ErasedOperation, Refusal, Refused, Service};
 use std::sync::Arc;
 
+pub mod error_document_request_id;
 pub mod wire;
 
 /// The `com-amazonaws-quicksight-quicksight-20180401` emulated service: the generated [`ServiceDefinition`] plus
@@ -62,6 +64,11 @@ pub struct EmulatedService<Eng: Send + Sync + 'static> {
     /// of [`wire`]. Built once here because [`Service::override_protocol`] hands back a
     /// borrow of it.
     protocol: wire::RequestIdMirroredRestJson,
+    /// The wrapper every request the generated routing table can serve is served through,
+    /// which states the request id in the error document of the refusals whose surface
+    /// states it there (see [`error_document_request_id`]). Held rather than built per
+    /// request: [`Service::override_operation`] hands back a borrow of it.
+    request_id_document: error_document_request_id::NamespaceScopedRequestIdOperation,
 }
 
 impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
@@ -72,6 +79,7 @@ impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
         Self {
             entry: crate::ServiceDefinition::new(engine),
             protocol: wire::RequestIdMirroredRestJson::new(),
+            request_id_document: error_document_request_id::NamespaceScopedRequestIdOperation,
         }
     }
 }
@@ -98,12 +106,21 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
         &self,
         req: &aws_smithy_runtime_api::http::Request,
     ) -> Option<&dyn ErasedOperation> {
-        // Return `Some(op)` to serve a request the model's routing key cannot name
-        // correctly; `None` (the default) lets the generated routing table resolve
-        // it. `req` is the whole request, so a decision that depends on the body —
-        // the `Action` form field on a query protocol, say — is reachable here.
-        let _ = req;
-        None
+        // Every request the generated routing table can serve is served through the
+        // wrapper that owns the document half of the request-id rule (see
+        // [`error_document_request_id`]): it delegates to that same table entry, so the
+        // routing stays the model's and the framework still owns the whole
+        // deserialize → validate → handle → serialize sequence. A request whose method and
+        // path name no modelled operation is declined here, so the framework answers it as
+        // the unroutable request it is.
+        let routable = self
+            .entry
+            .protocol()
+            .routing_key(req)
+            .ok()
+            .and_then(|key| self.entry.routing_table().get(key))
+            .is_some();
+        routable.then_some(&self.request_id_document as _)
     }
 
     fn override_refusal(&self, refusal: &Refusal) -> Option<Refused> {

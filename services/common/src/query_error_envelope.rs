@@ -63,7 +63,10 @@
 //!   [`with_request_id_error_member_named`] is that same report for a service whose error
 //!   bodies SPELL the member another way, reached through [`RequestIdReportedOperation`]:
 //!   the spelling is the service's own fact, read off its recordings, so it is passed in
-//!   rather than restated here.
+//!   rather than restated here. [`with_stated_request_id_error_member_named`] is that
+//!   report for a service that also knows WHICH id the answer belongs to — one whose
+//!   answer already states it somewhere else (a header a layer below wrote, say) — so the
+//!   body restates that id rather than a second one.
 //! * [`with_request_id_header_and_error_member`], the header report and the body-member
 //!   report composed under ONE id: the header on every response and the `requestId` member
 //!   of a JSON error body, which is what a service whose recorded failures state the id in
@@ -422,8 +425,27 @@ pub fn with_stated_request_id_error_member(resp: RtResponse, request_id: &str) -
     with_stated_error_member(resp, request_id, REQUEST_ID_MEMBER)
 }
 
+/// [`with_stated_request_id_error_member`], with the MEMBER the error body spells the id in
+/// chosen by the caller — the writer for a service that knows BOTH which request it is
+/// answering and which member its own error bodies carry the id in.
+///
+/// The two facts a service brings are the two arguments: the id (`request_id`, already
+/// stated elsewhere on that answer, so the body and that other place cannot name different
+/// ids) and the spelling (`member`, read off the service's recordings — several AWS services
+/// spell it `requestId`, others `RequestId` beside the capitalized members their models
+/// declare). Everything else is the body [`with_request_id_error_member`] runs: the same
+/// idempotence, the same textual insertion that leaves every other byte as the renderer
+/// wrote it, and the same silence about a success or a body that is not a JSON object.
+pub fn with_stated_request_id_error_member_named(
+    resp: RtResponse,
+    request_id: &str,
+    member: &str,
+) -> RtResponse {
+    with_stated_error_member(resp, request_id, member)
+}
+
 /// The ONE statement of the body-member report: `request_id` written into `member` of a JSON
-/// error body, which is what the three writers above differ only in the id and the member of.
+/// error body, which is what the four writers above differ only in the id and the member of.
 fn with_stated_error_member(mut resp: RtResponse, request_id: &str, member: &str) -> RtResponse {
     if resp.status().as_u16() < FIRST_FAILURE_STATUS {
         return resp;
@@ -642,7 +664,16 @@ where
 
 /// The modelled operation the service's routing table names for this request, or `None`
 /// when the request names none.
-fn modeled_operation<'s>(svc: &'s dyn Service, req: &RtRequest) -> Option<&'s dyn ErasedOperation> {
+///
+/// Public because a service whose report needs the REQUEST — one deciding from the route
+/// what to report, which a [`Report`] (`fn(RtResponse) -> RtResponse`) cannot see — writes
+/// its own wrapper and still delegates to the operation its own table names, exactly as
+/// [`serve_reporting`] does. The lookup is the service's own generated table, so nothing
+/// about routing is restated by such a wrapper.
+pub fn modeled_operation<'s>(
+    svc: &'s dyn Service,
+    req: &RtRequest,
+) -> Option<&'s dyn ErasedOperation> {
     let definition = svc.definition();
     let key = definition.protocol().routing_key(req).ok()?;
     definition.routing_table().get(key)
@@ -1514,6 +1545,102 @@ mod tests {
                 answered_body,
                 "case {case:?}: expected a second report to change nothing"
             );
+        }
+    }
+
+    /// RULE: the stated-and-named report writes the id its CALLER already knows into the
+    /// member that caller's service spells it in — it mints none of its own, so the body
+    /// and whatever else states that id on the answer can never disagree.
+    ///
+    /// The rows span what it generalises over: the member's spelling, the id's own form (a
+    /// service whose ids are not UUID-shaped states them through this writer too), and the
+    /// responses it must leave untouched — a success and a body that already names the
+    /// member.
+    #[test]
+    fn the_stated_error_member_report_names_the_id_it_was_given() {
+        // (case, status, the member to name, the id to state, the rendered body, whether
+        // the member is added)
+        let rows = [
+            (
+                "the default spelling",
+                400u16,
+                REQUEST_ID_MEMBER,
+                "11112222-3333-4444-5555-666677778888",
+                r#"{"message":"no"}"#,
+                true,
+            ),
+            (
+                "a capitalized member beside capitalized ones",
+                404,
+                "RequestId",
+                "aaaabbbb-cccc-dddd-eeee-ffff00001111",
+                r#"{"__type":"NotFound","Message":"no"}"#,
+                true,
+            ),
+            (
+                "an id spelled a service's own way",
+                409,
+                "RequestId",
+                "7FMRQ9H4ABCDEF01",
+                r#"{"Message":"taken"}"#,
+                true,
+            ),
+            (
+                "a body already naming the member",
+                404,
+                "RequestId",
+                "11112222-3333-4444-5555-666677778888",
+                r#"{"Message":"no","RequestId":"aaaabbbb-cccc-dddd-eeee-ffff00001111"}"#,
+                false,
+            ),
+            (
+                "a success",
+                200,
+                "RequestId",
+                "11112222-3333-4444-5555-666677778888",
+                r#"{"Arn":"a"}"#,
+                false,
+            ),
+        ];
+
+        for (case, status, member, request_id, body, adds) in rows {
+            let answered = with_stated_request_id_error_member_named(
+                RtResponse::new(
+                    aws_smithy_runtime_api::http::StatusCode::try_from(status).expect("a status"),
+                    SdkBody::from(body),
+                ),
+                request_id,
+                member,
+            );
+            let answered_body = std::str::from_utf8(answered.body().bytes().expect("bytes"))
+                .expect("utf-8")
+                .to_string();
+            if !adds {
+                assert_eq!(
+                    answered_body, body,
+                    "case {case:?}: expected the body to survive byte for byte, got \
+                     {answered_body:?}"
+                );
+                continue;
+            }
+            let document: serde_json::Value =
+                serde_json::from_str(&answered_body).unwrap_or_else(|e| {
+                    panic!("case {case:?}: expected JSON, got {answered_body:?} ({e})")
+                });
+            assert_eq!(
+                document.get(member).and_then(serde_json::Value::as_str),
+                Some(request_id),
+                "case {case:?}: expected the id it was given in {member:?}, got \
+                 {answered_body:?}"
+            );
+            let original: serde_json::Value = serde_json::from_str(body).expect("a JSON object");
+            for (name, value) in original.as_object().expect("an object") {
+                assert_eq!(
+                    document.get(name),
+                    Some(value),
+                    "case {case:?}: expected the member {name:?} to survive"
+                );
+            }
         }
     }
 

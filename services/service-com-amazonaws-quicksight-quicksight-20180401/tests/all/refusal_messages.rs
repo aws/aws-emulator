@@ -26,13 +26,18 @@
 //! The closing suites are about WHERE an answer states the request id of the call,
 //! which is the same rule read across error classes: a SUCCESS states it in the
 //! `RequestId` member its output shape declares, and a FAILURE states it in the
-//! `x-amzn-RequestId` response header and nowhere in its document, which carries the
-//! members the class fills and nothing else.
+//! `x-amzn-RequestId` response header — always — and in the `RequestId` member of its
+//! document only when the call was addressed to a route scoped to a NAMESPACE
+//! (`/accounts/{AwsAccountId}/namespaces/{Namespace}/…`, the identity surface); a refusal
+//! of an account-scoped route (a data source, a folder) states it in that header alone and
+//! its document is the members its class fills. So each row below carries which surface it
+//! addresses, and the tables span both.
 
 use serde_json::{json, Value};
 
 use super::data_source_data_set_lifecycle::Harness;
 use super::delete_namespace::{delete_namespace, settle_deletion};
+use super::group_lifecycle::group_label;
 use super::namespace_lifecycle::{create_namespace_in, describe_namespace_in};
 
 /// The account most rows use.
@@ -799,21 +804,28 @@ async fn deleting_a_namespace_nothing_holds_names_the_delete_that_failed() {
 /// spelling.
 const REQUEST_ID_HEADER: &str = "x-amzn-requestid";
 
-/// The member a SUCCESS of this service states the id of the call in — the one its output
-/// shape declares for it. A refusal document carries no such member: its id is reported in
-/// [`REQUEST_ID_HEADER`] alone.
+/// The member this service states the id of the call in, in a SUCCESS — the one its output
+/// shape declares for it — and in the document of a refusal of its namespace-scoped
+/// identity surface. A refusal of an account-scoped route carries no such member: its id is
+/// reported in [`REQUEST_ID_HEADER`] alone.
 /// Source: smithy_query(query="shape", shape="ResourceNotFoundException,
 /// ResourceExistsException,InvalidParameterValueException") — each of them declares
 /// `RequestId`, and declares it OPTIONAL.
 const REQUEST_ID_MEMBER: &str = "RequestId";
 
 /// Every member a refusal document of this service may carry: the shape discriminator the
-/// JSON envelope names the error class in, the error shape's own `Message` and
-/// `ResourceType`, and the lowercase `message` the framework's synthetic shapes word a
+/// JSON envelope names the error class in, the error shape's own `Message`, `ResourceType`
+/// and `RequestId`, and the lowercase `message` the framework's synthetic shapes word a
 /// 501 in.
 /// Source: smithy_query(query="shape", shape="ResourceNotFoundException,
 /// ResourceExistsException,InvalidParameterValueException").
-const REFUSAL_BODY_MEMBERS: [&str; 4] = ["__type", "Message", "ResourceType", "message"];
+const REFUSAL_BODY_MEMBERS: [&str; 5] = [
+    "__type",
+    "Message",
+    "ResourceType",
+    "RequestId",
+    "message",
+];
 
 /// One row of the refusal-answer table: the call to make, and what its answer states.
 struct RefusalRow {
@@ -832,10 +844,14 @@ struct RefusalRow {
     /// framework's synthetic shapes (the 501 among them) declare none, so they report none
     /// anywhere.
     reports_a_request_id: bool,
+    /// Whether the DOCUMENT states that same id too, which is what the surface the call
+    /// was addressed to decides: a route scoped to a namespace states it, an account-scoped
+    /// route states it in the header alone.
+    states_the_id_in_its_document: bool,
 }
 
 #[tokio::test]
-async fn a_refusal_reports_its_request_id_in_its_header_and_not_in_its_document() {
+async fn a_refusal_reports_its_request_id_in_its_header_and_in_the_document_of_its_surface() {
     let harness = Harness::new();
 
     // Fixtures the rows refuse against: a folder and a group whose ids are taken, a
@@ -856,8 +872,9 @@ async fn a_refusal_reports_its_request_id_in_its_header_and_not_in_its_document(
     assert_eq!(status, 200, "fixture delete: got {status} with {body}");
 
     // Rows: the error class and the status it renders under, the operation that refuses,
-    // whether the class reports a `ResourceType` beside its sentence, and — the last row
-    // — a rendered shape that declares no request-id member at all.
+    // the surface it was addressed to (the account's and the namespace-scoped identity one
+    // both), whether the class reports a `ResourceType` beside its sentence, and — the last
+    // row — a rendered shape that declares no request-id member at all.
     let rows: Vec<RefusalRow> = vec![
         RefusalRow {
             case: "a data source deleted before the read, 404",
@@ -868,6 +885,7 @@ async fn a_refusal_reports_its_request_id_in_its_header_and_not_in_its_document(
             shape: "ResourceNotFoundException",
             resource_type: None,
             reports_a_request_id: true,
+            states_the_id_in_its_document: false,
         },
         RefusalRow {
             case: "a data source nothing created, on the update, 404",
@@ -878,6 +896,7 @@ async fn a_refusal_reports_its_request_id_in_its_header_and_not_in_its_document(
             shape: "ResourceNotFoundException",
             resource_type: None,
             reports_a_request_id: true,
+            states_the_id_in_its_document: false,
         },
         RefusalRow {
             case: "a second create of the same folder id, 409",
@@ -888,6 +907,7 @@ async fn a_refusal_reports_its_request_id_in_its_header_and_not_in_its_document(
             shape: "ResourceExistsException",
             resource_type: None,
             reports_a_request_id: true,
+            states_the_id_in_its_document: false,
         },
         RefusalRow {
             case: "a second create of the same data source id, 409",
@@ -902,6 +922,7 @@ async fn a_refusal_reports_its_request_id_in_its_header_and_not_in_its_document(
             shape: "ResourceExistsException",
             resource_type: Some("DATA_SOURCE"),
             reports_a_request_id: true,
+            states_the_id_in_its_document: false,
         },
         RefusalRow {
             case: "a second create of the same group name, which reports a ResourceType",
@@ -912,6 +933,7 @@ async fn a_refusal_reports_its_request_id_in_its_header_and_not_in_its_document(
             shape: "ResourceExistsException",
             resource_type: Some("GROUP"),
             reports_a_request_id: true,
+            states_the_id_in_its_document: true,
         },
         RefusalRow {
             case: "a folder the account holds none of, 404",
@@ -922,6 +944,7 @@ async fn a_refusal_reports_its_request_id_in_its_header_and_not_in_its_document(
             shape: "ResourceNotFoundException",
             resource_type: None,
             reports_a_request_id: true,
+            states_the_id_in_its_document: false,
         },
         RefusalRow {
             case: "a namespace nothing holds, on the delete, 404",
@@ -932,6 +955,7 @@ async fn a_refusal_reports_its_request_id_in_its_header_and_not_in_its_document(
             shape: "ResourceNotFoundException",
             resource_type: Some("NAMESPACE"),
             reports_a_request_id: true,
+            states_the_id_in_its_document: true,
         },
         RefusalRow {
             case: "a parameter value naming an address with no route, 400",
@@ -947,6 +971,7 @@ async fn a_refusal_reports_its_request_id_in_its_header_and_not_in_its_document(
             shape: "InvalidParameterValueException",
             resource_type: None,
             reports_a_request_id: true,
+            states_the_id_in_its_document: false,
         },
         RefusalRow {
             // `DescribeIpRestriction` is still a stub, so its 501 is rendered from the
@@ -960,6 +985,7 @@ async fn a_refusal_reports_its_request_id_in_its_header_and_not_in_its_document(
             shape: "NotImplemented",
             resource_type: None,
             reports_a_request_id: false,
+            states_the_id_in_its_document: false,
         },
     ];
 
@@ -976,6 +1002,7 @@ async fn a_refusal_reports_its_request_id_in_its_header_and_not_in_its_document(
             shape,
             resource_type,
             reports_a_request_id,
+            states_the_id_in_its_document,
         } = row;
 
         let (status, document, headers) = harness
@@ -1023,18 +1050,14 @@ async fn a_refusal_reports_its_request_id_in_its_header_and_not_in_its_document(
             .map(str::to_string);
         if reports_a_request_id {
             // The sentence of the class is the handler's, and the id it allocated is
-            // reported in the header rather than in the document.
+            // reported in the header of every refusal — and in the document of one the
+            // identity surface refused.
             assert!(
                 document["Message"]
                     .as_str()
                     .is_some_and(|sentence| !sentence.is_empty()),
                 "case {case:?}: the document must still carry the class's sentence, got \
                  {document}"
-            );
-            assert!(
-                document.get(REQUEST_ID_MEMBER).is_none(),
-                "case {case:?}: a refusal document carries no {REQUEST_ID_MEMBER} member, \
-                 got {document}"
             );
             let reported = reported.unwrap_or_else(|| {
                 panic!(
@@ -1046,6 +1069,20 @@ async fn a_refusal_reports_its_request_id_in_its_header_and_not_in_its_document(
                 is_uuid_shaped(&reported),
                 "case {case:?}: expected a UUID-shaped request id, got {reported:?}"
             );
+            if states_the_id_in_its_document {
+                assert_eq!(
+                    document[REQUEST_ID_MEMBER],
+                    json!(reported),
+                    "case {case:?}: the document must state the id its header reports \
+                     ({reported:?}) in {REQUEST_ID_MEMBER}, got {document}"
+                );
+            } else {
+                assert!(
+                    document.get(REQUEST_ID_MEMBER).is_none(),
+                    "case {case:?}: a refusal of an account-scoped route carries no \
+                     {REQUEST_ID_MEMBER} member, got {document}"
+                );
+            }
             assert!(
                 reported_ids.insert(reported.clone()),
                 "case {case:?}: the request id {reported:?} was reported for another call too"
@@ -1153,10 +1190,14 @@ struct RequestIdRow {
     body: Option<Value>,
     status: u16,
     shape: &'static str,
+    /// Whether the DOCUMENT states the id its header reports: a route scoped to a
+    /// namespace states it there too, an account-scoped route states it in the header
+    /// alone.
+    states_the_id_in_its_document: bool,
 }
 
 #[tokio::test]
-async fn every_refusal_class_reports_its_request_id_in_its_header_alone() {
+async fn every_refusal_class_reports_its_request_id_in_the_places_its_surface_states_it() {
     let harness = Harness::new();
 
     // The fixtures the conflict rows collide with: a group, a folder and a policy
@@ -1179,8 +1220,9 @@ async fn every_refusal_class_reports_its_request_id_in_its_header_alone() {
     assert_eq!(status, 201, "fixture assignment: got {status} with {body}");
 
     // Rows: four error classes over four statuses, reached through GET, POST and DELETE on
-    // six resource kinds — so what the rows vary is the class, the status, the method and
-    // the resource, which is what the rule generalises over.
+    // six resource kinds, across BOTH surfaces — so what the rows vary is the class, the
+    // status, the method, the resource and the surface, which is what the rule generalises
+    // over.
     // Source: smithy_query(query="operation", operation="DescribeGroup,CreateGroup,
     // DescribeIAMPolicyAssignment,CreateIAMPolicyAssignment,DeleteNamespace,DescribeFolder,
     // CreateFolder,DescribeUser,CreateDataSource,ListRoleMemberships").
@@ -1192,6 +1234,7 @@ async fn every_refusal_class_reports_its_request_id_in_its_header_alone() {
             body: None,
             status: 404,
             shape: "ResourceNotFoundException",
+            states_the_id_in_its_document: true,
         },
         RequestIdRow {
             case: "a second create of the same group name, 409",
@@ -1200,6 +1243,7 @@ async fn every_refusal_class_reports_its_request_id_in_its_header_alone() {
             body: Some(json!({ "GroupName": held_group })),
             status: 409,
             shape: "ResourceExistsException",
+            states_the_id_in_its_document: true,
         },
         RequestIdRow {
             case: "an assignment nothing created, on the read, 404",
@@ -1208,6 +1252,7 @@ async fn every_refusal_class_reports_its_request_id_in_its_header_alone() {
             body: None,
             status: 404,
             shape: "ResourceNotFoundException",
+            states_the_id_in_its_document: true,
         },
         RequestIdRow {
             case: "a second create of the same assignment name, 409",
@@ -1216,6 +1261,7 @@ async fn every_refusal_class_reports_its_request_id_in_its_header_alone() {
             body: Some(assignment_body),
             status: 409,
             shape: "ResourceExistsException",
+            states_the_id_in_its_document: true,
         },
         RequestIdRow {
             case: "a namespace nothing holds, on the delete, 404",
@@ -1224,6 +1270,7 @@ async fn every_refusal_class_reports_its_request_id_in_its_header_alone() {
             body: None,
             status: 404,
             shape: "ResourceNotFoundException",
+            states_the_id_in_its_document: true,
         },
         RequestIdRow {
             case: "a folder nothing created, on the read, 404",
@@ -1232,6 +1279,7 @@ async fn every_refusal_class_reports_its_request_id_in_its_header_alone() {
             body: None,
             status: 404,
             shape: "ResourceNotFoundException",
+            states_the_id_in_its_document: false,
         },
         RequestIdRow {
             case: "a second create of the same folder id, 409",
@@ -1240,6 +1288,7 @@ async fn every_refusal_class_reports_its_request_id_in_its_header_alone() {
             body: Some(json!({ "Name": "a folder" })),
             status: 409,
             shape: "ResourceExistsException",
+            states_the_id_in_its_document: false,
         },
         RequestIdRow {
             case: "a user nothing registered, on the read, 404",
@@ -1248,6 +1297,7 @@ async fn every_refusal_class_reports_its_request_id_in_its_header_alone() {
             body: None,
             status: 404,
             shape: "ResourceNotFoundException",
+            states_the_id_in_its_document: true,
         },
         RequestIdRow {
             case: "a create naming an address with no route, 400",
@@ -1261,6 +1311,7 @@ async fn every_refusal_class_reports_its_request_id_in_its_header_alone() {
             })),
             status: 400,
             shape: "InvalidParameterValueException",
+            states_the_id_in_its_document: false,
         },
         RequestIdRow {
             case: "a role of an account with no QuickSight identity store, 401",
@@ -1269,6 +1320,7 @@ async fn every_refusal_class_reports_its_request_id_in_its_header_alone() {
             body: None,
             status: 401,
             shape: "AccessDeniedException",
+            states_the_id_in_its_document: true,
         },
     ];
 
@@ -1283,6 +1335,7 @@ async fn every_refusal_class_reports_its_request_id_in_its_header_alone() {
             body,
             status: expected_status,
             shape,
+            states_the_id_in_its_document,
         } = row;
         let (status, document, headers) = harness
             .call_reporting_headers(WEST, method, &path, body)
@@ -1311,11 +1364,20 @@ async fn every_refusal_class_reports_its_request_id_in_its_header_alone() {
             is_uuid_shaped(&in_header),
             "case {case:?}: expected a UUID-shaped request id, got {in_header:?}"
         );
-        assert!(
-            document.get(REQUEST_ID_MEMBER).is_none(),
-            "case {case:?}: a refusal document carries no {REQUEST_ID_MEMBER} member, got \
-             {document}"
-        );
+        if states_the_id_in_its_document {
+            assert_eq!(
+                document[REQUEST_ID_MEMBER],
+                json!(in_header),
+                "case {case:?}: the document must state the id its header reports \
+                 ({in_header:?}) in {REQUEST_ID_MEMBER}, got {document}"
+            );
+        } else {
+            assert!(
+                document.get(REQUEST_ID_MEMBER).is_none(),
+                "case {case:?}: a refusal of an account-scoped route carries no \
+                 {REQUEST_ID_MEMBER} member, got {document}"
+            );
+        }
         assert!(
             stated.insert(in_header.clone()),
             "case {case:?}: the request id {in_header:?} was stated for another call too"
@@ -1331,7 +1393,8 @@ async fn two_answers_of_one_operation_each_state_their_own_request_id() {
     // The same operation answered twice: the create that succeeds, then the create that
     // collides with it. Each reports a request id of its own — the success in the
     // `RequestId` member its output shape declares, the refusal in its
-    // `x-amzn-RequestId` header and nowhere in its document — and the two ids differ,
+    // `x-amzn-RequestId` header and, because a group is served on the namespace-scoped
+    // identity surface, in that same member of its document — and the two ids differ,
     // because an id belongs to one call.
     let (status, created) = create_group(&harness, WEST, ACCOUNT, DEFAULT_NAMESPACE, group_name).await;
     assert_eq!(status, 201, "the create expected 201, got {status}: {created}");
@@ -1367,9 +1430,11 @@ async fn two_answers_of_one_operation_each_state_their_own_request_id() {
         "case {:?}: expected a UUID-shaped request id, got {refused_header:?}",
         "the refusal"
     );
-    assert!(
-        refused.get(REQUEST_ID_MEMBER).is_none(),
-        "the refusal document carries no {REQUEST_ID_MEMBER} member: {refused}"
+    assert_eq!(
+        refused[REQUEST_ID_MEMBER],
+        json!(refused_header),
+        "the refusal's document must state the id its header reports ({refused_header:?}): \
+         {refused}"
     );
     assert_ne!(
         in_body, refused_header,
@@ -1429,10 +1494,12 @@ async fn an_error_document_is_made_of_the_members_the_service_fills_for_the_clas
     assert_eq!(status, 200, "fixture delete: got {status} with {body}");
 
     // The rows span what the rule generalises over — the error class, the status, the
-    // method, the resource kind, and whether the class reports a `ResourceType`
-    // discriminator — including the two classes the recorded fixtures read: a data source
-    // read after its delete, and a folder id created twice. No row's document carries a
-    // `RequestId`: the id of the call is reported in the response header.
+    // method, the resource kind, whether the class reports a `ResourceType` discriminator,
+    // and the surface the call was addressed to — including the two classes the recorded
+    // fixtures read: a data source read after its delete, and a folder id created twice. A
+    // row of the account-scoped surface carries no `RequestId`: the id of the call is
+    // reported in the response header alone there, while a row of the namespace-scoped
+    // identity surface states it in the document too.
     // Source: smithy_query(query="operation", operation="DescribeDataSource,CreateFolder,
     // DescribeFolder,CreateGroup,DeleteNamespace,CreateDataSource").
     let rows: Vec<DocumentShapeRow> = vec![
@@ -1461,14 +1528,16 @@ async fn an_error_document_is_made_of_the_members_the_service_fills_for_the_clas
             members: &["__type", "Message"],
         },
         DocumentShapeRow {
-            // The identity path reports a discriminator for the kind it refused, so the row
-            // shows the document is the members the class fills rather than a fixed set.
+            // The identity path reports a discriminator for the kind it refused, and
+            // states the id of the call in its document, so the row shows the document is
+            // the members the class fills on the surface that served it rather than a
+            // fixed set.
             case: "a second create of the same group name, 409",
             method: "POST",
             path: format!("/accounts/{ACCOUNT}/namespaces/{DEFAULT_NAMESPACE}/groups"),
             body: Some(json!({ "GroupName": held_group })),
             status: 409,
-            members: &["__type", "Message", "ResourceType"],
+            members: &["__type", "Message", "ResourceType", "RequestId"],
         },
         DocumentShapeRow {
             // A namespace miss reports a discriminator too, on another resource kind.
@@ -1477,7 +1546,7 @@ async fn an_error_document_is_made_of_the_members_the_service_fills_for_the_clas
             path: format!("/accounts/{ACCOUNT}/namespaces/absent-shape-ns"),
             body: None,
             status: 404,
-            members: &["__type", "Message", "ResourceType"],
+            members: &["__type", "Message", "ResourceType", "RequestId"],
         },
         DocumentShapeRow {
             case: "a create naming an address with no route, 400",
@@ -1523,8 +1592,8 @@ async fn an_error_document_is_made_of_the_members_the_service_fills_for_the_clas
             "case {case:?}: expected the members {expected:?}, got {carried:?} in {document}"
         );
 
-        // The id of the call is reported in the response header, and in no member of the
-        // document.
+        // The id of the call is reported in the response header on every surface, and in
+        // the document of the rows whose member set names it.
         let reported = headers
             .get(REQUEST_ID_HEADER)
             .and_then(|value| value.to_str().ok())
@@ -1538,6 +1607,14 @@ async fn an_error_document_is_made_of_the_members_the_service_fills_for_the_clas
             is_uuid_shaped(reported),
             "case {case:?}: expected a UUID-shaped request id, got {reported:?}"
         );
+        if members.contains(&REQUEST_ID_MEMBER) {
+            assert_eq!(
+                document[REQUEST_ID_MEMBER],
+                json!(reported),
+                "case {case:?}: the member must hold the id the header reports \
+                 ({reported:?}), got {document}"
+            );
+        }
     }
 }
 
@@ -1571,7 +1648,8 @@ async fn every_operation_reports_the_request_id_of_the_call_it_refused() {
     // What the rows vary is the OPERATION a refusal comes out of: the create that
     // collides, and the read, the update and the delete of a name nothing holds, over two
     // resource kinds the identity path serves — so the rule is read per operation rather
-    // than per error class.
+    // than per error class. Every row is addressed to a route scoped to a namespace, so
+    // every one of them states the id in its document as well as in its header.
     // Source: smithy_query(query="operation", operation="CreateGroup,DescribeGroup,
     // UpdateGroup,DeleteGroup,DescribeIAMPolicyAssignment,UpdateIAMPolicyAssignment").
     let rows: Vec<FailedOperationRow> = vec![
@@ -1651,10 +1729,11 @@ async fn every_operation_reports_the_request_id_of_the_call_it_refused() {
             is_uuid_shaped(&in_header),
             "case {case:?}: expected a UUID-shaped request id, got {in_header:?}"
         );
-        assert!(
-            document.get(REQUEST_ID_MEMBER).is_none(),
-            "case {case:?}: a refusal document carries no {REQUEST_ID_MEMBER} member, got \
-             {document}"
+        assert_eq!(
+            document[REQUEST_ID_MEMBER],
+            json!(in_header),
+            "case {case:?}: the document of a refusal the identity surface answered must \
+             state the id its header reports ({in_header:?}), got {document}"
         );
         assert!(
             stated.insert(in_header.clone()),
@@ -1683,19 +1762,21 @@ async fn every_operation_reports_the_request_id_of_the_call_it_refused() {
 }
 
 /// RULE, stated as the document's own contract: a refusal reports the id of its call in the
-/// `x-amzn-RequestId` header and under NO member name of its document — the document is the
-/// members the class fills, and the id is nowhere in its text.
+/// `x-amzn-RequestId` header, and in its document under the `RequestId` member the model
+/// declares and under NO other member name — on the namespace-scoped identity surface; a
+/// refusal of an account-scoped route carries the id nowhere in its document's text at all.
 ///
 /// This is the channel the rule is about, read independently of which member a document
 /// happens to carry: the id the header reports is searched for in the WHOLE rendered
-/// document, so a refusal that moved it to another member name, or carried it twice, fails
-/// here. Each row is also called TWICE, because the id belongs to one call: two answers of
-/// the same refusal report two ids, and neither shows up in either document.
+/// document, so a refusal that moved it to another member name, carried it twice, or
+/// carried it on the surface that states it in the header alone, fails here. Each row is
+/// also called TWICE, because the id belongs to one call: two answers of the same refusal
+/// report two ids, and neither shows up in the other's document.
 ///
-/// The rows differ along the class, the status, the method and the resource kind, which is
-/// what the rule generalises over.
+/// The rows differ along the class, the status, the method, the resource kind and the
+/// surface, which is what the rule generalises over.
 #[tokio::test]
-async fn a_refusal_carries_its_request_id_under_no_member_name_of_its_document() {
+async fn a_refusal_carries_its_request_id_under_no_member_name_its_surface_does_not_state_it_in() {
     let harness = Harness::new();
 
     // The fixtures the rows refuse against: a folder and a group whose ids are taken, and a
@@ -1713,7 +1794,8 @@ async fn a_refusal_carries_its_request_id_under_no_member_name_of_its_document()
     assert_eq!(status, 200, "fixture delete: got {status} with {body}");
 
     // The rows: one per class/method/resource, built as [`RequestIdRow`] so the table is
-    // the one every request-id suite of this file reads.
+    // the one every request-id suite of this file reads — and spanning both surfaces, since
+    // which of them served the call is what decides where the id is stated.
     let rows: Vec<RequestIdRow> = vec![
         RequestIdRow {
             case: "a data source read after its delete, 404",
@@ -1722,6 +1804,7 @@ async fn a_refusal_carries_its_request_id_under_no_member_name_of_its_document()
             body: None,
             status: 404,
             shape: "ResourceNotFoundException",
+            states_the_id_in_its_document: false,
         },
         RequestIdRow {
             case: "a group nothing created, on the delete, 404",
@@ -1732,6 +1815,7 @@ async fn a_refusal_carries_its_request_id_under_no_member_name_of_its_document()
             body: None,
             status: 404,
             shape: "ResourceNotFoundException",
+            states_the_id_in_its_document: true,
         },
         RequestIdRow {
             case: "a data source nothing created, on the update, 404",
@@ -1740,6 +1824,7 @@ async fn a_refusal_carries_its_request_id_under_no_member_name_of_its_document()
             body: Some(json!({ "Name": "whatever" })),
             status: 404,
             shape: "ResourceNotFoundException",
+            states_the_id_in_its_document: false,
         },
         RequestIdRow {
             case: "a second create of the same folder id, 409",
@@ -1748,6 +1833,7 @@ async fn a_refusal_carries_its_request_id_under_no_member_name_of_its_document()
             body: Some(json!({ "Name": "a folder" })),
             status: 409,
             shape: "ResourceExistsException",
+            states_the_id_in_its_document: false,
         },
         RequestIdRow {
             case: "a second create of the same group name, 409",
@@ -1756,6 +1842,7 @@ async fn a_refusal_carries_its_request_id_under_no_member_name_of_its_document()
             body: Some(json!({ "GroupName": held_group })),
             status: 409,
             shape: "ResourceExistsException",
+            states_the_id_in_its_document: true,
         },
         RequestIdRow {
             case: "a create naming an address with no route, 400",
@@ -1769,6 +1856,7 @@ async fn a_refusal_carries_its_request_id_under_no_member_name_of_its_document()
             })),
             status: 400,
             shape: "InvalidParameterValueException",
+            states_the_id_in_its_document: false,
         },
     ];
 
@@ -1781,6 +1869,7 @@ async fn a_refusal_carries_its_request_id_under_no_member_name_of_its_document()
             body,
             status: expected_status,
             shape,
+            states_the_id_in_its_document,
         } = row;
         for attempt in ["first", "second"] {
             let (status, document, headers) = harness
@@ -1810,14 +1899,32 @@ async fn a_refusal_carries_its_request_id_under_no_member_name_of_its_document()
                 is_uuid_shaped(&id),
                 "case {case:?}/{attempt}: expected a UUID-shaped request id, got {id:?}"
             );
-            // The id is in the HEADER and nowhere in the document — under the member the
-            // model declares for it or under any other name.
+            // The id is in the HEADER, and in the document under the member the model
+            // declares for it where the surface states it there — and under no other
+            // member name, and not at all where the surface states it in the header
+            // alone.
             let rendered = document.to_string();
-            assert!(
-                !rendered.contains(&id),
-                "case {case:?}/{attempt}: the document must carry the call's id under no \
-                 member, got {id:?} in {rendered}"
-            );
+            let occurrences = rendered.matches(&id).count();
+            if states_the_id_in_its_document {
+                assert_eq!(
+                    document[REQUEST_ID_MEMBER],
+                    json!(id),
+                    "case {case:?}/{attempt}: the document must state the id in \
+                     {REQUEST_ID_MEMBER}, got {rendered}"
+                );
+                assert_eq!(
+                    occurrences, 1,
+                    "case {case:?}/{attempt}: the document must carry the call's id once, \
+                     under {REQUEST_ID_MEMBER} alone, got {occurrences} of {id:?} in \
+                     {rendered}"
+                );
+            } else {
+                assert_eq!(
+                    occurrences, 0,
+                    "case {case:?}/{attempt}: the document must carry the call's id under no \
+                     member, got {id:?} in {rendered}"
+                );
+            }
             let carried: Vec<String> = document
                 .as_object()
                 .map(|object| object.keys().cloned().collect())
@@ -1836,4 +1943,268 @@ async fn a_refusal_carries_its_request_id_under_no_member_name_of_its_document()
             );
         }
     }
+}
+
+/// One row of the surface table: a call that fails, and the surface its route belongs to.
+struct SurfaceRow {
+    case: &'static str,
+    method: &'static str,
+    path: String,
+    body: Option<Value>,
+    /// The status the refusal is rendered under.
+    status: u16,
+    /// Whether the route is scoped to a NAMESPACE, which is what decides whether the
+    /// document states the id of the call beside the header that always reports it.
+    namespace_scoped: bool,
+}
+
+/// RULE: every refusal of this service reports the id of the call in the
+/// `x-amzn-RequestId` response header, and its DOCUMENT states that same id in the
+/// `RequestId` member the error shapes declare exactly when the call was addressed to a
+/// route scoped to a namespace — `/accounts/{AwsAccountId}/namespaces/{Namespace}/…`, the
+/// identity surface. A refusal of an account-scoped route states the id in that header
+/// alone.
+///
+/// The rows vary what the rule generalises over INSIDE each surface: the resource kind, the
+/// operation and its method, the error class and status, the account, and the form and
+/// length of the name the route carries — so what is read is the surface rather than one
+/// recorded call. The same id is asserted in both places, so a document naming a second id
+/// fails here.
+/// Source: smithy_query(query="operation", operation="DescribeGroup,CreateGroup,DescribeUser,
+/// DescribeGroupMembership,DescribeIAMPolicyAssignment,DeleteNamespace,DescribeDataSource,
+/// DescribeDataSet,DescribeFolder,CreateFolder") — each operation's `@http` uri is its
+/// route, and `GroupName`/`UserName` admit every character in `\u{20}..\u{FF}`.
+#[tokio::test]
+async fn a_refusal_states_the_id_of_its_call_where_the_surface_it_addresses_states_it() {
+    let harness = Harness::new();
+
+    // The fixtures the conflict rows collide with: a group on the identity surface and a
+    // folder on the account's.
+    let held_group = "surface-group";
+    let (status, body) = create_group(&harness, WEST, ACCOUNT, DEFAULT_NAMESPACE, held_group).await;
+    assert_eq!(status, 201, "fixture group: got {status} with {body}");
+    let held_folder = "surface-folder";
+    let (status, body) = create_folder(&harness, WEST, ACCOUNT, held_folder).await;
+    assert_eq!(status, 200, "fixture folder: got {status} with {body}");
+
+    // A name holding a space and a non-ASCII letter, and a long one, so a row shows the
+    // surface is read off the ROUTE rather than off the shape of the label it carries.
+    let spaced_group = "Zürich analysts";
+    let long_group = "g".repeat(128);
+    let groups = format!("/accounts/{ACCOUNT}/namespaces/{DEFAULT_NAMESPACE}/groups");
+
+    let rows: Vec<SurfaceRow> = vec![
+        SurfaceRow {
+            case: "DescribeGroup of a name nothing holds, 404",
+            method: "GET",
+            path: format!("{groups}/absent-surface-group"),
+            body: None,
+            status: 404,
+            namespace_scoped: true,
+        },
+        SurfaceRow {
+            case: "DescribeGroup of a name holding a space and a non-ASCII letter, 404",
+            method: "GET",
+            path: format!("{groups}/{}", group_label(spaced_group)),
+            body: None,
+            status: 404,
+            namespace_scoped: true,
+        },
+        SurfaceRow {
+            case: "DescribeGroup of a 128-character name, 404",
+            method: "GET",
+            path: format!("{groups}/{}", group_label(&long_group)),
+            body: None,
+            status: 404,
+            namespace_scoped: true,
+        },
+        SurfaceRow {
+            case: "CreateGroup onto a name the namespace holds, 409",
+            method: "POST",
+            path: groups.clone(),
+            body: Some(json!({ "GroupName": held_group })),
+            status: 409,
+            namespace_scoped: true,
+        },
+        SurfaceRow {
+            case: "DescribeUser of a name nothing registered, 404",
+            method: "GET",
+            path: format!(
+                "/accounts/{ACCOUNT}/namespaces/{DEFAULT_NAMESPACE}/users/absent-surface-user"
+            ),
+            body: None,
+            status: 404,
+            namespace_scoped: true,
+        },
+        SurfaceRow {
+            case: "DescribeIAMPolicyAssignment of a name nothing holds, 404",
+            method: "GET",
+            path: format!(
+                "/accounts/{ACCOUNT}/namespaces/{DEFAULT_NAMESPACE}/iam-policy-assignments/\
+                 absent-surface-assignment"
+            ),
+            body: None,
+            status: 404,
+            namespace_scoped: true,
+        },
+        SurfaceRow {
+            case: "DescribeGroup under an account holding no namespace of that name, 404",
+            method: "GET",
+            path: format!(
+                "/accounts/{THIRD_ACCOUNT}/namespaces/surface-absent-ns/groups/{held_group}"
+            ),
+            body: None,
+            status: 404,
+            namespace_scoped: true,
+        },
+        SurfaceRow {
+            case: "DeleteNamespace of a name the account does not hold, 404",
+            method: "DELETE",
+            path: format!("/accounts/{ACCOUNT}/namespaces/surface-absent-ns"),
+            body: None,
+            status: 404,
+            namespace_scoped: true,
+        },
+        SurfaceRow {
+            case: "DescribeDataSource of an id nothing created, 404",
+            method: "GET",
+            path: format!("/accounts/{ACCOUNT}/data-sources/absent-surface-source"),
+            body: None,
+            status: 404,
+            namespace_scoped: false,
+        },
+        SurfaceRow {
+            case: "DescribeDataSet of an id nothing created, 404",
+            method: "GET",
+            path: format!("/accounts/{ACCOUNT}/data-sets/absent-surface-set"),
+            body: None,
+            status: 404,
+            namespace_scoped: false,
+        },
+        SurfaceRow {
+            case: "DescribeFolder of an id nothing created, 404",
+            method: "GET",
+            path: format!("/accounts/{ACCOUNT}/folders/absent-surface-folder"),
+            body: None,
+            status: 404,
+            namespace_scoped: false,
+        },
+        SurfaceRow {
+            case: "CreateFolder onto an id the account holds, 409",
+            method: "POST",
+            path: format!("/accounts/{ACCOUNT}/folders/{held_folder}"),
+            body: Some(json!({ "Name": "a folder" })),
+            status: 409,
+            namespace_scoped: false,
+        },
+    ];
+
+    // Every id reported across the table, so no two refusals can report the same one.
+    let mut reported_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    for row in rows {
+        let SurfaceRow {
+            case,
+            method,
+            path,
+            body,
+            status: expected_status,
+            namespace_scoped,
+        } = row;
+        let (status, document, headers) = harness
+            .call_reporting_headers(WEST, method, &path, body)
+            .await;
+        assert_eq!(
+            status, expected_status,
+            "case {case:?}: expected {expected_status}, got {status} with {document}"
+        );
+        let reported = headers
+            .get(REQUEST_ID_HEADER)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_else(|| {
+                panic!(
+                    "case {case:?}: expected the call's id in the {REQUEST_ID_HEADER} header, \
+                     got {headers:?}"
+                )
+            })
+            .to_string();
+        assert!(
+            is_uuid_shaped(&reported),
+            "case {case:?}: expected a UUID-shaped request id, got {reported:?}"
+        );
+        if namespace_scoped {
+            assert_eq!(
+                document[REQUEST_ID_MEMBER],
+                json!(reported),
+                "case {case:?}: a refusal of a namespace-scoped route states the id its \
+                 header reports ({reported:?}) in {REQUEST_ID_MEMBER}, got {document}"
+            );
+        } else {
+            assert!(
+                document.get(REQUEST_ID_MEMBER).is_none(),
+                "case {case:?}: a refusal of an account-scoped route states the id in its \
+                 header alone, got {document}"
+            );
+        }
+        assert!(
+            reported_ids.insert(reported.clone()),
+            "case {case:?}: the request id {reported:?} was reported for another call too"
+        );
+    }
+
+    // A SUCCESS is the other half of the contract, on either surface: it states its own id
+    // in the `RequestId` member its OUTPUT shape declares, and no refusal above took that
+    // away.
+    let successes = [
+        (
+            "DescribeGroup of the group the fixture created",
+            describe_group_by_label(&harness, ACCOUNT, DEFAULT_NAMESPACE, held_group).await,
+        ),
+        (
+            "DescribeFolder of the folder the fixture created",
+            describe_folder(&harness, WEST, ACCOUNT, held_folder).await,
+        ),
+    ];
+    for (case, (status, document)) in successes {
+        assert_eq!(
+            status, 200,
+            "case {case:?}: expected 200, got {status} with {document}"
+        );
+        let stated = document[REQUEST_ID_MEMBER]
+            .as_str()
+            .unwrap_or_else(|| {
+                panic!("case {case:?}: a success states its id as a body member: {document}")
+            })
+            .to_string();
+        assert!(
+            is_uuid_shaped(&stated),
+            "case {case:?}: expected a UUID-shaped request id, got {stated:?}"
+        );
+        assert!(
+            reported_ids.insert(stated.clone()),
+            "case {case:?}: the request id {stated:?} was reported for another call too"
+        );
+    }
+}
+
+/// `DescribeGroup`: `GET /accounts/{AwsAccountId}/namespaces/{Namespace}/groups/{GroupName}`,
+/// with the name percent-encoded into the path label.
+/// Source: smithy_query(query="operation", operation="DescribeGroup").
+async fn describe_group_by_label(
+    harness: &Harness,
+    account: &str,
+    namespace: &str,
+    group_name: &str,
+) -> (u16, Value) {
+    harness
+        .call_in_region(
+            WEST,
+            "GET",
+            &format!(
+                "/accounts/{account}/namespaces/{namespace}/groups/{}",
+                group_label(group_name)
+            ),
+            None,
+        )
+        .await
 }
