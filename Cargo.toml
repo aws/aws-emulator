@@ -113,6 +113,7 @@ members = [
     "services/service-com-amazonaws-connectcontactlens-amazonconnectcontactlens",
     "services/service-com-amazonaws-connecthealth-connecthealth",
     "services/service-com-amazonaws-connectparticipant-amazonconnectparticipantservicelambda",
+    "services/service-com-amazonaws-connectscheduling-amazonconnectscheduling",
     "services/service-com-amazonaws-continuum-continuumcontrolplane",
     "services/service-com-amazonaws-controlcatalog-controlcatalog",
     "services/service-com-amazonaws-controltower-awscontroltowerapis",
@@ -587,6 +588,7 @@ service-com-amazonaws-connectcases-amazonconnectcases = { path = "services/servi
 service-com-amazonaws-connectcontactlens-amazonconnectcontactlens = { path = "services/service-com-amazonaws-connectcontactlens-amazonconnectcontactlens" }
 service-com-amazonaws-connecthealth-connecthealth = { path = "services/service-com-amazonaws-connecthealth-connecthealth" }
 service-com-amazonaws-connectparticipant-amazonconnectparticipantservicelambda = { path = "services/service-com-amazonaws-connectparticipant-amazonconnectparticipantservicelambda" }
+service-com-amazonaws-connectscheduling-amazonconnectscheduling = { path = "services/service-com-amazonaws-connectscheduling-amazonconnectscheduling" }
 service-com-amazonaws-continuum-continuumcontrolplane = { path = "services/service-com-amazonaws-continuum-continuumcontrolplane" }
 service-com-amazonaws-controlcatalog-controlcatalog = { path = "services/service-com-amazonaws-controlcatalog-controlcatalog" }
 service-com-amazonaws-controltower-awscontroltowerapis = { path = "services/service-com-amazonaws-controltower-awscontroltowerapis" }

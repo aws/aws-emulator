@@ -453,6 +453,10 @@
       "spec_url": "https://raw.githubusercontent.com/aws/api-models-aws/refs/heads/main/models/connectparticipant/service/2018-09-07/connectparticipant-2018-09-07.json"
     },
     {
+      "shape_id": "com.amazonaws.connectscheduling#AmazonConnectScheduling",
+      "spec_url": "https://raw.githubusercontent.com/aws/api-models-aws/d504436b2739873d202b10a26bdecb620fa1e4f0/models/connectscheduling/service/2026-07-16/connectscheduling-2026-07-16.json"
+    },
+    {
       "shape_id": "com.amazonaws.continuum#ContinuumControlPlane",
       "spec_url": "https://raw.githubusercontent.com/aws/api-models-aws/refs/heads/main/models/continuum/service/2022-07-26/continuum-2022-07-26.json"
     },

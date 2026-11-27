@@ -124,6 +124,7 @@ service-com-amazonaws-connectcases-amazonconnectcases = { workspace = true }
 service-com-amazonaws-connectcontactlens-amazonconnectcontactlens = { workspace = true }
 service-com-amazonaws-connecthealth-connecthealth = { workspace = true }
 service-com-amazonaws-connectparticipant-amazonconnectparticipantservicelambda = { workspace = true }
+service-com-amazonaws-connectscheduling-amazonconnectscheduling = { workspace = true }
 service-com-amazonaws-continuum-continuumcontrolplane = { workspace = true }
 service-com-amazonaws-controlcatalog-controlcatalog = { workspace = true }
 service-com-amazonaws-controltower-awscontroltowerapis = { workspace = true }
