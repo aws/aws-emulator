@@ -152,11 +152,11 @@ use crate::state::kms_reference::{self, request_region, KeyReference};
 use crate::state::{
     blocks_in_volume, expiry_from_timeout, fingerprint_hex_sha256, invalid_volume_size_message,
     is_well_formed_snapshot_id, malformed_snapshot_id_message, snapshot_encryption,
-    snapshot_not_found_message, BlockEntry, Snapshot, SnapshotStatus,
+    snapshot_not_found_message, too_many_tags_message, BlockEntry, Snapshot, SnapshotStatus,
     StartSnapshotIdempotencyRecord, StoredTag, CLIENT_TOKEN_CONFLICT_MESSAGE,
     DEFAULT_SNAPSHOT_TIMEOUT_MINUTES, MAX_STORED_BLOCKS_PER_SNAPSHOT, MAX_STORED_BLOCKS_TOTAL,
-    MAX_STORED_SNAPSHOTS, MAX_VOLUME_SIZE_GIB, PARENT_SNAPSHOT_ID_AND_ENCRYPT_MESSAGE,
-    SNAPSHOT_BLOCK_SIZE_BYTES,
+    MAX_STORED_SNAPSHOTS, MAX_TAGS_PER_SNAPSHOT, MAX_VOLUME_SIZE_GIB,
+    PARENT_SNAPSHOT_ID_AND_ENCRYPT_MESSAGE, SNAPSHOT_BLOCK_SIZE_BYTES,
 };
 
 // `#[operation_error]` below expands to an invocation of the LOCAL declarative
@@ -276,6 +276,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 "INVALID_PARAMETER_VALUE",
                 PARENT_SNAPSHOT_ID_AND_ENCRYPT_MESSAGE.to_string(),
             ));
+        }
+
+        // `Tags`: "You can specify up to 50 tags per snapshot." `Tags` is a bare list with
+        // no `@length`, so the request boundary applies no bound and the documented maximum
+        // is refused here, with the reason the model declares for a tag the service will
+        // not take (`INVALID_TAG`) and the service's fixed sentence for the ceiling.
+        if input.tags.as_ref().is_some_and(|tags| tags.len() > MAX_TAGS_PER_SNAPSHOT) {
+            return Err(validation("INVALID_TAG", too_many_tags_message()));
         }
 
         // `KmsKeyArn` is a reference to a KEY ANOTHER SERVICE holds, and all the model

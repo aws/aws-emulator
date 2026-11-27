@@ -31,6 +31,11 @@ pub const DEFAULT_SNAPSHOT_TIMEOUT_MINUTES: i32 = 60;
 /// by the handler.
 pub const MAX_VOLUME_SIZE_GIB: i64 = 65_536;
 
+/// `StartSnapshotResponse$Tags` documents "You can specify up to 50 tags per snapshot";
+/// `Tags` is a bare `list` with no `@length` of its own, so the documented maximum is
+/// enforced by the handler, exactly as [`MAX_VOLUME_SIZE_GIB`] is.
+pub const MAX_TAGS_PER_SNAPSHOT: usize = 50;
+
 /// The only checksum algorithm the model's `ChecksumAlgorithm` enum declares, and the
 /// one `PutSnapshotBlockRequest$Checksum` documents ("A Base64-encoded SHA256 checksum
 /// of the data. Only SHA256 checksums are supported.").
@@ -964,6 +969,17 @@ pub fn unsupported_checksum_algorithm_message(algorithm: &str) -> String {
 /// volume could not address the content it inherits (see [`blocks_in_volume`]).
 pub fn invalid_volume_size_message(volume_size: i64) -> String {
     format!("Invalid volume size: {volume_size}")
+}
+
+/// The message `StartSnapshot` answers with when a request carries more `Tags` than one
+/// snapshot may hold.
+///
+/// FIXED and request-independent: the sentence states the ceiling
+/// ([`MAX_TAGS_PER_SNAPSHOT`]) in the words the member's own documentation states the rule
+/// in, and interpolates nothing the request carried — not how many tags it sent, not a key
+/// and not a value, since the rule is the same whichever tags were refused.
+pub fn too_many_tags_message() -> String {
+    format!("You can specify up to {MAX_TAGS_PER_SNAPSHOT} tags per snapshot")
 }
 
 /// The message `StartSnapshot` answers with when a request SPECIFIES both a parent
