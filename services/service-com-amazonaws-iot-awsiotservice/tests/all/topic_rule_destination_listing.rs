@@ -857,8 +857,8 @@ async fn a_page_size_outside_the_modelled_range_is_refused() {
         assert_eq!(
             refused.message(),
             format!(
-                "1 validation error detected: Value '{max_results}' at 'maxResults' failed to \
-                 satisfy constraint: {constraint}"
+                "1 validation error detected: Value at 'maxResults' failed to satisfy \
+                 constraint: {constraint}"
             ),
             "case {case:?}: expected the refusal to name the constraint maxResults failed, \
              got {:?}",

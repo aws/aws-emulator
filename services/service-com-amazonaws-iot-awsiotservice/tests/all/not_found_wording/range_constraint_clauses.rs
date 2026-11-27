@@ -8,13 +8,13 @@
 //! request signed for the `iot` signing name — so what is asserted is what an AWS SDK
 //! client would see, not an internal function's return value.
 //!
-//! The rule under test: a clause about a member's `@range` names the member, the bound it
-//! broke and the NUMBER the request submitted for it — `Value '<n>' at '<member>' failed to
-//! satisfy constraint: Member must have value {less,greater} than or equal to <bound>` —
-//! because a numeric bound states the interval a value had to lie in rather than the value
-//! that fell outside it. It is the same decision the enumerated class already takes, and the
-//! opposite of the `@length` and `@pattern` classes, whose requirement is itself a statement
-//! about the value's own text.
+//! The rule under test: a clause about a member's `@range` names the member and the bound it
+//! broke and states NO value — `Value at '<member>' failed to satisfy constraint: Member must
+//! have value {less,greater} than or equal to <bound>` — because the bound already states the
+//! interval the value had to lie in, so the number that fell outside it would say the same
+//! thing twice. It is the same decision the `@length` and `@pattern` classes take, and the
+//! opposite of the enumerated class, whose requirement is a SET the rejected value is stated
+//! beside.
 //!
 //! The envelope itself is the parent suite's: 400, `InvalidRequestException` qualified with
 //! the service's API doc namespace in `x-amzn-errortype`, `N validation error(s) detected: `
@@ -22,8 +22,8 @@
 //!
 //! The table spans what the rule generalises over rather than one request: both ends of a
 //! bound (a value past a maximum and one short of a minimum), the published bound itself and
-//! the first value past it, bounds of two different widths, members bound to the body and
-//! members bound to the query string, five operations across three resource families, and a
+//! the first value past it, bounds of three different widths, members bound to the body and
+//! members bound to the query string, six operations across four resource families, and a
 //! range clause alone and beside a clause of another class. A refused create is then read
 //! back through the family's own reader, which must still answer its not-found refusal: a
 //! request the validation layer turns away reaches no handler and so persists nothing.
@@ -54,6 +54,13 @@ const MAX_CREDENTIAL_DURATION_SECONDS: i64 = 43_200;
 /// (`smithy_query(query="shape",shape="RegistryMaxResults,PageSize,MaxResults")`).
 const MIN_PAGE_SIZE: i64 = 1;
 const MAX_PAGE_SIZE: i64 = 250;
+
+/// The bounds of `TopicRuleDestinationMaxResults`, the page size of
+/// `ListTopicRuleDestinations` (`range 1..1000`,
+/// `smithy_query(query="shape",shape="TopicRuleDestinationMaxResults")`) — a third bound
+/// width, so no row's expectation can be read off one number.
+const MIN_DESTINATION_PAGE_SIZE: i64 = 1;
+const MAX_DESTINATION_PAGE_SIZE: i64 = 1_000;
 
 /// A role ARN inside `RoleArn`'s `length 20..2048`, so a row about the credential duration
 /// draws no clause about the role.
@@ -139,19 +146,21 @@ impl Emulator {
     }
 }
 
-/// The clause a refusal states for `submitted` at a member past its `@range` maximum.
-fn past_the_maximum(member: &str, maximum: i64, submitted: i64) -> String {
+/// The clause a refusal states for a member past its `@range` maximum: the member and the
+/// bound, with no value at all.
+fn past_the_maximum(member: &str, maximum: i64) -> String {
     format!(
-        "Value '{submitted}' at '{member}' failed to satisfy constraint: Member must have \
-         value less than or equal to {maximum}"
+        "Value at '{member}' failed to satisfy constraint: Member must have value less than \
+         or equal to {maximum}"
     )
 }
 
-/// The clause a refusal states for `submitted` at a member short of its `@range` minimum.
-fn short_of_the_minimum(member: &str, minimum: i64, submitted: i64) -> String {
+/// The clause a refusal states for a member short of its `@range` minimum: the member and
+/// the bound, with no value at all.
+fn short_of_the_minimum(member: &str, minimum: i64) -> String {
     format!(
-        "Value '{submitted}' at '{member}' failed to satisfy constraint: Member must have \
-         value greater than or equal to {minimum}"
+        "Value at '{member}' failed to satisfy constraint: Member must have value greater \
+         than or equal to {minimum}"
     )
 }
 
@@ -165,7 +174,8 @@ struct RefusedRequest {
     /// A body for the rows that carry one.
     body: Option<Value>,
     clauses: Vec<String>,
-    /// What the request sent for the member the range clause is about: the clause quotes it.
+    /// What the request sent for the member the range clause is about: no clause may quote
+    /// it.
     rejected: i64,
 }
 
@@ -192,30 +202,22 @@ fn refused_requests() -> Vec<RefusedRequest> {
             (
                 "the first second past the maximum",
                 MAX_CREDENTIAL_DURATION_SECONDS + 1,
-                past_the_maximum(
-                    duration,
-                    MAX_CREDENTIAL_DURATION_SECONDS,
-                    MAX_CREDENTIAL_DURATION_SECONDS + 1,
-                ),
+                past_the_maximum(duration, MAX_CREDENTIAL_DURATION_SECONDS),
             ),
             (
                 "a duration well past the maximum",
                 46_800,
-                past_the_maximum(duration, MAX_CREDENTIAL_DURATION_SECONDS, 46_800),
+                past_the_maximum(duration, MAX_CREDENTIAL_DURATION_SECONDS),
             ),
             (
                 "the last second short of the minimum",
                 MIN_CREDENTIAL_DURATION_SECONDS - 1,
-                short_of_the_minimum(
-                    duration,
-                    MIN_CREDENTIAL_DURATION_SECONDS,
-                    MIN_CREDENTIAL_DURATION_SECONDS - 1,
-                ),
+                short_of_the_minimum(duration, MIN_CREDENTIAL_DURATION_SECONDS),
             ),
             (
                 "a duration of no seconds at all",
                 0,
-                short_of_the_minimum(duration, MIN_CREDENTIAL_DURATION_SECONDS, 0),
+                short_of_the_minimum(duration, MIN_CREDENTIAL_DURATION_SECONDS),
             ),
         ] {
             rows.push(RefusedRequest {
@@ -241,12 +243,12 @@ fn refused_requests() -> Vec<RefusedRequest> {
             (
                 "one page past the maximum",
                 MAX_PAGE_SIZE + 1,
-                past_the_maximum(member, MAX_PAGE_SIZE, MAX_PAGE_SIZE + 1),
+                past_the_maximum(member, MAX_PAGE_SIZE),
             ),
             (
                 "a page of none",
                 MIN_PAGE_SIZE - 1,
-                short_of_the_minimum(member, MIN_PAGE_SIZE, MIN_PAGE_SIZE - 1),
+                short_of_the_minimum(member, MIN_PAGE_SIZE),
             ),
         ] {
             rows.push(RefusedRequest {
@@ -260,15 +262,39 @@ fn refused_requests() -> Vec<RefusedRequest> {
         }
     }
 
+    // A bound of a THIRD width, on a fourth resource family:
+    // `ListTopicRuleDestinations$maxResults` (`TopicRuleDestinationMaxResults`,
+    // `range 1..1000`), at each end of it.
+    for (label, value, clause) in [
+        (
+            "one page past the maximum",
+            MAX_DESTINATION_PAGE_SIZE + 1,
+            past_the_maximum("maxResults", MAX_DESTINATION_PAGE_SIZE),
+        ),
+        (
+            "a page of none",
+            MIN_DESTINATION_PAGE_SIZE - 1,
+            short_of_the_minimum("maxResults", MIN_DESTINATION_PAGE_SIZE),
+        ),
+    ] {
+        rows.push(RefusedRequest {
+            case: format!("ListTopicRuleDestinations asking for {label}"),
+            method: "GET",
+            path: format!("/destinations?maxResults={value}"),
+            body: None,
+            clauses: vec![clause],
+            rejected: value,
+        });
+    }
+
     rows
 }
 
-/// RULE: a clause about a `@range` bound names the member, the bound and the number the
-/// request submitted, at either end of the bound, for a member bound anywhere in the
-/// request, on every operation — and the envelope counts the clauses as it does for any
-/// other class.
+/// RULE: a clause about a `@range` bound names the member and the bound and states NO value,
+/// at either end of the bound, for a member bound anywhere in the request, on every
+/// operation — and the envelope counts the clauses as it does for any other class.
 #[tokio::test]
-async fn a_range_clause_states_the_bound_and_the_value_that_broke_it() {
+async fn a_range_clause_states_the_bound_and_withholds_the_value_that_broke_it() {
     for case in refused_requests() {
         // A fresh emulator per row: a validation refusal is decided by the REQUEST, so it
         // must not depend on what another row left behind.
@@ -302,17 +328,18 @@ async fn a_range_clause_states_the_bound_and_the_value_that_broke_it() {
         );
         let quoted = format!("Value '{}'", case.rejected);
         assert!(
-            reply.message().contains(&quoted),
-            "case {:?}: expected the clause to quote {quoted:?}, got {:?}",
+            !reply.message().contains(&quoted),
+            "case {:?}: expected the clause NOT to quote {quoted:?}, got {:?}",
             case.case,
             reply.message()
         );
     }
 }
 
-/// RULE: the class that states a SET of admissible values quotes the value it rejected just
-/// as the range class does — the envelope states one clause per broken constraint and each
-/// clause its own value — including in a message that states a range clause beside it.
+/// RULE: the class that states a SET of admissible values quotes the value it rejected,
+/// where the range class states none — the envelope states one clause per broken constraint
+/// and each clause its own value half — including in a message that states a range clause
+/// beside it.
 #[tokio::test]
 async fn a_class_that_quotes_the_submitted_value_still_quotes_it() {
     // `ListAuditTasks` binds both `maxResults` (`range 1..250`) and `taskStatus` (the
@@ -325,11 +352,7 @@ async fn a_class_that_quotes_the_submitted_value_still_quotes_it() {
         ("an unmodelled task status alone", None, 1),
         (
             "an unmodelled task status beside a page size past its maximum",
-            Some(past_the_maximum(
-                "maxResults",
-                MAX_PAGE_SIZE,
-                MAX_PAGE_SIZE + 1,
-            )),
+            Some(past_the_maximum("maxResults", MAX_PAGE_SIZE)),
             2,
         ),
     ];
@@ -413,6 +436,12 @@ async fn a_request_within_every_bound_is_not_refused_that_way() {
             "ListRoleAliases at the page-size minimum",
             "GET",
             format!("/role-aliases?pageSize={MIN_PAGE_SIZE}"),
+            None,
+        ),
+        (
+            "ListTopicRuleDestinations at its own page-size maximum",
+            "GET",
+            format!("/destinations?maxResults={MAX_DESTINATION_PAGE_SIZE}"),
             None,
         ),
     ];

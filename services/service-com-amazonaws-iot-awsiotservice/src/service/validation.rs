@@ -41,11 +41,12 @@
 //!   ([`::service_common::validation_message::quoting_an_empty_submitted_collection`], where
 //!   the rendering lives); a summary of any other size needs the request's own elements,
 //!   which this seam is not handed, and keeps the framework's valueless clause;
-//! * a member outside either end of its `@range` is stated WITH the number the request
-//!   submitted, quoted, beside the numeric bound it broke — `Value '<n>' at '<member path>'
+//! * a member outside either end of its `@range` is stated with no value either: the clause
+//!   names the member and the numeric bound it broke — `Value at '<member path>'
 //!   failed to satisfy constraint: Member must have value less than or equal to <bound>` —
-//!   because a numeric bound names the admissible INTERVAL rather than the one value that
-//!   fell outside it, so the number says something the requirement does not;
+//!   and the number that fell outside the bound is not reflected back, which is what this
+//!   service's recorded refusal of a role alias's credential duration past its maximum
+//!   shows;
 //! * every other class keeps the value the request submitted — a value outside an
 //!   enumerated set is quoted beside the set it had to be in — which is what the framework
 //!   already states.
@@ -224,20 +225,19 @@ const PATTERNS_STATED_WITH_THE_REJECTED_VALUE: &[&str] =
 /// Whether the clause for `violation` states no value: the member was ABSENT, so there is
 /// no value to quote; it fell outside a `@pattern` this service does not publish with the
 /// value that missed it, whose clause names the expression alone; it fell outside its
-/// `@length`, whose clause names the bound rather than the text that broke it; or it is one
-/// this service never discloses.
+/// `@length` or its `@range`, whose clause names the bound rather than the value that broke
+/// it; or it is one this service never discloses.
 ///
 /// What those classes have in common is that the clause already states the REQUIREMENT the
-/// value broke — an expression, a length bound — so quoting the value says the same thing
-/// twice. The classes stated WITH a value are the one whose requirement is a SET of
-/// admissible values, which the framework already writes that way, a NUMERIC bound, which
-/// states the interval a value had to lie in rather than the value, and a value outside one of
-/// the expressions this service publishes with it
+/// value broke — an expression, a length bound, a numeric bound — so quoting the value says
+/// the same thing twice. The classes stated WITH a value are the one whose requirement is a
+/// SET of admissible values, which the framework already writes that way, and a value outside
+/// one of the expressions this service publishes with it
 /// ([`PATTERNS_STATED_WITH_THE_REJECTED_VALUE`]). That last one is why this is asked about
 /// the violation rather than about its member path: the same member path states its value for
 /// this requirement and withholds it for the `@length` bound of the very same type.
 ///
-/// A `@length` broken by a COLLECTION is the third class stated WITH a value: the clause
+/// A `@length` broken by a COLLECTION is the one length clause stated WITH a value: the clause
 /// states the collection itself, because the walk's own rendering of one is a size no caller
 /// sent rather than a value that would say the bound twice. `quoting_a_collection` names the
 /// member paths where the collection was restored into the clause; a collection NOBODY could
@@ -249,9 +249,10 @@ fn states_no_value(violation: &Violation, quoting_a_collection: &HashSet<String>
             !PATTERNS_STATED_WITH_THE_REJECTED_VALUE.contains(&expression.as_str())
         }
         ViolationKind::MissingRequiredMember => true,
-        // A numeric bound states the INTERVAL the value had to lie in, so the number that
-        // fell outside it is stated beside it.
-        ViolationKind::MinValue(_) | ViolationKind::MaxValue(_) => false,
+        // A numeric bound already states the interval the value had to lie in, so the
+        // number that fell outside it says the same thing twice, exactly as the text that
+        // broke a length bound does.
+        ViolationKind::MinValue(_) | ViolationKind::MaxValue(_) => true,
         // The text that broke a length bound says the bound twice; the COLLECTION that
         // broke one is the value the clause states.
         ViolationKind::MinLength(_) | ViolationKind::MaxLength(_) => {
@@ -283,14 +284,14 @@ mod tests {
     }
 
     /// RULE: a member the request did not carry, a member outside a `@pattern` this service
-    /// does not publish with the value that missed it, and a member whose own TEXT is outside
-    /// its `@length` are each stated with NO value; a value outside one of the expressions
-    /// this service DOES publish with it, a member outside its `@range`, a COLLECTION outside
-    /// its `@length` (stated with the collection itself where the walk's summary determines
-    /// it) and every other constraint class state the value the request submitted; and a
-    /// `@pattern` is quoted without the whole-value anchors a model wraps it in, unless what
-    /// they enclose carries an anchor of its own, in which case the model's own text is
-    /// quoted.
+    /// does not publish with the value that missed it, a member whose own TEXT is outside
+    /// its `@length` and a member outside its `@range` are each stated with NO value; a
+    /// value outside one of the expressions this service DOES publish with it, a COLLECTION
+    /// outside its `@length` (stated with the collection itself where the walk's summary
+    /// determines it) and every other constraint class state the value the request
+    /// submitted; and a `@pattern` is quoted without the whole-value anchors a model wraps
+    /// it in, unless what they enclose carries an anchor of its own, in which case the
+    /// model's own text is quoted.
     #[test]
     fn an_absent_member_states_no_value_and_every_other_class_states_one() {
         // The rows span the classes the framework reports: an absent member, a value
@@ -364,7 +365,7 @@ mod tests {
                     ViolationKind::MaxValue("43200".to_owned()),
                     Some("46800"),
                 ),
-                "1 validation error detected: Value '46800' at 'credentialDurationSeconds' \
+                "1 validation error detected: Value at 'credentialDurationSeconds' \
                  failed to satisfy constraint: Member must have value less than or equal to \
                  43200",
             ),
@@ -375,7 +376,7 @@ mod tests {
                     ViolationKind::MinValue("900".to_owned()),
                     Some("899"),
                 ),
-                "1 validation error detected: Value '899' at 'credentialDurationSeconds' \
+                "1 validation error detected: Value at 'credentialDurationSeconds' \
                  failed to satisfy constraint: Member must have value greater than or equal \
                  to 900",
             ),
