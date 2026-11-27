@@ -160,6 +160,7 @@ async fn the_location_store_is_bounded() {
                         blob_type: "BLOCK".to_string(),
                         access_tier: "HOT".to_string(),
                         secret: state::LocationSecret::None,
+                        federated_identity: None,
                     }),
                 },
             );

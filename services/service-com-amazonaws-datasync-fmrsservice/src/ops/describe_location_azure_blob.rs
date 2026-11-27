@@ -61,9 +61,10 @@
 //!   as a transfer destination. For more information, see Access tiers.
 //! * `AgentArns` (AgentArnList, len 1..8) — The ARNs of the DataSync agents that can connect
 //!   with your Azure Blob Storage container.
-//! * `AuthenticationType` (AzureBlobAuthenticationType, one of: NONE | SAS) — The
+//! * `AuthenticationType` (AzureBlobAuthenticationType, one of: SAS | NONE | OIDC) — The
 //!   authentication method DataSync uses to access your Azure Blob Storage. DataSync can
-//!   access blob storage using a shared access signature (SAS).
+//!   access blob storage using a shared access signature (SAS) or an OpenID Connect (OIDC)
+//!   token.
 //! * `BlobType` (AzureBlobType, one of: BLOCK) — The type of blob that you want your objects
 //!   or files to be when transferring them into Azure Blob Storage. Currently, DataSync only
 //!   supports moving data into Azure Blob Storage as block blobs. For more information on
@@ -77,6 +78,9 @@
 //!   customer-managed secret, such as an authentication token that DataSync uses to access a
 //!   specific storage location, with a customer-managed Identity and Access Management (IAM)
 //!   role that provides access to the secret.
+//! * `FederatedIdentity` (AzureFederatedIdentityConfig) — The federated identity
+//!   configuration that DataSync uses to access your Azure Blob Storage using an OpenID
+//!   Connect (OIDC) token.
 //! * `LocationArn` (LocationArn, len 0..128, pattern
 //!   ^arn:(aws|aws-cn|aws-us-gov|aws-eusc|aws-iso|aws-iso-b):datasync:[a-z\-0-9]+:[0-9]{12}:location/loc-[0-9a-z]{17}$)
 //!   — The ARN of your Azure Blob Storage transfer location.
@@ -233,6 +237,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             location_arn: Some(location.arn.clone()),
             location_uri: Some(location.location_uri.clone()),
             authentication_type: Some(azure_blob.authentication_type.clone()),
+            // The federated identity the location reaches its container through, when it
+            // was created with one. It carries no credential — only the IAM role and the
+            // external identity parameters DataSync exchanges a token with — so it is
+            // reported as stored.
+            federated_identity: azure_blob.federated_identity.clone(),
             blob_type: Some(azure_blob.blob_type.clone()),
             access_tier: Some(azure_blob.access_tier.clone()),
             // `AgentArns` is modelled `len 1..8`, so an empty list is not a legal value

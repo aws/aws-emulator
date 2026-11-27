@@ -21,6 +21,7 @@ pub struct UpdateLocationObjectStorageInput {
     pub server_hostname: Option<String>,
     pub access_key: Option<String>,
     pub secret_key: Option<String>,
+    pub federated_identity: Option<ObjectStorageFederatedIdentityConfig>,
     pub agent_arns: Option<Vec<String>>,
     pub server_certificate: Option<Vec<u8>>,
     pub cmk_secret_config: Option<CmkSecretConfig>,

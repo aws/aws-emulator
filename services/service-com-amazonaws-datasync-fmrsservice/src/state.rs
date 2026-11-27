@@ -50,9 +50,10 @@ use std::collections::HashMap;
 use std::time::{Duration, SystemTime};
 
 use crate::ops::types::{
-    CmkSecretConfig, CustomSecretConfig, Ec2Config, FilterRule, HdfsNameNode,
-    InvalidRequestException, ManagedSecretConfig, ManifestConfig, NfsMountOptions, Options,
-    QopConfiguration, S3Config, SmbMountOptions, TagListEntry, TaskReportConfig, TaskSchedule,
+    AzureFederatedIdentityConfig, CmkSecretConfig, CustomSecretConfig, Ec2Config, FilterRule,
+    HdfsNameNode, InvalidRequestException, ManagedSecretConfig, ManifestConfig, NfsMountOptions,
+    ObjectStorageFederatedIdentityConfig, Options, QopConfiguration, S3Config, SmbMountOptions,
+    TagListEntry, TaskReportConfig, TaskSchedule,
 };
 
 /// How long each clock-owed transition takes.
@@ -365,6 +366,11 @@ pub struct AzureBlobLocationConfig {
     pub blob_type: String,
     pub access_tier: String,
     pub secret: LocationSecret,
+    /// The federated identity this location reaches its container through, when the
+    /// request named one. It is an alternative to a shared access signature kept in a
+    /// secret, so a location holds at most one of the two; the members it carries are
+    /// configuration, not a credential, and are reported back by the describe.
+    pub federated_identity: Option<AzureFederatedIdentityConfig>,
 }
 
 /// The object storage configuration of a transfer location.
@@ -377,6 +383,11 @@ pub struct ObjectStorageLocationConfig {
     pub access_key: Option<String>,
     pub server_certificate: Option<Vec<u8>>,
     pub secret: LocationSecret,
+    /// The federated identity this location reaches its bucket through, when the request
+    /// named one. It is an alternative to a long-term access key and secret key, so a
+    /// location holds at most one of the two; the members it carries are configuration,
+    /// not a credential, and are reported back by the describe.
+    pub federated_identity: Option<ObjectStorageFederatedIdentityConfig>,
 }
 
 /// The Amazon EFS configuration of a transfer location.

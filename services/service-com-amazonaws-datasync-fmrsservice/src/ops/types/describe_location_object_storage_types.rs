@@ -23,6 +23,7 @@ pub struct DescribeLocationObjectStorageOutput {
     pub location_arn: Option<String>,
     pub location_uri: Option<String>,
     pub access_key: Option<String>,
+    pub federated_identity: Option<ObjectStorageFederatedIdentityConfig>,
     pub server_port: Option<i32>,
     pub server_protocol: Option<String>,
     pub agent_arns: Option<Vec<String>>,

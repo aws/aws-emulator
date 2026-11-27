@@ -66,6 +66,10 @@
 //!   customer-managed secret, such as an authentication token or set of credentials that
 //!   DataSync uses to access a specific transfer location, and a customer-managed Identity
 //!   and Access Management (IAM) role that provides access to the secret.
+//! * `FederatedIdentity` (ObjectStorageFederatedIdentityConfig) — Specifies the federated
+//!   identity configuration that allows DataSync to access your object storage using an
+//!   OpenID Connect (OIDC) token instead of a long-term access key and secret key. Provide
+//!   either FederatedIdentity or the AccessKey/SecretKey credentials, but not both.
 //! * `LocationArn` (LocationArn, len 0..128, pattern
 //!   ^arn:(aws|aws-cn|aws-us-gov|aws-eusc|aws-iso|aws-iso-b):datasync:[a-z\-0-9]+:[0-9]{12}:location/loc-[0-9a-z]{17}$)
 //!   **required** — Specifies the ARN of the object storage system location that you're
@@ -189,6 +193,19 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .into());
         };
 
+        // A federated identity is what DataSync reaches a bucket with INSTEAD of a
+        // long-term access key and secret key, on an update exactly as on a create: a
+        // request naming both names two credentials for one location.
+        if input.federated_identity.is_some()
+            && (input.access_key.is_some() || input.secret_key.is_some())
+        {
+            return Err(invalid_request(
+                "Provide either FederatedIdentity or the AccessKey/SecretKey credentials, \
+                 but not both."
+                    .to_string(),
+            ));
+        }
+
         // The two secret members are alternatives, on an update exactly as on a
         // create: a location's credential lives in one secret, so a request cannot
         // name two places to find it.
@@ -275,6 +292,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         }
         if input.access_key.is_some() {
             location.config.access_key = input.access_key;
+        }
+        if input.federated_identity.is_some() {
+            location.config.federated_identity = input.federated_identity;
         }
         if input.server_certificate.is_some() {
             location.config.server_certificate = input.server_certificate;

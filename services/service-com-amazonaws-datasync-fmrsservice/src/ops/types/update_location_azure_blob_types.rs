@@ -18,6 +18,7 @@ pub struct UpdateLocationAzureBlobInput {
     pub subdirectory: Option<String>,
     pub authentication_type: Option<String>,
     pub sas_configuration: Option<AzureBlobSasConfiguration>,
+    pub federated_identity: Option<AzureFederatedIdentityConfig>,
     pub blob_type: Option<String>,
     pub access_tier: Option<String>,
     pub agent_arns: Option<Vec<String>>,

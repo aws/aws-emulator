@@ -38,7 +38,7 @@ contents — read that shape in the model above when you need its own members.
 
 ## CreateLocationAzureBlob
 
-- **Input:** `ContainerUrl` (string, len 0..325, pattern ^https:\/\/[A-Za-z0-9]((\.|-+)?[A-Za-z0-9]){0,252}\/[a-z0-9](-?[a-z0-9]){2,62}$, required), `AuthenticationType` (AzureBlobAuthenticationType, one of: NONE | SAS, required), `SasConfiguration` (AzureBlobSasConfiguration), `BlobType` (AzureBlobType, one of: BLOCK), `AccessTier` (AzureAccessTier, one of: ARCHIVE | COOL | HOT), `Subdirectory` (string, len 0..1024, pattern ^[\p{L}\p{M}\p{Z}\p{S}\p{N}\p{P}\p{C}]*$), `AgentArns` (list<string>, len 1..8), `Tags` (list<TagListEntry>, len 0..50), `CmkSecretConfig` (CmkSecretConfig), `CustomSecretConfig` (CustomSecretConfig)
+- **Input:** `ContainerUrl` (string, len 0..325, pattern ^https:\/\/[A-Za-z0-9]((\.|-+)?[A-Za-z0-9]){0,252}\/[a-z0-9](-?[a-z0-9]){2,62}$, required), `AuthenticationType` (AzureBlobAuthenticationType, one of: NONE | OIDC | SAS, required), `SasConfiguration` (AzureBlobSasConfiguration), `FederatedIdentity` (AzureFederatedIdentityConfig), `BlobType` (AzureBlobType, one of: BLOCK), `AccessTier` (AzureAccessTier, one of: ARCHIVE | COOL | HOT), `Subdirectory` (string, len 0..1024, pattern ^[\p{L}\p{M}\p{Z}\p{S}\p{N}\p{P}\p{C}]*$), `AgentArns` (list<string>, len 1..8), `Tags` (list<TagListEntry>, len 0..50), `CmkSecretConfig` (CmkSecretConfig), `CustomSecretConfig` (CustomSecretConfig)
 - **Output:** `LocationArn` (string, len 0..128, pattern ^arn:(aws|aws-cn|aws-us-gov|aws-eusc|aws-iso|aws-iso-b):datasync:[a-z\-0-9]+:[0-9]{12}:location/loc-[0-9a-z]{17}$)
 - **Errors:** `InternalException (HTTP 500)`, `InvalidRequestException (HTTP 400)`
 
@@ -86,7 +86,7 @@ contents — read that shape in the model above when you need its own members.
 
 ## CreateLocationObjectStorage
 
-- **Input:** `ServerHostname` (string, len 0..255, pattern ^(([a-zA-Z0-9\-]*[a-zA-Z0-9])\.)*([A-Za-z0-9\-:]*[A-Za-z0-9])$, required), `ServerPort` (integer, range 1..65536), `ServerProtocol` (ObjectStorageServerProtocol, one of: HTTP | HTTPS), `Subdirectory` (string, len 0..4096, pattern ^[a-zA-Z0-9_\-\+\./\(\)\p{Zs}]*$), `BucketName` (string, len 3..63, pattern ^[a-zA-Z0-9_\-\+\.\(\)\$\p{Zs}]+$, required), `AccessKey` (string, len 0..200, pattern ^.*$), `SecretKey` (string, len 0..200, pattern ^.*$), `AgentArns` (list<string>, len 1..8), `Tags` (list<TagListEntry>, len 0..50), `ServerCertificate` (blob, len 0..32768), `CmkSecretConfig` (CmkSecretConfig), `CustomSecretConfig` (CustomSecretConfig)
+- **Input:** `ServerHostname` (string, len 0..255, pattern ^(([a-zA-Z0-9\-]*[a-zA-Z0-9])\.)*([A-Za-z0-9\-:]*[A-Za-z0-9])$, required), `ServerPort` (integer, range 1..65536), `ServerProtocol` (ObjectStorageServerProtocol, one of: HTTP | HTTPS), `Subdirectory` (string, len 0..4096, pattern ^[a-zA-Z0-9_\-\+\./\(\)\p{Zs}]*$), `BucketName` (string, len 3..63, pattern ^[a-zA-Z0-9_\-\+\.\(\)\$\p{Zs}]+$, required), `AccessKey` (string, len 0..200, pattern ^.*$), `SecretKey` (string, len 0..200, pattern ^.*$), `FederatedIdentity` (ObjectStorageFederatedIdentityConfig), `AgentArns` (list<string>, len 1..8), `Tags` (list<TagListEntry>, len 0..50), `ServerCertificate` (blob, len 0..32768), `CmkSecretConfig` (CmkSecretConfig), `CustomSecretConfig` (CustomSecretConfig)
 - **Output:** `LocationArn` (string, len 0..128, pattern ^arn:(aws|aws-cn|aws-us-gov|aws-eusc|aws-iso|aws-iso-b):datasync:[a-z\-0-9]+:[0-9]{12}:location/loc-[0-9a-z]{17}$)
 - **Errors:** `InternalException (HTTP 500)`, `InvalidRequestException (HTTP 400)`
 
@@ -135,7 +135,7 @@ contents — read that shape in the model above when you need its own members.
 ## DescribeLocationAzureBlob
 
 - **Input:** `LocationArn` (string, len 0..128, pattern ^arn:(aws|aws-cn|aws-us-gov|aws-eusc|aws-iso|aws-iso-b):datasync:[a-z\-0-9]+:[0-9]{12}:location/loc-[0-9a-z]{17}$, required)
-- **Output:** `LocationArn` (string, len 0..128, pattern ^arn:(aws|aws-cn|aws-us-gov|aws-eusc|aws-iso|aws-iso-b):datasync:[a-z\-0-9]+:[0-9]{12}:location/loc-[0-9a-z]{17}$), `LocationUri` (string, len 0..4360, pattern ^(efs|nfs|s3|smb|hdfs|fsx[a-z0-9-]+)://[a-zA-Z0-9.:/\-]+$), `AuthenticationType` (AzureBlobAuthenticationType, one of: NONE | SAS), `BlobType` (AzureBlobType, one of: BLOCK), `AccessTier` (AzureAccessTier, one of: ARCHIVE | COOL | HOT), `AgentArns` (list<string>, len 1..8), `CreationTime` (timestamp), `ManagedSecretConfig` (ManagedSecretConfig), `CmkSecretConfig` (CmkSecretConfig), `CustomSecretConfig` (CustomSecretConfig)
+- **Output:** `LocationArn` (string, len 0..128, pattern ^arn:(aws|aws-cn|aws-us-gov|aws-eusc|aws-iso|aws-iso-b):datasync:[a-z\-0-9]+:[0-9]{12}:location/loc-[0-9a-z]{17}$), `LocationUri` (string, len 0..4360, pattern ^(efs|nfs|s3|smb|hdfs|fsx[a-z0-9-]+)://[a-zA-Z0-9.:/\-]+$), `AuthenticationType` (AzureBlobAuthenticationType, one of: NONE | OIDC | SAS), `FederatedIdentity` (AzureFederatedIdentityConfig), `BlobType` (AzureBlobType, one of: BLOCK), `AccessTier` (AzureAccessTier, one of: ARCHIVE | COOL | HOT), `AgentArns` (list<string>, len 1..8), `CreationTime` (timestamp), `ManagedSecretConfig` (ManagedSecretConfig), `CmkSecretConfig` (CmkSecretConfig), `CustomSecretConfig` (CustomSecretConfig)
 - **Errors:** `InternalException (HTTP 500)`, `InvalidRequestException (HTTP 400)`
 
 ## DescribeLocationEfs
@@ -183,7 +183,7 @@ contents — read that shape in the model above when you need its own members.
 ## DescribeLocationObjectStorage
 
 - **Input:** `LocationArn` (string, len 0..128, pattern ^arn:(aws|aws-cn|aws-us-gov|aws-eusc|aws-iso|aws-iso-b):datasync:[a-z\-0-9]+:[0-9]{12}:location/loc-[0-9a-z]{17}$, required)
-- **Output:** `LocationArn` (string, len 0..128, pattern ^arn:(aws|aws-cn|aws-us-gov|aws-eusc|aws-iso|aws-iso-b):datasync:[a-z\-0-9]+:[0-9]{12}:location/loc-[0-9a-z]{17}$), `LocationUri` (string, len 0..4360, pattern ^(efs|nfs|s3|smb|hdfs|fsx[a-z0-9-]+)://[a-zA-Z0-9.:/\-]+$), `AccessKey` (string, len 0..200, pattern ^.*$), `ServerPort` (integer, range 1..65536), `ServerProtocol` (ObjectStorageServerProtocol, one of: HTTP | HTTPS), `AgentArns` (list<string>, len 1..8), `CreationTime` (timestamp), `ServerCertificate` (blob, len 0..32768), `ManagedSecretConfig` (ManagedSecretConfig), `CmkSecretConfig` (CmkSecretConfig), `CustomSecretConfig` (CustomSecretConfig)
+- **Output:** `LocationArn` (string, len 0..128, pattern ^arn:(aws|aws-cn|aws-us-gov|aws-eusc|aws-iso|aws-iso-b):datasync:[a-z\-0-9]+:[0-9]{12}:location/loc-[0-9a-z]{17}$), `LocationUri` (string, len 0..4360, pattern ^(efs|nfs|s3|smb|hdfs|fsx[a-z0-9-]+)://[a-zA-Z0-9.:/\-]+$), `AccessKey` (string, len 0..200, pattern ^.*$), `FederatedIdentity` (ObjectStorageFederatedIdentityConfig), `ServerPort` (integer, range 1..65536), `ServerProtocol` (ObjectStorageServerProtocol, one of: HTTP | HTTPS), `AgentArns` (list<string>, len 1..8), `CreationTime` (timestamp), `ServerCertificate` (blob, len 0..32768), `ManagedSecretConfig` (ManagedSecretConfig), `CmkSecretConfig` (CmkSecretConfig), `CustomSecretConfig` (CustomSecretConfig)
 - **Errors:** `InternalException (HTTP 500)`, `InvalidRequestException (HTTP 400)`
 
 ## DescribeLocationS3
@@ -271,7 +271,7 @@ contents — read that shape in the model above when you need its own members.
 
 ## UpdateLocationAzureBlob
 
-- **Input:** `LocationArn` (string, len 0..128, pattern ^arn:(aws|aws-cn|aws-us-gov|aws-eusc|aws-iso|aws-iso-b):datasync:[a-z\-0-9]+:[0-9]{12}:location/loc-[0-9a-z]{17}$, required), `Subdirectory` (string, len 0..1024, pattern ^[\p{L}\p{M}\p{Z}\p{S}\p{N}\p{P}\p{C}]*$), `AuthenticationType` (AzureBlobAuthenticationType, one of: NONE | SAS), `SasConfiguration` (AzureBlobSasConfiguration), `BlobType` (AzureBlobType, one of: BLOCK), `AccessTier` (AzureAccessTier, one of: ARCHIVE | COOL | HOT), `AgentArns` (list<string>, len 1..8), `CmkSecretConfig` (CmkSecretConfig), `CustomSecretConfig` (CustomSecretConfig)
+- **Input:** `LocationArn` (string, len 0..128, pattern ^arn:(aws|aws-cn|aws-us-gov|aws-eusc|aws-iso|aws-iso-b):datasync:[a-z\-0-9]+:[0-9]{12}:location/loc-[0-9a-z]{17}$, required), `Subdirectory` (string, len 0..1024, pattern ^[\p{L}\p{M}\p{Z}\p{S}\p{N}\p{P}\p{C}]*$), `AuthenticationType` (AzureBlobAuthenticationType, one of: NONE | OIDC | SAS), `SasConfiguration` (AzureBlobSasConfiguration), `FederatedIdentity` (AzureFederatedIdentityConfig), `BlobType` (AzureBlobType, one of: BLOCK), `AccessTier` (AzureAccessTier, one of: ARCHIVE | COOL | HOT), `AgentArns` (list<string>, len 1..8), `CmkSecretConfig` (CmkSecretConfig), `CustomSecretConfig` (CustomSecretConfig)
 - **Output:** (no members)
 - **Errors:** `InternalException (HTTP 500)`, `InvalidRequestException (HTTP 400)`
 
@@ -319,7 +319,7 @@ contents — read that shape in the model above when you need its own members.
 
 ## UpdateLocationObjectStorage
 
-- **Input:** `LocationArn` (string, len 0..128, pattern ^arn:(aws|aws-cn|aws-us-gov|aws-eusc|aws-iso|aws-iso-b):datasync:[a-z\-0-9]+:[0-9]{12}:location/loc-[0-9a-z]{17}$, required), `ServerPort` (integer, range 1..65536), `ServerProtocol` (ObjectStorageServerProtocol, one of: HTTP | HTTPS), `Subdirectory` (string, len 0..4096, pattern ^[a-zA-Z0-9_\-\+\./\(\)\p{Zs}]*$), `ServerHostname` (string, len 0..255, pattern ^(([a-zA-Z0-9\-]*[a-zA-Z0-9])\.)*([A-Za-z0-9\-:]*[A-Za-z0-9])$), `AccessKey` (string, len 0..200, pattern ^.*$), `SecretKey` (string, len 0..200, pattern ^.*$), `AgentArns` (list<string>, len 1..8), `ServerCertificate` (blob, len 0..32768), `CmkSecretConfig` (CmkSecretConfig), `CustomSecretConfig` (CustomSecretConfig)
+- **Input:** `LocationArn` (string, len 0..128, pattern ^arn:(aws|aws-cn|aws-us-gov|aws-eusc|aws-iso|aws-iso-b):datasync:[a-z\-0-9]+:[0-9]{12}:location/loc-[0-9a-z]{17}$, required), `ServerPort` (integer, range 1..65536), `ServerProtocol` (ObjectStorageServerProtocol, one of: HTTP | HTTPS), `Subdirectory` (string, len 0..4096, pattern ^[a-zA-Z0-9_\-\+\./\(\)\p{Zs}]*$), `ServerHostname` (string, len 0..255, pattern ^(([a-zA-Z0-9\-]*[a-zA-Z0-9])\.)*([A-Za-z0-9\-:]*[A-Za-z0-9])$), `AccessKey` (string, len 0..200, pattern ^.*$), `SecretKey` (string, len 0..200, pattern ^.*$), `FederatedIdentity` (ObjectStorageFederatedIdentityConfig), `AgentArns` (list<string>, len 1..8), `ServerCertificate` (blob, len 0..32768), `CmkSecretConfig` (CmkSecretConfig), `CustomSecretConfig` (CustomSecretConfig)
 - **Output:** (no members)
 - **Errors:** `InternalException (HTTP 500)`, `InvalidRequestException (HTTP 400)`
 

@@ -47,3 +47,12 @@ aside) in
 snapshot is ever refreshed with `PreserveNfsAcls`, with a member the overlay does
 not restate, or with a changed target, value set or constraint, that test fails —
 and the local declaration should then give way to the modelled shape.
+
+## One declaration per shape, after a snapshot refresh
+
+`src/ops/types/shared_types.rs` is rendered from the snapshot, so it declares no
+`Options`: a member list carrying `PreserveNfsAcls` does not validate against the
+model that module loads, and two declarations of one shape make the name the
+`types` registry re-exports ambiguous. A refresh that re-renders that module with
+an `Options` of its own has to have it removed again, leaving
+`src/ops/types/options_types.rs` as this crate's single declaration of the shape.

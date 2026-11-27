@@ -21,6 +21,7 @@ pub struct CreateLocationObjectStorageInput {
     pub bucket_name: String,
     pub access_key: Option<String>,
     pub secret_key: Option<String>,
+    pub federated_identity: Option<ObjectStorageFederatedIdentityConfig>,
     pub agent_arns: Option<Vec<String>>,
     pub tags: Option<Vec<TagListEntry>>,
     pub server_certificate: Option<Vec<u8>>,

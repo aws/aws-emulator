@@ -23,6 +23,7 @@ pub struct DescribeLocationAzureBlobOutput {
     pub location_arn: Option<String>,
     pub location_uri: Option<String>,
     pub authentication_type: Option<String>,
+    pub federated_identity: Option<AzureFederatedIdentityConfig>,
     pub blob_type: Option<String>,
     pub access_tier: Option<String>,
     pub agent_arns: Option<Vec<String>>,

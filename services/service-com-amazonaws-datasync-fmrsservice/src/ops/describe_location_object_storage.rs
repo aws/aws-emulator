@@ -68,6 +68,9 @@
 //!   customer-managed secret, such as an authentication token or set of credentials that
 //!   DataSync uses to access a specific transfer location, and a customer-managed Identity
 //!   and Access Management (IAM) role that provides access to the secret.
+//! * `FederatedIdentity` (ObjectStorageFederatedIdentityConfig) — The federated identity
+//!   configuration that DataSync uses to access your object storage using an OpenID Connect
+//!   (OIDC) token.
 //! * `LocationArn` (LocationArn, len 0..128, pattern
 //!   ^arn:(aws|aws-cn|aws-us-gov|aws-eusc|aws-iso|aws-iso-b):datasync:[a-z\-0-9]+:[0-9]{12}:location/loc-[0-9a-z]{17}$)
 //!   — The ARN of the object storage system location.
@@ -200,6 +203,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             location_arn: Some(location.arn.clone()),
             location_uri: Some(location.location_uri.clone()),
             access_key: object_storage.access_key.clone(),
+            // The federated identity the location reaches its bucket through, when it was
+            // created (or updated) with one. It carries no credential — only the IAM role
+            // and the external identity parameters DataSync exchanges a token with — so it
+            // is reported as stored.
+            federated_identity: object_storage.federated_identity.clone(),
             server_port: Some(object_storage.server_port),
             server_protocol: Some(object_storage.server_protocol.clone()),
             // `AgentArns` is modelled `len 1..8`, so an empty list is not a legal

@@ -67,9 +67,11 @@
 //!   multiple agents for your transfer. Make sure you configure this parameter correctly when
 //!   you first create your storage location. You cannot add or remove agents from a storage
 //!   location after you create it.
-//! * `AuthenticationType` (AzureBlobAuthenticationType, one of: NONE | SAS) **required** —
+//! * `AuthenticationType` (AzureBlobAuthenticationType, one of: SAS | NONE | OIDC)
+//!   **required** —
 //!   Specifies the authentication method DataSync uses to access your Azure Blob Storage.
-//!   DataSync can access blob storage using a shared access signature (SAS).
+//!   DataSync can access blob storage using a shared access signature (SAS) or an OpenID
+//!   Connect (OIDC) token.
 //! * `BlobType` (AzureBlobType, one of: BLOCK) — Specifies the type of blob that you want
 //!   your objects or files to be when transferring them into Azure Blob Storage. Currently,
 //!   DataSync only supports moving data into Azure Blob Storage as block blobs. For more
@@ -95,6 +97,10 @@
 //!   CmkSecretConfig (with SasConfiguration) or CustomSecretConfig (without SasConfiguration)
 //!   to provide credentials for a CreateLocationAzureBlob request. Do not provide both
 //!   parameters for the same request.
+//! * `FederatedIdentity` (AzureFederatedIdentityConfig) — Specifies the federated identity
+//!   configuration that allows DataSync to access your Azure Blob Storage using an OpenID
+//!   Connect (OIDC) token instead of a shared access signature (SAS). Provide either
+//!   FederatedIdentity or SasConfiguration, but not both.
 //! * `SasConfiguration` (AzureBlobSasConfiguration) — Specifies the SAS configuration that
 //!   allows DataSync to access your Azure Blob Storage. If you provide an authentication
 //!   token using SasConfiguration, but do not provide secret configuration details using
@@ -291,6 +297,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                             blob_type,
                             access_tier,
                             secret,
+                            federated_identity: input.federated_identity,
                         },
                     ),
                 },
@@ -318,13 +325,15 @@ const DEFAULT_BLOB_TYPE: &str = "BLOCK";
 const DEFAULT_ACCESS_TIER: &str = "HOT";
 
 /// The authentication method that makes a location's access depend on a credential, as
-/// the modelled `AzureBlobAuthenticationType` enum spells it (`NONE | SAS`).
+/// the modelled `AzureBlobAuthenticationType` enum spells it (`SAS | NONE | OIDC`).
 const SAS_AUTHENTICATION_TYPE: &str = "SAS";
 
 /// The refusal a request earns from the credential parameters it names, if any.
 ///
-/// Two rules, both of them dependencies between members that the shapes alone cannot
-/// state. A location that authenticates with a shared access signature only reaches its
+/// Three rules, each of them a dependency between members that the shapes alone cannot
+/// state. A federated identity is what DataSync reaches a container with INSTEAD of a
+/// shared access signature, so a request naming both names two credentials for one
+/// location. A location that authenticates with a shared access signature only reaches its
 /// container with that signature, so the request has to say where the signature is —
 /// inline in `SasConfiguration`, or in the secret `CustomSecretConfig` names; a request
 /// selecting that authentication method and naming no credential at all describes a
@@ -338,6 +347,12 @@ fn credential_parameter_refusal(input: &CreateLocationAzureBlobInput) -> Option<
     let custom = input.custom_secret_config.is_some();
     let sas = input.sas_configuration.is_some();
 
+    // A federated identity is the alternative to a shared access signature, not a
+    // companion to one: the two name two different ways for DataSync to reach the same
+    // container, so a request naming both describes no single one.
+    if input.federated_identity.is_some() && sas {
+        return Some(FEDERATED_IDENTITY_RULE.to_string());
+    }
     if input.authentication_type == SAS_AUTHENTICATION_TYPE && !sas && !cmk && !custom {
         return Some(MISSING_SAS_CREDENTIAL_REFUSAL.to_string());
     }
@@ -365,6 +380,10 @@ fn credential_parameter_refusal(input: &CreateLocationAzureBlobInput) -> Option<
 const MISSING_SAS_CREDENTIAL_REFUSAL: &str = "Invalid parameter: SasConfiguration or \
      CustomConfiguration needs to be provided when authentication type is SAS for Azure \
      Blob locations..";
+
+/// The rule the `FederatedIdentity` member documents, as it words it.
+const FEDERATED_IDENTITY_RULE: &str =
+    "Provide either FederatedIdentity or SasConfiguration, but not both.";
 
 /// The rule both secret-configuration members document, as they word it, and the first
 /// sentence of every refusal above.

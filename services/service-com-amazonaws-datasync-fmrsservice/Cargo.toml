@@ -50,6 +50,10 @@ emulator-core-build-support = { workspace = true }
 # Compiles every `tests/all/<name>.rs` as a suite of the one integration-test target
 # rooted at `tests/all/main.rs`.
 automod = { workspace = true }
+# The CBOR implementation the framework's own codec is built on, at the version that
+# codec uses: the wire suite writes and reads the bodies of this service's Smithy RPC v2
+# CBOR framing with it, so no second CBOR implementation enters the tree.
+aws-smithy-cbor = "0.62.2"
 sha2 = { workspace = true }
 # Both sides of a transfer between Amazon S3 locations are buckets of this emulator's own
 # object store, and the role a location names is a record of its own IAM, so the suite

@@ -81,6 +81,10 @@
 //!   CmkSecretConfig (with SecretKey) or CustomSecretConfig (without SecretKey) to provide
 //!   credentials for a CreateLocationObjectStorage request. Do not provide both parameters
 //!   for the same request.
+//! * `FederatedIdentity` (ObjectStorageFederatedIdentityConfig) — Specifies the federated
+//!   identity configuration that allows DataSync to access your object storage using an
+//!   OpenID Connect (OIDC) token instead of a long-term access key and secret key. Provide
+//!   either FederatedIdentity or the AccessKey/SecretKey credentials, but not both.
 //! * `SecretKey` (ObjectStorageSecretKey, len 0..200, pattern ^.*$) — Specifies the secret
 //!   key (for example, a password) if credentials are required to authenticate with the
 //!   object storage server. If you provide a secret using SecretKey, but do not provide
@@ -295,6 +299,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                             access_key: input.access_key,
                             server_certificate: input.server_certificate,
                             secret,
+                            federated_identity: input.federated_identity,
                         },
                     ),
                 },
@@ -317,15 +322,20 @@ pub(crate) fn object_storage_global_id(server_hostname: &str, bucket_name: &str)
 /// The refusal a request earns by combining the credential parameters in a way this
 /// operation does not accept, if any.
 ///
-/// Both secret-configuration members document the same rule: a request provides either
-/// `CmkSecretConfig` together with the `SecretKey` that DataSync then puts in the secret
-/// it manages, or `CustomSecretConfig` on its own, naming a secret the caller already
-/// manages — never both, and never one without its partner.
+/// Two rules. A federated identity is what DataSync reaches a bucket with INSTEAD of a
+/// long-term access key and secret key, so a request naming both names two credentials
+/// for one location. And both secret-configuration members document the same rule: a
+/// request provides either `CmkSecretConfig` together with the `SecretKey` that DataSync
+/// then puts in the secret it manages, or `CustomSecretConfig` on its own, naming a
+/// secret the caller already manages — never both, and never one without its partner.
 fn secret_combination_refusal(input: &CreateLocationObjectStorageInput) -> Option<String> {
     let cmk = input.cmk_secret_config.is_some();
     let custom = input.custom_secret_config.is_some();
     let secret_key = input.secret_key.is_some();
 
+    if input.federated_identity.is_some() && (secret_key || input.access_key.is_some()) {
+        return Some(FEDERATED_IDENTITY_RULE.to_string());
+    }
     if cmk && custom {
         return Some(format!(
             "{CREDENTIAL_PARAMETER_RULE} Do not provide both parameters for the same request."
@@ -343,6 +353,10 @@ fn secret_combination_refusal(input: &CreateLocationObjectStorageInput) -> Optio
     }
     None
 }
+
+/// The rule the `FederatedIdentity` member documents, as it words it.
+const FEDERATED_IDENTITY_RULE: &str =
+    "Provide either FederatedIdentity or the AccessKey/SecretKey credentials, but not both.";
 
 /// The rule both secret-configuration members document, as they word it, and the first
 /// sentence of every refusal above.

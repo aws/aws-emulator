@@ -39,6 +39,20 @@ pub struct AzureBlobSasConfiguration {
     pub token: String,
 }
 
+#[smithy_macros::smithy(shape = "com.amazonaws.datasync#AzureFederatedIdentityConfig")]
+#[derive(Debug, Clone, Default)]
+pub struct AzureFederatedIdentityConfig {
+    pub aws_iam_role: Option<String>,
+    pub azure_oidc: Option<AzureOidcConfig>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.datasync#AzureOidcConfig")]
+#[derive(Debug, Clone, Default)]
+pub struct AzureOidcConfig {
+    pub tenant_id: String,
+    pub client_id: String,
+}
+
 #[smithy_macros::smithy(shape = "com.amazonaws.datasync#CmkSecretConfig")]
 #[derive(Debug, Clone, Default)]
 pub struct CmkSecretConfig {
@@ -123,11 +137,39 @@ pub struct OnPremConfig {
     pub agent_arns: Vec<String>,
 }
 
+#[smithy_macros::smithy(shape = "com.amazonaws.datasync#ObjectStorageFederatedIdentityConfig")]
+#[derive(Debug, Clone, Default)]
+pub struct ObjectStorageFederatedIdentityConfig {
+    pub aws_iam_role: Option<String>,
+    pub external_identity: Option<ObjectStorageExternalIdentityConfig>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.datasync#ObjectStorageExternalIdentityConfig")]
+#[derive(Debug, Clone, Default)]
+pub struct ObjectStorageExternalIdentityConfig {
+    pub google_oidc: Option<GoogleOidcConfig>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.datasync#GoogleOidcConfig")]
+#[derive(Debug, Clone, Default)]
+pub struct GoogleOidcConfig {
+    pub project_name: String,
+    pub project_number: String,
+    pub identity_pool_name: String,
+    pub identity_provider_name: String,
+}
+
 #[smithy_macros::smithy(shape = "com.amazonaws.datasync#S3Config")]
 #[derive(Debug, Clone, Default)]
 pub struct S3Config {
     pub bucket_access_role_arn: String,
 }
+
+// `com.amazonaws.datasync#Options` is declared in `options_types`, from the overlay
+// model that adds the member AWS answers with and this snapshot does not declare
+// (`smithy-model/LOCAL-ADDITIONS.md`). It is NOT declared here: the member list above
+// would not validate against this module's model, and two declarations of one shape
+// make the re-exported name ambiguous.
 
 #[smithy_macros::smithy(shape = "com.amazonaws.datasync#FilterRule")]
 #[derive(Debug, Clone, Default)]
@@ -224,7 +266,7 @@ pub const AZURE_ACCESS_TIER_VALUES: &[&str] = &["ARCHIVE", "COOL", "HOT"];
 
 
 /// The values `AzureBlobAuthenticationType` accepts on the wire.
-pub const AZURE_BLOB_AUTHENTICATION_TYPE_VALUES: &[&str] = &["NONE", "SAS"];
+pub const AZURE_BLOB_AUTHENTICATION_TYPE_VALUES: &[&str] = &["NONE", "OIDC", "SAS"];
 
 
 /// The values `AzureBlobType` accepts on the wire.
