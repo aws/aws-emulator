@@ -35,7 +35,8 @@ use crate::db_instances::{call, emulator, expect_ok, optional_text, subtrees, te
 // suite reads are the ones the sibling orderable-options suite already owns, so the two
 // suites cannot disagree about what an option is or about AWS's published storage table.
 use crate::orderable_db_instance_options::{
-    all_options, engine_max_allocated_storage, options, storage_rule, OrderableOption,
+    all_options, engine_max_allocated_storage, options, published_min_storage_size,
+    storage_rule, OrderableOption,
 };
 
 /// The operation under test.
@@ -133,16 +134,15 @@ fn is_a_plain_release_number(version: &str) -> bool {
 /// with it reports for `storage_type`.
 ///
 /// Both come from the sibling suite's published tables: the minimum from `STORAGE_RULES` for
-/// the type, and the maximum from the largest `AllocatedStorage` the ENGINE accepts
+/// the (engine, type) pair — `gp2` publishes the ENGINE's own floor and the later types their
+/// own — and the maximum from the largest `AllocatedStorage` the ENGINE accepts
 /// (`engine_max_allocated_storage`). They are a property of the (engine, storage type) pair
 /// and of neither the class nor the engine VERSION, so a release inside a published line
 /// reports the same bounds as the line's published release.
 fn published_storage_bounds(storage_type: &str, engine: &str) -> (i32, i32) {
-    let min = storage_rule(storage_type)
-        .min_storage_size
-        .unwrap_or_else(|| {
-            panic!("a per-instance storage type publishes a minimum size: {storage_type}")
-        });
+    let min = published_min_storage_size(storage_rule(storage_type), engine).unwrap_or_else(|| {
+        panic!("a per-instance storage type publishes a minimum size: {storage_type}")
+    });
     (min, engine_max_allocated_storage(engine))
 }
 

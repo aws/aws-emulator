@@ -134,9 +134,10 @@ struct CapabilityCase {
 ///
 /// Source: each member's own documentation on `OrderableDBInstanceOption`, plus the
 /// capability's own published scope — the Data API HTTP endpoint of an Aurora cluster, the
-/// local NVMe storage Optimized Reads places its temporary objects on (the `d` instance
-/// generations), the MySQL-compatible engines' Optimized Writes, and the Database Activity
-/// Streams modes the member itself lists per engine.
+/// local NVMe storage Optimized Reads places its temporary objects on (the `d` generations
+/// of the general-purpose and memory-optimized families), the MySQL-compatible engines'
+/// Optimized Writes, and the Database Activity Streams modes the member itself lists per
+/// engine.
 const CAPABILITIES: &[CapabilityCase] = &[
     CapabilityCase {
         case: "an Aurora PostgreSQL serverless option",
@@ -220,6 +221,21 @@ const CAPABILITIES: &[CapabilityCase] = &[
         activity_stream_modes: &[],
     },
     CapabilityCase {
+        // A COMPUTE-optimized class with local NVMe storage: the capabilities AWS publishes
+        // on whole general-purpose and memory-optimized families are offered on none of
+        // them, local storage or not.
+        case: "an RDS for MySQL option on a compute-optimized class with local NVMe storage",
+        engine: "mysql",
+        class: "db.c6gd.12xlarge",
+        expected: &[
+            ("SupportsOptimizedReads", "false"),
+            ("SupportsOptimizedWrites", "false"),
+            ("SupportsClusters", "false"),
+        ],
+        empty_processor_features: true,
+        activity_stream_modes: &[],
+    },
+    CapabilityCase {
         case: "an RDS for Db2 option",
         engine: "db2-se",
         class: "db.m6i.large",
@@ -291,8 +307,9 @@ async fn every_option_answers_the_capability_members_the_shape_publishes() {
             let network_types = subtrees(option, "SupportedNetworkTypes");
             assert_eq!(
                 texts(&network_types[0], "member"),
-                vec!["DUAL".to_string(), "IPV4".to_string()],
-                "case {:?}: expected both published network types, got {option}",
+                vec!["IPV4".to_string(), "DUAL".to_string()],
+                "case {:?}: expected both published network types, in the order the value \
+                 list names them, got {option}",
                 row.case
             );
         }

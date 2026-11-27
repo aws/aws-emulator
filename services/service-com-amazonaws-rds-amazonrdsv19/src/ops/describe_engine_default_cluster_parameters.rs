@@ -316,6 +316,15 @@ pub(crate) fn engine_cluster_parameter_vocabulary(
 /// metadata above, each sourced `engine-default`, in parameter-name order, paginated as this
 /// operation documents.
 ///
+/// What this level publishes and the per-instance level does not is the settings that apply to
+/// the cluster as a WHOLE: the `aurora_` settings of its binary-log replication, its parallel
+/// query and its write forwarding, and the `aurora_`/`aws_default_` role ARNs its Amazon S3
+/// and machine-learning integrations are configured with — the cluster-wide half of the
+/// engine's own settings namespace (`crate::state::engine_has_no_setting_named`, which carries
+/// the names this engine has a setting for at all). A parameter whose value is an IAM role ARN
+/// is bounded by no published domain and has no engine default, so its `allowed_values` and
+/// `default_value` columns are empty and the two members are reported absent.
+///
 /// `minimum_engine_version` is the release of the engine's own version line that
 /// introduced the parameter, published only where that release is the same for every engine
 /// that shares this catalog. It is reported as `Parameter$MinimumEngineVersion` and it
@@ -356,6 +365,245 @@ pub(crate) const MYSQL_CLUSTER_PARAMETERS: &[crate::state::ClusterParameterSpec]
         // byte for byte, rather than a paraphrase of what the buffer does.
         "Read buffer size used by master dump thread when the switch \
          aurora_binlog_use_large_read_buffer is ON.",
+    ),
+    parameter(
+        // The yield the dump thread of the same large-read-buffer facility takes, published
+        // in the release that added the facility.
+        "aurora_binlog_replication_max_yield_seconds",
+        crate::state::APPLY_TYPE_DYNAMIC,
+        "integer",
+        "0-36000",
+        "0",
+        true,
+        "5.7.mysql_aurora.2.04.5",
+        "Maximum number of seconds the binlog dump thread waits for the current binlog file \
+         to be filled with transactions before yielding to other threads.",
+    ),
+    parameter(
+        "aurora_binlog_use_large_read_buffer",
+        crate::state::APPLY_TYPE_DYNAMIC,
+        "boolean",
+        "0,1",
+        "1",
+        true,
+        "5.7.mysql_aurora.2.04.5",
+        "When this switch is ON, the master dump thread reads from the binlog with a buffer \
+         of aurora_binlog_read_buffer_size bytes.",
+    ),
+    parameter(
+        "aurora_disable_hash_join",
+        crate::state::APPLY_TYPE_DYNAMIC,
+        "boolean",
+        "0,1",
+        "0",
+        true,
+        "",
+        "Turns off the hash join optimization for the DB cluster.",
+    ),
+    parameter(
+        "aurora_enable_repl_bin_log_filtering",
+        crate::state::APPLY_TYPE_DYNAMIC,
+        "boolean",
+        "0,1",
+        "1",
+        true,
+        "",
+        "Filters the binlog entries that the replicas of the cluster do not need before \
+         they are replicated.",
+    ),
+    parameter(
+        "aurora_enable_replica_log_compression",
+        crate::state::APPLY_TYPE_DYNAMIC,
+        "boolean",
+        "0,1",
+        "1",
+        true,
+        "",
+        "Compresses the replication payload the writer sends to the replicas of the \
+         cluster.",
+    ),
+    parameter(
+        "aurora_enable_staggered_replica_restart",
+        crate::state::APPLY_TYPE_DYNAMIC,
+        "boolean",
+        "0,1",
+        "1",
+        true,
+        "",
+        "Restarts the replicas of the cluster at staggered times rather than all at once.",
+    ),
+    parameter(
+        "aurora_enable_zdr",
+        crate::state::APPLY_TYPE_DYNAMIC,
+        "boolean",
+        "0,1",
+        "1",
+        true,
+        "",
+        "Preserves the client connections of a DB instance across a zero-downtime restart.",
+    ),
+    parameter(
+        // Write forwarding from the secondary clusters of a global database: the parameters
+        // of the WRITER are published under its own name per release line — the 5.7-line
+        // engine publishes the `master` pair and the 8.0-line engine the `writer` pair — so
+        // each pair names the release line that publishes it.
+        "aurora_fwd_master_idle_timeout",
+        crate::state::APPLY_TYPE_DYNAMIC,
+        "integer",
+        "1-86400",
+        "60",
+        true,
+        "",
+        "Number of seconds the writer waits for activity on a connection forwarded from a \
+         secondary cluster before closing it.",
+    ),
+    parameter(
+        "aurora_fwd_master_max_connections_pct",
+        crate::state::APPLY_TYPE_DYNAMIC,
+        "integer",
+        "0-90",
+        "10",
+        true,
+        "",
+        "Upper limit, as a percentage of max_connections, on the connections the writer \
+         uses for queries forwarded from secondary clusters.",
+    ),
+    parameter(
+        // The 8.0-line spelling of the same pair, introduced with that line, so a family of
+        // the 5.7 line does not carry it ([`crate::state::family_carries_parameter`]).
+        "aurora_fwd_writer_idle_timeout",
+        crate::state::APPLY_TYPE_DYNAMIC,
+        "integer",
+        "1-86400",
+        "60",
+        true,
+        "8.0.mysql_aurora.3.01.0",
+        "Number of seconds the writer waits for activity on a connection forwarded from a \
+         secondary cluster before closing it.",
+    ),
+    parameter(
+        "aurora_fwd_writer_max_connections_pct",
+        crate::state::APPLY_TYPE_DYNAMIC,
+        "integer",
+        "0-90",
+        "10",
+        true,
+        "8.0.mysql_aurora.3.01.0",
+        "Upper limit, as a percentage of max_connections, on the connections the writer \
+         uses for queries forwarded from secondary clusters.",
+    ),
+    parameter(
+        // An IAM role ARN rather than a value out of a domain: the engine publishes no
+        // enumeration and no range for it, and no default at all, so both columns are empty
+        // and both members are reported absent
+        // (`crate::state::engine_default_parameter_to_wire`).
+        "aurora_load_from_s3_role",
+        crate::state::APPLY_TYPE_DYNAMIC,
+        "string",
+        "",
+        "",
+        true,
+        "",
+        "IAM role that Aurora uses to access your S3 bucket for LOAD DATA FROM S3.",
+    ),
+    parameter(
+        "aurora_parallel_query",
+        crate::state::APPLY_TYPE_DYNAMIC,
+        "boolean",
+        "0,1",
+        "0",
+        true,
+        "",
+        "Turns on parallel query for the DB cluster.",
+    ),
+    parameter(
+        "aurora_select_into_s3_role",
+        crate::state::APPLY_TYPE_DYNAMIC,
+        "string",
+        "",
+        "",
+        true,
+        "",
+        "IAM role that Aurora uses to access your S3 bucket for SELECT INTO OUTFILE S3.",
+    ),
+    parameter(
+        "aurora_tmpdir_upgrade",
+        crate::state::APPLY_TYPE_STATIC,
+        "boolean",
+        "0,1",
+        "0",
+        true,
+        "",
+        "Moves the temporary directory of the engine to the local storage of the DB \
+         instance.",
+    ),
+    parameter(
+        // A server system variable that applies to every instance of the cluster at once, so
+        // it is published at the CLUSTER level; its published record is the engine's own, the
+        // same one the per-instance catalog of this engine carries for it
+        // (`super::describe_engine_default_parameters::MYSQL_PARAMETERS`) — ONE parameter has
+        // ONE published record, whichever level reports it.
+        "auto_increment_increment",
+        crate::state::APPLY_TYPE_DYNAMIC,
+        "integer",
+        "1-65535",
+        "1",
+        true,
+        "",
+        "Intended for use with master-to-master replication, and can be used to control \
+         the operation of AUTO_INCREMENT columns",
+    ),
+    parameter(
+        "auto_increment_offset",
+        crate::state::APPLY_TYPE_DYNAMIC,
+        "integer",
+        "1-65535",
+        "1",
+        true,
+        "",
+        "Determines the starting point for the AUTO_INCREMENT column value",
+    ),
+    parameter(
+        // The machine-learning and Lambda integrations are configured with role ARNs at the
+        // CLUSTER level, as the S3 integration above is.
+        "aws_default_comprehend_role",
+        crate::state::APPLY_TYPE_DYNAMIC,
+        "string",
+        "",
+        "",
+        true,
+        "",
+        "IAM role that Aurora uses to access Amazon Comprehend.",
+    ),
+    parameter(
+        "aws_default_lambda_role",
+        crate::state::APPLY_TYPE_DYNAMIC,
+        "string",
+        "",
+        "",
+        true,
+        "",
+        "IAM role that Aurora uses to invoke AWS Lambda functions.",
+    ),
+    parameter(
+        "aws_default_s3_role",
+        crate::state::APPLY_TYPE_DYNAMIC,
+        "string",
+        "",
+        "",
+        true,
+        "",
+        "IAM role that Aurora uses to access your S3 bucket.",
+    ),
+    parameter(
+        "aws_default_sagemaker_role",
+        crate::state::APPLY_TYPE_DYNAMIC,
+        "string",
+        "",
+        "",
+        true,
+        "",
+        "IAM role that Aurora uses to access Amazon SageMaker.",
     ),
     parameter(
         "binlog_format",

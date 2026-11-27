@@ -1252,6 +1252,42 @@ fn magnetic_storage_range(engine: &str) -> (i32, i32) {
     (5, 3_072)
 }
 
+/// The smallest volume `engine` itself publishes for a DB instance whose storage is its own,
+/// in GiB: 5 for the MariaDB, MySQL and PostgreSQL engines, 10 for Oracle and 20 for
+/// Microsoft SQL Server.
+///
+/// It is the floor the engine has carried since before any one storage type published a
+/// higher one of its own, which is why it is the low end of the one type whose range is
+/// written per engine ([`magnetic_storage_range`]) and the floor the option CATALOG publishes
+/// for General Purpose SSD ([`reported_storage_size`]).
+fn engine_storage_floor(engine: &str) -> i32 {
+    magnetic_storage_range(engine).0
+}
+
+/// The storage bounds an OPTION reports for one (engine, storage type) pair —
+/// `MinStorageSize` and `MaxStorageSize` — or `None` for storage a cluster manages, which is
+/// not ordered per instance at all.
+///
+/// The ceiling is the type's own, capped by what the engine accepts
+/// ([`allocated_storage_range`]). The FLOOR is the type's own for every type that published
+/// one when it was introduced — `gp3` from 20 GiB, the Provisioned IOPS SSD types from 100 —
+/// and the ENGINE's own ([`engine_storage_floor`]) for `gp2`, the General Purpose SSD type
+/// these engines have been ordered with since before any higher general-purpose floor: the
+/// catalog publishes that engine floor for it, which is the value the recorded catalog
+/// carries for a `gp2` option of the MySQL engine.
+///
+/// It is the CATALOG's floor, not the order's: an `AllocatedStorage` a request asks for is
+/// held to the range `CreateDBInstanceMessage$AllocatedStorage` documents per type
+/// ([`check_requested_allocated_storage`]), which is why that check reads
+/// [`allocated_storage_range`] and this report reads this.
+fn reported_storage_size(engine: &str, storage_type: &str) -> Option<(i32, i32)> {
+    let (min, max) = allocated_storage_range(engine, storage_type)?;
+    if storage_type.eq_ignore_ascii_case(GP2.name) {
+        return Some((engine_storage_floor(engine), max));
+    }
+    Some((min, max))
+}
+
 /// Refuse an `AllocatedStorage` a request asks for an instance of `engine`, held to the
 /// range that applies to it: the range the `StorageType` the request NAMES publishes
 /// ([`check_allocated_storage`]), or — where the request names none — the widest range that
@@ -1559,7 +1595,7 @@ fn to_wire(
     region: &str,
 ) -> OrderableDBInstanceOption {
     // The sizes this (engine, storage type) pair publishes.
-    let storage_size = allocated_storage_range(engine, storage.name);
+    let storage_size = reported_storage_size(engine, storage.name);
     let processor_features = available_processor_features(engine, class);
     // The capability answers of an engine of ANOTHER control plane are that control plane's,
     // held once for both views of this front door that answer for it: the document engine's
@@ -1648,11 +1684,10 @@ fn to_wire(
         // of one reports it — the wire recording of this report for `aurora-postgresql` on
         // `db.serverless` carries `SupportsClusters` true, as the document engine's own
         // recorded options do for every class — and an instance of an engine that owns its own
-        // storage reports it where that engine can back a Multi-AZ DB cluster: the MySQL and
-        // PostgreSQL engines, and never on a burstable class.
+        // storage reports it where that engine can back a Multi-AZ DB cluster on that CLASS
+        // ([`offers_multi_az_db_clusters`]).
         supports_clusters: Some(
-            is_cluster_engine(engine)
-                || (!class.burstable && matches!(engine, "mysql" | "postgres")),
+            is_cluster_engine(engine) || offers_multi_az_db_clusters(engine, &class.name),
         ),
         // A dedicated log volume carries the instance's transaction logs, so it is offered
         // on the storage type the ORDER names rather than per engine: the Provisioned IOPS
@@ -1717,8 +1752,8 @@ fn to_wire(
         // engines too rather than left absent:
         //
         // * Optimized Reads places temporary objects on the instance's LOCAL NVMe SSD
-        //   storage, so it is offered exactly on the classes that have one — the `d`
-        //   generations of the published class table ([`class_has_local_nvme_storage`]);
+        //   storage, so it is offered on the general-purpose and memory-optimized classes
+        //   that have one ([`offers_optimized_reads`]);
         // * Optimized Writes is the MySQL-compatible RDS engines' atomic-write capability
         //   ([`offers_optimized_writes`]); and
         // * no class this door publishes has to have its processor features named at order
@@ -1747,47 +1782,112 @@ fn to_wire(
 /// and `db.r7g.large` do not. A class without one has nowhere to put the temporary objects,
 /// and the serverless capacity class is not a family-and-size class at all.
 fn class_has_local_nvme_storage(name: &str) -> bool {
-    name.strip_prefix("db.")
-        .and_then(|rest| rest.split('.').next())
+    class_family(name)
         // The family is a prefix of letters, the generation number, then the attribute
         // letters; only the last of the three is read here.
-        .map(|family| family.trim_start_matches(|c: char| c.is_ascii_alphabetic()))
-        .is_some_and(|attributes| attributes.contains('d'))
+        .trim_start_matches(|c: char| c.is_ascii_alphabetic())
+        .contains('d')
+}
+
+/// The FAMILY part of the DB instance class `name`: the `m6gd` of `db.m6gd.8xlarge`, which
+/// the published `db.<family>.<size>` naming puts between the two dots. Empty for a value
+/// that is not written that way.
+fn class_family(name: &str) -> &str {
+    name.strip_prefix("db.")
+        .and_then(|rest| rest.split('.').next())
+        .unwrap_or_default()
+}
+
+/// The letters a DB instance class family OPENS with — the `m` of `m6gd`, the `x` of
+/// `x2iedn`, the `t` of `t4g` — which is what the published instance-class naming states the
+/// class's PURPOSE in: `t` burstable performance, `c` compute optimized, `m` general purpose,
+/// and `r`, `x` and `z` memory optimized.
+fn class_family_purpose(name: &str) -> &str {
+    let family = class_family(name);
+    let letters = family
+        .find(|character: char| !character.is_ascii_alphabetic())
+        .unwrap_or(family.len());
+    &family[..letters]
+}
+
+/// The family-purpose letters of the classes Amazon RDS publishes its memory- and
+/// compute-intensive capabilities on: GENERAL PURPOSE (`m`) and MEMORY OPTIMIZED (`r`, `x`,
+/// `z`).
+///
+/// Those capabilities — Multi-AZ DB clusters, Optimized Reads and Optimized Writes — publish
+/// their supported classes as whole FAMILIES of those two purposes and never as a burstable
+/// (`t`) or compute-optimized (`c`) family, whose shared or compute-weighted hosts they are
+/// not offered on.
+const CAPABLE_CLASS_FAMILY_PURPOSES: [&str; 4] = ["m", "r", "x", "z"];
+
+/// Whether `name` is a general-purpose or memory-optimized class
+/// ([`CAPABLE_CLASS_FAMILY_PURPOSES`]).
+fn class_is_general_purpose_or_memory_optimized(name: &str) -> bool {
+    CAPABLE_CLASS_FAMILY_PURPOSES.contains(&class_family_purpose(name))
+}
+
+/// Whether an option of `engine` on the class `class_name` reports that a DB instance of it
+/// can be configured as a MULTI-AZ DB CLUSTER (`SupportsClusters`).
+///
+/// A Multi-AZ DB cluster is the deployment with two READABLE standby DB instances, which
+/// Amazon RDS publishes for the MySQL and PostgreSQL engines (and for no other engine whose
+/// instance owns its storage), on the general-purpose and memory-optimized classes that carry
+/// LOCAL NVMe SSD storage — `db.m5d`, `db.m6gd`, `db.r5d`, `db.r6gd` and their siblings. A
+/// burstable class is not one of them, and neither is a compute-optimized class with local
+/// storage: the published class list is read as the families of those two purposes
+/// ([`class_is_general_purpose_or_memory_optimized`]) rather than as one spelling of a class
+/// name, so a class of a published family this report offers answers the same way its
+/// siblings do.
+fn offers_multi_az_db_clusters(engine: &str, class_name: &str) -> bool {
+    matches!(engine, "mysql" | "postgres")
+        && class_is_general_purpose_or_memory_optimized(class_name)
+        && class_has_local_nvme_storage(class_name)
 }
 
 /// Whether an option of `engine` on `class` reports Optimized Reads.
 ///
 /// The feature places a query's temporary objects on the instance's LOCAL NVMe SSD storage
 /// ([`class_has_local_nvme_storage`]), so it is offered on a class that HAS one, for an
-/// engine whose DB INSTANCE owns its storage. An engine whose CLUSTER manages the storage
-/// offers it on no class at all — a cluster member's temporary objects are not placed on the
-/// host it happens to run on — which is what the recorded options of the two cluster control
-/// planes this door serves report for every class they publish, the local-NVMe classes of
-/// the graph engine's own class list included.
+/// engine whose DB INSTANCE owns its storage. Which classes those are is published as the
+/// general-purpose and memory-optimized families with that storage
+/// ([`class_is_general_purpose_or_memory_optimized`]) — the `d` generations of the `m`, `r`
+/// and `x` families — and not the compute-optimized ones, whose local storage the feature is
+/// not published on. An engine whose CLUSTER manages the storage offers it on no class at all
+/// — a cluster member's temporary objects are not placed on the host it happens to run on —
+/// which is what the recorded options of the two cluster control planes this door serves
+/// report for every class they publish, the local-NVMe classes of the graph engine's own
+/// class list included.
 fn offers_optimized_reads(engine: &str, class_name: &str) -> bool {
-    !is_cluster_engine(engine) && class_has_local_nvme_storage(class_name)
+    !is_cluster_engine(engine)
+        && class_is_general_purpose_or_memory_optimized(class_name)
+        && class_has_local_nvme_storage(class_name)
 }
 
 /// Whether an option of `engine` on `class` reports Optimized Writes.
 ///
 /// Amazon RDS Optimized Writes is the MySQL-compatible engines' atomic-write capability: it
 /// is published for Amazon RDS for MySQL and Amazon RDS for MariaDB — the engines that run
-/// the storage engine whose double-write buffer it replaces — and on the full-size classes
-/// rather than the burstable ones, whose shared vCPUs it is not offered on. No other engine
-/// of this door publishes it.
+/// the storage engine whose double-write buffer it replaces — on the general-purpose and
+/// memory-optimized classes, whose hosts carry the torn-write protection it is built on, and
+/// on neither the burstable classes nor the compute-optimized ones
+/// ([`class_is_general_purpose_or_memory_optimized`]). No other engine of this door publishes
+/// it.
 fn offers_optimized_writes(engine: &str, class: &InstanceClass) -> bool {
-    matches!(engine, "mysql" | "mariadb") && !class.burstable
+    matches!(engine, "mysql" | "mariadb")
+        && !class.burstable
+        && class_is_general_purpose_or_memory_optimized(&class.name)
 }
 
 /// `SupportedNetworkTypes` of an option of this door's own engines: the value list
 /// `NetworkType` publishes for a DB instance and a DB cluster
-/// ([`crate::state::NETWORK_TYPES`]), in ASCENDING order — the order a recorded option
-/// carries them in, the dual-stack value first.
+/// ([`crate::state::NETWORK_TYPES`]), in the order that value list names them ("IPV4 |
+/// DUAL") — which is the order a recorded option carries them in, and the order the engines
+/// of another control plane publish their own list in
+/// (`::service_common::docdb_engine_catalog::NETWORK_TYPES`), so the two views of this one
+/// door report one order.
 fn reported_network_types() -> Vec<String> {
-    let mut reported: Vec<String> = crate::state::NETWORK_TYPES
+    crate::state::NETWORK_TYPES
         .iter()
         .map(|network_type| (*network_type).to_string())
-        .collect();
-    reported.sort();
-    reported
+        .collect()
 }

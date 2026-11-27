@@ -84,6 +84,17 @@ fn names(parameters: &[Reported]) -> Vec<String> {
     parameters.iter().map(|p| p.name.clone()).collect()
 }
 
+/// Whether the cluster parameter `name` is one whose value is an IAM ROLE ARN — the
+/// `aurora_`/`aws_default_` parameters a cluster's Amazon S3 and machine-learning
+/// integrations are configured through.
+///
+/// Such a parameter is bounded by no published domain and the engine runs it at no default of
+/// its own, so the report carries neither `ParameterValue` nor `AllowedValues`: an empty
+/// member would say the cluster runs the parameter at the empty ARN and admits only it.
+fn names_an_iam_role(name: &str) -> bool {
+    name.ends_with("_role")
+}
+
 /// Whether `engine` has a cluster form, which is what makes its families cluster families.
 fn has_cluster_form(engine: &str) -> bool {
     DB_CLUSTER_ENGINES
@@ -187,9 +198,11 @@ async fn every_published_cluster_family_reports_its_engines_cluster_defaults() {
                  {PARAMETER_SOURCE_ENGINE_DEFAULT}, got {:?}",
                 parameter.source
             );
-            assert!(
+            assert_eq!(
                 parameter.value.is_some(),
-                "case {case:?}: {name} must report the value the cluster runs with, got {:?}",
+                !names_an_iam_role(name),
+                "case {case:?}: {name} must report the value the cluster runs with unless its \
+                 value is an IAM role ARN the engine publishes no default for, got {:?}",
                 parameter.value
             );
             assert!(
@@ -213,12 +226,14 @@ async fn every_published_cluster_family_reports_its_engines_cluster_defaults() {
                 "case {case:?}: {name} must report one of {DATA_TYPES:?}, got {:?}",
                 parameter.data_type
             );
-            assert!(
+            assert_eq!(
                 parameter
                     .allowed_values
                     .as_ref()
                     .is_some_and(|values| !values.is_empty()),
-                "case {case:?}: {name} must report the values it admits, got {:?}",
+                !names_an_iam_role(name),
+                "case {case:?}: {name} must report the values it admits unless its value is an \
+                 IAM role ARN, which no published domain bounds, got {:?}",
                 parameter.allowed_values
             );
             assert!(

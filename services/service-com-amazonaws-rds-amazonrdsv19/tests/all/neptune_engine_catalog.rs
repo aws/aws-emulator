@@ -126,8 +126,9 @@ pub(crate) const LICENSE_MODEL: &str = "amazon-license";
 pub(crate) const STORAGE_TYPES: [&str; 2] = ["standard", "iopt1"];
 
 /// The network types an option of this engine is offered for: the values `NetworkType`
-/// publishes for a DB cluster of this front door, in the order an option reports them.
-const NETWORK_TYPES: [&str; 2] = ["DUAL", "IPV4"];
+/// publishes for a DB cluster of this front door, in the order that value list names them
+/// ("IPV4 | DUAL"), which is the order an option reports them in.
+const NETWORK_TYPES: [&str; 2] = ["IPV4", "DUAL"];
 
 /// Read one engine-version entry's scalar members, with the `<ValidUpgradeTarget>`
 /// subtrees removed: a target carries its own `<Engine>` and `<EngineVersion>`, so the

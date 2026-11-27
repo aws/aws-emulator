@@ -642,12 +642,23 @@ async fn an_orderable_option_of_another_control_planes_engine_is_a_cluster_membe
             // An instance of a CLUSTER engine — the Aurora engines, and the DocumentDB and
             // Neptune engines this door serves for another control plane — is only ever a
             // member of its cluster, whatever its class, which recorded behaviour reports
-            // this member true for; on the RDS DB instance engines the Multi-AZ DB cluster
-            // deployment is offered on MySQL and PostgreSQL and never on a burstable
-            // (`db.t*`) class.
+            // this member true for. On the RDS DB instance engines the Multi-AZ DB cluster
+            // deployment is offered for MySQL and PostgreSQL on the general-purpose and
+            // memory-optimized classes that carry local NVMe SSD storage (`db.m5d`,
+            // `db.m6gd`, `db.r5d`, `db.r6gd`), and on neither a burstable (`db.t*`) class
+            // nor a compute-optimized one.
+            let family = class.strip_prefix("db.").unwrap_or(&class);
+            let purpose = family.chars().next().unwrap_or_default();
+            let has_local_nvme = family
+                .split('.')
+                .next()
+                .unwrap_or_default()
+                .trim_start_matches(|character: char| character.is_ascii_alphabetic())
+                .contains('d');
             let expected = is_cluster_engine(&engine)
                 || (matches!(engine.as_str(), "mysql" | "postgres")
-                    && !class.starts_with("db.t"));
+                    && matches!(purpose, 'm' | 'r' | 'x' | 'z')
+                    && has_local_nvme);
             assert_eq!(
                 supports_clusters,
                 expected.to_string(),

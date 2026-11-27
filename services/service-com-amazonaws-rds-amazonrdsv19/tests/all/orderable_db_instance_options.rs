@@ -519,6 +519,12 @@ pub(crate) struct StorageRule {
     /// `MinStorageSize`, in GiB, or `None` when storage is not ordered per instance and
     /// the option reports no bounds.
     pub(crate) min_storage_size: Option<i32>,
+    /// Whether the option catalog publishes the ENGINE's own storage floor for this type
+    /// rather than the type's own ([`engine_storage_floor`]): `gp2` is the General Purpose
+    /// SSD type these engines have been ordered with since before any higher general-purpose
+    /// floor, and the catalog still reports that engine floor for it, while `gp3` and the
+    /// Provisioned IOPS SSD types report the floor each published when it was introduced.
+    pub(crate) reports_engine_storage_floor: bool,
     /// `SupportsIops`, and `MaxIopsPerGib` — the published IOPS-to-GiB ratio ceiling —
     /// when the type takes provisioned IOPS.
     max_iops_per_gib: Option<f64>,
@@ -538,6 +544,7 @@ pub(crate) const STORAGE_RULES: &[StorageRule] = &[
     StorageRule {
         storage_type: "gp2",
         min_storage_size: Some(20),
+        reports_engine_storage_floor: true,
         max_iops_per_gib: None,
         min_storage_throughput: None,
         dedicated_log_volume: false,
@@ -545,6 +552,7 @@ pub(crate) const STORAGE_RULES: &[StorageRule] = &[
     StorageRule {
         storage_type: "gp3",
         min_storage_size: Some(20),
+        reports_engine_storage_floor: false,
         max_iops_per_gib: Some(500.0),
         min_storage_throughput: Some(125),
         dedicated_log_volume: false,
@@ -552,6 +560,7 @@ pub(crate) const STORAGE_RULES: &[StorageRule] = &[
     StorageRule {
         storage_type: "io1",
         min_storage_size: Some(100),
+        reports_engine_storage_floor: false,
         max_iops_per_gib: Some(50.0),
         min_storage_throughput: None,
         dedicated_log_volume: true,
@@ -559,6 +568,7 @@ pub(crate) const STORAGE_RULES: &[StorageRule] = &[
     StorageRule {
         storage_type: "io2",
         min_storage_size: Some(100),
+        reports_engine_storage_floor: false,
         max_iops_per_gib: Some(1000.0),
         min_storage_throughput: None,
         dedicated_log_volume: true,
@@ -566,6 +576,7 @@ pub(crate) const STORAGE_RULES: &[StorageRule] = &[
     StorageRule {
         storage_type: "aurora",
         min_storage_size: None,
+        reports_engine_storage_floor: false,
         max_iops_per_gib: None,
         min_storage_throughput: None,
         dedicated_log_volume: false,
@@ -576,6 +587,7 @@ pub(crate) const STORAGE_RULES: &[StorageRule] = &[
     StorageRule {
         storage_type: "aurora-iopt1",
         min_storage_size: None,
+        reports_engine_storage_floor: false,
         max_iops_per_gib: None,
         min_storage_throughput: None,
         dedicated_log_volume: false,
@@ -586,6 +598,7 @@ pub(crate) const STORAGE_RULES: &[StorageRule] = &[
     StorageRule {
         storage_type: "standard",
         min_storage_size: None,
+        reports_engine_storage_floor: false,
         max_iops_per_gib: None,
         min_storage_throughput: None,
         dedicated_log_volume: false,
@@ -593,11 +606,41 @@ pub(crate) const STORAGE_RULES: &[StorageRule] = &[
     StorageRule {
         storage_type: "iopt1",
         min_storage_size: None,
+        reports_engine_storage_floor: false,
         max_iops_per_gib: None,
         min_storage_throughput: None,
         dedicated_log_volume: false,
     },
 ];
+
+/// The smallest volume `engine` itself publishes for a DB instance whose storage is its own,
+/// in GiB: 5 for the MariaDB, MySQL and PostgreSQL engines, 10 for Oracle and 20 for
+/// Microsoft SQL Server.
+///
+/// Source: the magnetic line of `CreateDBInstanceMessage$AllocatedStorage`, the one range
+/// that member writes per engine ("Magnetic storage (standard): Must be an integer from 5 to
+/// 3072" for MariaDB, MySQL and PostgreSQL, "from 10 to 3072" for Oracle and "from 20 to
+/// 1024" for SQL Server) — the floor the engine has carried since before any one storage
+/// type published a higher one, which is the floor the option catalog reports for `gp2`.
+///
+/// `pub(crate)` so a sibling suite reads it from here rather than from a second copy.
+pub(crate) fn engine_storage_floor(engine: &str) -> i32 {
+    match engine {
+        _ if engine.starts_with("sqlserver") => 20,
+        _ if engine.starts_with("oracle") => 10,
+        _ => 5,
+    }
+}
+
+/// The `MinStorageSize` an option of `engine` reports for the storage type `rule` describes.
+///
+/// `pub(crate)` for the same reason as [`engine_storage_floor`].
+pub(crate) fn published_min_storage_size(rule: &StorageRule, engine: &str) -> Option<i32> {
+    if rule.reports_engine_storage_floor {
+        return Some(engine_storage_floor(engine));
+    }
+    rule.min_storage_size
+}
 
 /// The rule for `storage_type`.
 pub(crate) fn storage_rule(storage_type: &str) -> &'static StorageRule {
@@ -731,15 +774,16 @@ async fn a_class_is_offered_once_per_storage_type_it_can_be_ordered_with() {
 
         for option in &offered {
             let rule = storage_rule(&option.storage_type);
+            let expected_min = published_min_storage_size(rule, engine);
             let reported_min = optional_int(&option.xml, "MinStorageSize");
             assert_eq!(
-                reported_min, rule.min_storage_size,
+                reported_min, expected_min,
                 "case {case:?}: {} MinStorageSize, got {}",
                 option.storage_type, option.xml
             );
             assert_eq!(
                 optional_int(&option.xml, "MaxStorageSize"),
-                rule.min_storage_size.and(*max_storage_size),
+                expected_min.and(*max_storage_size),
                 "case {case:?}: {} MaxStorageSize is the engine's cap, got {}",
                 option.storage_type,
                 option.xml
@@ -830,8 +874,10 @@ async fn an_options_capabilities_follow_its_engine_and_its_class() {
         /// `SupportsClusters` — reported for every option of a CLUSTER engine, whose
         /// instance is only ever a member of its cluster (recorded behaviour reports it true
         /// for the Aurora engines and for the engines of another control plane this door
-        /// serves alike), and for the MySQL and PostgreSQL engines, which can back a
-        /// Multi-AZ DB cluster, on a class that is not burstable.
+        /// serves alike), and for the MySQL and PostgreSQL engines on the classes AWS
+        /// publishes Multi-AZ DB clusters for: the general-purpose and memory-optimized
+        /// families that carry local NVMe SSD storage, and neither a burstable class nor a
+        /// compute-optimized one.
         supports_clusters: bool,
     }
 
@@ -887,7 +933,26 @@ async fn an_options_capabilities_follow_its_engine_and_its_class() {
             activity_stream_modes: &[],
             // Not a core-licensed engine: no processor feature to configure.
             core_count: None,
+            // A general-purpose class WITHOUT local NVMe storage backs no Multi-AZ DB
+            // cluster.
+            supports_clusters: false,
+        },
+        CapabilityCase {
+            engine: "mysql",
+            db_instance_class: "db.m5d.2xlarge",
+            activity_stream_modes: &[],
+            core_count: None,
+            // The same family WITH local NVMe storage is one of the published Multi-AZ DB
+            // cluster classes.
             supports_clusters: true,
+        },
+        CapabilityCase {
+            engine: "mysql",
+            db_instance_class: "db.c6gd.12xlarge",
+            activity_stream_modes: &[],
+            core_count: None,
+            // A COMPUTE-optimized class, local NVMe storage or not, is not one of them.
+            supports_clusters: false,
         },
         CapabilityCase {
             engine: "mysql",
@@ -901,6 +966,15 @@ async fn an_options_capabilities_follow_its_engine_and_its_class() {
             db_instance_class: "db.r7g.large",
             activity_stream_modes: &[],
             core_count: None,
+            supports_clusters: false,
+        },
+        CapabilityCase {
+            engine: "postgres",
+            db_instance_class: "db.r6gd.large",
+            activity_stream_modes: &[],
+            core_count: None,
+            // The memory-optimized Graviton family with local NVMe storage: the other half
+            // of the published Multi-AZ DB cluster class list.
             supports_clusters: true,
         },
         CapabilityCase {
