@@ -27,5 +27,5 @@ contents — read that shape in the model above when you need its own members.
 
 - **Route:** `POST /clusters/{clusterName}/assume-role-for-pod-identity -> 200`
 - **Input:** `clusterName` (string, len 1..100, pattern ^[0-9A-Za-z][A-Za-z0-9\-_]*$, @httpLabel, required), `token` (string, len 1.., pattern ^[A-Za-z0-9-_=]+\.[A-Za-z0-9-_=]+\.[A-Za-z0-9-_=]+$, required), `eksNodeName` (string), `instanceId` (string), `zone` (string)
-- **Output:** `subject` (Subject, required), `audience` (string, required), `podIdentityAssociation` (PodIdentityAssociation, required), `assumedRoleUser` (AssumedRoleUser, required), `credentials` (Credentials, required)
+- **Output:** `subject` (Subject, required), `audience` (string, required), `podIdentityAssociation` (PodIdentityAssociation, required), `assumedRoleUser` (AssumedRoleUser, required), `credentials` (Credentials, required), `workloadIdentityProviderArn` (string)
 - **Errors:** `AccessDeniedException (HTTP 400)`, `ExpiredTokenException (HTTP 400)`, `InternalServerException (HTTP 500)`, `InvalidParameterException (HTTP 400)`, `InvalidRequestException (HTTP 400)`, `InvalidTokenException (HTTP 400)`, `ResourceNotFoundException (HTTP 404)`, `ServiceUnavailableException (HTTP 503)`, `ThrottlingException (HTTP 429)`

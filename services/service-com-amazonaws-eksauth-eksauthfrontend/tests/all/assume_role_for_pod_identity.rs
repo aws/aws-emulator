@@ -16,8 +16,8 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use service_com_amazonaws_eksauth_eksauthfrontend::state::{
-    service_state, AssociationRefusal, ServiceAccountTokenRequest, DEFAULT_REGION, PODS_AUDIENCE,
-    TOKEN_RECORD_GRACE,
+    service_state, AssociationRefusal, ProgrammedAssociation, ServiceAccountTokenRequest,
+    DEFAULT_REGION, PODS_AUDIENCE, TOKEN_RECORD_GRACE,
 };
 use service_com_amazonaws_eksauth_eksauthfrontend::EmulatedService;
 use smithy_server_runtime::MultiServiceRouter;
@@ -976,5 +976,243 @@ async fn an_expired_session_is_forgotten_on_the_next_call() {
     assert!(
         guard.sessions.contains_key(&fresh),
         "the live session {fresh} must be kept"
+    );
+}
+
+/// One association as the control plane holding it published it: the Kubernetes identity
+/// it binds, and the ARN of the workload identity provider its workload identity is
+/// enabled with — `None` for an association that has no workload identity.
+#[derive(Debug, Clone, Copy)]
+struct WorkloadIdentityCase {
+    case: &'static str,
+    namespace: &'static str,
+    service_account: &'static str,
+    provider_arn: Option<&'static str>,
+}
+
+/// The associations the table below programs onto a cluster. The rows differ along what
+/// the rule generalises over: whether an association has workload identity enabled at
+/// all, and — where it has — the FORM of the provider ARN, which belongs to the plane
+/// that published the provider (its partition, service, Region, account and resource
+/// path) and is this service's only to report back. Two rows share a namespace and three
+/// share a service account name, so a provider ARN reported for a neighbouring
+/// (namespace, service account) pair would be caught.
+const WORKLOAD_IDENTITY_CASES: &[WorkloadIdentityCase] = &[
+    WorkloadIdentityCase {
+        case: "enabled, a provider of this cluster in this Region",
+        namespace: "default",
+        service_account: "wi-sa",
+        provider_arn: Some(
+            "arn:aws:eks:us-east-1:000000000000:workloadidentityprovider\
+             /demo-cluster/wip-5f1c3b8a6d2e4f90",
+        ),
+    },
+    WorkloadIdentityCase {
+        case: "enabled, a provider in another partition, Region and account",
+        namespace: "default",
+        service_account: "other-wi-sa",
+        provider_arn: Some(
+            "arn:aws-us-gov:eks:us-gov-west-1:111122223333:workloadidentityprovider\
+             /demo-cluster/wip-0f0e0d0c0b0a0908",
+        ),
+    },
+    WorkloadIdentityCase {
+        case: "enabled, a provider named under a path, with a long id",
+        namespace: "team-a",
+        service_account: "wi-sa",
+        provider_arn: Some(
+            "arn:aws:eks:eu-west-1:444455556666:workloadidentityprovider/demo-cluster/team-a\
+             /wip-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        ),
+    },
+    WorkloadIdentityCase {
+        case: "enabled, a provider with no Region segment",
+        namespace: "kube-system",
+        service_account: "wi-sa",
+        provider_arn: Some("arn:aws:iam::000000000000:workload-identity-provider/global"),
+    },
+    WorkloadIdentityCase {
+        case: "workload identity off",
+        namespace: "default",
+        service_account: "plain-sa",
+        provider_arn: None,
+    },
+    WorkloadIdentityCase {
+        case: "workload identity off, in the namespace of an enabled pair",
+        namespace: "team-a",
+        service_account: "plain-sa",
+        provider_arn: None,
+    },
+];
+
+/// `case` as the control plane published it: the association's own id and ARN are that
+/// plane's, as is the provider ARN of its workload identity.
+fn programmed_association(
+    cluster: &str,
+    index: usize,
+    case: &WorkloadIdentityCase,
+) -> ProgrammedAssociation {
+    let account = engine::emulator_account_id();
+    let association_id = format!("a-wrkldidentity{index:04}");
+    ProgrammedAssociation {
+        association_arn: format!(
+            "arn:aws:eks:{DEFAULT_REGION}:{account}:podidentityassociation/{cluster}\
+             /{association_id}"
+        ),
+        association_id,
+        namespace: case.namespace.to_string(),
+        service_account: case.service_account.to_string(),
+        role_arn: format!("arn:aws:iam::{account}:role/{}-role", case.service_account),
+        policy: None,
+        target_role_arn: None,
+        external_id: None,
+        disable_session_tags: None,
+        workload_identity_provider_arn: case.provider_arn.map(str::to_string),
+    }
+}
+
+/// The exchange reports `workloadIdentityProviderArn` for exactly those associations whose
+/// workload identity is enabled, and reports the provider ARN the plane that published the
+/// association recorded for it — whatever form that ARN takes. An association with no
+/// workload identity carries no such member at all.
+#[tokio::test]
+async fn the_exchange_reports_a_provider_arn_only_where_workload_identity_is_enabled() {
+    let harness = Harness::seeded();
+    let cluster = "demo-cluster";
+    let programmed: Vec<ProgrammedAssociation> = WORKLOAD_IDENTITY_CASES
+        .iter()
+        .enumerate()
+        .map(|(index, case)| programmed_association(cluster, index, case))
+        .collect();
+    let state = service_state(&*harness.engine).expect("state");
+    let count = state
+        .lock()
+        .program_pod_identity_associations(cluster, DEFAULT_REGION, &programmed);
+    assert_eq!(
+        count,
+        programmed.len(),
+        "setup: every row must be programmed, got {count}"
+    );
+
+    for (case, association) in WORKLOAD_IDENTITY_CASES.iter().zip(&programmed) {
+        let token = harness.token_request(
+            cluster,
+            ServiceAccountTokenRequest::for_pod(
+                case.namespace,
+                case.service_account,
+                &format!("{}-pod", case.service_account),
+            ),
+        );
+        let (status, body) = harness.assume(cluster, &token).await;
+        assert_eq!(
+            status, 200,
+            "case {case:?}: expected HTTP 200, got {status} {body}"
+        );
+        // The exchange resolved THIS row's association, so the member below is read off
+        // the record this row programmed and not off a neighbouring pair's.
+        assert_eq!(
+            body["podIdentityAssociation"]["associationId"].as_str(),
+            Some(association.association_id.as_str()),
+            "case {case:?}: expected the association this row programmed, got {}",
+            body["podIdentityAssociation"]
+        );
+        let reported = body
+            .get("workloadIdentityProviderArn")
+            .and_then(serde_json::Value::as_str);
+        assert_eq!(
+            reported, case.provider_arn,
+            "case {:?}: expected workloadIdentityProviderArn={:?} for {}/{}, got \
+             {reported:?} in {body}",
+            case.case, case.provider_arn, case.namespace, case.service_account
+        );
+    }
+}
+
+/// The reported provider ARN is READ from the association on every exchange: it does not
+/// move between two calls, it follows the record when the plane re-publishes the
+/// association with another provider, and it is gone once that plane turns the
+/// association's workload identity off. An association registered through the seam that
+/// publishes no provider carries none either.
+#[tokio::test]
+async fn a_reported_provider_arn_follows_the_association_record() {
+    let harness = Harness::seeded();
+    let cluster = "demo-cluster";
+    let state = service_state(&*harness.engine).expect("state");
+
+    // The same pod's token throughout: who a token names is the cluster's record, so a
+    // change of provider is a change of the ASSOCIATION, never of the presented token.
+    let token = harness.token_request(
+        cluster,
+        ServiceAccountTokenRequest::for_pod("default", "wi-sa", "wi-sa-pod"),
+    );
+
+    // Each step states what the publishing plane holds for the pair, and what the
+    // exchange must then report for it.
+    let steps: &[(&str, Option<&str>)] = &[
+        (
+            "published with a provider",
+            Some(
+                "arn:aws:eks:us-east-1:000000000000:workloadidentityprovider\
+                 /demo-cluster/wip-1111111111111111",
+            ),
+        ),
+        (
+            "re-published with another provider",
+            Some(
+                "arn:aws:eks:us-west-2:000000000000:workloadidentityprovider\
+                 /demo-cluster/wip-2222222222222222",
+            ),
+        ),
+        ("re-published with workload identity off", None),
+    ];
+
+    for (step, provider_arn) in steps {
+        let case = WorkloadIdentityCase {
+            case: step,
+            namespace: "default",
+            service_account: "wi-sa",
+            provider_arn: *provider_arn,
+        };
+        let programmed = [programmed_association(cluster, 0, &case)];
+        let count = state
+            .lock()
+            .program_pod_identity_associations(cluster, DEFAULT_REGION, &programmed);
+        assert_eq!(
+            count, 1,
+            "case {step:?}: setup must program the association, got {count}"
+        );
+
+        // Twice: a value read from state is the same on the second call, where a value
+        // minted per exchange would not be.
+        for attempt in 1..=2 {
+            let (status, body) = harness.assume(cluster, &token).await;
+            assert_eq!(
+                status, 200,
+                "case {step:?} attempt {attempt}: expected HTTP 200, got {status} {body}"
+            );
+            let reported = body
+                .get("workloadIdentityProviderArn")
+                .and_then(serde_json::Value::as_str);
+            assert_eq!(
+                reported, *provider_arn,
+                "case {step:?} attempt {attempt}: expected \
+                 workloadIdentityProviderArn={provider_arn:?}, got {reported:?} in {body}"
+            );
+        }
+    }
+
+    // The other seam records the binding and nothing else, so an association registered
+    // through it has no workload identity and the exchange reports no provider for it.
+    let plain = SEEDS[3];
+    let plain_token = harness.token(&plain);
+    let (status, body) = harness.assume(plain.cluster, &plain_token).await;
+    assert_eq!(
+        status, 200,
+        "case {plain:?}: expected HTTP 200, got {status} {body}"
+    );
+    assert!(
+        body.get("workloadIdentityProviderArn").is_none(),
+        "case {plain:?}: an association with no workload identity must report no provider, \
+         got {body}"
     );
 }

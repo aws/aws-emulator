@@ -466,6 +466,9 @@ async fn a_pod_identity_refusal_points_at_the_authorization_details_of_that_requ
             // "When policy is specified, disableSessionTags must be set to true" — what the
             // control plane requires of an association carrying a session policy.
             disable_session_tags: row.session_policy.is_some().then_some(true),
+            // None of these rows enables workload identity, so the exchange reports no
+            // provider ARN for them.
+            workload_identity_provider_arn: None,
         });
     }
     program(&engine, &associations);

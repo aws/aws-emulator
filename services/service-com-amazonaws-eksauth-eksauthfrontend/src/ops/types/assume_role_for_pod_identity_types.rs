@@ -29,6 +29,7 @@ pub struct AssumeRoleForPodIdentityOutput {
     pub pod_identity_association: PodIdentityAssociation,
     pub assumed_role_user: AssumedRoleUser,
     pub credentials: Credentials,
+    pub workload_identity_provider_arn: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.eksauth#Subject")]

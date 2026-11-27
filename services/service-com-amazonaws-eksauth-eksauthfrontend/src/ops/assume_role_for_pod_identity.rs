@@ -117,6 +117,9 @@
 //!   Name (ARN) and ID of the EKS Pod Identity association.
 //! * `subject` (Subject) **required** — The name of the Kubernetes service account inside the
 //!   cluster to associate the IAM credentials with.
+//! * `workloadIdentityProviderArn` (String) — The ARN of the workload identity provider for
+//!   the returned credentials. Returned only for associations with workload identity
+//!   enabled.
 //!
 //! ## Errors
 //!
@@ -445,6 +448,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 session_token: vended.session_token,
                 expiration: ::aws_smithy_types::DateTime::from(expiration),
             },
+            // "The ARN of the workload identity provider for the returned credentials.
+            // Returned only for associations with workload identity enabled" — so it is
+            // the provider ARN the association the exchange resolved to carries, and
+            // nothing at all for an association that carries none. Reported from that
+            // record rather than built here: the provider is a resource the control plane
+            // that enabled the association's workload identity holds, the same way the
+            // association's own ARN is.
+            workload_identity_provider_arn: association.workload_identity_provider_arn,
         })
     }
 }

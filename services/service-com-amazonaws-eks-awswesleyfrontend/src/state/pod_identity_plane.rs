@@ -140,6 +140,12 @@ pub fn program_cluster_associations(
                 target_role_arn: record.target_role_arn.clone(),
                 external_id: record.external_id.clone(),
                 disable_session_tags: record.disable_session_tags,
+                // This service's `PodIdentityAssociation` models no workload identity
+                // (`smithy_query shape=PodIdentityAssociation`), so this control plane
+                // enables none and publishes no provider ARN for one: the exchange
+                // reports that member only where a plane that does enable it programmed
+                // the provider's ARN.
+                workload_identity_provider_arn: None,
             })
             .collect()
     };

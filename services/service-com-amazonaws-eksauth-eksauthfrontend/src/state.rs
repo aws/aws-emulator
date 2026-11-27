@@ -350,6 +350,9 @@ impl ComAmazonawsEksauthEksauthfrontendState {
                 target_role_arn: association.target_role_arn.clone(),
                 external_id: association.external_id.clone(),
                 disable_session_tags: association.disable_session_tags,
+                workload_identity_provider_arn: association
+                    .workload_identity_provider_arn
+                    .clone(),
             })
             .collect();
         cluster.associations.len()
@@ -507,14 +510,16 @@ impl Cluster {
             role_arn: role_arn.to_string(),
             role_id,
             // The seam a caller with no control plane behind it drives records the
-            // binding and nothing else: an association's session policy, target role
-            // and external id are the control plane's to publish, and
+            // binding and nothing else: an association's session policy, target role,
+            // external id and workload identity provider are the control plane's to
+            // publish, and
             // [`ComAmazonawsEksauthEksauthfrontendState::program_pod_identity_associations`]
             // is what carries them here.
             policy: None,
             target_role_arn: None,
             external_id: None,
             disable_session_tags: None,
+            workload_identity_provider_arn: None,
         });
         self.associations
             .last()
@@ -1120,6 +1125,17 @@ pub struct ProgrammedAssociation {
     /// Whether the association turns the pod identity session tags off
     /// (`PodIdentityAssociation$disableSessionTags`).
     pub disable_session_tags: Option<bool>,
+    /// The ARN of the workload identity provider the association's workload identity is
+    /// enabled with, when the control plane enabled one — `None` for an association that
+    /// carries no workload identity.
+    ///
+    /// It is the control plane's to publish, like the association's own ARN: what
+    /// `AssumeRoleForPodIdentity` reports is "the ARN of the workload identity provider
+    /// for the returned credentials", "returned only for associations with workload
+    /// identity enabled" (`smithy_query doc shape=AssumeRoleForPodIdentityResponse
+    /// member=workloadIdentityProviderArn`), so an ARN minted here would name a provider
+    /// no control plane holds.
+    pub workload_identity_provider_arn: Option<String>,
 }
 
 /// One pod identity association: a (namespace, service account) pair in a cluster bound
@@ -1141,6 +1157,8 @@ pub struct PodIdentityAssociationRecord {
     pub external_id: Option<String>,
     /// See [`ProgrammedAssociation::disable_session_tags`].
     pub disable_session_tags: Option<bool>,
+    /// See [`ProgrammedAssociation::workload_identity_provider_arn`].
+    pub workload_identity_provider_arn: Option<String>,
 }
 
 /// One session `AssumeRoleForPodIdentity` minted: the credentials it returned, when they
