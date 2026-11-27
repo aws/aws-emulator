@@ -18,7 +18,10 @@
 //! `0`, and the published bounds of the `Integer` member), which environment of the
 //! application is addressed, and which operation does the lookup — `GetDeployment` and
 //! `StopDeployment` both resolve a deployment number under an environment, so both are
-//! asserted to report a miss the same way.
+//! asserted to word the miss with this sentence. The stop then relays the component it
+//! settles a deployment through, which appends a clause after that sentence; the clause is
+//! `crate::stop_deployment_relayed_not_found`'s subject, so what is asserted here is the
+//! sentence the two operations share.
 //!
 //! The second suite pins the other half of the deployment REPORT's refusal: the resource
 //! `GetDeployment` addresses is the deployment, so a path that resolves no deployment is
@@ -106,6 +109,45 @@ async fn given_version(
         .expect("CreateHostedConfigurationVersion answers a Version-Number")
 }
 
+/// The refusal `operation` must answer for the deployment sentence `sentence`.
+///
+/// `GetDeployment` REPORTS a deployment out of the control-plane tree, so its refusal is
+/// that sentence and nothing else. `StopDeployment` settles the deployment through the
+/// component that owns one in flight, so its refusal is that component's answer relayed:
+/// the same sentence, then the clause naming the relayed call, every token of which is fixed
+/// text except the per-call request id — whose own form is asserted by
+/// `crate::stop_deployment_relayed_not_found`.
+fn assert_deployment_refusal(
+    case: &str,
+    operation: &str,
+    answer: &Answer,
+    sentence: &str,
+    relayed: bool,
+) {
+    let message = answer.string("Message").unwrap_or_default();
+    if !relayed {
+        assert_eq!(
+            message, sentence,
+            "case {case:?}: {operation} must answer the deployment template and nothing else, \
+             got {message:?}"
+        );
+        return;
+    }
+    let head = format!(
+        "{sentence} (Service: AWSAppConfigData; Status Code: 404; Error Code: \
+         ResourceNotFoundException; Request ID: "
+    );
+    assert!(
+        message.starts_with(&head),
+        "case {case:?}: {operation} must answer the deployment template and the relayed \
+         clause, expected it to start {head:?}, got {message:?}"
+    );
+    assert!(
+        message.ends_with("; Proxy: null)"),
+        "case {case:?}: {operation}'s relayed clause must end \"; Proxy: null)\", got {message:?}"
+    );
+}
+
 /// A deployment number a lookup under `environment` must miss on, and the refusal both
 /// readers of a deployment answer for it.
 #[tokio::test]
@@ -169,14 +211,18 @@ async fn a_deployment_lookup_that_misses_names_its_number_by_the_wire_member_spe
             "Deployment with Application Id {application}, Environment Id {environment}, and \
              deploymentNumber {number} could not be found for account {account}."
         );
-        for (operation, answer) in [
+        // The last column is whether that operation's refusal is RELAYED from the component
+        // the stop settles a deployment through, which appends its clause after the sentence.
+        for (operation, answer, relayed) in [
             (
                 "GetDeployment",
                 get_deployment(&router, &application, environment, number).await,
+                false,
             ),
             (
                 "StopDeployment",
                 stop_deployment(&router, &application, environment, number).await,
+                true,
             ),
         ] {
             assert_eq!(
@@ -192,12 +238,7 @@ async fn a_deployment_lookup_that_misses_names_its_number_by_the_wire_member_spe
                 "case {case:?}: {operation} must answer ResourceNotFoundException, got {:?}",
                 answer.error_code()
             );
-            assert_eq!(
-                answer.string("Message"),
-                Some(expected.clone()),
-                "case {case:?}: {operation} must answer the deployment template, got {}",
-                answer.json()
-            );
+            assert_deployment_refusal(case, operation, &answer, &expected, relayed);
         }
     }
 
@@ -304,17 +345,21 @@ async fn a_deployment_report_names_the_deployment_whichever_level_of_the_path_is
             "Deployment with Application Id {application_id}, Environment Id {environment_id}, \
              and deploymentNumber 1 could not be found for account {account}."
         );
+        // As above, the last column of each answer is whether that operation's refusal is
+        // relayed from the component the stop settles a deployment through.
         let mut answers = vec![(
             "GetDeployment",
             get_deployment(&router, application_id, environment_id, 1).await,
+            false,
         )];
         if !record_written {
             answers.push((
                 "StopDeployment",
                 stop_deployment(&router, application_id, environment_id, 1).await,
+                true,
             ));
         }
-        for (operation, answer) in answers {
+        for (operation, answer, relayed) in answers {
             assert_eq!(
                 answer.status,
                 404,
@@ -322,12 +367,7 @@ async fn a_deployment_report_names_the_deployment_whichever_level_of_the_path_is
                 answer.status,
                 String::from_utf8_lossy(&answer.body)
             );
-            assert_eq!(
-                answer.string("Message"),
-                Some(expected.clone()),
-                "case {case:?}: {operation} must answer the deployment template, got {}",
-                answer.json()
-            );
+            assert_deployment_refusal(case, operation, &answer, &expected, relayed);
         }
     }
 

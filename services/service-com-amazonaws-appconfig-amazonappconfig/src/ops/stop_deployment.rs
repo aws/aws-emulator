@@ -244,15 +244,33 @@ fn refused(
 /// The `ResourceNotFoundException` for a deployment this application holds no record of,
 /// under the environment and number the request named — each named by the id it resolved
 /// to, or as the request spelled it where it resolved to nothing.
+///
+/// A stop acts on the deployment through the component that owns one in flight, so the
+/// refusal for a deployment no record of exists is that component's own answer and reaches
+/// the caller RELAYED: the component's sentence, then the clause naming the call it came
+/// from ([`crate::state::deployment_backend::relayed_refusal`]). The status and the error
+/// code in that clause are read off the modelled error being answered, so they are the
+/// refusal's own and not a second pair of literals.
 fn deployment_missing(
     application_id: &str,
     environment_id: &str,
     deployment_number: i32,
 ) -> StopDeploymentError {
-    not_found(
-        crate::state::deployment_not_found(application_id, environment_id, deployment_number),
-        deployment_number.to_string(),
-    )
+    let mut refusal = StopDeploymentErrorModeled::ResourceNotFoundException(
+        ResourceNotFoundException {
+            message: None,
+            resource_name: Some(deployment_number.to_string()),
+        },
+    );
+    let message = crate::state::deployment_backend::relayed_refusal(
+        &crate::state::deployment_not_found(application_id, environment_id, deployment_number),
+        ::smithy_server_runtime::OperationError::shape_name(&refusal),
+        ::smithy_server_runtime::OperationError::http_status(&refusal),
+    );
+    if let StopDeploymentErrorModeled::ResourceNotFoundException(exception) = &mut refusal {
+        exception.message = Some(message);
+    }
+    refusal.into()
 }
 
 /// The `StopDeployment` operation.

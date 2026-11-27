@@ -44,6 +44,9 @@ pub mod alarm_monitors;
 /// Where a configuration profile's configuration LIVES, and the content a deployed
 /// version of it has when that location is not AppConfig's own hosted store.
 pub mod configuration_sources;
+/// The component a stop settles a deployment through, and how a refusal that component
+/// answers is relayed to the caller.
+pub mod deployment_backend;
 /// The one in-process task that carries a started deployment through the stages, and the
 /// extension action points, AppConfig's own schedule owes it — without a further call.
 pub mod deployment_clock;
