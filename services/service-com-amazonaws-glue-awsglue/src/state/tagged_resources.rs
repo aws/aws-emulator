@@ -513,10 +513,12 @@ pub fn tagged_resource_not_found_message(resource: &TaggedResource, resource_arn
 /// the refusal carries that surface's own miss sentence rather than one generic sentence for
 /// every kind — "Job not found." for a job ARN ([`messages::JOB_NOT_FOUND`], the sentence
 /// every job-definition lookup answers), the database surface's sentence naming the database
-/// ([`messages::database_not_found`]) for a database ARN, and the crawler-definition
-/// surface's naming the crawler ([`messages::crawler_not_found`]) for a crawler ARN. The
-/// name in a sentence that carries one comes from the ARN the request sent, resolved exactly
-/// as the store keys it; the ARN itself is never echoed.
+/// ([`messages::database_not_found`]) for a database ARN, the crawler-definition surface's
+/// naming the crawler ([`messages::crawler_not_found`]) for a crawler ARN, and the registry
+/// surface's rendering of the reference it resolved by
+/// ([`messages::registry_not_found_for_arn`]) for a registry ARN. Each sentence's variable
+/// parts come from the ARN the request sent: a NAME resolved exactly as the store keys that
+/// kind, and the ARN itself only where the sentence reports the reference it was addressed by.
 ///
 /// Every other kind keeps the generic entity sentence
 /// ([`messages::TAGGED_RESOURCE_NOT_FOUND`]), which is RECORDED as the tag read's answer for
@@ -528,11 +530,12 @@ pub fn tagged_resource_not_found_message(resource: &TaggedResource, resource_arn
 /// The tag WRITES do not resolve their miss this way: theirs is the fixed sentence their own
 /// recordings state ([`messages::TAGGED_RESOURCE_NOT_FOUND`]), so this is the READ's wording
 /// and not the tagging surface's.
-pub fn tag_read_not_found_message(resource: &TaggedResource) -> String {
+pub fn tag_read_not_found_message(resource: &TaggedResource, resource_arn: &str) -> String {
     match resource.kind {
         TaggedResourceKind::Job => messages::JOB_NOT_FOUND.to_string(),
         TaggedResourceKind::Database => messages::database_not_found(&resource.name),
         TaggedResourceKind::Crawler => messages::crawler_not_found(&resource.name),
+        TaggedResourceKind::Registry => messages::registry_not_found_for_arn(resource_arn),
         _ => messages::TAGGED_RESOURCE_NOT_FOUND.to_string(),
     }
 }

@@ -257,9 +257,11 @@ pub const SCHEMA_VERSION_NUMBER_REQUIRES_ONE: &str =
 pub const SCHEMA_UPDATE_REQUIRES_ONE: &str =
     "One of VersionNumber or Compatibility has to be provided.";
 
-/// How a member the request did not carry is spelled where a refusal renders the whole
-/// `SchemaId` wrapper back ([`schema_id_description`]).
-const ABSENT_MEMBER: &str = "null";
+/// How a member the request did not carry is spelled where a refusal renders a reference
+/// wrapper's members back — the whole `SchemaId` ([`schema_id_description`]), and the
+/// registry name of a registry addressed by its ARN alone
+/// ([`messages::registry_not_found_for_arn`]).
+pub const ABSENT_MEMBER: &str = "null";
 
 /// A `SchemaId` as a refusal renders it: the wrapper's own name and its three members, in
 /// the lower-camel spelling the service uses inside a message, each carrying the value the

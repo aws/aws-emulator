@@ -27,7 +27,10 @@
 //! modelled `EntityNotFoundException` carrying the miss sentence of the surface that OWNS
 //! that kind ([`crate::state::tag_read_not_found_message`]) — the read dispatches on the
 //! resource type to the lookup of a resource of that kind, so the refusal says WHICH lookup
-//! failed — as does one naming another Region's or another account's estate. A Glue resource
+//! failed, naming the resource as that surface names it: by the name the ARN carries, or by
+//! the reference the lookup was addressed by where the surface reports that instead (a
+//! registry's, which renders the ARN the request sent beside the registry name it carries
+//! none of) — as does one naming another Region's or another account's estate. A Glue resource
 //! ARN whose resource TYPE this service holds no record under AT ALL (a resource type it holds
 //! no record of, an ARN form of a record that hangs off a table, a resource portion naming no
 //! one resource of its kind) is an absence too, and there is no owning surface to word it, so
@@ -243,7 +246,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // carries that surface's own sentence.
         let not_found = || {
             GetTagsErrorModeled::EntityNotFoundException(EntityNotFoundException {
-                message: Some(crate::state::tag_read_not_found_message(&resource)),
+                message: Some(crate::state::tag_read_not_found_message(
+                    &resource,
+                    &input.resource_arn,
+                )),
                 from_federation_source: None,
             })
         };

@@ -1742,6 +1742,30 @@ pub fn registry_not_found_for_schema(name: &str) -> String {
     format!("Registry is not found. RegistryName: {name}")
 }
 
+/// The registry surface's miss of a registry addressed by its ARN alone — the tag READ's
+/// answer for a `ResourceArn` naming a registry this endpoint holds none of
+/// ([`crate::state::tag_read_not_found_message`]).
+///
+/// RECORDED template: the fixed text is "Registry is not found. RegistryName: ",
+/// ", RegistryArn: " and nothing after, and the one variable part is the registry ARN the
+/// request sent, echoed exactly as sent. The name component is the absent-member rendering
+/// ([`crate::state::ABSENT_MEMBER`]) rather than a value, because an address that is an ARN
+/// carries no registry NAME for the refusal to report — the surface renders back the
+/// reference it resolved by, member for member, as it does for a schema reference
+/// ([`crate::state::schema_id_description`]).
+///
+/// It is a THIRD wording of a registry miss beside [`registry_not_found`], which is what an
+/// operation addressing a registry by its `RegistryName` answers, and
+/// [`registry_not_found_for_schema`], which is what the schema read answers for the registry
+/// its `SchemaId` resolved to: each surface's sentence is recorded on its own, which is why
+/// none of them is borrowed for another.
+pub fn registry_not_found_for_arn(registry_arn: &str) -> String {
+    format!(
+        "Registry is not found. RegistryName: {}, RegistryArn: {registry_arn}",
+        crate::state::ABSENT_MEMBER
+    )
+}
+
 /// An operation of the integration API family that addresses ONE record by the ARN of
 /// the resource it belongs to, for a `ResourceArn` this account holds no such record
 /// for — the integration resource property read

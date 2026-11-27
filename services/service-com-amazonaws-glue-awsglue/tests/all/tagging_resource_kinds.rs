@@ -54,18 +54,29 @@ const AVRO_DEFINITION: &str =
 const ENTITY_NOT_FOUND: &str = "Entity not found";
 
 /// The `Message` the tagging READ answers for such an ARN of the kind `segment`, whose name
-/// after the type segment is `name`.
+/// after the type segment is `name`, for an ARN of this harness's own Region and account.
+pub fn read_miss_message(segment: &str, name: &str) -> String {
+    read_miss_message_of_arn(segment, name, &resource_arn(segment, name))
+}
+
+/// The same, for a request that sent `arn` — which for the kinds whose sentence reports the
+/// REFERENCE it was addressed by rather than a name is the value that sentence echoes, so an
+/// ARN of another Region or another account is echoed as sent.
 ///
 /// The read resolves the ARN through the surface that OWNS the kind, so its miss is that
 /// surface's own sentence: recorded as "Job not found." for a job ARN, as the database
-/// surface's sentence naming the database for a database ARN, and as the crawler-definition
-/// surface's naming the crawler for a crawler ARN. Every other kind answers the generic
-/// entity sentence, which is what the read is recorded to answer for a workflow ARN.
-pub fn read_miss_message(segment: &str, name: &str) -> String {
+/// surface's sentence naming the database for a database ARN, as the crawler-definition
+/// surface's naming the crawler for a crawler ARN, and for a registry ARN as the registry
+/// surface's rendering of the reference it resolved by — the registry name it was handed
+/// none of spelled as the absent member, beside the ARN the request sent. Every other kind
+/// answers the generic entity sentence, which is what the read is recorded to answer for a
+/// workflow ARN.
+pub fn read_miss_message_of_arn(segment: &str, name: &str, arn: &str) -> String {
     match segment {
         "job" => "Job not found.".to_string(),
         "database" => format!("Database {name} not found."),
         "crawler" => format!("Crawler entry with name {name} does not exist"),
+        "registry" => format!("Registry is not found. RegistryName: null, RegistryArn: {arn}"),
         _ => ENTITY_NOT_FOUND.to_string(),
     }
 }
