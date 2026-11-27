@@ -26,7 +26,12 @@
 //! application that is still `REGISTERING`
 //! ([`crate::state::application_control_available`]) and the discovery result that
 //! registration owed is reported all the same
-//! ([`crate::state::StoredApplication::owed_discovery_status`]).
+//! ([`crate::state::StoredApplication::owed_discovery_status`]). A registration that has
+//! SETTLED as failed is the opposite case: it discovered nothing, so there is no SAP
+//! system behind the application to stop and the `FAILED` status it settled on is not
+//! overwritten — the call is refused with the modelled `ValidationException` every call
+//! that moves an application's own `Status` states that outcome with
+//! ([`crate::state::application_status_move_available`]).
 //!
 //! ## Shape of an operation
 //!
@@ -281,6 +286,16 @@ fn record_stop(
         )
         .into());
     };
+
+    // A registration that FAILED leaves nothing to stop: the application was never
+    // discovered, so there is no SAP system behind it, and the `FAILED` status that
+    // registration settled on is this application's own answer about it — a stop served
+    // here would overwrite it. Asked of the application's own registration outcome and
+    // BEFORE the in-flight gate, so the answer is the same for every caller whatever else
+    // is happening to the application — in the one place every call that moves an
+    // application's own `Status` decides and words that refusal.
+    crate::state::application_status_move_available(&application)
+        .map_err(StopApplicationErrorModeled::ValidationException)?;
 
     // A change the clock still owes this application is an operation already under
     // way on it, which is what `ConflictException` reports — decided and worded in the

@@ -22,7 +22,9 @@
 //! state rather than from what else is in flight:
 //!
 //! * `StartApplication` refuses a FAILED registration with `ValidationException` (400),
-//!   naming the application;
+//!   naming the application, and so does `StopApplication`: a call that MOVES the
+//!   application's own `Status` has nothing to move for an application the service never
+//!   discovered, and the `FAILED` status that registration settled on stands;
 //! * `StartApplicationRefresh` and `StartConfigurationChecks` refuse an application that
 //!   has not been registered successfully — one still registering as much as one that
 //!   failed — with `ConflictException` (409), in fixed text that names nothing of the
@@ -38,18 +40,19 @@
 //!
 //! The rows span what the rules generalise over: whether the owner of the instance holds
 //! it and in what state, both lengths the modelled instance-id form admits, which
-//! precondition call is made, how many callers race, the application type, the forms the
-//! modelled `ApplicationId` admits, and whether a member a type excludes is carried,
-//! carried empty or omitted.
+//! precondition call is made, the switches a stop carries, how many callers race, the
+//! application type, the forms the modelled `ApplicationId` admits, and whether a member a
+//! type excludes is carried, carried empty or omitted.
 
 use std::collections::BTreeSet;
 
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 use service_com_amazonaws_ssmsap_ssmsap::state::APPLICATIONS_QUOTA;
 
 use crate::application_lifecycle::{
-    is_operation_id, settle, valid_registration, Emulator, Reply, REGION,
+    is_operation_id, rendered, settle, valid_registration, Emulator, Reply, REGION,
 };
+use crate::database_status_discovery::{database_status, wait_until};
 use crate::ec2_instance_shutdown::{registration, settle_wait, Emulator as WithEc2};
 use crate::resource_tags::{application_arn, list_tags};
 use crate::tag_resource::{pairs, tag};
@@ -869,4 +872,220 @@ async fn the_applications_quota_refuses_the_registration_that_would_exceed_it() 
         accepted.status, 200,
         "a freed slot admits the identical call, got {accepted:?}"
     );
+}
+
+/// One stop of an application whose registration FAILED, and the switches it carries.
+#[derive(Debug)]
+struct FailedStop {
+    /// The `ApplicationId` of the application whose registration failed — the rows span
+    /// the forms the modelled `ApplicationId` admits.
+    application_id: &'static str,
+    /// The `ApplicationId` of the control: the same stop against an application whose
+    /// registration SUCCEEDED, so the refusal is about the registration outcome and not
+    /// about the switches.
+    control_id: &'static str,
+    /// What the stop carries beyond the application it names.
+    switches: &'static str,
+    /// The `DatabaseStatus` the CONTROL's database reports once its served stop has
+    /// settled: the DBMS it lives in, which a stop naming the connected entity took down
+    /// with the application and a stop naming none left running.
+    control_database: &'static str,
+}
+
+/// The rows: the switches `StopApplication` carries, each against both registration
+/// outcomes — none, the connected entity, the Amazon EC2 shutdown, and both together.
+const FAILED_STOPS: &[FailedStop] = &[
+    FailedStop {
+        application_id: "stop-failed",
+        control_id: "stop-discovered",
+        switches: "{}",
+        control_database: "RUNNING",
+    },
+    FailedStop {
+        application_id: "STOP.FAILED-1",
+        control_id: "stop-discovered-dbms",
+        switches: r#"{"StopConnectedEntity": "DBMS"}"#,
+        control_database: "STOPPED",
+    },
+    FailedStop {
+        application_id: "s",
+        control_id: "stop-discovered-shutdown",
+        switches: r#"{"IncludeEc2InstanceShutdown": true}"#,
+        control_database: "RUNNING",
+    },
+    FailedStop {
+        application_id: "stop-failed-both",
+        control_id: "stop-discovered-both",
+        switches: r#"{"StopConnectedEntity": "DBMS", "IncludeEc2InstanceShutdown": true}"#,
+        control_database: "STOPPED",
+    },
+];
+
+/// The `DatabaseId` the credential the shared registration builder declares derives, which
+/// is the database every row below reads back
+/// ([`crate::application_lifecycle::conditional_value`] names it, and a `DatabaseId` is the
+/// canonical form of that name).
+const STOP_DATABASE_ID: &str = "HDB";
+
+/// The `/stop-application` body of `row` against `application_id`.
+fn stop_body(row: &FailedStop, application_id: &str) -> Value {
+    let mut body: Map<String, Value> = serde_json::from_str(row.switches)
+        .unwrap_or_else(|error| panic!("case {:?}: the switches parse: {error}", row.switches));
+    body.insert("ApplicationId".into(), json!(application_id));
+    Value::Object(body)
+}
+
+/// RULE: a call that MOVES an application's own `Status` is refused with
+/// `ValidationException` (400) naming the application when that application's registration
+/// has settled as FAILED — the service discovered no SAP system to stop — so the refused
+/// call files no work, moves no status and leaves nothing inside the application reporting
+/// a running state the service never established.
+///
+/// Nothing here waits a fixed time: each outcome the clock owes is waited for as a
+/// CONDITION ([`wait_until`]), and the control's own stop reaching `STOPPED` is what shows
+/// a span has passed without the refused stop owing anything.
+#[tokio::test]
+async fn a_stop_is_refused_for_an_application_whose_registration_failed() {
+    let emulator = WithEc2::new();
+    // One held instance per control, so a row that asks for the Amazon EC2 shutdown
+    // reaches an instance of its own.
+    let launched = emulator
+        .launch_running(i32::try_from(FAILED_STOPS.len()).expect("a small row count"))
+        .await;
+
+    // Every registration is filed before any of them is waited for, so the rows' clocks
+    // run together rather than one after another.
+    for (index, row) in FAILED_STOPS.iter().enumerate() {
+        register(
+            &emulator,
+            row.application_id,
+            row.application_id,
+            UNHELD_LONG_INSTANCE,
+        )
+        .await;
+        register(&emulator, row.control_id, row.control_id, &launched[index]).await;
+    }
+
+    for row in FAILED_STOPS {
+        let case = row.application_id;
+        wait_until(&emulator, case, row.application_id, "FAILED").await;
+        wait_until(&emulator, row.control_id, row.control_id, "ACTIVATED").await;
+
+        let settled = reported_outcome(&emulator, case, row.application_id).await;
+        assert_eq!(
+            (settled.0.as_str(), settled.1.as_str()),
+            ("FAILED", "REGISTRATION_FAILED"),
+            "case {case:?}: setup expected a failed registration, got {settled:?}"
+        );
+
+        // What the application and its database report before the stop is asked for.
+        let before = emulator
+            .reply(
+                "/get-application",
+                json!({"ApplicationId": row.application_id}),
+            )
+            .await;
+        let database_before =
+            database_status(&emulator, case, row.application_id, STOP_DATABASE_ID).await;
+        assert_eq!(
+            database_before, "UNKNOWN",
+            "case {case:?}: nothing is known about the databases of an undiscovered \
+             application, got {database_before}"
+        );
+
+        let refused = emulator
+            .reply("/stop-application", stop_body(row, row.application_id))
+            .await;
+        assert_eq!(
+            (refused.status, refused.code()),
+            (400, VALIDATION_EXCEPTION),
+            "case {case:?}: expected 400 {VALIDATION_EXCEPTION}, got {refused:?}"
+        );
+        assert_eq!(
+            message(&refused),
+            failed_registration(row.application_id),
+            "case {case:?}: expected the failed-registration refusal, got {:?}",
+            message(&refused)
+        );
+        assert!(
+            refused.member("OperationId").is_none(),
+            "case {case:?}: a refused stop hands out no OperationId, got {refused:?}"
+        );
+
+        // The refusal changed nothing: the application reports exactly what it did, and
+        // no stop record was filed against it.
+        let after = emulator
+            .reply(
+                "/get-application",
+                json!({"ApplicationId": row.application_id}),
+            )
+            .await;
+        assert_eq!(
+            rendered(&after),
+            rendered(&before),
+            "case {case:?}: a refused stop leaves the application as it was, got {after:?}"
+        );
+        let filed = records_of_type(&emulator, row.application_id, "STOP_APPLICATION").await;
+        assert!(
+            filed.is_empty(),
+            "case {case:?}: a refused stop files no record, got {filed:?}"
+        );
+
+        // The SAME stop against an application whose registration succeeded is served, so
+        // the refusal is about the registration outcome and not about the switches.
+        let served = emulator
+            .reply("/stop-application", stop_body(row, row.control_id))
+            .await;
+        assert_eq!(
+            served.status, 200,
+            "case {case:?}: a discovered application stops, got {served:?}"
+        );
+        let operation = served
+            .member("OperationId")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        assert!(
+            is_operation_id(&operation),
+            "case {case:?}: a served stop answers the id that tracks it, got {operation:?}"
+        );
+    }
+
+    for row in FAILED_STOPS {
+        let case = row.application_id;
+        // The control's served stop reaching the status it owed is what shows the span
+        // the refused stop would have taken has passed.
+        wait_until(&emulator, row.control_id, row.control_id, "STOPPED").await;
+        let control = reported_outcome(&emulator, row.control_id, row.control_id).await;
+        assert_eq!(
+            (control.0.as_str(), control.1.as_str()),
+            ("STOPPED", "SUCCESS"),
+            "case {:?}: a served stop completes, got {control:?}",
+            row.control_id
+        );
+        let control_database =
+            database_status(&emulator, row.control_id, row.control_id, STOP_DATABASE_ID).await;
+        assert_eq!(
+            control_database, row.control_database,
+            "case {:?}: expected the DBMS of a discovered application to report {}, got \
+             {control_database}",
+            row.control_id, row.control_database
+        );
+
+        // The refused stop still owes nothing: the FAILED registration keeps the status it
+        // settled on, and its database keeps reporting that nothing is known about it.
+        let settled = reported_outcome(&emulator, case, row.application_id).await;
+        assert_eq!(
+            (settled.0.as_str(), settled.1.as_str()),
+            ("FAILED", "REGISTRATION_FAILED"),
+            "case {case:?}: a refused stop owes no status change, got {settled:?}"
+        );
+        let database_after =
+            database_status(&emulator, case, row.application_id, STOP_DATABASE_ID).await;
+        assert_eq!(
+            database_after, "UNKNOWN",
+            "case {case:?}: an undiscovered application's database reports no running \
+             state, got {database_after}"
+        );
+    }
 }

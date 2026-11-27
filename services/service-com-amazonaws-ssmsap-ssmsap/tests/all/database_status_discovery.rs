@@ -187,7 +187,11 @@ async fn read_database(
 
 /// The `Database$Status` reported for `database_id` under `application_id`, checked against
 /// the model's own catalogue of `DatabaseStatus` values.
-async fn database_status(
+///
+/// `pub(crate)` so the suite about what a call whose precondition is a working application
+/// answers (`tests/all/registration_outcome.rs`) reads a database's status through THIS one
+/// helper, catalogue check included, rather than spelling a second variant of it.
+pub(crate) async fn database_status(
     emulator: &WithEc2,
     case: &str,
     application_id: &str,
@@ -223,7 +227,11 @@ async fn read_application(emulator: &WithEc2, case: &str, application_id: &str) 
 }
 
 /// Look again until `application_id` reports `status`, which is an outcome the clock owes it.
-async fn wait_until(emulator: &WithEc2, case: &str, application_id: &str, status: &str) {
+///
+/// `pub(crate)` for the same reason [`database_status`] is: a suite that has to let a change
+/// the clock owes an application fall due waits for that CONDITION here rather than waiting a
+/// fixed time of its own.
+pub(crate) async fn wait_until(emulator: &WithEc2, case: &str, application_id: &str, status: &str) {
     let until = Instant::now() + SETTLE_DEADLINE;
     loop {
         let (reported, discovery) = read_application(emulator, case, application_id).await;

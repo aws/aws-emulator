@@ -1031,13 +1031,14 @@ impl StoredApplication {
     /// at all — the application is up, or on its way up or down.
     ///
     /// The status ALONE is not that evidence, which is why both conditions are asked here:
-    /// a control call of this service is served against an application whose registration
-    /// is still under way or has failed ([`application_control_available`] gates work in
-    /// flight, not the registration outcome), so a never-discovered application also
-    /// reaches the transient and settled statuses of a stop while carrying its failed
-    /// discovery forward. Every reading of something INSIDE the application goes through
-    /// this ([`StoredDbms::status_for`], [`component_status_for`]), so none of them reports
-    /// a running state the service never established.
+    /// a stop of this service is served against an application whose registration is still
+    /// under way ([`application_control_available`] gates work in flight, not the
+    /// registration outcome, and a stop does not wait for a running registration), so an
+    /// application whose discovery then fails also reaches the transient and settled
+    /// statuses of that stop while carrying its failed discovery forward. Every reading of
+    /// something INSIDE the application goes through this ([`StoredDbms::status_for`],
+    /// [`component_status_for`]), so none of them reports a running state the service never
+    /// established.
     pub fn established_status(&self) -> Option<&str> {
         if !self.registered_successfully() {
             return None;
@@ -3926,6 +3927,36 @@ pub fn not_registered_successfully() -> ConflictException {
 /// `ConflictException` that says to wait.
 pub fn failed_registration_message(application_id: &str) -> String {
     format!("The registration of application {application_id} is failed.")
+}
+
+/// Whether a call that MOVES an application's own `Status` can act on `application`, or the
+/// modelled `ValidationException` (HTTP 400) refusing it because that application's
+/// registration FAILED ([`failed_registration_message`]).
+///
+/// A registration that failed discovered nothing, so there is no SAP system behind the
+/// application for such a call to start or stop, and the `FAILED` status the registration
+/// settled on is the application's own answer about it: a status move served here would
+/// overwrite that answer with a running state the service never established, leaving the
+/// two reads of one application contradicting each other. The refusal is settled — the
+/// application does not become usable without being registered again — so it is the
+/// `ValidationException` a caller has to act on rather than the `ConflictException` that
+/// says to wait.
+///
+/// The ONE place that condition is decided, so every call that moves the application's own
+/// `Status` refuses it with the same code and the same sentence,
+/// and it is asked of the application's own registration outcome alone — never of what else
+/// is in flight ([`application_control_available`] is the separate gate for that) — so
+/// concurrent callers are all refused the same way whatever order they arrive in. A call
+/// whose precondition is the STRONGER one, a registration that completed successfully
+/// ([`not_registered_successfully`]), refuses a failed registration under that precondition
+/// instead.
+pub fn application_status_move_available(
+    application: &StoredApplication,
+) -> Result<(), ValidationException> {
+    if application.registration_failed() {
+        return Err(validation(failed_registration_message(&application.id)));
+    }
+    Ok(())
 }
 
 /// The message `RegisterApplication` reports when the account has already registered
