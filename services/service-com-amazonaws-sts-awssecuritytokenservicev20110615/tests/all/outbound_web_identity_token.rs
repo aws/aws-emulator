@@ -227,6 +227,9 @@ fn seed_session(
             federating_user_arn: None,
             mfa_authenticated: false,
             federated_claims: Vec::new(),
+            // A record made directly rather than by an exchange, so it names no web-identity
+            // federation.
+            web_identity_federation: None,
             revoked: false,
         })
         .unwrap_or_else(|error| panic!("recording a session: {}", error.message()));

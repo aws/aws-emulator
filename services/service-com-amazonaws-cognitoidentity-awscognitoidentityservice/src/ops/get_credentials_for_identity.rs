@@ -657,7 +657,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> GetCredentialsFor
         let Some(role) = crate::state::resolve_role(&*self.engine, &resolved.role_arn) else {
             return Err(refused());
         };
-        let context = crate::state::web_identity_condition_context(
+        // The web identity this vend exchanges: the condition keys the assume publishes
+        // about it, which the trust-policy decision below is taken over, and the federation
+        // a record of a call made with the vended credential names — one value, so the two
+        // cannot name two different identities.
+        let web_identity = crate::state::vended_web_identity(
             &resolved.identity_pool_id,
             &input.identity_id,
             &resolved.methods,
@@ -668,7 +672,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> GetCredentialsFor
         // ([`crate::state::session_tags`]): a trust policy gated on
         // `aws:RequestTag/<key>` admits the identities whose mapped value satisfies it and
         // refuses the others, which is the pool-configuration refusal below.
-        let mut assume_context = context.clone();
+        let mut assume_context = web_identity.claims.clone();
         assume_context.extend(crate::state::session_tags::requested_session_tag_conditions(
             &resolved.requested_tags,
         ));
@@ -698,7 +702,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> GetCredentialsFor
             &role,
             now,
             CREDENTIAL_VALIDITY,
-            &context,
+            &web_identity,
             &resolved.requested_tags,
         );
         // A vend that could not be recorded is refused rather than answered with a

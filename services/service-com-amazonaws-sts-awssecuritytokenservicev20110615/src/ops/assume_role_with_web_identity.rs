@@ -578,6 +578,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 // very keys this assume was decided under
                 // (`crate::state::federated_claim_keys`).
                 federated_claims: context.clone(),
+                // The web identity the exchange federated, as a record of a call made with
+                // the credential names it: the provider that issued the token and the
+                // claims it carried (`crate::state::web_identity::recorded_federation`),
+                // which is what tells a federated session apart from a plainly assumed one
+                // in event history.
+                web_identity_federation: Some(crate::state::web_identity::recorded_federation(
+                    &web_identity,
+                )),
                 ..NewSession::new(session_identity, SessionKind::AssumedRole, duration_seconds)
             },
         );

@@ -266,6 +266,56 @@ pub fn condition_context(web_identity: &WebIdentity) -> Vec<(String, String)> {
     context
 }
 
+/// The WEB IDENTITY FEDERATION a record of a call made with the session this token mints
+/// names: the provider that issued the token, and the identity that token established.
+///
+/// The provider is the identifier that provider is KNOWN BY
+/// ([`super::web_identity_provider_name`]), the same spelling the condition keys are named
+/// after, and the attributes are the facts CloudTrail reports a federated session's identity
+/// by — the audience the token was issued for, the identity it names and the authentication
+/// methods it was issued under — each under the `<provider>:<claim>` key the exchange
+/// published it as ([`condition_context`]), so what an auditor reads off a record is what the
+/// trust-policy decision was taken over. The authentication methods are a LIST claim, so they
+/// are one attribute holding their JSON array, there being one string per key; a claim the
+/// token carried no value for contributes no attribute at all.
+#[must_use]
+pub fn recorded_federation(
+    web_identity: &WebIdentity,
+) -> ::service_common::management_events::RecordedWebIdentityFederation {
+    let provider = super::web_identity_provider_name(&web_identity.identity.issuer);
+    let mut attributes: Vec<(String, String)> = Vec::new();
+    for (claim, value) in [
+        (AUDIENCE_CLAIM, web_identity.identity.audience.clone()),
+        (SUBJECT_CLAIM, web_identity.identity.subject.clone()),
+    ] {
+        if !value.is_empty() {
+            attributes.push((format!("{provider}:{claim}"), value));
+        }
+    }
+    if !web_identity.identity.authentication_methods.is_empty() {
+        attributes.push((
+            format!("{provider}:{AUTHENTICATION_METHODS_CLAIM}"),
+            json_array(&web_identity.identity.authentication_methods),
+        ));
+    }
+    ::service_common::management_events::RecordedWebIdentityFederation {
+        federated_provider: provider.to_string(),
+        attributes,
+    }
+}
+
+/// `values` as the text of a JSON array of strings, which is how a multi-valued claim is
+/// carried by a member that holds one string per key.
+fn json_array(values: &[String]) -> String {
+    ::serde_json::Value::Array(
+        values
+            .iter()
+            .map(|value| ::serde_json::Value::String(value.clone()))
+            .collect(),
+    )
+    .to_string()
+}
+
 /// The keys [`condition_context`] publishes, as the policy evaluator needs them: the keys
 /// whose absence from the context means the token carried no such value rather than this
 /// emulator not knowing the key.

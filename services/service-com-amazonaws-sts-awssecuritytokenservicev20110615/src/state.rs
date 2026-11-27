@@ -281,6 +281,13 @@ pub struct Session {
     /// (`AssumeRoleWithWebIdentityRequest$WebIdentityToken` is `clientTokenType`, length
     /// 4..20000) caps the claims it can carry, and by [`MAX_SESSIONS`] records in all.
     pub federated_claims: Vec<(String, String)>,
+    /// The WEB IDENTITY this session was minted by exchanging, as the audit view of a call
+    /// made with its credential names it: the provider that issued the token and the claims
+    /// it carried ([`::service_common::management_events::RecordedWebIdentityFederation`]).
+    /// `None` for a session no web-identity exchange minted, whose records name no
+    /// federation at all.
+    pub web_identity_federation:
+        Option<::service_common::management_events::RecordedWebIdentityFederation>,
     /// Set once the credential has been deleted from the credential store because
     /// the session expired, so the deletion happens exactly once.
     pub revoked: bool,
@@ -317,6 +324,9 @@ pub struct NewSession {
     pub mfa_authenticated: bool,
     /// See [`Session::federated_claims`].
     pub federated_claims: Vec<(String, String)>,
+    /// See [`Session::web_identity_federation`].
+    pub web_identity_federation:
+        Option<::service_common::management_events::RecordedWebIdentityFederation>,
 }
 
 impl NewSession {
@@ -338,6 +348,7 @@ impl NewSession {
             federating_user_arn: None,
             mfa_authenticated: false,
             federated_claims: Vec::new(),
+            web_identity_federation: None,
         }
     }
 
@@ -378,6 +389,7 @@ impl NewSession {
             federating_user_arn: self.federating_user_arn,
             mfa_authenticated: self.mfa_authenticated,
             federated_claims: self.federated_claims,
+            web_identity_federation: self.web_identity_federation,
             revoked: false,
         }
     }
@@ -3022,6 +3034,10 @@ pub fn audited_session(session: &Session) -> ::service_common::management_events
         user_name: Some(entity_name_of(&session.identity.arn).to_string()),
         issuer,
         source_identity: session.source_identity.clone(),
+        // The web identity the session was federated from, for a session minted by
+        // exchanging one: the record of a call made with the credential names the
+        // federation the session carries, whatever that call was answered with.
+        web_identity_federation: session.web_identity_federation.clone(),
         created_at: session.created_at,
         expires_at: session.expires_at,
     }

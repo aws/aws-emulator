@@ -294,6 +294,7 @@ impl Emulator {
             account_id: account.clone(),
             user_name: Some(format!("{SESSION_ROLE}-session")),
             source_identity: None,
+            web_identity_federation: None,
             created_at: std::time::SystemTime::now(),
             expires_at: std::time::SystemTime::now() + std::time::Duration::from_secs(3600),
             issuer: Some(RecordedSessionIssuer {

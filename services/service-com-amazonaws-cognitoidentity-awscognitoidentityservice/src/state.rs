@@ -3733,6 +3733,66 @@ pub fn web_identity_condition_context(
     context
 }
 
+/// The web identity ONE vend exchanges, as everything downstream of the exchange needs it:
+/// the condition keys it publishes about the assume it makes
+/// ([`web_identity_condition_context`]) and the federation a record of a call made with the
+/// vended credential names ([`::service_common::management_events::RecordedWebIdentityFederation`]).
+///
+/// One value, because the two are the SAME facts — the pool the credentials are vended for,
+/// the identity they are vended to, and the authentication methods the exchange was made
+/// under — so a trust policy's decision and an auditor's reading of a later call cannot name
+/// two different identities.
+#[derive(Debug, Clone)]
+pub struct VendedWebIdentity {
+    /// The condition keys the exchange publishes, one pair per value.
+    pub claims: Vec<(String, String)>,
+    /// The federation a record of a call made with the vended credential carries.
+    pub federation: ::service_common::management_events::RecordedWebIdentityFederation,
+}
+
+/// The web identity a vend for `identity_id` of `identity_pool_id`, made under `methods`,
+/// exchanges.
+///
+/// The federation's provider is this service's own principal — the issuer of every token an
+/// identity pool exchanges — and its attributes are the exchange's own claims under the
+/// `<provider>:<claim>` keys the assume publishes them as: the pool as the audience, the
+/// identity as the subject, and the authentication methods as the JSON array the multi-valued
+/// `amr` claim is carried by, there being one string per attribute key. Nothing is invented:
+/// every value comes from the request and from the stored identity it names.
+#[must_use]
+pub fn vended_web_identity(
+    identity_pool_id: &str,
+    identity_id: &str,
+    methods: &[String],
+) -> VendedWebIdentity {
+    let mut attributes = vec![
+        (
+            AUDIENCE_CONDITION_KEY.to_string(),
+            identity_pool_id.to_string(),
+        ),
+        (SUBJECT_CONDITION_KEY.to_string(), identity_id.to_string()),
+    ];
+    if !methods.is_empty() {
+        attributes.push((
+            AUTHENTICATION_METHODS_CONDITION_KEY.to_string(),
+            ::serde_json::Value::Array(
+                methods
+                    .iter()
+                    .map(|method| ::serde_json::Value::String(method.clone()))
+                    .collect(),
+            )
+            .to_string(),
+        ));
+    }
+    VendedWebIdentity {
+        claims: web_identity_condition_context(identity_pool_id, identity_id, methods),
+        federation: ::service_common::management_events::RecordedWebIdentityFederation {
+            federated_provider: COGNITO_IDENTITY_PRINCIPAL.to_string(),
+            attributes,
+        },
+    }
+}
+
 /// The authentication methods an exchange made with `providers` — the `Logins` provider
 /// names the call presented — was performed under.
 ///
@@ -3836,10 +3896,11 @@ pub struct VendedSession {
 /// The session lasts `validity`, capped by the role's own `MaxSessionDuration` — a session
 /// is never minted for longer than the role admits.
 ///
-/// `federated_claims` are the condition keys the exchange this vend makes publishes about
-/// the token it stands for ([`web_identity_condition_context`]); they travel with the
-/// session, so a request the vended credential signs is decided against the same keys the
-/// assume was.
+/// `web_identity` is the identity this vend exchanges ([`vended_web_identity`]): its
+/// condition keys travel with the session, so a request the vended credential signs is
+/// decided against the same keys the assume was, and its federation travels with the
+/// session too, so a record of a call made with the credential names the web identity the
+/// session was federated from.
 ///
 /// `tags` are the session tags the assume ASKED to attach
 /// ([`ComAmazonawsCognitoidentityAwscognitoidentityserviceState::requested_session_tags`]):
@@ -3855,7 +3916,7 @@ pub fn mint_vended_role_session<Eng: Send + Sync + 'static>(
     role: &ResolvedRole,
     now: SystemTime,
     validity: Duration,
-    federated_claims: &[(String, String)],
+    web_identity: &VendedWebIdentity,
     tags: &[(String, String)],
 ) -> Result<VendedSession, String> {
     use ::service_com_amazonaws_sts_awssecuritytokenservicev20110615::state as sts;
@@ -3893,7 +3954,12 @@ pub fn mint_vended_role_session<Eng: Send + Sync + 'static>(
             // The identity the exchanged token stands for travels with the session, so a
             // policy in force on the role can scope what the session may do to its own
             // federated subject.
-            federated_claims: federated_claims.to_vec(),
+            federated_claims: web_identity.claims.clone(),
+            // The web identity the exchange federated travels with the session as the audit
+            // view of it: a record of any call the credential signs names the provider that
+            // issued the token and the claims it carried, whatever that call was answered
+            // with.
+            web_identity_federation: Some(web_identity.federation.clone()),
             // The tags the assume asked for are the tags the session carries: the pool
             // performs its exchange WITH them, so a policy conditioned on
             // `aws:PrincipalTag/<key>` reads them for every request this credential signs.

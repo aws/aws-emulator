@@ -333,6 +333,7 @@ impl Emulator {
                 user_name: role_name.to_string(),
             }),
             source_identity: None,
+            web_identity_federation: None,
             created_at: now,
             expires_at: now + ::std::time::Duration::from_secs(3_600),
         };

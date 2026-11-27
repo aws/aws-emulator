@@ -898,6 +898,26 @@ pub struct RecordedSessionIssuer {
     pub user_name: String,
 }
 
+/// The WEB IDENTITY a session was federated FROM, as a record names it in
+/// `userIdentity.sessionContext.webIdFederationData`: the provider that issued the token
+/// the session was minted by exchanging, and the claims of that token.
+///
+/// A session minted by exchanging a web identity token carries one; a session minted
+/// without such an exchange carries none, and a record of a call made with it leaves the
+/// member out altogether — the presence of the member is what tells the two apart in event
+/// history.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordedWebIdentityFederation {
+    /// `webIdFederationData.federatedProvider`: the issuer of the web identity token, as
+    /// the identifier that provider is known by.
+    pub federated_provider: String,
+    /// `webIdFederationData.attributes`: the token's claims as the exchange published
+    /// them, each key named `<provider>:<claim>` after the provider the token came from,
+    /// in the order the minting service states them. A claim carrying a LIST of values is
+    /// one entry holding its JSON array, there being one string per key.
+    pub attributes: Vec<(String, String)>,
+}
+
 /// What a record names about the SESSION a call's temporary credential belongs to.
 ///
 /// A session is minted by one service (STS, or a service that assumes a role on a
@@ -926,6 +946,12 @@ pub struct RecordedSession {
     /// its caller carried. `None` for a session assumed without one, which is what leaves
     /// `sessionContext.sourceIdentity` out of the record altogether.
     pub source_identity: Option<String>,
+    /// The WEB IDENTITY the session was federated from, for a session minted by exchanging
+    /// one: what the record carries as `sessionContext.webIdFederationData`. `None` for a
+    /// session no such exchange minted, which is what leaves the member out of the record
+    /// altogether. It describes the CALLER, not the call, so a record of a refused call
+    /// carries it exactly as a served one does.
+    pub web_identity_federation: Option<RecordedWebIdentityFederation>,
     /// When the session was minted, as `sessionContext.attributes.creationDate`.
     pub created_at: SystemTime,
     /// When the credential stops being valid — the instant past which no call can be made
@@ -1244,6 +1270,26 @@ impl ManagementEvent {
                 "attributes".to_string(),
                 serde_json::json!({"creationDate": iso8601(session.created_at)}),
             );
+            // The web identity the session was federated from, for a session minted by
+            // exchanging one. It names the CALLER — the provider that issued the token and
+            // the claims it carried — so it is written whatever the call's outcome, a
+            // refused call's record carrying it exactly as a served one does. A session no
+            // web-identity exchange minted carries no such member at all, which is what
+            // tells a federated session apart from a plainly assumed one in event history.
+            if let Some(federation) = &session.web_identity_federation {
+                let attributes: serde_json::Map<String, serde_json::Value> = federation
+                    .attributes
+                    .iter()
+                    .map(|(key, value)| (key.clone(), serde_json::Value::String(value.clone())))
+                    .collect();
+                context.insert(
+                    "webIdFederationData".to_string(),
+                    serde_json::json!({
+                        "federatedProvider": federation.federated_provider,
+                        "attributes": attributes,
+                    }),
+                );
+            }
             if let Some(source_identity) = &session.source_identity {
                 context.insert(
                     "sourceIdentity".to_string(),
@@ -2030,6 +2076,7 @@ mod tests {
                 user_name: "shared".to_string(),
             }),
             source_identity: source_identity.map(ToString::to_string),
+            web_identity_federation: None,
             created_at: at,
             expires_at: at + lasts,
         }
@@ -2082,6 +2129,82 @@ mod tests {
                 None,
                 "case {case:?}: an assumed role's identity carries no userName — the name \
                  behind it is the issuer's, got {json}"
+            );
+        }
+    }
+
+    /// A call made with a session the emulator FEDERATED from a web identity is recorded
+    /// with `sessionContext.webIdFederationData` — the provider and the claims the exchange
+    /// published — whatever the call's outcome, and a call made with a session no such
+    /// exchange minted is recorded without the member at all.
+    #[test]
+    fn a_federated_sessions_call_records_its_web_identity_federation() {
+        let now = SystemTime::now();
+        let federation = RecordedWebIdentityFederation {
+            federated_provider: "cognito-identity.amazonaws.com".to_string(),
+            attributes: vec![
+                (
+                    "cognito-identity.amazonaws.com:aud".to_string(),
+                    "us-east-1:00000000-0000-4000-8000-000000000001".to_string(),
+                ),
+                (
+                    "cognito-identity.amazonaws.com:sub".to_string(),
+                    "us-east-1:00000000-0000-4000-8000-000000000002".to_string(),
+                ),
+                (
+                    "cognito-identity.amazonaws.com:amr".to_string(),
+                    "[\"unauthenticated\"]".to_string(),
+                ),
+            ],
+        };
+        // The rows differ along the two facts the member is independent of: whether the
+        // call was refused, and whether the session was federated at all.
+        for (case, federated, error_code) in [
+            ("a federated session, served", true, None),
+            ("a federated session, refused", true, Some("AccessDenied")),
+            ("a session no exchange minted", false, None),
+            (
+                "a session no exchange minted, refused",
+                false,
+                Some("AccessDenied"),
+            ),
+        ] {
+            let mut log = ManagementEventLog::default();
+            let mut served = call("DescribeTrails");
+            let mut held = session(None, now, Duration::from_secs(3600));
+            if federated {
+                held.web_identity_federation = Some(federation.clone());
+            }
+            served.session = Some(held);
+            served.principal_type = PRINCIPAL_TYPE_ASSUMED_ROLE.to_string();
+            served.error_code = error_code.map(ToString::to_string);
+            log.record(served, now);
+            let json = log
+                .iter()
+                .next()
+                .expect("the recorded event")
+                .to_cloudtrail_event_json();
+            let expected = federated.then(|| {
+                serde_json::json!({
+                    "federatedProvider": "cognito-identity.amazonaws.com",
+                    "attributes": {
+                        "cognito-identity.amazonaws.com:aud":
+                            "us-east-1:00000000-0000-4000-8000-000000000001",
+                        "cognito-identity.amazonaws.com:sub":
+                            "us-east-1:00000000-0000-4000-8000-000000000002",
+                        "cognito-identity.amazonaws.com:amr": "[\"unauthenticated\"]",
+                    },
+                })
+            });
+            assert_eq!(
+                json.pointer("/userIdentity/sessionContext/webIdFederationData"),
+                expected.as_ref(),
+                "case {case:?}: expected webIdFederationData {expected:?}, got {json}"
+            );
+            assert_eq!(
+                json.get("errorCode").and_then(serde_json::Value::as_str),
+                error_code,
+                "case {case:?}: expected errorCode {error_code:?}, got {json}"
             );
         }
     }
