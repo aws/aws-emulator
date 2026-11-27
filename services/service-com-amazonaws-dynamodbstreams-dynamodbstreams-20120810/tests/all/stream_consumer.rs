@@ -10,11 +10,19 @@
 //! `CreateTable`(StreamSpecification) / `PutItem` / `UpdateItem` / `DeleteItem` call
 //! once they are implemented. Every assertion below reads the result back off the
 //! wire, so nothing is proved about the store that a client cannot observe.
+//!
+//! The last two tests pin the surface against the MODEL rather than against values
+//! written out here: every member an operation's input schema declares is one that
+//! operation reads, and every identifier this service mints fits the `@length` window
+//! the model declares for the shape that carries it. Both read the model-derived
+//! schemas the framework's own request walk is driven by, so an upstream model change
+//! to a member or a constraint fails them instead of passing unnoticed.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use aws_smithy_schema_server::constraints::LengthTrait;
 use service_com_amazonaws_dynamodbstreams_dynamodbstreams_20120810 as streams;
 use smithy_server_runtime::MultiServiceRouter;
 use streams::ops::types::{AttributeValue, KeySchemaElement};
@@ -1690,5 +1698,329 @@ async fn an_image_nesting_past_the_published_limit_is_refused_at_the_seam() {
                 "case {case}: SizeBytes must be at least 1, got {body}"
             );
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The surface the model declares
+// ---------------------------------------------------------------------------
+
+/// The members the MODEL declares on the input shape `input`, sorted — the whole set a
+/// request to that operation may carry.
+///
+/// Read off the model-derived schema the framework's own request walk is driven by, so
+/// it cannot drift from the model the way a list written out here would.
+fn declared_members(input: &'static aws_smithy_schema::Schema) -> Vec<String> {
+    let mut names: Vec<String> = input
+        .members()
+        .iter()
+        .filter_map(|member| member.member_name().map(str::to_string))
+        .collect();
+    names.sort();
+    names
+}
+
+/// The `@length` window the MODEL declares for `member` of the input shape `input`, as
+/// `(min, max)` — read the same way, and from the same place, the front door reads it
+/// (`crate::service::declared_length`).
+fn declared_length(input: &'static aws_smithy_schema::Schema, member: &str) -> (i64, i64) {
+    let declared = input
+        .members()
+        .iter()
+        .copied()
+        .find(|candidate| candidate.member_name() == Some(member))
+        .unwrap_or_else(|| panic!("the model declares no member {member} on this input"));
+    let carried = declared
+        .traits()
+        .and_then(|traits| traits.get(&LengthTrait::TRAIT_ID))
+        .and_then(|length| length.as_any().downcast_ref::<LengthTrait>())
+        .copied()
+        .unwrap_or_else(|| panic!("the model declares no length window for {member}"));
+    (
+        carried.min.unwrap_or(i64::MIN),
+        carried.max.unwrap_or(i64::MAX),
+    )
+}
+
+/// `value` fits the window the model declares for the shape that carries it, counted in
+/// characters the way a `@length` constraint counts them.
+fn assert_within(case: &str, member: &str, value: &str, (min, max): (i64, i64)) {
+    let length = i64::try_from(value.chars().count()).unwrap_or(i64::MAX);
+    assert!(
+        (min..=max).contains(&length),
+        "case {case}: the minted {member} must be {min}..={max} characters long, got \
+         {length} ({value:?})"
+    );
+}
+
+/// Every member this service's model declares on an operation's input is a member that
+/// operation READS, and every member of the answer is one the model declares on that
+/// operation's output: a request carrying an operation's whole declared member set is
+/// served, and the answer is built of declared members alone.
+///
+/// The set each row is checked against is that operation's own model-derived input
+/// schema rather than a list written out here, so a member the upstream model gains or
+/// loses fails this test instead of being silently ignored by the handler.
+#[tokio::test]
+async fn every_declared_input_member_is_read_by_its_operation() {
+    let (engine, router) = build();
+    let base = seconds_ago(600);
+    let stream_arn = register(&engine, "ledger", StreamViewType::NewAndOldImages, base);
+    let appended = append(&engine, &stream_arn, OperationType::Insert, "item-0", base);
+    let parent_id = only_shard_id(&router, &stream_arn).await;
+    // A second shard, so the one page-narrowing member set a `ShardFilter` leaves
+    // reachable — the children of a named shard, walked from a named start point — is a
+    // set that exists.
+    let child_id = engine
+        .state::<StreamsState>()
+        .lock()
+        .roll_shard(&stream_arn, base + Duration::from_secs(10))
+        .expect("the stream has an open shard to roll");
+    let (status, minted) = shard_iterator(
+        &router,
+        &stream_arn,
+        &parent_id,
+        "TRIM_HORIZON",
+        serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(status, 200, "GetShardIterator answered {status}: {minted}");
+    let token = minted["ShardIterator"].clone();
+
+    type Row = (
+        &'static str,
+        &'static aws_smithy_schema::Schema,
+        &'static aws_smithy_schema::Schema,
+        serde_json::Value,
+    );
+    let rows: [Row; 4] = [
+        (
+            "DescribeStream",
+            streams::ops::types::DESCRIBE_STREAM_INPUT_SCHEMA,
+            streams::ops::types::DESCRIBE_STREAM_OUTPUT_SCHEMA,
+            serde_json::json!({
+                "StreamArn": stream_arn,
+                "Limit": 1,
+                "ExclusiveStartShardId": child_id,
+                "ShardFilter": { "Type": "CHILD_SHARDS", "ShardId": parent_id },
+            }),
+        ),
+        (
+            "ListStreams",
+            streams::ops::types::LIST_STREAMS_INPUT_SCHEMA,
+            streams::ops::types::LIST_STREAMS_OUTPUT_SCHEMA,
+            serde_json::json!({
+                "TableName": "ledger",
+                "Limit": 1,
+                "ExclusiveStartStreamArn": stream_arn,
+            }),
+        ),
+        (
+            "GetShardIterator",
+            streams::ops::types::GET_SHARD_ITERATOR_INPUT_SCHEMA,
+            streams::ops::types::GET_SHARD_ITERATOR_OUTPUT_SCHEMA,
+            serde_json::json!({
+                "StreamArn": stream_arn,
+                "ShardId": parent_id,
+                "ShardIteratorType": "AT_SEQUENCE_NUMBER",
+                "SequenceNumber": appended,
+                "Timestamp": epoch_secs(base),
+            }),
+        ),
+        (
+            "GetRecords",
+            streams::ops::types::GET_RECORDS_INPUT_SCHEMA,
+            streams::ops::types::GET_RECORDS_OUTPUT_SCHEMA,
+            serde_json::json!({ "ShardIterator": token, "Limit": 1 }),
+        ),
+    ];
+
+    for (operation, input, output, body) in rows {
+        let mut carried: Vec<String> = body
+            .as_object()
+            .map(|members| members.keys().cloned().collect())
+            .unwrap_or_default();
+        carried.sort();
+        let declared = declared_members(input);
+        assert_eq!(
+            carried, declared,
+            "case {operation:?}: the row must carry every member the model declares, \
+             expected {declared:?}, got {carried:?}"
+        );
+        let (status, answered) = call(&router, operation, body).await;
+        assert_eq!(
+            status, 200,
+            "case {operation:?}: a request carrying every declared member must be served, \
+             got {status} and {answered}"
+        );
+        // And the answer is built of the output members the model declares, nothing else:
+        // a response carrying a member no schema names is as much a drift as a request
+        // member nothing reads.
+        let answered_members: Vec<String> = answered
+            .as_object()
+            .map(|members| members.keys().cloned().collect())
+            .unwrap_or_default();
+        assert!(
+            !answered_members.is_empty(),
+            "case {operation:?}: the answer must carry the output the model declares, got \
+             {answered}"
+        );
+        let declared_output = declared_members(output);
+        for member in &answered_members {
+            assert!(
+                declared_output.contains(member),
+                "case {operation:?}: {member:?} is no member of this output, which declares \
+                 {declared_output:?}"
+            );
+        }
+    }
+}
+
+/// Every identifier this service MINTS fits the `@length` window the model declares for
+/// the shape that carries it, and is a value the boundary admits when a consumer hands
+/// it back: the stream ARN a discovery returns, the shard ids and sequence numbers a
+/// description reports, and the shard iterators a cursor walk is driven by.
+///
+/// The windows come off the model-derived input schemas that carry those shapes
+/// (`GetShardIteratorInput$StreamArn`, `$ShardId`, `$SequenceNumber` and
+/// `GetRecordsInput$ShardIterator`), so a bound the upstream model moves fails here
+/// rather than leaving the service minting values its own model rejects.
+///
+/// The rows differ along what the minting generalises over: the length of the table name
+/// an ARN is built from — both ends of the window `ListStreams$TableName` declares
+/// (3..255) and one between — and how many records the shard has numbered.
+#[tokio::test]
+async fn minted_identifiers_fit_the_length_windows_the_model_declares() {
+    let iterator_input = streams::ops::types::GET_SHARD_ITERATOR_INPUT_SCHEMA;
+    let stream_arn_window = declared_length(iterator_input, "StreamArn");
+    let shard_id_window = declared_length(iterator_input, "ShardId");
+    let sequence_number_window = declared_length(iterator_input, "SequenceNumber");
+    let token_window = declared_length(
+        streams::ops::types::GET_RECORDS_INPUT_SCHEMA,
+        "ShardIterator",
+    );
+
+    let longest_table_name = "t".repeat(255);
+    let rows: [(&str, usize); 3] = [
+        ("abc", 0),
+        ("ledger", 1),
+        (longest_table_name.as_str(), 5),
+    ];
+
+    for (table_name, record_count) in rows {
+        let case = format!(
+            "a {} character table name with {record_count} records",
+            table_name.len()
+        );
+        let (engine, router) = build();
+        let base = seconds_ago(600);
+        let stream_arn = register(&engine, table_name, StreamViewType::KeysOnly, base);
+        for index in 0..record_count {
+            append(
+                &engine,
+                &stream_arn,
+                OperationType::Insert,
+                &format!("item-{index}"),
+                base,
+            );
+        }
+
+        // The ARN as a CONSUMER discovers it, rather than as the publishing seam
+        // returned it.
+        let (status, listed) = call(
+            &router,
+            "ListStreams",
+            serde_json::json!({ "TableName": table_name }),
+        )
+        .await;
+        assert_eq!(status, 200, "case {case}: ListStreams answered {status}: {listed}");
+        let discovered = listed["Streams"][0]["StreamArn"]
+            .as_str()
+            .unwrap_or_else(|| panic!("case {case}: no stream was listed, got {listed}"))
+            .to_string();
+        assert_eq!(
+            discovered, stream_arn,
+            "case {case}: the listed ARN must be the registered one, got {discovered:?}"
+        );
+        assert_within(&case, "StreamArn", &discovered, stream_arn_window);
+
+        let (status, described) = call(
+            &router,
+            "DescribeStream",
+            serde_json::json!({ "StreamArn": discovered }),
+        )
+        .await;
+        assert_eq!(
+            status, 200,
+            "case {case}: DescribeStream answered {status}: {described}"
+        );
+        let shard = &described["StreamDescription"]["Shards"][0];
+        let shard_id = shard["ShardId"]
+            .as_str()
+            .unwrap_or_else(|| panic!("case {case}: no shard was described, got {described}"))
+            .to_string();
+        assert_within(&case, "ShardId", &shard_id, shard_id_window);
+        let starting = shard["SequenceNumberRange"]["StartingSequenceNumber"]
+            .as_str()
+            .unwrap_or_else(|| panic!("case {case}: no StartingSequenceNumber in {described}"));
+        assert_within(
+            &case,
+            "StartingSequenceNumber",
+            starting,
+            sequence_number_window,
+        );
+
+        let (status, minted) = shard_iterator(
+            &router,
+            &discovered,
+            &shard_id,
+            "TRIM_HORIZON",
+            serde_json::json!({}),
+        )
+        .await;
+        assert_eq!(
+            status, 200,
+            "case {case}: GetShardIterator answered {status}: {minted}"
+        );
+        let token = minted["ShardIterator"]
+            .as_str()
+            .unwrap_or_else(|| panic!("case {case}: no ShardIterator in {minted}"))
+            .to_string();
+        assert_within(&case, "ShardIterator", &token, token_window);
+
+        let (status, page) = call(
+            &router,
+            "GetRecords",
+            serde_json::json!({ "ShardIterator": token }),
+        )
+        .await;
+        assert_eq!(status, 200, "case {case}: GetRecords answered {status}: {page}");
+        assert_eq!(
+            sequence_numbers(&page["Records"]).len(),
+            record_count,
+            "case {case}: the shard must deliver every record it holds, got {page}"
+        );
+        for numbered in sequence_numbers(&page["Records"]) {
+            assert_within(&case, "SequenceNumber", &numbered, sequence_number_window);
+        }
+        let next = page["NextShardIterator"]
+            .as_str()
+            .unwrap_or_else(|| panic!("case {case}: no NextShardIterator in {page}"))
+            .to_string();
+        assert_within(&case, "NextShardIterator", &next, token_window);
+
+        // And the cursor it handed on is one the boundary ADMITS: fed back, it is served
+        // rather than refused for the shape of the value this service itself minted.
+        let (status, resumed) = call(
+            &router,
+            "GetRecords",
+            serde_json::json!({ "ShardIterator": next }),
+        )
+        .await;
+        assert_eq!(
+            status, 200,
+            "case {case}: the minted NextShardIterator must be accepted, got {status} and \
+             {resumed}"
+        );
     }
 }

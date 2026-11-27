@@ -35,6 +35,10 @@ emulator-core-build-support = { workspace = true }
 [dev-dependencies]
 sha2 = { workspace = true }
 hex = { workspace = true }
+# The model-derived schemas the request walk is driven by, so a test reads a member
+# name or a `@length` window off the MODEL instead of restating it.
+aws-smithy-schema = { workspace = true }
+aws-smithy-schema-server = { workspace = true }
 
 [lints]
 workspace = true
