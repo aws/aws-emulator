@@ -18,6 +18,12 @@ pub struct Tag {
     pub value: String,
 }
 
+#[smithy_macros::smithy(shape = "com.amazonaws.codeconnections#InvalidInputException")]
+#[derive(Debug, Clone, Default)]
+pub struct InvalidInputException {
+    pub message: Option<String>,
+}
+
 #[smithy_macros::smithy(shape = "com.amazonaws.codeconnections#LimitExceededException")]
 #[derive(Debug, Clone, Default)]
 pub struct LimitExceededException {
@@ -33,6 +39,12 @@ pub struct ResourceNotFoundException {
 #[smithy_macros::smithy(shape = "com.amazonaws.codeconnections#ResourceUnavailableException")]
 #[derive(Debug, Clone, Default)]
 pub struct ResourceUnavailableException {
+    pub message: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.codeconnections#UnsupportedProviderTypeException")]
+#[derive(Debug, Clone, Default)]
+pub struct UnsupportedProviderTypeException {
     pub message: Option<String>,
 }
 
@@ -75,12 +87,6 @@ pub struct InternalServerException {
     pub message: Option<String>,
 }
 
-#[smithy_macros::smithy(shape = "com.amazonaws.codeconnections#InvalidInputException")]
-#[derive(Debug, Clone, Default)]
-pub struct InvalidInputException {
-    pub message: Option<String>,
-}
-
 #[smithy_macros::smithy(shape = "com.amazonaws.codeconnections#ResourceAlreadyExistsException")]
 #[derive(Debug, Clone, Default)]
 pub struct ResourceAlreadyExistsException {
@@ -110,20 +116,10 @@ pub struct SyncConfiguration {
     pub pull_request_comment: Option<String>,
 }
 
-#[smithy_macros::smithy(shape = "com.amazonaws.codeconnections#Connection")]
-#[derive(Debug, Clone, Default)]
-pub struct Connection {
-    pub connection_name: Option<String>,
-    pub connection_arn: Option<String>,
-    pub provider_type: Option<String>,
-    pub owner_account_id: Option<String>,
-    pub connection_status: Option<String>,
-    pub host_arn: Option<String>,
-    /// `OwnershipType`, a member ADDED to this service's model — see
-    /// [`crate::ops::get_connection`] for why the shipped model does not declare it
-    /// and the recorded responses carry it.
-    pub ownership_type: Option<String>,
-}
+// `Connection` is declared in `connection_types` instead: AWS answers every connection
+// read with an `OwnershipType` this snapshot does not declare, so the shape is generated
+// from the overlay model `smithy-model/local-additions.json`. See
+// `smithy-model/LOCAL-ADDITIONS.md`.
 
 #[smithy_macros::smithy(shape = "com.amazonaws.codeconnections#SyncBlocker")]
 #[derive(Debug, Clone)]
@@ -164,7 +160,7 @@ pub const CONNECTION_STATUS_VALUES: &[&str] = &["AVAILABLE", "ERROR", "PENDING"]
 
 
 /// The values `ProviderType` accepts on the wire.
-pub const PROVIDER_TYPE_VALUES: &[&str] = &["AzureDevOps", "Bitbucket", "GitHub", "GitHubEnterpriseServer", "GitLab", "GitLabSelfManaged"];
+pub const PROVIDER_TYPE_VALUES: &[&str] = &["AzureDevOps", "Bitbucket", "GitHub", "GitHubEnterpriseCloudDataResidency", "GitHubEnterpriseServer", "GitLab", "GitLabSelfManaged"];
 
 
 /// The values `PublishDeploymentStatus` accepts on the wire.

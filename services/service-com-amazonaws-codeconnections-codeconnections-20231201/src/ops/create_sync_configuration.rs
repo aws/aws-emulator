@@ -118,6 +118,7 @@ pub enum CreateSyncConfigurationErrorModeled {
     InvalidInputException(InvalidInputException),
     LimitExceededException(LimitExceededException),
     ResourceAlreadyExistsException(ResourceAlreadyExistsException),
+    ResourceNotFoundException(ResourceNotFoundException),
     ThrottlingException(ThrottlingException),
 }
 

@@ -14,8 +14,8 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-codeconnections-codecon
 #[smithy_macros::smithy(shape = "com.amazonaws.codeconnections#ListConnectionsInput")]
 #[derive(Debug, Clone, Default)]
 pub struct ListConnectionsInput {
-    pub provider_type_filter: Option<String>,
     pub host_arn_filter: Option<String>,
+    pub provider_type_filter: Option<String>,
     pub max_results: i32,
     pub next_token: Option<String>,
 }

@@ -26,31 +26,31 @@ contents — read that shape in the model above when you need its own members.
 
 ## CreateConnection
 
-- **Input:** `ProviderType` (ProviderType, one of: AzureDevOps | Bitbucket | GitHub | GitHubEnterpriseServer | GitLab | GitLabSelfManaged), `ConnectionName` (string, len 1..32, pattern ^[\s\S]*$, required), `Tags` (list<Tag>, len 0..200), `HostArn` (string, len 0..256, pattern ^arn:aws(-[\w]+)*:(codestar-connections|codeconnections):.+:[0-9]{12}:host\/.+$)
-- **Output:** `ConnectionArn` (string, len 0..256, pattern ^arn:aws(-[\w]+)*:.+:.+:[0-9]{12}:.+$, required), `Tags` (list<Tag>, len 0..200)
-- **Errors:** `LimitExceededException (HTTP 429)`, `ResourceNotFoundException (HTTP 404)`, `ResourceUnavailableException (HTTP 400)`
+- **Input:** `ProviderType` (ProviderType, one of: AzureDevOps | Bitbucket | GitHub | GitHubEnterpriseCloudDataResidency | GitHubEnterpriseServer | GitLab | GitLabSelfManaged), `ConnectionName` (string, len 1..32, pattern ^[\s\S]*$, required), `Tags` (list<Tag>, len 0..200), `HostArn` (string, len 0..256, pattern ^arn:aws(-[\w]+)*:(codestar-connections|codeconnections):.+:[0-9]{12}:host\/.+$), `ProviderEndpoint` (string, len 1..512, pattern .*)
+- **Output:** `ConnectionArn` (string, len 0..256, pattern ^arn:aws(-[\w]+)*:(codestar-connections|codeconnections):[a-z0-9\-]+:[0-9]{12}:connection\/[\w\-]+$, required), `Tags` (list<Tag>, len 0..200)
+- **Errors:** `InvalidInputException (HTTP 400)`, `LimitExceededException (HTTP 429)`, `ResourceNotFoundException (HTTP 404)`, `ResourceUnavailableException (HTTP 400)`, `UnsupportedProviderTypeException (HTTP 400)`
 
 ## CreateHost
 
-- **Input:** `Name` (string, len 1..64, pattern .*, required), `ProviderType` (ProviderType, one of: AzureDevOps | Bitbucket | GitHub | GitHubEnterpriseServer | GitLab | GitLabSelfManaged, required), `ProviderEndpoint` (string, len 1..512, pattern .*, required), `VpcConfiguration` (VpcConfiguration), `Tags` (list<Tag>, len 0..200)
+- **Input:** `Name` (string, len 1..64, pattern .*, required), `ProviderType` (ProviderType, one of: AzureDevOps | Bitbucket | GitHub | GitHubEnterpriseCloudDataResidency | GitHubEnterpriseServer | GitLab | GitLabSelfManaged, required), `ProviderEndpoint` (string, len 1..512, pattern .*, required), `VpcConfiguration` (VpcConfiguration), `Tags` (list<Tag>, len 0..200)
 - **Output:** `HostArn` (string, len 0..256, pattern ^arn:aws(-[\w]+)*:(codestar-connections|codeconnections):.+:[0-9]{12}:host\/.+$), `Tags` (list<Tag>, len 0..200)
 - **Errors:** `LimitExceededException (HTTP 429)`
 
 ## CreateRepositoryLink
 
-- **Input:** `ConnectionArn` (string, len 0..256, pattern ^arn:aws(-[\w]+)*:.+:.+:[0-9]{12}:.+$, required), `OwnerId` (string, len 1..255, pattern ^.*$, required), `RepositoryName` (string, len 1..128, pattern ^.*$, required), `EncryptionKeyArn` (string, len 1..1024, pattern ^arn:aws(-[\w]+)*:kms:[a-z\-0-9]+:\d{12}:key/[a-zA-Z0-9\-]+$), `Tags` (list<Tag>, len 0..200)
+- **Input:** `ConnectionArn` (string, len 0..256, pattern ^arn:aws(-[\w]+)*:(codestar-connections|codeconnections):[a-z0-9\-]+:[0-9]{12}:connection\/[\w\-]+$, required), `OwnerId` (string, len 1..255, pattern ^.*$, required), `RepositoryName` (string, len 1..128, pattern ^.*$, required), `EncryptionKeyArn` (string, len 1..1024, pattern ^arn:aws(-[\w]+)*:kms:[a-z\-0-9]+:\d{12}:key/[a-zA-Z0-9\-]+$), `Tags` (list<Tag>, len 0..200)
 - **Output:** `RepositoryLinkInfo` (RepositoryLinkInfo, required)
-- **Errors:** `AccessDeniedException (HTTP 403)`, `ConcurrentModificationException (HTTP 409)`, `InternalServerException (HTTP 503)`, `InvalidInputException (HTTP 400)`, `LimitExceededException (HTTP 429)`, `ResourceAlreadyExistsException (HTTP 409)`, `ThrottlingException (HTTP 429)`
+- **Errors:** `AccessDeniedException (HTTP 403)`, `ConcurrentModificationException (HTTP 409)`, `InternalServerException (HTTP 503)`, `InvalidInputException (HTTP 400)`, `LimitExceededException (HTTP 429)`, `ResourceAlreadyExistsException (HTTP 409)`, `ResourceNotFoundException (HTTP 404)`, `ThrottlingException (HTTP 429)`
 
 ## CreateSyncConfiguration
 
 - **Input:** `Branch` (string, len 1..255, pattern ^.*$, required), `ConfigFile` (string, required), `RepositoryLinkId` (string, pattern ^[0-9a-fA-F]{8}\b-[0-9a-fA-F]{4}\b-[0-9a-fA-F]{4}\b-[0-9a-fA-F]{4}\b-[0-9a-fA-F]{12}$, required), `ResourceName` (string, len 1..100, pattern ^[0-9A-Za-z]+[0-9A-Za-z_\\-]*$, required), `RoleArn` (string, len 1..1024, pattern ^arn:aws(-[\w]+)*:iam::\d{12}:role/[a-zA-Z_0-9+=,.@\-_/]+$, required), `SyncType` (SyncConfigurationType, one of: CFN_STACK_SYNC, required), `PublishDeploymentStatus` (PublishDeploymentStatus, one of: DISABLED | ENABLED), `TriggerResourceUpdateOn` (TriggerResourceUpdateOn, one of: ANY_CHANGE | FILE_CHANGE), `PullRequestComment` (PullRequestComment, one of: DISABLED | ENABLED)
 - **Output:** `SyncConfiguration` (SyncConfiguration, required)
-- **Errors:** `AccessDeniedException (HTTP 403)`, `ConcurrentModificationException (HTTP 409)`, `InternalServerException (HTTP 503)`, `InvalidInputException (HTTP 400)`, `LimitExceededException (HTTP 429)`, `ResourceAlreadyExistsException (HTTP 409)`, `ThrottlingException (HTTP 429)`
+- **Errors:** `AccessDeniedException (HTTP 403)`, `ConcurrentModificationException (HTTP 409)`, `InternalServerException (HTTP 503)`, `InvalidInputException (HTTP 400)`, `LimitExceededException (HTTP 429)`, `ResourceAlreadyExistsException (HTTP 409)`, `ResourceNotFoundException (HTTP 404)`, `ThrottlingException (HTTP 429)`
 
 ## DeleteConnection
 
-- **Input:** `ConnectionArn` (string, len 0..256, pattern ^arn:aws(-[\w]+)*:.+:.+:[0-9]{12}:.+$, required)
+- **Input:** `ConnectionArn` (string, len 0..256, pattern ^arn:aws(-[\w]+)*:(codestar-connections|codeconnections):[a-z0-9\-]+:[0-9]{12}:connection\/[\w\-]+$, required)
 - **Output:** (no members)
 - **Errors:** `ResourceNotFoundException (HTTP 404)`
 
@@ -74,14 +74,14 @@ contents — read that shape in the model above when you need its own members.
 
 ## GetConnection
 
-- **Input:** `ConnectionArn` (string, len 0..256, pattern ^arn:aws(-[\w]+)*:.+:.+:[0-9]{12}:.+$, required)
+- **Input:** `ConnectionArn` (string, len 0..256, pattern ^arn:aws(-[\w]+)*:(codestar-connections|codeconnections):[a-z0-9\-]+:[0-9]{12}:connection\/[\w\-]+$, required)
 - **Output:** `Connection` (Connection)
 - **Errors:** `ResourceNotFoundException (HTTP 404)`, `ResourceUnavailableException (HTTP 400)`
 
 ## GetHost
 
 - **Input:** `HostArn` (string, len 0..256, pattern ^arn:aws(-[\w]+)*:(codestar-connections|codeconnections):.+:[0-9]{12}:host\/.+$, required)
-- **Output:** `Name` (string, len 1..64, pattern .*), `Status` (string, len 1..64, pattern .*), `ProviderType` (ProviderType, one of: AzureDevOps | Bitbucket | GitHub | GitHubEnterpriseServer | GitLab | GitLabSelfManaged), `ProviderEndpoint` (string, len 1..512, pattern .*), `VpcConfiguration` (VpcConfiguration)
+- **Output:** `Name` (string, len 1..64, pattern .*), `Status` (string, len 1..64, pattern .*), `ProviderType` (ProviderType, one of: AzureDevOps | Bitbucket | GitHub | GitHubEnterpriseCloudDataResidency | GitHubEnterpriseServer | GitLab | GitLabSelfManaged), `ProviderEndpoint` (string, len 1..512, pattern .*), `VpcConfiguration` (VpcConfiguration)
 - **Errors:** `ResourceNotFoundException (HTTP 404)`, `ResourceUnavailableException (HTTP 400)`
 
 ## GetRepositoryLink
@@ -99,7 +99,7 @@ contents — read that shape in the model above when you need its own members.
 ## GetResourceSyncStatus
 
 - **Input:** `ResourceName` (string, len 1..100, pattern ^[0-9A-Za-z]+[0-9A-Za-z_\\-]*$, required), `SyncType` (SyncConfigurationType, one of: CFN_STACK_SYNC, required)
-- **Output:** `DesiredState` (Revision), `LatestSuccessfulSync` (ResourceSyncAttempt), `LatestSync` (ResourceSyncAttempt) — AWS's published model marks `LatestSync` `@required`, but the service answers a `(ResourceName, SyncType)` pair it has recorded no sync state for with HTTP 200 and none of these members present, so the trait is off this output member in `smithy-model/` (see `src/ops/get_resource_sync_status.rs`)
+- **Output:** `DesiredState` (Revision), `LatestSuccessfulSync` (ResourceSyncAttempt), `LatestSync` (ResourceSyncAttempt, required)
 - **Errors:** `AccessDeniedException (HTTP 403)`, `InternalServerException (HTTP 503)`, `InvalidInputException (HTTP 400)`, `ResourceNotFoundException (HTTP 404)`, `ThrottlingException (HTTP 429)`
 
 ## GetSyncBlockerSummary
@@ -117,15 +117,15 @@ contents — read that shape in the model above when you need its own members.
 ## ListConnections
 
 - **Traits:** @paginated(inputToken=NextToken, outputToken=NextToken, items=?)
-- **Input:** `ProviderTypeFilter` (ProviderType, one of: AzureDevOps | Bitbucket | GitHub | GitHubEnterpriseServer | GitLab | GitLabSelfManaged), `HostArnFilter` (string, len 0..256, pattern ^arn:aws(-[\w]+)*:(codestar-connections|codeconnections):.+:[0-9]{12}:host\/.+$), `MaxResults` (integer, range 0..100, default 0, required), `NextToken` (string, len 1..1024, pattern ^.*$)
-- **Output:** `Connections` (list<Connection>), `NextToken` (string, len 1..1024, pattern ^.*$)
+- **Input:** `HostArnFilter` (string, len 0..256, pattern ^arn:aws(-[\w]+)*:(codestar-connections|codeconnections):.+:[0-9]{12}:host\/.+$), `ProviderTypeFilter` (ProviderType, one of: AzureDevOps | Bitbucket | GitHub | GitHubEnterpriseCloudDataResidency | GitHubEnterpriseServer | GitLab | GitLabSelfManaged), `MaxResults` (integer, range 0..100, default 0, required), `NextToken` (string, len 1..2048, pattern ^.*$)
+- **Output:** `Connections` (list<Connection>), `NextToken` (string, len 1..2048, pattern ^.*$)
 - **Errors:** `ResourceNotFoundException (HTTP 404)`
 
 ## ListHosts
 
 - **Traits:** @paginated(inputToken=NextToken, outputToken=NextToken, items=?)
-- **Input:** `MaxResults` (integer, range 0..100, default 0, required), `NextToken` (string, len 1..1024, pattern ^.*$)
-- **Output:** `Hosts` (list<Host>), `NextToken` (string, len 1..1024, pattern ^.*$)
+- **Input:** `MaxResults` (integer, range 0..100, default 0, required), `NextToken` (string, len 1..2048, pattern ^.*$)
+- **Output:** `Hosts` (list<Host>), `NextToken` (string, len 1..2048, pattern ^.*$)
 - **Errors:** (none)
 
 ## ListRepositoryLinks
@@ -174,7 +174,7 @@ contents — read that shape in the model above when you need its own members.
 
 ## UpdateRepositoryLink
 
-- **Input:** `ConnectionArn` (string, len 0..256, pattern ^arn:aws(-[\w]+)*:.+:.+:[0-9]{12}:.+$), `EncryptionKeyArn` (string, len 1..1024, pattern ^arn:aws(-[\w]+)*:kms:[a-z\-0-9]+:\d{12}:key/[a-zA-Z0-9\-]+$), `RepositoryLinkId` (string, pattern ^[0-9a-fA-F]{8}\b-[0-9a-fA-F]{4}\b-[0-9a-fA-F]{4}\b-[0-9a-fA-F]{4}\b-[0-9a-fA-F]{12}$, required)
+- **Input:** `ConnectionArn` (string, len 0..256, pattern ^arn:aws(-[\w]+)*:(codestar-connections|codeconnections):[a-z0-9\-]+:[0-9]{12}:connection\/[\w\-]+$), `EncryptionKeyArn` (string, len 1..1024, pattern ^arn:aws(-[\w]+)*:kms:[a-z\-0-9]+:\d{12}:key/[a-zA-Z0-9\-]+$), `RepositoryLinkId` (string, pattern ^[0-9a-fA-F]{8}\b-[0-9a-fA-F]{4}\b-[0-9a-fA-F]{4}\b-[0-9a-fA-F]{4}\b-[0-9a-fA-F]{12}$, required)
 - **Output:** `RepositoryLinkInfo` (RepositoryLinkInfo, required)
 - **Errors:** `AccessDeniedException (HTTP 403)`, `ConditionalCheckFailedException (HTTP 409)`, `InternalServerException (HTTP 503)`, `InvalidInputException (HTTP 400)`, `ResourceNotFoundException (HTTP 404)`, `ThrottlingException (HTTP 429)`, `UpdateOutOfSyncException (HTTP 409)`
 

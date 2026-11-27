@@ -18,6 +18,7 @@ pub struct CreateConnectionInput {
     pub connection_name: String,
     pub tags: Option<Vec<Tag>>,
     pub host_arn: Option<String>,
+    pub provider_endpoint: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.codeconnections#CreateConnectionOutput")]

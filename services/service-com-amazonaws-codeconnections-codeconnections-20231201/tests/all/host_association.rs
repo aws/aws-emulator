@@ -401,15 +401,17 @@ async fn every_minted_host_resource_id_is_opaque_and_distinct() {
 async fn a_connection_resolves_a_host_that_exists() {
     let router = router();
 
-    // One host per provider type, and one connection associated with each.
+    // One host per provider type, and one connection associated with each. The names are
+    // built from the row's INDEX, not from the provider: the modelled `ConnectionName` is
+    // `length 1..32`, which the longest provider value overruns.
     let mut by_host: Vec<(&str, String, String)> = Vec::new();
-    for provider in PROVIDER_TYPES {
-        let host_arn = create_host(&router, &plain_host(&format!("host-{provider}"), provider)).await;
+    for (index, provider) in PROVIDER_TYPES.iter().enumerate() {
+        let host_arn = create_host(&router, &plain_host(&format!("host-{index}"), provider)).await;
         let (status, created) = call(
             &router,
             "CreateConnection",
             serde_json::json!({
-                "ConnectionName": format!("conn-{provider}"),
+                "ConnectionName": format!("conn-{index}"),
                 "ProviderType": provider,
                 "HostArn": host_arn,
             }),
@@ -659,7 +661,10 @@ async fn a_connection_arn_does_not_resolve_as_a_host() {
         "case connection-arn-to-GetHost: no host may be reported, got {body}"
     );
 
-    // And a host ARN names no connection.
+    // And a host ARN names no connection: the modelled `ConnectionArn` is this service's
+    // connection-scoped expression, so a host ARN is refused as invalid input before the
+    // handler runs — a 400 that reports no connection. `refusal_messages.rs` pins the
+    // clause it states.
     let (status, body) = call(
         &router,
         "GetConnection",
@@ -673,7 +678,11 @@ async fn a_connection_arn_does_not_resolve_as_a_host() {
     assert!(
         body["__type"]
             .as_str()
-            .is_some_and(|kind| kind.ends_with("ResourceNotFoundException")),
-        "case host-arn-to-GetConnection: expected ResourceNotFoundException, got {body}"
+            .is_some_and(|kind| kind.ends_with("ValidationException")),
+        "case host-arn-to-GetConnection: expected ValidationException, got {body}"
+    );
+    assert!(
+        body["Connection"].is_null(),
+        "case host-arn-to-GetConnection: no connection may be reported, got {body}"
     );
 }

@@ -57,6 +57,23 @@ fn resource_not_found_message(resource_arn: &str) -> String {
     format!("Resource not found. Verify the resource ARN and try again: {resource_arn}")
 }
 
+/// The expression the modelled `ConnectionArn` holds every connection-ARN member to
+/// (`smithy_query(query="operation", operation="GetConnection")`), with the `^` / `$` pair
+/// a clause drops. Written out as a LITERAL rather than read off the implementation's own
+/// constant, so rewording that constant fails this suite.
+const CONNECTION_ARN_EXPRESSION: &str = r"arn:aws(-[\w]+)*:(codestar-connections|codeconnections):[a-z0-9\-]+:[0-9]{12}:connection\/[\w\-]+";
+
+/// The message a connection-ARN member that is not a connection ARN is refused with at the
+/// BOUNDARY: the validation dialect's one clause, naming the member path the framework
+/// spells and the expression above. `validation_message_rules.rs` owns that dialect; this
+/// is the one clause the rows below need.
+fn not_a_connection_arn_message() -> String {
+    format!(
+        "1 validation error detected: Value at 'connectionArn' failed to satisfy constraint: \
+         Member must satisfy regular expression pattern: {CONNECTION_ARN_EXPRESSION}"
+    )
+}
+
 /// The published maximum length of the modeled `ResourceName` (`length 1..100`, from
 /// `smithy_query(query="shape", shape="ResourceName")`).
 const RESOURCE_NAME_MAX_LEN: usize = 100;
@@ -250,6 +267,32 @@ fn assert_bare_refusal(
     );
 }
 
+/// Assert the refusal a connection-ARN member that is NOT a connection ARN draws: the
+/// modelled `ConnectionArn` `@pattern` is the connection-scoped expression, so a
+/// well-formed ARN of another resource kind is refused at the boundary — in the validation
+/// dialect, without reaching the handler and so without reporting a connection either way.
+fn assert_not_a_connection_arn(case: &str, status: u16, body: &serde_json::Value) {
+    assert_eq!(
+        status, CLIENT_ERROR_STATUS,
+        "case {case:?}: expected HTTP {CLIENT_ERROR_STATUS}, got {status} {body}"
+    );
+    assert_eq!(
+        error_code(body),
+        "ValidationException",
+        "case {case:?}: expected ValidationException, got {body}"
+    );
+    let message = refusal_message(case, body);
+    let expected = not_a_connection_arn_message();
+    assert_eq!(
+        message, expected,
+        "case {case:?}: expected the clause {expected:?}, got {message:?}"
+    );
+    assert!(
+        body["Connection"].is_null(),
+        "case {case:?}: a refused request reports no connection, got {body}"
+    );
+}
+
 /// Create a connection and a repository link on it, returning the link's
 /// `(RepositoryLinkId, RepositoryLinkArn)`.
 ///
@@ -316,14 +359,18 @@ async fn create_sync_configuration(
 
 /// CAUSE 1 — every connection-addressed refusal states the service's fixed sentence.
 ///
-/// The rows are the ways an ARN the modeled patterns admit can resolve to nothing: an id
+/// The rows are the ways an ARN can fail to name a connection this service holds: an id
 /// never minted, a connection that was deleted, a live connection's id in another region,
 /// account or partition, the legacy `codestar-connections` namespace, and ARNs of the other
 /// resource kinds this service mints. `GetConnection` and `DeleteConnection` address a
-/// CONNECTION, so every row is refused with the one fixed sentence, which does not carry
-/// the ARN; `ListTagsForResource` is addressed by RESOURCE ARN and resolves a connection, a
-/// host or a repository link, so it answers in the wording of the kind the ARN names — the
-/// third column of each row.
+/// CONNECTION through the modelled `ConnectionArn`, whose `@pattern` is the
+/// connection-scoped expression, so a row that expression ADMITS is resolved by the handler
+/// and refused with the one fixed sentence, which does not carry the ARN, while a row it
+/// does not admit (a host or repository-link ARN) never reaches the handler and is refused
+/// at the boundary in the validation dialect — the fourth column of each row.
+/// `ListTagsForResource` is addressed by RESOURCE ARN, which the model holds to the generic
+/// `AmazonResourceName`, so it resolves a connection, a host or a repository link and
+/// answers in the wording of the kind the ARN names — the third column.
 #[tokio::test]
 async fn an_unresolvable_connection_arn_is_refused_with_the_services_fixed_sentence() {
     let router = router();
@@ -346,68 +393,81 @@ async fn an_unresolvable_connection_arn_is_refused_with_the_services_fixed_sente
     let absent_link = format!(
         "arn:aws:codeconnections:{REGION}:{account}:repository-link/11111111-2222-3333-4444-555555555555"
     );
-    // (case, the ARN, the message `ListTagsForResource` answers for it)
-    let rows: Vec<(&str, String, String)> = vec![
+    // (case, the ARN, the message `ListTagsForResource` answers for it, whether the
+    // modelled `ConnectionArn` expression admits it)
+    let rows: Vec<(&str, String, String, bool)> = vec![
         (
             "a connection id this store never minted",
             format!(
                 "arn:aws:codeconnections:{REGION}:{account}:connection/00000000-1111-2222-3333-444444444444"
             ),
             CONNECTION_NOT_FOUND_MESSAGE.to_string(),
+            true,
         ),
         (
             "the ARN of a connection that was deleted",
             doomed.clone(),
             CONNECTION_NOT_FOUND_MESSAGE.to_string(),
+            true,
         ),
         (
             "a live connection's id in another region",
             live.replace(REGION, "ca-central-1"),
             CONNECTION_NOT_FOUND_MESSAGE.to_string(),
+            true,
         ),
         (
             "a live connection's id in another account",
             live.replace(account, "314159265358"),
             CONNECTION_NOT_FOUND_MESSAGE.to_string(),
+            true,
         ),
         (
             "a live connection's id in the aws-us-gov partition",
             live.replace("arn:aws:", "arn:aws-us-gov:"),
             CONNECTION_NOT_FOUND_MESSAGE.to_string(),
+            true,
         ),
         (
             "a live connection's id in the legacy codestar-connections namespace",
             live.replace("codeconnections", "codestar-connections"),
             CONNECTION_NOT_FOUND_MESSAGE.to_string(),
+            true,
         ),
         (
             "a host ARN this store holds no host for",
             absent_host.clone(),
             host_not_found_message(&absent_host),
+            false,
         ),
         (
             "a repository-link ARN this store holds no link for",
             absent_link.clone(),
             resource_not_found_message(&absent_link),
+            false,
         ),
     ];
 
-    for (label, arn, tagging_message) in &rows {
+    for (label, arn, tagging_message, admitted) in &rows {
         let (status, body) = call(
             &router,
             "GetConnection",
             serde_json::json!({ "ConnectionArn": arn }),
         )
         .await;
-        assert_bare_refusal(
-            &format!("GetConnection: {label}"),
-            status,
-            &body,
-            CLIENT_ERROR_STATUS,
-            "ResourceNotFoundException",
-            CONNECTION_NOT_FOUND_MESSAGE,
-            arn,
-        );
+        if *admitted {
+            assert_bare_refusal(
+                &format!("GetConnection: {label}"),
+                status,
+                &body,
+                CLIENT_ERROR_STATUS,
+                "ResourceNotFoundException",
+                CONNECTION_NOT_FOUND_MESSAGE,
+                arn,
+            );
+        } else {
+            assert_not_a_connection_arn(&format!("GetConnection: {label}"), status, &body);
+        }
 
         let (status, body) = call(
             &router,
@@ -442,15 +502,19 @@ async fn an_unresolvable_connection_arn_is_refused_with_the_services_fixed_sente
             serde_json::json!({ "ConnectionArn": arn }),
         )
         .await;
-        assert_bare_refusal(
-            &format!("DeleteConnection: {label}"),
-            status,
-            &body,
-            CLIENT_ERROR_STATUS,
-            "ResourceNotFoundException",
-            CONNECTION_NOT_FOUND_MESSAGE,
-            arn,
-        );
+        if *admitted {
+            assert_bare_refusal(
+                &format!("DeleteConnection: {label}"),
+                status,
+                &body,
+                CLIENT_ERROR_STATUS,
+                "ResourceNotFoundException",
+                CONNECTION_NOT_FOUND_MESSAGE,
+                arn,
+            );
+        } else {
+            assert_not_a_connection_arn(&format!("DeleteConnection: {label}"), status, &body);
+        }
     }
 
     // The rows above are absence, not a blanket refusal: the live connection still reads

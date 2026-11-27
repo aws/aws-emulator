@@ -652,16 +652,18 @@ async fn deleting_one_link_leaves_every_other_link_resolvable() {
 async fn a_link_reports_its_connections_provider_and_refuses_an_unresolvable_connection() {
     let router = router();
 
-    for provider in PROVIDER_TYPES {
-        // A connection that states the provider and nothing else.
-        let direct = create(&router, &format!("direct-{provider}"), provider).await;
+    for (index, provider) in PROVIDER_TYPES.iter().enumerate() {
+        // A connection that states the provider and nothing else. The names are built
+        // from the row's INDEX, not from the provider: the modelled `ConnectionName` is
+        // `length 1..32`, which the longest provider value overruns.
+        let direct = create(&router, &format!("direct-{index}"), provider).await;
         // And one of the same provider that is also associated with a host.
-        let host = create_host(&router, &format!("host-{provider}"), provider).await;
+        let host = create_host(&router, &format!("host-{index}"), provider).await;
         let (status, created) = call(
             &router,
             "CreateConnection",
             serde_json::json!({
-                "ConnectionName": format!("hosted-{provider}"),
+                "ConnectionName": format!("hosted-{index}"),
                 "ProviderType": provider,
                 "HostArn": host,
             }),

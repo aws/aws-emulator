@@ -12,6 +12,11 @@
 //! the connection — reports the same provider. The connection is minted in the calling
 //! account, so that account owns it: see [`crate::state::CONNECTION_OWNERSHIP_OWNED`].
 //!
+//! The tenant endpoint belongs to that resolved provider and to no other: it is stored for
+//! a connection whose provider is [`crate::state::PROVIDER_TYPE_WITH_TENANT_ENDPOINT`], and
+//! a create that states one for any other provider is refused, so no row carries an
+//! endpoint the `Connection$ProviderEndpoint` member documents as empty.
+//!
 //! ## Shape of an operation
 //!
 //! Each operation is a struct that owns the shared engine and implements
@@ -62,26 +67,35 @@
 //!   ^arn:aws(-[\w]+)*:(codestar-connections|codeconnections):.+:[0-9]{12}:host\/.+$) — The
 //!   Amazon Resource Name (ARN) of the host associated with the connection to be created.
 //! * `ProviderType` (ProviderType, one of: AzureDevOps | Bitbucket | GitHub |
-//!   GitHubEnterpriseServer | GitLab | GitLabSelfManaged) — The name of the external provider
-//!   where your third-party code repository is configured.
+//!   GitHubEnterpriseCloudDataResidency | GitHubEnterpriseServer | GitLab |
+//!   GitLabSelfManaged) — The name of the external provider where your third-party code
+//!   repository is configured.
+//! * `ProviderEndpoint` (Url, len 1..512, pattern .*) — The endpoint of the ghe.com tenant
+//!   where your organization resides. Provide this parameter only when `ProviderType` is
+//!   `GitHubEnterpriseCloudDataResidency`. Leave this parameter empty for all other provider
+//!   types.
 //! * `Tags` (TagList, len 0..200) — The key-value pair to use when tagging the resource.
 //!
 //! ## Output
 //!
 //! * `ConnectionArn` (ConnectionArn, len 0..256, pattern
-//!   ^arn:aws(-[\w]+)*:.+:.+:[0-9]{12}:.+$) **required** — The Amazon Resource Name (ARN) of
-//!   the connection to be created. The ARN is used as the connection reference when the
-//!   connection is shared between Amazon Web Services services. The ARN is never reused if
-//!   the connection is deleted.
+//!   ^arn:aws(-[\w]+)*:(codestar-connections|codeconnections):[a-z0-9\-]+:[0-9]{12}:connection\/[\w\-]+$)
+//!   **required** — The Amazon Resource Name (ARN) of the connection to be created. The ARN
+//!   is used as the connection reference when the connection is shared between Amazon Web
+//!   Services services. The ARN is never reused if the connection is deleted.
 //! * `Tags` (TagList, len 0..200) — Specifies the tags applied to the resource.
 //!
 //! ## Errors
 //!
+//! * `InvalidInputException` (HTTP 400) — The input is not valid. Verify that the action is
+//!   typed correctly.
 //! * `LimitExceededException` (HTTP 429) — Exceeded the maximum limit for connections.
 //! * `ResourceNotFoundException` (HTTP 404) — Resource not found. Verify the connection
 //!   resource ARN and try again.
 //! * `ResourceUnavailableException` (HTTP 400) — Resource not found. Verify the ARN for the
 //!   host resource and try again.
+//! * `UnsupportedProviderTypeException` (HTTP 400) — The specified provider type is not
+//!   supported for connections.
 
 #[allow(unused_imports)]
 use super::types::*;
@@ -106,15 +120,22 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-codeconnections-codecon
 //   shape for a create refused because the resource is already there.
 // * `InternalServerException` (503) — the modelled server fault for a state store
 //   this handler cannot reach, which must never be reported as a client error.
+//
+// `UnsupportedProviderTypeException` (400, "The specified provider type is not supported
+// for connections") is declared because the model declares it, and nothing here
+// constructs it: every value the modeled `ProviderType` enum admits is a provider this
+// service mints a connection for, so no input reaches that refusal.
 #[smithy_macros::operation_error(
     "com.amazonaws.codeconnections#CreateConnection",
     extra_errors = ["ResourceAlreadyExistsException", "InternalServerException"]
 )]
 #[derive(Debug)]
 pub enum CreateConnectionErrorModeled {
+    InvalidInputException(InvalidInputException),
     LimitExceededException(LimitExceededException),
     ResourceNotFoundException(ResourceNotFoundException),
     ResourceUnavailableException(ResourceUnavailableException),
+    UnsupportedProviderTypeException(UnsupportedProviderTypeException),
     ResourceAlreadyExistsException(ResourceAlreadyExistsException),
     InternalServerException(InternalServerException),
 }
@@ -223,6 +244,28 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             }
         }
 
+        // The tenant endpoint belongs to ONE provider, whichever member named that
+        // provider: `CreateConnection$ProviderEndpoint` is "the endpoint of the ghe.com
+        // tenant where your organization resides. Provide this parameter only when
+        // `ProviderType` is `GitHubEnterpriseCloudDataResidency`. Leave this parameter
+        // empty for all other provider types." So an endpoint stated for a connection
+        // whose RESOLVED provider (the one stated, or the one taken from the host above)
+        // is any other provider — or for a connection that names no provider at all — is
+        // input the service cannot act on, and is refused with the modelled
+        // `InvalidInputException` (400) rather than stored on a row whose
+        // `Connection$ProviderEndpoint` must be empty.
+        let provider_endpoint = input.provider_endpoint;
+        if provider_endpoint.is_some()
+            && provider_type.as_deref() != Some(crate::state::PROVIDER_TYPE_WITH_TENANT_ENDPOINT)
+        {
+            return Err(CreateConnectionErrorModeled::InvalidInputException(
+                InvalidInputException {
+                    message: Some(crate::state::provider_endpoint_not_supported_message()),
+                },
+            )
+            .into());
+        }
+
         // The request-level condition first: a name that is taken makes THIS request
         // invalid, and the caller needs that specific reason even when the store is
         // also at its bound. `Connection.ConnectionName`: "Connection names must be
@@ -281,6 +324,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             // reader (`GetConnection`, `ListConnections`, its `HostArnFilter`)
             // reports it from this one row.
             host_arn: input.host_arn,
+            // The tenant endpoint the request stated, which the check above admits only
+            // for the one provider `Connection$ProviderEndpoint` is populated for, so
+            // every reader renders it from this row for that provider and for no other.
+            provider_endpoint,
             // The connection is minted in the calling account, which is therefore the
             // account that owns it (`owner_account_id` above) — see
             // `state::CONNECTION_OWNERSHIP_OWNED`.

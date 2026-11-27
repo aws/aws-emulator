@@ -14,6 +14,7 @@
 //! here named after an operation would make that operation's own module name
 //! ambiguous inside `ops` (`E0659`).
 
+pub mod connection_types;
 pub mod create_connection_types;
 pub mod create_host_types;
 pub mod create_repository_link_types;
@@ -26,6 +27,7 @@ pub mod get_connection_types;
 pub mod get_host_types;
 pub mod get_repository_link_types;
 pub mod get_repository_sync_status_types;
+pub mod get_resource_sync_status_output_types;
 pub mod get_resource_sync_status_types;
 pub mod get_sync_blocker_summary_types;
 pub mod get_sync_configuration_types;
@@ -43,6 +45,8 @@ pub mod update_repository_link_types;
 pub mod update_sync_blocker_types;
 pub mod update_sync_configuration_types;
 
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use connection_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use create_connection_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
@@ -67,6 +71,8 @@ pub use get_host_types::*;
 pub use get_repository_link_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use get_repository_sync_status_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use get_resource_sync_status_output_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use get_resource_sync_status_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]

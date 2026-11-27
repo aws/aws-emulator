@@ -18,24 +18,11 @@ pub struct GetResourceSyncStatusInput {
     pub sync_type: String,
 }
 
-/// `GetResourceSyncStatus`'s response.
-///
-/// Every member is optional, `LatestSync` included. AWS's published model marks
-/// `LatestSync` `@required`, but the service itself answers a `(ResourceName,
-/// SyncType)` pair it has recorded no sync state for with HTTP 200 and a payload in
-/// which none of these members appears — the recorded behaviour this emulator serves.
-/// The codegen in `smithy_macros` turns a `@required` member into a bare field its
-/// serializer ALWAYS writes, so rendering that response needs the member optional;
-/// the `@required` trait is therefore off this one output member in this crate's
-/// `smithy-model/`, and the handler reports what it holds instead of inventing a sync
-/// attempt to satisfy a trait the real service does not honour.
-#[smithy_macros::smithy(shape = "com.amazonaws.codeconnections#GetResourceSyncStatusOutput")]
-#[derive(Debug, Clone, Default)]
-pub struct GetResourceSyncStatusOutput {
-    pub desired_state: Option<Revision>,
-    pub latest_successful_sync: Option<ResourceSyncAttempt>,
-    pub latest_sync: Option<ResourceSyncAttempt>,
-}
+// `GetResourceSyncStatusOutput` is declared in `get_resource_sync_status_output_types`
+// instead: AWS answers a pair it recorded no sync for with none of the sync-state members
+// set, where this snapshot declares `LatestSync` required, so the shape is generated from
+// the overlay model `smithy-model/local-additions.json`. See
+// `smithy-model/LOCAL-ADDITIONS.md`.
 
 #[smithy_macros::smithy(shape = "com.amazonaws.codeconnections#Revision")]
 #[derive(Debug, Clone, Default)]

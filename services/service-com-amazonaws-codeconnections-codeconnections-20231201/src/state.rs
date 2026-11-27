@@ -36,6 +36,19 @@ pub const CONNECTION_STATUS_ON_CREATE: &str = "PENDING";
 /// so `GetConnection` and `ListConnections` report one ownership for one connection.
 pub const CONNECTION_OWNERSHIP_OWNED: &str = "Owned";
 
+/// The one `ProviderType` a connection carries a tenant endpoint for.
+///
+/// `CreateConnection$ProviderEndpoint` is "the endpoint of the ghe.com tenant where your
+/// organization resides. Provide this parameter only when `ProviderType` is
+/// `GitHubEnterpriseCloudDataResidency`. Leave this parameter empty for all other
+/// provider types", and `Connection$ProviderEndpoint` is "populated only for a connection
+/// with a `ProviderType` of `GitHubEnterpriseCloudDataResidency`. It is empty for all
+/// other provider types" — so the endpoint belongs to exactly this provider, on the way in
+/// and on the way out alike. One value of the modeled `ProviderType` enum (see
+/// `types::PROVIDER_TYPE_VALUES`), stated here so the create's refusal and the readers'
+/// rendering key on the same provider.
+pub const PROVIDER_TYPE_WITH_TENANT_ENDPOINT: &str = "GitHubEnterpriseCloudDataResidency";
+
 /// The status a host minted through the API, CLI or an SDK carries.
 ///
 /// From `CreateHost`'s own documentation: "A host created through the CLI or the SDK
@@ -114,6 +127,11 @@ pub struct StoredConnection {
     pub connection_status: String,
     /// The host the connection is associated with, when it has one.
     pub host_arn: Option<String>,
+    /// The tenant endpoint the connection reaches its provider at, which the
+    /// `Connection.ProviderEndpoint` member documents is populated only for a connection
+    /// whose provider is [`PROVIDER_TYPE_WITH_TENANT_ENDPOINT`] and empty for every other
+    /// provider type — so `None` for every other connection.
+    pub provider_endpoint: Option<String>,
     /// How the account that holds the connection holds it: [`CONNECTION_OWNERSHIP_OWNED`]
     /// for a connection that account owns.
     pub ownership_type: String,
@@ -134,6 +152,7 @@ impl StoredConnection {
             owner_account_id: Some(self.owner_account_id.clone()),
             connection_status: Some(self.connection_status.clone()),
             host_arn: self.host_arn.clone(),
+            provider_endpoint: self.provider_endpoint.clone(),
             ownership_type: Some(self.ownership_type.clone()),
         }
     }
@@ -954,6 +973,28 @@ pub const CONNECTION_NOT_FOUND_MESSAGE: &str = "No connection exists with the AR
 /// this service is recorded to answer for a host.
 pub fn host_not_found_message(host_arn: &str) -> String {
     format!("No host exists with the ARN: {host_arn}")
+}
+
+/// What `CreateConnection` answers for a `ProviderEndpoint` stated for a connection whose
+/// provider is not the one that endpoint belongs to
+/// ([`PROVIDER_TYPE_WITH_TENANT_ENDPOINT`]).
+///
+/// A CONSTANT sentence: it states the rule the member's own documentation states ("Provide
+/// this parameter only when `ProviderType` is `GitHubEnterpriseCloudDataResidency`. Leave
+/// this parameter empty for all other provider types"), opening with the modelled
+/// `InvalidInputException`'s own sentence, the way this service's other
+/// `InvalidInputException`s do. NO RECORDED RESPONSE covers this refusal — the member is new
+/// in the model and no fixture states AWS's wording for it — so the sentence is built from
+/// the model's own text rather than borrowed from another case's template; a recording that
+/// states it should replace this wording. Neither the endpoint nor the provider the request
+/// stated is echoed into it: the member and the rule are what the caller acts on, and the
+/// endpoint is the caller's own value.
+pub fn provider_endpoint_not_supported_message() -> String {
+    format!(
+        "The input is not valid. ProviderEndpoint is supported only for a connection with a \
+         ProviderType of {PROVIDER_TYPE_WITH_TENANT_ENDPOINT}, and must be empty for all other \
+         provider types."
+    )
 }
 
 /// The host statuses a host CANNOT be deleted from.

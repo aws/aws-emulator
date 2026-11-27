@@ -59,13 +59,15 @@ const CONNECTION_ARN_EXPRESSION: &str = r"arn:aws(-[\w]+)*:(codestar-connections
 /// The `ProviderType` value set as this service ADVERTISES it, written out as the literal
 /// the recorded service returns.
 ///
-/// The bracketed sequence is fixed text of the refusal: the service states these six
-/// members in this order, which is not the order the model declares them in
+/// The bracketed sequence is fixed text of the refusal: the service states these members in
+/// this order, which is not the order the model declares them in
 /// (`smithy_query(query="shape", shape="ProviderType")` gives `Bitbucket, GitHub,
-/// GitHubEnterpriseServer, GitLab, GitLabSelfManaged, AzureDevOps`), so the order is
-/// pinned here rather than derived from the enum.
-const PROVIDER_TYPES: &str =
-    "[GitLab, GitHub, GitHubEnterpriseServer, AzureDevOps, GitLabSelfManaged, Bitbucket]";
+/// GitHubEnterpriseServer, GitLab, GitLabSelfManaged, AzureDevOps,
+/// GitHubEnterpriseCloudDataResidency`), so the order is pinned here rather than derived
+/// from the enum. The membership is the model's: the value the shape gained after those
+/// refusals were recorded (`GitHubEnterpriseCloudDataResidency`) is stated last.
+const PROVIDER_TYPES: &str = "[GitLab, GitHub, GitHubEnterpriseServer, AzureDevOps, \
+     GitLabSelfManaged, Bitbucket, GitHubEnterpriseCloudDataResidency]";
 
 /// The `SyncConfigurationType` value set as the model declares it: one value.
 const SYNC_TYPES: &str = "[CFN_STACK_SYNC]";

@@ -1,0 +1,90 @@
+{
+  "smithy": "2.0",
+  "shapes": {
+    "com.amazonaws.codeconnections#Connection": {
+      "type": "structure",
+      "members": {
+        "ConnectionName": { "target": "com.amazonaws.codeconnections#ConnectionName" },
+        "ConnectionArn": { "target": "com.amazonaws.codeconnections#ConnectionArn" },
+        "ProviderType": { "target": "com.amazonaws.codeconnections#ProviderType" },
+        "OwnerAccountId": { "target": "com.amazonaws.codeconnections#AccountId" },
+        "ConnectionStatus": { "target": "com.amazonaws.codeconnections#ConnectionStatus" },
+        "HostArn": { "target": "com.amazonaws.codeconnections#HostArn" },
+        "ProviderEndpoint": { "target": "com.amazonaws.codeconnections#Url" },
+        "OwnershipType": { "target": "com.amazonaws.codeconnections#OwnershipType" }
+      }
+    },
+    "com.amazonaws.codeconnections#OwnershipType": {
+      "type": "string"
+    },
+    "com.amazonaws.codeconnections#GetResourceSyncStatusOutput": {
+      "type": "structure",
+      "members": {
+        "DesiredState": { "target": "com.amazonaws.codeconnections#Revision" },
+        "LatestSuccessfulSync": { "target": "com.amazonaws.codeconnections#ResourceSyncAttempt" },
+        "LatestSync": { "target": "com.amazonaws.codeconnections#ResourceSyncAttempt" }
+      }
+    },
+    "com.amazonaws.codeconnections#ConnectionName": {
+      "type": "string",
+      "traits": {
+        "smithy.api#length": { "min": 1, "max": 32 },
+        "smithy.api#pattern": "^[\\s\\S]*$"
+      }
+    },
+    "com.amazonaws.codeconnections#ConnectionArn": {
+      "type": "string",
+      "traits": {
+        "smithy.api#length": { "min": 0, "max": 256 },
+        "smithy.api#pattern": "^arn:aws(-[\\w]+)*:(codestar-connections|codeconnections):[a-z0-9\\-]+:[0-9]{12}:connection\\/[\\w\\-]+$"
+      }
+    },
+    "com.amazonaws.codeconnections#ProviderType": {
+      "type": "enum",
+      "members": {
+        "BITBUCKET": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "Bitbucket" } },
+        "GITHUB": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "GitHub" } },
+        "GITHUB_ENTERPRISE_SERVER": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "GitHubEnterpriseServer" } },
+        "GITLAB": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "GitLab" } },
+        "GITLAB_SELF_MANAGED": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "GitLabSelfManaged" } },
+        "AZURE_DEV_OPS": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "AzureDevOps" } },
+        "GITHUB_ENTERPRISE_CLOUD_DATA_RESIDENCY": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "GitHubEnterpriseCloudDataResidency" } }
+      }
+    },
+    "com.amazonaws.codeconnections#AccountId": {
+      "type": "string",
+      "traits": {
+        "smithy.api#length": { "min": 12, "max": 12 },
+        "smithy.api#pattern": "^[0-9]{12}$"
+      }
+    },
+    "com.amazonaws.codeconnections#ConnectionStatus": {
+      "type": "enum",
+      "members": {
+        "PENDING": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "PENDING" } },
+        "AVAILABLE": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "AVAILABLE" } },
+        "ERROR": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "ERROR" } }
+      }
+    },
+    "com.amazonaws.codeconnections#HostArn": {
+      "type": "string",
+      "traits": {
+        "smithy.api#length": { "min": 0, "max": 256 },
+        "smithy.api#pattern": "^arn:aws(-[\\w]+)*:(codestar-connections|codeconnections):.+:[0-9]{12}:host\\/.+$"
+      }
+    },
+    "com.amazonaws.codeconnections#Url": {
+      "type": "string",
+      "traits": {
+        "smithy.api#length": { "min": 1, "max": 512 },
+        "smithy.api#pattern": ".*"
+      }
+    },
+    "com.amazonaws.codeconnections#Revision": {
+      "type": "structure"
+    },
+    "com.amazonaws.codeconnections#ResourceSyncAttempt": {
+      "type": "structure"
+    }
+  }
+}

@@ -2,17 +2,18 @@
 
 //! @op GetConnection
 //!
-//! ## `OwnershipType`, a member added to this service's model
+//! ## `OwnershipType`, a member this service answers with and its model does not declare
 //!
-//! The shipped 2023-12-01 model declares `Connection` with `ConnectionName`,
-//! `ConnectionArn`, `ProviderType`, `OwnerAccountId`, `ConnectionStatus` and `HostArn`,
-//! while the recorded AWS responses answer every connection read with an
-//! `OwnershipType` beside them — the member that says whether the account reading the
-//! connection owns it or had it shared in. A schema-driven serializer cannot emit a
-//! member the model does not declare, so `OwnershipType` (target a string shape of the
-//! same name) was ADDED to
-//! `smithy-model/com-amazonaws-codeconnections-codeconnections-20231201.json`. The
-//! value is read off the stored row like every other member
+//! The published 2023-12-01 model declares `Connection` with `ConnectionName`,
+//! `ConnectionArn`, `ProviderType`, `OwnerAccountId`, `ConnectionStatus`, `HostArn` and
+//! `ProviderEndpoint`, while the recorded AWS responses answer every connection read with
+//! an `OwnershipType` beside them — the member that says whether the account reading the
+//! connection owns it or had it shared in. A schema-driven serializer cannot emit a member
+//! no model declares, so the shape is generated from the small overlay model
+//! `smithy-model/local-additions.json`, which restates the published members and adds that
+//! one (see `smithy-model/LOCAL-ADDITIONS.md` and
+//! [`crate::ops::types::connection_types`]); the published snapshot is kept exactly as
+//! shipped. The value is read off the stored row like every other member
 //! ([`crate::state::StoredConnection::to_modeled`]), so this operation and
 //! `ListConnections` report one ownership for one connection.
 //!

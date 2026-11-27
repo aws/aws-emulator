@@ -42,27 +42,25 @@
 //!
 //! # The connection-scoped ARN expression
 //!
-//! One member class is held to more than its model states. The public Smithy model
-//! targets every connection-ARN member at `ConnectionArn`, whose `@pattern` is the loose
-//! `^arn:aws(-[\w]+)*:.+:.+:[0-9]{12}:.+$` — ANY ARN of any service with a 12-digit
-//! account, so a host or repository-link ARN passed where a connection ARN belongs
-//! satisfies it. The REPOSITORY-LINK surface refuses such an ARN as an input-constraint
-//! violation ([`is_connection_arn`], run by its handlers), and a clause about a
-//! connection-ARN member advertises the connection-scoped expression
-//! ([`CONNECTION_ARN_PATTERN`]) rather than the model's generic one — the enforced check
-//! and the advertised text are the SAME constant, so a caller of that surface that
-//! re-applies the expression it was given reproduces the decision the service made.
+//! One member class is stated here as well as in the model. The published Smithy model
+//! targets every connection-ARN member at `ConnectionArn`, whose `@pattern` is this
+//! service's connection-scoped expression ([`CONNECTION_ARN_PATTERN`]) — so the framework's
+//! own walk refuses a host or repository-link ARN passed where a connection ARN belongs,
+//! and a clause about such a member advertises that expression whether it came from the
+//! walk or from a handler. The REPOSITORY-LINK surface checks the same expression itself
+//! ([`is_connection_arn`], run by its handlers), reading the ARN field by field: the
+//! enforced check and the advertised text are the SAME constant, so a caller of that
+//! surface that re-applies the expression it was given reproduces the decision the service
+//! made, and a model that ever loosens that member again does not loosen what the surface
+//! accepts.
 //!
 //! The advertised expression is the service's whichever operation refused, because the
 //! framework hands this seam the violations and NOT the operation they came from, and
 //! because the expression is a property of the ARN form rather than of one call. What
-//! each operation ENFORCES is its own: the older CONNECTION surface (`GetConnection`,
+//! each operation ENFORCES is its own: the CONNECTION surface (`GetConnection`,
 //! `DeleteConnection`) resolves every ARN its model admits and answers this service's
 //! fixed "no connection exists" sentence for one that resolves to nothing — recorded
-//! behaviour, pinned by `tests/all/refusal_messages.rs` — so there a value that satisfies
-//! the model's pattern but not the expression above is reported as an absent connection
-//! rather than as invalid input, and only a value that misses the model's pattern too is
-//! refused here at all.
+//! behaviour, pinned by `tests/all/refusal_messages.rs`.
 //!
 //! A violation class this module has no wording for declines the WHOLE refusal (`None`),
 //! which keeps the framework's default sentence rather than inventing one:
@@ -89,10 +87,10 @@ pub(crate) const VALIDATION_EXCEPTION: &str = "ValidationException";
 /// is the form a clause quotes; [`matches_connection_arn_expression`] is the whole-value
 /// check of the same expression, so the expression a caller is given is the expression the
 /// caller's value was run against.
-/// The partition branch (`aws(-[\w]+)*`) and the account bound are the public model's
-/// own (`smithy_query(query="shape", shape="ConnectionArn")`); the namespace and
-/// resource-type branches are `HostArn`'s, which the same model spells for the host form
-/// of the same ARN family.
+/// The partition branch (`aws(-[\w]+)*`), the namespace alternation, the region and account
+/// bounds and the `connection/<id>` resource are the published model's own
+/// (`smithy_query(query="shape", shape="ConnectionArn")`), restated here as the text a
+/// clause quotes and as the check below runs.
 pub(crate) const CONNECTION_ARN_PATTERN: &str = r"arn:aws(-[\w]+)*:(codestar-connections|codeconnections):[a-z0-9\-]+:[0-9]{12}:connection\/[\w\-]+";
 
 /// The path the framework reports a connection-ARN member at.
@@ -200,13 +198,20 @@ fn advertised_pattern(path: &str, model_pattern: &str) -> String {
 /// The order this service advertises the members of its `ProviderType` value set in.
 ///
 /// The sequence inside the brackets of an enum clause is FIXED TEXT of the refusal, not a
-/// rendering of the model: this service states these six members in this order, which is
+/// rendering of the model: this service states these members in this order, which is
 /// NOT the order the model declares them in (`smithy_query(query="shape",
 /// shape="ProviderType")` gives `Bitbucket, GitHub, GitHubEnterpriseServer, GitLab,
-/// GitLabSelfManaged, AzureDevOps`). A caller that reads the bracketed list back to offer
-/// a user the values it may send has to be given the list the service states, so the
-/// sequence is stated here beside the message wording rather than taken from the shape's
-/// declaration.
+/// GitLabSelfManaged, AzureDevOps, GitHubEnterpriseCloudDataResidency`). A caller that
+/// reads the bracketed list back to offer a user the values it may send has to be given the
+/// list the service states, so the sequence is stated here beside the message wording
+/// rather than taken from the shape's declaration.
+///
+/// The membership is the model's, so a value the shape gains joins the sequence — otherwise
+/// the clause falls back to declaration order and advertises none of this order at all (see
+/// [`advertised_enum_values`] and its tests). The six values the recorded refusals state
+/// keep the order they state them in, and a value those recordings could not have named
+/// (`GitHubEnterpriseCloudDataResidency`, which the shape gained later) is stated after
+/// them.
 const PROVIDER_TYPE_ADVERTISED_ORDER: &[&str] = &[
     "GitLab",
     "GitHub",
@@ -214,6 +219,7 @@ const PROVIDER_TYPE_ADVERTISED_ORDER: &[&str] = &[
     "AzureDevOps",
     "GitLabSelfManaged",
     "Bitbucket",
+    "GitHubEnterpriseCloudDataResidency",
 ];
 
 /// Every value set this service advertises in an order of its own.

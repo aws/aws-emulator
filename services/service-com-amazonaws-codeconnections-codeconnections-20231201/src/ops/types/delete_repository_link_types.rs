@@ -28,9 +28,3 @@ pub struct SyncConfigurationStillExistsException {
     pub message: Option<String>,
 }
 
-#[smithy_macros::smithy(shape = "com.amazonaws.codeconnections#UnsupportedProviderTypeException")]
-#[derive(Debug, Clone, Default)]
-pub struct UnsupportedProviderTypeException {
-    pub message: Option<String>,
-}
-

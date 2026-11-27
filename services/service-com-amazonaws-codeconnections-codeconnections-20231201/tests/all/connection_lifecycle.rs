@@ -28,6 +28,7 @@ pub(crate) const PROVIDER_TYPES: &[&str] = &[
     "GitLab",
     "GitLabSelfManaged",
     "AzureDevOps",
+    "GitHubEnterpriseCloudDataResidency",
 ];
 
 /// A host ARN matching the modeled `HostArn` pattern. This suite mints no host, so
@@ -516,12 +517,14 @@ async fn paging_covers_every_connection_exactly_once() {
 async fn list_filters_select_from_the_stored_set() {
     let router = router();
 
-    // Two connections per provider type, so every filter row selects a known subset.
+    // Two connections per provider type, so every filter row selects a known subset. The
+    // name is built from the row's INDEX, not from the provider: the modelled
+    // `ConnectionName` is `length 1..32`, which the longest provider value overruns.
     let mut by_provider: Vec<(&str, BTreeSet<String>)> = Vec::new();
-    for provider in PROVIDER_TYPES {
+    for (index, provider) in PROVIDER_TYPES.iter().enumerate() {
         let mut arns = BTreeSet::new();
         for copy in 0..2 {
-            arns.insert(create(&router, &format!("{provider}-{copy}"), provider).await);
+            arns.insert(create(&router, &format!("conn-{index}-{copy}"), provider).await);
         }
         by_provider.push((provider, arns));
     }
