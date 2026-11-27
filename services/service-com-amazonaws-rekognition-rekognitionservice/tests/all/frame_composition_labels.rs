@@ -6,18 +6,22 @@
 //!
 //! THE RULE UNDER TEST: `DetectLabels` reports one label per general-label taxonomy ENTITY the
 //! submitted frame's own pixels establish — "for each object, scene, and concept the API
-//! returns one or more labels" — so a frame no object was located in is reported by the
-//! concepts its measured COMPOSITION establishes: how much of it is one unbroken surface where
-//! no step is steep enough to be a boundary, how closely its parts hold the same tone over
-//! again, and how much of it one colour family covers. All three are measured off every such
-//! frame and each is reported at the share or agreement measured for it, with the category the
-//! published taxonomy puts it in and every ancestor above it as a unique label of its own; the
-//! only floor a reported concept clears is the request's own `MinConfidence`, 55 percent where
-//! it names none, so a frame a concept comes out of weakly is reported by what the frame's
-//! other statistics establish rather than by nothing at all. A colour's own name is never a
-//! label name: a colour is a property OF the picture and is reported under
-//! `ImageProperties.DominantColors`. A frame an object WAS located in is reported by that
-//! object and its own taxonomy chain.
+//! returns one or more labels" — so a frame no object was located in is reported by the concepts
+//! its measured COMPOSITION establishes, and by nothing else. Each concept is established no
+//! more strongly than the WEAKEST reading it needs: the unbroken surface is the share of the
+//! frame no step steep enough to be a boundary divides; the repeat is how closely its parts hold
+//! the same tone over again, bounded by how much of it carries a boundary at all, because a
+//! repeat is content RECURRING; and the single tone is the share one colour family covers,
+//! bounded by the range of tones the frame renders in it. A frame carrying none of what a
+//! concept is read off therefore establishes none of it and is not reported by it — a frame
+//! drawn in one flat colour is the one unbroken surface it is and no repeat and no rendering in
+//! a family of tones — rather than being reported by the complete agreement its absence
+//! trivially measures. What a reading did establish is reported at the share or agreement
+//! measured for it, with the category the published taxonomy puts it in and every ancestor above
+//! it as a unique label of its own; the only floor it then clears is the request's own
+//! `MinConfidence`, 55 percent where it names none. A colour's own name is never a label name: a
+//! colour is a property OF the picture and is reported under `ImageProperties.DominantColors`. A
+//! frame an object WAS located in is reported by that object and its own taxonomy chain.
 //!
 //! Every frame below is DRAWN by the test from known tones, so each assertion compares the
 //! service's answer against what the test PUT in the frame. The table spans what the rule
@@ -57,9 +61,9 @@ const SIMPLIFIED_COLORS: [&str; 12] = [
     "pink", "brown",
 ];
 
-// A measured composition concept clears no floor of this service's own: it is reported at
-// whatever share or agreement was measured for it, and the only floor applied to it is the
-// request's own `MinConfidence` below.
+// A measured composition concept clears no floor of this service's own: what a reading
+// established is reported at whatever share or agreement was measured for it, and the only
+// floor applied to it is the request's own `MinConfidence` below.
 
 /// The confidence floor a request naming no `MinConfidence` is narrowed to: "if MinConfidence
 /// is not specified, the operation returns labels with a confidence values greater than or
@@ -297,11 +301,14 @@ struct Composed {
 /// colours are mixed, a finely repeated frame, a coarsely banded frame whose parts disagree,
 /// and a frame split between two colours. Each row names the concepts the drawn composition
 /// establishes ABOVE the default floor of 55 percent: a concept the frame measures weakly is
-/// measured all the same and left out of the answer by that floor.
+/// measured all the same and left out of the answer by that floor, and a concept the frame
+/// establishes none of is not measured for it at all.
 fn composed_frames() -> Vec<Composed> {
-    // A frame drawn FLAT carries no boundary, holds its one content in every part of itself,
-    // and is covered by one colour family: all three concepts measure 100 on it.
-    let flat_composition = vec![TEXTURE, PATTERN, MONOCHROME];
+    // A frame drawn FLAT carries no boundary at all, so it is one unbroken surface entirely —
+    // and that same absence of a boundary leaves no content for anything to recur in, while its
+    // single tone is no range of tones to render a colour family in, so it establishes neither
+    // the repeat nor the single tone.
+    let flat_composition = vec![TEXTURE];
     vec![
         Composed {
             case: "a frame drawn flat in one chromatic colour",
@@ -326,43 +333,47 @@ fn composed_frames() -> Vec<Composed> {
         Composed {
             case: "a frame graded from dark to light, whose colours are mixed",
             bytes: grey_bytes(&graded(120, 60), ImageFormat::Png),
-            // Every step of a grade is a drift rather than a boundary, and the grey middle of
-            // it covers more of the frame than its dark and light ends; its parts depart too
-            // far from its own mean tone for the repeat to clear the floor.
+            // Every step of a grade is a drift rather than a boundary, so all of it is one
+            // unbroken surface and none of it is a boundary a repeat could be read across; the
+            // grey middle of it covers more of the frame than its dark and light ends, over a
+            // range of tones wide enough to render in that family.
             expected: vec![TEXTURE, MONOCHROME],
         },
         Composed {
             case: "a frame drawn flat but for a speck too small to break its surface",
             bytes: colour_bytes(&split(400, 50, 1, [20, 20, 20], [40, 180, 60]), ImageFormat::Png),
-            expected: flat_composition.clone(),
+            // The speck leaves a hundredth of a part of the frame divided, which is next to no
+            // content for a repeat, and the two tones it sets span little of the scale.
+            expected: vec![TEXTURE],
         },
         Composed {
             case: "a finely repeated frame, whose parts hold the same tone over again",
             bytes: grey_bytes(&striped(120, 120, 2, 40, 215), ImageFormat::Png),
-            // Bands two rows apart leave no pixel without a boundary beside it, and the two
-            // tones split the frame evenly between two colour families.
+            // Bands two rows apart leave no pixel without a boundary beside it, so the whole
+            // frame is content for the repeat its agreeing parts establish; the two tones split
+            // the frame evenly between two colour families.
             expected: vec![PATTERN],
         },
         Composed {
-            case: "a finely repeated frame of one colour family, repeated and single-toned",
+            case: "a finely repeated frame of one colour family, repeated and narrowly toned",
             bytes: grey_bytes(&striped(120, 120, 2, 110, 150), ImageFormat::Png),
-            expected: vec![PATTERN, MONOCHROME],
+            expected: vec![PATTERN],
         },
         Composed {
             case: "a coarsely banded frame, whose parts each hold a tone of their own",
             bytes: grey_bytes(&striped(120, 120, 30, 40, 215), ImageFormat::Png),
-            // The bands leave most of the frame unbroken, while its parts each hold a tone of
-            // their own and the two tones split it evenly: neither the repeat nor the single
-            // tone clears the floor.
+            // The bands leave most of the frame unbroken, so their few edges are all the
+            // content a repeat could be read in, and the two tones split it evenly: neither
+            // the repeat nor the single tone clears the floor.
             expected: vec![TEXTURE],
         },
         Composed {
             case: "a frame split between two colours",
             bytes: colour_bytes(&split(100, 50, 40, [30, 60, 220], [220, 30, 30]), ImageFormat::Png),
-            // Only the one column where the colours meet is a boundary, the larger of them
-            // covers three fifths of the frame, and its parts depart from its mean colour by
-            // less than half the scale.
-            expected: vec![TEXTURE, MONOCHROME, PATTERN],
+            // Only the one column where the colours meet is a boundary, which is next to no
+            // content for a repeat, and the two colours sit so close in tone that the frame
+            // renders next to no range of either family.
+            expected: vec![TEXTURE],
         },
     ]
 }
@@ -447,24 +458,27 @@ async fn a_frame_an_object_was_located_in_is_reported_by_that_object() {
 #[tokio::test]
 async fn the_concepts_measured_narrow_by_max_labels_and_min_confidence() {
     let router = harness_with_object_store();
-    let bytes = colour_bytes(&flat(64, 64, [200, 30, 30]), ImageFormat::Jpeg);
+    // A graded frame establishes two concepts at two different confidences — all of it is one
+    // unbroken surface, and the grey band through the middle of it covers most of it over a
+    // range of tones — so both narrowing relations are observable on it.
+    let bytes = grey_bytes(&graded(120, 60), ImageFormat::Png);
     assert_eq!(
         s3(&router, &format!("/{BUCKET}"), &[]).await,
         200,
         "the bucket the frame is staged in must be created"
     );
     assert_eq!(
-        s3(&router, &format!("/{BUCKET}/composed.jpg"), &bytes).await,
+        s3(&router, &format!("/{BUCKET}/composed.png"), &bytes).await,
         200,
         "the frame must be staged"
     );
-    let staged = json!({ "S3Object": { "Bucket": BUCKET, "Name": "composed.jpg" } });
+    let staged = json!({ "S3Object": { "Bucket": BUCKET, "Name": "composed.png" } });
 
     let wide = labels_of(
         "the staged frame, unnarrowed",
         &detect(
             &router,
-            json!({ "Image": staged, "MaxLabels": 10, "MinConfidence": 70.0 }),
+            json!({ "Image": staged, "MaxLabels": 10, "MinConfidence": DEFAULT_MIN_CONFIDENCE }),
         )
         .await,
     );
@@ -479,7 +493,11 @@ async fn the_concepts_measured_narrow_by_max_labels_and_min_confidence() {
             "the same bytes submitted inline",
             &detect(
                 &router,
-                json!({ "Image": bytes_image(&bytes), "MaxLabels": 10, "MinConfidence": 70.0 }),
+                json!({
+                    "Image": bytes_image(&bytes),
+                    "MaxLabels": 10,
+                    "MinConfidence": DEFAULT_MIN_CONFIDENCE,
+                }),
             )
             .await,
         ),
@@ -498,14 +516,14 @@ async fn the_concepts_measured_narrow_by_max_labels_and_min_confidence() {
         ),
         (
             "the floor the wide answer was read at",
-            json!({ "MinConfidence": 70.0 }),
+            json!({ "MinConfidence": DEFAULT_MIN_CONFIDENCE }),
             wide.len(),
         ),
         (
-            "a floor raised to 95",
-            json!({ "MinConfidence": 95.0 }),
+            "a floor raised to 70",
+            json!({ "MinConfidence": 70.0 }),
             wide.iter()
-                .filter(|label| confidence("a floor raised to 95", label) >= 95.0)
+                .filter(|label| confidence("a floor raised to 70", label) >= 70.0)
                 .count(),
         ),
         (
@@ -517,9 +535,9 @@ async fn the_concepts_measured_narrow_by_max_labels_and_min_confidence() {
         ),
         (
             "the cap and a raised floor together",
-            json!({ "MaxLabels": 1, "MinConfidence": 95.0 }),
+            json!({ "MaxLabels": 1, "MinConfidence": 70.0 }),
             wide.iter()
-                .filter(|label| confidence("the cap and a raised floor together", label) >= 95.0)
+                .filter(|label| confidence("the cap and a raised floor together", label) >= 70.0)
                 .count()
                 .min(1),
         ),

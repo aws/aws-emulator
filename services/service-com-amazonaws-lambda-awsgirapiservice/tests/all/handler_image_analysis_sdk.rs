@@ -108,15 +108,18 @@ const ENTITY_CHAIN: [&str; 3] = ["Face", "Head", "Person"];
 
 /// The labels a frame no object was located in is reported with, where it is drawn FLAT in one
 /// colour: the concepts of the published taxonomy's colour-and-composition category that the
-/// frame's own measured composition establishes — one unbroken surface, holding that one
-/// content over and over again, of a single colour family. A colour's own name is still no
-/// label of the frame.
-const FLAT_COMPOSITION: [&str; 3] = ["Texture", "Pattern", "Monochrome"];
+/// frame's own measured composition establishes. A flat frame carries no boundary at all, so it
+/// is one unbroken surface entirely — and that same absence leaves no content for anything to
+/// recur across, while its single tone is no range of tones to render a colour family over, so
+/// it establishes neither the repeat nor the single tone. A colour's own name is still no label
+/// of the frame.
+const FLAT_COMPOSITION: [&str; 1] = ["Texture"];
 
 /// The concepts a frame split evenly between two colours establishes above the default
-/// confidence floor: its one boundary leaves almost all of it unbroken, while its halves each
-/// hold a colour of their own, so neither the repeat across it nor a single colour family
-/// covering it clears that floor.
+/// confidence floor: its one boundary leaves almost all of it unbroken, while that single
+/// boundary is next to no content for a repeat to be read in and its two colours sit too close
+/// in tone for the frame to render a range of either family, so neither the repeat across it nor
+/// a single colour family covering it clears that floor.
 const SPLIT_COMPOSITION: [&str; 1] = ["Texture"];
 
 /// The version of the label detection model the service answers with, which is the member's
@@ -862,11 +865,11 @@ async fn a_node_handler_analyses_an_image_through_the_sdk_the_runtime_supplies()
     }
 
     // The frames drawn in COLOUR and nothing else: no object is located in either, so each is
-    // answered by the concepts its own measured COMPOSITION establishes — a flat frame is one
-    // unbroken surface, repeated in every part of itself, of a single colour family, while a
-    // frame split between two colours establishes only the surface the one boundary leaves it —
-    // and never by the name of a colour, which is a measured property of the frame reported
-    // under `ImageProperties`.
+    // answered by the concepts its own measured COMPOSITION establishes — a flat frame is the one
+    // unbroken surface it is, carrying no boundary for content to recur across and no range of
+    // tones to render a colour family over, and a frame split between two colours establishes
+    // only the surface its one boundary leaves it — and never by the name of a colour, which is a
+    // measured property of the frame reported under `ImageProperties`.
     for (case, composition) in [
         ("one colour, staged as PNG", FLAT_COMPOSITION.to_vec()),
         (

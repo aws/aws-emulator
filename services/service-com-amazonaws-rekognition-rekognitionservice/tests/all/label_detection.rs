@@ -1621,9 +1621,11 @@ fn graded(width: u32, height: u32) -> GrayImage {
     })
 }
 
-/// The concepts a frame drawn FLAT in one colour establishes: one unbroken surface, holding
-/// that one content over and over again, of a single colour family.
-const FLAT_COMPOSITION: [&str; 3] = [TEXTURE, PATTERN, MONOCHROME];
+/// The concepts a frame drawn FLAT in one colour establishes: the one unbroken surface it is,
+/// and nothing else — a frame carrying no boundary holds no content for anything to recur in,
+/// and a frame of a single tone renders no range of its colour family's tones, so neither the
+/// repeat nor the single tone is established by any part of it.
+const FLAT_COMPOSITION: [&str; 1] = [TEXTURE];
 
 /// One row of the vocabulary table: the frame the test drew, how it is submitted, which
 /// analyses are asked for, and the entities this service measures in it.
@@ -1666,20 +1668,22 @@ fn drawn_frames() -> Vec<Drawn> {
             bytes: colour_png(&two_colour(100, 50, 40, [30, 60, 220], [220, 30, 30])),
             staged_as: None,
             features: None,
-            // Only the one column where the two colours meet is a boundary, the larger
-            // colour covers more than half the frame, and the frame's parts each depart from
-            // its own mean colour by less than half the scale: all three clear the default
-            // floor of 55 percent.
-            reported: vec![TEXTURE, MONOCHROME, PATTERN],
+            // Only the one column where the two colours meet is a boundary, so almost all of
+            // the frame is one unbroken surface — while that single boundary leaves next to no
+            // content for a repeat to be read in, and the two colours sit so close in tone that
+            // the frame renders next to no range of either family: neither of those two concepts
+            // comes near the default floor of 55 percent.
+            reported: vec![TEXTURE],
         },
         Drawn {
             what: "a frame graded from dark to light",
             bytes: encode(&graded(120, 60), ImageFormat::Png),
             staged_as: None,
             features: None,
-            // Every step in a grade is a drift rather than a boundary, and the grey band in
-            // the middle of it covers more of the frame than the dark and light ends do; its
-            // parts depart too far from its mean tone for the repeat to clear the floor.
+            // Every step in a grade is a drift rather than a boundary, so all of it is one
+            // unbroken surface — which leaves no boundary for a repeat to be read in — while the
+            // grey band in the middle of it covers more of the frame than the dark and light
+            // ends do, over a range of tones wide enough to render in that family.
             reported: vec![TEXTURE, MONOCHROME],
         },
         Drawn {
@@ -1687,9 +1691,10 @@ fn drawn_frames() -> Vec<Drawn> {
             bytes: encode(&banded_tones(120, 120, &[40, 215, 40, 215]), ImageFormat::Png),
             staged_as: None,
             features: None,
-            // The bands leave most of the frame unbroken, but each part of it holds a tone of
-            // its own and the two tones split it evenly, so neither the repeat nor the single
-            // tone clears the floor.
+            // The bands leave most of the frame unbroken, so the little of it their edges
+            // divide is all the content a repeat could be read in, and the two tones split the
+            // frame evenly between two families: neither the repeat nor the single tone clears
+            // the floor.
             reported: vec![TEXTURE],
         },
         Drawn {

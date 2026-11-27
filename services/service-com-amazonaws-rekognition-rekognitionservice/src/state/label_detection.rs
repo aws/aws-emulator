@@ -44,26 +44,36 @@
 //! The second reads how the frame is COMPOSED, which its own gradient and colour statistics
 //! establish without a classifier, and which the published taxonomy holds concepts for in its
 //! colour-and-composition category ([`label_taxonomy::COLORS_AND_COMPOSITION_CATEGORY`]).
-//! "For each object, scene, and concept the API returns one or more labels", and how a frame is
-//! composed is a concept OF that frame whatever else it carries, so a frame in which no object
-//! was located is reported by all three readings below, each as its own concept and each at the
-//! share or agreement measured for it:
+//! "For each object, scene, and concept the API returns one or more labels", so a frame in which
+//! no object was located is reported by the concepts its own readings ESTABLISH, and by nothing
+//! else. A concept is established no more strongly than the WEAKEST reading it needs, so a frame
+//! carrying none of what a concept is read off establishes it at none of the scale and is not
+//! reported by it at all — rather than being reported by the full agreement that an absence
+//! trivially has:
 //!
 //! * [`label_taxonomy::TEXTURE`] — how much of the frame is one unbroken surface: the share of
 //!   it carrying no step steep enough, in any colour channel, to be a boundary between two
-//!   things ([`BOUNDARY_GRADIENT`]), which is the confidence reported for it.
-//! * [`label_taxonomy::PATTERN`] — how closely the parts of the frame hold the same content
-//!   over again: how little each part's own measured colour departs from the whole frame's,
-//!   which is the confidence. A frame drawn in one tone is the limiting case of a repeat, its
-//!   parts holding that one content over and over, and measures the complete agreement it has.
+//!   things ([`BOUNDARY_GRADIENT`]), which is the confidence reported for it. A frame too small
+//!   for a step to be measured anywhere in it carries no such reading at all.
+//! * [`label_taxonomy::PATTERN`] — how closely the parts of the frame hold the same content over
+//!   again: how little each part's own measured colour departs from the whole frame's, bounded
+//!   by how much of the frame carries a boundary ([`boundary_share`]). A repeat is content
+//!   RECURRING, so a frame carrying no content for anything to recur in establishes none of it,
+//!   however closely its undivided parts agree with one another. The bound is the share of the
+//!   frame's own pixels a boundary runs through, so a repeat drawn COARSELY — a few wide bands,
+//!   large blocks — is established the more faintly the fewer pixels its edges reach, which is
+//!   what this reading measures rather than the period of the repeat.
 //! * [`label_taxonomy::MONOCHROME`] — how much of the frame one colour family covers: the share
-//!   of it carrying the family most of it carries, which is the confidence. The measurement
-//!   reads the frame's colours; the name reported is the concept's, because a colour family is
-//!   a property OF the picture and is reported under `ImageProperties`, where the model puts a
-//!   property.
+//!   of it carrying the family most of it carries, bounded by the range of tones the frame
+//!   carries at all ([`tonal_span`], the span from its darkest pixel to its lightest). A picture
+//!   rendered in one colour is one drawn in the TONES of it, so a frame holding a single tone
+//!   renders no range of it and establishes none of the concept. The measurement reads the
+//!   frame's colours; the name reported is the concept's, because a colour family is a property
+//!   OF the picture and is reported under `ImageProperties`, where the model puts a property.
 //!
-//! No reading is silenced by a floor of this service's own. A concept measured WEAKLY is
-//! reported at the weak confidence measured for it, because how confident a reported label has
+//! What a reading DID establish is not silenced by a floor of this service's own. A concept
+//! measured WEAKLY is reported at the weak confidence measured for it, because how confident a
+//! reported label has
 //! to be is the REQUEST's to say: "Amazon Rekognition doesn't return any labels with confidence
 //! lower than this specified value … If MinConfidence is not specified, the operation returns
 //! labels with a confidence values greater than or equal to 55 percent" (`MinConfidence`'s own
@@ -71,7 +81,8 @@
 //! photographic frame — one whose detail breaks its surface, whose parts differ and whose
 //! colours are mixed — is therefore answered with the concepts its own statistics establish,
 //! and not with the empty list of an image carrying nothing: an empty `Labels` is what is left
-//! when the request's own narrowing keeps none of what was measured, and a refusal is reserved
+//! where no entity was located, the frame's own readings establish no concept of it either and
+//! the request's own narrowing keeps none of what they did establish, and a refusal is reserved
 //! for an image that could not be read at all. Every label reported carries all six
 //! members `Label` models, built in one place ([`super::label_taxonomy`]): the category the
 //! published taxonomy puts it in, every ancestor above it, the instances located for it, and
@@ -397,9 +408,10 @@ fn excluded(filters: &Option<Vec<String>>, values: &[&str], inclusive: bool) -> 
 /// [`label_taxonomy::FACE`] entity carrying an instance per measured face, and otherwise the
 /// composition concepts the frame's own statistics establish ([`composition_entities`]) — each
 /// with the ancestor labels the taxonomy expansion brings with it, "the response includes the
-/// all ancestors for a label", "where every ancestor is a unique label". A frame carries a
-/// composition whatever it holds, so an answer here names at least one entity; what the
-/// REQUEST then keeps of it is [`narrowed`]'s to say.
+/// all ancestors for a label", "where every ancestor is a unique label". An answer here names
+/// what was measured and nothing besides, so a frame no entity was located in and whose own
+/// readings establish no concept of it is named by nothing; what the REQUEST then keeps of what
+/// was named is [`narrowed`]'s to say.
 ///
 /// A frame an object was located IN is a picture of that object, so its composition is not
 /// what is reported for it; a frame no object was located in is a picture of its own
@@ -442,69 +454,91 @@ fn detected_labels(faces: &[FaceDetail], plane: &Plane, colors: Option<usize>) -
 // How a frame is composed
 // ---------------------------------------------------------------------------
 
-/// What one frame's own statistics say about how it is COMPOSED: how much of it carries no
-/// boundary, how closely its parts agree on their tone, and how much of it one colour family
-/// covers. Each is a percentage, and each is the confidence of the concept it establishes.
-#[derive(Debug, Clone, Copy)]
-struct Composition {
-    /// The share of the frame carrying no step steep enough to be a boundary.
-    unbroken: f32,
-    /// How closely the frame's own parts agree on their measured tone.
-    agreement: f32,
-    /// The share of the frame the colour family most of it carries covers.
-    one_family: f32,
-}
-
-/// The composition concepts a frame's own statistics establish, in the order they are
-/// measured: how much of it is one unbroken surface, how closely its parts hold the same
-/// content over again, and how much of it one colour family covers.
+/// The composition concepts a frame's own statistics ESTABLISH, in the order they are measured:
+/// how much of it is one unbroken surface, how much of it holds the same content over again, and
+/// how much of it is rendered in one colour family.
 ///
-/// ALL THREE are reported, each at the share or agreement measured for it, however weakly one
-/// of them comes out: a frame is composed somehow whatever it holds, and the floor a reported
-/// concept has to clear is the request's own `MinConfidence` ([`narrowed`]) and never one this
-/// service keeps to itself.
+/// Each concept is reported at the share or agreement measured for it, and each is established
+/// no more strongly than the WEAKEST reading it needs: a repeat needs content for something to
+/// recur in, and a rendering in one colour family needs a range of tones to render. A reading
+/// that establishes NONE of its concept — a frame no boundary could be measured in at all, a
+/// frame carrying no boundary for a repeat to be read in, a frame holding a single tone — is no
+/// evidence of that concept, so nothing is reported for it rather than the full agreement the
+/// absence trivially measures. The floor a concept a reading DID establish has to clear is the
+/// request's own `MinConfidence` ([`narrowed`]) and never one this service keeps to itself.
 fn composition_entities(plane: &Plane) -> Vec<Measured> {
-    let measured = composition_of(plane);
-    let concept = |name: &'static str, confidence: f32| Measured {
-        name,
-        confidence,
-        // Where a concept of the whole frame's composition "extends" is the frame itself,
-        // which is not an instance of a common object located in it.
-        instances: Vec::new(),
-    };
-    vec![
-        concept(label_taxonomy::TEXTURE, measured.unbroken),
-        concept(label_taxonomy::PATTERN, measured.agreement),
-        concept(label_taxonomy::MONOCHROME, measured.one_family),
-    ]
+    // One pass for the boundaries: both the surface and the repeat are read off it.
+    let boundaries = boundary_share(plane);
+    let readings = [
+        // How much of the frame no boundary divides.
+        (
+            label_taxonomy::TEXTURE,
+            boundaries.map(|share| 100.0 - share),
+        ),
+        // How closely its parts hold the same content over again, which is a repeat only of
+        // the content its boundaries divide it into.
+        (
+            label_taxonomy::PATTERN,
+            boundaries.map(|share| part_agreement(plane).min(share)),
+        ),
+        // How much of it one colour family covers, which is a rendering in that family only
+        // over the range of tones the frame carries at all.
+        (
+            label_taxonomy::MONOCHROME,
+            Some(one_family_share(plane).min(tonal_span(plane))),
+        ),
+    ];
+    readings
+        .into_iter()
+        .filter_map(|(name, measured)| {
+            // A reading of none establishes nothing, and a reading nothing could be taken for
+            // establishes nothing either.
+            measured.filter(|confidence| *confidence > 0.0).map(
+                |confidence| Measured {
+                    name,
+                    confidence,
+                    // Where a concept of the whole frame's composition "extends" is the frame
+                    // itself, which is not an instance of a common object located in it.
+                    instances: Vec::new(),
+                },
+            )
+        })
+        .collect()
 }
 
-/// How one frame is composed, measured off its own pixels.
-fn composition_of(plane: &Plane) -> Composition {
-    Composition {
-        unbroken: unbroken_share(plane),
-        agreement: part_agreement(plane),
-        one_family: one_family_share(plane),
-    }
-}
-
-/// How much of a frame carries NO boundary: the share of the pixels a gradient can be measured
-/// at whose own step is gentler than [`BOUNDARY_GRADIENT`], as a percentage. A frame too
-/// small to measure a gradient in carries no measurement, which is a share of none.
-fn unbroken_share(plane: &Plane) -> f32 {
+/// How much of a frame carries a BOUNDARY: the share of the pixels a gradient can be measured
+/// at whose own step is steeper than [`BOUNDARY_GRADIENT`], as a percentage, or `None` for a
+/// frame too small for a step to be measured anywhere in it — which is no reading at all rather
+/// than a reading of none.
+fn boundary_share(plane: &Plane) -> Option<f32> {
     let region = Region::whole(plane);
     let mut measured = 0_u64;
-    let mut gentle = 0_u64;
+    let mut steep = 0_u64;
     for index in region.inner_indices(plane) {
         measured += 1;
-        if steepest_step(plane, index) <= BOUNDARY_GRADIENT {
-            gentle += 1;
+        if steepest_step(plane, index) > BOUNDARY_GRADIENT {
+            steep += 1;
         }
     }
-    if measured == 0 {
+    (measured > 0).then(|| percent_of(steep as f64, measured as f64))
+}
+
+/// The range of tones the WHOLE frame carries, as a percentage of the scale a tone is measured
+/// on: the span from its darkest pixel to its lightest, whichever colour family each of them
+/// belongs to. A frame drawn in ONE tone spans none of the scale, so it carries no range of tones
+/// for any colour family to be rendered over.
+fn tonal_span(plane: &Plane) -> f32 {
+    if plane.pixels() == 0 {
         return 0.0;
     }
-    percent_of(gentle as f64, measured as f64)
+    let mut darkest = f64::MAX;
+    let mut lightest = f64::MIN;
+    for index in 0..plane.pixels() {
+        let tone = plane.luma_at(index);
+        darkest = darkest.min(tone);
+        lightest = lightest.max(tone);
+    }
+    percent_of(lightest - darkest, 255.0)
 }
 
 /// The steepest step at one pixel: the gradient magnitude of the COLOUR CHANNEL that changes

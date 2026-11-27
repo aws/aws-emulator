@@ -9,13 +9,18 @@
 //! measured in it — each a fully shaped `Label` (a `Name` of the general-label taxonomy, the
 //! `Confidence` measured for it, its `Categories`, its `Parents`, its `Aliases` and its
 //! `Instances`) beside the `LabelModelVersion` of the detection that ran. How a frame is
-//! composed is a concept OF that frame whatever else it holds, so every reading taken off it is
-//! reported at the share or agreement measured for it and NONE is silenced by a floor of the
+//! composed is read off the frame's own statistics, and each concept of it is established no
+//! more strongly than the WEAKEST reading it needs: the unbroken surface is the share of the
+//! frame no boundary divides, the repeat is its parts' agreement bounded by how much of it
+//! carries a boundary for content to recur in, and the single tone is one colour family's cover
+//! bounded by the range of tones the frame renders in it. What a reading established is reported
+//! at the share or agreement measured for it and NONE of it is silenced by a floor of the
 //! service's own: the only floor a reported label clears is the request's `MinConfidence` —
 //! "Amazon Rekognition doesn't return any labels with confidence lower than this specified
 //! value … If MinConfidence is not specified, the operation returns labels with a confidence
-//! values greater than or equal to 55 percent" — so an empty `Labels` list is what the
-//! request's own narrowing left and never the answer for a frame that was measured.
+//! values greater than or equal to 55 percent" — so an empty `Labels` list is what the request's
+//! own narrowing left of what was established, or what a frame whose pixels establish no concept
+//! at all is answered with, and never the answer for a frame a concept was measured in.
 //!
 //! Every frame below is DRAWN by the test, which measures the same two statistics off the same
 //! pixels the service reads and compares the confidences reported against what it measured
@@ -86,13 +91,13 @@ const MEASURED_TOLERANCE: f64 = 0.5;
 // ---------------------------------------------------------------------------
 
 /// A frame drawn entirely in one colour.
-fn flat(width: u32, height: u32, colour: [u8; 3]) -> RgbImage {
+pub(crate) fn flat(width: u32, height: u32, colour: [u8; 3]) -> RgbImage {
     RgbImage::from_pixel(width, height, Rgb(colour))
 }
 
 /// A frame graded from dark on the left to light on the right: every step in it is a drift
 /// rather than a boundary.
-fn graded(width: u32, height: u32) -> RgbImage {
+pub(crate) fn graded(width: u32, height: u32) -> RgbImage {
     RgbImage::from_fn(width, height, |x, _| {
         let tone = ((x * 255) / width.max(1)) as u8;
         Rgb([tone, tone, tone])
@@ -101,7 +106,7 @@ fn graded(width: u32, height: u32) -> RgbImage {
 
 /// A frame of `rows`-row bands alternating between two tones: the same content over again,
 /// finely where `rows` is small and coarsely where each band fills a part of the frame.
-fn striped(width: u32, height: u32, rows: u32, dark: u8, light: u8) -> RgbImage {
+pub(crate) fn striped(width: u32, height: u32, rows: u32, dark: u8, light: u8) -> RgbImage {
     RgbImage::from_fn(width, height, |_, y| {
         let tone = if (y / rows.max(1)).is_multiple_of(2) {
             dark
@@ -144,7 +149,7 @@ fn scene(width: u32, height: u32) -> RgbImage {
 
 /// The frame as the bytes a client submits, in one of the two formats the service reads: "the
 /// image must be either a PNG or JPEG formatted file".
-fn encoded(image: &RgbImage, format: ImageFormat) -> Vec<u8> {
+pub(crate) fn encoded(image: &RgbImage, format: ImageFormat) -> Vec<u8> {
     let mut bytes = Cursor::new(Vec::new());
     DynamicImage::ImageRgb8(image.clone())
         .write_to(&mut bytes, format)
@@ -155,18 +160,18 @@ fn encoded(image: &RgbImage, format: ImageFormat) -> Vec<u8> {
 /// The deterministic draw the generated frames are drawn from: an xorshift over a stated seed,
 /// so a failing case is reproduced by the seed the assertion names and nothing is written
 /// anywhere.
-struct Draw {
+pub(crate) struct Draw {
     state: u64,
 }
 
 impl Draw {
-    fn from(seed: u64) -> Self {
+    pub(crate) fn from(seed: u64) -> Self {
         Self {
             state: seed | 1,
         }
     }
 
-    fn next_byte(&mut self) -> u8 {
+    pub(crate) fn next_byte(&mut self) -> u8 {
         self.state ^= self.state << 13;
         self.state ^= self.state >> 7;
         self.state ^= self.state << 17;
@@ -502,8 +507,10 @@ fn drawn_frames() -> Vec<Frame> {
             labelled_at_the_default_floor: true,
         },
         Frame {
-            case: "a frame as small as a single pixel",
-            bytes: encoded(&flat(1, 1, [10, 10, 10]), ImageFormat::Png),
+            // Three pixels across: just large enough for one step to be measured in the middle
+            // of it, which is the smallest frame any reading can be taken off at all.
+            case: "a frame as small as a step can be measured in",
+            bytes: encoded(&flat(3, 3, [10, 10, 10]), ImageFormat::Png),
             labelled_at_the_default_floor: true,
         },
         Frame {
@@ -671,14 +678,18 @@ async fn a_swept_frame_is_never_answered_as_carrying_nothing() {
 // What each concept is reported at
 // ---------------------------------------------------------------------------
 
-/// Each composition concept is reported at the share or agreement MEASURED for it: the test
-/// takes the same two statistics off the same pixels and the reported confidences are what it
-/// measured, and a frame drawn in one colour is covered by one colour family completely. The
-/// frames are PNG, so the pixels the service decodes are the pixels the test drew.
+/// Each composition concept is reported at the share or agreement MEASURED for it, bounded by
+/// the weakest reading it needs: the test takes the same two statistics off the same pixels, and
+/// the confidences reported are what it measured — the unbroken share for the surface, and the
+/// parts' agreement bounded by the boundary share for the repeat. A concept a reading
+/// establishes NONE of is not reported at all: a frame drawn in one colour carries no boundary
+/// for a repeat to be read in and holds no range of tones to render its colour family over, so
+/// neither the repeat nor the single tone is reported for it. The frames are PNG, so the pixels
+/// the service decodes are the pixels the test drew.
 #[tokio::test]
 async fn each_concept_is_reported_at_the_share_measured_for_it() {
     let router = harness();
-    // (the case, the frame, whether one colour family covers all of it)
+    // (the case, the frame, whether it is drawn in one single colour)
     let cases: Vec<(&str, RgbImage, bool)> = vec![
         ("a frame drawn flat in one colour", flat(64, 64, [200, 30, 30]), true),
         ("a larger flat frame of another colour", flat(200, 120, [120, 70, 20]), true),
@@ -693,7 +704,7 @@ async fn each_concept_is_reported_at_the_share_measured_for_it() {
         ("a frame of fine detail", detailed(96, 96, 0x1234_5678), false),
         ("a smooth scene of drifting tones", scene(160, 120), false),
     ];
-    for (case, frame, one_family) in cases {
+    for (case, frame, one_colour) in cases {
         let bytes = encoded(&frame, ImageFormat::Png);
         // The floor of the scale narrows nothing away, so the whole measurement is visible.
         let wide = assert_shaped(
@@ -705,33 +716,57 @@ async fn each_concept_is_reported_at_the_share_measured_for_it() {
             .await,
             0.0,
         );
+        // The same two statistics, off the same pixels: the surface is the share of the frame
+        // no boundary divides, and the repeat is the parts' agreement bounded by the share a
+        // boundary does divide, because a repeat is content recurring.
+        let unbroken = unbroken_share(&frame);
+        let boundaries = 100.0 - unbroken;
         for (concept, expected) in [
-            (TEXTURE, unbroken_share(&frame)),
-            (PATTERN, part_agreement(&frame)),
+            (TEXTURE, unbroken),
+            (PATTERN, part_agreement(&frame).min(boundaries)),
         ] {
-            let reported = measured(&wide, concept).unwrap_or_else(|| {
-                panic!("case {case:?}: {concept:?} is measured off every frame, got {wide:?}")
-            });
-            assert!(
-                (reported - expected).abs() <= MEASURED_TOLERANCE,
-                "case {case:?}: {concept:?} is reported at the {expected} the test measured \
-                 off the same pixels, got {reported}"
-            );
+            let reported = measured(&wide, concept);
+            if expected == 0.0 {
+                assert!(
+                    reported.is_none(),
+                    "case {case:?}: the frame establishes none of {concept:?}, so it is not \
+                     reported by it, got {reported:?} in {wide:?}"
+                );
+                continue;
+            }
+            // A reading the test measures within [`MEASURED_TOLERANCE`] of none may land either
+            // side of none once the single precision the wire carries has rounded it, so
+            // presence is asserted of what the frame establishes by more than that tolerance,
+            // absence of what it establishes none of, and the confidence of whatever was
+            // reported either way.
+            if expected > MEASURED_TOLERANCE {
+                assert!(
+                    reported.is_some(),
+                    "case {case:?}: {concept:?} is established at {expected} by this frame, so \
+                     it is reported, got {wide:?}"
+                );
+            }
+            if let Some(reported) = reported {
+                assert!(
+                    (reported - expected).abs() <= MEASURED_TOLERANCE,
+                    "case {case:?}: {concept:?} is reported at the {expected} the test measured \
+                     off the same pixels, got {reported}"
+                );
+            }
         }
-        let monochrome = measured(&wide, MONOCHROME).unwrap_or_else(|| {
-            panic!("case {case:?}: the colour family's share is measured, got {wide:?}")
-        });
-        if one_family {
+        let monochrome = measured(&wide, MONOCHROME);
+        if one_colour {
             assert!(
-                (monochrome - 100.0).abs() <= MEASURED_TOLERANCE,
-                "case {case:?}: one colour family covers a frame drawn in one colour \
-                 completely, got {monochrome}"
+                monochrome.is_none(),
+                "case {case:?}: a frame drawn in one colour renders no range of that colour's \
+                 tones, so it establishes none of the single tone, got {monochrome:?} \
+                 in {wide:?}"
             );
-        } else {
+        } else if let Some(monochrome) = monochrome {
             assert!(
-                monochrome < 100.0,
-                "case {case:?}: the frame carries more than one colour family, so none of them \
-                 covers all of it, got {monochrome}"
+                (0.0..100.0).contains(&monochrome),
+                "case {case:?}: the frame carries more than one colour family or more than one \
+                 tone, so neither covers all of it, got {monochrome}"
             );
         }
 
@@ -754,8 +789,8 @@ async fn each_concept_is_reported_at_the_share_measured_for_it() {
         );
         assert!(
             !defaulted.is_empty(),
-            "case {case:?}: a frame is composed somehow, so the default answer still reports \
-             what was measured in it, got {wide:?}"
+            "case {case:?}: each of these frames establishes a concept of its composition \
+             clearly, so the default answer still reports what was measured in it, got {wide:?}"
         );
     }
 }
@@ -784,7 +819,8 @@ async fn the_floor_and_the_cap_only_narrow_what_was_measured() {
     assert_eq!(
         wide.len(),
         3,
-        "the three concepts are measured off every frame, got {wide:?}"
+        "this frame establishes all three concepts of its composition, the two weaker of them \
+         faintly, got {wide:?}"
     );
 
     // (the case, the narrowing, the floor it names, how many of the labels above that floor it

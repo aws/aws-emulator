@@ -11,6 +11,21 @@ Issue-Commit: 43586243266d19b209b15f2de40e433673053310
 
 # Rekognition DetectLabels reports composition concepts instead of the real-world entities in the image
 
+## Resolution of this report
+
+Cause 2 of 2 is FIXED: `DetectLabels` no longer appends composition concepts a frame carries
+nothing of, and no reading is reported at a confidence its own measurement did not establish, so
+the request's `MinConfidence` narrows them like any other label. Replay of
+`rekognition-refarch-rekreup-detect-labels-s3object-mistakes` (task#5 and task#6) passes.
+
+Cause 1 of 2 is NOT fixed and is NOT claimed fixed by this report's move. Naming the entities of
+the general-label taxonomy that an arbitrary photograph carries is a trained classifier over that
+taxonomy; its weights can neither be shipped in this repository nor fetched at run time, and the
+only ways to produce the recorded names without one — keying them to a file name, an object key, a
+byte digest or the recorded answer — are fabrication. That cause is carried on as its own open
+report, `issues/things-that-do-not-work/20261127T000000Z-rekognition-detectlabels-names-no-real-world-entity-of-a-photograph.md`,
+which records the blocker and the fixture step that still diverges on it.
+
 > _Note: this issue was identified against the code base at commit `43586243266d19b209b15f2de40e433673053310`. If you are an issue fixer working on this, the code base you are currently working in can have drifted, so you might need to trace the issue back to the current code base._
 
 ## Operation
