@@ -81,6 +81,8 @@ pub struct Connector {
     pub scope_configuration: Option<AzureScopeConfiguration>,
     pub tags: Option<std::collections::HashMap<String, String>>,
     pub auto_install_vm_scanner: Option<bool>,
+    pub gcp_regions: Option<Vec<String>>,
+    pub gcp_scope_configuration: Option<GcpScopeConfiguration>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.inspector2#ConnectorHealth")]
@@ -102,6 +104,23 @@ pub struct AzureScopeConfiguration {
 #[smithy_macros::smithy(shape = "com.amazonaws.inspector2#ScopeConfiguration")]
 #[derive(Debug, Clone, Default)]
 pub struct ScopeConfiguration {
+    pub scope_type: String,
+    pub scope_values: Option<Vec<String>>,
+    pub state: Option<String>,
+    pub state_reason: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.inspector2#GcpScopeConfiguration")]
+#[derive(Debug, Clone, Default)]
+pub struct GcpScopeConfiguration {
+    pub vm_scanning: Option<GcpCapabilityScope>,
+    pub container_image_scanning: Option<GcpCapabilityScope>,
+    pub serverless_scanning: Option<GcpCapabilityScope>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.inspector2#GcpCapabilityScope")]
+#[derive(Debug, Clone, Default)]
+pub struct GcpCapabilityScope {
     pub scope_type: String,
     pub scope_values: Option<Vec<String>>,
     pub state: Option<String>,

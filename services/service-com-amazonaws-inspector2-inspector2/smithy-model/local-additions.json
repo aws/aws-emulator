@@ -1,0 +1,31 @@
+{
+  "smithy": "2.0",
+  "shapes": {
+    "com.amazonaws.inspector2#State": {
+      "type": "structure",
+      "members": {
+        "status": {
+          "target": "com.amazonaws.inspector2#Status",
+          "traits": {
+            "smithy.api#required": {}
+          }
+        },
+        "errorCode": {
+          "target": "com.amazonaws.inspector2#ErrorCode"
+        },
+        "errorMessage": {
+          "target": "com.amazonaws.inspector2#NonEmptyString"
+        }
+      }
+    },
+    "com.amazonaws.inspector2#Status": {
+      "type": "string"
+    },
+    "com.amazonaws.inspector2#ErrorCode": {
+      "type": "string"
+    },
+    "com.amazonaws.inspector2#NonEmptyString": {
+      "type": "string"
+    }
+  }
+}

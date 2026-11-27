@@ -55,6 +55,7 @@ pub mod get_ec2_deep_inspection_configuration_types;
 pub mod get_encryption_key_types;
 pub mod get_findings_report_status_types;
 pub mod get_member_types;
+pub mod get_on_demand_scan_status_types;
 pub mod get_sbom_export_types;
 pub mod list_account_permissions_types;
 pub mod list_cis_scan_configurations_types;
@@ -73,6 +74,7 @@ pub mod list_filters_types;
 pub mod list_finding_aggregations_types;
 pub mod list_findings_types;
 pub mod list_members_types;
+pub mod list_on_demand_scans_types;
 pub mod list_tags_for_resource_types;
 pub mod list_usage_totals_types;
 pub mod reset_encryption_key_types;
@@ -82,6 +84,7 @@ pub mod send_cis_session_telemetry_types;
 pub mod shared_types;
 pub mod start_cis_session_types;
 pub mod start_code_security_scan_types;
+pub mod start_on_demand_scan_types;
 pub mod stop_cis_session_types;
 pub mod tag_resource_types;
 pub mod untag_resource_types;
@@ -180,6 +183,8 @@ pub use get_findings_report_status_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use get_member_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use get_on_demand_scan_status_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use get_sbom_export_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use list_account_permissions_types::*;
@@ -216,6 +221,8 @@ pub use list_findings_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use list_members_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use list_on_demand_scans_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use list_tags_for_resource_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use list_usage_totals_types::*;
@@ -233,6 +240,8 @@ pub use shared_types::*;
 pub use start_cis_session_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use start_code_security_scan_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use start_on_demand_scan_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use stop_cis_session_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]

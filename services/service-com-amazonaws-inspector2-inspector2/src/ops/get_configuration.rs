@@ -2,8 +2,9 @@
 
 //! @op GetConfiguration
 //! IMPLEMENTED: reports the Amazon Inspector scan configuration in force for the account
-//! the request names — its own ECR automated re-scan setting and Amazon EC2 scan mode where
-//! it has been configured individually, and the delegated administrator's where it has not.
+//! the request names — its own ECR automated re-scan setting, Amazon EC2 scan mode and
+//! Amazon Machine Image scan setting where it has been configured individually, and the
+//! delegated administrator's where it has not.
 //! A reporting operation: every value is read from the shared state and every status is
 //! derived from the instant the last change falls due, so this handler writes nothing.
 //!
@@ -195,6 +196,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             )),
             ec2_configuration: Some(crate::state::ec2_configuration_state(
                 configuration.ec2.as_ref(),
+                now,
+            )),
+            ami_configuration: Some(crate::state::ami_configuration_state(
+                configuration.ami.as_ref(),
                 now,
             )),
         })

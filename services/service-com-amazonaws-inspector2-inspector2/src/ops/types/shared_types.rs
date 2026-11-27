@@ -108,6 +108,7 @@ pub struct ResourceStatus {
     pub lambda: Option<String>,
     pub lambda_code: Option<String>,
     pub code_repository: Option<String>,
+    pub ami: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.inspector2#CisaData")]
@@ -183,6 +184,17 @@ pub struct MonthlySchedule {
     pub day: String,
 }
 
+#[smithy_macros::smithy(shape = "com.amazonaws.inspector2#CodeSecurityIntegrationVpcConfiguration")]
+#[derive(Debug, Clone, Default)]
+pub struct CodeSecurityIntegrationVpcConfiguration {
+    pub vpc_id: String,
+    pub vpc_endpoint_id: String,
+    pub code_connections_host_arn: Option<String>,
+    pub subnet_ids: Option<Vec<String>>,
+    pub security_groups: Option<Vec<String>>,
+    pub tls_certificate: Option<String>,
+}
+
 #[smithy_macros::smithy(shape = "com.amazonaws.inspector2#CodeSecurityScanConfiguration")]
 #[derive(Debug, Clone, Default)]
 pub struct CodeSecurityScanConfiguration {
@@ -221,6 +233,21 @@ pub struct AzureScopeConfigurationInput {
 #[smithy_macros::smithy(shape = "com.amazonaws.inspector2#ScopeConfigurationInput")]
 #[derive(Debug, Clone, Default)]
 pub struct ScopeConfigurationInput {
+    pub scope_type: String,
+    pub scope_values: Option<Vec<String>>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.inspector2#GcpScopeConfigurationInput")]
+#[derive(Debug, Clone, Default)]
+pub struct GcpScopeConfigurationInput {
+    pub vm_scanning: Option<GcpCapabilityScopeInput>,
+    pub container_image_scanning: Option<GcpCapabilityScopeInput>,
+    pub serverless_scanning: Option<GcpCapabilityScopeInput>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.inspector2#GcpCapabilityScopeInput")]
+#[derive(Debug, Clone, Default)]
+pub struct GcpCapabilityScopeInput {
     pub scope_type: String,
     pub scope_values: Option<Vec<String>>,
 }
@@ -274,6 +301,10 @@ pub struct FilterCriteria {
     pub epss_score: Option<Vec<NumberFilter>>,
     pub code_repository_project_name: Option<Vec<StringFilter>>,
     pub code_repository_provider_type: Option<Vec<StringFilter>>,
+    pub machine_image_id: Option<Vec<StringFilter>>,
+    pub machine_image_name: Option<Vec<StringFilter>>,
+    pub machine_image_owner_account_id: Option<Vec<StringFilter>>,
+    pub machine_image_platform: Option<Vec<StringFilter>>,
     pub cloud_provider: Option<Vec<StringFilter>>,
     pub cloud_provider_region: Option<Vec<StringFilter>>,
     pub cloud_provider_account_id: Option<Vec<StringFilter>>,
@@ -342,6 +373,31 @@ pub struct PackageFilter {
     pub source_layer_hash: Option<StringFilter>,
     pub source_lambda_layer_arn: Option<StringFilter>,
     pub file_path: Option<StringFilter>,
+    pub runtime_reachability: Option<RuntimeReachabilityFilter>,
+    pub runtime_reachability_reason: Option<RuntimeReachabilityReasonFilter>,
+    pub purl_qualifier: Option<PurlQualifierFilter>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.inspector2#RuntimeReachabilityFilter")]
+#[derive(Debug, Clone, Default)]
+pub struct RuntimeReachabilityFilter {
+    pub comparison: String,
+    pub value: String,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.inspector2#RuntimeReachabilityReasonFilter")]
+#[derive(Debug, Clone, Default)]
+pub struct RuntimeReachabilityReasonFilter {
+    pub comparison: String,
+    pub value: String,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.inspector2#PurlQualifierFilter")]
+#[derive(Debug, Clone, Default)]
+pub struct PurlQualifierFilter {
+    pub comparison: String,
+    pub key: String,
+    pub value: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.inspector2#BadRequestException")]
@@ -356,6 +412,7 @@ pub struct Destination {
     pub bucket_name: String,
     pub key_prefix: Option<String>,
     pub kms_key_arn: String,
+    pub expected_bucket_owner: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.inspector2#ResourceFilterCriteria")]
@@ -405,6 +462,7 @@ pub struct AutoEnable {
     pub lambda: Option<bool>,
     pub lambda_code: Option<bool>,
     pub code_repository: Option<bool>,
+    pub ami: Option<bool>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.inspector2#Account")]
@@ -427,6 +485,22 @@ pub struct CisStringFilter {
 pub struct CisSecurityLevelFilter {
     pub comparison: String,
     pub value: String,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.inspector2#AmiScanModeConfiguration")]
+#[derive(Debug, Clone, Default)]
+pub struct AmiScanModeConfiguration {
+    pub scan_mode: String,
+    pub tags: Option<Vec<AmiTagFilter>>,
+    pub exclude_copied_amis: Option<bool>,
+    pub exclude_backup_dlm_amis: Option<bool>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.inspector2#AmiTagFilter")]
+#[derive(Debug, Clone, Default)]
+pub struct AmiTagFilter {
+    pub key: String,
+    pub value: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.inspector2#Member")]
@@ -496,6 +570,7 @@ pub struct CoverageFilterCriteria {
     pub lambda_function_name: Option<Vec<CoverageStringFilter>>,
     pub lambda_function_tags: Option<Vec<CoverageMapFilter>>,
     pub lambda_function_runtime: Option<Vec<CoverageStringFilter>>,
+    pub machine_image_tags: Option<Vec<CoverageMapFilter>>,
     pub last_scanned_at: Option<Vec<CoverageDateFilter>>,
     pub scan_mode: Option<Vec<CoverageStringFilter>>,
     pub image_pulled_at: Option<Vec<CoverageDateFilter>>,
@@ -556,11 +631,23 @@ pub const AGGREGATION_FINDING_TYPE_VALUES: &[&str] = &["CODE_VULNERABILITY", "NE
 
 
 /// The values `AggregationResourceType` accepts on the wire.
-pub const AGGREGATION_RESOURCE_TYPE_VALUES: &[&str] = &["AWS_EC2_INSTANCE", "AWS_ECR_CONTAINER_IMAGE", "AWS_LAMBDA_FUNCTION", "CODE_REPOSITORY", "Microsoft.Compute/virtualMachines", "Microsoft.ContainerRegistry/registry/containerImage", "Microsoft.Web/sites"];
+pub const AGGREGATION_RESOURCE_TYPE_VALUES: &[&str] = &["AWS_EC2_INSTANCE", "AWS_ECR_CONTAINER_IMAGE", "AWS_LAMBDA_FUNCTION", "CODE_REPOSITORY", "Microsoft.Compute/virtualMachines", "Microsoft.ContainerRegistry/registry/containerImage", "Microsoft.Web/sites", "artifactregistry.googleapis.com/DockerImage", "cloudfunctions.googleapis.com/Function", "compute.googleapis.com/Instance"];
 
 
 /// The values `AggregationType` accepts on the wire.
 pub const AGGREGATION_TYPE_VALUES: &[&str] = &["ACCOUNT", "AMI", "AWS_EC2_INSTANCE", "AWS_ECR_CONTAINER", "AWS_LAMBDA_FUNCTION", "CODE_REPOSITORY", "CONTAINER_IMAGE", "FINDING_TYPE", "IMAGE_LAYER", "LAMBDA_LAYER", "PACKAGE", "REPOSITORY", "SERVERLESS_FUNCTION", "TITLE", "VM_INSTANCE"];
+
+
+/// The values `AmiConfigurationStatus` accepts on the wire.
+pub const AMI_CONFIGURATION_STATUS_VALUES: &[&str] = &["FAILED", "PENDING", "SUCCESS"];
+
+
+/// The values `AmiScanDuration` accepts on the wire.
+pub const AMI_SCAN_DURATION_VALUES: &[&str] = &["DAYS_14", "DAYS_180", "DAYS_30", "DAYS_60", "DAYS_7", "DAYS_90"];
+
+
+/// The values `AmiScanMode` accepts on the wire.
+pub const AMI_SCAN_MODE_VALUES: &[&str] = &["SCAN_ALL", "TARGET_SCANNING"];
 
 
 /// The values `AmiSortBy` accepts on the wire.
@@ -664,7 +751,7 @@ pub const CIS_TARGET_STATUS_REASON_VALUES: &[&str] = &["SCAN_IN_PROGRESS", "SSM_
 
 
 /// The values `CloudProvider` accepts on the wire.
-pub const CLOUD_PROVIDER_VALUES: &[&str] = &["AWS", "AZURE", "NOT_APPLICABLE"];
+pub const CLOUD_PROVIDER_VALUES: &[&str] = &["AWS", "AZURE", "GCP", "NOT_APPLICABLE"];
 
 
 /// The values `CodeRepositoryProviderType` accepts on the wire.
@@ -692,7 +779,7 @@ pub const CONNECTOR_ARN_COMPARISON_VALUES: &[&str] = &["EQUALS"];
 
 
 /// The values `ConnectorCloudProvider` accepts on the wire.
-pub const CONNECTOR_CLOUD_PROVIDER_VALUES: &[&str] = &["AZURE"];
+pub const CONNECTOR_CLOUD_PROVIDER_VALUES: &[&str] = &["AZURE", "GCP"];
 
 
 /// The values `ConnectorHealthStatus` accepts on the wire.
@@ -728,7 +815,7 @@ pub const COVERAGE_MAP_COMPARISON_VALUES: &[&str] = &["EQUALS"];
 
 
 /// The values `CoverageResourceType` accepts on the wire.
-pub const COVERAGE_RESOURCE_TYPE_VALUES: &[&str] = &["AWS_EC2_INSTANCE", "AWS_ECR_CONTAINER_IMAGE", "AWS_ECR_REPOSITORY", "AWS_LAMBDA_FUNCTION", "CODE_REPOSITORY", "Microsoft.Compute/virtualMachines", "Microsoft.ContainerRegistry/registries", "Microsoft.ContainerRegistry/registry/containerImage", "Microsoft.ContainerRegistry/registry/containerRepository", "Microsoft.Web/sites"];
+pub const COVERAGE_RESOURCE_TYPE_VALUES: &[&str] = &["AWS_EC2_INSTANCE", "AWS_ECR_CONTAINER_IMAGE", "AWS_ECR_REPOSITORY", "AWS_LAMBDA_FUNCTION", "CODE_REPOSITORY", "MACHINE_IMAGE", "Microsoft.Compute/virtualMachines", "Microsoft.ContainerRegistry/registries", "Microsoft.ContainerRegistry/registry/containerImage", "Microsoft.ContainerRegistry/registry/containerRepository", "Microsoft.Web/sites", "artifactregistry.googleapis.com/DockerImage", "artifactregistry.googleapis.com/Repository", "cloudfunctions.googleapis.com/Function", "compute.googleapis.com/Instance"];
 
 
 /// The values `CoverageStringComparison` accepts on the wire.
@@ -836,7 +923,7 @@ pub const FREE_TRIAL_STATUS_VALUES: &[&str] = &["ACTIVE", "INACTIVE"];
 
 
 /// The values `FreeTrialType` accepts on the wire.
-pub const FREE_TRIAL_TYPE_VALUES: &[&str] = &["CODE_REPOSITORY", "CONTAINER_IMAGE", "EC2", "ECR", "LAMBDA", "LAMBDA_CODE", "SERVERLESS_FUNCTION", "VM"];
+pub const FREE_TRIAL_TYPE_VALUES: &[&str] = &["CODE_REPOSITORY", "CONTAINER_IMAGE", "EC2", "ECR", "LAMBDA", "LAMBDA_CODE", "MACHINE_IMAGE", "SERVERLESS_FUNCTION", "VM"];
 
 
 /// The values `GroupKey` accepts on the wire.
@@ -852,11 +939,11 @@ pub const INHERITANCE_MODE_VALUES: &[&str] = &["INHERIT_FROM_ADMIN"];
 
 
 /// The values `IntegrationStatus` accepts on the wire.
-pub const INTEGRATION_STATUS_VALUES: &[&str] = &["ACTIVE", "DISABLING", "INACTIVE", "IN_PROGRESS", "PENDING"];
+pub const INTEGRATION_STATUS_VALUES: &[&str] = &["ACTIVE", "DELETE_FAILED", "DELETE_IN_PROGRESS", "DISABLING", "ESTABLISHING_CONNECTION_COMPLETED", "ESTABLISHING_CONNECTION_FAILED", "ESTABLISHING_CONNECTION_IN_PROGRESS", "INACTIVE", "IN_PROGRESS", "PENDING", "PENDING_MANIFEST_CODE"];
 
 
 /// The values `IntegrationType` accepts on the wire.
-pub const INTEGRATION_TYPE_VALUES: &[&str] = &["GITHUB", "GITLAB_SELF_MANAGED"];
+pub const INTEGRATION_TYPE_VALUES: &[&str] = &["GITHUB", "GITHUB_ENTERPRISE_SERVER", "GITLAB_SELF_MANAGED"];
 
 
 /// The values `LambdaFunctionSortBy` accepts on the wire.
@@ -875,12 +962,28 @@ pub const LIST_CIS_SCANS_DETAIL_LEVEL_VALUES: &[&str] = &["MEMBER", "ORGANIZATIO
 pub const LIST_CIS_SCANS_SORT_BY_VALUES: &[&str] = &["FAILED_CHECKS", "SCAN_START_DATE", "SCHEDULED_BY", "STATUS"];
 
 
+/// The values `MachineImagePlatform` accepts on the wire.
+pub const MACHINE_IMAGE_PLATFORM_VALUES: &[&str] = &["LINUX", "UNKNOWN", "WINDOWS"];
+
+
 /// The values `MapComparison` accepts on the wire.
 pub const MAP_COMPARISON_VALUES: &[&str] = &["EQUALS"];
 
 
 /// The values `NetworkProtocol` accepts on the wire.
 pub const NETWORK_PROTOCOL_VALUES: &[&str] = &["TCP", "UDP"];
+
+
+/// The values `OnDemandResourceType` accepts on the wire.
+pub const ON_DEMAND_RESOURCE_TYPE_VALUES: &[&str] = &["AMI"];
+
+
+/// The values `OnDemandScanStatus` accepts on the wire.
+pub const ON_DEMAND_SCAN_STATUS_VALUES: &[&str] = &["FAILED", "IN_PROGRESS", "SUCCESSFUL"];
+
+
+/// The values `OnDemandScanStatusReason` accepts on the wire.
+pub const ON_DEMAND_SCAN_STATUS_REASON_VALUES: &[&str] = &["ACCESS_DENIED", "EXTRACTION_COLLECTION_TIME_LIMIT_EXCEEDED", "INTERNAL_ERROR", "RESOURCE_TERMINATED", "STORAGE_LIMIT_EXCEEDED", "UNSUPPORTED_OS"];
 
 
 /// The values `Operation` accepts on the wire.
@@ -908,11 +1011,15 @@ pub const PROJECT_SELECTION_SCOPE_VALUES: &[&str] = &["ALL"];
 
 
 /// The values `Provider` accepts on the wire.
-pub const PROVIDER_VALUES: &[&str] = &["AWS", "AZURE"];
+pub const PROVIDER_VALUES: &[&str] = &["AWS", "AZURE", "GCP"];
 
 
 /// The values `ProviderComparison` accepts on the wire.
 pub const PROVIDER_COMPARISON_VALUES: &[&str] = &["EQUALS"];
+
+
+/// The values `PurlQualifierKey` accepts on the wire.
+pub const PURL_QUALIFIER_KEY_VALUES: &[&str] = &["arch", "collector", "dev_dependency", "distro", "epoch", "go_toolchain", "hardened", "private", "rust_toolchain", "scope", "skip_chromium_download", "source", "stream", "transitive_dependency", "unresolved", "vendor"];
 
 
 /// The values `RelationshipStatus` accepts on the wire.
@@ -944,7 +1051,7 @@ pub const RESOURCE_STRING_COMPARISON_VALUES: &[&str] = &["EQUALS", "NOT_EQUALS"]
 
 
 /// The values `ResourceType` accepts on the wire.
-pub const RESOURCE_TYPE_VALUES: &[&str] = &["AWS_EC2_INSTANCE", "AWS_ECR_CONTAINER_IMAGE", "AWS_ECR_REPOSITORY", "AWS_LAMBDA_FUNCTION", "CODE_REPOSITORY", "Microsoft.Compute/virtualMachines", "Microsoft.ContainerRegistry/registry/containerImage", "Microsoft.Web/sites"];
+pub const RESOURCE_TYPE_VALUES: &[&str] = &["AWS_EC2_INSTANCE", "AWS_ECR_CONTAINER_IMAGE", "AWS_ECR_REPOSITORY", "AWS_LAMBDA_FUNCTION", "CODE_REPOSITORY", "MACHINE_IMAGE", "Microsoft.Compute/virtualMachines", "Microsoft.ContainerRegistry/registry/containerImage", "Microsoft.Web/sites", "artifactregistry.googleapis.com/DockerImage", "cloudfunctions.googleapis.com/Function", "compute.googleapis.com/Instance"];
 
 
 /// The values `RuleSetCategory` accepts on the wire.
@@ -955,6 +1062,18 @@ pub const RULE_SET_CATEGORY_VALUES: &[&str] = &["IAC", "SAST", "SCA"];
 pub const RUNTIME_VALUES: &[&str] = &["DOTNETCORE_3_1", "DOTNET_10", "DOTNET_6", "DOTNET_7", "DOTNET_8", "GO_1_X", "JAVA_11", "JAVA_17", "JAVA_21", "JAVA_25", "JAVA_8", "JAVA_8_AL2", "NODEJS", "NODEJS_12_X", "NODEJS_14_X", "NODEJS_16_X", "NODEJS_18_X", "NODEJS_20_X", "NODEJS_22_X", "NODEJS_24_X", "PYTHON_3_10", "PYTHON_3_11", "PYTHON_3_12", "PYTHON_3_13", "PYTHON_3_14", "PYTHON_3_7", "PYTHON_3_8", "PYTHON_3_9", "RUBY_2_7", "RUBY_3_2", "RUBY_3_3", "UNSUPPORTED"];
 
 
+/// The values `RuntimeReachability` accepts on the wire.
+pub const RUNTIME_REACHABILITY_VALUES: &[&str] = &["NOT_REACHABLE", "REACHABLE", "UNKNOWN"];
+
+
+/// The values `RuntimeReachabilityComparison` accepts on the wire.
+pub const RUNTIME_REACHABILITY_COMPARISON_VALUES: &[&str] = &["EQUALS", "NOT_EQUALS"];
+
+
+/// The values `RuntimeReachabilityReason` accepts on the wire.
+pub const RUNTIME_REACHABILITY_REASON_VALUES: &[&str] = &["PACKAGE_IN_DOCKERFILE_WORKLOAD_PATH", "PACKAGE_NOT_IN_DOCKERFILE_WORKLOAD_PATH", "PROCESS_NOT_OBSERVED_IN_EC2_RUNTIME", "PROCESS_OBSERVED_IN_EC2_RUNTIME"];
+
+
 /// The values `SbomReportFormat` accepts on the wire.
 pub const SBOM_REPORT_FORMAT_VALUES: &[&str] = &["CYCLONEDX_1_4", "SPDX_2_3"];
 
@@ -963,12 +1082,16 @@ pub const SBOM_REPORT_FORMAT_VALUES: &[&str] = &["CYCLONEDX_1_4", "SPDX_2_3"];
 pub const SCAN_MODE_VALUES: &[&str] = &["EC2_AGENTLESS", "EC2_INSPECTOR_AGENT_BASED", "EC2_SSM_AGENT_BASED", "VM_INSPECTOR_AGENT_BASED"];
 
 
+/// The values `ScanSource` accepts on the wire.
+pub const SCAN_SOURCE_VALUES: &[&str] = &["INSTANCE_SCAN", "MACHINE_IMAGE_SCAN"];
+
+
 /// The values `ScanStatusCode` accepts on the wire.
 pub const SCAN_STATUS_CODE_VALUES: &[&str] = &["ACTIVE", "INACTIVE"];
 
 
 /// The values `ScanStatusReason` accepts on the wire.
-pub const SCAN_STATUS_REASON_VALUES: &[&str] = &["ACCESS_DENIED", "ACCESS_DENIED_TO_ENCRYPTION_KEY", "AGENTLESS_INSTANCE_COLLECTION_TIME_LIMIT_EXCEEDED", "AGENTLESS_INSTANCE_STORAGE_LIMIT_EXCEEDED", "DEEP_INSPECTION_COLLECTION_TIME_LIMIT_EXCEEDED", "DEEP_INSPECTION_DAILY_SSM_INVENTORY_LIMIT_EXCEEDED", "DEEP_INSPECTION_NO_INVENTORY", "DEEP_INSPECTION_PACKAGE_COLLECTION_LIMIT_EXCEEDED", "EC2_INSTANCE_STOPPED", "EXCLUDED_BY_TAG", "IMAGE_ARCHIVED", "IMAGE_SIZE_EXCEEDED", "INTEGRATION_CONNECTION_LOST", "INTERNAL_ERROR", "NO_INVENTORY", "NO_RESOURCES_FOUND", "NO_SCAN_CONFIGURATION_ASSOCIATED", "PENDING_DISABLE", "PENDING_INITIAL_SCAN", "PENDING_REVIVAL_SCAN", "RESOURCE_STOPPED", "RESOURCE_TERMINATED", "RESOURCE_UNMANAGED", "SCAN_ELIGIBILITY_EXPIRED", "SCAN_FREQUENCY_MANUAL", "SCAN_FREQUENCY_SCAN_ON_PUSH", "SCAN_IN_PROGRESS", "STALE_INVENTORY", "SUCCESSFUL", "UNMANAGED_EC2_INSTANCE", "UNSUPPORTED_CODE_ARTIFACTS", "UNSUPPORTED_CONFIG_FILE", "UNSUPPORTED_LANGUAGE", "UNSUPPORTED_MEDIA_TYPE", "UNSUPPORTED_OS", "UNSUPPORTED_RUNTIME"];
+pub const SCAN_STATUS_REASON_VALUES: &[&str] = &["ACCESS_DENIED", "ACCESS_DENIED_TO_ENCRYPTION_KEY", "AGENTLESS_INSTANCE_COLLECTION_TIME_LIMIT_EXCEEDED", "AGENTLESS_INSTANCE_STORAGE_LIMIT_EXCEEDED", "DEEP_INSPECTION_COLLECTION_TIME_LIMIT_EXCEEDED", "DEEP_INSPECTION_DAILY_SSM_INVENTORY_LIMIT_EXCEEDED", "DEEP_INSPECTION_NO_INVENTORY", "DEEP_INSPECTION_PACKAGE_COLLECTION_LIMIT_EXCEEDED", "EC2_INSTANCE_STOPPED", "EXCLUDED_BY_TAG", "EXTRACTION_COLLECTION_TIME_LIMIT_EXCEEDED", "IMAGE_ARCHIVED", "IMAGE_SIZE_EXCEEDED", "INTEGRATION_CONNECTION_LOST", "INTERNAL_ERROR", "INVALID_ARTIFACT", "NO_INVENTORY", "NO_RESOURCES_FOUND", "NO_SCAN_CONFIGURATION_ASSOCIATED", "PENDING_DISABLE", "PENDING_INITIAL_SCAN", "PENDING_REVIVAL_SCAN", "RESOURCE_STOPPED", "RESOURCE_TERMINATED", "RESOURCE_UNMANAGED", "SCAN_ELIGIBILITY_EXPIRED", "SCAN_FREQUENCY_MANUAL", "SCAN_FREQUENCY_SCAN_ON_PUSH", "SCAN_IN_PROGRESS", "STALE_INVENTORY", "STORAGE_LIMIT_EXCEEDED", "SUCCESSFUL", "UNMANAGED_EC2_INSTANCE", "UNSUPPORTED_CODE_ARTIFACTS", "UNSUPPORTED_CONFIG_FILE", "UNSUPPORTED_LANGUAGE", "UNSUPPORTED_MEDIA_TYPE", "UNSUPPORTED_OS", "UNSUPPORTED_RUNTIME"];
 
 
 /// The values `ScanType` accepts on the wire.
@@ -980,7 +1103,7 @@ pub const SCOPE_STATE_VALUES: &[&str] = &["ACTIVE", "DISABLED", "ERROR", "PENDIN
 
 
 /// The values `ScopeType` accepts on the wire.
-pub const SCOPE_TYPE_VALUES: &[&str] = &["SUBSCRIPTION", "TENANT"];
+pub const SCOPE_TYPE_VALUES: &[&str] = &["ORGANIZATION", "PROJECT", "SUBSCRIPTION", "TENANT"];
 
 
 /// The values `ServerlessFunctionSortBy` accepts on the wire.
@@ -1024,7 +1147,7 @@ pub const TITLE_SORT_BY_VALUES: &[&str] = &["ALL", "CRITICAL", "HIGH"];
 
 
 /// The values `UsageType` accepts on the wire.
-pub const USAGE_TYPE_VALUES: &[&str] = &["AZURE_CONTAINER_IMAGE_INITIAL_SCAN", "AZURE_CONTAINER_IMAGE_RESCAN", "AZURE_SERVERLESS_FUNCTION_HOURS", "AZURE_VM_AGENT_BASED_INSTANCE_HOURS", "CODE_REPOSITORY_IAC", "CODE_REPOSITORY_SAST", "CODE_REPOSITORY_SCA", "EC2_AGENTLESS_INSTANCE_HOURS", "EC2_INSTANCE_HOURS", "ECR_INITIAL_SCAN", "ECR_RESCAN", "LAMBDA_FUNCTION_CODE_HOURS", "LAMBDA_FUNCTION_HOURS"];
+pub const USAGE_TYPE_VALUES: &[&str] = &["AZURE_CONTAINER_IMAGE_INITIAL_SCAN", "AZURE_CONTAINER_IMAGE_RESCAN", "AZURE_SERVERLESS_FUNCTION_HOURS", "AZURE_VM_AGENT_BASED_INSTANCE_HOURS", "CODE_REPOSITORY_IAC", "CODE_REPOSITORY_SAST", "CODE_REPOSITORY_SCA", "EC2_AGENTLESS_INSTANCE_HOURS", "EC2_AMI_HOURS", "EC2_AMI_ONE_SHOT_SCAN", "EC2_INSTANCE_HOURS", "ECR_INITIAL_SCAN", "ECR_RESCAN", "GCP_CLOUD_RUN_HOURS", "GCP_CONTAINER_IMAGE_INITIAL_SCAN", "GCP_CONTAINER_IMAGE_RESCAN", "GCP_VM_AGENT_BASED_INSTANCE_HOURS", "LAMBDA_FUNCTION_CODE_HOURS", "LAMBDA_FUNCTION_HOURS"];
 
 
 /// The values `VMScannerStatus` accepts on the wire.

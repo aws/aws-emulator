@@ -194,13 +194,20 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             // A member account Amazon Inspector was never enabled for has no record, and
             // reports the same thing a disabled account does: everything off.
             let enablement = guard.accounts.get(&account_id).cloned().unwrap_or_default();
+            // Neither error member is reported: this account's scanning did not fail to
+            // enable, and `ErrorCode` has no token for that — see
+            // `smithy-model/LOCAL-ADDITIONS.md`.
             let scan_state = |resource_type: &str| State {
                 status: enablement.status_of(resource_type).to_string(),
+                error_code: None,
+                error_message: None,
             };
             accounts.push(AccountState {
                 account_id,
                 state: State {
                     status: enablement.account_status().to_string(),
+                    error_code: None,
+                    error_message: None,
                 },
                 resource_state: ResourceState {
                     ec2: scan_state("EC2"),
@@ -208,6 +215,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     lambda: Some(scan_state("LAMBDA")),
                     lambda_code: Some(scan_state("LAMBDA_CODE")),
                     code_repository: Some(scan_state("CODE_REPOSITORY")),
+                    // Amazon Machine Image scanning is reported for every account the same
+                    // way every other scan type is: off until it is switched on.
+                    ami: Some(scan_state(crate::state::AMI_RESOURCE_TYPE)),
                 },
             });
         }

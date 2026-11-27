@@ -24,12 +24,14 @@ pub struct UpdateCodeSecurityIntegrationInput {
 pub enum UpdateIntegrationDetails {
     gitlabSelfManaged(UpdateGitLabSelfManagedIntegrationDetail),
     Github(UpdateGitHubIntegrationDetail),
+    githubEnterpriseServer(UpdateGitHubEnterpriseServerIntegrationDetail),
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.inspector2#UpdateGitLabSelfManagedIntegrationDetail")]
 #[derive(Debug, Clone, Default)]
 pub struct UpdateGitLabSelfManagedIntegrationDetail {
     pub auth_code: String,
+    pub state_token: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.inspector2#UpdateGitHubIntegrationDetail")]
@@ -37,6 +39,29 @@ pub struct UpdateGitLabSelfManagedIntegrationDetail {
 pub struct UpdateGitHubIntegrationDetail {
     pub code: String,
     pub installation_id: String,
+    pub state_token: Option<String>,
+}
+
+#[smithy_macros::smithy(union_for = "com.amazonaws.inspector2#UpdateGitHubEnterpriseServerIntegrationDetail")]
+#[allow(clippy::large_enum_variant)]
+#[derive(Debug, Clone)]
+pub enum UpdateGitHubEnterpriseServerIntegrationDetail {
+    appInstallation(UpdateGitHubEnterpriseServerAppInstallationDetail),
+    appRegistration(GitHubEnterpriseServerAppRegistrationDetail),
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.inspector2#UpdateGitHubEnterpriseServerAppInstallationDetail")]
+#[derive(Debug, Clone, Default)]
+pub struct UpdateGitHubEnterpriseServerAppInstallationDetail {
+    pub code: String,
+    pub installation_id: String,
+    pub state_token: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.inspector2#GitHubEnterpriseServerAppRegistrationDetail")]
+#[derive(Debug, Clone, Default)]
+pub struct GitHubEnterpriseServerAppRegistrationDetail {
+    pub manifest_code: String,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.inspector2#UpdateCodeSecurityIntegrationResponse")]

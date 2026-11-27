@@ -3,7 +3,10 @@
 //! End-to-end tests for the Amazon Inspector account-activation and
 //! suppression-filter slice: `Enable`, `BatchGetAccountStatus`, `CreateFilter`,
 //! `ListFilters`, `UpdateFilter` and `DeleteFilter`, plus the per-account SCAN
-//! CONFIGURATION that activation carries — `UpdateConfiguration` and `GetConfiguration`.
+//! CONFIGURATION that activation carries — `UpdateConfiguration` and `GetConfiguration`,
+//! for every scan type they configure, the Amazon Machine Image (AMI) setting included —
+//! and the ON-DEMAND SCANS of a resource: `StartOnDemandScan`, `GetOnDemandScanStatus`
+//! and `ListOnDemandScans`.
 //!
 //! Every request goes through the real `MultiServiceRouter` — routing, restJson1
 //! deserialization, modelled-constraint validation, the handler, and restJson1
@@ -15,7 +18,8 @@ use std::time::{Duration, Instant};
 use serde_json::{json, Value};
 use service_com_amazonaws_inspector2_inspector2::state::{
     CONFIGURATION_PENDING, CONFIGURATION_SUCCESS, CONFIGURATION_TRANSITION,
-    DEFAULT_EC2_SCAN_MODE, DEFAULT_ECR_RESCAN_DURATION, INHERIT_FROM_ADMIN,
+    DEFAULT_AMI_SCAN_MODE, DEFAULT_EC2_SCAN_MODE, DEFAULT_ECR_RESCAN_DURATION,
+    INHERIT_FROM_ADMIN, ON_DEMAND_SCAN_DURATION, STATUS_DISABLED,
 };
 use smithy_server_runtime::MultiServiceRouter;
 
@@ -2053,4 +2057,1122 @@ async fn a_configuration_call_for_an_account_outside_the_organization_is_refused
         &in_force,
     )
     .await;
+}
+
+// ---------------------------------------------------------------------------------------
+// The Amazon Machine Image (AMI) half of the per-account SCAN CONFIGURATION: the setting
+// `UpdateConfiguration` writes and `GetConfiguration` reports, under the same rule the ECR
+// and Amazon EC2 settings follow — each member the call names replaces the value in force,
+// each member it omits leaves that value alone, only a CHANGE is applied over a span, and a
+// member account follows the delegated administrator's setting until it is configured
+// individually.
+
+/// Every published `AmiScanDuration` token, in model order — the windows AMI scanning may
+/// be restricted to.
+/// Source: `smithy_query(query="shape", shape="AmiScanDuration")`.
+const AMI_SCAN_DURATIONS: [&str; 6] = [
+    "DAYS_180", "DAYS_90", "DAYS_60", "DAYS_30", "DAYS_14", "DAYS_7",
+];
+
+/// Every published `AmiScanMode` token, in model order.
+/// Source: `smithy_query(query="shape", shape="AmiScanMode")`.
+const AMI_SCAN_MODES: [&str; 2] = ["SCAN_ALL", "TARGET_SCANNING"];
+
+/// A duration one step outside the published `AmiScanDuration` set: `EcrRescanDuration`
+/// admits `DAYS_3`, `AmiScanDuration` does not, so a request naming it is refused at the
+/// request boundary.
+const UNPUBLISHED_AMI_SCAN_DURATION: &str = "DAYS_3";
+
+/// What a read must report for the AMI setting: the mode in force, the two windows (absent
+/// while no account in the inheritance chain has configured them), the tag filters (absent
+/// while none were configured) and the two exclusions (absent while the account has never
+/// asked either way).
+#[derive(Debug, Clone)]
+struct ExpectedAmi {
+    scan_mode: &'static str,
+    last_launched_within: Option<&'static str>,
+    created_within: Option<&'static str>,
+    tags: Option<Value>,
+    exclude_copied_amis: Option<bool>,
+    exclude_backup_dlm_amis: Option<bool>,
+}
+
+impl ExpectedAmi {
+    /// The setting an account that configured nothing reports.
+    fn unconfigured() -> Self {
+        Self {
+            scan_mode: DEFAULT_AMI_SCAN_MODE,
+            last_launched_within: None,
+            created_within: None,
+            tags: None,
+            exclude_copied_amis: None,
+            exclude_backup_dlm_amis: None,
+        }
+    }
+}
+
+/// An `UpdateConfiguration` body carrying only an `amiConfiguration`: the required
+/// `scanModeConfiguration`, plus whichever scan windows the row names.
+fn ami_update(scan_mode_configuration: Value, windows: Vec<(&str, &str)>) -> Value {
+    let mut ami = json!({ "scanModeConfiguration": scan_mode_configuration });
+    for (member, value) in windows {
+        ami[member] = json!(value);
+    }
+    json!({ "amiConfiguration": ami })
+}
+
+/// The `amiConfiguration` member of a `GetConfiguration` read, asserting the read was
+/// answered and that the member is reported at all.
+async fn ami_configuration_of(router: &MultiServiceRouter, case: &str, request: &Value) -> Value {
+    let (status, error_type, body) = get_configuration(router, request).await;
+    assert_eq!(
+        status, 200,
+        "case {case}: GetConfiguration: expected 200, got {status} / {body} ({error_type:?})"
+    );
+    let ami = body.get("amiConfiguration").cloned().unwrap_or(Value::Null);
+    assert!(
+        ami.is_object(),
+        "case {case}: expected the account's AMI scan configuration, got {body}"
+    );
+    ami
+}
+
+/// Assert the AMI setting the account `request` names is exactly `expected`, read TWICE:
+/// the configuration is state, so reading it reports the same thing again and changes
+/// nothing a later caller sees.
+async fn assert_ami_reports(
+    router: &MultiServiceRouter,
+    case: &str,
+    request: &Value,
+    expected: &ExpectedAmi,
+) {
+    for read in 1..=2 {
+        let ami = ami_configuration_of(router, case, request).await;
+        let mode_configuration = &ami["scanModeConfiguration"];
+        assert_eq!(
+            mode_configuration["scanMode"],
+            json!(expected.scan_mode),
+            "case {case}: read #{read}: expected scanMode {:?}, got {ami}",
+            expected.scan_mode
+        );
+        assert_eq!(
+            ami.get("lastLaunchedWithin").cloned().unwrap_or(Value::Null),
+            member_or_absent(expected.last_launched_within),
+            "case {case}: read #{read}: expected lastLaunchedWithin {:?}, got {ami}",
+            expected.last_launched_within
+        );
+        assert_eq!(
+            ami.get("createdWithin").cloned().unwrap_or(Value::Null),
+            member_or_absent(expected.created_within),
+            "case {case}: read #{read}: expected createdWithin {:?}, got {ami}",
+            expected.created_within
+        );
+        assert_eq!(
+            mode_configuration
+                .get("tags")
+                .cloned()
+                .unwrap_or(Value::Null),
+            expected.tags.clone().unwrap_or(Value::Null),
+            "case {case}: read #{read}: expected tags {:?}, got {ami}",
+            expected.tags
+        );
+        for (member, value) in [
+            ("excludeCopiedAmis", expected.exclude_copied_amis),
+            ("excludeBackupDlmAmis", expected.exclude_backup_dlm_amis),
+        ] {
+            assert_eq!(
+                mode_configuration
+                    .get(member)
+                    .cloned()
+                    .unwrap_or(Value::Null),
+                value.map_or(Value::Null, |value| json!(value)),
+                "case {case}: read #{read}: expected {member} {value:?}, got {ami}"
+            );
+        }
+        // The status is one of the two tokens a setting passes through; which one at which
+        // instant is pinned by `a_changed_ami_setting_is_pending_until_it_is_applied`.
+        let status = ami["status"].as_str().unwrap_or_default();
+        assert!(
+            [CONFIGURATION_PENDING, CONFIGURATION_SUCCESS].contains(&status),
+            "case {case}: read #{read}: expected an applied or pending status, got \
+             {status:?} / {ami}"
+        );
+    }
+}
+
+/// An account nothing has configured reports the AMI setting the service applies until it
+/// is asked for another: every AMI selected, no window, no tag filter, no exclusion,
+/// already applied, and no instant of a change that never happened.
+#[tokio::test]
+async fn an_unconfigured_account_reports_the_ami_configuration_the_service_applies() {
+    assert!(
+        AMI_SCAN_MODES.contains(&DEFAULT_AMI_SCAN_MODE),
+        "the mode the service applies must be a published token, got \
+         {DEFAULT_AMI_SCAN_MODE:?}"
+    );
+
+    let router = router();
+    // Rows: the two ways a request names the calling account — not at all, and by its id.
+    for (case, request) in [
+        ("no accountId", json!({})),
+        ("its own accountId", json!({ "accountId": ACCOUNT })),
+    ] {
+        assert_ami_reports(&router, case, &request, &ExpectedAmi::unconfigured()).await;
+        let ami = ami_configuration_of(&router, case, &request).await;
+        assert!(
+            ami.get("updatedAt").is_none(),
+            "case {case}: a setting that never changed reports no updatedAt, got {ami}"
+        );
+        assert_eq!(
+            ami["status"],
+            json!(CONFIGURATION_SUCCESS),
+            "case {case}: with nothing being applied the AMI setting is applied, got {ami}"
+        );
+    }
+}
+
+/// The AMI setting an account reports is the one its updates wrote: each member a call
+/// names replaces the value in force, each member it omits leaves that value alone, and a
+/// value outside the published set is refused without changing anything.
+#[tokio::test]
+async fn the_ami_scan_configuration_read_back_is_the_one_the_updates_wrote() {
+    let router = router();
+    let read = json!({});
+
+    // Rows differ along the mode asked for, which optional members the call names, the tag
+    // filter's shape and the exclusions — and the later rows name only the required member,
+    // which must leave every value an earlier row wrote alone.
+    let rows: Vec<(&str, Value, ExpectedAmi)> = vec![
+        (
+            "targeted scanning selected by a tag key alone",
+            ami_update(
+                json!({ "scanMode": "TARGET_SCANNING", "tags": [{ "key": "Owner" }] }),
+                Vec::new(),
+            ),
+            ExpectedAmi {
+                scan_mode: "TARGET_SCANNING",
+                last_launched_within: None,
+                created_within: None,
+                tags: Some(json!([{ "key": "Owner" }])),
+                exclude_copied_amis: None,
+                exclude_backup_dlm_amis: None,
+            },
+        ),
+        (
+            "targeted scanning selected by a tag key and value, excluding copies",
+            ami_update(
+                json!({
+                    "scanMode": "TARGET_SCANNING",
+                    "tags": [{ "key": "Env", "value": "prod" }],
+                    "excludeCopiedAmis": true,
+                }),
+                Vec::new(),
+            ),
+            ExpectedAmi {
+                scan_mode: "TARGET_SCANNING",
+                last_launched_within: None,
+                created_within: None,
+                tags: Some(json!([{ "key": "Env", "value": "prod" }])),
+                exclude_copied_amis: Some(true),
+                exclude_backup_dlm_amis: None,
+            },
+        ),
+        (
+            "every AMI, restricted to the ones launched in the last week",
+            ami_update(
+                json!({ "scanMode": "SCAN_ALL" }),
+                vec![("lastLaunchedWithin", "DAYS_7")],
+            ),
+            ExpectedAmi {
+                scan_mode: "SCAN_ALL",
+                last_launched_within: Some("DAYS_7"),
+                created_within: None,
+                // Omitted, so the tag filter and the exclusion stay as the rows before left
+                // them.
+                tags: Some(json!([{ "key": "Env", "value": "prod" }])),
+                exclude_copied_amis: Some(true),
+                exclude_backup_dlm_amis: None,
+            },
+        ),
+        (
+            "a creation window beside the launch window, keeping backup copies",
+            ami_update(
+                json!({ "scanMode": "SCAN_ALL", "excludeBackupDlmAmis": false }),
+                vec![("createdWithin", "DAYS_180")],
+            ),
+            ExpectedAmi {
+                scan_mode: "SCAN_ALL",
+                last_launched_within: Some("DAYS_7"),
+                created_within: Some("DAYS_180"),
+                tags: Some(json!([{ "key": "Env", "value": "prod" }])),
+                exclude_copied_amis: Some(true),
+                exclude_backup_dlm_amis: Some(false),
+            },
+        ),
+    ];
+
+    for (case, request, expected) in &rows {
+        update_ok(&router, request, case).await;
+        assert_ami_reports(&router, case, &read, expected).await;
+    }
+
+    // Every published window token, each asked for in turn: the value read back is the one
+    // asked for, whichever token it is.
+    for duration in AMI_SCAN_DURATIONS {
+        let case = format!("lastLaunchedWithin {duration}");
+        update_ok(
+            &router,
+            &ami_update(
+                json!({ "scanMode": "SCAN_ALL" }),
+                vec![("lastLaunchedWithin", duration)],
+            ),
+            &case,
+        )
+        .await;
+        let ami = ami_configuration_of(&router, &case, &read).await;
+        assert_eq!(
+            ami["lastLaunchedWithin"],
+            json!(duration),
+            "case {case}: expected the window asked for, got {ami}"
+        );
+    }
+
+    // One step outside the published set: refused at the boundary, and the setting still
+    // reports the last value that WAS published.
+    let before = ami_configuration_of(&router, "before the refusal", &read).await;
+    let (status, error_type, body) = update_configuration(
+        &router,
+        &ami_update(
+            json!({ "scanMode": "SCAN_ALL" }),
+            vec![("lastLaunchedWithin", UNPUBLISHED_AMI_SCAN_DURATION)],
+        ),
+    )
+    .await;
+    assert_eq!(
+        status, 400,
+        "an unpublished window: expected 400, got {status} / {body}"
+    );
+    assert_eq!(
+        error_type.as_deref(),
+        Some("ValidationException"),
+        "an unpublished window: expected ValidationException, got {error_type:?} / {body}"
+    );
+    let after = ami_configuration_of(&router, "after the refusal", &read).await;
+    // The values in force and the instant they last changed, not the status the setting
+    // reports: a change is applied over a span, so comparing whole answers would compare
+    // instants rather than values.
+    for member in [
+        "lastLaunchedWithin",
+        "createdWithin",
+        "scanModeConfiguration",
+        "updatedAt",
+    ] {
+        assert_eq!(
+            after.get(member),
+            before.get(member),
+            "a refused update must leave {member} exactly as it was, got {after} after \
+             {before}"
+        );
+    }
+}
+
+/// A changed AMI setting is pending until the service has applied it, and a call asking for
+/// the values already in force changes neither the status nor the instant the setting last
+/// changed.
+#[tokio::test]
+async fn a_changed_ami_setting_is_pending_until_it_is_applied() {
+    let router = router();
+    let read = json!({});
+    let request = ami_update(
+        json!({ "scanMode": "TARGET_SCANNING", "tags": [{ "key": "Fleet", "value": "bakery" }] }),
+        vec![("createdWithin", "DAYS_30")],
+    );
+
+    update_ok(&router, &request, "the change").await;
+    let changed_at = Instant::now();
+    let ami = ami_configuration_of(&router, "the change", &read).await;
+    let reported = ami["status"].as_str().unwrap_or_default().to_string();
+    let owed = owed_status(changed_at.elapsed());
+    assert!(
+        owed.contains(&reported.as_str()),
+        "the change: expected one of {owed:?}, got {reported:?} / {ami}"
+    );
+    assert!(
+        ami.get("updatedAt").is_some(),
+        "the change: a setting that changed reports when it changed, got {ami}"
+    );
+
+    // Poll for the CONDITION rather than for a fixed time.
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let applied = loop {
+        let ami = ami_configuration_of(&router, "polling", &read).await;
+        if ami["status"] == json!(CONFIGURATION_SUCCESS) {
+            break ami;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the change never reported itself applied, last read {ami}"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    };
+
+    // The same values again: nothing for the service to apply, so the setting stays
+    // terminal and keeps the instant it last really changed.
+    update_ok(&router, &request, "the same values again").await;
+    let again = ami_configuration_of(&router, "the same values again", &read).await;
+    assert_eq!(
+        again["status"],
+        json!(CONFIGURATION_SUCCESS),
+        "the same values again: expected the setting to stay applied, got {again}"
+    );
+    assert_eq!(
+        again["updatedAt"], applied["updatedAt"],
+        "the same values again: expected the instant of the last real change, got {again} \
+         after {applied}"
+    );
+}
+
+/// A member account's AMI setting follows the delegated administrator's until it is
+/// configured individually, and goes back to following it when the update asks it to.
+#[tokio::test]
+async fn an_inheritance_reset_returns_the_member_to_the_administrators_ami_setting() {
+    let router = router();
+    let member_read = json!({ "accountId": MEMBER });
+
+    let (status, _, body) = post_in(
+        &router,
+        "us-east-1",
+        "/enable",
+        &json!({ "resourceTypes": ["ECR"], "accountIds": [MEMBER] }),
+    )
+    .await;
+    assert_eq!(
+        status, 200,
+        "Enable for the member account: expected 200, got {status} / {body}"
+    );
+
+    let administrators = ExpectedAmi {
+        scan_mode: "SCAN_ALL",
+        last_launched_within: None,
+        created_within: Some("DAYS_90"),
+        tags: None,
+        exclude_copied_amis: None,
+        exclude_backup_dlm_amis: None,
+    };
+    update_ok(
+        &router,
+        &ami_update(
+            json!({ "scanMode": "SCAN_ALL" }),
+            vec![("createdWithin", "DAYS_90")],
+        ),
+        "the administrator's setting",
+    )
+    .await;
+    assert_ami_reports(
+        &router,
+        "the member before it is configured",
+        &member_read,
+        &administrators,
+    )
+    .await;
+
+    // The member's own override.
+    let mut member_update = ami_update(
+        json!({ "scanMode": "TARGET_SCANNING", "tags": [{ "key": "Team" }] }),
+        vec![("lastLaunchedWithin", "DAYS_14")],
+    );
+    member_update["accountId"] = json!(MEMBER);
+    update_ok(&router, &member_update, "the member's own setting").await;
+    assert_ami_reports(
+        &router,
+        "the member's own setting",
+        &member_read,
+        &ExpectedAmi {
+            scan_mode: "TARGET_SCANNING",
+            last_launched_within: Some("DAYS_14"),
+            created_within: Some("DAYS_90"),
+            tags: Some(json!([{ "key": "Team" }])),
+            exclude_copied_amis: None,
+            exclude_backup_dlm_amis: None,
+        },
+    )
+    .await;
+
+    // The reset: the member follows the administrator again, so the administrator's values
+    // are what it reports.
+    update_ok(
+        &router,
+        &json!({
+            "accountId": MEMBER,
+            "updateConfigurationInheritance": { "amiConfiguration": INHERIT_FROM_ADMIN },
+        }),
+        "the inheritance reset",
+    )
+    .await;
+    assert_ami_reports(
+        &router,
+        "the inheritance reset",
+        &member_read,
+        &administrators,
+    )
+    .await;
+}
+
+/// Every account-posture read reports AMI scanning beside the other scan types, and a
+/// posture with no failure behind it carries no error code or error message.
+#[tokio::test]
+async fn an_account_posture_reports_ami_scanning_and_no_error_of_its_own() {
+    let router = router();
+
+    let (status, _, enabled) = post_in(
+        &router,
+        "us-east-1",
+        "/enable",
+        &json!({ "resourceTypes": ["EC2", "ECR"] }),
+    )
+    .await;
+    assert_eq!(status, 200, "Enable: expected 200, got {status} / {enabled}");
+    assert_eq!(
+        enabled["accounts"][0]["resourceStatus"]["ami"],
+        json!(STATUS_DISABLED),
+        "Enable: no request of this model switches AMI scanning on, so it is reported off, \
+         got {enabled}"
+    );
+
+    let (status, _, posture) = post_in(&router, "us-east-1", "/status/batch/get", &json!({})).await;
+    assert_eq!(
+        status, 200,
+        "BatchGetAccountStatus: expected 200, got {status} / {posture}"
+    );
+    let account = &posture["accounts"][0];
+    assert_eq!(
+        account["accountId"],
+        json!(ACCOUNT),
+        "expected the calling account's posture, got {posture}"
+    );
+    let resource_state = &account["resourceState"];
+    assert_eq!(
+        resource_state["ami"]["status"],
+        json!(STATUS_DISABLED),
+        "expected AMI scanning reported off, got {posture}"
+    );
+
+    // Every posture this read reports: the account's own and one per scan type. None of
+    // them failed to enable, and `ErrorCode` has no token for that, so none carries an
+    // error code or an error message.
+    // Source: `smithy_query(query="shape", shape="ResourceState,ErrorCode")`.
+    let mut states = vec![("state", &account["state"])];
+    for member in ["ec2", "ecr", "lambda", "lambdaCode", "codeRepository", "ami"] {
+        states.push((member, &resource_state[member]));
+    }
+    for (member, state) in states {
+        assert!(
+            state.is_object(),
+            "case {member}: expected a reported state, got {posture}"
+        );
+        for error_member in ["errorCode", "errorMessage"] {
+            assert!(
+                state.get(error_member).is_none(),
+                "case {member}: a posture with no failure behind it reports no \
+                 {error_member}, got {state}"
+            );
+        }
+        assert!(
+            state["status"].is_string(),
+            "case {member}: expected the status in force, got {state}"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------------------
+// The ON-DEMAND SCANS of a resource: `StartOnDemandScan` records a scan and answers with
+// its id, `GetOnDemandScanStatus` reports one scan of one resource, and
+// `ListOnDemandScans` pages through the scans of one resource in the order they were
+// started.
+//
+// The rules under test: a started scan is RECORDED and runs over the span the service takes
+// to finish it, reporting the instant it finished from then on; a scan is addressed by its
+// id together with the resource it was started for; one `clientToken` names one scan, so a
+// retry replays it and the same token naming another resource is a conflict that records
+// nothing; and the list answers one resource's scans, paged by `maxResults`, refusing a
+// token it did not hand out.
+
+/// `StartOnDemandScan`'s route.
+/// Source: `smithy_query(query="operation", operation="StartOnDemandScan")` — `POST
+/// /ondemand/scan`, success status 202.
+const SCAN_START_URI: &str = "/ondemand/scan";
+
+/// `GetOnDemandScanStatus`'s route.
+/// Source: `smithy_query(query="operation", operation="GetOnDemandScanStatus")` — `POST
+/// /ondemand/scan/status`.
+const SCAN_STATUS_URI: &str = "/ondemand/scan/status";
+
+/// `ListOnDemandScans`'s route.
+/// Source: `smithy_query(query="operation", operation="ListOnDemandScans")` — `POST
+/// /ondemand/scans`.
+const SCAN_LIST_URI: &str = "/ondemand/scans";
+
+/// The one `OnDemandResourceType` token.
+/// Source: `smithy_query(query="shape", shape="OnDemandResourceType")` — `AMI`.
+const ON_DEMAND_RESOURCE_TYPE: &str = "AMI";
+
+/// The `OnDemandScanStatus` token of a scan the service is still running.
+/// Source: `smithy_query(query="shape", shape="OnDemandScanStatus")` —
+/// `IN_PROGRESS | SUCCESSFUL | FAILED`.
+const SCAN_IN_PROGRESS: &str = "IN_PROGRESS";
+
+/// The `OnDemandScanStatus` token of a scan that has finished its work.
+/// Source: `smithy_query(query="shape", shape="OnDemandScanStatus")`.
+const SCAN_SUCCESSFUL: &str = "SUCCESSFUL";
+
+/// How this service words its refusal of a scan it holds no record of.
+const SCAN_NOT_FOUND_MESSAGE: &str = "On-demand scan not found";
+
+/// Every form of `resourceId` the model admits, each with the name the assertions use.
+///
+/// Source: `smithy_query(query="shape", shape="ResourceId")` — `@length` 10..1024 and a
+/// `@pattern` admitting an ECR repository ARN (optionally with an image digest), an
+/// instance id of 8 or 17 characters, a Lambda function ARN, a code security integration
+/// project ARN and an Azure resource path.
+const SCAN_RESOURCE_IDS: [(&str, &str); 5] = [
+    ("a short instance id", "i-0abc1234"),
+    ("a long instance id", "i-0123456789abcdef0"),
+    (
+        "an ECR repository ARN",
+        "arn:aws:ecr:us-east-1:000000000000:repository/inspector-images",
+    ),
+    (
+        "an ECR repository ARN with an image digest",
+        "arn:aws:ecr:us-east-1:000000000000:repository/inspector-images/sha256:\
+         9f8e7d6c5b4a39281706f5e4d3c2b1a09f8e7d6c5b4a39281706f5e4d3c2b1a0",
+    ),
+    (
+        "a Lambda function ARN",
+        "arn:aws:lambda:us-east-1:000000000000:function:inspector-target",
+    ),
+];
+
+/// A resource this store holds no scan of, used where a row needs a second resource.
+const OTHER_SCAN_RESOURCE_ID: &str = "i-0fedcba9876543210";
+
+/// A `StartOnDemandScan` body for `resource_id`, with `client_token` when the row carries
+/// one.
+fn start_scan_body(resource_id: &str, client_token: Option<&str>) -> Value {
+    let mut body =
+        json!({ "resourceId": resource_id, "resourceType": ON_DEMAND_RESOURCE_TYPE });
+    if let Some(token) = client_token {
+        body["clientToken"] = json!(token);
+    }
+    body
+}
+
+/// Start a scan of `resource_id`, asserting the modelled 202 and a `scanId` inside
+/// `ScanId`'s own shape, and answering with that id.
+async fn start_scan_ok(
+    router: &MultiServiceRouter,
+    case: &str,
+    resource_id: &str,
+    client_token: Option<&str>,
+) -> String {
+    let (status, error_type, body) = post_in(
+        router,
+        "us-east-1",
+        SCAN_START_URI,
+        &start_scan_body(resource_id, client_token),
+    )
+    .await;
+    assert_eq!(
+        status, 202,
+        "case {case}: StartOnDemandScan: expected 202, got {status} / {body} ({error_type:?})"
+    );
+    let scan_id = body["scanId"]
+        .as_str()
+        .unwrap_or_else(|| panic!("case {case}: no scanId in {body}"))
+        .to_string();
+    // Source: `smithy_query(query="shape", shape="ScanId")` — `@length` 1..64, `@pattern`
+    // `^[a-z0-9]+$`.
+    assert!(
+        !scan_id.is_empty()
+            && scan_id.len() <= 64
+            && scan_id
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit()),
+        "case {case}: expected a minted ScanId of 1..64 lowercase alphanumerics, got \
+         {scan_id:?}"
+    );
+    scan_id
+}
+
+/// `GetOnDemandScanStatus` for one scan of one resource.
+async fn scan_status(
+    router: &MultiServiceRouter,
+    resource_id: &str,
+    scan_id: &str,
+) -> (u16, Option<String>, Value) {
+    post_in(
+        router,
+        "us-east-1",
+        SCAN_STATUS_URI,
+        &json!({
+            "resourceId": resource_id,
+            "resourceType": ON_DEMAND_RESOURCE_TYPE,
+            "scanId": scan_id,
+        }),
+    )
+    .await
+}
+
+/// `GetOnDemandScanStatus`, asserting the read was answered.
+async fn scan_status_ok(
+    router: &MultiServiceRouter,
+    case: &str,
+    resource_id: &str,
+    scan_id: &str,
+) -> Value {
+    let (status, error_type, body) = scan_status(router, resource_id, scan_id).await;
+    assert_eq!(
+        status, 200,
+        "case {case}: GetOnDemandScanStatus: expected 200, got {status} / {body} \
+         ({error_type:?})"
+    );
+    body
+}
+
+/// The statuses a scan started `elapsed` ago may report: it runs over a span, so while that
+/// span is open it is still running, and only a test slow enough to have passed the due
+/// instant may see it already finished. Recomputed before each assertion, so a stall
+/// between two calls cannot make a test flaky.
+fn owed_scan_statuses(elapsed: Duration) -> Vec<&'static str> {
+    if elapsed < ON_DEMAND_SCAN_DURATION {
+        vec![SCAN_IN_PROGRESS]
+    } else {
+        vec![SCAN_IN_PROGRESS, SCAN_SUCCESSFUL]
+    }
+}
+
+/// Poll `GetOnDemandScanStatus` until the scan reports itself finished, or a generous
+/// deadline passes. Waits for the CONDITION rather than for a fixed time.
+async fn wait_until_scan_finished(
+    router: &MultiServiceRouter,
+    case: &str,
+    resource_id: &str,
+    scan_id: &str,
+) -> Value {
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        let body = scan_status_ok(router, case, resource_id, scan_id).await;
+        if body["scanStatus"] == json!(SCAN_SUCCESSFUL) {
+            return body;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "case {case}: the scan never reported itself finished, last read {body}"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
+/// `ListOnDemandScans` for one resource, with the page size and cursor a row carries.
+async fn list_scans(
+    router: &MultiServiceRouter,
+    resource_id: &str,
+    max_results: Option<i64>,
+    next_token: Option<&str>,
+) -> (u16, Option<String>, Value) {
+    let mut body =
+        json!({ "resourceId": resource_id, "resourceType": ON_DEMAND_RESOURCE_TYPE });
+    if let Some(max) = max_results {
+        body["maxResults"] = json!(max);
+    }
+    if let Some(token) = next_token {
+        body["nextToken"] = json!(token);
+    }
+    post_in(router, "us-east-1", SCAN_LIST_URI, &body).await
+}
+
+/// Every scan id `ListOnDemandScans` reports for `resource_id`, walked page by page at
+/// `max_results` per page, with every page asserted along the way.
+async fn listed_scan_ids(
+    router: &MultiServiceRouter,
+    case: &str,
+    resource_id: &str,
+    max_results: Option<i64>,
+) -> Vec<String> {
+    let mut ids: Vec<String> = Vec::new();
+    let mut cursor: Option<String> = None;
+    // More pages than there can be scans, so a cursor that never settles fails here
+    // instead of looping.
+    for page in 1..=64 {
+        let (status, error_type, body) =
+            list_scans(router, resource_id, max_results, cursor.as_deref()).await;
+        assert_eq!(
+            status, 200,
+            "case {case}: page {page}: ListOnDemandScans: expected 200, got {status} / \
+             {body} ({error_type:?})"
+        );
+        let items = body["items"]
+            .as_array()
+            .unwrap_or_else(|| panic!("case {case}: page {page}: no items in {body}"))
+            .clone();
+        if let Some(max) = max_results {
+            assert!(
+                items.len() as i64 <= max,
+                "case {case}: page {page}: expected at most {max} items, got {body}"
+            );
+        }
+        for item in &items {
+            assert_eq!(
+                item["resourceId"],
+                json!(resource_id),
+                "case {case}: page {page}: a listed scan must belong to the resource asked \
+                 about, got {item}"
+            );
+            assert_eq!(
+                item["resourceType"],
+                json!(ON_DEMAND_RESOURCE_TYPE),
+                "case {case}: page {page}: expected resourceType \
+                 {ON_DEMAND_RESOURCE_TYPE}, got {item}"
+            );
+            assert!(
+                item["startedAt"].is_number(),
+                "case {case}: page {page}: a listed scan reports when it started, got {item}"
+            );
+            ids.push(
+                item["scanId"]
+                    .as_str()
+                    .unwrap_or_else(|| panic!("case {case}: page {page}: no scanId in {item}"))
+                    .to_string(),
+            );
+        }
+        match body.get("nextToken").and_then(Value::as_str) {
+            Some(token) => cursor = Some(token.to_string()),
+            None => return ids,
+        }
+    }
+    panic!("case {case}: the scan list never reached its last page, collected {ids:?}");
+}
+
+/// A started scan is recorded, reported by its own id, runs over the span the service takes
+/// and is reported finished — with the instant it finished at — from the instant that span
+/// falls due. Driven over every form of `resourceId` the model admits.
+#[tokio::test]
+async fn a_started_on_demand_scan_is_recorded_and_runs_to_completion() {
+    let router = router();
+
+    // Every row's scan is started first, so the single poll below settles them together
+    // rather than once per row.
+    let mut started: Vec<(&str, &str, String, Instant)> = Vec::new();
+    for (case, resource_id) in SCAN_RESOURCE_IDS {
+        let scan_id = start_scan_ok(&router, case, resource_id, None).await;
+        started.push((case, resource_id, scan_id, Instant::now()));
+    }
+
+    for (case, resource_id, scan_id, at) in &started {
+        let body = scan_status_ok(&router, case, resource_id, scan_id).await;
+        assert_eq!(
+            body["scanId"],
+            json!(scan_id),
+            "case {case}: expected the scan read back under its own id, got {body}"
+        );
+        assert_eq!(
+            body["resourceId"],
+            json!(*resource_id),
+            "case {case}: expected the resource the scan was started for, got {body}"
+        );
+        assert_eq!(
+            body["resourceType"],
+            json!(ON_DEMAND_RESOURCE_TYPE),
+            "case {case}: expected resourceType {ON_DEMAND_RESOURCE_TYPE}, got {body}"
+        );
+        assert!(
+            body["startedAt"].is_number(),
+            "case {case}: a recorded scan reports when it started, got {body}"
+        );
+        let owed = owed_scan_statuses(at.elapsed());
+        let reported = body["scanStatus"].as_str().unwrap_or_default().to_string();
+        assert!(
+            owed.contains(&reported.as_str()),
+            "case {case}: expected one of {owed:?}, got {reported:?} / {body}"
+        );
+        // A scan that has not completed reports no completion instant, and one that has
+        // reports it: the two members never disagree.
+        let completed = body.get("completedAt").cloned().unwrap_or(Value::Null);
+        if reported == SCAN_IN_PROGRESS {
+            assert!(
+                completed.is_null(),
+                "case {case}: a scan still running reports no completedAt, got {body}"
+            );
+        } else {
+            assert!(
+                completed.is_number(),
+                "case {case}: a finished scan reports when it completed, got {body}"
+            );
+        }
+        // Every `OnDemandScanStatusReason` token is a reason a scan FAILED
+        // (`smithy_query(query="shape", shape="OnDemandScanStatusReason")`), and a scan
+        // this service started runs to completion, so there is no reason to report.
+        assert!(
+            body.get("scanStatusReason")
+                .cloned()
+                .unwrap_or(Value::Null)
+                .is_null(),
+            "case {case}: a scan that did not fail reports no scanStatusReason, got {body}"
+        );
+    }
+
+    for (case, resource_id, scan_id, _) in &started {
+        let finished = wait_until_scan_finished(&router, case, resource_id, scan_id).await;
+        let started_at = finished["startedAt"]
+            .as_f64()
+            .unwrap_or_else(|| panic!("case {case}: no startedAt in {finished}"));
+        let completed_at = finished["completedAt"]
+            .as_f64()
+            .unwrap_or_else(|| panic!("case {case}: no completedAt in {finished}"));
+        assert!(
+            completed_at >= started_at,
+            "case {case}: a scan cannot complete before it started, got startedAt \
+             {started_at} and completedAt {completed_at}"
+        );
+        // Reading is not a write: the same read answers the same thing again.
+        let again = scan_status_ok(&router, case, resource_id, scan_id).await;
+        assert_eq!(
+            again, finished,
+            "case {case}: reading a finished scan twice must report the same scan, got \
+             {again} after {finished}"
+        );
+    }
+}
+
+/// A scan is addressed by its id TOGETHER WITH the resource it was started for: an id
+/// paired with another resource, like an id nothing minted, names no scan.
+#[tokio::test]
+async fn an_on_demand_scan_is_found_only_under_the_resource_it_was_started_for() {
+    let router = router();
+    let scan_id = start_scan_ok(&router, "the recorded scan", SCAN_RESOURCE_IDS[0].1, None).await;
+
+    // Rows: the id of a real scan paired with another resource of every admitted form, an
+    // id no scan was ever minted under, and the shortest id the model admits.
+    let mut cases: Vec<(String, String, String)> = Vec::new();
+    for (case, resource_id) in SCAN_RESOURCE_IDS.iter().skip(1) {
+        cases.push((
+            format!("the scan's id under {case}"),
+            (*resource_id).to_string(),
+            scan_id.clone(),
+        ));
+    }
+    cases.push((
+        "an id nothing minted".to_string(),
+        SCAN_RESOURCE_IDS[0].1.to_string(),
+        "ffffffffffffffff".to_string(),
+    ));
+    cases.push((
+        "a single-character id".to_string(),
+        SCAN_RESOURCE_IDS[0].1.to_string(),
+        "z".to_string(),
+    ));
+
+    for (case, resource_id, asked) in cases {
+        let (status, error_type, body) = scan_status(&router, &resource_id, &asked).await;
+        assert_eq!(
+            status, 404,
+            "case {case}: expected 404, got {status} / {body} ({error_type:?})"
+        );
+        assert_eq!(
+            error_type.as_deref(),
+            Some("ResourceNotFoundException"),
+            "case {case}: expected ResourceNotFoundException, got {error_type:?} / {body}"
+        );
+        assert_eq!(
+            body["message"],
+            json!(SCAN_NOT_FOUND_MESSAGE),
+            "case {case}: expected the service's not-found wording, got {body}"
+        );
+    }
+
+    // The refusals recorded nothing: the one scan is still the only scan of its resource,
+    // and the other resources have none.
+    let listed = listed_scan_ids(
+        &router,
+        "after the refusals",
+        SCAN_RESOURCE_IDS[0].1,
+        None,
+    )
+    .await;
+    assert_eq!(
+        listed,
+        vec![scan_id],
+        "after the refusals: expected the one recorded scan, got {listed:?}"
+    );
+    for (case, resource_id) in SCAN_RESOURCE_IDS.iter().skip(1) {
+        let listed = listed_scan_ids(&router, case, resource_id, None).await;
+        assert!(
+            listed.is_empty(),
+            "case {case}: expected no scan of a resource nothing scanned, got {listed:?}"
+        );
+    }
+}
+
+/// One `clientToken` names one scan: a retry replays it, and the same token naming another
+/// resource is a conflict that records nothing.
+#[tokio::test]
+async fn one_client_token_names_one_on_demand_scan() {
+    let router = router();
+    let resource_id = SCAN_RESOURCE_IDS[2].1;
+
+    let first = start_scan_ok(&router, "the first start", resource_id, Some("token-a")).await;
+    // Rows: the same token and resource again, twice over, so a replay is not itself a
+    // change.
+    for attempt in 1..=2 {
+        let replay = start_scan_ok(
+            &router,
+            &format!("replay #{attempt}"),
+            resource_id,
+            Some("token-a"),
+        )
+        .await;
+        assert_eq!(
+            replay, first,
+            "replay #{attempt}: a retry under one clientToken must answer the scan it \
+             already started, got {replay} after {first}"
+        );
+    }
+
+    // The same token naming another resource: a conflict naming the resource the token
+    // already scans, and nothing recorded for the second resource.
+    let (status, error_type, body) = post_in(
+        &router,
+        "us-east-1",
+        SCAN_START_URI,
+        &start_scan_body(OTHER_SCAN_RESOURCE_ID, Some("token-a")),
+    )
+    .await;
+    assert_eq!(
+        status, 409,
+        "the conflicting start: expected 409, got {status} / {body} ({error_type:?})"
+    );
+    assert_eq!(
+        error_type.as_deref(),
+        Some("ConflictException"),
+        "the conflicting start: expected ConflictException, got {error_type:?} / {body}"
+    );
+    assert_eq!(
+        body["resourceId"],
+        json!(resource_id),
+        "the conflicting start: expected the conflict to name the resource the token \
+         already scans, got {body}"
+    );
+    assert_eq!(
+        body["resourceType"],
+        json!(ON_DEMAND_RESOURCE_TYPE),
+        "the conflicting start: expected resourceType {ON_DEMAND_RESOURCE_TYPE}, got {body}"
+    );
+    assert!(
+        listed_scan_ids(
+            &router,
+            "the refused resource",
+            OTHER_SCAN_RESOURCE_ID,
+            None
+        )
+        .await
+        .is_empty(),
+        "the conflicting start must record no scan of the resource it refused"
+    );
+
+    // Rows: another token, and no token at all twice — each starts a scan of its own.
+    let second = start_scan_ok(&router, "another token", resource_id, Some("token-b")).await;
+    let third = start_scan_ok(&router, "no token", resource_id, None).await;
+    let fourth = start_scan_ok(&router, "no token again", resource_id, None).await;
+    let expected = vec![first, second, third, fourth];
+    let mut distinct = expected.clone();
+    distinct.sort();
+    distinct.dedup();
+    assert_eq!(
+        distinct.len(),
+        expected.len(),
+        "each start that is not a replay must mint its own scan id, got {expected:?}"
+    );
+    let listed = listed_scan_ids(&router, "every scan of the resource", resource_id, None).await;
+    assert_eq!(
+        listed, expected,
+        "expected every scan of the resource in the order they were started, got {listed:?}"
+    );
+}
+
+/// The scan list answers the scans of ONE resource in starting order, pages by
+/// `maxResults`, and refuses a token it did not hand out.
+#[tokio::test]
+async fn the_on_demand_scan_list_pages_through_one_resources_scans() {
+    let router = router();
+    let resource_id = SCAN_RESOURCE_IDS[1].1;
+
+    // Five scans of the resource under test, and two of another, so a page can never be
+    // filled from the wrong resource.
+    let mut expected: Vec<String> = Vec::new();
+    for scan in 1..=5 {
+        expected.push(start_scan_ok(&router, &format!("scan #{scan}"), resource_id, None).await);
+    }
+    let mut other: Vec<String> = Vec::new();
+    for scan in 1..=2 {
+        other.push(
+            start_scan_ok(
+                &router,
+                &format!("other resource scan #{scan}"),
+                OTHER_SCAN_RESOURCE_ID,
+                None,
+            )
+            .await,
+        );
+    }
+
+    // Rows: no page size at all, both modelled bounds (1 and 100) and the sizes a page
+    // boundary can fall on for five scans.
+    // Source: `smithy_query(query="operation", operation="ListOnDemandScans")` —
+    // `maxResults` range 1..100.
+    for max_results in [None, Some(1), Some(2), Some(3), Some(5), Some(100)] {
+        let case = format!("maxResults {max_results:?}");
+        let listed = listed_scan_ids(&router, &case, resource_id, max_results).await;
+        assert_eq!(
+            listed, expected,
+            "case {case}: expected every scan of the resource exactly once in starting \
+             order, got {listed:?}"
+        );
+        let listed_other =
+            listed_scan_ids(&router, &case, OTHER_SCAN_RESOURCE_ID, max_results).await;
+        assert_eq!(
+            listed_other, other,
+            "case {case}: expected the other resource's own scans, got {listed_other:?}"
+        );
+    }
+
+    // Rows: a token this service never handed out, in each of the forms a client could
+    // send — plain text, text that is not hex, and hex that decodes to something that is
+    // not a scan id.
+    for token in ["not-a-token", "zzzz", "2f2f2f2f"] {
+        let (status, error_type, body) = list_scans(&router, resource_id, None, Some(token)).await;
+        assert_eq!(
+            status, 400,
+            "case {token:?}: expected 400, got {status} / {body} ({error_type:?})"
+        );
+        assert_eq!(
+            error_type.as_deref(),
+            Some("ValidationException"),
+            "case {token:?}: expected ValidationException, got {error_type:?} / {body}"
+        );
+    }
+
+    // A resource nothing scanned reports an empty page, not a refusal.
+    let (status, error_type, body) = list_scans(&router, SCAN_RESOURCE_IDS[4].1, None, None).await;
+    assert_eq!(
+        status, 200,
+        "an unscanned resource: expected 200, got {status} / {body} ({error_type:?})"
+    );
+    assert_eq!(
+        body["items"],
+        json!([]),
+        "an unscanned resource: expected an empty item list, got {body}"
+    );
+    assert!(
+        body.get("nextToken").is_none(),
+        "an unscanned resource: expected no page cursor, got {body}"
+    );
 }

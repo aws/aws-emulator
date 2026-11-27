@@ -17,6 +17,7 @@ pub struct UpdateConfigurationInput {
     pub account_id: Option<String>,
     pub ecr_configuration: Option<EcrConfiguration>,
     pub ec2_configuration: Option<Ec2Configuration>,
+    pub ami_configuration: Option<AmiConfiguration>,
     pub update_configuration_inheritance: Option<UpdateConfigurationInheritance>,
 }
 
@@ -35,11 +36,20 @@ pub struct Ec2Configuration {
     pub activate_vm_scanner: Option<bool>,
 }
 
+#[smithy_macros::smithy(shape = "com.amazonaws.inspector2#AmiConfiguration")]
+#[derive(Debug, Clone, Default)]
+pub struct AmiConfiguration {
+    pub last_launched_within: Option<String>,
+    pub created_within: Option<String>,
+    pub scan_mode_configuration: AmiScanModeConfiguration,
+}
+
 #[smithy_macros::smithy(shape = "com.amazonaws.inspector2#UpdateConfigurationInheritance")]
 #[derive(Debug, Clone, Default)]
 pub struct UpdateConfigurationInheritance {
     pub ec2_configuration: Option<String>,
     pub ecr_configuration: Option<String>,
+    pub ami_configuration: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.inspector2#UpdateConfigurationResponse")]

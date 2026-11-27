@@ -24,6 +24,7 @@ pub struct UpdateConnectorInput {
 #[derive(Debug, Clone)]
 pub enum ProviderDetailUpdate {
     Azure(AzureProviderDetailUpdate),
+    Gcp(GcpProviderDetailUpdate),
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.inspector2#AzureProviderDetailUpdate")]
@@ -31,6 +32,14 @@ pub enum ProviderDetailUpdate {
 pub struct AzureProviderDetailUpdate {
     pub azure_regions: Option<Vec<String>>,
     pub scope_configuration: Option<AzureScopeConfigurationInput>,
+    pub auto_install_vm_scanner: Option<bool>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.inspector2#GcpProviderDetailUpdate")]
+#[derive(Debug, Clone, Default)]
+pub struct GcpProviderDetailUpdate {
+    pub gcp_regions: Option<Vec<String>>,
+    pub scope_configuration: Option<GcpScopeConfigurationInput>,
     pub auto_install_vm_scanner: Option<bool>,
 }
 

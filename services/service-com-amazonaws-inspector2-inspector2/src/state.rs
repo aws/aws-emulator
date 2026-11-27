@@ -28,6 +28,9 @@
 //!   `DeleteCodeSecurityScanConfiguration`.
 //! * `org_package_paths` — the organization-wide deep inspection custom paths both deep
 //!   inspection reads report alongside an account's own.
+//! * `on_demand_scans` — the on-demand scans of a resource, keyed by their own scan id,
+//!   started by `StartOnDemandScan`, reported one at a time by `GetOnDemandScanStatus` and
+//!   paged through by `ListOnDemandScans` ([`on_demand_scan`]).
 //! * `vulnerabilities` — the vulnerability database `SearchVulnerabilities` answers from,
 //!   seeded from the published records in [`vulnerability_catalog`] because no operation
 //!   of this API publishes a vulnerability.
@@ -43,10 +46,12 @@
 //! calling identity alone and so reaches no store.
 
 mod cis_session;
+mod on_demand_scan;
 mod scan_configuration;
 mod vulnerability_catalog;
 
 pub use cis_session::*;
+pub use on_demand_scan::*;
 pub use scan_configuration::*;
 pub use vulnerability_catalog::*;
 
@@ -76,6 +81,16 @@ pub const RESOURCE_SCAN_TYPES: [&str; 5] = [
     "LAMBDA_CODE",
     "CODE_REPOSITORY",
 ];
+
+/// How Amazon Machine Image scanning is named where this service reports a scan's status
+/// per resource type: `ResourceStatus$ami` and `ResourceState$ami` report it, and
+/// `OnDemandResourceType` names the same resource type with its one token.
+///
+/// It is NOT a `ResourceScanType` (`smithy_query(query="shape",
+/// shape="ResourceScanType,ResourceStatus,OnDemandResourceType")`), so no `Enable` or
+/// `Disable` request can name it and an account's AMI scanning is reported off until a
+/// request that can switch it on exists.
+pub const AMI_RESOURCE_TYPE: &str = "AMI";
 
 /// The `Status` token for a scan that is on.
 /// Source: `smithy_query(query="shape", shape="Status")`.
@@ -571,6 +586,13 @@ pub struct ComAmazonawsInspector2Inspector2State {
     /// records this emulator ships ([`seed_vulnerability_catalog`]) and only read from.
     /// BOUNDED without a cap of its own: nothing adds an entry after the seed.
     pub vulnerabilities: BTreeMap<String, Vulnerability>,
+    /// The recorded on-demand scans, keyed by their own scan id — which is minted in
+    /// starting order, so iteration walks the scans in the order they were started.
+    /// Bounded by [`MAX_ON_DEMAND_SCANS`]: `StartOnDemandScan`, the only operation that
+    /// adds one, refuses once the map holds that many.
+    pub on_demand_scans: BTreeMap<String, StoredOnDemandScan>,
+    /// Monotonic source for a minted `ScanId`.
+    pub next_on_demand_scan_id: u64,
 }
 
 impl Default for ComAmazonawsInspector2Inspector2State {
@@ -586,6 +608,8 @@ impl Default for ComAmazonawsInspector2Inspector2State {
             encryption_keys: BTreeMap::new(),
             org_package_paths: Vec::new(),
             vulnerabilities: seed_vulnerability_catalog(),
+            on_demand_scans: BTreeMap::new(),
+            next_on_demand_scan_id: 0,
         }
     }
 }
@@ -608,7 +632,7 @@ pub struct Ec2DeepInspectionReport {
 /// a type out.
 ///
 /// Source: `smithy_query(query="shape", shape="Account,ResourceStatus")` — `ec2` and `ecr`
-/// are required members, the other three optional.
+/// are required members, the other four optional.
 pub fn account_view(
     account_id: &str,
     enablement: &AccountEnablement,
@@ -622,6 +646,7 @@ pub fn account_view(
             lambda: Some(enablement.status_of("LAMBDA").to_string()),
             lambda_code: Some(enablement.status_of("LAMBDA_CODE").to_string()),
             code_repository: Some(enablement.status_of("CODE_REPOSITORY").to_string()),
+            ami: Some(enablement.status_of(AMI_RESOURCE_TYPE).to_string()),
         },
     }
 }

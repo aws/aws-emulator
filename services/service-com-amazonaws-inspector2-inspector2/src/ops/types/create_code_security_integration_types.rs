@@ -25,6 +25,7 @@ pub struct CreateCodeSecurityIntegrationInput {
 #[derive(Debug, Clone)]
 pub enum CreateIntegrationDetail {
     gitlabSelfManaged(CreateGitLabSelfManagedIntegrationDetail),
+    githubEnterprise(CreateGitHubEnterpriseIntegrationDetail),
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.inspector2#CreateGitLabSelfManagedIntegrationDetail")]
@@ -32,6 +33,14 @@ pub enum CreateIntegrationDetail {
 pub struct CreateGitLabSelfManagedIntegrationDetail {
     pub instance_url: String,
     pub access_token: String,
+    pub vpc_configuration: Option<CodeSecurityIntegrationVpcConfiguration>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.inspector2#CreateGitHubEnterpriseIntegrationDetail")]
+#[derive(Debug, Clone, Default)]
+pub struct CreateGitHubEnterpriseIntegrationDetail {
+    pub instance_url: String,
+    pub vpc_configuration: Option<CodeSecurityIntegrationVpcConfiguration>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.inspector2#CreateCodeSecurityIntegrationResponse")]

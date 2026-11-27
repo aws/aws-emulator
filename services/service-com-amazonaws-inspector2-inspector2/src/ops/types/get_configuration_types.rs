@@ -22,6 +22,7 @@ pub struct GetConfigurationInput {
 pub struct GetConfigurationOutput {
     pub ecr_configuration: Option<EcrConfigurationState>,
     pub ec2_configuration: Option<Ec2ConfigurationState>,
+    pub ami_configuration: Option<AmiConfigurationState>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.inspector2#EcrConfigurationState")]
@@ -60,5 +61,15 @@ pub struct VMScannerState {
     pub activated: Option<bool>,
     pub activated_at: Option<::aws_smithy_types::DateTime>,
     pub status: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.inspector2#AmiConfigurationState")]
+#[derive(Debug, Clone, Default)]
+pub struct AmiConfigurationState {
+    pub last_launched_within: Option<String>,
+    pub created_within: Option<String>,
+    pub scan_mode_configuration: Option<AmiScanModeConfiguration>,
+    pub status: Option<String>,
+    pub updated_at: Option<::aws_smithy_types::DateTime>,
 }
 

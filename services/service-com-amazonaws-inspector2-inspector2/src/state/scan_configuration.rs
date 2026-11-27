@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: CC0-1.0
 
-//! One account's Amazon Inspector SCAN CONFIGURATION — the ECR automated re-scan setting
-//! and the Amazon EC2 scan mode — which `UpdateConfiguration` writes and
-//! `GetConfiguration` reports.
+//! One account's Amazon Inspector SCAN CONFIGURATION — the ECR automated re-scan setting,
+//! the Amazon EC2 scan mode and the Amazon Machine Image scan setting — which
+//! `UpdateConfiguration` writes and `GetConfiguration` reports.
 //!
 //! The configuration is held per account, as an OVERRIDE: an account that has never been
 //! configured individually has no record here and reads the delegated administrator's
@@ -28,8 +28,8 @@ use std::time::{Duration, SystemTime};
 
 use super::{timestamp, ComAmazonawsInspector2Inspector2State};
 use crate::ops::types::{
-    Ec2ConfigurationState, Ec2ScanModeState, EcrConfigurationState, EcrRescanDurationState,
-    VMScannerState,
+    AmiConfigurationState, AmiScanModeConfiguration, AmiTagFilter, Ec2ConfigurationState,
+    Ec2ScanModeState, EcrConfigurationState, EcrRescanDurationState, VMScannerState,
 };
 
 /// The `EcrRescanDuration` token of an image that stays actively scanned for as long as it
@@ -105,6 +105,18 @@ pub const INHERITANCE_WITHOUT_ACCOUNT_MESSAGE: &str =
 /// `updateConfigurationInheritance`, which is the member whose presence the requirement is
 /// about.
 pub const INHERITANCE_MEMBER: &str = "updateConfigurationInheritance";
+
+/// The `AmiScanMode` token an account scans Amazon Machine Images under until it asks for
+/// the other one: every AMI of the account.
+///
+/// `AmiScanModeConfiguration$scanMode` is documented as deciding "whether all AMIs are
+/// scanned or only those matching the specified tags"
+/// (`smithy_query(query="shape", shape="AmiScanModeConfiguration")`), and the tag filters
+/// the other mode selects with are what an account has to configure, so the mode that needs
+/// no filters is the one it starts on.
+/// Source: `smithy_query(query="shape", shape="AmiScanMode")` —
+/// `SCAN_ALL | TARGET_SCANNING`.
+pub const DEFAULT_AMI_SCAN_MODE: &str = "SCAN_ALL";
 
 /// The VALUES of one account's ECR automated re-scan setting: what a read reports and what
 /// a write is measured against, with none of the instants the state also carries.
@@ -183,12 +195,69 @@ pub struct Ec2ScanConfiguration {
     pub settled_at: Option<SystemTime>,
 }
 
+/// The VALUES of one account's Amazon Machine Image scan setting.
+///
+/// Source: `smithy_query(query="shape", shape="AmiConfiguration,AmiScanModeConfiguration")`
+/// — `scanModeConfiguration` is required and carries a required `scanMode`; the two scan
+/// windows and the two exclusions are optional.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AmiScanSettings {
+    /// The `AmiScanDuration` scanning is restricted to AMIs last launched within, absent
+    /// while the account has never configured one — a different answer from a duration, so
+    /// the absence is kept out of that token space.
+    pub last_launched_within: Option<String>,
+    /// The `AmiScanDuration` scanning is restricted to AMIs created within, absent for the
+    /// same reason.
+    pub created_within: Option<String>,
+    /// The `AmiScanMode` AMIs of this account are selected by.
+    pub scan_mode: String,
+    /// The tag filters targeted scanning selects AMIs with, each a key and an optional
+    /// value, absent while the account configured none.
+    pub tags: Option<Vec<(String, Option<String>)>>,
+    /// Whether AMIs copied from other AMIs are excluded, absent while the account has
+    /// never asked either way.
+    pub exclude_copied_amis: Option<bool>,
+    /// Whether AMIs created by Amazon Data Lifecycle Manager backups are excluded, absent
+    /// for the same reason.
+    pub exclude_backup_dlm_amis: Option<bool>,
+}
+
+impl Default for AmiScanSettings {
+    /// The AMI setting an account has until it configures one: every AMI selected
+    /// ([`DEFAULT_AMI_SCAN_MODE`]), no window restricting which ones, no tag filter and no
+    /// exclusion decision of its own.
+    fn default() -> Self {
+        Self {
+            last_launched_within: None,
+            created_within: None,
+            scan_mode: DEFAULT_AMI_SCAN_MODE.to_string(),
+            tags: None,
+            exclude_copied_amis: None,
+            exclude_backup_dlm_amis: None,
+        }
+    }
+}
+
+/// One account's stored Amazon Machine Image scan setting: its values, the instant they
+/// last changed and the instant the last change falls due.
+#[derive(Debug, Clone, Default)]
+pub struct AmiScanConfiguration {
+    pub settings: AmiScanSettings,
+    /// The instant a value of this setting last changed, absent while none ever has —
+    /// which is what `AmiConfigurationState$updatedAt` reports.
+    pub changed_at: Option<SystemTime>,
+    /// The instant the last change stops being [`CONFIGURATION_PENDING`], as
+    /// [`EcrScanConfiguration::settled_at`].
+    pub settled_at: Option<SystemTime>,
+}
+
 /// One account's own scan configuration: a scan type with no record here is not configured
 /// individually and follows the delegated administrator's.
 #[derive(Debug, Clone, Default)]
 pub struct ScanConfiguration {
     pub ecr: Option<EcrScanConfiguration>,
     pub ec2: Option<Ec2ScanConfiguration>,
+    pub ami: Option<AmiScanConfiguration>,
 }
 
 /// What one `UpdateConfiguration` call asks of an account's scan configuration: the values
@@ -212,6 +281,13 @@ pub struct ScanConfigurationUpdate {
     /// Whether `updateConfigurationInheritance$ec2Configuration` asked the same of the EC2
     /// setting.
     pub inherit_ec2: bool,
+    /// The `amiConfiguration` the request carried, read the same way:
+    /// `scanModeConfiguration` is required and names a `scanMode`, and every other member
+    /// is optional.
+    pub ami: Option<AmiScanSettings>,
+    /// Whether `updateConfigurationInheritance$amiConfiguration` asked the AMI setting to
+    /// follow the delegated administrator again.
+    pub inherit_ami: bool,
 }
 
 impl ScanConfigurationUpdate {
@@ -219,7 +295,12 @@ impl ScanConfigurationUpdate {
     /// that asks nothing changes nothing, so it never reaches a write and never records an
     /// account.
     pub fn asks_for_nothing(&self) -> bool {
-        self.ecr.is_none() && self.ec2.is_none() && !self.inherit_ecr && !self.inherit_ec2
+        self.ecr.is_none()
+            && self.ec2.is_none()
+            && self.ami.is_none()
+            && !self.inherit_ecr
+            && !self.inherit_ec2
+            && !self.inherit_ami
     }
 }
 
@@ -290,6 +371,40 @@ pub fn ec2_configuration_state(
     }
 }
 
+/// The wire `AmiConfigurationState` for the AMI setting `stored` — the service's own values
+/// when no account in the inheritance chain has configured one.
+///
+/// Source: `smithy_query(query="shape", shape="AmiConfigurationState")` — every member of
+/// it is optional, and its `scanModeConfiguration` carries the `AmiScanMode` in force.
+pub fn ami_configuration_state(
+    stored: Option<&AmiScanConfiguration>,
+    now: SystemTime,
+) -> AmiConfigurationState {
+    let unconfigured = AmiScanConfiguration::default();
+    let stored = stored.unwrap_or(&unconfigured);
+    AmiConfigurationState {
+        last_launched_within: stored.settings.last_launched_within.clone(),
+        created_within: stored.settings.created_within.clone(),
+        scan_mode_configuration: Some(AmiScanModeConfiguration {
+            scan_mode: stored.settings.scan_mode.clone(),
+            // Reported only for an account whose configuration carries tag filters: no
+            // filter at all is a different answer from an empty filter list.
+            tags: stored.settings.tags.as_ref().map(|tags| {
+                tags.iter()
+                    .map(|(key, value)| AmiTagFilter {
+                        key: key.clone(),
+                        value: value.clone(),
+                    })
+                    .collect()
+            }),
+            exclude_copied_amis: stored.settings.exclude_copied_amis,
+            exclude_backup_dlm_amis: stored.settings.exclude_backup_dlm_amis,
+        }),
+        status: Some(applied_status(stored.settled_at, now).to_string()),
+        updated_at: stored.changed_at.map(timestamp),
+    }
+}
+
 impl ComAmazonawsInspector2Inspector2State {
     /// The scan configuration IN FORCE for `account_id`: its own overrides where it has
     /// them, and the delegated administrator `admin_id`'s where it does not.
@@ -315,6 +430,7 @@ impl ComAmazonawsInspector2Inspector2State {
         ScanConfiguration {
             ecr: own.ecr.or(administrator.ecr),
             ec2: own.ec2.or(administrator.ec2),
+            ami: own.ami.or(administrator.ami),
         }
     }
 
@@ -359,6 +475,9 @@ impl ComAmazonawsInspector2Inspector2State {
         }
         if update.inherit_ec2 {
             configuration.ec2 = None;
+        }
+        if update.inherit_ami {
+            configuration.ami = None;
         }
 
         if let Some(requested) = update.ecr {
@@ -408,6 +527,36 @@ impl ComAmazonawsInspector2Inspector2State {
             configuration.ec2 = Some(Ec2ScanConfiguration {
                 settings,
                 vm_scanner_activated_at,
+                settled_at: if changed {
+                    Some(now + CONFIGURATION_TRANSITION)
+                } else {
+                    previous.settled_at
+                },
+            });
+        }
+
+        if let Some(requested) = update.ami {
+            let previous = before.ami.unwrap_or_default();
+            let settings = AmiScanSettings {
+                last_launched_within: requested
+                    .last_launched_within
+                    .or_else(|| previous.settings.last_launched_within.clone()),
+                created_within: requested
+                    .created_within
+                    .or_else(|| previous.settings.created_within.clone()),
+                scan_mode: requested.scan_mode,
+                tags: requested.tags.or_else(|| previous.settings.tags.clone()),
+                exclude_copied_amis: requested
+                    .exclude_copied_amis
+                    .or(previous.settings.exclude_copied_amis),
+                exclude_backup_dlm_amis: requested
+                    .exclude_backup_dlm_amis
+                    .or(previous.settings.exclude_backup_dlm_amis),
+            };
+            let changed = settings != previous.settings;
+            configuration.ami = Some(AmiScanConfiguration {
+                settings,
+                changed_at: if changed { Some(now) } else { previous.changed_at },
                 settled_at: if changed {
                     Some(now + CONFIGURATION_TRANSITION)
                 } else {

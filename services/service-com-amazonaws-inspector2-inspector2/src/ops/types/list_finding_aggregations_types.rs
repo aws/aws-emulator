@@ -57,6 +57,7 @@ pub struct AmiAggregation {
     pub amis: Option<Vec<StringFilter>>,
     pub sort_order: Option<String>,
     pub sort_by: Option<String>,
+    pub scan_sources: Option<Vec<String>>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.inspector2#AwsEcrContainerAggregation")]
@@ -280,6 +281,7 @@ pub struct AmiAggregationResponse {
     pub cloud_account_id: Option<String>,
     pub severity_counts: Option<SeverityCounts>,
     pub affected_instances: Option<i64>,
+    pub scan_source: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.inspector2#AwsEcrContainerAggregationResponse")]

@@ -94,6 +94,7 @@ pub struct ResourceDetails {
     pub aws_ecr_container_image: Option<AwsEcrContainerImageDetails>,
     pub aws_lambda_function: Option<AwsLambdaFunctionDetails>,
     pub code_repository: Option<CodeRepositoryDetails>,
+    pub machine_image: Option<MachineImageDetails>,
     pub vm: Option<Vm>,
     pub image: Option<Image>,
     pub serverless_function: Option<ServerlessFunction>,
@@ -158,6 +159,22 @@ pub struct CodeRepositoryDetails {
     pub project_name: Option<String>,
     pub integration_arn: Option<String>,
     pub provider_type: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.inspector2#MachineImageDetails")]
+#[derive(Debug, Clone, Default)]
+pub struct MachineImageDetails {
+    pub machine_image_id: String,
+    pub name: Option<String>,
+    pub owner_account_id: Option<String>,
+    pub platform: Option<String>,
+    pub architecture: Option<String>,
+    pub creation_date: Option<::aws_smithy_types::DateTime>,
+    pub state: Option<String>,
+    pub is_public: Option<bool>,
+    pub root_device_type: Option<String>,
+    pub virtualization_type: Option<String>,
+    pub source_resource_id: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.inspector2#Vm")]
@@ -291,6 +308,9 @@ pub struct VulnerablePackage {
     pub fixed_in_version: Option<String>,
     pub remediation: Option<String>,
     pub source_lambda_layer_arn: Option<String>,
+    pub runtime_reachability: Option<String>,
+    pub runtime_reachability_reason: Option<String>,
+    pub purl: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.inspector2#CvssScore")]

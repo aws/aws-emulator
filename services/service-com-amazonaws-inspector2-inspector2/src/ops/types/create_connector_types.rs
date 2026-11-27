@@ -27,6 +27,7 @@ pub struct CreateConnectorInput {
 #[derive(Debug, Clone)]
 pub enum ProviderDetailCreate {
     Azure(AzureProviderDetailCreate),
+    Gcp(GcpProviderDetailCreate),
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.inspector2#AzureProviderDetailCreate")]
@@ -35,6 +36,15 @@ pub struct AzureProviderDetailCreate {
     pub aws_config_connector_arn: String,
     pub scope_configuration: AzureScopeConfigurationInput,
     pub azure_regions: Vec<String>,
+    pub auto_install_vm_scanner: bool,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.inspector2#GcpProviderDetailCreate")]
+#[derive(Debug, Clone, Default)]
+pub struct GcpProviderDetailCreate {
+    pub aws_config_connector_arn: String,
+    pub scope_configuration: GcpScopeConfigurationInput,
+    pub gcp_regions: Vec<String>,
     pub auto_install_vm_scanner: bool,
 }
 

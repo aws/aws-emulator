@@ -2,10 +2,11 @@
 
 //! @op UpdateConfiguration
 //! IMPLEMENTED: writes the Amazon Inspector scan configuration of the account the request
-//! names — the ECR automated re-scan setting and the Amazon EC2 scan mode — and can reset
-//! a member account's scan type to inherit the delegated administrator's again. Only a
-//! CHANGE of value starts the span the service applies it over, so a request asking for
-//! what is already in force leaves the setting terminal.
+//! names — the ECR automated re-scan setting, the Amazon EC2 scan mode and the Amazon
+//! Machine Image scan setting — and can reset a member account's scan type to inherit the
+//! delegated administrator's again. Only a CHANGE of value starts the span the service
+//! applies it over, so a request asking for what is already in force leaves the setting
+//! terminal.
 //!
 //! ## Shape of an operation
 //!
@@ -59,6 +60,8 @@
 //!   specified, you must be the delegated administrator for this member account. If not
 //!   specified, the operation updates your own configuration and propagates changes to any
 //!   member accounts that have not been individually configured.
+//! * `amiConfiguration` (AmiConfiguration) — Specifies how Amazon Machine Images (AMIs) are
+//!   scanned for the account.
 //! * `ec2Configuration` (Ec2Configuration) — Specifies how the Amazon EC2 automated scan will
 //!   be updated for your environment.
 //! * `ecrConfiguration` (EcrConfiguration) — Specifies how the ECR automated re-scan will be
@@ -75,6 +78,8 @@
 //! * `AccessDeniedException` (HTTP 403) — You do not have sufficient access to perform this
 //!   action. For Enable, you receive this error if you attempt to use a feature in an
 //!   unsupported Amazon Web Services Region.
+//! * `ConflictException` (HTTP 409) — A conflict occurred. This exception occurs when the
+//!   same resource is being modified by concurrent requests.
 //! * `InternalServerException` (HTTP 500) — The request has failed due to an internal failure
 //!   of the Amazon Inspector service.
 //! * `ThrottlingException` (HTTP 429) — The limit on the number of requests per second was
@@ -100,6 +105,7 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-inspector2-inspector2.j
 #[derive(Debug)]
 pub enum UpdateConfigurationErrorModeled {
     AccessDeniedException(AccessDeniedException),
+    ConflictException(ConflictException),
     InternalServerException(InternalServerException),
     ThrottlingException(ThrottlingException),
     ValidationException(ValidationException),
@@ -233,6 +239,26 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 == Some(crate::state::INHERIT_FROM_ADMIN),
             inherit_ec2: inheritance
                 .and_then(|inheritance| inheritance.ec2_configuration.as_deref())
+                == Some(crate::state::INHERIT_FROM_ADMIN),
+            // The AMI setting is carried by the same two members every other scan type is:
+            // a structure naming the values to apply, and an inheritance member asking for
+            // the administrator's to apply again.
+            ami: input
+                .ami_configuration
+                .map(|ami| crate::state::AmiScanSettings {
+                    last_launched_within: ami.last_launched_within,
+                    created_within: ami.created_within,
+                    scan_mode: ami.scan_mode_configuration.scan_mode,
+                    tags: ami.scan_mode_configuration.tags.map(|tags| {
+                        tags.into_iter()
+                            .map(|filter| (filter.key, filter.value))
+                            .collect()
+                    }),
+                    exclude_copied_amis: ami.scan_mode_configuration.exclude_copied_amis,
+                    exclude_backup_dlm_amis: ami.scan_mode_configuration.exclude_backup_dlm_amis,
+                }),
+            inherit_ami: inheritance
+                .and_then(|inheritance| inheritance.ami_configuration.as_deref())
                 == Some(crate::state::INHERIT_FROM_ADMIN),
         };
 

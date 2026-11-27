@@ -64,6 +64,7 @@ pub struct ResourceScanMetadata {
     pub container_repository: Option<ContainerRepositoryMetadata>,
     pub container_registry: Option<ContainerRegistryMetadata>,
     pub serverless_function: Option<ServerlessFunctionMetadata>,
+    pub machine_image: Option<MachineImageMetadata>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.inspector2#EcrRepositoryMetadata")]
@@ -177,5 +178,12 @@ pub struct ServerlessFunctionMetadata {
     pub serverless_function_name: Option<String>,
     pub runtime: Option<String>,
     pub function_tags: Option<std::collections::HashMap<String, String>>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.inspector2#MachineImageMetadata")]
+#[derive(Debug, Clone, Default)]
+pub struct MachineImageMetadata {
+    pub tags: Option<std::collections::HashMap<String, String>>,
+    pub platform: Option<String>,
 }
 

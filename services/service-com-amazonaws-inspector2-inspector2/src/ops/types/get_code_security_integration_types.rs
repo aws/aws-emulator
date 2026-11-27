@@ -29,6 +29,8 @@ pub struct GetCodeSecurityIntegrationOutput {
     pub created_on: ::aws_smithy_types::DateTime,
     pub last_update_on: ::aws_smithy_types::DateTime,
     pub authorization_url: Option<String>,
+    pub vpc_configuration: Option<CodeSecurityIntegrationVpcConfiguration>,
+    pub instance_url: Option<String>,
     pub tags: Option<std::collections::HashMap<String, String>>,
 }
 
