@@ -17,9 +17,9 @@
 //! [`crate::service`]. `GetSecurityGroup`'s handler answers this status for exactly one
 //! reason: the group the request named is not there ([`crate::ops::get_security_group`]).
 //!
-//! It reaches that one operation alone: this API does answer a typed `UnauthorizedError` at
-//! the same status elsewhere — a network read denies a `networkId` it cannot place with one —
-//! and that refusal keeps the shape its renderer named it with.
+//! It reaches that one operation alone: every other refusal of this API keeps the shape its
+//! renderer named it with — a network read denies a `networkId` it cannot place with a typed
+//! `ForbiddenError`, at the status that shape declares.
 
 /// The status the refusal of an unresolvable security-group read carries: the one the model
 /// declares for `UnauthorizedError` (`@httpError(401)`), which is the only reason a security

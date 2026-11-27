@@ -16,8 +16,13 @@
 //! * a network this account owned and deleted — `ForbiddenError` (403) with the
 //!   service's "gone" sentence, which is the terminal answer a client polling for the
 //!   end of an initiated deletion waits for;
-//! * a well-formed label this store cannot place at all — `UnauthorizedError`
-//!   (`@httpError(401)`), disclosing nothing about whether such a network exists.
+//! * a well-formed label this store cannot place at all — `ForbiddenError`
+//!   (`@httpError(403)`), disclosing nothing about whether such a network exists.
+//!
+//! All three are the PERMISSION class: the caller is authenticated, so what the answer
+//! states is that these credentials may not be shown the resource. The authentication
+//! class (`UnauthorizedError`, `@httpError(401)`) is for a request whose credentials are
+//! missing or invalid, which no id in the path can make true.
 //!
 //! Every case goes through the real multi-service router — route resolution, restJson1
 //! deserialization, modelled-constraint validation, the handler and response
@@ -217,8 +222,8 @@ async fn a_well_formed_network_id_that_names_no_network_is_denied() {
         assert_denied(
             case,
             &answer,
-            401,
-            "UnauthorizedError",
+            403,
+            "ForbiddenError",
             ACCESS_DENIED_MESSAGE,
             network_id,
         );
@@ -325,8 +330,8 @@ async fn the_three_refusal_classes_are_told_apart() {
         (
             "well formed and unplaceable",
             "87654321".to_string(),
-            401,
-            "UnauthorizedError",
+            403,
+            "ForbiddenError",
             ACCESS_DENIED_MESSAGE,
         ),
     ];
@@ -343,6 +348,12 @@ async fn the_three_refusal_classes_are_told_apart() {
             answer.wire_code(),
             "ValidationError",
             "case {case:?}: a read this API denies is never a validation failure, got {}",
+            answer.body
+        );
+        assert_ne!(
+            answer.wire_code(),
+            "UnauthorizedError",
+            "case {case:?}: a read this API denies is never an authentication failure, got {}",
             answer.body
         );
     }

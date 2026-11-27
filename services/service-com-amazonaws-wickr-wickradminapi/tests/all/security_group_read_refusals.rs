@@ -19,7 +19,7 @@
 //!   member in the body, so a client classifies it by status. Everything else this service
 //!   refuses still names its shape — a network read of a deleted network is the typed
 //!   `ForbiddenError` this API states for a network that is gone, and a `networkId` it cannot
-//!   place at all is a typed `UnauthorizedError` at the very same status.
+//!   place at all is a typed `ForbiddenError` carrying this API's denial sentence.
 //! * The sentence is entirely fixed text: it names neither the `groupId` nor the `networkId`
 //!   the request carried, so the refusal discloses nothing about what the account holds or
 //!   used to hold.
@@ -441,12 +441,12 @@ async fn a_cascade_is_reported_at_the_resource_the_request_named() {
     );
 }
 
-/// The refusal body carries the sentence and nothing else, and the SAME status answered for
-/// another resource still names its shape: a `networkId` this store cannot place at all is
-/// denied with the typed `UnauthorizedError` this API states for it, so dropping the shape
-/// reaches the group read alone.
+/// The refusal body carries the sentence and nothing else, and another refusal of this API
+/// still names its shape: a `networkId` this store cannot place at all is denied with the
+/// typed `ForbiddenError` this API states for it, so dropping the shape reaches the group
+/// read alone.
 #[tokio::test]
-async fn the_refusal_body_carries_the_sentence_alone_and_no_other_401_loses_its_shape() {
+async fn the_refusal_body_carries_the_sentence_alone_and_no_other_refusal_loses_its_shape() {
     let router = emulator();
     let network_id = create_network(&router, "body-sg-net").await;
     let answer = get_group(&router, &network_id, "4242").await;
@@ -467,12 +467,12 @@ async fn the_refusal_body_carries_the_sentence_alone_and_no_other_401_loses_its_
         answer.body
     );
 
-    // The network read's own denial at the same status: this one a client resolves to a
-    // modelled shape, in both places the shape travels.
+    // The network read's own denial: this one a client resolves to a modelled shape, in both
+    // places the shape travels, and it is the permission class rather than this status.
     let answer = call(&router, "GET", "/networks/99999999", None).await;
     assert_eq!(
-        answer.status, REFUSED_READ_STATUS,
-        "case \"an unplaceable networkId\": expected {REFUSED_READ_STATUS}, got {} with {}",
+        answer.status, FORBIDDEN_STATUS,
+        "case \"an unplaceable networkId\": expected {FORBIDDEN_STATUS}, got {} with {}",
         answer.status, answer.body
     );
     assert_eq!(
@@ -483,13 +483,13 @@ async fn the_refusal_body_carries_the_sentence_alone_and_no_other_401_loses_its_
     );
     assert_eq!(
         answer.body_shape(),
-        "UnauthorizedError",
+        "ForbiddenError",
         "case \"an unplaceable networkId\": expected the typed shape in the body, got {}",
         answer.body
     );
     assert_eq!(
-        answer.error_type, "UnauthorizedError",
-        "case \"an unplaceable networkId\": expected x-amzn-errortype UnauthorizedError, got {:?}",
+        answer.error_type, "ForbiddenError",
+        "case \"an unplaceable networkId\": expected x-amzn-errortype ForbiddenError, got {:?}",
         answer.error_type
     );
 }

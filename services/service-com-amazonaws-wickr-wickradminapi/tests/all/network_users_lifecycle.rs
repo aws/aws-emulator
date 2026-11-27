@@ -1931,7 +1931,7 @@ async fn delete_network_states_the_initiated_deletion_and_echoes_the_network_id(
 /// listing (200), an update (200), a delete (200), a refusal a handler raises (422), a
 /// refusal the model's own constraints produce before any handler runs (400), an error
 /// about stored state (404), and the two denials `GetNetwork` answers for a `networkId` it
-/// cannot own (403 before the model's constraints are reached, 401 for an id this store
+/// cannot own (403 before the model's constraints are reached, 403 again for an id this store
 /// cannot place).
 #[tokio::test]
 async fn every_response_announces_the_charset_and_carries_an_entity_tag() {
@@ -1994,7 +1994,7 @@ async fn every_response_announces_the_charset_and_carries_an_entity_tag() {
             "GET",
             "/networks/99999999".to_string(),
             None,
-            401,
+            403,
         ),
         (
             "a delete",

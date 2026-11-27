@@ -20,8 +20,13 @@
 //!   check is taken in front of this operation
 //!   (`crate::service::network_ownership`) rather than here;
 //! * an id this account owned and deleted is `ForbiddenError` (403);
-//! * an id this store cannot place at all is `UnauthorizedError` (401), which discloses
+//! * an id this store cannot place at all is `ForbiddenError` (403) too, which discloses
 //!   nothing about whether such a network exists.
+//!
+//! Every one of those is the PERMISSION class: the caller is authenticated, and what the
+//! answer states is that these credentials may not be shown the resource.
+//! `UnauthorizedError` (401) is the authentication class — missing or invalid credentials —
+//! and so is never an answer this handler reaches from the store.
 //!
 //! A 501 from this operation means "nobody has written it yet", never "the emulator is
 //! broken".
@@ -213,7 +218,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 .into())
             }
             crate::state::NetworkAccess::Unplaceable => {
-                return Err(GetNetworkErrorModeled::UnauthorizedError(UnauthorizedError {
+                // An authenticated caller asking for an id this store cannot place as a
+                // network of this account is refused in the PERMISSION class, never in the
+                // authentication one: the credentials are valid, they just may not be shown
+                // this resource. The sentence names neither the member nor the id, so the
+                // denial says nothing about whether a network holds it.
+                return Err(GetNetworkErrorModeled::ForbiddenError(ForbiddenError {
                     message: Some(crate::state::ACCESS_DENIED_MESSAGE.to_string()),
                 })
                 .into())

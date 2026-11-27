@@ -330,11 +330,18 @@ mod tests {
                 Some("NotImplemented"),
             ),
             (
-                "a denied network id under the gone-bot wrapper",
+                "a typed refusal at the security-group status under the gone-bot wrapper",
                 GONE_BOT_STATUS,
                 REFUSED_SECURITY_GROUP_READ_STATUS,
-                r#"{"__type":"UnauthorizedError","message":"Access Denied"}"#,
+                r#"{"__type":"UnauthorizedError","message":"invalid security group request"}"#,
                 Some("UnauthorizedError"),
+            ),
+            (
+                "a denied network id under the gone-bot wrapper",
+                GONE_BOT_STATUS,
+                403,
+                r#"{"__type":"ForbiddenError","message":"Access Denied"}"#,
+                Some("ForbiddenError"),
             ),
             (
                 "a not-found under the security-group wrapper",
