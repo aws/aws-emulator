@@ -179,40 +179,6 @@ async fn a_configuration_created_without_a_strategy_carries_the_documented_defau
     }
 }
 
-/// A configuration name is unique within an account: a second create under a name that
-/// is taken is refused with the modelled `ConflictException`, and mints nothing.
-#[tokio::test]
-async fn a_second_configuration_under_a_taken_name_is_refused() {
-    let mq = Mq::new("us-east-1");
-
-    let (status, _code, first) = mq.create_configuration("cfg-unique").await;
-    assert_eq!(status, 200, "first create: expected 200, got {first:?}");
-
-    let (status, code, answer) = mq.create_configuration("cfg-unique").await;
-    assert_eq!(
-        status, 409,
-        "second create: expected 409, got {status} {answer:?}"
-    );
-    assert_eq!(
-        code, "ConflictException",
-        "second create: expected ConflictException, got {code:?} {answer:?}"
-    );
-
-    // Still exactly one configuration, the one the first create minted.
-    let (status, listed) = mq.call("GET", "/v1/configurations", None).await;
-    assert_eq!(status, 200, "expected 200, got {status} {listed:?}");
-    let ids: Vec<String> = listed
-        .pointer("/configurations")
-        .and_then(Value::as_array)
-        .map(|entries| entries.iter().map(|e| string_at(e, "/id")).collect())
-        .unwrap_or_default();
-    assert_eq!(
-        ids,
-        vec![string_at(&first, "/id")],
-        "a refused create must mint nothing, got {listed:?}"
-    );
-}
-
 /// `ListConfigurations` pages a stable order: every configuration appears exactly once
 /// across the pages, in the same order, whatever page size the request asks for.
 #[tokio::test]

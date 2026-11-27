@@ -753,20 +753,6 @@ impl ComAmazonawsMqMqState {
         }
     }
 
-    /// The configuration a CALLER created under `name`. Configuration names are
-    /// unique per account, so this scan over the one map is the name index — a second
-    /// map could desync from it.
-    ///
-    /// A configuration created FOR a broker carries that broker's name by
-    /// construction, and broker names are their own namespace, so it is not part of
-    /// the names a `CreateConfiguration` competes for: a caller can still name a
-    /// configuration after a broker it created.
-    pub fn configuration_by_name(&self, name: &str) -> Option<&ConfigurationRecord> {
-        self.configurations
-            .values()
-            .find(|c| c.name == name && c.created_for_broker.is_none())
-    }
-
     /// Mint the `ConfigurationId` of a configuration created at `created`: `c-`
     /// and the same minted bits a `BrokerId` carries — see
     /// [`Self::mint_broker_id`] for where they come from.

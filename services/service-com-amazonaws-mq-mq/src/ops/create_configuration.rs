@@ -7,15 +7,16 @@
 //! or the length the member documents, an `engineType` or `authenticationStrategy`
 //! outside the enum the model declares — is answered with the modelled
 //! `BadRequestException` (HTTP 400) naming that member in `errorAttribute`, and nothing
-//! is stored. A `name` another configuration of this account already carries is refused
-//! with the modelled `ConflictException` (HTTP 409). A create past the per-Region
-//! configuration quota is refused too — that bound is the emulator's own, set at the
-//! quota the Developer Guide publishes, so one caller cannot grow the store without end.
+//! is stored. A configuration is identified by the `Id` this service mints, not by its
+//! `Name`: the model puts no uniqueness constraint on `Name`, so a name another
+//! configuration already carries mints a second configuration with its own `Id`. A
+//! create past the per-Region configuration quota is refused — that bound is the
+//! emulator's own, set at the quota the Developer Guide publishes, so one caller cannot
+//! grow the store without end.
 //!
 //! What a served request mints is read back by `DescribeConfiguration` and reported by
 //! `ListConfigurations`; its `Data` and later revisions belong to the operations that
-//! own them (`UpdateConfiguration`, `DescribeConfigurationRevision`), which are still
-//! scaffolded.
+//! own them (`UpdateConfiguration`, `DescribeConfigurationRevision`).
 //!
 //! ## Shape of an operation
 //!
@@ -219,32 +220,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         let mut store = service_state.lock();
 
-        // A configuration name is unique within an account: the corpus holds a
-        // recorded check for exactly that refusal
-        // (`mq.create-configuration-duplicate-name-conflict-rejected`), and
-        // `ConflictException` is the error this operation models for a request
-        // that conflicts with what the account already holds. So a second create
-        // under a taken name is refused rather than minting a second
-        // configuration a caller cannot tell from the first.
-        //
-        // No recorded response covers the SENTENCE for this refusal, so it is
-        // worded the way this service words its other conflicts (see
-        // `CreateBroker`'s duplicate-broker-name refusal), naming the member and
-        // the configuration that already holds the name — both read from the
-        // request and from stored state.
-        if let Some(existing) = store.configuration_by_name(&input.name) {
-            return Err(CreateConfigurationErrorModeled::ConflictException(
-                ConflictException {
-                    error_attribute: Some("name".to_string()),
-                    message: Some(format!(
-                        "a configuration named {:?} already exists in this account as {:?}",
-                        input.name, existing.configuration_id
-                    )),
-                    resource_share_errors: None,
-                },
-            )
-            .into());
-        }
+        // A configuration's identity is the `Id` this store mints, which `Id` is
+        // documented as ("the unique ID that Amazon MQ generates for the
+        // configuration"); `Name` carries only its value rule, with no uniqueness
+        // constraint, so a name the account already uses is NOT a conflict and
+        // this create goes straight to the mint path below. Two configurations
+        // sharing a name are two configurations, told apart by their ids, and
+        // `ListConfigurations` reports both. The modelled `ConflictException`
+        // stays for a genuine conflict of state; it is not raised on `Name`.
 
         // The emulator's own bound on how far this store may grow, set at the
         // per-Region quota the Developer Guide publishes ([`state::MAX_CONFIGURATIONS`]):
