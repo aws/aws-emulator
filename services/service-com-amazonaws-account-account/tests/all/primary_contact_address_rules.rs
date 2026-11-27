@@ -15,6 +15,13 @@
 //!    state or region is refused the same way naming `StateOrRegion`, while an
 //!    address in any other country is complete without one.
 //!
+//! And the ORDER both are decided in: the account this call acts on is resolved
+//! before the address is looked at, so the account-target refusal — the
+//! caller's own account named in `AccountId`, which that member's own
+//! documentation forbids — answers whatever address the request carries, while
+//! an address at fault is still refused for its own member on every target the
+//! account-target rule admits.
+//!
 //! Every case goes through the router, so it exercises routing,
 //! deserialization, the handler, the persisted store and serialization: the same
 //! path a client takes. And every refusal is checked to have written NOTHING:
@@ -24,13 +31,15 @@
 //! the seven that require a state, and countries on four other continents that
 //! do not), the form of a value that is no country code (the standard's
 //! user-assigned ranges, a code in the wrong case, and two letters that are not
-//! letters), and whether `StateOrRegion` carries a two-letter code or a full
-//! name.
+//! letters), whether `StateOrRegion` carries a two-letter code or a full name,
+//! and which account the request targets (the caller's own, none at all, and a
+//! member account).
 
 use std::sync::Arc;
 
 use bytes::Bytes;
 use serde_json::{json, Value};
+use service_com_amazonaws_account_account::state::default_account_id;
 use service_com_amazonaws_account_account::EmulatedService;
 use smithy_server_runtime::MultiServiceRouter;
 
@@ -78,6 +87,17 @@ const ASSIGNED_ELSEWHERE: [&str; 6] = ["AQ", "AU", "FR", "MX", "SG", "ZA"];
 const NOT_ASSIGNED: [&str; 11] = [
     "AA", "QM", "QZ", "XA", "XZ", "ZZ", "us", "Fr", "12", "A1", "--",
 ];
+
+/// The HTTP status and error code of this service's account-target refusal,
+/// from `smithy_query(query="operation", operation="PutContactInformation")`:
+/// `AccessDeniedException` at 403.
+const DENIED: (u16, &str) = (403, "AccessDeniedException");
+
+/// An account id inside `AccountId`'s modelled `^\d{12}$` that is NOT the
+/// caller's own, so the account-target rule admits it: it is what shows the 403
+/// below belongs to naming the caller's OWN account rather than to naming an
+/// account at all.
+const MEMBER_ACCOUNT_ID: &str = "246813579024";
 
 /// One emulator: a router carrying only this service, over one shared engine.
 fn emulator() -> MultiServiceRouter {
@@ -180,12 +200,39 @@ async fn put(router: &MultiServiceRouter, contact: Value) -> Answer {
     .await
 }
 
+/// Store `contact` as the primary contact of `account_id`, naming that account
+/// in the `AccountId` member.
+async fn put_for(router: &MultiServiceRouter, account_id: &str, contact: Value) -> Answer {
+    call(
+        router,
+        "/putContactInformation",
+        json!({ "AccountId": account_id, "ContactInformation": contact }),
+    )
+    .await
+}
+
 /// The caller's own primary contact, as `GetContactInformation` reports it.
 async fn stored(router: &MultiServiceRouter) -> Value {
     let answer = call(router, "/getContactInformation", json!({})).await;
     assert_eq!(
         answer.status, 200,
         "GetContactInformation must answer 200, got {} with {:?}",
+        answer.status, answer.body
+    );
+    answer.contact_information().clone()
+}
+
+/// The primary contact `GetContactInformation` reports for `account_id`.
+async fn stored_for(router: &MultiServiceRouter, account_id: &str) -> Value {
+    let answer = call(
+        router,
+        "/getContactInformation",
+        json!({ "AccountId": account_id }),
+    )
+    .await;
+    assert_eq!(
+        answer.status, 200,
+        "GetContactInformation for account {account_id} must answer 200, got {} with {:?}",
         answer.status, answer.body
     );
     answer.contact_information().clone()
@@ -365,4 +412,138 @@ async fn a_state_or_region_is_admitted_in_every_assigned_country() {
             "case {country_code:?}: StateOrRegion must be read back as stored, got {reported:?}"
         );
     }
+}
+
+/// One address this service refuses: the case label, the structure, and the
+/// member the refusal names.
+type RefusableAddress = (String, Value, &'static str);
+
+/// Every address the two rules above refuse, as ONE table: each two-letter
+/// string the standard assigns to no country (with and without a state, since
+/// the country code decides on its own) and each of the seven countries whose
+/// address must carry a state, carrying none.
+fn refusable_addresses() -> Vec<RefusableAddress> {
+    let mut addresses = Vec::new();
+    for country_code in NOT_ASSIGNED {
+        for state_or_region in [None, Some("WA")] {
+            addresses.push((
+                format!("CountryCode {country_code:?} with StateOrRegion {state_or_region:?}"),
+                contact_in(country_code, state_or_region),
+                "CountryCode",
+            ));
+        }
+    }
+    for (country_code, _) in REQUIRES_STATE_OR_REGION {
+        addresses.push((
+            format!("{country_code:?} with no StateOrRegion"),
+            contact_in(country_code, None),
+            "StateOrRegion",
+        ));
+    }
+    addresses
+}
+
+/// Which account the put acts on is resolved BEFORE the address it carries is
+/// looked at, so the account-target refusal is never outranked by an address
+/// rule: a put naming the caller's own account — which `AccountId`'s own
+/// documentation forbids ("the management account can't specify its own
+/// AccountId") — answers the IDENTICAL 403 `AccessDeniedException` whatever
+/// address travels with it, naming no input member, while the same address is
+/// refused for the member at fault on every target the account-target rule
+/// admits: no member at all (the standalone call, which lands on that very
+/// account) and a member account. Nothing any of those refusals touched is
+/// stored.
+#[tokio::test]
+async fn the_account_target_refusal_outranks_both_address_rules() {
+    let router = emulator();
+    let own = default_account_id();
+
+    // The refusal that naming the caller's own account earns with an address
+    // both rules accept, so there is nothing else in the request to refuse: the
+    // whole payload every row below must answer too.
+    let reference = put_for(&router, own, contact_in("US", Some("WA"))).await;
+    assert_eq!(
+        (reference.status, reference.error_code()),
+        DENIED,
+        "case \"an accepted address naming the caller's own account\": expected {DENIED:?}, \
+         got {} with {:?}",
+        reference.status,
+        reference.body
+    );
+    let denied = (
+        reference.status,
+        reference.error_code().to_string(),
+        reference.member("message").to_string(),
+    );
+
+    // The contact the caller's own account reports before any refusal below:
+    // none of them may change it.
+    let before = stored(&router).await;
+
+    for (case, contact, member) in refusable_addresses() {
+        let own_target = put_for(&router, own, contact.clone()).await;
+        assert_eq!(
+            (
+                own_target.status,
+                own_target.error_code().to_string(),
+                own_target.member("message").to_string(),
+            ),
+            denied,
+            "case {case:?}: naming the caller's own account must answer the account-target \
+             refusal {denied:?}, got {} with {:?}",
+            own_target.status,
+            own_target.body
+        );
+        assert!(
+            own_target.invalid_members().is_empty(),
+            "case {case:?}: the account-target refusal names no input member, got {:?}",
+            own_target.body
+        );
+
+        // No account-id member at all: the standalone call lands on that very
+        // account, and there the address decides.
+        let standalone = put(&router, contact.clone()).await;
+        assert_refused_naming(&format!("{case}, standalone"), &standalone, member);
+
+        // A member account, which the account-target rule admits: the address
+        // decides there too, so the 403 above belongs to the own-account member
+        // and not to naming an account.
+        let member_account = put_for(&router, MEMBER_ACCOUNT_ID, contact).await;
+        assert_refused_naming(
+            &format!("{case}, naming a member account"),
+            &member_account,
+            member,
+        );
+    }
+
+    let after_refusals = stored(&router).await;
+    assert_eq!(
+        after_refusals, before,
+        "case \"after every refusal\": a refused put must leave the stored contact alone, \
+         got {after_refusals:?} after {before:?}"
+    );
+
+    // The resolving arm: an address both rules accept, stored for the member
+    // account every faulty row above was refused for, is read back from that
+    // account — and the caller's own contact is still its own.
+    let accepted = contact_in("BR", Some("São Paulo"));
+    let put_accepted = put_for(&router, MEMBER_ACCOUNT_ID, accepted.clone()).await;
+    assert_eq!(
+        put_accepted.status, 200,
+        "case \"an accepted address naming a member account\": expected 200, got {} with {:?}",
+        put_accepted.status, put_accepted.body
+    );
+    let reported = stored_for(&router, MEMBER_ACCOUNT_ID).await;
+    assert_eq!(
+        (&reported["CountryCode"], &reported["StateOrRegion"]),
+        (&accepted["CountryCode"], &accepted["StateOrRegion"]),
+        "case \"an accepted address naming a member account\": the address must be read back \
+         as stored, got {reported:?}"
+    );
+    let own_after = stored(&router).await;
+    assert_eq!(
+        own_after, before,
+        "case \"after the member account's put\": the caller's own contact must be untouched, \
+         got {own_after:?} after {before:?}"
+    );
 }
