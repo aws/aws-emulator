@@ -1368,19 +1368,18 @@ pub fn federation_source_not_registered(source: &str) -> String {
 
 /// `CreateCatalog` for a `Name` the account already holds a catalog under.
 ///
-/// RECORDED constant, and the whole message: the sentence is fixed text that names the
-/// resource kind, withholds the requested name and closes on a full stop — the sentence this
-/// service words an already-exists condition with for every resource kind that has one
-/// ([`DATABASE_ALREADY_EXISTS`], [`CONNECTION_ALREADY_EXISTS`], [`CRAWLER_ALREADY_EXISTS`],
-/// [`REGISTRY_ALREADY_EXISTS`], [`TABLE_ALREADY_EXISTS`]), and the punctuation the catalog
-/// surface's own miss sentence carries too ([`CATALOG_NOT_FOUND`]).
+/// RECORDED constant, and the whole message: fixed text that names the resource kind,
+/// withholds the requested name and closes on the last letter of its last word — this
+/// surface's own sentence, which carries no terminal full stop.
 ///
-/// Two recordings of this one refusal disagree about that stop, and the stop is what this
-/// constant states: it is the form the whole family of this service's already-exists
-/// sentences takes, so a single missing character in one transcription of otherwise identical
-/// fixed text is the likelier of the two to be wrong. The sentence is pinned per resource kind
-/// by `tests/all/catalog_duplicate_create_wording.rs`, so a change to any of them fails a test.
-pub const CATALOG_ALREADY_EXISTS: &str = "Catalog already exists.";
+/// The terminal character belongs to the CONDITION that is worded, not to a family the
+/// sentences are normalised into: the sibling already-exists sentences of this service
+/// ([`DATABASE_ALREADY_EXISTS`], [`CONNECTION_ALREADY_EXISTS`], [`CRAWLER_ALREADY_EXISTS`],
+/// [`REGISTRY_ALREADY_EXISTS`], [`TABLE_ALREADY_EXISTS`]) and the catalog surface's own miss
+/// sentence ([`CATALOG_NOT_FOUND`]) each keep theirs, and this one keeps its own. Pinned per
+/// surface by `tests/all/catalog_duplicate_create_wording.rs`, so normalising any of them
+/// onto one closing character fails a test.
+pub const CATALOG_ALREADY_EXISTS: &str = "Catalog already exists";
 
 /// `CreateCatalog` whose `Name` is the account's own id. Stated by the model: the
 /// catalog's name "Cannot be the same as the account ID" (`Catalog$Name`), because

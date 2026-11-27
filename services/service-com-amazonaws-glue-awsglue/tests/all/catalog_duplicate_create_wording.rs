@@ -8,9 +8,10 @@
 //! THAT resource surface with, reproduced character for character — its terminal
 //! punctuation included — and interpolates nothing the sentence does not name, so each
 //! already-exists surface keeps its own wording and none of them is derived from another's.
-//! Every one of them names its resource kind, withholds the requested name and closes on a
-//! full stop; the suite below drives five surfaces beside each other so the wording is pinned
-//! per surface rather than blanket-derived.
+//! Every one of them names its resource kind and withholds the requested name, and each closes
+//! on the character its OWN sentence closes on — the catalog's on the last letter of its last
+//! word, the four sibling surfaces' on a full stop; the suite below drives five surfaces beside
+//! each other so the wording is pinned per surface rather than blanket-derived.
 //!
 //! Each suite is a table whose rows differ along what the rule generalises over: the
 //! requested name's value, length, casing and character set, and how the second create
@@ -30,8 +31,8 @@ use crate::wire::{call, emulator, error_code, error_message, ok, ACCOUNT_ID, REG
 const ALREADY_EXISTS: &str = "AlreadyExistsException";
 
 /// The whole `Message` a `CreateCatalog` for a name the account already holds answers:
-/// fixed text, closing on a full stop.
-const CATALOG_ALREADY_EXISTS: &str = "Catalog already exists.";
+/// fixed text, closing on the last letter of its last word.
+const CATALOG_ALREADY_EXISTS: &str = "Catalog already exists";
 
 /// The whole `Message` the catalog read and delete answer for an id holding no catalog.
 const CATALOG_NOT_FOUND: &str = "Catalog not found.";
@@ -235,8 +236,9 @@ fn registry_body(name: &str) -> Value {
 /// The bound of the rule: a duplicate name is worded by the surface it was asked of, so each
 /// of these sentences names its own resource kind — the catalog's, the database's, the
 /// connection's, the crawler's and the registry's — on the same request and the same error
-/// code, and every one of them closes on the full stop this service's already-exists sentences
-/// close on.
+/// code, and each closes on the character its OWN sentence closes on: the catalog's on the
+/// last letter of its last word, the other four on a full stop. The closing character is a
+/// property of the one condition that is worded and is never normalised across the surfaces.
 ///
 /// The five surfaces are the axis this suite adds to the name table above: a wording that has
 /// lost or gained its closing character on any one of them fails here.
@@ -304,13 +306,8 @@ async fn each_already_exists_surface_keeps_its_own_sentence() {
             )
             .await;
             let message = error_message(&answered);
-            // The sentence ends where this service ends it, so a client matching the
-            // documented text, terminal punctuation and all, matches.
-            assert!(
-                message.ends_with('.'),
-                "case {case}: this surface's already-exists sentence closes on a full stop, got \
-                 {message:?}"
-            );
+            // The whole sentence is compared above, so the character it CLOSES on is pinned by
+            // that comparison: this surface's own, and not one shared across the surfaces.
             assert_withholds(&case, &message, &name);
         }
     }

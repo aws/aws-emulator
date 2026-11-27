@@ -41,9 +41,9 @@ const INVALID_INPUT: &str = "InvalidInputException";
 
 /// The whole `Message` a second `CreateCatalog` for a name the account already holds is
 /// refused with — the catalog surface's own sentence, which names the resource kind and
-/// closes on a full stop, as the database duplicate's sentence does (another surface's,
-/// pinned in [`crate::error_messages`]).
-const CATALOG_ALREADY_EXISTS: &str = "Catalog already exists.";
+/// closes on the last letter of its last word, unlike the database duplicate's sentence
+/// (another surface's, pinned in [`crate::error_messages`]).
+const CATALOG_ALREADY_EXISTS: &str = "Catalog already exists";
 
 /// A `CreateCatalog` body for `name`, naming a source outside the Glue Data Catalog —
 /// the only catalog this operation registers — and carrying `description` so one create's
