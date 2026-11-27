@@ -7,12 +7,10 @@
 //! * a register PERSISTS the endpoint under the `AppInstanceUser` it was addressed to and
 //!   `DescribeAppInstanceUserEndpoint` reports every member back exactly as registered,
 //!   under a freshly minted `EndpointId` that fits the modelled `String64`;
-//! * a register resolves the Amazon Pinpoint application its `ResourceArn` names before
-//!   it registers anything: an ARN in Pinpoint's `apps` space that names no application
-//!   Pinpoint mints is refused `ForbiddenException`, an ARN that is not a Pinpoint
-//!   application ARN at all leaves the endpoint registered but `INACTIVE` with
-//!   `StatusReason` `INVALID_PINPOINT_ARN`, and one that does resolve registers an
-//!   `ACTIVE` endpoint with no reason;
+//! * a register's `ResourceArn` decides the state the endpoint is registered in and
+//!   never whether it is registered at all: an ARN naming an Amazon Pinpoint application
+//!   registers an `ACTIVE` endpoint with no reason, and every other `ResourceArn` leaves
+//!   the endpoint registered but `INACTIVE` with `StatusReason` `INVALID_PINPOINT_ARN`;
 //! * one `ClientRequestToken` registers one endpoint: a repeat replays that endpoint's
 //!   id, concurrent repeats all answer with that one id, and the same token presented
 //!   with different parameters is refused `ConflictException`;
@@ -68,6 +66,10 @@ type MemberRow<'a> = (
     Option<&'a str>,
     Option<&'a str>,
 );
+
+/// One registered endpoint of the `ResourceArn` table: the case's label, the minted
+/// `EndpointId` and the `EndpointState` (status and reason) the register computed for it.
+type RegisteredState = (String, String, (Option<&'static str>, Option<&'static str>));
 
 /// One row of the reused-token table: the case's label and the single change it makes
 /// to the request the token already carried.
@@ -343,20 +345,16 @@ async fn a_registered_endpoint_round_trips_through_describe() {
 enum Resolution {
     /// It names a Pinpoint application: the endpoint is registered and active.
     Active,
-    /// It is no Pinpoint application ARN at all: the endpoint is registered, and
-    /// inactive because nothing behind it can deliver.
+    /// It names no Pinpoint application, so it is an invalid Pinpoint ARN: the endpoint
+    /// is registered, and inactive because nothing behind it can deliver.
     Inactive,
-    /// It is in Pinpoint's `apps` space but names no application Pinpoint mints: the
-    /// register is refused.
-    Forbidden,
 }
 
-/// RULE: a register resolves the Amazon Pinpoint application its `ResourceArn` names
-/// before registering anything — an `apps` ARN that names no application Pinpoint mints
-/// is refused with the modelled `ForbiddenException`, an ARN that is not a Pinpoint
-/// application ARN leaves the endpoint registered but `INACTIVE` with `StatusReason`
-/// `INVALID_PINPOINT_ARN`, and an ARN that resolves registers an `ACTIVE` endpoint whose
-/// state carries no reason.
+/// RULE: a register's `ResourceArn` decides the state the endpoint is registered in and
+/// never whether it is registered at all — an ARN naming an Amazon Pinpoint application
+/// registers an `ACTIVE` endpoint whose state carries no reason, and every other
+/// `ResourceArn` is an invalid Pinpoint ARN, which registers the endpoint `INACTIVE`
+/// with `StatusReason` `INVALID_PINPOINT_ARN`.
 #[tokio::test]
 async fn a_registers_resource_arn_decides_the_endpoints_state() {
     let emulator = Emulator::new();
@@ -385,29 +383,48 @@ async fn a_registers_resource_arn_decides_the_endpoints_state() {
             Resolution::Active,
         ),
         (
+            "a Pinpoint application in the colon-separated resource form",
+            format!("arn:aws:mobiletargeting:us-east-1:123456789012:apps:{hex32}"),
+            Resolution::Active,
+        ),
+        (
             "an application id one character short",
             pinpoint_arn("aws", "us-east-1", &hex32[1..]),
-            Resolution::Forbidden,
+            Resolution::Inactive,
         ),
         (
             "an application id one character long",
             pinpoint_arn("aws", "us-east-1", &format!("{hex32}a")),
-            Resolution::Forbidden,
+            Resolution::Inactive,
         ),
         (
             "an application id of the right length but not hexadecimal",
             pinpoint_arn("aws", "us-east-1", &format!("{}z", &hex32[1..])),
-            Resolution::Forbidden,
+            Resolution::Inactive,
         ),
         (
             "an application id in upper case",
             pinpoint_arn("aws", "us-east-1", &hex32.to_uppercase()),
-            Resolution::Forbidden,
+            Resolution::Inactive,
+        ),
+        (
+            "an application id in uuid form",
+            pinpoint_arn(
+                "aws",
+                "us-east-1",
+                "5eed5eed-5eed-4eed-8eed-5eed5eed5eed",
+            ),
+            Resolution::Inactive,
         ),
         (
             "an apps ARN naming no application",
             pinpoint_arn("aws", "us-east-1", ""),
-            Resolution::Forbidden,
+            Resolution::Inactive,
+        ),
+        (
+            "a campaign under a well-formed application id",
+            pinpoint_arn("aws", "us-east-1", &format!("{hex32}/campaigns/launch")),
+            Resolution::Inactive,
         ),
         (
             "a Pinpoint resource that is not an application",
@@ -427,6 +444,9 @@ async fn a_registers_resource_arn_decides_the_endpoints_state() {
         ("the endpoint's own user", user_arn.clone(), Resolution::Inactive),
     ];
 
+    // Every row's minted id against the state the caller must be able to read back.
+    let mut registered: Vec<RegisteredState> = Vec::new();
+
     for endpoint_type in ENDPOINT_TYPES {
         for (index, (label, resource_arn, resolution)) in rows.iter().enumerate() {
             let case = format!("{endpoint_type}/{label}");
@@ -437,23 +457,8 @@ async fn a_registers_resource_arn_decides_the_endpoints_state() {
                 "device-token-state",
             );
 
-            if *resolution == Resolution::Forbidden {
-                let (status, answer) = register(&emulator, &user_arn, body).await;
-                assert_eq!(
-                    (status, answer["Code"].as_str(), answer["Message"].as_str()),
-                    (
-                        403,
-                        Some("Forbidden"),
-                        Some("You are not authorized to perform this action.")
-                    ),
-                    "case {case:?}: expected ResourceArn {resource_arn:?} to be refused the \
-                     modelled forbidden, got {status} {answer:?}"
-                );
-                continue;
-            }
-
-            // The other rows REGISTER: a resource ARN with no Pinpoint application
-            // behind it leaves an inactive endpoint, it does not refuse the call.
+            // EVERY row REGISTERS: a resource ARN with no Pinpoint application behind it
+            // leaves an inactive endpoint, it does not refuse the call.
             let minted_id = endpoint_id(&emulator, &user_arn, body).await;
             let (status, described) = describe_endpoint(&emulator, &user_arn, &minted_id).await;
             assert_eq!(
@@ -473,7 +478,39 @@ async fn a_registers_resource_arn_decides_the_endpoints_state() {
                 "case {case:?}: expected EndpointState {expected:?} for ResourceArn \
                  {resource_arn:?}, got {state:?}"
             );
+            registered.push((case, minted_id, expected));
         }
+    }
+
+    // The state the model tells the caller to read is reportable through the listing
+    // too: every row registered one endpoint, whatever its `ResourceArn` named.
+    let (status, listed) = list_endpoints(&emulator, &user_arn, "?max-results=50").await;
+    assert_eq!(
+        status, 200,
+        "expected the listing to answer 200, got {status} {listed:?}"
+    );
+    let summaries = listed["AppInstanceUserEndpoints"]
+        .as_array()
+        .unwrap_or_else(|| panic!("the listing reported no list: {listed:?}"));
+    assert_eq!(
+        summaries.len(),
+        registered.len(),
+        "expected the listing to report every registered endpoint, got {listed:?}"
+    );
+    for (case, minted_id, expected) in &registered {
+        let summary = summaries
+            .iter()
+            .find(|summary| summary["EndpointId"].as_str() == Some(minted_id.as_str()))
+            .unwrap_or_else(|| {
+                panic!("case {case:?}: the listing reported no {minted_id:?}: {listed:?}")
+            });
+        let state = &summary["EndpointState"];
+        assert_eq!(
+            (state["Status"].as_str(), state["StatusReason"].as_str()),
+            *expected,
+            "case {case:?}: expected the listing to report EndpointState {expected:?}, got \
+             {summary:?}"
+        );
     }
 }
 

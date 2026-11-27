@@ -215,40 +215,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         // `EndpointState` is a read-only field: the service computes it, the caller never
         // sends it. Every endpoint type delivers its push notification through the Amazon
-        // Pinpoint application the register's `ResourceArn` names, so the service
-        // resolves that application before it registers anything:
-        //
-        // * an ARN in Pinpoint's own `apps` space that names no application Pinpoint
-        //   could have minted resolves to no application this caller may push through,
-        //   which is a permanent, caller-side refusal rather than a registered endpoint;
-        // * an ARN that is no Pinpoint application ARN at all is registered, but with
-        //   nothing behind it to deliver through, so it is INACTIVE carrying the reason
-        //   the model declares for exactly that input;
-        // * an ARN that resolves registers an ACTIVE endpoint, which has no reason to
-        //   report.
-        let endpoint_state = match crate::state::pinpoint_application_of(&input.resource_arn) {
-            crate::state::PinpointApplication::Resolved => EndpointState {
-                status: "ACTIVE".to_string(),
-                status_reason: None,
-            },
-            crate::state::PinpointApplication::NotAPinpointApplication => EndpointState {
-                status: "INACTIVE".to_string(),
-                status_reason: Some("INVALID_PINPOINT_ARN".to_string()),
-            },
-            crate::state::PinpointApplication::Unresolvable => {
-                return Err(
-                    RegisterAppInstanceUserEndpointErrorModeled::ForbiddenException(
-                        ForbiddenException {
-                            code: Some("Forbidden".to_string()),
-                            message: Some(
-                                "You are not authorized to perform this action.".to_string(),
-                            ),
-                        },
-                    )
-                    .into(),
-                );
-            }
-        };
+        // Pinpoint application the register's `ResourceArn` names, so the `ResourceArn`
+        // decides the state the endpoint is registered in, and never whether it is
+        // registered at all: an ARN naming an application Pinpoint could have minted
+        // registers an ACTIVE endpoint with no reason to report, and any other
+        // `ResourceArn` is an invalid Pinpoint ARN, which the model answers with a
+        // registered endpoint reporting INACTIVE and the reason it declares for exactly
+        // that input.
+        let endpoint_state = crate::state::endpoint_state_of(&input.resource_arn);
 
         let now = ::std::time::SystemTime::now();
         let endpoint_id = crate::state::new_endpoint_id();

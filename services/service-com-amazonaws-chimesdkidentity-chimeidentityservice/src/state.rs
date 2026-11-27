@@ -942,37 +942,49 @@ const PINPOINT_APPLICATION: ::service_common::arn::Requirement =
 /// hexadecimal characters, which is the `apps/<application-id>` segment of its ARN.
 const PINPOINT_APPLICATION_ID_LENGTH: usize = 32;
 
-/// What the `ResourceArn` of an `AppInstanceUserEndpoint` resolves to.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PinpointApplication {
-    /// The ARN names an application Pinpoint could have minted.
-    Resolved,
-    /// The ARN is in Pinpoint's namespace and names an application, but no application
-    /// Pinpoint mints: there is nothing for it to resolve to.
-    Unresolvable,
-    /// The ARN is not a Pinpoint application ARN at all, so there is no Pinpoint
-    /// application to resolve — an endpoint registered against it can never deliver.
-    NotAPinpointApplication,
+/// The `EndpointState` the `ResourceArn` of a register implies.
+///
+/// `EndpointState` is read-only: the service computes it from the Pinpoint application
+/// the `ResourceArn` names, which is what delivers the push notification for every
+/// endpoint type. An ARN that names an application Pinpoint could have minted carries
+/// an endpoint that can deliver, so it is `ACTIVE` and reports no reason; any other
+/// `ResourceArn` is an invalid Pinpoint ARN, which leaves the endpoint registered and
+/// `INACTIVE` carrying the reason the model declares for exactly that input.
+pub fn endpoint_state_of(resource_arn: &str) -> EndpointState {
+    if names_pinpoint_application(resource_arn) {
+        EndpointState {
+            status: ENDPOINT_ACTIVE.to_string(),
+            status_reason: None,
+        }
+    } else {
+        EndpointState {
+            status: ENDPOINT_INACTIVE.to_string(),
+            status_reason: Some(INVALID_PINPOINT_ARN.to_string()),
+        }
+    }
 }
 
-/// What `resource_arn` resolves to, read against the one ARN parse in
-/// [`::service_common::arn`].
+/// `EndpointStatus` for an endpoint that can receive messages.
+const ENDPOINT_ACTIVE: &str = "ACTIVE";
+
+/// `EndpointStatus` for an endpoint that cannot receive messages.
+const ENDPOINT_INACTIVE: &str = "INACTIVE";
+
+/// The `EndpointStatusReason` the model declares for an endpoint whose `ResourceArn` is
+/// not a Pinpoint ARN that names an application.
+const INVALID_PINPOINT_ARN: &str = "INVALID_PINPOINT_ARN";
+
+/// Whether `resource_arn` names an Amazon Pinpoint application, read against the one ARN
+/// parse in [`::service_common::arn`].
 ///
-/// A value that is not an ARN, one of another vendor and one of another Pinpoint
-/// resource type name no Pinpoint application at all; one in the `apps` space whose id
-/// is not an id Pinpoint mints ([`names_pinpoint_application_id`]) names an application
-/// that cannot exist.
-pub fn pinpoint_application_of(resource_arn: &str) -> PinpointApplication {
-    if !PINPOINT_APPLICATION.admits(resource_arn) {
-        return PinpointApplication::NotAPinpointApplication;
-    }
-    match ::service_common::arn::resource_id_of_type(resource_arn, "apps") {
-        Some(application_id) if names_pinpoint_application_id(application_id) => {
-            PinpointApplication::Resolved
-        }
-        // `apps` with no id at all (`apps`, no separator) names no application either.
-        _ => PinpointApplication::Unresolvable,
-    }
+/// A value that is not an ARN, one of another vendor, one of another Pinpoint resource
+/// type, one in the `apps` space whose id is not an id Pinpoint mints
+/// ([`names_pinpoint_application_id`]) and `apps` with no id at all name no Pinpoint
+/// application.
+fn names_pinpoint_application(resource_arn: &str) -> bool {
+    PINPOINT_APPLICATION.admits(resource_arn)
+        && ::service_common::arn::resource_id_of_type(resource_arn, "apps")
+            .is_some_and(names_pinpoint_application_id)
 }
 
 /// Whether `application_id` is an id Pinpoint mints for an application: exactly
