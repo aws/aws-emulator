@@ -24,6 +24,7 @@
 //! later in-process caller answer from one place.
 
 use super::kubernetes_config_maps::ConfigMapObject;
+use super::kubernetes_container_run::{ContainerRun, PodRunRecord};
 use super::kubernetes_events::{
     EventObject, RecordedEvent, EVENT_SOURCE_SCHEDULER, EVENT_TYPE_NORMAL, EVENT_TYPE_WARNING,
     INVOLVED_KIND_POD,
@@ -238,20 +239,35 @@ pub const POD_START_DELAY: Duration = UPDATE_COMPLETION_DELAY;
 /// The `Pod$status.phase` a pod reports before the node has taken it.
 pub const POD_PHASE_PENDING: &str = "Pending";
 
-/// The phase a pod whose containers were never started ends in: "all containers
-/// in the pod have terminated, and at least one container has terminated in
-/// failure" — the terminal phase, which is what a client polling for one reaches.
+/// The phase a pod whose containers the node has STARTED reports: "the pod has been
+/// bound to a node, and all of the containers have been created. At least one container
+/// is still running, or is in the process of starting or restarting."
 ///
-/// A pod's work is a CONTAINER IMAGE, and this emulator has no runtime for one:
-/// "containers and external processes are not available to a generated emulator
-/// yet" (`vendor/engine`'s module documentation), which also forbids reporting a
-/// result for work nothing performed. So the start the node would have done never
-/// happens, no retry could make it happen, and the pod ends in the phase
-/// Kubernetes reports for containers that terminated without running — with the
-/// runtime's own reason for a container it could not start
-/// ([`POD_START_ERROR_REASON`]) and the sentence naming that condition
-/// ([`POD_NO_CONTAINER_RUNTIME_MESSAGE`]) rather than a phase, an exit status or a
-/// duration invented for a run.
+/// A pod reaches it once the kubelet of its node has pulled its images and run the
+/// programs its containers declare ([`super::kubernetes_container_run`]), and it is where
+/// a pod whose `restartPolicy` starts a terminated container again stays.
+pub const POD_PHASE_RUNNING: &str = "Running";
+
+/// The phase a pod whose containers all ran to completion reports: "all containers in
+/// the pod have terminated in success, and will not be restarted" — which a pod reaches
+/// when every program its containers declared exited with the status a program that
+/// completed its work exits with ([`super::kubernetes_container_run`]).
+pub const POD_PHASE_SUCCEEDED: &str = "Succeeded";
+
+/// The phase a pod reports when "all containers in the pod have terminated, and at least
+/// one container has terminated in failure" — the terminal phase a client polling for
+/// one may also reach.
+///
+/// Two things reach it. A container whose program EXITED with a status other than the one
+/// a completed program exits with, under a `restartPolicy` that does not start it again
+/// ([`super::kubernetes_container_run`]). And a container nothing was performed for: a
+/// pod's work is a CONTAINER IMAGE, and this emulator starts none — "containers and
+/// external processes are not available to a generated emulator yet" (`vendor/engine`'s
+/// module documentation), which also forbids reporting a result for work nothing
+/// performed — so a container whose program is the one inside that image was never
+/// created, and the pod reports the runtime's own reason for a container it could not
+/// start ([`POD_START_ERROR_REASON`]) and the sentence naming that condition
+/// ([`POD_NO_CONTAINER_RUNTIME_MESSAGE`]) rather than an exit status invented for a run.
 pub const POD_PHASE_FAILED: &str = "Failed";
 
 /// The `reason` a container runtime reports for a container it could not START,
@@ -365,6 +381,22 @@ pub struct PodObject {
     /// so it does not reach the phase a pod whose containers were started and
     /// terminated reports.
     pub pull: Option<ImagePullRecord>,
+    /// What the node's kubelet made of the PROGRAMS this pod's containers run,
+    /// recorded when that node started them
+    /// ([`super::kubernetes_container_run::settle_due_runs`]); `None` until it has.
+    ///
+    /// It is what every later read of the pod reports: the phase it has reached, the
+    /// state each of its containers is in, and the status each terminated container
+    /// exited with are all read off this one recording.
+    pub run: Option<PodRunRecord>,
+    /// When set, the instant at which the clock owes this pod the phase its containers'
+    /// exit statuses decide. Cleared once that move is materialised, and `None` for a
+    /// pod whose `restartPolicy` reaches no such phase at all
+    /// ([`PodRunRecord::terminal_phase`]).
+    pub ends_at: Option<SystemTime>,
+    /// The instant this pod's containers had all ended, which is what a terminated
+    /// container reports as its `finishedAt`. `None` until the clock owes that move.
+    pub ended_at: Option<SystemTime>,
     /// The address the cluster's networking plugin gave this pod on the node it
     /// was placed on, which is a secondary private address of that node's own
     /// elastic network interface
@@ -391,9 +423,10 @@ impl PodObject {
     /// no longer holding that node leaves it as: a pod waiting for capacity, in
     /// the phase a pod no node has taken is in.
     ///
-    /// Nothing of its stay on that node is history to keep: no container of it
-    /// ever ran there ([`POD_PHASE_FAILED`]), so the pod is one waiting for
-    /// capacity again rather than a workload on capacity that is gone.
+    /// Nothing of its stay on that node is history to keep: whatever its containers
+    /// did there, they did on capacity the cluster no longer holds, so the pod is one
+    /// waiting for capacity again rather than a workload on capacity that is gone —
+    /// and whichever node takes it next pulls its images and runs its containers.
     ///
     /// The ADDRESS the plugin of that node gave it is answered back, for the
     /// caller to give to the subnet it came out of: an address is held for exactly
@@ -407,38 +440,97 @@ impl PodObject {
         self.phase = POD_PHASE_PENDING.to_string();
         self.concludes_at = None;
         self.started_at = None;
-        // The pull was the kubelet's of THAT node; the pod is one waiting for
-        // capacity again, and whichever node takes it next pulls its images.
+        self.ends_at = None;
+        self.ended_at = None;
+        // The pull and the run were the kubelet's of THAT node.
         self.pull = None;
+        self.run = None;
         self.address.take()
     }
 
-    /// Materialise the phase move the clock already owes at `now`.
+    /// The `spec.restartPolicy` this pod was admitted under, which is what decides
+    /// whether a container that terminates is started again — and so whether the pod
+    /// reaches a terminal phase at all ([`PodRunRecord::terminal_phase`]).
     ///
-    /// Like every other clock-owed move of this service, it was due at the stored
-    /// instant whether or not anybody called, so applying it on a read does not
-    /// change what a later caller sees. `started_at` is the DUE instant rather
-    /// than the instant of the call that noticed it, so every caller reads the
+    /// Always there on an admitted spec: the API server fills in the Kubernetes default
+    /// for a manifest that named none ([`super::kubernetes_pod_spec`]).
+    #[must_use]
+    pub fn restart_policy(&self) -> &str {
+        self.spec
+            .get("restartPolicy")
+            .and_then(::serde_json::Value::as_str)
+            .unwrap_or(super::kubernetes_pod_spec::POD_RESTART_POLICY_ALWAYS)
+    }
+
+    /// Materialise the phase moves the clock already owes at `now`.
+    ///
+    /// Like every other clock-owed move of this service, each was due at the stored
+    /// instant whether or not anybody called, so applying them on a read does not
+    /// change what a later caller sees. Every instant recorded is the DUE instant
+    /// rather than the instant of the call that noticed it, so every caller reads the
     /// same instants.
+    ///
+    /// There are two of them. The node TAKES the pod, which creates and starts its
+    /// containers, so the pod leaves the phase a pod nothing has started is in: it
+    /// reports `Running` once their programs have run
+    /// ([`super::kubernetes_container_run`]), and the terminal phase a pod with a
+    /// container nothing could start reports when one of them was never created. Then
+    /// its containers END, one span after they were started — or after the time their
+    /// programs stated they took — and the pod reports the phase their exit statuses
+    /// and its own `restartPolicy` decide, which for a policy that starts a terminated
+    /// container again is no terminal phase at all.
     ///
     /// A pod whose image the registry REFUSED the node's kubelet is not moved: its
     /// containers were never created, so it stays in the phase a pod waiting on an
-    /// image is in and keeps the due instant the kubelet pulls again at.
+    /// image is in and keeps the due instant the kubelet pulls again at. Neither is a
+    /// pod whose containers have not been run yet — the start the pod is owed is the
+    /// start of those containers, so there is nothing to report about it until they have
+    /// been.
     pub fn materialize_due_transitions(&mut self, now: SystemTime) {
         if self.pull.as_ref().is_some_and(ImagePullRecord::stopped_the_pod) {
             return;
         }
+        let policy = self.restart_policy().to_string();
         if let Some(due) = self.concludes_at.filter(|due| now >= *due) {
-            self.phase = POD_PHASE_FAILED.to_string();
+            let Some((started, ends_in, terminal)) = self.run.as_ref().map(|run| {
+                (
+                    run.every_container_started(),
+                    run.ran_for(),
+                    run.terminal_phase(&policy),
+                )
+            }) else {
+                return;
+            };
             self.started_at = Some(due);
             self.concludes_at = None;
+            if started {
+                self.phase = POD_PHASE_RUNNING.to_string();
+                self.ends_at = terminal.and_then(|_| due.checked_add(ends_in));
+            } else {
+                // A container that was never created never ran, so the pod has nothing
+                // running and reaches the phase its containers report at once.
+                self.phase = POD_PHASE_FAILED.to_string();
+                self.ended_at = Some(due);
+            }
+        }
+        if let Some(due) = self.ends_at.filter(|due| now >= *due) {
+            self.ends_at = None;
+            self.ended_at = Some(due);
+            if let Some(phase) = self
+                .run
+                .as_ref()
+                .and_then(|run| run.terminal_phase(&policy))
+            {
+                self.phase = phase.to_string();
+            }
         }
     }
 
-    /// Whether the pod has reached the phase it ends in.
+    /// Whether the pod has reached a phase a pod whose containers have all terminated
+    /// reports, which is what a client polling for a terminal phase reads.
     #[must_use]
     pub fn has_concluded(&self) -> bool {
-        self.phase == POD_PHASE_FAILED
+        self.phase == POD_PHASE_FAILED || self.phase == POD_PHASE_SUCCEEDED
     }
 
     /// Whether every container of this pod is READY, which is what a workload
@@ -473,11 +565,19 @@ impl PodObject {
     }
 
     /// The containers the pod's spec declares, as `status.containerStatuses`
-    /// reports them: one entry per container, each terminated without having run
-    /// once the node has tried to start it, and waiting to be created until then.
+    /// reports them: one entry per container, in the state the kubelet of its node
+    /// left it in.
+    ///
+    /// There are four of them, and which one a container is in is read off the
+    /// recordings the kubelet made rather than stated: it WAITS to be created while the
+    /// node has not taken the pod yet, waits on the PULL its image could not be served
+    /// by ([`super::kubernetes_image_pull`]), RUNS while its program is running
+    /// ([`super::kubernetes_container_run`]), and is TERMINATED once that program
+    /// ended — with the status it exited with and the reason the runtime words for that
+    /// status, or with the runtime's reason for a container it could not start at all.
     fn container_statuses(&self) -> Vec<::serde_json::Value> {
-        let concluded = self.has_concluded();
-        let finished_at = self.started_at.map(rfc3339_seconds);
+        let started_at = self.started_at.map(rfc3339_seconds);
+        let finished_at = self.ended_at.map(rfc3339_seconds);
         self.spec
             .get("containers")
             .and_then(::serde_json::Value::as_array)
@@ -502,24 +602,66 @@ impl PodObject {
                     .as_ref()
                     .and_then(|pull| pull.failure.as_ref())
                     .filter(|failure| failure.container == name);
-                let state = match (withheld, concluded, finished_at.as_ref()) {
-                    (Some(failure), _, _) => ::serde_json::json!({
-                        "waiting": {
-                            "reason": WAITING_REASON_IMAGE_PULL_BACK_OFF,
-                            "message": back_off_message(&failure.image),
-                        }
-                    }),
-                    (None, true, Some(at)) => ::serde_json::json!({
-                        "terminated": {
-                            "reason": POD_START_ERROR_REASON,
-                            "message": POD_NO_CONTAINER_RUNTIME_MESSAGE,
-                            "exitCode": POD_START_ERROR_EXIT_CODE,
-                            "finishedAt": at,
-                        }
-                    }),
-                    _ => ::serde_json::json!({
-                        "waiting": { "reason": "ContainerCreating" }
-                    }),
+                let run = self.run.as_ref().and_then(|run| run.of(name));
+                // What the kubelet left this container in, as one of the four states
+                // Kubernetes reports — beside whether it is ready and whether it was
+                // ever started, which are the same one answer.
+                let (state, ready, has_started) = match (withheld, run, &started_at, &finished_at) {
+                    (Some(failure), _, _, _) => (
+                        ::serde_json::json!({
+                            "waiting": {
+                                "reason": WAITING_REASON_IMAGE_PULL_BACK_OFF,
+                                "message": back_off_message(&failure.image),
+                            }
+                        }),
+                        false,
+                        false,
+                    ),
+                    // Its program ENDED: the status it exited with, beside the reason a
+                    // runtime words that status with.
+                    (None, Some(run), Some(at), Some(end)) => match run.exit_status() {
+                        Some(status) => (
+                            ::serde_json::json!({
+                                "terminated": {
+                                    "reason": ContainerRun::terminated_reason(status),
+                                    "exitCode": status,
+                                    "startedAt": at,
+                                    "finishedAt": end,
+                                }
+                            }),
+                            false,
+                            true,
+                        ),
+                        // Nothing was performed for it, so it was never created: the
+                        // runtime's own reason for a container it could not start, and
+                        // no exit status of a program.
+                        None => (
+                            ::serde_json::json!({
+                                "terminated": {
+                                    "reason": POD_START_ERROR_REASON,
+                                    "message": POD_NO_CONTAINER_RUNTIME_MESSAGE,
+                                    "exitCode": POD_START_ERROR_EXIT_CODE,
+                                    "finishedAt": end,
+                                }
+                            }),
+                            false,
+                            false,
+                        ),
+                    },
+                    // Its program is RUNNING, and a container with no readiness probe
+                    // is ready as soon as it is.
+                    (None, Some(run), Some(at), None) if run.exit_status().is_some() => (
+                        ::serde_json::json!({ "running": { "startedAt": at } }),
+                        true,
+                        true,
+                    ),
+                    _ => (
+                        ::serde_json::json!({
+                            "waiting": { "reason": "ContainerCreating" }
+                        }),
+                        false,
+                        false,
+                    ),
                 };
                 ::serde_json::json!({
                     "name": name,
@@ -536,10 +678,8 @@ impl PodObject {
                     // because the member is a required one of the status a client
                     // deserialises.
                     "imageID": self.pulled_image_id(name, image),
-                    // A container that never ran is neither ready nor started,
-                    // whatever phase the pod has reached.
-                    "ready": false,
-                    "started": false,
+                    "ready": ready,
+                    "started": has_started,
                     "restartCount": 0,
                     "state": state,
                 })
@@ -581,20 +721,32 @@ impl PodObject {
                 .started_at
                 .map(rfc3339_seconds)
                 .unwrap_or_else(|| scheduled_at.clone());
-            let readiness = ::serde_json::json!({
-                "status": "False",
-                "reason": "ContainersNotReady",
-                "message": format!("containers with unready status: [{}]", unready.join(" ")),
-            });
+            // "ContainersReady" is "all containers in the pod are ready" and "Ready" is
+            // what a Service routes traffic by, so both read off the container statuses
+            // above rather than being stated: a pod every container of which reports
+            // ready is ready, and one with a container that does not names the
+            // containers that do not, the way Kubernetes words that condition.
+            let all_ready = !statuses.is_empty() && unready.is_empty();
+            let readiness = if all_ready {
+                ::serde_json::json!({ "status": "True" })
+            } else {
+                ::serde_json::json!({
+                    "status": "False",
+                    "reason": "ContainersNotReady",
+                    "message": format!("containers with unready status: [{}]", unready.join(" ")),
+                })
+            };
             for condition in ["Initialized", "ContainersReady", "Ready"] {
                 let mut entry = ::serde_json::json!({
                     "type": condition,
                     "lastTransitionTime": started_at,
                 });
-                // A pod the node has taken was initialized, whatever became of
-                // its containers; a pod it has not is not initialized yet.
+                // A pod the node has TAKEN was initialized, whatever became of its
+                // containers; a pod it has not taken yet is not initialized.
                 let state = if condition == "Initialized" {
-                    ::serde_json::json!({ "status": if concluded { "True" } else { "False" } })
+                    ::serde_json::json!({
+                        "status": if self.started_at.is_some() { "True" } else { "False" },
+                    })
                 } else {
                     readiness.clone()
                 };
@@ -625,9 +777,11 @@ impl PodObject {
             status["podIP"] = ::serde_json::json!(held.address);
             status["podIPs"] = ::serde_json::json!([{ "ip": held.address }]);
         }
-        // What a pod ENDED on, which is the pod-level reading of what its
-        // containers report ([`POD_PHASE_FAILED`]).
-        if concluded {
+        // What a pod with a container nothing could START ended on, which is the
+        // pod-level reading of what such a container reports ([`POD_PHASE_FAILED`]). A
+        // pod whose containers all RAN reports no pod-level reason: what each of them
+        // did is on its own status, which is where Kubernetes reports it.
+        if concluded && self.run.as_ref().is_some_and(|run| !run.every_container_started()) {
             status["reason"] = ::serde_json::json!(POD_START_ERROR_REASON);
             status["message"] = ::serde_json::json!(POD_NO_CONTAINER_RUNTIME_MESSAGE);
         }
@@ -951,6 +1105,11 @@ impl ClusterObjects {
                 concludes_at: None,
                 started_at: None,
                 pull: None,
+                // Run by the kubelet of the node that takes it, once that node has
+                // pulled its images ([`super::kubernetes_container_run`]).
+                run: None,
+                ends_at: None,
+                ended_at: None,
                 // Addressed by the node's networking plugin once the cluster has
                 // placed it ([`super::kubernetes_pod_addressing`]).
                 address: None,

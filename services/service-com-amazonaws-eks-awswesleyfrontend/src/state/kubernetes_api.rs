@@ -91,6 +91,7 @@ use ::tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use super::kubernetes_audit::{AuditDelivery, AuditedRequest, ClusterAuditLog};
 use super::kubernetes_authentication::{self as authentication, ApiServerPrincipals};
+use super::kubernetes_container_run;
 use super::kubernetes_events::EVENT_FIELD_SELECTORS;
 use super::kubernetes_image_pull;
 use super::kubernetes_lists::ListRequest;
@@ -562,6 +563,14 @@ async fn answer(
             });
         };
         let body = collected.to_bytes();
+        // The containers the clock already owes their start: once the kubelet has the
+        // images, it creates the containers and runs the programs they declare
+        // ([`kubernetes_container_run`]). It is settled HERE rather than inside `serve`
+        // because performing a caller's own program is synchronous, CPU-bound work: it
+        // goes to the blocking pool, so this worker is released while a program runs and
+        // the deadline around this block still has an await point to land on. Every run
+        // it settles was due at a stored instant whether or not anybody called.
+        kubernetes_container_run::settle_due_runs(&state, &key, SystemTime::now()).await;
         let served = serve(
             &state,
             auth.as_ref(),

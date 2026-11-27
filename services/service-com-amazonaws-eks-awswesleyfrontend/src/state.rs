@@ -4666,6 +4666,7 @@ pub mod kubernetes_audit;
 pub mod kubernetes_authentication;
 pub mod kubernetes_aws_auth;
 pub mod kubernetes_config_maps;
+pub mod kubernetes_container_run;
 pub mod kubernetes_events;
 pub mod kubernetes_fargate;
 pub mod kubernetes_image_pull;

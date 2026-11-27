@@ -131,6 +131,10 @@ service-com-amazonaws-ecr-amazonec2containerregistry-v20150921 = { workspace = t
 # address names the gallery rather than the private registry is the gallery's own
 # answer (`src/state/kubernetes_image_pull.rs`).
 service-com-amazonaws-ecrpublic-spencerfrontendservice = { workspace = true }
+# `shell-words`: the maintained POSIX word quoter, so the argument vector a pod's
+# container declares is handed to the shared shell session as ONE command line with
+# each word still one word (`src/state/kubernetes_container_run.rs`).
+shell-words = "1.1"
 
 [dev-dependencies]
 # The integration-test target is rooted at `tests/all/main.rs`, which declares one

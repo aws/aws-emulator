@@ -19,10 +19,9 @@
 //! the wrong case, and the empty string, which names nothing and so takes the
 //! default).
 //!
-//! What a pod then DOES on its node is not this suite's subject: this emulator has
-//! no container runtime, so an admitted pod reports the phase and the container
-//! condition `kubernetes_cluster_resources` asserts, and the policy changes
-//! neither.
+//! What a pod then DOES on its node is not this suite's subject: the programs its
+//! containers run, and the phase and the container states the policy then decides,
+//! are `kubernetes_container_run`'s.
 //!
 //! The cluster setup is `kubernetes_cluster_resources`', so this suite grows no
 //! second copy of it.

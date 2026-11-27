@@ -24,6 +24,11 @@
 //! what was already owed at that instant, so a later caller reads exactly what an
 //! earlier one did.
 //!
+//! What the kubelet does NEXT with an image it was served — create the container and
+//! run the program it declares — is [`super::kubernetes_container_run`], which reads
+//! the verdict recorded here: a container whose image was refused is never created, so
+//! there is no program of its to perform.
+//!
 //! LOCK ORDER: the verdict is taken with NO store of this service held — the
 //! registry takes its own lock and IAM's — which is why this runs before a request
 //! to the cluster's API server is routed ([`super::kubernetes_api::serve`]) rather
@@ -37,7 +42,6 @@ use super::kubernetes_events::{
     EventObject, RecordedEvent, EVENT_SOURCE_KUBELET, EVENT_TYPE_NORMAL, EVENT_TYPE_WARNING,
     INVOLVED_KIND_POD,
 };
-use super::kubernetes_objects::POD_NO_CONTAINER_RUNTIME_MESSAGE;
 use super::ComAmazonawsEksAwswesleyfrontendState as ServiceStore;
 use super::*;
 
@@ -418,21 +422,6 @@ fn attempt(
                 });
                 break;
             }
-        }
-    }
-    // The containers the pull was made for: this emulator runs none of them
-    // ([`POD_NO_CONTAINER_RUNTIME_MESSAGE`]), which is the condition the kubelet
-    // records against the pod whose images it did pull — the pod's own status
-    // reports the same one.
-    if !record.stopped_the_pod() {
-        if let Some((container, _)) = pull.containers.first() {
-            events.push(kubelet_event(
-                pull,
-                container,
-                PULL_REASON_FAILED,
-                format!("Error: {POD_NO_CONTAINER_RUNTIME_MESSAGE}"),
-                EVENT_TYPE_WARNING,
-            ));
         }
     }
     (record, events)
