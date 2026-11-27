@@ -2,15 +2,16 @@
 
 //! What `DescribeLoadBalancers` NAMES when it resolves no load balancer, over the wire.
 //!
-//! One rule, shared with the sibling read of target groups (`DescribeTargetGroups`, read in
-//! `list_read_not_found_identifiers.rs`): a read that selects by a LIST of identifiers refuses
-//! naming the identifiers it could not resolve, under the plural noun and rendered as the list
-//! the request carried — `Load balancers '[<identifier>]' not found` — whichever of its two
-//! selectors carried them, since `LoadBalancerArns` and `Names` select the same resource by
-//! two spellings of its identity. A client acting on the refusal has to know WHICH of the
-//! identifiers it asked about is missing, which a sentence naming none of them does not tell
-//! it; an operation addressing ONE load balancer through its own required `LoadBalancerArn`
-//! names that identifier with no list around it, which `tag_not_found_wording` pins.
+//! One rule, by the SELECTOR the request used rather than by the operation: a selection of
+//! load balancers by `LoadBalancerArns` is refused ABOUT THE SELECTION — the collection-level
+//! sentence `One or more load balancers not found`, fixed text that names no value of the
+//! request — while a selection by `Names` quotes the names it could not resolve, under the
+//! plural noun and rendered as the list the request carried (`Load balancers '[<name>]' not
+//! found`). The ARN form is therefore worded exactly as this service's other list reads and as
+//! a tag call naming a load balancer are (`tag_not_found_wording`), and the name form is the
+//! one lookup here whose refusal carries a value of the request at all; an operation
+//! addressing ONE load balancer through its own required `LoadBalancerArn` quotes that
+//! identifier, which `tag_not_found_wording` pins too.
 //!
 //! The rows span what the rule generalises over: which selector carried the identifier, how
 //! many identifiers did not resolve, whether some of them DID resolve, and whether the load
@@ -29,6 +30,17 @@ use crate::wire::{action, call, p, router, Reply};
 /// is answered under.
 const LOAD_BALANCER_NOT_FOUND: &str = "LoadBalancerNotFound";
 const REFUSED_STATUS: u16 = 400;
+
+/// The sentence a selection by ARN is refused with, whatever it selected: the collection-level
+/// wording, spelled out here rather than imported so a wrong constant in the implementation
+/// cannot make this suite pass.
+const SELECTION_NOT_FOUND: &str = "One or more load balancers not found";
+
+/// The sentence a selection by NAME is refused with: the same plural noun, carrying the names
+/// that did not resolve as the list the request sent them as.
+fn names_not_found(names: &[&str]) -> String {
+    format!("Load balancers '[{}]' not found", names.join(", "))
+}
 
 /// Create a load balancer called `name` and answer its ARN.
 async fn create(router: &MultiServiceRouter, name: &str) -> String {
@@ -56,12 +68,12 @@ async fn describe(router: &MultiServiceRouter, selectors: &[(&str, &str)]) -> Re
     call(router, &form).await
 }
 
-/// Assert that the read by `selectors` is refused naming exactly `identifiers`.
-async fn assert_names(
+/// Assert that the read by `selectors` is refused with exactly `expected`.
+async fn assert_refused(
     router: &MultiServiceRouter,
     case: &str,
     selectors: &[(&str, &str)],
-    identifiers: &[&str],
+    expected: &str,
 ) {
     let reply = describe(router, selectors).await;
     assert_eq!(
@@ -75,7 +87,6 @@ async fn assert_names(
         .text("Message")
         .map(|text| unescaped(&text))
         .unwrap_or_else(|| panic!("case {case:?}: no message in {}", reply.body));
-    let expected = format!("Load balancers '[{}]' not found", identifiers.join(", "));
     assert_eq!(
         stated, expected,
         "case {case:?}: expected {expected:?}, got {stated:?}"
@@ -94,59 +105,40 @@ fn absent_arn(id: &str) -> String {
 }
 
 #[tokio::test]
-async fn a_read_that_resolves_nothing_names_the_identifiers_it_could_not_resolve() {
+async fn a_selection_by_arn_is_refused_about_the_selection() {
     let router = router();
 
-    let held = create(&router, "named-not-found-lb").await;
+    let held = create(&router, "arn-not-found-lb").await;
     let first = absent_arn("0123456789abcdef");
     let second = absent_arn("fedcba9876543210");
 
-    // One identifier, on each of the two selectors.
-    assert_names(
-        &router,
-        "one absent name",
-        &[("Names.member.1", "no-such-alb")],
-        &["no-such-alb"],
-    )
-    .await;
-    assert_names(
+    // One ARN, two ARNs, and an ARN that resolves beside one that does not: the sentence is
+    // the same one, so nothing of the request reaches the caller through it.
+    assert_refused(
         &router,
         "one absent ARN",
         &[("LoadBalancerArns.member.1", &first)],
-        &[&first],
+        SELECTION_NOT_FOUND,
     )
     .await;
-    // Two of them, in the order the request carried them.
-    assert_names(
-        &router,
-        "two absent names",
-        &[
-            ("Names.member.1", "no-such-alb"),
-            ("Names.member.2", "nor-this-one"),
-        ],
-        &["no-such-alb", "nor-this-one"],
-    )
-    .await;
-    assert_names(
+    assert_refused(
         &router,
         "two absent ARNs",
         &[
             ("LoadBalancerArns.member.1", &first),
             ("LoadBalancerArns.member.2", &second),
         ],
-        &[&first, &second],
+        SELECTION_NOT_FOUND,
     )
     .await;
-    // And the load balancer that IS held does not make the read serve: the refusal names
-    // only what did not resolve.
-    assert_names(
+    assert_refused(
         &router,
         "an ARN that resolves beside one that does not",
         &[
             ("LoadBalancerArns.member.1", &held),
             ("LoadBalancerArns.member.2", &first),
         ],
-        &[&first],
+        SELECTION_NOT_FOUND,
     )
     .await;
 
@@ -161,7 +153,8 @@ async fn a_read_that_resolves_nothing_names_the_identifiers_it_could_not_resolve
     );
 
     // A load balancer that was DELETED is one the read no longer resolves — the case a client
-    // meets when it reads an ARN whose load balancer is gone.
+    // meets when it reads an ARN whose load balancer is gone — and its own ARN is not echoed
+    // back either.
     let mut form = action("DeleteLoadBalancer");
     form.push(p("LoadBalancerArn", &held));
     let deleted = call(&router, &form).await;
@@ -170,11 +163,85 @@ async fn a_read_that_resolves_nothing_names_the_identifiers_it_could_not_resolve
         "case the delete: expected it to be served, got {} body {}",
         deleted.status, deleted.body
     );
-    assert_names(
+    assert_refused(
         &router,
         "the ARN of a deleted load balancer",
         &[("LoadBalancerArns.member.1", &held)],
-        &[&held],
+        SELECTION_NOT_FOUND,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn a_selection_by_name_names_the_names_it_could_not_resolve() {
+    let router = router();
+
+    let held = create(&router, "named-not-found-lb").await;
+
+    // One name, and two in the order the request carried them.
+    assert_refused(
+        &router,
+        "one absent name",
+        &[("Names.member.1", "no-such-alb")],
+        &names_not_found(&["no-such-alb"]),
+    )
+    .await;
+    assert_refused(
+        &router,
+        "two absent names",
+        &[
+            ("Names.member.1", "no-such-alb"),
+            ("Names.member.2", "nor-this-one"),
+        ],
+        &names_not_found(&["no-such-alb", "nor-this-one"]),
+    )
+    .await;
+    // A name that resolves beside one that does not: only what did not resolve is named.
+    assert_refused(
+        &router,
+        "a name that resolves beside one that does not",
+        &[
+            ("Names.member.1", "named-not-found-lb"),
+            ("Names.member.2", "no-such-alb"),
+        ],
+        &names_not_found(&["no-such-alb"]),
+    )
+    .await;
+
+    // The read by a name that resolves is served.
+    let served = describe(&router, &[("Names.member.1", "named-not-found-lb")]).await;
+    assert_eq!(
+        (served.status, served.text("LoadBalancerArn").as_deref()),
+        (200, Some(held.as_str())),
+        "case the load balancer that is held: expected it to be reported, got body {}",
+        served.body
+    );
+
+    // The name of a DELETED load balancer is one the read no longer resolves, and the name is
+    // named — the same selector, the same wording, whatever took the load balancer away.
+    let mut form = action("DeleteLoadBalancer");
+    form.push(p("LoadBalancerArn", &held));
+    let deleted = call(&router, &form).await;
+    assert_eq!(
+        deleted.status, 200,
+        "case the delete: expected it to be served, got {} body {}",
+        deleted.status, deleted.body
+    );
+    assert_refused(
+        &router,
+        "the name of a deleted load balancer",
+        &[("Names.member.1", "named-not-found-lb")],
+        &names_not_found(&["named-not-found-lb"]),
+    )
+    .await;
+
+    // And the two selectors do NOT answer one wording: the ARN form of the very same absent
+    // load balancer is refused about the selection instead.
+    assert_refused(
+        &router,
+        "the ARN of the same deleted load balancer",
+        &[("LoadBalancerArns.member.1", &held)],
+        SELECTION_NOT_FOUND,
     )
     .await;
 }

@@ -3,16 +3,13 @@
 //! What `DescribeTargetGroups` NAMES when it resolves none of the identifiers it was given,
 //! over the wire.
 //!
-//! One rule, shared with the sibling read of load balancers (`DescribeLoadBalancers`, read in
-//! `describe_load_balancers_not_found_identifiers.rs`): a read that selects by a LIST of
-//! identifiers refuses naming the identifiers it could not resolve, under the plural noun and
-//! rendered as the list the request carried — `Target groups '[<identifier>]' not found` —
-//! whichever of its selectors carried them, since the ARN and the name select the same
-//! resource by two spellings of its identity. A client acting on the refusal has to know WHICH
-//! of the identifiers it asked about is gone, which a sentence naming none of them does not
-//! tell it; an operation addressing ONE target group through its own required `TargetGroupArn`
-//! names that identifier with no list around it, which
-//! `target_group_attributes_and_modification` pins.
+//! One rule: a read that SELECTS target groups is refused ABOUT THE SELECTION rather than
+//! about an identifier in it — the collection-level sentence `One or more target groups not
+//! found`, fixed text naming no value of the request — whichever of its selectors carried the
+//! identifiers, since the refusal is a verdict on the selection and not a report about one
+//! resource. It is the wording this service's sibling list reads answer, while an operation
+//! addressing ONE target group through its own required `TargetGroupArn` quotes that
+//! identifier, which `target_group_attributes_and_modification` pins.
 //!
 //! The cases span what the rule generalises over: which selector carried the identifier, how
 //! many did not resolve, whether some of them DID resolve, and whether the target group never
@@ -30,6 +27,10 @@ use crate::wire::{action, call, p, router, Reply};
 /// The awsQuery code this read is refused with, and the status it is answered under.
 const TARGET_GROUP_NOT_FOUND: &str = "TargetGroupNotFound";
 const REFUSED_STATUS: u16 = 400;
+
+/// The sentence a selection this read could not resolve is refused with, spelled out here
+/// rather than imported so a wrong constant in the implementation cannot make this suite pass.
+const SELECTION_NOT_FOUND: &str = "One or more target groups not found";
 
 /// Create a target group called `name` and answer its ARN.
 async fn create_target_group(router: &MultiServiceRouter, name: &str) -> String {
@@ -58,13 +59,8 @@ async fn describe(router: &MultiServiceRouter, selectors: &[(&str, &str)]) -> Re
     call(router, &form).await
 }
 
-/// Assert that the read by `selectors` is refused naming exactly `identifiers`.
-async fn assert_names(
-    router: &MultiServiceRouter,
-    case: &str,
-    selectors: &[(&str, &str)],
-    identifiers: &[&str],
-) {
+/// Assert that the read by `selectors` is refused with the collection-level sentence.
+async fn assert_refused(router: &MultiServiceRouter, case: &str, selectors: &[(&str, &str)]) {
     let reply = describe(router, selectors).await;
     assert_eq!(
         (reply.status, reply.error_code().as_str()),
@@ -77,10 +73,9 @@ async fn assert_names(
         .text("Message")
         .map(|text| unescaped(&text))
         .unwrap_or_else(|| panic!("case {case:?}: no message in {}", reply.body));
-    let expected = format!("Target groups '[{}]' not found", identifiers.join(", "));
     assert_eq!(
-        stated, expected,
-        "case {case:?}: expected {expected:?}, got {stated:?}"
+        stated, SELECTION_NOT_FOUND,
+        "case {case:?}: expected {SELECTION_NOT_FOUND:?}, got {stated:?}"
     );
 }
 
@@ -96,7 +91,7 @@ fn absent_arn(id: &str) -> String {
 }
 
 #[tokio::test]
-async fn a_target_group_read_names_the_identifiers_it_could_not_resolve() {
+async fn a_target_group_read_is_refused_about_the_selection_it_could_not_resolve() {
     let router = router();
 
     let held = create_target_group(&router, "named-not-found-tg").await;
@@ -104,41 +99,50 @@ async fn a_target_group_read_names_the_identifiers_it_could_not_resolve() {
     let second = absent_arn("fedcba9876543210");
 
     // One identifier, on each of the two selectors.
-    assert_names(
-        &router,
-        "one absent name",
-        &[("Names.member.1", "no-such-tg")],
-        &["no-such-tg"],
-    )
-    .await;
-    assert_names(
+    assert_refused(&router, "one absent name", &[("Names.member.1", "no-such-tg")]).await;
+    assert_refused(
         &router,
         "one absent ARN",
         &[("TargetGroupArns.member.1", &first)],
-        &[&first],
     )
     .await;
-    // Two of them, in the order the request carried them.
-    assert_names(
+    // Two of them, on each selector.
+    assert_refused(
+        &router,
+        "two absent names",
+        &[
+            ("Names.member.1", "no-such-tg"),
+            ("Names.member.2", "nor-this-one"),
+        ],
+    )
+    .await;
+    assert_refused(
         &router,
         "two absent ARNs",
         &[
             ("TargetGroupArns.member.1", &first),
             ("TargetGroupArns.member.2", &second),
         ],
-        &[&first, &second],
     )
     .await;
-    // The target group that IS held does not make the read serve: the refusal names only
-    // what did not resolve.
-    assert_names(
+    // The target group that IS held does not make the read serve: a selection is refused when
+    // any entry of it goes unresolved, and still names none of them.
+    assert_refused(
         &router,
         "an ARN that resolves beside one that does not",
         &[
             ("TargetGroupArns.member.1", &held),
             ("TargetGroupArns.member.2", &first),
         ],
-        &[&first],
+    )
+    .await;
+    assert_refused(
+        &router,
+        "a name that resolves beside one that does not",
+        &[
+            ("Names.member.1", "named-not-found-tg"),
+            ("Names.member.2", "no-such-tg"),
+        ],
     )
     .await;
 
@@ -153,7 +157,7 @@ async fn a_target_group_read_names_the_identifiers_it_could_not_resolve() {
     );
 
     // A target group that was DELETED is one the read no longer resolves — the case a client
-    // meets when it reads an identifier whose resource is gone.
+    // meets when it reads an identifier whose resource is gone — under either selector.
     let mut form = action("DeleteTargetGroup");
     form.push(p("TargetGroupArn", &held));
     let deleted = call(&router, &form).await;
@@ -162,11 +166,16 @@ async fn a_target_group_read_names_the_identifiers_it_could_not_resolve() {
         "case the delete: expected it to be served, got {} body {}",
         deleted.status, deleted.body
     );
-    assert_names(
+    assert_refused(
         &router,
         "the ARN of a deleted target group",
         &[("TargetGroupArns.member.1", &held)],
-        &[&held],
+    )
+    .await;
+    assert_refused(
+        &router,
+        "the name of a deleted target group",
+        &[("Names.member.1", "named-not-found-tg")],
     )
     .await;
 }

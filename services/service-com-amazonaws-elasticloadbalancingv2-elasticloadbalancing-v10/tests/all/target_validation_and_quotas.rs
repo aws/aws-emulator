@@ -679,7 +679,7 @@ async fn a_target_group_holds_the_published_number_of_targets_for_its_family() {
 type NotFoundCase = (&'static str, Vec<(String, String)>, String);
 
 #[tokio::test]
-async fn a_not_found_refusal_names_the_identifiers_the_lookup_carried() {
+async fn a_not_found_refusal_is_worded_by_the_lookup_that_carried_the_identifier() {
     let (router, _engine) = emulator();
     let absent_tg = format!(
         "arn:aws:elasticloadbalancing:us-west-2:{}:targetgroup/ghost-tg/0123456789abcdef",
@@ -698,7 +698,7 @@ async fn a_not_found_refusal_names_the_identifiers_the_lookup_carried() {
             format!("Target groups '{absent_tg}' not found"),
         ),
         (
-            // A lookup by a LIST member renders the list.
+            // A lookup by the NAME list of load balancers renders that list.
             "DescribeLoadBalancers by one absent name",
             vec![
                 p("Action", "DescribeLoadBalancers"),
@@ -718,10 +718,11 @@ async fn a_not_found_refusal_names_the_identifiers_the_lookup_carried() {
             "Load balancers '[no-such-alb, nor-this-one]' not found".to_string(),
         ),
         (
-            // A lookup by ARN names the ARN it could not resolve: both of this read's
-            // selectors are refused in the same words, which is what the recorded answer to
-            // a `DescribeLoadBalancers(LoadBalancerArns=[...])` of the ARN of a load balancer
-            // that was deleted carries.
+            // A lookup by ARN names NOTHING it could not resolve: that selector is refused
+            // about the selection, which is what the recorded answer to a
+            // `DescribeLoadBalancers(LoadBalancerArns=[...])` of the ARN of a load balancer
+            // that was deleted carries — the asymmetry between the two selectors of this one
+            // read is pinned by `describe_load_balancers_not_found_identifiers`.
             "DescribeLoadBalancers by an absent ARN",
             vec![
                 p("Action", "DescribeLoadBalancers"),
@@ -736,9 +737,7 @@ async fn a_not_found_refusal_names_the_identifiers_the_lookup_carried() {
                      /0123456789abcdef",
                 ),
             ],
-            "Load balancers '[arn:aws:elasticloadbalancing:us-west-2:000000000000:loadbalancer\
-             /app/ghost/0123456789abcdef]' not found"
-                .to_string(),
+            "One or more load balancers not found".to_string(),
         ),
     ];
 

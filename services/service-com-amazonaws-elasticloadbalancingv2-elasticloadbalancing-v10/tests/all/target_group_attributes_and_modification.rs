@@ -197,8 +197,8 @@ async fn modify_attribute(
 ///
 /// The rows span the shapes of such an operation: a list read, a read of one group's
 /// attributes, two writes of one group, and the two registration calls. A `Describe`
-/// over a LIST of identifiers names the identifiers it could not resolve, rendered as that
-/// list; an operation naming ONE `TargetGroupArn` names that ARN without a list around it.
+/// that SELECTS target groups is refused about the selection, naming none of the
+/// identifiers it carried; an operation naming ONE `TargetGroupArn` names that ARN.
 #[tokio::test]
 async fn every_operation_naming_an_absent_target_group_answers_the_modelled_refusal() {
     let (router, _engine) = emulator();
@@ -207,21 +207,21 @@ async fn every_operation_naming_an_absent_target_group_answers_the_modelled_refu
     // (case, form fields, the message the refusal must answer)
     //
     // The wording follows the shape of the lookup, as the recorded answers do: a
-    // `Describe` over a LIST of identifiers names what it could not resolve out of that
-    // list, while an operation acting on ONE `TargetGroupArn` names that identifier with no
-    // list around it.
-    let selection = |identifier: &str| format!("Target groups '[{identifier}]' not found");
+    // `Describe` that SELECTS target groups answers the collection-level sentence for the
+    // selection it could not resolve, under either of its selectors, while an operation
+    // acting on ONE `TargetGroupArn` names that identifier.
+    let selection = || "One or more target groups not found".to_string();
     let named = |identifier: &str| format!("Target groups '{identifier}' not found");
     let cases: Vec<NotFoundCase> = vec![
         (
             "DescribeTargetGroups by ARN",
             vec![p("TargetGroupArns.member.1", &absent)],
-            selection(&absent),
+            selection(),
         ),
         (
             "DescribeTargetGroups by name",
             vec![p("Names.member.1", "not-here")],
-            selection("not-here"),
+            selection(),
         ),
         (
             "DescribeTargetGroupAttributes",
