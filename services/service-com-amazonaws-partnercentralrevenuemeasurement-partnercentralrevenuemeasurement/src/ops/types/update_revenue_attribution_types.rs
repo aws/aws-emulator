@@ -19,6 +19,7 @@ pub struct UpdateRevenueAttributionInput {
     pub client_token: Option<String>,
     pub description: Option<String>,
     pub revision: String,
+    pub context: Option<std::collections::HashMap<String, String>>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.partnercentralrevenuemeasurement#UpdateRevenueAttributionOutput")]
@@ -29,5 +30,6 @@ pub struct UpdateRevenueAttributionOutput {
     pub description: Option<String>,
     pub last_modified_date: ::aws_smithy_types::DateTime,
     pub latest_revision: Option<String>,
+    pub context: Option<std::collections::HashMap<String, String>>,
 }
 

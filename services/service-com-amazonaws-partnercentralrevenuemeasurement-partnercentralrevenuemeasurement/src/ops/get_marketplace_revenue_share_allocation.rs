@@ -50,30 +50,33 @@
 //! * `Catalog` (CatalogName, one of: AWS | Sandbox) **required** — The catalog that the
 //!   allocation belongs to.
 //! * `MarketplaceRevenueShareAllocationId` (MarketplaceRevenueShareAllocationId, len 18..18,
-//!   pattern ^mrsa-[A-Za-z0-9]{13}$) **required** — The unique identifier of the allocation
+//!   pattern ^mrsa-[a-z0-9]{13}$) **required** — The unique identifier of the allocation
 //!   to retrieve.
+//! * `MarketplaceRevenueShareIdentifier` (MarketplaceRevenueShareIdentifier, len 17..1011)
+//!   **required** — The parent marketplace revenue share, by ID (mrs-...) or ARN.
 //! * `MarketplaceRevenueShareRevision` (RevisionToken, len 1..19, pattern ^[1-9][0-9]*$) —
 //!   The revision of the parent marketplace revenue share at which to retrieve the
 //!   allocation. Omit to return the latest.
-//! * `ProductId` (MarketplaceProductId, len 18..18, pattern ^prod-[a-z0-9]{13}$) **required**
-//!   — The AWS Marketplace product identifier of the parent revenue share.
 //!
 //! ## Output
 //!
-//! * `Arn` (String) **required** — The Amazon Resource Name (ARN) of the allocation.
-//! * `CreatedDate` (Timestamp) — The date when the allocation was created.
+//! * `CreatedDate` (Timestamp) **required** — The date when the allocation was created.
 //! * `EffectiveFrom` (AllocationEffectiveDateString, len 10..10, pattern ^\d{4}-\d{2}-\d{2}$)
 //!   **required** — The effective start date of the allocation.
 //! * `EffectiveUntil` (AllocationEffectiveDateString, len 10..10, pattern
-//!   ^\d{4}-\d{2}-\d{2}$) — The effective end date of the allocation, or null if open-ended.
-//! * `LastModifiedDate` (Timestamp) — The date when the allocation was last modified.
-//! * `LatestMarketplaceRevenueShareRevision` (RevisionToken, len 1..19, pattern
-//!   ^[1-9][0-9]*$) — The latest revision of the parent marketplace revenue share.
+//!   ^\d{4}-\d{2}-\d{2}$) **required** — The effective end date of the allocation.
+//! * `LastModifiedDate` (Timestamp) **required** — The date when the allocation was last
+//!   modified.
 //! * `MarketplaceRevenueShareAllocationId` (MarketplaceRevenueShareAllocationId, len 18..18,
-//!   pattern ^mrsa-[A-Za-z0-9]{13}$) **required** — The unique identifier of the allocation.
-//! * `ProductId` (MarketplaceProductId, len 18..18, pattern ^prod-[a-z0-9]{13}$) **required**
-//!   — The AWS Marketplace product identifier.
-//! * `ProductName` (String) — The display name of the AWS Marketplace product.
+//!   pattern ^mrsa-[a-z0-9]{13}$) **required** — The unique identifier of the allocation.
+//! * `MarketplaceRevenueShareIdentifier` (MarketplaceRevenueShareId, len 17..17, pattern
+//!   ^mrs-[a-z0-9]{13}$) **required** — The parent marketplace revenue share, short ID form.
+//! * `MarketplaceRevenueShareLatestRevision` (RevisionToken, len 1..19, pattern
+//!   ^[1-9][0-9]*$) **required** — The latest revision of the parent marketplace revenue
+//!   share.
+//! * `MarketplaceRevenueShareRevision` (RevisionToken, len 1..19, pattern ^[1-9][0-9]*$)
+//!   **required** — The revision of the parent marketplace revenue share this allocation was
+//!   read at.
 //! * `RevenueSharePercent` (RevenueSharePercent, len 1..6, pattern ^\d{1,3}(\.\d{1,2})?$)
 //!   **required** — The revenue share percentage.
 //! * `Status` (AllocationStatus, one of: ACTIVE | INACTIVE) **required** — The status of the
@@ -178,11 +181,19 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         };
 
         let catalog = crate::state::parse_catalog(&input.catalog).map_err(validation)?;
+        let share_id = crate::state::resolve_share_identifier(
+            catalog,
+            &input.marketplace_revenue_share_identifier,
+        )
+        .map_err(GetMarketplaceRevenueShareAllocationErrorModeled::ResourceNotFoundException)?;
         let state = state.lock();
-        let Some(share) = state.share(catalog, &input.product_id) else {
+        let Some(share) = state.share(catalog, &share_id) else {
             return Err(
                 GetMarketplaceRevenueShareAllocationErrorModeled::ResourceNotFoundException(
-                    crate::state::share_not_found(catalog, &input.product_id),
+                    crate::state::share_not_found(
+                        catalog,
+                        &input.marketplace_revenue_share_identifier,
+                    ),
                 )
                 .into(),
             );
@@ -191,9 +202,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // `MarketplaceRevenueShareRevision` reads the allocation as it existed at
         // that parent revision; omitting it reads the latest.
         let revision = match input.marketplace_revenue_share_revision.as_deref() {
-            None => share.revision,
+            None => share.revision(),
             Some(token) => match crate::state::parse_revision_token(token)
-                .filter(|revision| *revision <= share.revision)
+                .filter(|revision| *revision <= share.revision())
             {
                 Some(revision) => revision,
                 None => {
@@ -201,9 +212,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                         GetMarketplaceRevenueShareAllocationErrorModeled::ResourceNotFoundException(
                             crate::state::revision_not_found(
                                 "MarketplaceRevenueShareRevision",
-                                &input.product_id,
+                                &share.share_id,
                                 token,
-                                share.revision,
+                                share.revision(),
                             ),
                         )
                         .into(),
@@ -219,7 +230,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             return Err(
                 GetMarketplaceRevenueShareAllocationErrorModeled::ResourceNotFoundException(
                     crate::state::allocation_not_found(
-                        &input.product_id,
+                        &share.share_id,
                         &input.marketplace_revenue_share_allocation_id,
                     ),
                 )
@@ -245,19 +256,16 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let view = crate::state::allocation_view(share, allocation, version);
         Ok(GetMarketplaceRevenueShareAllocationOutput {
             marketplace_revenue_share_allocation_id: view.allocation_id,
-            product_id: view.product_id,
-            // Absent: see the note on `ProductName` in `crate::state`.
-            product_name: None,
-            arn: view.arn,
+            marketplace_revenue_share_identifier: view.share_id,
             effective_from: view.effective_from,
             effective_until: view.effective_until,
             revenue_share_percent: view.revenue_share_percent,
             status: view.status,
-            created_date: Some(crate::state::wire_timestamp(view.created_date)),
-            last_modified_date: Some(crate::state::wire_timestamp(view.last_modified_date)),
-            latest_marketplace_revenue_share_revision: Some(
-                view.latest_marketplace_revenue_share_revision,
-            ),
+            created_date: crate::state::wire_timestamp(view.created_date),
+            last_modified_date: crate::state::wire_timestamp(view.last_modified_date),
+            marketplace_revenue_share_revision: view.marketplace_revenue_share_revision,
+            marketplace_revenue_share_latest_revision: view
+                .marketplace_revenue_share_latest_revision,
         })
     }
 }

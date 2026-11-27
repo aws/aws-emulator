@@ -15,23 +15,41 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-partnercentralrevenueme
 #[derive(Debug, Clone, Default)]
 pub struct GetMarketplaceRevenueShareInput {
     pub catalog: String,
-    pub product_id: String,
-    pub revision: Option<i32>,
+    pub identifier: String,
+    pub revision: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.partnercentralrevenuemeasurement#GetMarketplaceRevenueShareOutput")]
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct GetMarketplaceRevenueShareOutput {
-    pub product_id: String,
+    pub id: String,
     pub arn: String,
     pub catalog: String,
+    pub products: Vec<MarketplaceRevenueShareProductDetail>,
+    pub created_date: ::aws_smithy_types::DateTime,
+    pub last_modified_date: ::aws_smithy_types::DateTime,
+    pub revision: String,
+    pub latest_revision: String,
+    pub effective_from: Option<String>,
+    pub effective_until: Option<String>,
+    pub total_active_marketplace_revenue_share_allocation_count: i32,
+    pub total_marketplace_revenue_share_allocation_count: i32,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.partnercentralrevenuemeasurement#MarketplaceRevenueShareProductDetail")]
+#[derive(Debug, Clone, Default)]
+pub struct MarketplaceRevenueShareProductDetail {
+    pub product_id: String,
     pub product_code: Option<String>,
     pub product_name: Option<String>,
-    pub created_date: Option<::aws_smithy_types::DateTime>,
-    pub last_modified_date: Option<::aws_smithy_types::DateTime>,
-    pub revision: Option<i32>,
-    pub latest_revision: Option<i32>,
-    pub total_active_marketplace_revenue_share_allocation_count: Option<i32>,
-    pub total_marketplace_revenue_share_allocation_count: Option<i32>,
+    pub accounts: Option<Vec<RevenueShareProductAccountDetail>>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.partnercentralrevenuemeasurement#RevenueShareProductAccountDetail")]
+#[derive(Debug, Clone, Default)]
+pub struct RevenueShareProductAccountDetail {
+    pub account_type: String,
+    pub count: i32,
+    pub account_ids: Vec<String>,
 }
 

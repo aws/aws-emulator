@@ -49,17 +49,21 @@
 //!
 //! * `Catalog` (CatalogName, one of: AWS | Sandbox) **required** — The catalog to list
 //!   marketplace revenue shares from.
-//! * `CreatedAfter` (Timestamp) — Filter results to only include marketplace revenue shares
-//!   created after this timestamp.
-//! * `CreatedBefore` (Timestamp) — Filter results to only include marketplace revenue shares
-//!   created before this timestamp.
-//! * `MaxResults` (Integer) — The maximum number of results to return in a single call.
+//! * `CreatedAfter` (Timestamp) — Filter results to marketplace revenue shares created at or
+//!   after this timestamp (inclusive).
+//! * `CreatedBefore` (Timestamp) — Filter results to marketplace revenue shares created
+//!   before this timestamp (exclusive).
+//! * `Identifiers` (MarketplaceRevenueShareIdentifierList, len 1..100) — Filter results to
+//!   only include these marketplace revenue shares, by ID or ARN. When several filters are
+//!   sent, a share must match all of them.
+//! * `MaxResults` (Integer, range 1..100) — The maximum number of results to return in a
+//!   single call.
 //! * `NextToken` (NextToken, len 1..2048, pattern ^[\S]+$) — Token for pagination. Use the
 //!   value returned in the previous response to retrieve the next page.
-//! * `ProductCodes` (ProductCodeList, len 1..10) — Filter results to only include shares with
-//!   these product codes.
-//! * `ProductIds` (MarketplaceProductIdList, len 1..10) — Filter results to only include
-//!   shares with these product identifiers.
+//! * `ProductCodes` (ProductCodeList, len 1..10) — Filter results to the marketplace revenue
+//!   shares that contain a product with any of these product codes.
+//! * `ProductIds` (MarketplaceProductIdList, len 1..10) — Filter results to the marketplace
+//!   revenue shares that contain any of these products, by product ID or product ARN.
 //! * `SortBy` (MarketplaceRevenueShareSortBy, one of: LastModifiedDate) — The field to sort
 //!   marketplace revenue shares by.
 //! * `SortOrder` (SortOrder, one of: ASCENDING | DESCENDING) — The direction to sort results.
@@ -77,6 +81,7 @@
 //!   permissions.
 //! * `InternalServerException` (HTTP 500) — An internal server error occurred. Retry your
 //!   request.
+//! * `ResourceNotFoundException` (HTTP 404) — The specified resource was not found.
 //! * `ThrottlingException` (HTTP 429) — The request was throttled due to too many requests.
 //!   Retry your request.
 //! * `ValidationException` (HTTP 400) — The request failed validation due to invalid input
@@ -101,6 +106,7 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-partnercentralrevenueme
 pub enum ListMarketplaceRevenueSharesErrorModeled {
     AccessDeniedException(AccessDeniedException),
     InternalServerException(InternalServerException),
+    ResourceNotFoundException(ResourceNotFoundException),
     ThrottlingException(ThrottlingException),
     ValidationException(ValidationException),
 }
@@ -198,44 +204,62 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         }
 
         let state = state.lock();
+        // Every filter is "match all of them", as the contract words it, and
+        // each one compares against stored state: the share's own id, or the
+        // products it holds at its latest revision.
+        let wanted_ids: Option<Vec<String>> = input.identifiers.as_ref().map(|identifiers| {
+            identifiers
+                .iter()
+                .filter_map(|identifier| crate::state::parse_share_identifier(identifier))
+                .collect()
+        });
+        let wanted_products: Option<Vec<&str>> = input.product_ids.as_ref().map(|products| {
+            products
+                .iter()
+                .map(|product| crate::state::product_id_segment(product))
+                .collect()
+        });
         let mut rows: Vec<((i64, u32, String), String, MarketplaceRevenueShareSummary)> =
             Vec::new();
-        for ((share_catalog, product_id), share) in &state.marketplace_revenue_shares {
+        for ((share_catalog, share_id), share) in &state.marketplace_revenue_shares {
             if *share_catalog != catalog {
                 continue;
             }
-            if input
-                .product_ids
+            if wanted_ids
                 .as_ref()
-                .is_some_and(|wanted| !wanted.contains(product_id))
+                .is_some_and(|wanted| !wanted.iter().any(|id| id == share_id))
             {
                 continue;
             }
-            if input
-                .product_codes
-                .as_ref()
-                .is_some_and(|wanted| !wanted.contains(&share.product_code))
-            {
+            let products = share.products();
+            if wanted_products.as_ref().is_some_and(|wanted| {
+                !products
+                    .iter()
+                    .any(|product| wanted.contains(&product.product_id.as_str()))
+            }) {
+                continue;
+            }
+            if input.product_codes.as_ref().is_some_and(|wanted| {
+                !products.iter().any(|product| {
+                    crate::state::product_code(&product.product_id)
+                        .is_some_and(|code| wanted.contains(&code))
+                })
+            }) {
                 continue;
             }
             let created = crate::state::epoch_whole_seconds(share.created_date);
-            // Neither `CreatedAfter` nor `CreatedBefore` carries inclusivity
-            // wording in this operation's contract — unlike
-            // `ListMarketplaceRevenueShareAllocations`, whose `AfterEffectiveFrom`
-            // is documented "Inclusive lower bound" and whose
-            // `BeforeEffectiveFrom` is documented "Exclusive upper bound
-            // (half-open range)" — so applying BOTH strictly here is the
-            // EMULATOR's own rule, not a modelled one: a share created within the
-            // bound's own second is outside the window. The comparison is at
-            // whole-second granularity, which is the precision a bound survives
-            // this protocol's timestamp encoding at (see
-            // `state::epoch_whole_seconds`), so a bound a caller echoes back from
-            // a `CreatedDate` means exactly that instant. The tests pin both
-            // boundaries.
+            // The two bounds are MODELLED, and the contract above quotes them:
+            // `CreatedAfter` keeps a share created "at or after this timestamp
+            // (inclusive)" and `CreatedBefore` one created "before this
+            // timestamp (exclusive)". The comparison is at whole-second
+            // granularity, which is the precision a bound survives this
+            // protocol's timestamp encoding at (see
+            // `state::epoch_whole_seconds`), so a bound a caller echoes back
+            // from a `CreatedDate` means exactly that instant.
             if input
                 .created_after
                 .as_ref()
-                .is_some_and(|after| created <= crate::state::wire_whole_seconds(*after))
+                .is_some_and(|after| created < crate::state::wire_whole_seconds(*after))
             {
                 continue;
             }
@@ -246,38 +270,37 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             {
                 continue;
             }
-            // Both counts are derived from the stored allocations at the share's
-            // latest revision, never held as a field.
-            let (total, active) = share.allocation_counts_at(share.revision);
+            // Every derived member is computed from the stored state at the
+            // share's latest revision, never held as a field.
+            let (total, active) = share.allocation_counts_at(share.revision());
+            let (effective_from, effective_until) = share.effective_window_at(share.revision());
             let sort_key = if sort_by_last_modified {
                 let (secs, nanos) = crate::state::epoch_parts(share.last_modified_date());
-                (secs, nanos, product_id.clone())
+                (secs, nanos, share_id.clone())
             } else {
-                (0, 0, product_id.clone())
+                (0, 0, share_id.clone())
             };
             rows.push((
                 sort_key,
-                product_id.clone(),
+                share_id.clone(),
                 MarketplaceRevenueShareSummary {
-                    product_id: share.product_id.clone(),
+                    id: share.share_id.clone(),
                     arn: share.arn.clone(),
-                    catalog: Some(share.catalog.as_wire().to_string()),
-                    product_code: Some(share.product_code.clone()),
-                    // Absent: see the note on `ProductName` in `crate::state`.
-                    product_name: None,
-                    created_date: Some(crate::state::wire_timestamp(share.created_date)),
-                    last_modified_date: Some(crate::state::wire_timestamp(
-                        share.last_modified_date(),
-                    )),
-                    latest_revision: Some(share.revision),
-                    total_marketplace_revenue_share_allocation_count: Some(total),
-                    total_active_marketplace_revenue_share_allocation_count: Some(active),
+                    catalog: share.catalog.as_wire().to_string(),
+                    products: crate::state::product_summaries(products),
+                    created_date: crate::state::wire_timestamp(share.created_date),
+                    last_modified_date: crate::state::wire_timestamp(share.last_modified_date()),
+                    latest_revision: crate::state::revision_token(share.revision()),
+                    effective_from,
+                    effective_until,
+                    total_marketplace_revenue_share_allocation_count: total,
+                    total_active_marketplace_revenue_share_allocation_count: active,
                 },
             ));
         }
-        // `ProductId` breaks every tie, so the order is total and a page resumes
+        // The share id breaks every tie, so the order is total and a page resumes
         // at exactly the item the previous one stopped before. With `SortBy`
-        // absent the rows are already in `ProductId` order (the store iterates a
+        // absent the rows are already in id order (the store iterates a
         // `BTreeMap` keyed on it), so only a `LastModifiedDate` sort has work to
         // do here.
         if sort_by_last_modified {

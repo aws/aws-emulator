@@ -15,10 +15,12 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-partnercentralrevenueme
 #[derive(Debug, Clone, Default)]
 pub struct ListMarketplaceRevenueShareAllocationsInput {
     pub catalog: String,
-    pub product_id: String,
-    pub status: Option<String>,
+    pub marketplace_revenue_share_identifier: String,
+    pub status_filter: Option<String>,
     pub after_effective_from: Option<String>,
     pub before_effective_from: Option<String>,
+    pub after_effective_until: Option<String>,
+    pub before_effective_until: Option<String>,
     pub sort_by: Option<String>,
     pub sort_order: Option<String>,
     pub max_results: Option<i32>,
@@ -34,17 +36,15 @@ pub struct ListMarketplaceRevenueShareAllocationsOutput {
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.partnercentralrevenuemeasurement#MarketplaceRevenueShareAllocationSummary")]
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct MarketplaceRevenueShareAllocationSummary {
     pub marketplace_revenue_share_allocation_id: String,
-    pub product_id: String,
-    pub product_name: Option<String>,
-    pub arn: String,
+    pub marketplace_revenue_share_identifier: String,
     pub effective_from: String,
-    pub effective_until: Option<String>,
+    pub effective_until: String,
     pub revenue_share_percent: String,
     pub status: String,
-    pub created_date: Option<::aws_smithy_types::DateTime>,
-    pub last_modified_date: Option<::aws_smithy_types::DateTime>,
+    pub created_date: ::aws_smithy_types::DateTime,
+    pub last_modified_date: ::aws_smithy_types::DateTime,
 }
 

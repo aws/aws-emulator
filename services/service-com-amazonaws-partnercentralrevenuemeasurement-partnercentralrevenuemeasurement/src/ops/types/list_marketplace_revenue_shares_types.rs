@@ -15,6 +15,7 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-partnercentralrevenueme
 #[derive(Debug, Clone, Default)]
 pub struct ListMarketplaceRevenueSharesInput {
     pub catalog: String,
+    pub identifiers: Option<Vec<String>>,
     pub product_ids: Option<Vec<String>>,
     pub product_codes: Option<Vec<String>>,
     pub max_results: Option<i32>,
@@ -33,17 +34,18 @@ pub struct ListMarketplaceRevenueSharesOutput {
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.partnercentralrevenuemeasurement#MarketplaceRevenueShareSummary")]
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct MarketplaceRevenueShareSummary {
-    pub product_id: String,
+    pub id: String,
     pub arn: String,
-    pub catalog: Option<String>,
-    pub product_code: Option<String>,
-    pub product_name: Option<String>,
-    pub created_date: Option<::aws_smithy_types::DateTime>,
-    pub last_modified_date: Option<::aws_smithy_types::DateTime>,
-    pub latest_revision: Option<i32>,
-    pub total_active_marketplace_revenue_share_allocation_count: Option<i32>,
-    pub total_marketplace_revenue_share_allocation_count: Option<i32>,
+    pub catalog: String,
+    pub products: Vec<MarketplaceRevenueShareProductSummary>,
+    pub created_date: ::aws_smithy_types::DateTime,
+    pub last_modified_date: ::aws_smithy_types::DateTime,
+    pub latest_revision: String,
+    pub effective_from: Option<String>,
+    pub effective_until: Option<String>,
+    pub total_active_marketplace_revenue_share_allocation_count: i32,
+    pub total_marketplace_revenue_share_allocation_count: i32,
 }
 

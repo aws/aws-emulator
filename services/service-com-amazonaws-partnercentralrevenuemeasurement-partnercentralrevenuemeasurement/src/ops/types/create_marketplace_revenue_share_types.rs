@@ -16,20 +16,19 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-partnercentralrevenueme
 pub struct CreateMarketplaceRevenueShareInput {
     pub catalog: String,
     pub client_token: Option<String>,
-    pub product_id: String,
+    pub products: Vec<MarketplaceRevenueShareProductEntry>,
     pub tags: Option<Vec<Tag>>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.partnercentralrevenuemeasurement#CreateMarketplaceRevenueShareOutput")]
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct CreateMarketplaceRevenueShareOutput {
-    pub product_id: String,
+    pub id: String,
     pub arn: String,
-    pub catalog: Option<String>,
-    pub product_code: Option<String>,
-    pub product_name: Option<String>,
-    pub created_date: Option<::aws_smithy_types::DateTime>,
-    pub last_modified_date: Option<::aws_smithy_types::DateTime>,
-    pub revision: Option<i32>,
+    pub catalog: String,
+    pub products: Vec<MarketplaceRevenueShareProductSummary>,
+    pub created_date: ::aws_smithy_types::DateTime,
+    pub last_modified_date: ::aws_smithy_types::DateTime,
+    pub revision: String,
 }
 

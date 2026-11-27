@@ -43,7 +43,7 @@
 //! smithy_query(query="doc",shape="<Shape>",member="<Member>",model_path="services/service-com-amazonaws-partnercentralrevenuemeasurement-partnercentralrevenuemeasurement/smithy-model/com-amazonaws-partnercentralrevenuemeasurement-partnercentralrevenuemeasurement.json")
 //! ```
 //!
-//! Creates a new marketplace revenue share allocation for the specified product.
+//! Creates a new allocation under the specified marketplace revenue share.
 //!
 //! ## Input
 //!
@@ -55,30 +55,37 @@
 //!   **required** — The effective start date for the allocation. Must be the first day of a
 //!   month.
 //! * `EffectiveUntil` (AllocationEffectiveDateString, len 10..10, pattern
-//!   ^\d{4}-\d{2}-\d{2}$) — The effective end date for the allocation. Must be the last day
-//!   of a month (YYYY-MM-DD). Omit for open-ended allocations.
-//! * `ProductId` (MarketplaceProductId, len 18..18, pattern ^prod-[a-z0-9]{13}$) **required**
-//!   — The AWS Marketplace product identifier for the parent revenue share.
+//!   ^\d{4}-\d{2}-\d{2}$) **required** — The effective end date for the allocation. Must be
+//!   the last day of a month (YYYY-MM-DD).
+//! * `MarketplaceRevenueShareIdentifier` (MarketplaceRevenueShareIdentifier, len 17..1011)
+//!   **required** — The parent marketplace revenue share, by ID (mrs-...) or ARN.
+//! * `MarketplaceRevenueShareRevision` (RevisionToken, len 1..19, pattern ^[1-9][0-9]*$)
+//!   **required** — The revision of the parent marketplace revenue share that the caller last
+//!   read, for optimistic concurrency control. A stale value returns ConflictException with
+//!   Reason REVISION_MISMATCH.
 //! * `RevenueSharePercent` (RevenueSharePercent, len 1..6, pattern ^\d{1,3}(\.\d{1,2})?$)
 //!   **required** — The revenue share percentage for this allocation.
 //!
 //! ## Output
 //!
-//! * `Arn` (String) **required** — The Amazon Resource Name (ARN) of the allocation.
-//! * `CreatedDate` (Timestamp) — The date when the allocation was created.
+//! * `CreatedDate` (Timestamp) **required** — The date when the allocation was created.
 //! * `EffectiveFrom` (AllocationEffectiveDateString, len 10..10, pattern ^\d{4}-\d{2}-\d{2}$)
 //!   **required** — The effective start date of the allocation.
 //! * `EffectiveUntil` (AllocationEffectiveDateString, len 10..10, pattern
-//!   ^\d{4}-\d{2}-\d{2}$) — The effective end date of the allocation, or null if open-ended.
-//! * `LastModifiedDate` (Timestamp) — The date when the allocation was last modified.
-//! * `LatestMarketplaceRevenueShareRevision` (RevisionToken, len 1..19, pattern
-//!   ^[1-9][0-9]*$) — The latest revision of the parent marketplace revenue share.
+//!   ^\d{4}-\d{2}-\d{2}$) **required** — The effective end date of the allocation.
+//! * `LastModifiedDate` (Timestamp) **required** — The date when the allocation was last
+//!   modified.
 //! * `MarketplaceRevenueShareAllocationId` (MarketplaceRevenueShareAllocationId, len 18..18,
-//!   pattern ^mrsa-[A-Za-z0-9]{13}$) **required** — The unique identifier of the newly
-//!   created allocation.
-//! * `ProductId` (MarketplaceProductId, len 18..18, pattern ^prod-[a-z0-9]{13}$) **required**
-//!   — The AWS Marketplace product identifier.
-//! * `ProductName` (String) — The display name of the AWS Marketplace product.
+//!   pattern ^mrsa-[a-z0-9]{13}$) **required** — The unique identifier of the newly created
+//!   allocation.
+//! * `MarketplaceRevenueShareIdentifier` (MarketplaceRevenueShareId, len 17..17, pattern
+//!   ^mrs-[a-z0-9]{13}$) **required** — The parent marketplace revenue share, short ID form.
+//! * `MarketplaceRevenueShareLatestRevision` (RevisionToken, len 1..19, pattern
+//!   ^[1-9][0-9]*$) **required** — The latest revision of the parent marketplace revenue
+//!   share.
+//! * `MarketplaceRevenueShareRevision` (RevisionToken, len 1..19, pattern ^[1-9][0-9]*$)
+//!   **required** — The revision of the parent marketplace revenue share this allocation
+//!   belongs to.
 //! * `RevenueSharePercent` (RevenueSharePercent, len 1..6, pattern ^\d{1,3}(\.\d{1,2})?$)
 //!   **required** — The revenue share percentage.
 //! * `Status` (AllocationStatus, one of: ACTIVE | INACTIVE) **required** — The status of the
@@ -93,6 +100,8 @@
 //! * `InternalServerException` (HTTP 500) — An internal server error occurred. Retry your
 //!   request.
 //! * `ResourceNotFoundException` (HTTP 404) — The specified resource was not found.
+//! * `ServiceQuotaExceededException` (HTTP 402) — The request would exceed a service quota
+//!   limit.
 //! * `ThrottlingException` (HTTP 429) — The request was throttled due to too many requests.
 //!   Retry your request.
 //! * `ValidationException` (HTTP 400) — The request failed validation due to invalid input
@@ -119,6 +128,7 @@ pub enum CreateMarketplaceRevenueShareAllocationErrorModeled {
     ConflictException(ConflictException),
     InternalServerException(InternalServerException),
     ResourceNotFoundException(ResourceNotFoundException),
+    ServiceQuotaExceededException(ServiceQuotaExceededException),
     ThrottlingException(ThrottlingException),
     ValidationException(ValidationException),
 }
@@ -184,14 +194,37 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         };
 
         let catalog = crate::state::parse_catalog(&input.catalog).map_err(validation)?;
+        let share_id = crate::state::resolve_share_identifier(
+            catalog,
+            &input.marketplace_revenue_share_identifier,
+        )
+        .map_err(
+            CreateMarketplaceRevenueShareAllocationErrorModeled::ResourceNotFoundException,
+        )?;
         crate::state::validate_effective_from("EffectiveFrom", &input.effective_from)
             .map_err(validation)?;
-        if let Some(until) = input.effective_until.as_deref() {
-            crate::state::validate_effective_until("EffectiveUntil", until).map_err(validation)?;
-            crate::state::validate_interval(&input.effective_from, until).map_err(validation)?;
-        }
+        crate::state::validate_effective_until("EffectiveUntil", &input.effective_until)
+            .map_err(validation)?;
+        crate::state::validate_interval(&input.effective_from, &input.effective_until)
+            .map_err(validation)?;
         crate::state::validate_percent("RevenueSharePercent", &input.revenue_share_percent)
             .map_err(validation)?;
+        if input.marketplace_revenue_share_revision.is_empty() {
+            return Err(validation(crate::state::required_member(
+                "MarketplaceRevenueShareRevision",
+            )));
+        }
+        let Some(supplied_revision) =
+            crate::state::parse_revision_token(&input.marketplace_revenue_share_revision)
+        else {
+            return Err(validation(crate::state::invalid_value(
+                "MarketplaceRevenueShareRevision",
+                format!(
+                    "{:?} is not a revision this service could have issued",
+                    input.marketplace_revenue_share_revision
+                ),
+            )));
+        };
 
         let region = crate::state::request_region(ctx.parts());
         let now = ::std::time::SystemTime::now();
@@ -201,27 +234,31 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // allocation it already minted, and only when this request asks for the
         // same allocation under the same parent.
         if let Some(token) = input.client_token.as_deref() {
-            if let Some((minted_catalog, minted_product, minted_allocation)) =
+            if let Some((minted_catalog, minted_share, minted_allocation)) =
                 state.allocation_idempotency.get(token).cloned()
             {
-                if let Some(share) = state.share(minted_catalog, &minted_product) {
+                if let Some(share) = state.share(minted_catalog, &minted_share) {
                     if let Some(allocation) = share.allocations.get(&minted_allocation) {
                         let created = allocation.created();
                         let same = minted_catalog == catalog
-                            && minted_product == input.product_id
+                            && minted_share == share_id
                             && created.effective_from == input.effective_from
                             && created.effective_until == input.effective_until
                             && created.revenue_share_percent == input.revenue_share_percent;
                         if same {
-                            let view = crate::state::allocation_view(
-                                share,
-                                allocation,
-                                allocation.current(),
-                            );
+                            // The version this call WROTE, so a replay answers
+                            // what the first attempt answered.
+                            let view =
+                                crate::state::allocation_view(share, allocation, created);
                             crate::state::audit(
                                 ctx.parts(),
                                 Self::NAME,
-                                &view.arn,
+                                &crate::state::allocation_arn(
+                                    &region,
+                                    catalog,
+                                    &share_id,
+                                    &view.allocation_id,
+                                ),
                                 "replayed: no change",
                             );
                             return Ok(output(view));
@@ -240,24 +277,48 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // An allocation only exists under a revenue share, so an unknown parent
         // is a 404.
         let Some((held, revision)) = state
-            .share(catalog, &input.product_id)
-            .map(|share| (share.allocations.len(), share.revision))
+            .share(catalog, &share_id)
+            .map(|share| (share.allocations.len(), share.revision()))
         else {
             return Err(
                 CreateMarketplaceRevenueShareAllocationErrorModeled::ResourceNotFoundException(
-                    crate::state::share_not_found(catalog, &input.product_id),
+                    crate::state::share_not_found(
+                        catalog,
+                        &input.marketplace_revenue_share_identifier,
+                    ),
                 )
                 .into(),
             );
         };
+        // `MarketplaceRevenueShareRevision` is the optimistic concurrency check:
+        // it must name the share's CURRENT revision, or the share moved under
+        // the caller.
+        if supplied_revision != revision {
+            return Err(
+                CreateMarketplaceRevenueShareAllocationErrorModeled::ConflictException(
+                    crate::state::revision_mismatch(
+                        "MarketplaceRevenueShareRevision",
+                        &share_id,
+                        &input.marketplace_revenue_share_revision,
+                        revision,
+                    ),
+                )
+                .into(),
+            );
+        }
         if held >= crate::state::MAX_ALLOCATIONS_PER_SHARE {
-            // A whole-store condition, not a bad member: no `fieldList`.
-            return Err(validation(crate::state::request_validation(format!(
-                "this emulator holds at most {} allocations per marketplace revenue share",
-                crate::state::MAX_ALLOCATIONS_PER_SHARE
-            ))));
+            return Err(
+                CreateMarketplaceRevenueShareAllocationErrorModeled::ServiceQuotaExceededException(
+                    crate::state::quota_exceeded(
+                        "marketplace revenue share allocation",
+                        crate::state::MAX_ALLOCATIONS_PER_SHARE,
+                    ),
+                )
+                .into(),
+            );
         }
         if revision >= crate::state::MAX_SHARE_REVISION {
+            // A whole-store condition, not a bad member: no `fieldList`.
             return Err(validation(crate::state::request_validation(format!(
                 "this emulator holds at most {} revisions of a marketplace revenue share",
                 crate::state::MAX_SHARE_REVISION
@@ -266,9 +327,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         let sequence = state.next_sequence();
         let allocation_id = crate::state::allocation_id(sequence);
-        let arn = crate::state::allocation_arn(&region, catalog, &input.product_id, &allocation_id);
 
-        let Some(share) = state.share_mut(catalog, &input.product_id) else {
+        let Some(share) = state.share_mut(catalog, &share_id) else {
             return Err(
                 CreateMarketplaceRevenueShareAllocationErrorModeled::InternalServerException(
                     crate::state::state_unavailable(),
@@ -283,8 +343,6 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             allocation_id.clone(),
             crate::state::MarketplaceRevenueShareAllocation {
                 allocation_id: allocation_id.clone(),
-                arn,
-                product_id: input.product_id.clone(),
                 created_date: now,
                 created_version: crate::state::AllocationVersion {
                     revision: new_revision,
@@ -303,23 +361,19 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // `@idempotencyToken` member means this create has no idempotency key,
         // so there is nothing a later request could replay.
         if let Some(token) = input.client_token.clone() {
-            state.allocation_idempotency.insert(
-                token,
-                (catalog, input.product_id.clone(), allocation_id.clone()),
-            );
+            state
+                .allocation_idempotency
+                .insert(token, (catalog, share_id.clone(), allocation_id.clone()));
         }
 
         // Read the stored record back, so the response is the state rather than
         // the values that went into it.
         let stored = state
-            .share(catalog, &input.product_id)
+            .share(catalog, &share_id)
             .and_then(|share| {
-                share
-                    .allocations
-                    .get(&allocation_id)
-                    .map(|allocation| {
-                        crate::state::allocation_view(share, allocation, allocation.current())
-                    })
+                share.allocations.get(&allocation_id).map(|allocation| {
+                    crate::state::allocation_view(share, allocation, allocation.current())
+                })
             })
             .ok_or_else(|| {
                 CreateMarketplaceRevenueShareAllocationError::from(
@@ -328,7 +382,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     ),
                 )
             })?;
-        crate::state::audit(ctx.parts(), Self::NAME, &stored.arn, "created");
+        crate::state::audit(
+            ctx.parts(),
+            Self::NAME,
+            &crate::state::allocation_arn(&region, catalog, &share_id, &allocation_id),
+            "created",
+        );
         Ok(output(stored))
     }
 }
@@ -339,23 +398,18 @@ fn validation(error: ValidationException) -> CreateMarketplaceRevenueShareAlloca
 }
 
 /// This operation's output for a stored allocation.
-fn output(
-    view: crate::state::AllocationView,
-) -> CreateMarketplaceRevenueShareAllocationOutput {
+fn output(view: crate::state::AllocationView) -> CreateMarketplaceRevenueShareAllocationOutput {
     CreateMarketplaceRevenueShareAllocationOutput {
         marketplace_revenue_share_allocation_id: view.allocation_id,
-        product_id: view.product_id,
-        // Absent: see the note on `ProductName` in `crate::state`.
-        product_name: None,
-        arn: view.arn,
+        marketplace_revenue_share_identifier: view.share_id,
         effective_from: view.effective_from,
         effective_until: view.effective_until,
         revenue_share_percent: view.revenue_share_percent,
         status: view.status,
-        created_date: Some(crate::state::wire_timestamp(view.created_date)),
-        last_modified_date: Some(crate::state::wire_timestamp(view.last_modified_date)),
-        latest_marketplace_revenue_share_revision: Some(
-            view.latest_marketplace_revenue_share_revision,
-        ),
+        created_date: crate::state::wire_timestamp(view.created_date),
+        last_modified_date: crate::state::wire_timestamp(view.last_modified_date),
+        marketplace_revenue_share_revision: view.marketplace_revenue_share_revision,
+        marketplace_revenue_share_latest_revision: view
+            .marketplace_revenue_share_latest_revision,
     }
 }

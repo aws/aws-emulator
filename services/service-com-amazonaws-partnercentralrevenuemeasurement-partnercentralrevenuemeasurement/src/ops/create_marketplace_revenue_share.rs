@@ -52,26 +52,28 @@
 //!   create the marketplace revenue share.
 //! * `ClientToken` (ClientToken, len 1..64, pattern ^[!-~]{1,64}$, @idempotencyToken) — A
 //!   unique token to ensure idempotency of the create request.
-//! * `ProductId` (MarketplaceProductId, len 18..18, pattern ^prod-[a-z0-9]{13}$) **required**
-//!   — The AWS Marketplace product identifier for this revenue share.
-//! * `Tags` (MarketplaceRevenueShareTagList, len 0..50) — Tags to associate with the
-//!   marketplace revenue share upon creation.
+//! * `Products` (MarketplaceRevenueShareProductEntryList, len 1..25) **required** — The
+//!   products to include in the marketplace revenue share, each with its typed account
+//!   lists.
+//! * `Tags` (TagList, len 1..200) — Tags to associate with the marketplace revenue share
+//!   upon creation.
 //!
 //! ## Output
 //!
-//! * `Arn` (String) **required** — The Amazon Resource Name (ARN) of the newly created
-//!   marketplace revenue share.
-//! * `Catalog` (CatalogName, one of: AWS | Sandbox) — The catalog that the marketplace
-//!   revenue share belongs to.
-//! * `CreatedDate` (Timestamp) — The date when the marketplace revenue share was created.
-//! * `LastModifiedDate` (Timestamp) — The date when the marketplace revenue share was last
-//!   modified.
-//! * `ProductCode` (String) — The AWS Marketplace product code.
-//! * `ProductId` (MarketplaceProductId, len 18..18, pattern ^prod-[a-z0-9]{13}$) **required**
-//!   — The AWS Marketplace product identifier of the newly created revenue share.
-//! * `ProductName` (String) — The display name of the AWS Marketplace product.
-//! * `Revision` (Integer) — The revision number of the newly created marketplace revenue
-//!   share.
+//! * `Arn` (MarketplaceRevenueShareArn, len 1..1011) **required** — The Amazon Resource Name
+//!   (ARN) of the newly created marketplace revenue share.
+//! * `Catalog` (CatalogName, one of: AWS | Sandbox) **required** — The catalog that the
+//!   marketplace revenue share belongs to.
+//! * `CreatedDate` (Timestamp) **required** — The date when the marketplace revenue share was
+//!   created.
+//! * `Id` (MarketplaceRevenueShareId, len 17..17, pattern ^mrs-[a-z0-9]{13}$) **required** —
+//!   The unique identifier of the newly created marketplace revenue share.
+//! * `LastModifiedDate` (Timestamp) **required** — The date when the marketplace revenue
+//!   share was last modified.
+//! * `Products` (MarketplaceRevenueShareProductSummaryList, len 0..25) **required** — The
+//!   products in the marketplace revenue share, each with per-type account counts.
+//! * `Revision` (RevisionToken, len 1..19, pattern ^[1-9][0-9]*$) **required** — The revision
+//!   of the newly created marketplace revenue share.
 //!
 //! ## Errors
 //!
@@ -179,6 +181,32 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // its membership, and the deserializer materializes an absent member as
         // the empty string, so both cases are the handler's to refuse.
         let catalog = crate::state::parse_catalog(&input.catalog).map_err(validation)?;
+        // `Products` on this operation is `len 1..25`: a create names the
+        // products the share starts with, and only the update can empty it (and
+        // so close the share).
+        if input.products.is_empty() {
+            return Err(validation(crate::state::field_validation(
+                "REQUEST_VALIDATION_FAILED",
+                "REQUIRED_FIELD_MISSING",
+                "Products",
+                "must list at least one product",
+            )));
+        }
+        let products = crate::state::resolve_products(&input.products).map_err(validation)?;
+        // How much this request would add to the store, checked before anything
+        // is stored: the share's whole product set is held in memory, so the
+        // accounts it names are bounded in front of the write.
+        if crate::state::account_total(&products) > crate::state::MAX_ACCOUNTS_PER_SHARE {
+            return Err(
+                CreateMarketplaceRevenueShareErrorModeled::ServiceQuotaExceededException(
+                    crate::state::quota_exceeded(
+                        "marketplace revenue share product account",
+                        crate::state::MAX_ACCOUNTS_PER_SHARE,
+                    ),
+                )
+                .into(),
+            );
+        }
         let region = crate::state::request_region(ctx.parts());
         let now = ::std::time::SystemTime::now();
         let mut state = state.lock();
@@ -187,11 +215,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // it already minted, and only when this request asks for the same share —
         // a token reused with different parameters is a conflict.
         if let Some(token) = input.client_token.as_deref() {
-            if let Some((minted_catalog, minted_product)) =
-                state.share_idempotency.get(token).cloned()
+            if let Some((minted_catalog, minted_share)) = state.share_idempotency.get(token).cloned()
             {
-                if let Some(share) = state.share(minted_catalog, &minted_product) {
-                    if share.matches_create(catalog, &input.product_id, input.tags.as_ref()) {
+                if let Some(share) = state.share(minted_catalog, &minted_share) {
+                    if share.matches_create(catalog, &products, input.tags.as_ref()) {
                         let answer = output(share);
                         crate::state::audit(
                             ctx.parts(),
@@ -209,16 +236,6 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             }
         }
 
-        // A `(Catalog, ProductId)` pair identifies the resource, so a second
-        // create for one the catalog already holds is a conflict rather than an
-        // overwrite.
-        if state.share(catalog, &input.product_id).is_some() {
-            return Err(CreateMarketplaceRevenueShareErrorModeled::ConflictException(
-                crate::state::already_exists(catalog, &input.product_id),
-            )
-            .into());
-        }
-
         if state.marketplace_revenue_shares.len() >= crate::state::MAX_REVENUE_SHARES {
             return Err(
                 CreateMarketplaceRevenueShareErrorModeled::ServiceQuotaExceededException(
@@ -231,21 +248,27 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             );
         }
 
+        // The identifier is MINTED by this service: `Id` is an `^mrs-[a-z0-9]{13}$`
+        // token the request does not carry, so a second create with the same
+        // products is a second share rather than a conflict.
+        let share_id = crate::state::share_id(state.next_sequence());
         let share = crate::state::MarketplaceRevenueShare {
-            arn: crate::state::share_arn(&region, catalog, &input.product_id),
-            product_id: input.product_id.clone(),
+            arn: crate::state::share_arn(&region, catalog, &share_id),
+            share_id: share_id.clone(),
             catalog,
-            product_code: crate::state::product_code(&input.product_id),
             created_date: now,
             // A share is created ready: revision 1 is written by this call, and
-            // every later revision by an allocation write.
-            revision: 1,
-            revision_dates: vec![now],
+            // every later revision by a write to the share or to one of its
+            // allocations.
+            revisions: vec![crate::state::ShareRevision {
+                written_at: now,
+                products: ::std::sync::Arc::new(products),
+            }],
             tags: input.tags.clone().unwrap_or_default(),
             allocations: ::std::collections::BTreeMap::new(),
         };
 
-        let key = (catalog, input.product_id.clone());
+        let key = (catalog, share_id.clone());
         // Only a token the CALLER sent is recorded: an absent
         // `@idempotencyToken` member means this create has no idempotency key,
         // so there is nothing a later request could replay.
@@ -255,7 +278,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         state.marketplace_revenue_shares.insert(key, share);
         // Read the stored record back, so the response is the state rather than
         // the values that went into it.
-        let stored = state.share(catalog, &input.product_id).ok_or_else(|| {
+        let stored = state.share(catalog, &share_id).ok_or_else(|| {
             CreateMarketplaceRevenueShareError::from(
                 CreateMarketplaceRevenueShareErrorModeled::InternalServerException(
                     crate::state::state_unavailable(),
@@ -277,14 +300,12 @@ fn validation(error: ValidationException) -> CreateMarketplaceRevenueShareError 
 /// record, so a create answers exactly what the following get answers.
 fn output(share: &crate::state::MarketplaceRevenueShare) -> CreateMarketplaceRevenueShareOutput {
     CreateMarketplaceRevenueShareOutput {
-        product_id: share.product_id.clone(),
+        id: share.share_id.clone(),
         arn: share.arn.clone(),
-        catalog: Some(share.catalog.as_wire().to_string()),
-        product_code: Some(share.product_code.clone()),
-        // Absent: see the note on `ProductName` in `crate::state`.
-        product_name: None,
-        created_date: Some(crate::state::wire_timestamp(share.created_date)),
-        last_modified_date: Some(crate::state::wire_timestamp(share.last_modified_date())),
-        revision: Some(share.revision),
+        catalog: share.catalog.as_wire().to_string(),
+        products: crate::state::product_summaries(share.products()),
+        created_date: crate::state::wire_timestamp(share.created_date),
+        last_modified_date: crate::state::wire_timestamp(share.last_modified_date()),
+        revision: crate::state::revision_token(share.revision()),
     }
 }

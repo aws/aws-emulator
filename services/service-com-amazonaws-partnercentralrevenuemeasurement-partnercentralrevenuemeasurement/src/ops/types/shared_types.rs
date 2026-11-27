@@ -69,6 +69,36 @@ pub struct ConflictException {
     pub reason: String,
 }
 
+#[smithy_macros::smithy(shape = "com.amazonaws.partnercentralrevenuemeasurement#MarketplaceRevenueShareProductEntry")]
+#[derive(Debug, Clone, Default)]
+pub struct MarketplaceRevenueShareProductEntry {
+    pub product_id: String,
+    pub accounts: Option<Vec<RevenueShareProductAccountEntry>>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.partnercentralrevenuemeasurement#RevenueShareProductAccountEntry")]
+#[derive(Debug, Clone, Default)]
+pub struct RevenueShareProductAccountEntry {
+    pub account_type: String,
+    pub account_ids: Vec<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.partnercentralrevenuemeasurement#MarketplaceRevenueShareProductSummary")]
+#[derive(Debug, Clone, Default)]
+pub struct MarketplaceRevenueShareProductSummary {
+    pub product_id: String,
+    pub product_code: Option<String>,
+    pub product_name: Option<String>,
+    pub accounts: Option<Vec<RevenueShareProductAccountSummary>>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.partnercentralrevenuemeasurement#RevenueShareProductAccountSummary")]
+#[derive(Debug, Clone, Default)]
+pub struct RevenueShareProductAccountSummary {
+    pub account_type: String,
+    pub count: i32,
+}
+
 #[smithy_macros::smithy(shape = "com.amazonaws.partnercentralrevenuemeasurement#ServiceQuotaExceededException")]
 #[derive(Debug, Clone, Default)]
 pub struct ServiceQuotaExceededException {
@@ -138,6 +168,10 @@ pub const REVENUE_ATTRIBUTION_ALLOCATION_SORT_FIELD_VALUES: &[&str] = &["Effecti
 
 /// The values `RevenueAttributionAllocationTaskStatus` accepts on the wire.
 pub const REVENUE_ATTRIBUTION_ALLOCATION_TASK_STATUS_VALUES: &[&str] = &["COMPLETE", "FAILED", "IN_PROGRESS"];
+
+
+/// The values `RevenueShareProductAccountType` accepts on the wire.
+pub const REVENUE_SHARE_PRODUCT_ACCOUNT_TYPE_VALUES: &[&str] = &["DEPLOYMENT", "ORGANIZATION"];
 
 
 /// The values `ServiceQuotaExceededExceptionReason` accepts on the wire.

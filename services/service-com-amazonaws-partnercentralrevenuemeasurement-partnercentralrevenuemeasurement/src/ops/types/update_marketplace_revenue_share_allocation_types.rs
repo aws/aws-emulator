@@ -15,29 +15,26 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-partnercentralrevenueme
 #[derive(Debug, Clone, Default)]
 pub struct UpdateMarketplaceRevenueShareAllocationInput {
     pub catalog: String,
-    pub product_id: String,
+    pub marketplace_revenue_share_identifier: String,
     pub marketplace_revenue_share_allocation_id: String,
     pub marketplace_revenue_share_revision: String,
     pub client_token: Option<String>,
-    pub effective_from: Option<String>,
-    pub effective_until: Option<String>,
     pub revenue_share_percent: Option<String>,
     pub status: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.partnercentralrevenuemeasurement#UpdateMarketplaceRevenueShareAllocationOutput")]
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct UpdateMarketplaceRevenueShareAllocationOutput {
     pub marketplace_revenue_share_allocation_id: String,
-    pub product_id: String,
-    pub product_name: Option<String>,
-    pub arn: String,
+    pub marketplace_revenue_share_identifier: String,
     pub effective_from: String,
-    pub effective_until: Option<String>,
+    pub effective_until: String,
     pub revenue_share_percent: String,
     pub status: String,
-    pub created_date: Option<::aws_smithy_types::DateTime>,
-    pub last_modified_date: Option<::aws_smithy_types::DateTime>,
-    pub latest_marketplace_revenue_share_revision: Option<String>,
+    pub created_date: ::aws_smithy_types::DateTime,
+    pub last_modified_date: ::aws_smithy_types::DateTime,
+    pub marketplace_revenue_share_revision: String,
+    pub marketplace_revenue_share_latest_revision: String,
 }
 

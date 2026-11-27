@@ -22,6 +22,14 @@ pub struct ListRevenueAttributionsInput {
     pub sort_order: Option<String>,
     pub max_results: Option<i32>,
     pub next_token: Option<String>,
+    pub context_filters: Option<Vec<ContextFilter>>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.partnercentralrevenuemeasurement#ContextFilter")]
+#[derive(Debug, Clone, Default)]
+pub struct ContextFilter {
+    pub key: String,
+    pub values: Option<Vec<String>>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.partnercentralrevenuemeasurement#ListRevenueAttributionsOutput")]
@@ -47,5 +55,6 @@ pub struct AttributionSummary {
     pub effective_until: Option<String>,
     pub total_active_revenue_attribution_allocation_count: Option<i32>,
     pub total_revenue_attribution_allocation_count: Option<i32>,
+    pub context: Option<std::collections::HashMap<String, String>>,
 }
 

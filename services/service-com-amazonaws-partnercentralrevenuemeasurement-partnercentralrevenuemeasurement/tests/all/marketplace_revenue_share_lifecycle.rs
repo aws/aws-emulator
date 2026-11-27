@@ -4,10 +4,9 @@
 //! service's own `rpcv2Cbor` wire protocol through the same `MultiServiceRouter`
 //! the production emulator dispatches with.
 //!
-//! Every test asserts a RULE over a SET of inputs: the shapes the bootstrap issue
-//! names are one row each.
+//! Every test asserts a RULE over a SET of inputs: the shapes the model names
+//! are one row each.
 
-use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use aws_smithy_schema::codec::{Codec, FinishSerializer};
@@ -24,19 +23,25 @@ use prm::ops::types::{
     GetMarketplaceRevenueShareAllocationInput, GetMarketplaceRevenueShareAllocationOutput,
     GetMarketplaceRevenueShareInput, GetMarketplaceRevenueShareOutput,
     ListMarketplaceRevenueShareAllocationsInput, ListMarketplaceRevenueShareAllocationsOutput,
-    ListMarketplaceRevenueSharesInput, ListMarketplaceRevenueSharesOutput, Tag,
+    ListMarketplaceRevenueSharesInput, ListMarketplaceRevenueSharesOutput,
+    MarketplaceRevenueShareProductEntry, RevenueShareProductAccountEntry, Tag,
     UpdateMarketplaceRevenueShareAllocationInput, UpdateMarketplaceRevenueShareAllocationOutput,
+    UpdateMarketplaceRevenueShareInput, UpdateMarketplaceRevenueShareOutput,
     CREATE_MARKETPLACE_REVENUE_SHARE_ALLOCATION_INPUT_SCHEMA,
     CREATE_MARKETPLACE_REVENUE_SHARE_INPUT_SCHEMA,
     GET_MARKETPLACE_REVENUE_SHARE_ALLOCATION_INPUT_SCHEMA,
-    GET_MARKETPLACE_REVENUE_SHARE_INPUT_SCHEMA,
-    LIST_MARKETPLACE_REVENUE_SHARES_INPUT_SCHEMA,
+    GET_MARKETPLACE_REVENUE_SHARE_INPUT_SCHEMA, LIST_MARKETPLACE_REVENUE_SHARES_INPUT_SCHEMA,
     LIST_MARKETPLACE_REVENUE_SHARE_ALLOCATIONS_INPUT_SCHEMA,
     UPDATE_MARKETPLACE_REVENUE_SHARE_ALLOCATION_INPUT_SCHEMA,
+    UPDATE_MARKETPLACE_REVENUE_SHARE_INPUT_SCHEMA,
 };
 
 /// The Region the request's SigV4 credential scope names.
 const REGION: &str = "us-east-1";
+
+/// The Region the audit suite signs for, so the records it asserts on are
+/// distinguishable from every other suite's in this test binary.
+const AUDIT_REGION: &str = "us-west-2";
 
 /// This service's SigV4 signing name, which is also the router's route key.
 const SIGNING_NAME: &str = "partnercentral";
@@ -60,9 +65,17 @@ const FUTURE_UNTIL: &str = "2099-12-31";
 /// force and the mutability rules refuse the members they protect.
 const PAST_FROM: &str = "2020-01-01";
 
+/// A last-of-month date after [`PAST_FROM`].
+const PAST_UNTIL: &str = "2021-12-31";
+
 /// One emulator holding exactly this service, dispatched over HTTP.
 struct Emulator {
     router: MultiServiceRouter,
+    /// The Region this emulator's requests are signed for, which is the Region
+    /// segment of every ARN it mints. A suite that needs its own ARN namespace
+    /// — the audit suite, which reads records emitted by every suite in this
+    /// test binary — gets one of its own.
+    region: String,
 }
 
 /// A dispatched response: the HTTP status and the raw CBOR body.
@@ -120,12 +133,19 @@ impl Answer {
 
 impl Emulator {
     fn new() -> Self {
+        Self::in_region(REGION)
+    }
+
+    fn in_region(region: &str) -> Self {
         // The SINGLE shared engine, exactly as `router/src/lib.rs` builds it.
         let engine: Arc<engine::InMemoryEngine> = Arc::new(engine::InMemoryEngine::new());
         let mut router = MultiServiceRouter::new();
         router.set_request_authentication(false);
         router.register_service(prm::EmulatedService::new(engine));
-        Self { router }
+        Self {
+            router,
+            region: region.to_string(),
+        }
     }
 
     async fn call<I: SerializableStruct>(
@@ -143,8 +163,9 @@ impl Emulator {
     }
 
     async fn call_raw(&self, operation: &str, payload: Vec<u8>) -> Answer {
+        let region = self.region.as_str();
         let authorization = format!(
-            "AWS4-HMAC-SHA256 Credential=AKIDEMULATOR/20260101/{REGION}/{SIGNING_NAME}/aws4_request, \
+            "AWS4-HMAC-SHA256 Credential=AKIDEMULATOR/20260101/{region}/{SIGNING_NAME}/aws4_request, \
              SignedHeaders=host;x-amz-date, Signature=0000000000000000000000000000000000000000000000000000000000000000"
         );
         let request = http::Request::builder()
@@ -175,6 +196,15 @@ impl Emulator {
         self.call(
             "GetMarketplaceRevenueShare",
             GET_MARKETPLACE_REVENUE_SHARE_INPUT_SCHEMA,
+            input,
+        )
+        .await
+    }
+
+    async fn update_share(&self, input: &UpdateMarketplaceRevenueShareInput) -> Answer {
+        self.call(
+            "UpdateMarketplaceRevenueShare",
+            UPDATE_MARKETPLACE_REVENUE_SHARE_INPUT_SCHEMA,
             input,
         )
         .await
@@ -241,71 +271,1065 @@ impl Emulator {
         )
         .await
     }
-}
 
-/// A `MarketplaceProductId`: `^prod-[a-z0-9]{13}$`, 18 characters.
-fn product_id(suffix: &str) -> String {
-    let id = format!("prod-{suffix}");
-    assert_eq!(id.len(), 18, "a product id is 18 characters: {id:?}");
-    id
-}
-
-/// `MarketplaceRevenueShareAllocationId`'s pattern, `^mrsa-[A-Za-z0-9]{13}$`, as
-/// a predicate.
-fn is_allocation_id(value: &str) -> bool {
-    value.len() == 18
-        && value.starts_with("mrsa-")
-        && value[5..].chars().all(|c| c.is_ascii_alphanumeric())
-}
-
-/// The ARN the model's `ResourceARN` pattern spells for a revenue share.
-fn expected_share_arn(catalog: &str, product: &str) -> String {
-    format!(
-        "arn:aws:{SIGNING_NAME}:{REGION}:{ACCOUNT_ID}:catalog/{catalog}/marketplace-revenue-share/{product}"
-    )
-}
-
-/// A create request for `catalog`/`product`, with no tags and no client token.
-fn create_share_input(catalog: &str, product: &str) -> CreateMarketplaceRevenueShareInput {
-    CreateMarketplaceRevenueShareInput {
-        catalog: catalog.to_string(),
-        product_id: product.to_string(),
-        ..Default::default()
+    /// Create a share holding exactly `products` and answer the stored record.
+    async fn share_with(
+        &self,
+        case: &str,
+        catalog: &str,
+        products: Vec<MarketplaceRevenueShareProductEntry>,
+    ) -> CreateMarketplaceRevenueShareOutput {
+        self.create_share(&CreateMarketplaceRevenueShareInput {
+            catalog: catalog.to_string(),
+            products,
+            ..Default::default()
+        })
+        .await
+        .ok(case)
     }
 }
 
-/// A create-allocation request with only the required members set.
+/// `MarketplaceRevenueShareId`'s pattern, `^mrs-[a-z0-9]{13}$`, as a predicate.
+fn is_share_id(value: &str) -> bool {
+    value.len() == 17
+        && value.starts_with("mrs-")
+        && value[4..]
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+}
+
+/// `MarketplaceRevenueShareAllocationId`'s pattern, `^mrsa-[a-z0-9]{13}$`, as a
+/// predicate.
+fn is_allocation_id(value: &str) -> bool {
+    value.len() == 18
+        && value.starts_with("mrsa-")
+        && value[5..]
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+}
+
+/// The ARN `MarketplaceRevenueShareArn`'s pattern spells for a revenue share.
+fn expected_share_arn(catalog: &str, share_id: &str) -> String {
+    format!(
+        "arn:aws:{SIGNING_NAME}:{REGION}:{ACCOUNT_ID}:catalog/{catalog}/marketplace-revenue-share/{share_id}"
+    )
+}
+
+/// One product as a table row compares it, with the number of account ids
+/// answered beside each per-type count: `(ProductId, [(AccountType, Count,
+/// AccountIds)])`.
+type ProductDetail<'a> = (&'a str, Vec<(&'a str, i32, usize)>);
+
+/// One row of the allocation-update table: `(case, RevenueSharePercent, Status,
+/// the percentage that follows, the status that follows)`.
+type AllocationUpdateRow = (
+    &'static str,
+    Option<&'static str>,
+    Option<&'static str>,
+    &'static str,
+    &'static str,
+);
+
+/// One row of the list-filter table: `(case, the request body's entries, the
+/// share ids the filter keeps)`.
+type FilterRow<'a> = (&'a str, Vec<(&'a str, Cbor)>, Vec<&'a str>);
+
+/// A product entry naming `product_id` and no account list.
+fn product(product_id: &str) -> MarketplaceRevenueShareProductEntry {
+    MarketplaceRevenueShareProductEntry {
+        product_id: product_id.to_string(),
+        accounts: None,
+    }
+}
+
+/// A product entry naming `product_id` and the typed account lists `accounts`,
+/// each `(AccountType, [AccountIds])`.
+fn product_with_accounts(
+    product_id: &str,
+    accounts: &[(&str, &[&str])],
+) -> MarketplaceRevenueShareProductEntry {
+    MarketplaceRevenueShareProductEntry {
+        product_id: product_id.to_string(),
+        accounts: Some(
+            accounts
+                .iter()
+                .map(|(account_type, ids)| RevenueShareProductAccountEntry {
+                    account_type: account_type.to_string(),
+                    account_ids: ids.iter().map(|id| id.to_string()).collect(),
+                })
+                .collect(),
+        ),
+    }
+}
+
+/// A create-allocation request with every required member set.
 fn create_allocation_input(
     catalog: &str,
-    product: &str,
+    share_id: &str,
+    revision: &str,
     effective_from: &str,
+    effective_until: &str,
     percent: &str,
 ) -> CreateMarketplaceRevenueShareAllocationInput {
     CreateMarketplaceRevenueShareAllocationInput {
         catalog: catalog.to_string(),
-        product_id: product.to_string(),
+        marketplace_revenue_share_identifier: share_id.to_string(),
+        marketplace_revenue_share_revision: revision.to_string(),
         effective_from: effective_from.to_string(),
+        effective_until: effective_until.to_string(),
         revenue_share_percent: percent.to_string(),
         ..Default::default()
     }
 }
 
-/// Month ends across the Gregorian leap rule, which the `time` crate answers
-/// for `state::parse_date` / `state::is_last_day_of_month`: these rows are what
-/// pin that the service asks it the right question on each side of a month
-/// boundary. Each row is `(case, EffectiveFrom, EffectiveUntil)` where
-/// the end date IS the last day of its month, so the create must be accepted:
-/// a leap February, a common February, a century year divisible by 400 (a leap
-/// year), a century year that is not, a 30- and a 31-day month, and the last
-/// month RFC 3339 represents — whose end date is the one whose SUCCESSOR the
-/// date type cannot render, which the service must answer rather than unwind
-/// on (`state::is_last_day_of_month`).
+// ---------------------------------------------------------------------------
+// A share is stored, and read back member for member
+// ---------------------------------------------------------------------------
+
+/// One row of the create/read-back table: the products a create sends and the
+/// per-type account counts the share must report for each of them.
+struct ShareRow {
+    case: &'static str,
+    catalog: &'static str,
+    products: Vec<MarketplaceRevenueShareProductEntry>,
+    /// Per product: `(ProductId, [(AccountType, Count)])`, in the order the
+    /// request listed them.
+    expected: Vec<(&'static str, Vec<(&'static str, i32)>)>,
+    tags: Option<Vec<Tag>>,
+}
+
+/// The rule: a created marketplace revenue share is stored, and the following
+/// `GetMarketplaceRevenueShare` answers the same share — its minted id, its
+/// ARN, its catalog, its products in the order the request listed them, each
+/// with the account list the request carried, and revision 1.
+///
+/// The rows differ along what the rule generalises over: the catalog, the
+/// number of products, whether a product carries account lists, which types it
+/// carries (`RevenueShareProductAccountType`: DEPLOYMENT | ORGANIZATION) and
+/// how many accounts each list holds, and whether the create carried tags.
+fn share_rows() -> Vec<ShareRow> {
+    vec![
+        ShareRow {
+            case: "one product, no account list",
+            catalog: "AWS",
+            products: vec![product("prod-abc1234567890")],
+            expected: vec![("prod-abc1234567890", Vec::new())],
+            tags: None,
+        },
+        ShareRow {
+            case: "one product with one typed account list",
+            catalog: "AWS",
+            products: vec![product_with_accounts(
+                "prod-def1234567890",
+                &[("DEPLOYMENT", &["111122223333"])],
+            )],
+            expected: vec![("prod-def1234567890", vec![("DEPLOYMENT", 1)])],
+            tags: None,
+        },
+        ShareRow {
+            case: "one product with both typed account lists",
+            catalog: "Sandbox",
+            products: vec![product_with_accounts(
+                "prod-ghi1234567890",
+                &[
+                    ("ORGANIZATION", &["111122223333", "444455556666"]),
+                    ("DEPLOYMENT", &["777788889999"]),
+                ],
+            )],
+            expected: vec![(
+                "prod-ghi1234567890",
+                vec![("ORGANIZATION", 2), ("DEPLOYMENT", 1)],
+            )],
+            tags: None,
+        },
+        ShareRow {
+            case: "three products, mixed account lists, with tags",
+            catalog: "AWS",
+            products: vec![
+                product("prod-jkl1234567890"),
+                product_with_accounts(
+                    "prod-mno1234567890",
+                    &[("DEPLOYMENT", &["111122223333", "444455556666"])],
+                ),
+                product("my.product/v2"),
+            ],
+            expected: vec![
+                ("prod-jkl1234567890", Vec::new()),
+                ("prod-mno1234567890", vec![("DEPLOYMENT", 2)]),
+                ("my.product/v2", Vec::new()),
+            ],
+            tags: Some(vec![Tag {
+                key: "team".to_string(),
+                value: "revenue".to_string(),
+            }]),
+        },
+    ]
+}
+
+#[tokio::test]
+async fn a_created_revenue_share_is_read_back_member_for_member() {
+    let emulator = Emulator::new();
+    for row in share_rows() {
+        let created: CreateMarketplaceRevenueShareOutput = emulator
+            .create_share(&CreateMarketplaceRevenueShareInput {
+                catalog: row.catalog.to_string(),
+                products: row.products.clone(),
+                tags: row.tags.clone(),
+                ..Default::default()
+            })
+            .await
+            .ok(row.case);
+
+        assert!(
+            is_share_id(&created.id),
+            "case {:?}: expected an mrs- id, got {:?}",
+            row.case,
+            created.id
+        );
+        assert_eq!(
+            created.arn,
+            expected_share_arn(row.catalog, &created.id),
+            "case {:?}: expected the ARN the model's pattern spells, got {:?}",
+            row.case,
+            created.arn
+        );
+        assert_eq!(
+            (created.catalog.as_str(), created.revision.as_str()),
+            (row.catalog, "1"),
+            "case {:?}: expected the requested catalog at revision 1, got {created:?}",
+            row.case
+        );
+        let summarised: Vec<(&str, Vec<(&str, i32)>)> = created
+            .products
+            .iter()
+            .map(|product| {
+                (
+                    product.product_id.as_str(),
+                    product
+                        .accounts
+                        .iter()
+                        .flatten()
+                        .map(|accounts| (accounts.account_type.as_str(), accounts.count))
+                        .collect(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            summarised, row.expected,
+            "case {:?}: expected the products with their per-type counts, got {:?}",
+            row.case, created.products
+        );
+        for product in &created.products {
+            assert!(
+                product
+                    .product_code
+                    .as_ref()
+                    .is_some_and(|code| !code.is_empty()
+                        && code.chars().all(|c| c.is_ascii_alphanumeric())),
+                "case {:?}: expected an alphanumeric ProductCode, got {product:?}",
+                row.case
+            );
+        }
+
+        // The read back: the same share, with the FULL account lists.
+        let fetched: GetMarketplaceRevenueShareOutput = emulator
+            .get_share(&GetMarketplaceRevenueShareInput {
+                catalog: row.catalog.to_string(),
+                identifier: created.id.clone(),
+                revision: None,
+            })
+            .await
+            .ok(row.case);
+        assert_eq!(
+            (
+                fetched.id.as_str(),
+                fetched.arn.as_str(),
+                fetched.catalog.as_str(),
+                fetched.revision.as_str(),
+                fetched.latest_revision.as_str()
+            ),
+            (
+                created.id.as_str(),
+                created.arn.as_str(),
+                row.catalog,
+                "1",
+                "1"
+            ),
+            "case {:?}: expected the stored share back, got {fetched:?}",
+            row.case
+        );
+        assert_eq!(
+            (
+                fetched.total_marketplace_revenue_share_allocation_count,
+                fetched.total_active_marketplace_revenue_share_allocation_count
+            ),
+            (0, 0),
+            "case {:?}: a share with no allocation counts zero of each, got {fetched:?}",
+            row.case
+        );
+        assert_eq!(
+            (
+                fetched.effective_from.as_deref(),
+                fetched.effective_until.as_deref()
+            ),
+            (None, None),
+            "case {:?}: with no ACTIVE allocation both window members are absent, got {fetched:?}",
+            row.case
+        );
+        let detailed: Vec<ProductDetail<'_>> = fetched
+            .products
+            .iter()
+            .map(|product| {
+                (
+                    product.product_id.as_str(),
+                    product
+                        .accounts
+                        .iter()
+                        .flatten()
+                        .map(|accounts| {
+                            (
+                                accounts.account_type.as_str(),
+                                accounts.count,
+                                accounts.account_ids.len(),
+                            )
+                        })
+                        .collect(),
+                )
+            })
+            .collect();
+        let expected_detail: Vec<ProductDetail<'_>> = row
+            .expected
+            .iter()
+            .map(|(product_id, accounts)| {
+                (
+                    *product_id,
+                    accounts
+                        .iter()
+                        .map(|(account_type, count)| {
+                            (*account_type, *count, usize::try_from(*count).unwrap_or(0))
+                        })
+                        .collect(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            detailed, expected_detail,
+            "case {:?}: expected every account id back under its type, got {:?}",
+            row.case, fetched.products
+        );
+    }
+}
+
+/// The rule: the identifier of a marketplace revenue share is its `mrs-` id or
+/// its ARN, and an identifier naming no share in the catalog is a 404.
+#[tokio::test]
+async fn a_share_is_named_by_its_id_or_by_its_arn() {
+    let emulator = Emulator::new();
+    let created = emulator
+        .share_with(
+            "the share every row below names",
+            "AWS",
+            vec![product("prod-idf1234567890")],
+        )
+        .await;
+
+    // (case, Catalog, Identifier, expected status)
+    let rows: Vec<(&str, &str, String, u16)> = vec![
+        ("the short id form", "AWS", created.id.clone(), 200),
+        ("the ARN form", "AWS", created.arn.clone(), 200),
+        (
+            "an id this catalog does not hold",
+            "AWS",
+            "mrs-0000000000000".to_string(),
+            404,
+        ),
+        (
+            "the right id in the other catalog",
+            "Sandbox",
+            created.id.clone(),
+            404,
+        ),
+        (
+            "an ARN whose id this catalog does not hold",
+            "AWS",
+            expected_share_arn("AWS", "mrs-0000000000000"),
+            404,
+        ),
+    ];
+    for (case, catalog, identifier, status) in rows {
+        let answer = emulator
+            .get_share(&GetMarketplaceRevenueShareInput {
+                catalog: catalog.to_string(),
+                identifier: identifier.clone(),
+                revision: None,
+            })
+            .await;
+        if status == 200 {
+            let fetched: GetMarketplaceRevenueShareOutput = answer.ok(case);
+            assert_eq!(
+                fetched.id, created.id,
+                "case {case:?}: expected the share {:?}, got {fetched:?}",
+                created.id
+            );
+        } else {
+            answer.is_error(case, status, "ResourceNotFoundException");
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The update replaces the whole product set
+// ---------------------------------------------------------------------------
+
+/// The rule: `UpdateMarketplaceRevenueShare` carries the COMPLETE desired set
+/// of products — what it lists is what the share holds afterwards, a product it
+/// does not list is removed with its account lists, and the write is a new
+/// revision, so a read at the previous revision still answers the products that
+/// were held then.
+///
+/// The rows differ along what the rule generalises over: replacing a product,
+/// dropping one, adding one, and changing only a product's account lists.
+#[tokio::test]
+async fn an_update_replaces_the_whole_product_set_as_a_new_revision() {
+    // (case, the products the update sends, the product ids the share then holds)
+    let rows: Vec<(
+        &str,
+        Vec<MarketplaceRevenueShareProductEntry>,
+        Vec<&str>,
+    )> = vec![
+        (
+            "replacing one product with another",
+            vec![product("prod-upd1111111111"), product("prod-upd3333333333")],
+            vec!["prod-upd1111111111", "prod-upd3333333333"],
+        ),
+        (
+            "dropping a product",
+            vec![product("prod-upd1111111111")],
+            vec!["prod-upd1111111111"],
+        ),
+        (
+            "adding a product",
+            vec![
+                product("prod-upd1111111111"),
+                product("prod-upd2222222222"),
+                product("prod-upd4444444444"),
+            ],
+            vec![
+                "prod-upd1111111111",
+                "prod-upd2222222222",
+                "prod-upd4444444444",
+            ],
+        ),
+        (
+            "changing only the account lists of a product it keeps",
+            vec![
+                product_with_accounts(
+                    "prod-upd1111111111",
+                    &[("ORGANIZATION", &["111122223333", "444455556666"])],
+                ),
+                product("prod-upd2222222222"),
+            ],
+            vec!["prod-upd1111111111", "prod-upd2222222222"],
+        ),
+    ];
+
+    for (case, products, expected) in rows {
+        // Each row starts from the same two-product share, in its own store, so
+        // the revision numbers below are this row's alone.
+        let emulator = Emulator::new();
+        let created = emulator
+            .share_with(
+                case,
+                "AWS",
+                vec![
+                    product_with_accounts(
+                        "prod-upd1111111111",
+                        &[("DEPLOYMENT", &["111122223333"])],
+                    ),
+                    product("prod-upd2222222222"),
+                ],
+            )
+            .await;
+
+        let updated: UpdateMarketplaceRevenueShareOutput = emulator
+            .update_share(&UpdateMarketplaceRevenueShareInput {
+                catalog: "AWS".to_string(),
+                identifier: created.id.clone(),
+                revision: created.revision.clone(),
+                products: products.clone(),
+                ..Default::default()
+            })
+            .await
+            .ok(case);
+        assert_eq!(
+            (
+                updated.id.as_str(),
+                updated.arn.as_str(),
+                updated.latest_revision.as_str()
+            ),
+            (created.id.as_str(), created.arn.as_str(), "2"),
+            "case {case:?}: expected the same share at revision 2, got {updated:?}"
+        );
+        let answered: Vec<&str> = updated
+            .products
+            .iter()
+            .map(|product| product.product_id.as_str())
+            .collect();
+        assert_eq!(
+            answered, expected,
+            "case {case:?}: expected the complete desired set back, got {:?}",
+            updated.products
+        );
+
+        // The read back at the latest revision: the same set, with its account
+        // lists.
+        let fetched: GetMarketplaceRevenueShareOutput = emulator
+            .get_share(&GetMarketplaceRevenueShareInput {
+                catalog: "AWS".to_string(),
+                identifier: created.id.clone(),
+                revision: None,
+            })
+            .await
+            .ok(case);
+        let held: Vec<&str> = fetched
+            .products
+            .iter()
+            .map(|product| product.product_id.as_str())
+            .collect();
+        assert_eq!(
+            held, expected,
+            "case {case:?}: expected the stored share to hold the new set, got {:?}",
+            fetched.products
+        );
+        let sent_accounts: Vec<Option<usize>> = products
+            .iter()
+            .map(|product| product.accounts.as_ref().map(Vec::len))
+            .collect();
+        let held_accounts: Vec<Option<usize>> = fetched
+            .products
+            .iter()
+            .map(|product| product.accounts.as_ref().map(Vec::len))
+            .collect();
+        assert_eq!(
+            held_accounts, sent_accounts,
+            "case {case:?}: a product the update did not list carries no account list, got {:?}",
+            fetched.products
+        );
+
+        // The historical read: revision 1 still holds what the create wrote.
+        let before: GetMarketplaceRevenueShareOutput = emulator
+            .get_share(&GetMarketplaceRevenueShareInput {
+                catalog: "AWS".to_string(),
+                identifier: created.id.clone(),
+                revision: Some("1".to_string()),
+            })
+            .await
+            .ok(case);
+        let then: Vec<&str> = before
+            .products
+            .iter()
+            .map(|product| product.product_id.as_str())
+            .collect();
+        assert_eq!(
+            then,
+            vec!["prod-upd1111111111", "prod-upd2222222222"],
+            "case {case:?}: a read at revision 1 answers the products held then, got {:?}",
+            before.products
+        );
+        assert_eq!(
+            (before.revision.as_str(), before.latest_revision.as_str()),
+            ("1", "2"),
+            "case {case:?}: a historical read names both revisions, got {before:?}"
+        );
+    }
+}
+
+/// The rule: an empty `Products` list closes the marketplace revenue share, and
+/// closing is one-way — a later update that lists a product is refused and the
+/// share stays closed.
+#[tokio::test]
+async fn an_empty_product_list_closes_the_share_one_way() {
+    let emulator = Emulator::new();
+    let created = emulator
+        .share_with(
+            "the share this test closes",
+            "AWS",
+            vec![product("prod-clo1234567890")],
+        )
+        .await;
+
+    let closed: UpdateMarketplaceRevenueShareOutput = emulator
+        .update_share(&UpdateMarketplaceRevenueShareInput {
+            catalog: "AWS".to_string(),
+            identifier: created.id.clone(),
+            revision: created.revision.clone(),
+            products: Vec::new(),
+            ..Default::default()
+        })
+        .await
+        .ok("closing the share");
+    assert!(
+        closed.products.is_empty(),
+        "case {:?}: a closed share holds no product, got {closed:?}",
+        "closing the share"
+    );
+
+    // Every attempt to put a product back is refused, whatever it lists.
+    for (case, products) in [
+        ("the product it used to hold", vec![product("prod-clo1234567890")]),
+        ("a different product", vec![product("prod-clo9999999999")]),
+    ] {
+        emulator
+            .update_share(&UpdateMarketplaceRevenueShareInput {
+                catalog: "AWS".to_string(),
+                identifier: created.id.clone(),
+                revision: closed.latest_revision.clone(),
+                products,
+                ..Default::default()
+            })
+            .await
+            .is_error(case, 400, "ValidationException");
+    }
+
+    let fetched: GetMarketplaceRevenueShareOutput = emulator
+        .get_share(&GetMarketplaceRevenueShareInput {
+            catalog: "AWS".to_string(),
+            identifier: created.id.clone(),
+            revision: None,
+        })
+        .await
+        .ok("the closed share");
+    assert!(
+        fetched.products.is_empty(),
+        "a refused reopen leaves the share closed, got {fetched:?}"
+    );
+    assert_eq!(
+        fetched.latest_revision, "2",
+        "a refused reopen writes no revision, got {fetched:?}"
+    );
+}
+
+/// The rule: a `Products` entry names a product by id or by product ARN, the
+/// share stores and returns the product ID, and a value that names no product
+/// id is refused with the modelled 400.
+#[tokio::test]
+async fn a_product_entry_is_resolved_to_the_product_id_it_names() {
+    let emulator = Emulator::new();
+    // (case, the entry's ProductId, the id the share stores)
+    let accepted: Vec<(&str, &str, &str)> = vec![
+        (
+            "a plain product id",
+            "prod-res1234567890",
+            "prod-res1234567890",
+        ),
+        (
+            "a product ARN",
+            "arn:aws:aws-marketplace:us-east-1:123456789012:AWSMarketplace/ProductId/prod-res2222222222",
+            "prod-res2222222222",
+        ),
+        ("a dotted product id", "my.product.v3", "my.product.v3"),
+    ];
+    for (case, sent, stored) in accepted {
+        let created = emulator
+            .share_with(case, "AWS", vec![product(sent)])
+            .await;
+        let ids: Vec<&str> = created
+            .products
+            .iter()
+            .map(|product| product.product_id.as_str())
+            .collect();
+        assert_eq!(
+            ids,
+            vec![stored],
+            "case {case:?}: expected the product id stored and returned, got {:?}",
+            created.products
+        );
+    }
+
+    // Each value satisfies the entry's own `^[\w\-:/.]+$`, so the refusal is
+    // this service's and not the boundary validator's: none of them is a
+    // `MarketplaceProductId` (`^[a-zA-Z0-9][.a-zA-Z0-9/-]{1,254}[a-zA-Z0-9]$`).
+    for (case, sent) in [
+        ("an underscore, which a product id does not carry", "my_product"),
+        ("a trailing separator", "prod-trailing-"),
+        ("two characters, below the published minimum of three", "ab"),
+        ("a colon-separated token that is no ARN", "not:an:arn"),
+    ] {
+        emulator
+            .create_share(&CreateMarketplaceRevenueShareInput {
+                catalog: "AWS".to_string(),
+                products: vec![product(sent)],
+                ..Default::default()
+            })
+            .await
+            .is_error(case, 400, "ValidationException");
+    }
+}
+
+/// The rule: `Products` is a SET — one product may appear once, each product
+/// carries at most one account list per type, and a list of accounts cannot be
+/// empty.
+#[tokio::test]
+async fn a_malformed_product_set_is_refused() {
+    let emulator = Emulator::new();
+    // (case, the products the request sends)
+    let rows: Vec<(&str, Vec<MarketplaceRevenueShareProductEntry>)> = vec![
+        (
+            "the same product twice",
+            vec![product("prod-dup1234567890"), product("prod-dup1234567890")],
+        ),
+        (
+            "the same product, once by id and once by ARN",
+            vec![
+                product("prod-dup1234567890"),
+                product("arn:aws:aws-marketplace:us-east-1:123456789012:AWSMarketplace/ProductId/prod-dup1234567890"),
+            ],
+        ),
+        (
+            "two account lists of the same type",
+            vec![product_with_accounts(
+                "prod-dup2222222222",
+                &[
+                    ("DEPLOYMENT", &["111122223333"]),
+                    ("DEPLOYMENT", &["444455556666"]),
+                ],
+            )],
+        ),
+        (
+            "an account type the model does not declare",
+            vec![product_with_accounts(
+                "prod-dup3333333333",
+                &[("BILLING", &["111122223333"])],
+            )],
+        ),
+        (
+            "no product at all, which only the update may send",
+            Vec::new(),
+        ),
+    ];
+    for (case, products) in rows {
+        emulator
+            .create_share(&CreateMarketplaceRevenueShareInput {
+                catalog: "AWS".to_string(),
+                products,
+                ..Default::default()
+            })
+            .await
+            .is_error(case, 400, "ValidationException");
+    }
+}
+
+/// The rule: `Catalog` is an enum the model declares two values for, and a
+/// request carrying anything else — or nothing — is refused with the modelled
+/// 400.
+#[tokio::test]
+async fn a_catalog_outside_the_modelled_enum_is_refused_everywhere_it_appears() {
+    let emulator = Emulator::new();
+    let created = emulator
+        .share_with("the share the rows below name", "AWS", vec![product("prod-cat1234567890")])
+        .await;
+    for (case, catalog) in [
+        ("a catalog the model does not declare", "Staging"),
+        ("the right value in the wrong case", "aws"),
+        ("no catalog at all", ""),
+    ] {
+        emulator
+            .create_share(&CreateMarketplaceRevenueShareInput {
+                catalog: catalog.to_string(),
+                products: vec![product("prod-cat1234567890")],
+                ..Default::default()
+            })
+            .await
+            .is_error(case, 400, "ValidationException");
+        emulator
+            .get_share(&GetMarketplaceRevenueShareInput {
+                catalog: catalog.to_string(),
+                identifier: created.id.clone(),
+                revision: None,
+            })
+            .await
+            .is_error(case, 400, "ValidationException");
+        emulator
+            .list_shares(&ListMarketplaceRevenueSharesInput {
+                catalog: catalog.to_string(),
+                ..Default::default()
+            })
+            .await
+            .is_error(case, 400, "ValidationException");
+        emulator
+            .list_allocations(&ListMarketplaceRevenueShareAllocationsInput {
+                catalog: catalog.to_string(),
+                marketplace_revenue_share_identifier: created.id.clone(),
+                ..Default::default()
+            })
+            .await
+            .is_error(case, 400, "ValidationException");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Optimistic concurrency, across every write that carries a revision
+// ---------------------------------------------------------------------------
+
+/// The rule: a write that carries a revision of the parent share must carry the
+/// CURRENT one — a stale or future value is a `ConflictException` with reason
+/// REVISION_MISMATCH, and the write does not happen.
+///
+/// The rows are the three writes that carry such a member, each with a revision
+/// that is not the share's current one.
+#[tokio::test]
+async fn a_revision_that_is_not_the_current_one_is_refused_with_revision_mismatch() {
+    let emulator = Emulator::new();
+    let created = emulator
+        .share_with(
+            "the share these writes name",
+            "AWS",
+            vec![product("prod-rev1234567890")],
+        )
+        .await;
+    let allocation: CreateMarketplaceRevenueShareAllocationOutput = emulator
+        .create_allocation(&create_allocation_input(
+            "AWS",
+            &created.id,
+            &created.revision,
+            FUTURE_FROM,
+            FUTURE_UNTIL,
+            "10",
+        ))
+        .await
+        .ok("the allocation the update below names");
+    // The create above wrote revision 2, so 1 is stale and 9 was never reached.
+    assert_eq!(
+        allocation.marketplace_revenue_share_latest_revision, "2",
+        "an allocation write moves the parent share to a new revision, got {allocation:?}"
+    );
+
+    for (case, stale) in [("a stale revision", "1"), ("a revision never reached", "9")] {
+        emulator
+            .update_share(&UpdateMarketplaceRevenueShareInput {
+                catalog: "AWS".to_string(),
+                identifier: created.id.clone(),
+                revision: stale.to_string(),
+                products: vec![product("prod-rev9999999999")],
+                ..Default::default()
+            })
+            .await
+            .is_error(case, 409, "ConflictException");
+        emulator
+            .create_allocation(&create_allocation_input(
+                "AWS",
+                &created.id,
+                stale,
+                FUTURE_FROM,
+                FUTURE_UNTIL,
+                "20",
+            ))
+            .await
+            .is_error(case, 409, "ConflictException");
+        emulator
+            .update_allocation(&UpdateMarketplaceRevenueShareAllocationInput {
+                catalog: "AWS".to_string(),
+                marketplace_revenue_share_identifier: created.id.clone(),
+                marketplace_revenue_share_allocation_id: allocation
+                    .marketplace_revenue_share_allocation_id
+                    .clone(),
+                marketplace_revenue_share_revision: stale.to_string(),
+                revenue_share_percent: Some("30".to_string()),
+                ..Default::default()
+            })
+            .await
+            .is_error(case, 409, "ConflictException");
+    }
+
+    // None of the refusals wrote anything: the share is still at revision 2
+    // with the product and the allocation it had.
+    let fetched: GetMarketplaceRevenueShareOutput = emulator
+        .get_share(&GetMarketplaceRevenueShareInput {
+            catalog: "AWS".to_string(),
+            identifier: created.id.clone(),
+            revision: None,
+        })
+        .await
+        .ok("the share after six refusals");
+    assert_eq!(
+        (
+            fetched.latest_revision.as_str(),
+            fetched.total_marketplace_revenue_share_allocation_count,
+            fetched
+                .products
+                .first()
+                .map(|product| product.product_id.as_str())
+        ),
+        ("2", 1, Some("prod-rev1234567890")),
+        "a refused write changes nothing, got {fetched:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The allocation lifecycle
+// ---------------------------------------------------------------------------
+
+/// The rule: an allocation created under a share is stored and read back member
+/// for member, the write moves the parent share to a new revision, and the
+/// share's own counts and effective window are derived from the allocations it
+/// holds.
+///
+/// The rows differ along the percentage form (whole, one decimal, two
+/// decimals, the published bounds) and the effective interval.
+#[tokio::test]
+async fn an_allocation_round_trips_and_moves_the_parent_share_revision() {
+    // (case, EffectiveFrom, EffectiveUntil, RevenueSharePercent)
+    let rows: Vec<(&str, &str, &str, &str)> = vec![
+        ("a whole percentage", "2099-01-01", "2099-12-31", "10"),
+        ("one decimal place", "2099-02-01", "2099-02-28", "12.5"),
+        ("two decimal places", "2099-03-01", "2099-03-31", "0.01"),
+        ("the lower bound of the range", "2099-04-01", "2099-04-30", "0"),
+        ("the upper bound of the range", "2099-05-01", "2099-05-31", "100"),
+        (
+            "a single-month interval in a leap February",
+            "2096-02-01",
+            "2096-02-29",
+            "33.33",
+        ),
+    ];
+
+    let emulator = Emulator::new();
+    let created = emulator
+        .share_with(
+            "the parent share",
+            "AWS",
+            vec![product("prod-all1234567890")],
+        )
+        .await;
+    let mut revision = created.revision.clone();
+    let mut expected_count = 0;
+    for (case, from, until, percent) in rows {
+        let allocation: CreateMarketplaceRevenueShareAllocationOutput = emulator
+            .create_allocation(&create_allocation_input(
+                "AWS", &created.id, &revision, from, until, percent,
+            ))
+            .await
+            .ok(case);
+        expected_count += 1;
+
+        assert!(
+            is_allocation_id(&allocation.marketplace_revenue_share_allocation_id),
+            "case {case:?}: expected an mrsa- id, got {:?}",
+            allocation.marketplace_revenue_share_allocation_id
+        );
+        assert_eq!(
+            (
+                allocation.marketplace_revenue_share_identifier.as_str(),
+                allocation.effective_from.as_str(),
+                allocation.effective_until.as_str(),
+                allocation.revenue_share_percent.as_str(),
+                allocation.status.as_str()
+            ),
+            (created.id.as_str(), from, until, percent, "ACTIVE"),
+            "case {case:?}: expected the allocation the request asked for, got {allocation:?}"
+        );
+        // The parent share moved by exactly one revision, and the allocation
+        // belongs to the revision the write produced.
+        let expected_revision = (revision.parse::<i32>().expect("a revision token") + 1).to_string();
+        assert_eq!(
+            (
+                allocation.marketplace_revenue_share_revision.as_str(),
+                allocation.marketplace_revenue_share_latest_revision.as_str()
+            ),
+            (expected_revision.as_str(), expected_revision.as_str()),
+            "case {case:?}: expected the write's own revision on both members, got {allocation:?}"
+        );
+
+        let fetched: GetMarketplaceRevenueShareAllocationOutput = emulator
+            .get_allocation(&GetMarketplaceRevenueShareAllocationInput {
+                catalog: "AWS".to_string(),
+                marketplace_revenue_share_identifier: created.arn.clone(),
+                marketplace_revenue_share_allocation_id: allocation
+                    .marketplace_revenue_share_allocation_id
+                    .clone(),
+                marketplace_revenue_share_revision: None,
+            })
+            .await
+            .ok(case);
+        assert_eq!(
+            (
+                fetched.marketplace_revenue_share_allocation_id.as_str(),
+                fetched.effective_from.as_str(),
+                fetched.effective_until.as_str(),
+                fetched.revenue_share_percent.as_str(),
+                fetched.status.as_str(),
+                fetched.marketplace_revenue_share_revision.as_str()
+            ),
+            (
+                allocation.marketplace_revenue_share_allocation_id.as_str(),
+                from,
+                until,
+                percent,
+                "ACTIVE",
+                expected_revision.as_str()
+            ),
+            "case {case:?}: expected the stored allocation back, got {fetched:?}"
+        );
+
+        revision = expected_revision;
+        let share: GetMarketplaceRevenueShareOutput = emulator
+            .get_share(&GetMarketplaceRevenueShareInput {
+                catalog: "AWS".to_string(),
+                identifier: created.id.clone(),
+                revision: None,
+            })
+            .await
+            .ok(case);
+        assert_eq!(
+            (
+                share.latest_revision.as_str(),
+                share.total_marketplace_revenue_share_allocation_count,
+                share.total_active_marketplace_revenue_share_allocation_count
+            ),
+            (revision.as_str(), expected_count, expected_count),
+            "case {case:?}: expected the counts derived from the stored allocations, got {share:?}"
+        );
+    }
+
+    // The share's effective window is the earliest start and the latest end
+    // over its ACTIVE allocations.
+    let share: GetMarketplaceRevenueShareOutput = emulator
+        .get_share(&GetMarketplaceRevenueShareInput {
+            catalog: "AWS".to_string(),
+            identifier: created.id.clone(),
+            revision: None,
+        })
+        .await
+        .ok("the share after every allocation above");
+    assert_eq!(
+        (
+            share.effective_from.as_deref(),
+            share.effective_until.as_deref()
+        ),
+        (Some("2096-02-01"), Some("2099-12-31")),
+        "expected the window derived from the ACTIVE allocations, got {share:?}"
+    );
+}
+
+/// Month ends across the Gregorian leap rule, which the date type answers for
+/// `state::is_last_day_of_month`: these rows pin that the service asks it the
+/// right question on each side of a month boundary. Each row is `(case,
+/// EffectiveFrom, EffectiveUntil)` where the end date IS the last day of its
+/// month, so the create must be accepted: a leap February, a common February, a
+/// century year divisible by 400 (a leap year), a century year that is not, a
+/// 30- and a 31-day month, and the last month RFC 3339 represents — whose end
+/// date is the one whose SUCCESSOR the date type cannot render, which the
+/// service must answer rather than unwind on.
 fn month_end_rows() -> Vec<(&'static str, &'static str, &'static str)> {
     vec![
         ("a leap February", "2024-02-01", "2024-02-29"),
         ("a common February", "2023-02-01", "2023-02-28"),
         ("a century year divisible by 400", "2000-02-01", "2000-02-29"),
-        ("a century year not divisible by 400", "2100-02-01", "2100-02-28"),
+        (
+            "a century year not divisible by 400",
+            "2100-02-01",
+            "2100-02-28",
+        ),
         ("a thirty-day month", "2024-04-01", "2024-04-30"),
         ("a thirty-one-day month", "2024-12-01", "2024-12-31"),
         (
@@ -316,1739 +1340,1089 @@ fn month_end_rows() -> Vec<(&'static str, &'static str, &'static str)> {
     ]
 }
 
-/// The same rule's refusals: `(case, EffectiveFrom, EffectiveUntil, member)`,
-/// each value satisfying `^\d{4}-\d{2}-\d{2}$` so the refusal is this service's
-/// and not the boundary validator's.
-fn month_end_refusals() -> Vec<(&'static str, &'static str, &'static str, &'static str)> {
+/// The same rule's refusals: `(case, EffectiveFrom, EffectiveUntil)`, each value
+/// satisfying `^\d{4}-\d{2}-\d{2}$` so the refusal is this service's and not the
+/// boundary validator's.
+fn month_end_refusals() -> Vec<(&'static str, &'static str, &'static str)> {
     vec![
         (
             "the 29th of a February in a century year not divisible by 400",
             "2100-02-01",
             "2100-02-29",
-            "EffectiveUntil",
         ),
         (
             "the 29th of February 1900, which was not a leap year",
             "1900-02-01",
             "1900-02-29",
-            "EffectiveUntil",
         ),
-        (
-            "the 31st of a thirty-day month",
-            "2024-04-01",
-            "2024-04-31",
-            "EffectiveUntil",
-        ),
+        ("the 31st of a thirty-day month", "2024-04-01", "2024-04-31"),
         (
             "the 28th of a leap February, which is not its last day",
             "2024-02-01",
             "2024-02-28",
-            "EffectiveUntil",
         ),
-        (
-            "month zero",
-            "2024-01-01",
-            "2024-00-31",
-            "EffectiveUntil",
-        ),
-        ("day zero", "2024-01-00", "2024-01-31", "EffectiveFrom"),
-        // One past the published lower bound of the date range: `^\d{4}-\d{2}-\d{2}$`
-        // admits year 0000, which is outside the years RFC 3339 represents
-        // (0001..=9999), so it earns the modelled 400 rather than a panic in
-        // the formatter.
+        ("month zero", "2024-01-01", "2024-00-31"),
+        ("day zero", "2024-01-00", "2024-01-31"),
+        // One past the published lower bound of the date range:
+        // `^\d{4}-\d{2}-\d{2}$` admits year 0000, which is outside the years
+        // RFC 3339 represents (0001..=9999), so it earns the modelled 400
+        // rather than a panic in the formatter.
         (
             "a year below the first RFC 3339 represents",
             "0000-01-01",
             "0000-01-31",
-            "EffectiveFrom",
+        ),
+        (
+            "a start date that is not the first day of its month",
+            "2024-01-15",
+            "2024-01-31",
+        ),
+        (
+            "an interval that ends before it starts",
+            "2024-06-01",
+            "2024-03-31",
         ),
     ]
 }
 
+/// The rule: `EffectiveFrom` must be the first day of a month and
+/// `EffectiveUntil` the last day of one, both on the real calendar, and
+/// `RevenueSharePercent` is a share of revenue, so it cannot exceed 100.
 #[tokio::test]
-async fn the_month_boundary_rule_follows_the_gregorian_leap_rule() {
+async fn the_documented_calendar_and_percentage_rules_are_enforced() {
     let emulator = Emulator::new();
-    let catalog = "AWS";
-    let product = product_id("abc1234567890");
-    let _: CreateMarketplaceRevenueShareOutput = emulator
-        .create_share(&create_share_input(catalog, &product))
-        .await
-        .ok("the parent share");
+    let created = emulator
+        .share_with(
+            "the parent share",
+            "AWS",
+            vec![product("prod-cal1234567890")],
+        )
+        .await;
+    let mut revision = created.revision.clone();
 
     for (case, from, until) in month_end_rows() {
-        let created: CreateMarketplaceRevenueShareAllocationOutput = emulator
-            .create_allocation(&CreateMarketplaceRevenueShareAllocationInput {
-                effective_until: Some(until.to_string()),
-                ..create_allocation_input(catalog, &product, from, "10")
+        let allocation: CreateMarketplaceRevenueShareAllocationOutput = emulator
+            .create_allocation(&create_allocation_input(
+                "AWS", &created.id, &revision, from, until, "1",
+            ))
+            .await
+            .ok(case);
+        assert_eq!(
+            (
+                allocation.effective_from.as_str(),
+                allocation.effective_until.as_str()
+            ),
+            (from, until),
+            "case {case:?}: expected the interval the request asked for, got {allocation:?}"
+        );
+        revision = allocation.marketplace_revenue_share_latest_revision.clone();
+    }
+
+    for (case, from, until) in month_end_refusals() {
+        emulator
+            .create_allocation(&create_allocation_input(
+                "AWS", &created.id, &revision, from, until, "1",
+            ))
+            .await
+            .is_error(case, 400, "ValidationException");
+    }
+
+    // The percentage rule, over the published bound and one past it.
+    for (case, percent, status) in [
+        ("the upper bound of the range", "100", 200),
+        ("one hundredth past the upper bound", "100.01", 400),
+        ("more than three times the bound", "999", 400),
+    ] {
+        let answer = emulator
+            .create_allocation(&create_allocation_input(
+                "AWS",
+                &created.id,
+                &revision,
+                "2098-01-01",
+                "2098-12-31",
+                percent,
+            ))
+            .await;
+        if status == 200 {
+            let allocation: CreateMarketplaceRevenueShareAllocationOutput = answer.ok(case);
+            assert_eq!(
+                allocation.revenue_share_percent, percent,
+                "case {case:?}: expected the percentage back, got {allocation:?}"
+            );
+            revision = allocation.marketplace_revenue_share_latest_revision.clone();
+        } else {
+            answer.is_error(case, status, "ValidationException");
+        }
+    }
+}
+
+/// The rule: `UpdateMarketplaceRevenueShareAllocation` writes a new version of
+/// the allocation and a new revision of the parent share; `RevenueSharePercent`
+/// and `Status` are "only modifiable on future-dated allocations"; and a read at
+/// the earlier revision still answers the version that was current then.
+#[tokio::test]
+async fn an_allocation_update_writes_through_and_honours_the_mutability_rules() {
+    let emulator = Emulator::new();
+    let created = emulator
+        .share_with(
+            "the parent share",
+            "AWS",
+            vec![product("prod-upa1234567890")],
+        )
+        .await;
+    let future: CreateMarketplaceRevenueShareAllocationOutput = emulator
+        .create_allocation(&create_allocation_input(
+            "AWS",
+            &created.id,
+            &created.revision,
+            FUTURE_FROM,
+            FUTURE_UNTIL,
+            "10",
+        ))
+        .await
+        .ok("the future-dated allocation");
+    let in_force: CreateMarketplaceRevenueShareAllocationOutput = emulator
+        .create_allocation(&create_allocation_input(
+            "AWS",
+            &created.id,
+            &future.marketplace_revenue_share_latest_revision,
+            PAST_FROM,
+            PAST_UNTIL,
+            "10",
+        ))
+        .await
+        .ok("the allocation already in force");
+
+    // (case, what the update changes, the percentage and status that follow)
+    let rows: Vec<AllocationUpdateRow> = vec![
+        ("the percentage alone", Some("20"), None, "20", "ACTIVE"),
+        ("the status alone", None, Some("INACTIVE"), "20", "INACTIVE"),
+        (
+            "both members at once",
+            Some("42.75"),
+            Some("ACTIVE"),
+            "42.75",
+            "ACTIVE",
+        ),
+    ];
+    let mut revision = in_force.marketplace_revenue_share_latest_revision.clone();
+    for (case, percent, status, expected_percent, expected_status) in rows {
+        let updated: UpdateMarketplaceRevenueShareAllocationOutput = emulator
+            .update_allocation(&UpdateMarketplaceRevenueShareAllocationInput {
+                catalog: "AWS".to_string(),
+                marketplace_revenue_share_identifier: created.id.clone(),
+                marketplace_revenue_share_allocation_id: future
+                    .marketplace_revenue_share_allocation_id
+                    .clone(),
+                marketplace_revenue_share_revision: revision.clone(),
+                revenue_share_percent: percent.map(str::to_string),
+                status: status.map(str::to_string),
+                ..Default::default()
+            })
+            .await
+            .ok(case);
+        let expected_revision = (revision.parse::<i32>().expect("a revision token") + 1).to_string();
+        assert_eq!(
+            (
+                updated.revenue_share_percent.as_str(),
+                updated.status.as_str(),
+                updated.effective_from.as_str(),
+                updated.effective_until.as_str(),
+                updated.marketplace_revenue_share_revision.as_str()
+            ),
+            (
+                expected_percent,
+                expected_status,
+                FUTURE_FROM,
+                FUTURE_UNTIL,
+                expected_revision.as_str()
+            ),
+            "case {case:?}: expected the updated version at the new revision, got {updated:?}"
+        );
+        // The earlier revision still answers the version that was current then.
+        let before: GetMarketplaceRevenueShareAllocationOutput = emulator
+            .get_allocation(&GetMarketplaceRevenueShareAllocationInput {
+                catalog: "AWS".to_string(),
+                marketplace_revenue_share_identifier: created.id.clone(),
+                marketplace_revenue_share_allocation_id: future
+                    .marketplace_revenue_share_allocation_id
+                    .clone(),
+                marketplace_revenue_share_revision: Some(
+                    future.marketplace_revenue_share_revision.clone(),
+                ),
             })
             .await
             .ok(case);
         assert_eq!(
             (
-                created.effective_from.as_str(),
-                created.effective_until.as_deref()
+                before.revenue_share_percent.as_str(),
+                before.status.as_str()
             ),
-            (from, Some(until)),
-            "case {case:?}: expected the stored interval back, got {created:?}"
+            ("10", "ACTIVE"),
+            "case {case:?}: a historical read answers the version written then, got {before:?}"
         );
+        revision = expected_revision;
     }
 
-    for (case, from, until, member) in month_end_refusals() {
-        let answer = emulator
-            .create_allocation(&CreateMarketplaceRevenueShareAllocationInput {
-                effective_until: Some(until.to_string()),
-                ..create_allocation_input(catalog, &product, from, "10")
-            })
-            .await;
-        answer.is_error(case, 400, "ValidationException");
-        assert!(
-            answer.mentions(member),
-            "case {case:?}: expected the refusal to name {member:?}, got {}",
-            answer.render()
-        );
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Step 1 + 2 of the slice: create a share, read it back.
-// ---------------------------------------------------------------------------
-
-/// One row of the create-and-read-back table.
-struct ShareRow {
-    case: &'static str,
-    catalog: &'static str,
-    suffix: &'static str,
-    tags: Option<Vec<Tag>>,
-}
-
-fn share_rows() -> Vec<ShareRow> {
-    vec![
-        ShareRow {
-            case: "the AWS catalog, the shape the issue records",
-            catalog: "AWS",
-            suffix: "abc1234567890",
-            tags: None,
-        },
-        ShareRow {
-            case: "the Sandbox catalog, which is a separate namespace",
-            catalog: "Sandbox",
-            suffix: "abc1234567890",
-            tags: None,
-        },
-        ShareRow {
-            case: "a product id of digits only",
-            catalog: "AWS",
-            suffix: "0000000000001",
-            tags: Some(vec![Tag {
-                key: "owner".to_string(),
-                value: "revenue-team".to_string(),
-            }]),
-        },
-        ShareRow {
-            case: "a product id of letters only, with two tags",
-            catalog: "Sandbox",
-            suffix: "zzzzzzzzzzzzz",
-            tags: Some(vec![
-                Tag {
-                    key: "owner".to_string(),
-                    value: "revenue-team".to_string(),
-                },
-                Tag {
-                    key: "cost-centre".to_string(),
-                    value: "4711".to_string(),
-                },
-            ]),
-        },
-        ShareRow {
-            case: "a product id mixing both",
-            catalog: "AWS",
-            suffix: "a1b2c3d4e5f60",
-            tags: Some(vec![]),
-        },
-    ]
-}
-
-#[tokio::test]
-async fn a_created_revenue_share_is_read_back_member_for_member() {
-    let emulator = Emulator::new();
-    let mut seen_arns: BTreeSet<String> = BTreeSet::new();
-
-    for row in share_rows() {
-        let product = product_id(row.suffix);
-        let created: CreateMarketplaceRevenueShareOutput = emulator
-            .create_share(&CreateMarketplaceRevenueShareInput {
-                tags: row.tags.clone(),
-                ..create_share_input(row.catalog, &product)
-            })
-            .await
-            .ok(row.case);
-
-        assert_eq!(
-            created.product_id, product,
-            "case {:?}: expected the product id back, got {:?}",
-            row.case, created.product_id
-        );
-        assert_eq!(
-            created.arn,
-            expected_share_arn(row.catalog, &product),
-            "case {:?}: expected the catalog-scoped ARN, got {:?}",
-            row.case,
-            created.arn
-        );
-        assert!(
-            seen_arns.insert(created.arn.clone()),
-            "case {:?}: expected a fresh ARN, got the already-minted {:?}",
-            row.case,
-            created.arn
-        );
-        assert_eq!(
-            created.catalog.as_deref(),
-            Some(row.catalog),
-            "case {:?}: expected the catalog back, got {:?}",
-            row.case,
-            created.catalog
-        );
-        assert_eq!(
-            created.revision,
-            Some(1),
-            "case {:?}: expected a fresh share at revision 1, got {:?}",
-            row.case,
-            created.revision
-        );
-        assert_eq!(
-            created.product_code.as_deref(),
-            Some(row.suffix),
-            "case {:?}: expected the product code derived from the product id, got {:?}",
-            row.case,
-            created.product_code
-        );
-        assert_eq!(
-            created.created_date, created.last_modified_date,
-            "case {:?}: expected a fresh share's two dates to agree, got {:?} and {:?}",
-            row.case, created.created_date, created.last_modified_date
-        );
-
-        // Step 2: the read is answered from the same stored record.
-        let fetched: GetMarketplaceRevenueShareOutput = emulator
-            .get_share(&GetMarketplaceRevenueShareInput {
-                catalog: row.catalog.to_string(),
-                product_id: product.clone(),
-                revision: None,
-            })
-            .await
-            .ok(row.case);
-        assert_eq!(
-            (
-                fetched.arn.as_str(),
-                fetched.catalog.as_str(),
-                fetched.product_code.as_deref(),
-                fetched.created_date,
-                fetched.revision,
-            ),
-            (
-                created.arn.as_str(),
-                row.catalog,
-                created.product_code.as_deref(),
-                created.created_date,
-                created.revision,
-            ),
-            "case {:?}: expected the get to answer the created record, got {fetched:?}",
-            row.case
-        );
-        // `ProductName` is the AWS Marketplace display name, which this emulator
-        // does not hold; the member is optional, so it is left absent rather
-        // than answered with generated text.
-        assert_eq!(
-            (
-                created.product_name.as_deref(),
-                fetched.product_name.as_deref()
-            ),
-            (None, None),
-            "case {:?}: expected ProductName to be absent, got {:?} and {:?}",
-            row.case,
-            created.product_name,
-            fetched.product_name
-        );
-        assert_eq!(
-            (
-                fetched.latest_revision,
-                fetched.total_marketplace_revenue_share_allocation_count,
-                fetched.total_active_marketplace_revenue_share_allocation_count,
-            ),
-            (Some(1), Some(0), Some(0)),
-            "case {:?}: expected a share with no allocations to count zero, got {fetched:?}",
-            row.case
-        );
-    }
-
-    // A share in one catalog is invisible in the other, which is what makes the
-    // catalog part of the resource's identity.
-    let only_in_sandbox = product_id("zzzzzzzzzzzzz");
-    emulator
-        .get_share(&GetMarketplaceRevenueShareInput {
-            catalog: "AWS".to_string(),
-            product_id: only_in_sandbox.clone(),
-            revision: None,
-        })
-        .await
-        .is_error(
-            "a Sandbox-only product read from the AWS catalog",
-            404,
-            "ResourceNotFoundException",
-        );
-}
-
-// ---------------------------------------------------------------------------
-// Step 3 + 4 of the slice: create an allocation, read it back.
-// ---------------------------------------------------------------------------
-
-/// One row of the allocation round-trip table.
-struct AllocationRow {
-    case: &'static str,
-    effective_from: &'static str,
-    effective_until: Option<&'static str>,
-    percent: &'static str,
-}
-
-fn allocation_rows() -> Vec<AllocationRow> {
-    vec![
-        AllocationRow {
-            case: "the shape the issue records: open-ended, one decimal place",
-            effective_from: "2024-01-01",
-            effective_until: None,
-            percent: "12.5",
-        },
-        AllocationRow {
-            case: "a bounded interval inside one month",
-            effective_from: "2024-03-01",
-            effective_until: Some("2024-03-31"),
-            percent: "7.25",
-        },
-        AllocationRow {
-            // February 2024 has 29 days, so its last day is a leap-year value.
-            case: "a leap February, whose last day is the 29th",
-            effective_from: "2024-02-01",
-            effective_until: Some("2024-02-29"),
-            percent: "0",
-        },
-        AllocationRow {
-            // February 2023 has 28 days.
-            case: "a common February, whose last day is the 28th",
-            effective_from: "2023-02-01",
-            effective_until: Some("2023-02-28"),
-            percent: "100",
-        },
-        AllocationRow {
-            case: "a thirty-day month, and the largest percentage with two decimals",
-            effective_from: "2025-04-01",
-            effective_until: Some("2025-04-30"),
-            percent: "99.99",
-        },
-        AllocationRow {
-            case: "an interval spanning years",
-            effective_from: "2022-11-01",
-            effective_until: Some("2026-01-31"),
-            percent: "33.33",
-        },
-    ]
-}
-
-#[tokio::test]
-async fn an_allocation_round_trips_and_moves_the_parent_share_revision() {
-    let emulator = Emulator::new();
-    let catalog = "AWS";
-    let product = product_id("abc1234567890");
-    let _: CreateMarketplaceRevenueShareOutput = emulator
-        .create_share(&create_share_input(catalog, &product))
-        .await
-        .ok("the parent share");
-
-    let mut seen_ids: BTreeSet<String> = BTreeSet::new();
-    let rows = allocation_rows();
-    for (index, row) in rows.iter().enumerate() {
-        let created: CreateMarketplaceRevenueShareAllocationOutput = emulator
-            .create_allocation(&CreateMarketplaceRevenueShareAllocationInput {
-                effective_until: row.effective_until.map(str::to_string),
-                ..create_allocation_input(catalog, &product, row.effective_from, row.percent)
-            })
-            .await
-            .ok(row.case);
-
-        assert!(
-            is_allocation_id(&created.marketplace_revenue_share_allocation_id),
-            "case {:?}: expected an id matching ^mrsa-[A-Za-z0-9]{{13}}$, got {:?}",
-            row.case,
-            created.marketplace_revenue_share_allocation_id
-        );
-        assert!(
-            seen_ids.insert(created.marketplace_revenue_share_allocation_id.clone()),
-            "case {:?}: expected a fresh allocation id, got the already-minted {:?}",
-            row.case,
-            created.marketplace_revenue_share_allocation_id
-        );
-        assert_eq!(
-            created.status, "ACTIVE",
-            "case {:?}: expected a newly created allocation to be ACTIVE, got {:?}",
-            row.case, created.status
-        );
-        assert_eq!(
-            created.arn,
-            format!(
-                "{}/allocation/{}",
-                expected_share_arn(catalog, &product),
-                created.marketplace_revenue_share_allocation_id
-            ),
-            "case {:?}: expected the allocation ARN under its share, got {:?}",
-            row.case,
-            created.arn
-        );
-        // Each allocation write is a new revision of the parent share, so the
-        // n-th allocation sits at revision n + 1.
-        let expected_revision = (index + 2).to_string();
-        assert_eq!(
-            created.latest_marketplace_revenue_share_revision.as_deref(),
-            Some(expected_revision.as_str()),
-            "case {:?}: expected the parent share at revision {expected_revision}, got {:?}",
-            row.case,
-            created.latest_marketplace_revenue_share_revision
-        );
-
-        // Step 4: the allocation reads back field for field.
-        let fetched: GetMarketplaceRevenueShareAllocationOutput = emulator
-            .get_allocation(&GetMarketplaceRevenueShareAllocationInput {
-                catalog: catalog.to_string(),
-                product_id: product.clone(),
-                marketplace_revenue_share_allocation_id: created
+    // An allocation that has come into force keeps both protected members.
+    for (case, percent, status) in [
+        ("the percentage of an in-force allocation", Some("5"), None),
+        (
+            "the status of an in-force allocation",
+            None,
+            Some("INACTIVE"),
+        ),
+    ] {
+        emulator
+            .update_allocation(&UpdateMarketplaceRevenueShareAllocationInput {
+                catalog: "AWS".to_string(),
+                marketplace_revenue_share_identifier: created.id.clone(),
+                marketplace_revenue_share_allocation_id: in_force
                     .marketplace_revenue_share_allocation_id
                     .clone(),
-                marketplace_revenue_share_revision: None,
-            })
-            .await
-            .ok(row.case);
-        assert_eq!(
-            (
-                fetched.effective_from.as_str(),
-                fetched.effective_until.as_deref(),
-                fetched.revenue_share_percent.as_str(),
-                fetched.status.as_str(),
-                fetched.arn.as_str(),
-                fetched.created_date,
-            ),
-            (
-                row.effective_from,
-                row.effective_until,
-                row.percent,
-                "ACTIVE",
-                created.arn.as_str(),
-                created.created_date,
-            ),
-            "case {:?}: expected the stored allocation back, got {fetched:?}",
-            row.case
-        );
-    }
-
-    // Step 2 again: both counts are derived from the stored allocations.
-    let share: GetMarketplaceRevenueShareOutput = emulator
-        .get_share(&GetMarketplaceRevenueShareInput {
-            catalog: catalog.to_string(),
-            product_id: product.clone(),
-            revision: None,
-        })
-        .await
-        .ok("the share after every allocation");
-    let total = i32::try_from(rows.len()).expect("a small row count");
-    assert_eq!(
-        (
-            share.revision,
-            share.latest_revision,
-            share.total_marketplace_revenue_share_allocation_count,
-            share.total_active_marketplace_revenue_share_allocation_count,
-        ),
-        (Some(total + 1), Some(total + 1), Some(total), Some(total)),
-        "expected {total} active allocations at revision {}, got {share:?}",
-        total + 1
-    );
-
-    // A historical read reconstructs the share as it stood before the last
-    // allocation was written.
-    let earlier: GetMarketplaceRevenueShareOutput = emulator
-        .get_share(&GetMarketplaceRevenueShareInput {
-            catalog: catalog.to_string(),
-            product_id: product.clone(),
-            revision: Some(2),
-        })
-        .await
-        .ok("the share at revision 2");
-    assert_eq!(
-        (
-            earlier.revision,
-            earlier.latest_revision,
-            earlier.total_marketplace_revenue_share_allocation_count,
-        ),
-        (Some(2), Some(total + 1), Some(1)),
-        "expected exactly one allocation at revision 2, got {earlier:?}"
-    );
-
-    // A revision the share never reached names nothing.
-    emulator
-        .get_share(&GetMarketplaceRevenueShareInput {
-            catalog: catalog.to_string(),
-            product_id: product.clone(),
-            revision: Some(total + 99),
-        })
-        .await
-        .is_error(
-            "a revision past the latest",
-            404,
-            "ResourceNotFoundException",
-        );
-
-    // An unknown allocation id under a known share is a 404, not an empty 200.
-    emulator
-        .get_allocation(&GetMarketplaceRevenueShareAllocationInput {
-            catalog: catalog.to_string(),
-            product_id: product.clone(),
-            marketplace_revenue_share_allocation_id: "mrsa-0000000000000".to_string(),
-            marketplace_revenue_share_revision: None,
-        })
-        .await
-        .is_error("an unknown allocation id", 404, "ResourceNotFoundException");
-}
-
-// ---------------------------------------------------------------------------
-// The documented calendar and percentage rules.
-// ---------------------------------------------------------------------------
-
-/// One row of the refusal table: a create request, and why the service refuses
-/// it.
-struct RefusalRow {
-    case: &'static str,
-    effective_from: &'static str,
-    effective_until: Option<&'static str>,
-    percent: &'static str,
-    /// The member the refusal must name.
-    member: &'static str,
-}
-
-/// Every row breaks exactly one documented rule: `EffectiveFrom` "must be the
-/// first day of a month", `EffectiveUntil` "must be the last day of a month",
-/// and `RevenueSharePercent` is a share of revenue, so at most 100. Each value
-/// satisfies the member's `@pattern`, so the refusal is the handler's.
-fn refusal_rows() -> Vec<RefusalRow> {
-    vec![
-        RefusalRow {
-            case: "EffectiveFrom is mid-month",
-            effective_from: "2024-01-15",
-            effective_until: None,
-            percent: "10",
-            member: "EffectiveFrom",
-        },
-        RefusalRow {
-            case: "EffectiveFrom is the last day of a month, not the first",
-            effective_from: "2024-01-31",
-            effective_until: None,
-            percent: "10",
-            member: "EffectiveFrom",
-        },
-        RefusalRow {
-            case: "EffectiveFrom names a day February never has",
-            effective_from: "2024-02-30",
-            effective_until: None,
-            percent: "10",
-            member: "EffectiveFrom",
-        },
-        RefusalRow {
-            case: "EffectiveFrom names month 13",
-            effective_from: "2024-13-01",
-            effective_until: None,
-            percent: "10",
-            member: "EffectiveFrom",
-        },
-        RefusalRow {
-            case: "EffectiveUntil is mid-month",
-            effective_from: "2024-01-01",
-            effective_until: Some("2024-01-15"),
-            percent: "10",
-            member: "EffectiveUntil",
-        },
-        RefusalRow {
-            case: "EffectiveUntil is the 29th of a February that has 28 days",
-            effective_from: "2023-02-01",
-            effective_until: Some("2023-02-29"),
-            percent: "10",
-            member: "EffectiveUntil",
-        },
-        RefusalRow {
-            case: "EffectiveUntil ends before EffectiveFrom starts",
-            effective_from: "2024-06-01",
-            effective_until: Some("2024-01-31"),
-            percent: "10",
-            member: "EffectiveUntil",
-        },
-        RefusalRow {
-            case: "RevenueSharePercent is one hundredth past 100",
-            effective_from: "2024-01-01",
-            effective_until: None,
-            percent: "100.01",
-            member: "RevenueSharePercent",
-        },
-        RefusalRow {
-            case: "RevenueSharePercent is far past 100",
-            effective_from: "2024-01-01",
-            effective_until: None,
-            percent: "999",
-            member: "RevenueSharePercent",
-        },
-    ]
-}
-
-#[tokio::test]
-async fn the_documented_calendar_and_percentage_rules_are_enforced() {
-    let emulator = Emulator::new();
-    let catalog = "AWS";
-    let product = product_id("abc1234567890");
-    let _: CreateMarketplaceRevenueShareOutput = emulator
-        .create_share(&create_share_input(catalog, &product))
-        .await
-        .ok("the parent share");
-
-    for row in refusal_rows() {
-        let answer = emulator
-            .create_allocation(&CreateMarketplaceRevenueShareAllocationInput {
-                effective_until: row.effective_until.map(str::to_string),
-                ..create_allocation_input(catalog, &product, row.effective_from, row.percent)
-            })
-            .await;
-        answer.is_error(row.case, 400, "ValidationException");
-        assert!(
-            answer.mentions(row.member),
-            "case {:?}: expected the refusal to name {:?}, got {}",
-            row.case,
-            row.member,
-            answer.render()
-        );
-    }
-
-    // The share stayed at revision 1: a refused create writes nothing.
-    let share: GetMarketplaceRevenueShareOutput = emulator
-        .get_share(&GetMarketplaceRevenueShareInput {
-            catalog: catalog.to_string(),
-            product_id: product.clone(),
-            revision: None,
-        })
-        .await
-        .ok("the share after every refusal");
-    assert_eq!(
-        (
-            share.revision,
-            share.total_marketplace_revenue_share_allocation_count
-        ),
-        (Some(1), Some(0)),
-        "expected a refused create to write nothing, got {share:?}"
-    );
-
-    // `Catalog` is an enum shape, so the handler owns its membership check.
-    emulator
-        .get_share(&GetMarketplaceRevenueShareInput {
-            catalog: "Production".to_string(),
-            product_id: product.clone(),
-            revision: None,
-        })
-        .await
-        .is_error("a catalog the model does not declare", 400, "ValidationException");
-
-    // An allocation under a product no share exists for is a 404.
-    emulator
-        .create_allocation(&create_allocation_input(
-            catalog,
-            &product_id("zzz0000000000"),
-            "2024-01-01",
-            "10",
-        ))
-        .await
-        .is_error("an allocation under an unknown product", 404, "ResourceNotFoundException");
-}
-
-/// Product identifiers the model's `MarketplaceProductId` refuses: it is
-/// `len 18..18` with `pattern ^prod-[a-z0-9]{13}$` (see the `ProductId` member
-/// in every operation's contract header). One row per way a string can miss
-/// that: absent, the wrong prefix, too short, too long, upper case, and a
-/// non-alphanumeric suffix character.
-fn invalid_product_ids() -> Vec<(&'static str, &'static str)> {
-    vec![
-        ("an absent product id", ""),
-        ("no prod- prefix", "item-abc1234567890"),
-        ("a suffix one character short", "prod-abc123456789"),
-        ("a suffix one character long", "prod-abc12345678901"),
-        ("an upper-case suffix", "prod-ABC1234567890"),
-        ("a punctuation character in the suffix", "prod-abc123456789_"),
-    ]
-}
-
-#[tokio::test]
-async fn a_product_id_outside_the_modelled_pattern_is_refused_everywhere_it_appears() {
-    let emulator = Emulator::new();
-    let catalog = "AWS";
-
-    for (case, product) in invalid_product_ids() {
-        emulator
-            .create_share(&create_share_input(catalog, product))
-            .await
-            .is_error(
-                &format!("creating a share with {case}"),
-                400,
-                "ValidationException",
-            );
-        emulator
-            .get_share(&GetMarketplaceRevenueShareInput {
-                catalog: catalog.to_string(),
-                product_id: product.to_string(),
-                revision: None,
-            })
-            .await
-            .is_error(
-                &format!("getting a share with {case}"),
-                400,
-                "ValidationException",
-            );
-        emulator
-            .create_allocation(&create_allocation_input(
-                catalog,
-                product,
-                "2099-01-01",
-                "10",
-            ))
-            .await
-            .is_error(
-                &format!("creating an allocation under {case}"),
-                400,
-                "ValidationException",
-            );
-    }
-
-    // And nothing was written: a store that refused every id above holds no
-    // shares at all.
-    let listed: ListMarketplaceRevenueSharesOutput = emulator
-        .list_shares(&ListMarketplaceRevenueSharesInput {
-            catalog: catalog.to_string(),
-            ..Default::default()
-        })
-        .await
-        .ok("the store after every refused product id");
-    assert!(
-        listed.marketplace_revenue_share_summaries.is_empty(),
-        "expected a refused product id to write nothing, got {:?}",
-        listed.marketplace_revenue_share_summaries
-    );
-}
-
-// ---------------------------------------------------------------------------
-// Step 5 of the slice: filters, sorting and pagination.
-// ---------------------------------------------------------------------------
-
-#[tokio::test]
-async fn the_allocation_list_pages_filters_and_sorts_from_state() {
-    let emulator = Emulator::new();
-    let catalog = "AWS";
-    let product = product_id("abc1234567890");
-    let _: CreateMarketplaceRevenueShareOutput = emulator
-        .create_share(&create_share_input(catalog, &product))
-        .await
-        .ok("the parent share");
-
-    // One allocation per quarter of 2024, created in ascending date order.
-    let months = ["2024-01-01", "2024-04-01", "2024-07-01", "2024-10-01"];
-    let mut ids: Vec<String> = Vec::new();
-    for (index, from) in months.iter().enumerate() {
-        let created: CreateMarketplaceRevenueShareAllocationOutput = emulator
-            .create_allocation(&create_allocation_input(
-                catalog,
-                &product,
-                from,
-                &format!("{}", index + 1),
-            ))
-            .await
-            .ok(from);
-        ids.push(created.marketplace_revenue_share_allocation_id);
-    }
-
-    // Every page size walks the whole collection exactly once, in the same
-    // order, and only the last page omits `NextToken`.
-    for page_size in [1_i32, 2, 3, 4, 7] {
-        let case = format!("MaxResults={page_size}");
-        let mut walked: Vec<String> = Vec::new();
-        let mut token: Option<String> = None;
-        let mut pages = 0;
-        loop {
-            let page: ListMarketplaceRevenueShareAllocationsOutput = emulator
-                .list_allocations(&ListMarketplaceRevenueShareAllocationsInput {
-                    catalog: catalog.to_string(),
-                    product_id: product.clone(),
-                    max_results: Some(page_size),
-                    next_token: token.clone(),
-                    sort_by: Some("EffectiveFrom".to_string()),
-                    sort_order: Some("ASCENDING".to_string()),
-                    ..Default::default()
-                })
-                .await
-                .ok(&case);
-            pages += 1;
-            assert!(
-                page.marketplace_revenue_share_allocation_summaries.len()
-                    <= page_size as usize,
-                "case {case:?}: expected at most {page_size} summaries, got {}",
-                page.marketplace_revenue_share_allocation_summaries.len()
-            );
-            walked.extend(
-                page.marketplace_revenue_share_allocation_summaries
-                    .iter()
-                    .map(|summary| summary.marketplace_revenue_share_allocation_id.clone()),
-            );
-            match page.next_token {
-                Some(next) => token = Some(next),
-                None => break,
-            }
-            assert!(
-                pages <= months.len() + 2,
-                "case {case:?}: the pagination token never ran out after {pages} pages"
-            );
-        }
-        assert_eq!(
-            walked, ids,
-            "case {case:?}: expected every allocation once in EffectiveFrom order, got {walked:?}"
-        );
-    }
-
-    // DESCENDING is the documented default for this list's `SortOrder`.
-    let defaulted: ListMarketplaceRevenueShareAllocationsOutput = emulator
-        .list_allocations(&ListMarketplaceRevenueShareAllocationsInput {
-            catalog: catalog.to_string(),
-            product_id: product.clone(),
-            sort_by: Some("EffectiveFrom".to_string()),
-            ..Default::default()
-        })
-        .await
-        .ok("SortOrder absent");
-    let descending: Vec<String> = defaulted
-        .marketplace_revenue_share_allocation_summaries
-        .iter()
-        .map(|summary| summary.marketplace_revenue_share_allocation_id.clone())
-        .collect();
-    let mut expected = ids.clone();
-    expected.reverse();
-    assert_eq!(
-        descending, expected,
-        "expected the documented DESCENDING default, got {descending:?}"
-    );
-
-    // `AfterEffectiveFrom` is inclusive and `BeforeEffectiveFrom` exclusive: the
-    // half-open range the model documents.
-    struct RangeRow {
-        case: &'static str,
-        after: Option<&'static str>,
-        before: Option<&'static str>,
-        expected: &'static [usize],
-    }
-    let range_rows = [
-        RangeRow {
-            case: "no bound at all keeps everything",
-            after: None,
-            before: None,
-            expected: &[0, 1, 2, 3],
-        },
-        RangeRow {
-            case: "the inclusive lower bound keeps the allocation that equals it",
-            after: Some("2024-04-01"),
-            before: None,
-            expected: &[1, 2, 3],
-        },
-        RangeRow {
-            case: "the exclusive upper bound drops the allocation that equals it",
-            after: None,
-            before: Some("2024-07-01"),
-            expected: &[0, 1],
-        },
-        RangeRow {
-            case: "both bounds, one allocation between them",
-            after: Some("2024-04-01"),
-            before: Some("2024-07-01"),
-            expected: &[1],
-        },
-        RangeRow {
-            case: "an empty half-open range keeps nothing",
-            after: Some("2024-04-01"),
-            before: Some("2024-04-01"),
-            expected: &[],
-        },
-    ];
-    for row in range_rows {
-        let page: ListMarketplaceRevenueShareAllocationsOutput = emulator
-            .list_allocations(&ListMarketplaceRevenueShareAllocationsInput {
-                catalog: catalog.to_string(),
-                product_id: product.clone(),
-                after_effective_from: row.after.map(str::to_string),
-                before_effective_from: row.before.map(str::to_string),
-                sort_by: Some("EffectiveFrom".to_string()),
-                sort_order: Some("ASCENDING".to_string()),
+                marketplace_revenue_share_revision: revision.clone(),
+                revenue_share_percent: percent.map(str::to_string),
+                status: status.map(str::to_string),
                 ..Default::default()
             })
             .await
-            .ok(row.case);
-        let got: Vec<String> = page
-            .marketplace_revenue_share_allocation_summaries
-            .iter()
-            .map(|summary| summary.marketplace_revenue_share_allocation_id.clone())
-            .collect();
-        let want: Vec<String> = row.expected.iter().map(|index| ids[*index].clone()).collect();
-        assert_eq!(
-            got, want,
-            "case {:?}: expected {want:?}, got {got:?}",
-            row.case
-        );
+            .is_error(case, 400, "ValidationException");
     }
 
-    // A `MaxResults` that asks for no items at all is refused, not clamped.
-    for requested in [0_i32, -1] {
-        emulator
-            .list_allocations(&ListMarketplaceRevenueShareAllocationsInput {
-                catalog: catalog.to_string(),
-                product_id: product.clone(),
-                max_results: Some(requested),
-                ..Default::default()
-            })
-            .await
-            .is_error(
-                &format!("MaxResults={requested}"),
-                400,
-                "ValidationException",
-            );
-    }
-
-    // A token this query never issued is refused rather than silently restarted.
+    // An update that names nothing to change, and one that names a value the
+    // enum does not declare.
     emulator
-        .list_allocations(&ListMarketplaceRevenueShareAllocationsInput {
-            catalog: catalog.to_string(),
-            product_id: product.clone(),
-            next_token: Some("mrsa-9999999999999".to_string()),
+        .update_allocation(&UpdateMarketplaceRevenueShareAllocationInput {
+            catalog: "AWS".to_string(),
+            marketplace_revenue_share_identifier: created.id.clone(),
+            marketplace_revenue_share_allocation_id: future
+                .marketplace_revenue_share_allocation_id
+                .clone(),
+            marketplace_revenue_share_revision: revision.clone(),
             ..Default::default()
         })
         .await
-        .is_error("a forged NextToken", 400, "ValidationException");
-
-    // `ListMarketplaceRevenueShares` reads the same store: the share is there,
-    // with the allocation counts the get reports.
-    let shares: ListMarketplaceRevenueSharesOutput = emulator
-        .list_shares(&ListMarketplaceRevenueSharesInput {
-            catalog: catalog.to_string(),
-            ..Default::default()
-        })
-        .await
-        .ok("the shares of the AWS catalog");
-    assert_eq!(
-        shares.marketplace_revenue_share_summaries.len(),
-        1,
-        "expected exactly the one created share, got {:?}",
-        shares.marketplace_revenue_share_summaries
-    );
-    let summary = &shares.marketplace_revenue_share_summaries[0];
-    assert_eq!(
-        (
-            summary.product_id.as_str(),
-            summary.arn.as_str(),
-            summary.total_marketplace_revenue_share_allocation_count,
-            summary.total_active_marketplace_revenue_share_allocation_count,
-        ),
-        (
-            product.as_str(),
-            expected_share_arn(catalog, &product).as_str(),
-            Some(4),
-            Some(4),
-        ),
-        "expected the summary to report the stored share, got {summary:?}"
-    );
-
-    // The product-id filter keeps only what it names.
-    let filtered: ListMarketplaceRevenueSharesOutput = emulator
-        .list_shares_raw(vec![
-            ("Catalog", Cbor::text(catalog)),
-            ("ProductIds", texts(&[&product_id("zzz0000000000")])),
-        ])
-        .await
-        .ok("a product-id filter naming nothing stored");
-    assert!(
-        filtered.marketplace_revenue_share_summaries.is_empty(),
-        "expected no summary, got {:?}",
-        filtered.marketplace_revenue_share_summaries
-    );
-    let kept: ListMarketplaceRevenueSharesOutput = emulator
-        .list_shares_raw(vec![
-            ("Catalog", Cbor::text(catalog)),
-            (
-                "ProductIds",
-                texts(&[&product_id("zzz0000000000"), &product]),
-            ),
-        ])
-        .await
-        .ok("a product-id filter naming the stored share");
-    assert_eq!(
-        kept.marketplace_revenue_share_summaries.len(),
-        1,
-        "expected the named share, got {:?}",
-        kept.marketplace_revenue_share_summaries
-    );
-    // The product-code filter reads the SAME derived code the summary reports.
-    let by_code: ListMarketplaceRevenueSharesOutput = emulator
-        .list_shares_raw(vec![
-            ("Catalog", Cbor::text(catalog)),
-            (
-                "ProductCodes",
-                texts(&[summary.product_code.as_deref().unwrap_or_default()]),
-            ),
-        ])
-        .await
-        .ok("a product-code filter naming the stored share");
-    assert_eq!(
-        by_code.marketplace_revenue_share_summaries.len(),
-        1,
-        "expected the share with that product code, got {:?}",
-        by_code.marketplace_revenue_share_summaries
-    );
-    let by_other_code: ListMarketplaceRevenueSharesOutput = emulator
-        .list_shares_raw(vec![
-            ("Catalog", Cbor::text(catalog)),
-            ("ProductCodes", texts(&["zzz0000000000"])),
-        ])
-        .await
-        .ok("a product-code filter naming nothing stored");
-    assert!(
-        by_other_code
-            .marketplace_revenue_share_summaries
-            .is_empty(),
-        "expected no summary, got {:?}",
-        by_other_code.marketplace_revenue_share_summaries
-    );
-
-    // `CreatedAfter` and `CreatedBefore` are both STRICTLY exclusive and compare
-    // at whole-second granularity — the model states neither bound's
-    // inclusivity, and the handler says which convention it applies — so a share
-    // created within the bound's own second is outside the window, and a second
-    // either way puts it inside.
-    let created = summary
-        .created_date
-        .expect("a stored share reports its CreatedDate");
-    let created_second = created.secs();
-    struct CreatedRow {
-        case: &'static str,
-        after: Option<i64>,
-        before: Option<i64>,
-        kept: bool,
-    }
-    for row in [
-        CreatedRow {
-            case: "CreatedAfter in the creation second is exclusive",
-            after: Some(created_second),
-            before: None,
-            kept: false,
-        },
-        CreatedRow {
-            case: "CreatedAfter one second earlier keeps the share",
-            after: Some(created_second - 1),
-            before: None,
-            kept: true,
-        },
-        CreatedRow {
-            case: "CreatedBefore in the creation second is exclusive",
-            after: None,
-            before: Some(created_second),
-            kept: false,
-        },
-        CreatedRow {
-            case: "CreatedBefore one second later keeps the share",
-            after: None,
-            before: Some(created_second + 1),
-            kept: true,
-        },
-        CreatedRow {
-            case: "both bounds straddling the creation second keep the share",
-            after: Some(created_second - 1),
-            before: Some(created_second + 1),
-            kept: true,
-        },
-    ] {
-        let page: ListMarketplaceRevenueSharesOutput = emulator
-            .list_shares(&ListMarketplaceRevenueSharesInput {
-                catalog: catalog.to_string(),
-                created_after: row.after.map(aws_smithy_types::DateTime::from_secs),
-                created_before: row.before.map(aws_smithy_types::DateTime::from_secs),
-                ..Default::default()
-            })
-            .await
-            .ok(row.case);
-        assert_eq!(
-            page.marketplace_revenue_share_summaries.len(),
-            usize::from(row.kept),
-            "case {:?}: expected {} summary, got {:?}",
-            row.case,
-            usize::from(row.kept),
-            page.marketplace_revenue_share_summaries
-        );
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Step 6 of the slice: the update writes through, under the documented rules.
-// ---------------------------------------------------------------------------
-
-/// One row of the update table: which members the request changes.
-struct UpdateRow {
-    case: &'static str,
-    effective_from: Option<&'static str>,
-    effective_until: Option<&'static str>,
-    percent: Option<&'static str>,
-    status: Option<&'static str>,
-}
-
-fn update_rows() -> Vec<UpdateRow> {
-    vec![
-        UpdateRow {
-            case: "only the percentage",
-            effective_from: None,
-            effective_until: None,
-            percent: Some("20"),
-            status: None,
-        },
-        UpdateRow {
-            case: "only the status, the model's soft delete",
-            effective_from: None,
-            effective_until: None,
-            percent: None,
-            status: Some("INACTIVE"),
-        },
-        UpdateRow {
-            case: "the status back to ACTIVE",
-            effective_from: None,
-            effective_until: None,
-            percent: None,
-            status: Some("ACTIVE"),
-        },
-        UpdateRow {
-            case: "only the end date",
-            effective_from: None,
-            effective_until: Some("2099-06-30"),
-            percent: None,
-            status: None,
-        },
-        UpdateRow {
-            case: "the start date, which must stay a first-of-month",
-            effective_from: Some("2099-02-01"),
-            effective_until: None,
-            percent: None,
-            status: None,
-        },
-        UpdateRow {
-            case: "every mutable member at once",
-            effective_from: Some("2099-03-01"),
-            effective_until: Some("2099-09-30"),
-            percent: Some("5.75"),
-            status: Some("INACTIVE"),
-        },
-    ]
-}
-
-#[tokio::test]
-async fn an_update_writes_through_and_honours_the_revision_check() {
-    let emulator = Emulator::new();
-    let catalog = "AWS";
-    let product = product_id("abc1234567890");
-    let _: CreateMarketplaceRevenueShareOutput = emulator
-        .create_share(&create_share_input(catalog, &product))
-        .await
-        .ok("the parent share");
-    // Future-dated, because the model says `EffectiveFrom`,
-    // `RevenueSharePercent` and `Status` are "Only modifiable on future-dated
-    // allocations".
-    let created: CreateMarketplaceRevenueShareAllocationOutput = emulator
-        .create_allocation(&CreateMarketplaceRevenueShareAllocationInput {
-            effective_until: Some(FUTURE_UNTIL.to_string()),
-            ..create_allocation_input(catalog, &product, FUTURE_FROM, "12.5")
-        })
-        .await
-        .ok("a future-dated allocation");
-    let allocation = created.marketplace_revenue_share_allocation_id.clone();
-
-    let mut expected_from = FUTURE_FROM.to_string();
-    let mut expected_until = Some(FUTURE_UNTIL.to_string());
-    let mut expected_percent = "12.5".to_string();
-    let mut expected_status = "ACTIVE".to_string();
-    // The share is at revision 2: 1 for the create, 2 for the allocation.
-    let mut revision = 2_i32;
-
-    for row in update_rows() {
-        let updated: UpdateMarketplaceRevenueShareAllocationOutput = emulator
-            .update_allocation(&UpdateMarketplaceRevenueShareAllocationInput {
-                catalog: catalog.to_string(),
-                product_id: product.clone(),
-                marketplace_revenue_share_allocation_id: allocation.clone(),
-                marketplace_revenue_share_revision: revision.to_string(),
-                effective_from: row.effective_from.map(str::to_string),
-                effective_until: row.effective_until.map(str::to_string),
-                revenue_share_percent: row.percent.map(str::to_string),
-                status: row.status.map(str::to_string),
-                client_token: None,
-            })
-            .await
-            .ok(row.case);
-
-        if let Some(from) = row.effective_from {
-            expected_from = from.to_string();
-        }
-        if let Some(until) = row.effective_until {
-            expected_until = Some(until.to_string());
-        }
-        if let Some(percent) = row.percent {
-            expected_percent = percent.to_string();
-        }
-        if let Some(status) = row.status {
-            expected_status = status.to_string();
-        }
-        revision += 1;
-
-        assert_eq!(
-            (
-                updated.effective_from.as_str(),
-                updated.effective_until.as_deref(),
-                updated.revenue_share_percent.as_str(),
-                updated.status.as_str(),
-                updated
-                    .latest_marketplace_revenue_share_revision
-                    .as_deref(),
-            ),
-            (
-                expected_from.as_str(),
-                expected_until.as_deref(),
-                expected_percent.as_str(),
-                expected_status.as_str(),
-                Some(revision.to_string().as_str()),
-            ),
-            "case {:?}: expected the update to answer the new values, got {updated:?}",
-            row.case
-        );
-
-        // THIS output's `Arn` is documented as the PARENT share's ARN, where the
-        // create and get outputs document theirs as the allocation's own. Every
-        // row asserts it, so no update answers the allocation ARN here.
-        assert_eq!(
-            updated.arn,
-            expected_share_arn(catalog, &product),
-            "case {:?}: expected the parent share ARN on the update output, got {:?}",
-            row.case,
-            updated.arn
-        );
-
-        // The following read observes exactly the change.
-        let fetched: GetMarketplaceRevenueShareAllocationOutput = emulator
-            .get_allocation(&GetMarketplaceRevenueShareAllocationInput {
-                catalog: catalog.to_string(),
-                product_id: product.clone(),
-                marketplace_revenue_share_allocation_id: allocation.clone(),
-                marketplace_revenue_share_revision: None,
-            })
-            .await
-            .ok(row.case);
-        assert_eq!(
-            (
-                fetched.effective_from.as_str(),
-                fetched.effective_until.as_deref(),
-                fetched.revenue_share_percent.as_str(),
-                fetched.status.as_str(),
-            ),
-            (
-                expected_from.as_str(),
-                expected_until.as_deref(),
-                expected_percent.as_str(),
-                expected_status.as_str(),
-            ),
-            "case {:?}: expected the get to observe the update, got {fetched:?}",
-            row.case
-        );
-
-        // And so does the list.
-        let listed: ListMarketplaceRevenueShareAllocationsOutput = emulator
-            .list_allocations(&ListMarketplaceRevenueShareAllocationsInput {
-                catalog: catalog.to_string(),
-                product_id: product.clone(),
-                ..Default::default()
-            })
-            .await
-            .ok(row.case);
-        let summary = listed
-            .marketplace_revenue_share_allocation_summaries
-            .first()
-            .unwrap_or_else(|| panic!("case {:?}: expected one summary", row.case));
-        assert_eq!(
-            (
-                summary.revenue_share_percent.as_str(),
-                summary.status.as_str()
-            ),
-            (expected_percent.as_str(), expected_status.as_str()),
-            "case {:?}: expected the list to observe the update, got {summary:?}",
-            row.case
-        );
-
-        // The `Status` filter reads the stored status: the allocation appears
-        // under its own status and nowhere else.
-        for filter in ["ACTIVE", "INACTIVE"] {
-            let filtered: ListMarketplaceRevenueShareAllocationsOutput = emulator
-                .list_allocations(&ListMarketplaceRevenueShareAllocationsInput {
-                    catalog: catalog.to_string(),
-                    product_id: product.clone(),
-                    status: Some(filter.to_string()),
-                    ..Default::default()
-                })
-                .await
-                .ok(row.case);
-            let want = usize::from(filter == expected_status);
-            assert_eq!(
-                filtered
-                    .marketplace_revenue_share_allocation_summaries
-                    .len(),
-                want,
-                "case {:?}: expected {want} summary with Status={filter} while the stored \
-                 status is {expected_status}, got {:?}",
-                row.case,
-                filtered.marketplace_revenue_share_allocation_summaries
-            );
-        }
-
-        // The active count follows the status, because it is counted and not
-        // stored.
-        let share: GetMarketplaceRevenueShareOutput = emulator
-            .get_share(&GetMarketplaceRevenueShareInput {
-                catalog: catalog.to_string(),
-                product_id: product.clone(),
-                revision: None,
-            })
-            .await
-            .ok(row.case);
-        let expected_active = i32::from(expected_status == "ACTIVE");
-        assert_eq!(
-            (
-                share.revision,
-                share.total_marketplace_revenue_share_allocation_count,
-                share.total_active_marketplace_revenue_share_allocation_count,
-            ),
-            (Some(revision), Some(1), Some(expected_active)),
-            "case {:?}: expected the counts to follow the stored status, got {share:?}",
-            row.case
-        );
-    }
-
-    // A status the model does not declare is refused rather than ignored.
+        .is_error("an update that changes nothing", 400, "ValidationException");
     emulator
-        .list_allocations(&ListMarketplaceRevenueShareAllocationsInput {
-            catalog: catalog.to_string(),
-            product_id: product.clone(),
-            status: Some("ARCHIVED".to_string()),
+        .update_allocation(&UpdateMarketplaceRevenueShareAllocationInput {
+            catalog: "AWS".to_string(),
+            marketplace_revenue_share_identifier: created.id.clone(),
+            marketplace_revenue_share_allocation_id: future
+                .marketplace_revenue_share_allocation_id
+                .clone(),
+            marketplace_revenue_share_revision: revision.clone(),
+            status: Some("DELETED".to_string()),
             ..Default::default()
         })
         .await
         .is_error(
-            "a Status the model does not declare",
+            "a status the model does not declare",
             400,
             "ValidationException",
         );
 
-    // A historical read at the revision the allocation was created at answers
-    // the values the create wrote, not the ones the updates left.
-    let original: GetMarketplaceRevenueShareAllocationOutput = emulator
+    // An allocation id under a share that does not hold it is a 404.
+    emulator
         .get_allocation(&GetMarketplaceRevenueShareAllocationInput {
-            catalog: catalog.to_string(),
-            product_id: product.clone(),
-            marketplace_revenue_share_allocation_id: allocation.clone(),
-            marketplace_revenue_share_revision: Some("2".to_string()),
+            catalog: "AWS".to_string(),
+            marketplace_revenue_share_identifier: created.id.clone(),
+            marketplace_revenue_share_allocation_id: "mrsa-0000000000000".to_string(),
+            marketplace_revenue_share_revision: None,
         })
         .await
-        .ok("the allocation at revision 2");
-    assert_eq!(
-        (
-            original.effective_from.as_str(),
-            original.effective_until.as_deref(),
-            original.revenue_share_percent.as_str(),
-            original.status.as_str(),
-        ),
-        (FUTURE_FROM, Some(FUTURE_UNTIL), "12.5", "ACTIVE"),
-        "expected the created version at revision 2, got {original:?}"
-    );
+        .is_error("an allocation id naming nothing", 404, "ResourceNotFoundException");
+}
 
-    // The optimistic concurrency check: a revision that is no longer current.
-    for stale in [1_i32, 2, revision - 1, revision + 1] {
-        let answer = emulator
-            .update_allocation(&UpdateMarketplaceRevenueShareAllocationInput {
-                catalog: catalog.to_string(),
-                product_id: product.clone(),
-                marketplace_revenue_share_allocation_id: allocation.clone(),
-                marketplace_revenue_share_revision: stale.to_string(),
-                revenue_share_percent: Some("1".to_string()),
-                ..Default::default()
-            })
-            .await;
-        answer.is_error(
-            &format!("MarketplaceRevenueShareRevision={stale}"),
-            409,
-            "ConflictException",
-        );
-    }
-
-    // An id naming no allocation is a 404 whatever the revision says: the
-    // resource is resolved BEFORE the concurrency check, so a caller is told
-    // what is actually wrong.
-    for (case, supplied) in [
-        ("an unknown allocation id at the current revision", revision),
-        ("an unknown allocation id at a stale revision", 1),
-    ] {
-        emulator
-            .update_allocation(&UpdateMarketplaceRevenueShareAllocationInput {
-                catalog: catalog.to_string(),
-                product_id: product.clone(),
-                marketplace_revenue_share_allocation_id: "mrsa-0000000000000".to_string(),
-                marketplace_revenue_share_revision: supplied.to_string(),
-                revenue_share_percent: Some("1".to_string()),
-                ..Default::default()
-            })
-            .await
-            .is_error(case, 404, "ResourceNotFoundException");
-    }
-
-    // An update that changes nothing is refused rather than minting a revision
-    // for nothing.
-    emulator
+/// The rule: an INACTIVE allocation is counted in the total but not in the
+/// active total, and it leaves the share's effective window to the ACTIVE ones.
+#[tokio::test]
+async fn a_soft_deleted_allocation_leaves_the_counts_and_the_window_to_the_active_ones() {
+    let emulator = Emulator::new();
+    let created = emulator
+        .share_with(
+            "the parent share",
+            "AWS",
+            vec![product("prod-ina1234567890")],
+        )
+        .await;
+    let first: CreateMarketplaceRevenueShareAllocationOutput = emulator
+        .create_allocation(&create_allocation_input(
+            "AWS",
+            &created.id,
+            &created.revision,
+            "2098-01-01",
+            "2098-12-31",
+            "10",
+        ))
+        .await
+        .ok("the allocation that stays ACTIVE");
+    let second: CreateMarketplaceRevenueShareAllocationOutput = emulator
+        .create_allocation(&create_allocation_input(
+            "AWS",
+            &created.id,
+            &first.marketplace_revenue_share_latest_revision,
+            "2097-01-01",
+            "2097-12-31",
+            "10",
+        ))
+        .await
+        .ok("the allocation this test deactivates");
+    let deactivated: UpdateMarketplaceRevenueShareAllocationOutput = emulator
         .update_allocation(&UpdateMarketplaceRevenueShareAllocationInput {
-            catalog: catalog.to_string(),
-            product_id: product.clone(),
-            marketplace_revenue_share_allocation_id: allocation.clone(),
-            marketplace_revenue_share_revision: revision.to_string(),
+            catalog: "AWS".to_string(),
+            marketplace_revenue_share_identifier: created.id.clone(),
+            marketplace_revenue_share_allocation_id: second
+                .marketplace_revenue_share_allocation_id
+                .clone(),
+            marketplace_revenue_share_revision: second
+                .marketplace_revenue_share_latest_revision
+                .clone(),
+            status: Some("INACTIVE".to_string()),
             ..Default::default()
         })
         .await
-        .is_error("an update with no mutable member", 400, "ValidationException");
+        .ok("the soft delete");
+    assert_eq!(
+        deactivated.status, "INACTIVE",
+        "expected the soft-deleted status back, got {deactivated:?}"
+    );
 
-    // And the share did not move under any of those refusals.
     let share: GetMarketplaceRevenueShareOutput = emulator
         .get_share(&GetMarketplaceRevenueShareInput {
-            catalog: catalog.to_string(),
-            product_id: product.clone(),
+            catalog: "AWS".to_string(),
+            identifier: created.id.clone(),
             revision: None,
         })
         .await
-        .ok("the share after every refused update");
+        .ok("the share after the soft delete");
     assert_eq!(
-        share.revision,
-        Some(revision),
-        "expected a refused update to write nothing, got {share:?}"
+        (
+            share.total_marketplace_revenue_share_allocation_count,
+            share.total_active_marketplace_revenue_share_allocation_count,
+            share.effective_from.as_deref(),
+            share.effective_until.as_deref()
+        ),
+        (2, 1, Some("2098-01-01"), Some("2098-12-31")),
+        "expected the INACTIVE allocation out of the active count and the window, got {share:?}"
     );
 }
 
-#[tokio::test]
-async fn an_in_force_allocation_keeps_the_members_the_model_protects() {
-    let emulator = Emulator::new();
-    let catalog = "Sandbox";
-    let product = product_id("abc1234567890");
-    let _: CreateMarketplaceRevenueShareOutput = emulator
-        .create_share(&create_share_input(catalog, &product))
-        .await
-        .ok("the parent share");
-    let created: CreateMarketplaceRevenueShareAllocationOutput = emulator
-        .create_allocation(&create_allocation_input(catalog, &product, PAST_FROM, "10"))
-        .await
-        .ok("an allocation already in force");
-    let allocation = created.marketplace_revenue_share_allocation_id.clone();
+// ---------------------------------------------------------------------------
+// The two paginated lists
+// ---------------------------------------------------------------------------
 
-    // "Only modifiable on future-dated allocations" — one row per protected
-    // member.
-    let protected: [(&str, UpdateMarketplaceRevenueShareAllocationInput); 3] = [
+/// The rule: `ListMarketplaceRevenueShares` answers the shares of ONE catalog,
+/// filtered by every filter the request carries, sorted as it asks, and paged by
+/// `MaxResults` / `NextToken` over a total order.
+#[tokio::test]
+async fn the_share_list_filters_sorts_and_pages_from_state() {
+    let emulator = Emulator::new();
+    // Three shares in `AWS`, one in `Sandbox`, created in this order.
+    let first = emulator
+        .share_with("the first share", "AWS", vec![product("prod-lst1111111111")])
+        .await;
+    let second = emulator
+        .share_with(
+            "the second share",
+            "AWS",
+            vec![
+                product("prod-lst2222222222"),
+                product("prod-lst3333333333"),
+            ],
+        )
+        .await;
+    let third = emulator
+        .share_with("the third share", "AWS", vec![product("prod-lst4444444444")])
+        .await;
+    let other_catalog = emulator
+        .share_with(
+            "the share in the other catalog",
+            "Sandbox",
+            vec![product("prod-lst1111111111")],
+        )
+        .await;
+
+    let page: ListMarketplaceRevenueSharesOutput = emulator
+        .list_shares(&ListMarketplaceRevenueSharesInput {
+            catalog: "AWS".to_string(),
+            ..Default::default()
+        })
+        .await
+        .ok("every share in the catalog");
+    let ids: Vec<&str> = page
+        .marketplace_revenue_share_summaries
+        .iter()
+        .map(|summary| summary.id.as_str())
+        .collect();
+    assert_eq!(
+        ids,
+        vec![first.id.as_str(), second.id.as_str(), third.id.as_str()],
+        "expected the catalog's own shares in id order, got {ids:?}"
+    );
+    assert!(
+        !ids.contains(&other_catalog.id.as_str()),
+        "a share of another catalog is never returned, got {ids:?}"
+    );
+    let summary = page
+        .marketplace_revenue_share_summaries
+        .iter()
+        .find(|summary| summary.id == second.id)
+        .expect("the second share's summary");
+    let products: Vec<&str> = summary
+        .products
+        .iter()
+        .map(|product| product.product_id.as_str())
+        .collect();
+    assert_eq!(
         (
-            "EffectiveFrom",
-            UpdateMarketplaceRevenueShareAllocationInput {
-                effective_from: Some("2098-01-01".to_string()),
-                ..Default::default()
-            },
+            summary.arn.as_str(),
+            summary.catalog.as_str(),
+            summary.latest_revision.as_str(),
+            products
         ),
         (
-            "RevenueSharePercent",
-            UpdateMarketplaceRevenueShareAllocationInput {
-                revenue_share_percent: Some("20".to_string()),
-                ..Default::default()
-            },
+            second.arn.as_str(),
+            "AWS",
+            "1",
+            vec!["prod-lst2222222222", "prod-lst3333333333"]
+        ),
+        "expected every summary member read off the stored share, got {summary:?}"
+    );
+
+    // The sort the model declares, in both directions.
+    for (case, order, expected) in [
+        (
+            "ascending by LastModifiedDate",
+            "ASCENDING",
+            vec![first.id.as_str(), second.id.as_str(), third.id.as_str()],
         ),
         (
-            "Status",
-            UpdateMarketplaceRevenueShareAllocationInput {
-                status: Some("INACTIVE".to_string()),
-                ..Default::default()
-            },
+            "descending by LastModifiedDate",
+            "DESCENDING",
+            vec![third.id.as_str(), second.id.as_str(), first.id.as_str()],
         ),
-    ];
-    for (member, change) in protected {
-        let answer = emulator
-            .update_allocation(&UpdateMarketplaceRevenueShareAllocationInput {
-                catalog: catalog.to_string(),
-                product_id: product.clone(),
-                marketplace_revenue_share_allocation_id: allocation.clone(),
-                marketplace_revenue_share_revision: "2".to_string(),
-                ..change
+    ] {
+        let sorted: ListMarketplaceRevenueSharesOutput = emulator
+            .list_shares(&ListMarketplaceRevenueSharesInput {
+                catalog: "AWS".to_string(),
+                sort_by: Some("LastModifiedDate".to_string()),
+                sort_order: Some(order.to_string()),
+                ..Default::default()
             })
-            .await;
-        answer.is_error(member, 400, "ValidationException");
-        assert!(
-            answer.mentions(member),
-            "case {member:?}: expected the refusal to name the protected member, got {}",
-            answer.render()
-        );
+            .await
+            .ok(case);
+        let ids: Vec<&str> = sorted
+            .marketplace_revenue_share_summaries
+            .iter()
+            .map(|summary| summary.id.as_str())
+            .collect();
+        assert_eq!(ids, expected, "case {case:?}: expected {expected:?}, got {ids:?}");
     }
 
-    // `EffectiveUntil` stays modifiable, which is how an in-force allocation is
-    // ended — as long as the new end is a month end on or after today.
-    let ended: UpdateMarketplaceRevenueShareAllocationOutput = emulator
-        .update_allocation(&UpdateMarketplaceRevenueShareAllocationInput {
-            catalog: catalog.to_string(),
-            product_id: product.clone(),
-            marketplace_revenue_share_allocation_id: allocation.clone(),
-            marketplace_revenue_share_revision: "2".to_string(),
-            effective_until: Some(FUTURE_UNTIL.to_string()),
-            ..Default::default()
-        })
-        .await
-        .ok("ending an in-force allocation");
+    // One page at a time, resumed by the token the previous page answered.
+    let mut seen: Vec<String> = Vec::new();
+    let mut token: Option<String> = None;
+    loop {
+        let page: ListMarketplaceRevenueSharesOutput = emulator
+            .list_shares(&ListMarketplaceRevenueSharesInput {
+                catalog: "AWS".to_string(),
+                max_results: Some(2),
+                next_token: token.clone(),
+                ..Default::default()
+            })
+            .await
+            .ok("one page of two");
+        assert!(
+            page.marketplace_revenue_share_summaries.len() <= 2,
+            "a page never holds more than MaxResults items, got {page:?}"
+        );
+        seen.extend(
+            page.marketplace_revenue_share_summaries
+                .iter()
+                .map(|summary| summary.id.clone()),
+        );
+        token = page.next_token;
+        if token.is_none() {
+            break;
+        }
+    }
     assert_eq!(
-        (
-            ended.effective_until.as_deref(),
-            ended.revenue_share_percent.as_str(),
-            ended.status.as_str(),
-        ),
-        (Some(FUTURE_UNTIL), "10", "ACTIVE"),
-        "expected only the end date to change, got {ended:?}"
+        seen,
+        vec![first.id.clone(), second.id.clone(), third.id.clone()],
+        "paging through the list answers every share exactly once, got {seen:?}"
     );
 
-    // An end date before today is refused: the model says "on or after today".
+    // A token this query never issued, and a MaxResults outside the published
+    // range, are both refused.
     emulator
-        .update_allocation(&UpdateMarketplaceRevenueShareAllocationInput {
-            catalog: catalog.to_string(),
-            product_id: product.clone(),
-            marketplace_revenue_share_allocation_id: allocation.clone(),
-            marketplace_revenue_share_revision: "3".to_string(),
-            effective_until: Some("2020-01-31".to_string()),
+        .list_shares(&ListMarketplaceRevenueSharesInput {
+            catalog: "AWS".to_string(),
+            next_token: Some("not-a-token".to_string()),
             ..Default::default()
         })
         .await
-        .is_error("an end date in the past", 400, "ValidationException");
+        .is_error("a token this query never issued", 400, "ValidationException");
+    emulator
+        .list_shares(&ListMarketplaceRevenueSharesInput {
+            catalog: "AWS".to_string(),
+            max_results: Some(0),
+            ..Default::default()
+        })
+        .await
+        .is_error(
+            "a page of no items, below the published minimum",
+            400,
+            "ValidationException",
+        );
+
+    // The three list-of-scalar filters, each sent as a body built directly
+    // (see `crate::cbor_request`). A share matches a filter when any of its
+    // products matches, and must match every filter sent.
+    let rows: Vec<FilterRow<'_>> = vec![
+        (
+            "Identifiers naming two of the three",
+            vec![
+                ("Catalog", Cbor::text("AWS")),
+                ("Identifiers", texts(&[&first.id, &third.id])),
+            ],
+            vec![first.id.as_str(), third.id.as_str()],
+        ),
+        (
+            "Identifiers in ARN form",
+            vec![
+                ("Catalog", Cbor::text("AWS")),
+                ("Identifiers", texts(&[&second.arn])),
+            ],
+            vec![second.id.as_str()],
+        ),
+        (
+            "ProductIds naming a product of one share",
+            vec![
+                ("Catalog", Cbor::text("AWS")),
+                ("ProductIds", texts(&["prod-lst3333333333"])),
+            ],
+            vec![second.id.as_str()],
+        ),
+        (
+            "ProductIds naming products of two shares",
+            vec![
+                ("Catalog", Cbor::text("AWS")),
+                (
+                    "ProductIds",
+                    texts(&["prod-lst1111111111", "prod-lst4444444444"]),
+                ),
+            ],
+            vec![first.id.as_str(), third.id.as_str()],
+        ),
+        (
+            "ProductCodes naming the code of one product",
+            vec![
+                ("Catalog", Cbor::text("AWS")),
+                ("ProductCodes", texts(&["prodlst2222222222"])),
+            ],
+            vec![second.id.as_str()],
+        ),
+        (
+            "two filters that no share matches together",
+            vec![
+                ("Catalog", Cbor::text("AWS")),
+                ("Identifiers", texts(&[&first.id])),
+                ("ProductIds", texts(&["prod-lst4444444444"])),
+            ],
+            Vec::new(),
+        ),
+        (
+            "a ProductId no share holds",
+            vec![
+                ("Catalog", Cbor::text("AWS")),
+                ("ProductIds", texts(&["prod-lst9999999999"])),
+            ],
+            Vec::new(),
+        ),
+    ];
+    for (case, entries, expected) in rows {
+        let filtered: ListMarketplaceRevenueSharesOutput =
+            emulator.list_shares_raw(entries).await.ok(case);
+        let ids: Vec<&str> = filtered
+            .marketplace_revenue_share_summaries
+            .iter()
+            .map(|summary| summary.id.as_str())
+            .collect();
+        assert_eq!(ids, expected, "case {case:?}: expected {expected:?}, got {ids:?}");
+    }
+
+    // The two creation-time bounds, on each side of a stored `CreatedDate`:
+    // `CreatedAfter` is inclusive and `CreatedBefore` exclusive.
+    let created_at = page
+        .marketplace_revenue_share_summaries
+        .first()
+        .map(|summary| summary.created_date)
+        .unwrap_or_else(|| {
+            panic!("the first page must hold a share to read a CreatedDate from")
+        });
+    let second_before: ListMarketplaceRevenueSharesOutput = emulator
+        .list_shares(&ListMarketplaceRevenueSharesInput {
+            catalog: "AWS".to_string(),
+            created_before: Some(created_at),
+            ..Default::default()
+        })
+        .await
+        .ok("CreatedBefore the share's own instant");
+    assert!(
+        second_before
+            .marketplace_revenue_share_summaries
+            .iter()
+            .all(|summary| summary.created_date.secs() < created_at.secs()),
+        "CreatedBefore is exclusive, got {second_before:?}"
+    );
+    let at_or_after: ListMarketplaceRevenueSharesOutput = emulator
+        .list_shares(&ListMarketplaceRevenueSharesInput {
+            catalog: "AWS".to_string(),
+            created_after: Some(created_at),
+            ..Default::default()
+        })
+        .await
+        .ok("CreatedAfter the share's own instant");
+    assert!(
+        at_or_after
+            .marketplace_revenue_share_summaries
+            .iter()
+            .any(|summary| summary.created_date.secs() == created_at.secs()),
+        "CreatedAfter is inclusive, got {at_or_after:?}"
+    );
+}
+
+/// The rule: `ListMarketplaceRevenueShareAllocations` answers the allocations of
+/// ONE share as they stood at the revision the request names, filtered by status
+/// and by the four half-open date bounds, sorted as it asks, and paged over a
+/// total order.
+#[tokio::test]
+async fn the_allocation_list_filters_sorts_and_pages_from_state() {
+    let emulator = Emulator::new();
+    let created = emulator
+        .share_with(
+            "the parent share",
+            "AWS",
+            vec![product("prod-lsa1234567890")],
+        )
+        .await;
+    // (EffectiveFrom, EffectiveUntil), created in this order.
+    let intervals = [
+        ("2097-01-01", "2097-06-30"),
+        ("2098-01-01", "2098-06-30"),
+        ("2099-01-01", "2099-06-30"),
+    ];
+    let mut revision = created.revision.clone();
+    let mut ids: Vec<String> = Vec::new();
+    for (from, until) in intervals {
+        let allocation: CreateMarketplaceRevenueShareAllocationOutput = emulator
+            .create_allocation(&create_allocation_input(
+                "AWS", &created.id, &revision, from, until, "10",
+            ))
+            .await
+            .ok("one of the three allocations");
+        revision = allocation.marketplace_revenue_share_latest_revision.clone();
+        ids.push(allocation.marketplace_revenue_share_allocation_id.clone());
+    }
+    let revision_with_three = revision.clone();
+
+    let page: ListMarketplaceRevenueShareAllocationsOutput = emulator
+        .list_allocations(&ListMarketplaceRevenueShareAllocationsInput {
+            catalog: "AWS".to_string(),
+            marketplace_revenue_share_identifier: created.id.clone(),
+            ..Default::default()
+        })
+        .await
+        .ok("every allocation under the share");
+    let listed: Vec<&str> = page
+        .marketplace_revenue_share_allocation_summaries
+        .iter()
+        .map(|summary| summary.marketplace_revenue_share_allocation_id.as_str())
+        .collect();
+    assert_eq!(
+        listed,
+        ids.iter().map(String::as_str).collect::<Vec<&str>>(),
+        "expected every allocation in creation order, got {listed:?}"
+    );
+    let summary = page
+        .marketplace_revenue_share_allocation_summaries
+        .first()
+        .expect("the first summary");
+    assert_eq!(
+        (
+            summary.marketplace_revenue_share_identifier.as_str(),
+            summary.effective_from.as_str(),
+            summary.effective_until.as_str(),
+            summary.revenue_share_percent.as_str(),
+            summary.status.as_str()
+        ),
+        (created.id.as_str(), "2097-01-01", "2097-06-30", "10", "ACTIVE"),
+        "expected every summary member read off the stored allocation, got {summary:?}"
+    );
+
+    // (case, the filter, the allocations it keeps)
+    let rows: Vec<(
+        &str,
+        ListMarketplaceRevenueShareAllocationsInput,
+        Vec<usize>,
+    )> = vec![
+        (
+            "AfterEffectiveFrom is an inclusive lower bound",
+            ListMarketplaceRevenueShareAllocationsInput {
+                catalog: "AWS".to_string(),
+                marketplace_revenue_share_identifier: created.id.clone(),
+                after_effective_from: Some("2098-01-01".to_string()),
+                ..Default::default()
+            },
+            vec![1, 2],
+        ),
+        (
+            "BeforeEffectiveFrom is an exclusive upper bound",
+            ListMarketplaceRevenueShareAllocationsInput {
+                catalog: "AWS".to_string(),
+                marketplace_revenue_share_identifier: created.id.clone(),
+                before_effective_from: Some("2098-01-01".to_string()),
+                ..Default::default()
+            },
+            vec![0],
+        ),
+        (
+            "AfterEffectiveUntil is an inclusive lower bound",
+            ListMarketplaceRevenueShareAllocationsInput {
+                catalog: "AWS".to_string(),
+                marketplace_revenue_share_identifier: created.id.clone(),
+                after_effective_until: Some("2098-06-30".to_string()),
+                ..Default::default()
+            },
+            vec![1, 2],
+        ),
+        (
+            "BeforeEffectiveUntil is an exclusive upper bound",
+            ListMarketplaceRevenueShareAllocationsInput {
+                catalog: "AWS".to_string(),
+                marketplace_revenue_share_identifier: created.id.clone(),
+                before_effective_until: Some("2098-06-30".to_string()),
+                ..Default::default()
+            },
+            vec![0],
+        ),
+        (
+            "a half-open window over one interval",
+            ListMarketplaceRevenueShareAllocationsInput {
+                catalog: "AWS".to_string(),
+                marketplace_revenue_share_identifier: created.id.clone(),
+                after_effective_from: Some("2098-01-01".to_string()),
+                before_effective_from: Some("2099-01-01".to_string()),
+                ..Default::default()
+            },
+            vec![1],
+        ),
+        (
+            "the ACTIVE status filter keeps every one of them",
+            ListMarketplaceRevenueShareAllocationsInput {
+                catalog: "AWS".to_string(),
+                marketplace_revenue_share_identifier: created.id.clone(),
+                status_filter: Some("ACTIVE".to_string()),
+                ..Default::default()
+            },
+            vec![0, 1, 2],
+        ),
+        (
+            "the INACTIVE status filter keeps none",
+            ListMarketplaceRevenueShareAllocationsInput {
+                catalog: "AWS".to_string(),
+                marketplace_revenue_share_identifier: created.id.clone(),
+                status_filter: Some("INACTIVE".to_string()),
+                ..Default::default()
+            },
+            Vec::new(),
+        ),
+        (
+            "descending by EffectiveFrom",
+            ListMarketplaceRevenueShareAllocationsInput {
+                catalog: "AWS".to_string(),
+                marketplace_revenue_share_identifier: created.id.clone(),
+                sort_by: Some("EffectiveFrom".to_string()),
+                sort_order: Some("DESCENDING".to_string()),
+                ..Default::default()
+            },
+            vec![2, 1, 0],
+        ),
+        (
+            "a historical read at the revision that held one allocation",
+            ListMarketplaceRevenueShareAllocationsInput {
+                catalog: "AWS".to_string(),
+                marketplace_revenue_share_identifier: created.id.clone(),
+                marketplace_revenue_share_revision: Some("2".to_string()),
+                ..Default::default()
+            },
+            vec![0],
+        ),
+    ];
+    for (case, input, expected) in rows {
+        let filtered: ListMarketplaceRevenueShareAllocationsOutput =
+            emulator.list_allocations(&input).await.ok(case);
+        let listed: Vec<&str> = filtered
+            .marketplace_revenue_share_allocation_summaries
+            .iter()
+            .map(|summary| summary.marketplace_revenue_share_allocation_id.as_str())
+            .collect();
+        let wanted: Vec<&str> = expected.iter().map(|index| ids[*index].as_str()).collect();
+        assert_eq!(listed, wanted, "case {case:?}: expected {wanted:?}, got {listed:?}");
+    }
+
+    // One page at a time, over the same total order.
+    let mut seen: Vec<String> = Vec::new();
+    let mut token: Option<String> = None;
+    loop {
+        let page: ListMarketplaceRevenueShareAllocationsOutput = emulator
+            .list_allocations(&ListMarketplaceRevenueShareAllocationsInput {
+                catalog: "AWS".to_string(),
+                marketplace_revenue_share_identifier: created.id.clone(),
+                max_results: Some(1),
+                next_token: token.clone(),
+                ..Default::default()
+            })
+            .await
+            .ok("one page of one");
+        assert!(
+            page.marketplace_revenue_share_allocation_summaries.len() <= 1,
+            "a page never holds more than MaxResults items, got {page:?}"
+        );
+        seen.extend(
+            page.marketplace_revenue_share_allocation_summaries
+                .iter()
+                .map(|summary| summary.marketplace_revenue_share_allocation_id.clone()),
+        );
+        token = page.next_token;
+        if token.is_none() {
+            break;
+        }
+    }
+    assert_eq!(
+        seen, ids,
+        "paging through the list answers every allocation exactly once, got {seen:?}"
+    );
+
+    // A revision the share never reached names nothing.
+    emulator
+        .list_allocations(&ListMarketplaceRevenueShareAllocationsInput {
+            catalog: "AWS".to_string(),
+            marketplace_revenue_share_identifier: created.id.clone(),
+            marketplace_revenue_share_revision: Some("99".to_string()),
+            ..Default::default()
+        })
+        .await
+        .is_error(
+            "a revision the share never reached",
+            404,
+            "ResourceNotFoundException",
+        );
+    // And so does a share the catalog does not hold.
+    emulator
+        .list_allocations(&ListMarketplaceRevenueShareAllocationsInput {
+            catalog: "AWS".to_string(),
+            marketplace_revenue_share_identifier: "mrs-0000000000000".to_string(),
+            ..Default::default()
+        })
+        .await
+        .is_error("a share the catalog does not hold", 404, "ResourceNotFoundException");
+    assert_eq!(
+        revision_with_three, "4",
+        "three allocation writes move the share from revision 1 to 4, got {revision_with_three:?}"
+    );
 }
 
 // ---------------------------------------------------------------------------
-// Idempotency and conflicts.
+// Idempotency, on every `@idempotencyToken` member
 // ---------------------------------------------------------------------------
 
+/// The rule: a `ClientToken` replayed with the SAME parameters answers with the
+/// resource the first call wrote and writes nothing more; replayed with
+/// DIFFERENT parameters it is a `ConflictException`.
 #[tokio::test]
-async fn an_idempotency_token_replays_instead_of_creating_a_duplicate() {
+async fn an_idempotency_token_replays_instead_of_writing_again() {
     let emulator = Emulator::new();
-    let catalog = "AWS";
-    let product = product_id("abc1234567890");
-
+    let products = vec![product("prod-idm1234567890")];
     let first: CreateMarketplaceRevenueShareOutput = emulator
         .create_share(&CreateMarketplaceRevenueShareInput {
-            client_token: Some("tok-1".to_string()),
-            ..create_share_input(catalog, &product)
+            catalog: "AWS".to_string(),
+            client_token: Some("token-create".to_string()),
+            products: products.clone(),
+            ..Default::default()
         })
         .await
         .ok("the first create");
     let replay: CreateMarketplaceRevenueShareOutput = emulator
         .create_share(&CreateMarketplaceRevenueShareInput {
-            client_token: Some("tok-1".to_string()),
-            ..create_share_input(catalog, &product)
+            catalog: "AWS".to_string(),
+            client_token: Some("token-create".to_string()),
+            products: products.clone(),
+            ..Default::default()
         })
         .await
         .ok("the replayed create");
     assert_eq!(
-        (replay.arn.as_str(), replay.revision),
-        (first.arn.as_str(), first.revision),
-        "expected the replay to answer the first share, got {replay:?}"
+        (replay.id.as_str(), replay.revision.as_str()),
+        (first.id.as_str(), "1"),
+        "expected the share the first call minted, got {replay:?}"
     );
-
-    // Every `ClientToken` the model admits replays the same way; the recorded
-    // `tok-1` is one row, and these span the pattern's length bounds and its
-    // punctuation range. Each row carries its own product, because one token per
-    // product is what a client sends.
-    for (index, token) in ["!", "~", &"t".repeat(64), "a-b_c.d/e:f"]
-        .into_iter()
-        .enumerate()
-    {
-        let own_product = product_id(&format!("{:013}", index + 10));
-        let created: CreateMarketplaceRevenueShareOutput = emulator
-            .create_share(&CreateMarketplaceRevenueShareInput {
-                client_token: Some(token.to_string()),
-                ..create_share_input(catalog, &own_product)
-            })
-            .await
-            .ok(token);
-        let replayed: CreateMarketplaceRevenueShareOutput = emulator
-            .create_share(&CreateMarketplaceRevenueShareInput {
-                client_token: Some(token.to_string()),
-                ..create_share_input(catalog, &own_product)
-            })
-            .await
-            .ok(token);
-        assert_eq!(
-            (replayed.arn.as_str(), replayed.revision),
-            (created.arn.as_str(), created.revision),
-            "case {token:?}: expected the replay to answer the first share, got {replayed:?}"
-        );
-    }
-
-    // A second create of the same ProductId under a DIFFERENT token conflicts
-    // rather than overwriting.
     emulator
         .create_share(&CreateMarketplaceRevenueShareInput {
-            client_token: Some("tok-other".to_string()),
-            ..create_share_input(catalog, &product)
-        })
-        .await
-        .is_error("a different token for the same product", 409, "ConflictException");
-
-    // The same token asking for a DIFFERENT share conflicts too.
-    emulator
-        .create_share(&CreateMarketplaceRevenueShareInput {
-            client_token: Some("tok-1".to_string()),
-            ..create_share_input(catalog, &product_id("0000000000002"))
-        })
-        .await
-        .is_error("one token, two products", 409, "ConflictException");
-
-    // One share per product, and not one more: a replay creates nothing.
-    let shares: ListMarketplaceRevenueSharesOutput = emulator
-        .list_shares(&ListMarketplaceRevenueSharesInput {
-            catalog: catalog.to_string(),
+            catalog: "AWS".to_string(),
+            client_token: Some("token-create".to_string()),
+            products: vec![product("prod-idm9999999999")],
             ..Default::default()
         })
         .await
-        .ok("the shares after the idempotent replays");
-    assert_eq!(
-        shares.marketplace_revenue_share_summaries.len(),
-        5,
-        "expected one share per product and no duplicate, got {:?}",
-        shares.marketplace_revenue_share_summaries
-    );
-
-    // The allocation create replays the same way.
-    let allocation: CreateMarketplaceRevenueShareAllocationOutput = emulator
-        .create_allocation(&CreateMarketplaceRevenueShareAllocationInput {
-            client_token: Some("alloc-1".to_string()),
-            ..create_allocation_input(catalog, &product, "2024-01-01", "12.5")
-        })
-        .await
-        .ok("the first allocation create");
-    let replay: CreateMarketplaceRevenueShareAllocationOutput = emulator
-        .create_allocation(&CreateMarketplaceRevenueShareAllocationInput {
-            client_token: Some("alloc-1".to_string()),
-            ..create_allocation_input(catalog, &product, "2024-01-01", "12.5")
-        })
-        .await
-        .ok("the replayed allocation create");
-    assert_eq!(
-        replay.marketplace_revenue_share_allocation_id,
-        allocation.marketplace_revenue_share_allocation_id,
-        "expected the replay to answer the first allocation, got {replay:?}"
-    );
-    emulator
-        .create_allocation(&CreateMarketplaceRevenueShareAllocationInput {
-            client_token: Some("alloc-1".to_string()),
-            ..create_allocation_input(catalog, &product, "2024-02-01", "12.5")
-        })
-        .await
         .is_error(
-            "one allocation token, two effective dates",
+            "the same token with different products",
             409,
             "ConflictException",
         );
 
-    // The share moved exactly once for the one allocation that was written.
+    // The share update: the replay answers the revision it wrote, and does not
+    // fail the concurrency check against the revision it has itself moved.
+    let update = UpdateMarketplaceRevenueShareInput {
+        catalog: "AWS".to_string(),
+        identifier: first.id.clone(),
+        client_token: Some("token-update".to_string()),
+        revision: "1".to_string(),
+        products: vec![product("prod-idm2222222222")],
+    };
+    let updated: UpdateMarketplaceRevenueShareOutput =
+        emulator.update_share(&update).await.ok("the first update");
+    let replayed: UpdateMarketplaceRevenueShareOutput = emulator
+        .update_share(&update)
+        .await
+        .ok("the replayed update");
+    assert_eq!(
+        (
+            replayed.latest_revision.as_str(),
+            replayed
+                .products
+                .first()
+                .map(|product| product.product_id.as_str())
+        ),
+        (
+            updated.latest_revision.as_str(),
+            Some("prod-idm2222222222")
+        ),
+        "expected the revision the first update wrote, got {replayed:?}"
+    );
+    emulator
+        .update_share(&UpdateMarketplaceRevenueShareInput {
+            products: vec![product("prod-idm3333333333")],
+            ..update.clone()
+        })
+        .await
+        .is_error(
+            "the same update token with different products",
+            409,
+            "ConflictException",
+        );
+
+    // The allocation create and update, on the same share.
+    let allocation_input = create_allocation_input(
+        "AWS",
+        &first.id,
+        &updated.latest_revision,
+        FUTURE_FROM,
+        FUTURE_UNTIL,
+        "10",
+    );
+    let allocation: CreateMarketplaceRevenueShareAllocationOutput = emulator
+        .create_allocation(&CreateMarketplaceRevenueShareAllocationInput {
+            client_token: Some("token-allocation".to_string()),
+            ..allocation_input.clone()
+        })
+        .await
+        .ok("the first allocation create");
+    let replayed_allocation: CreateMarketplaceRevenueShareAllocationOutput = emulator
+        .create_allocation(&CreateMarketplaceRevenueShareAllocationInput {
+            client_token: Some("token-allocation".to_string()),
+            ..allocation_input.clone()
+        })
+        .await
+        .ok("the replayed allocation create");
+    assert_eq!(
+        (
+            replayed_allocation
+                .marketplace_revenue_share_allocation_id
+                .as_str(),
+            replayed_allocation
+                .marketplace_revenue_share_revision
+                .as_str()
+        ),
+        (
+            allocation.marketplace_revenue_share_allocation_id.as_str(),
+            allocation.marketplace_revenue_share_revision.as_str()
+        ),
+        "expected the allocation the first call minted, got {replayed_allocation:?}"
+    );
+    emulator
+        .create_allocation(&CreateMarketplaceRevenueShareAllocationInput {
+            client_token: Some("token-allocation".to_string()),
+            revenue_share_percent: "20".to_string(),
+            ..allocation_input.clone()
+        })
+        .await
+        .is_error(
+            "the same allocation token with a different percentage",
+            409,
+            "ConflictException",
+        );
+
+    let allocation_update = UpdateMarketplaceRevenueShareAllocationInput {
+        catalog: "AWS".to_string(),
+        marketplace_revenue_share_identifier: first.id.clone(),
+        marketplace_revenue_share_allocation_id: allocation
+            .marketplace_revenue_share_allocation_id
+            .clone(),
+        marketplace_revenue_share_revision: allocation
+            .marketplace_revenue_share_latest_revision
+            .clone(),
+        client_token: Some("token-allocation-update".to_string()),
+        revenue_share_percent: Some("25".to_string()),
+        status: None,
+    };
+    let first_update: UpdateMarketplaceRevenueShareAllocationOutput = emulator
+        .update_allocation(&allocation_update)
+        .await
+        .ok("the first allocation update");
+    let replayed_update: UpdateMarketplaceRevenueShareAllocationOutput = emulator
+        .update_allocation(&allocation_update)
+        .await
+        .ok("the replayed allocation update");
+    assert_eq!(
+        (
+            replayed_update.revenue_share_percent.as_str(),
+            replayed_update.marketplace_revenue_share_revision.as_str()
+        ),
+        (
+            first_update.revenue_share_percent.as_str(),
+            first_update.marketplace_revenue_share_revision.as_str()
+        ),
+        "expected the version the first update wrote, got {replayed_update:?}"
+    );
+
+    // Four writes and four replays: the share is at the revision those four
+    // writes produced and holds exactly one allocation.
     let share: GetMarketplaceRevenueShareOutput = emulator
         .get_share(&GetMarketplaceRevenueShareInput {
-            catalog: catalog.to_string(),
-            product_id: product.clone(),
+            catalog: "AWS".to_string(),
+            identifier: first.id.clone(),
             revision: None,
         })
         .await
-        .ok("the share after the allocation replays");
+        .ok("the share after every call above");
     assert_eq!(
         (
-            share.revision,
+            share.latest_revision.as_str(),
             share.total_marketplace_revenue_share_allocation_count
         ),
-        (Some(2), Some(1)),
-        "expected one allocation and one revision bump, got {share:?}"
-    );
-}
-
-#[tokio::test]
-async fn a_replayed_update_answers_the_version_it_already_wrote() {
-    let emulator = Emulator::new();
-    let catalog = "AWS";
-    let product = product_id("abc1234567890");
-    let _: CreateMarketplaceRevenueShareOutput = emulator
-        .create_share(&create_share_input(catalog, &product))
-        .await
-        .ok("the parent share");
-    let created: CreateMarketplaceRevenueShareAllocationOutput = emulator
-        .create_allocation(&create_allocation_input(
-            catalog, &product, FUTURE_FROM, "12.5",
-        ))
-        .await
-        .ok("a future-dated allocation");
-    let allocation = created.marketplace_revenue_share_allocation_id.clone();
-
-    let request = UpdateMarketplaceRevenueShareAllocationInput {
-        catalog: catalog.to_string(),
-        product_id: product.clone(),
-        marketplace_revenue_share_allocation_id: allocation.clone(),
-        marketplace_revenue_share_revision: "2".to_string(),
-        client_token: Some("upd-1".to_string()),
-        revenue_share_percent: Some("20".to_string()),
-        ..Default::default()
-    };
-    let first: UpdateMarketplaceRevenueShareAllocationOutput =
-        emulator.update_allocation(&request).await.ok("the update");
-    // The identical retry must not fail the optimistic concurrency check that
-    // the first attempt itself moved past, and must not mint a second revision.
-    let replay: UpdateMarketplaceRevenueShareAllocationOutput = emulator
-        .update_allocation(&request)
-        .await
-        .ok("the retried update");
-    assert_eq!(
-        (
-            replay.revenue_share_percent.as_str(),
-            replay
-                .latest_marketplace_revenue_share_revision
-                .as_deref(),
-        ),
-        (
-            first.revenue_share_percent.as_str(),
-            first.latest_marketplace_revenue_share_revision.as_deref(),
-        ),
-        "expected the retry to answer the version the first attempt wrote, got {replay:?}"
-    );
-
-    let share: GetMarketplaceRevenueShareOutput = emulator
-        .get_share(&GetMarketplaceRevenueShareInput {
-            catalog: catalog.to_string(),
-            product_id: product.clone(),
-            revision: None,
-        })
-        .await
-        .ok("the share after the retried update");
-    assert_eq!(
-        share.revision,
-        Some(3),
-        "expected one revision for the create, one for the allocation and one for \
-         the single update, got {share:?}"
+        ("4", 1),
+        "expected a replay to have written nothing, got {share:?}"
     );
 }
 
@@ -2122,9 +2496,8 @@ static CAPTURED_EVENTS: std::sync::OnceLock<Arc<std::sync::Mutex<Vec<CapturedEve
 
 /// Install the capturing subscriber as this process's default, once.
 fn install_the_audit_capture() -> Arc<std::sync::Mutex<Vec<CapturedEvent>>> {
-    let events = Arc::clone(
-        CAPTURED_EVENTS.get_or_init(|| Arc::new(std::sync::Mutex::new(Vec::new()))),
-    );
+    let events =
+        Arc::clone(CAPTURED_EVENTS.get_or_init(|| Arc::new(std::sync::Mutex::new(Vec::new()))));
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
         let subscriber = CapturingSubscriber {
@@ -2153,39 +2526,60 @@ fn captured_audit_records() -> Vec<CapturedEvent> {
 #[tokio::test]
 async fn state_changing_operations_emit_an_audit_record() {
     install_the_audit_capture();
-    let emulator = Emulator::new();
-    let catalog = "AWS";
-    // A product id no other suite uses, so each record below is this test's.
-    let product = product_id("aud1234567890");
+    // Its own Region, so every record this suite asserts on is its own: the
+    // Region is the ARN segment that distinguishes it from the identical ids
+    // another suite's store mints.
+    let emulator = Emulator::in_region(AUDIT_REGION);
     let share: CreateMarketplaceRevenueShareOutput = emulator
         .create_share(&CreateMarketplaceRevenueShareInput {
+            catalog: "AWS".to_string(),
             client_token: Some("audit-share".to_string()),
-            ..create_share_input(catalog, &product)
+            products: vec![product("prod-aud1234567890")],
+            ..Default::default()
         })
         .await
         .ok("the share create");
     // The idempotent re-send writes nothing, and says so.
     let _: CreateMarketplaceRevenueShareOutput = emulator
         .create_share(&CreateMarketplaceRevenueShareInput {
+            catalog: "AWS".to_string(),
             client_token: Some("audit-share".to_string()),
-            ..create_share_input(catalog, &product)
+            products: vec![product("prod-aud1234567890")],
+            ..Default::default()
         })
         .await
         .ok("the replayed share create");
+    let updated: UpdateMarketplaceRevenueShareOutput = emulator
+        .update_share(&UpdateMarketplaceRevenueShareInput {
+            catalog: "AWS".to_string(),
+            identifier: share.id.clone(),
+            revision: share.revision.clone(),
+            products: vec![product("prod-aud2222222222")],
+            ..Default::default()
+        })
+        .await
+        .ok("the share update");
     let allocation: CreateMarketplaceRevenueShareAllocationOutput = emulator
         .create_allocation(&create_allocation_input(
-            catalog, &product, FUTURE_FROM, "12.5",
+            "AWS",
+            &share.id,
+            &updated.latest_revision,
+            FUTURE_FROM,
+            FUTURE_UNTIL,
+            "12.5",
         ))
         .await
         .ok("the allocation create");
     let _: UpdateMarketplaceRevenueShareAllocationOutput = emulator
         .update_allocation(&UpdateMarketplaceRevenueShareAllocationInput {
-            catalog: catalog.to_string(),
-            product_id: product.clone(),
+            catalog: "AWS".to_string(),
+            marketplace_revenue_share_identifier: share.id.clone(),
             marketplace_revenue_share_allocation_id: allocation
                 .marketplace_revenue_share_allocation_id
                 .clone(),
-            marketplace_revenue_share_revision: "2".to_string(),
+            marketplace_revenue_share_revision: allocation
+                .marketplace_revenue_share_latest_revision
+                .clone(),
             revenue_share_percent: Some("20".to_string()),
             ..Default::default()
         })
@@ -2194,8 +2588,8 @@ async fn state_changing_operations_emit_an_audit_record() {
     // A read: it owes no record, which the count below pins.
     let _: GetMarketplaceRevenueShareOutput = emulator
         .get_share(&GetMarketplaceRevenueShareInput {
-            catalog: catalog.to_string(),
-            product_id: product.clone(),
+            catalog: "AWS".to_string(),
+            identifier: share.id.clone(),
             revision: None,
         })
         .await
@@ -2205,12 +2599,13 @@ async fn state_changing_operations_emit_an_audit_record() {
     let mine: Vec<&CapturedEvent> = records
         .iter()
         .filter(|record| {
-            record
-                .fields
-                .get("resource")
-                .is_some_and(|resource| resource.contains(&product))
+            record.fields.get("region").map(String::as_str) == Some(AUDIT_REGION)
         })
         .collect();
+    let allocation_resource = format!(
+        "{}/allocation/{}",
+        share.arn, allocation.marketplace_revenue_share_allocation_id
+    );
 
     // (case, the operation, the resource it names, the outcome)
     for (case, operation, resource, outcome) in [
@@ -2227,15 +2622,21 @@ async fn state_changing_operations_emit_an_audit_record() {
             "replayed: no change",
         ),
         (
+            "the share update",
+            "UpdateMarketplaceRevenueShare",
+            share.arn.clone(),
+            "updated",
+        ),
+        (
             "the allocation create",
             "CreateMarketplaceRevenueShareAllocation",
-            allocation.arn.clone(),
+            allocation_resource.clone(),
             "created",
         ),
         (
             "the allocation update",
             "UpdateMarketplaceRevenueShareAllocation",
-            allocation.arn.clone(),
+            share.arn.clone(),
             "updated",
         ),
     ] {
@@ -2260,14 +2661,14 @@ async fn state_changing_operations_emit_an_audit_record() {
             );
             assert_eq!(
                 record.fields.get("region").map(String::as_str),
-                Some(REGION),
+                Some(AUDIT_REGION),
                 "case {case:?}: the record must name the Region, got {record:?}"
             );
         }
     }
     assert_eq!(
         mine.len(),
-        4,
+        5,
         "expected one record per state-changing call and none for the read, got {mine:?}"
     );
     assert!(

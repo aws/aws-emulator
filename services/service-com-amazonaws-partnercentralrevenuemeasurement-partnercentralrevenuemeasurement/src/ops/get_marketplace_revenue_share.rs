@@ -2,8 +2,9 @@
 
 //! @op GetMarketplaceRevenueShare
 //!
-//! IMPLEMENTED: reads the share out of [`crate::state`] and computes
-//! `LatestRevision` and the two allocation counts from the stored allocations.
+//! IMPLEMENTED: reads the share out of [`crate::state`] at the revision the
+//! request names and computes its products, its effective window and the two
+//! allocation counts from the stored state at that revision.
 //!
 //! ## Shape of an operation
 //!
@@ -49,31 +50,40 @@
 //!
 //! * `Catalog` (CatalogName, one of: AWS | Sandbox) **required** — The catalog that the
 //!   marketplace revenue share belongs to.
-//! * `ProductId` (MarketplaceProductId, len 18..18, pattern ^prod-[a-z0-9]{13}$) **required**
-//!   — The AWS Marketplace product identifier of the revenue share to retrieve.
-//! * `Revision` (Integer) — The revision of the marketplace revenue share to retrieve. Omit
-//!   to return the latest revision.
+//! * `Identifier` (MarketplaceRevenueShareIdentifier, len 17..1011) **required** — The
+//!   marketplace revenue share to retrieve, by ID (mrs-...) or ARN.
+//! * `Revision` (RevisionToken, len 1..19, pattern ^[1-9][0-9]*$) — The revision of the
+//!   marketplace revenue share to retrieve. Omit to return the latest revision.
 //!
 //! ## Output
 //!
-//! * `Arn` (String) **required** — The Amazon Resource Name (ARN) of the marketplace revenue
-//!   share.
+//! * `Arn` (MarketplaceRevenueShareArn, len 1..1011) **required** — The Amazon Resource Name
+//!   (ARN) of the marketplace revenue share.
 //! * `Catalog` (CatalogName, one of: AWS | Sandbox) **required** — The catalog that the
 //!   marketplace revenue share belongs to.
-//! * `CreatedDate` (Timestamp) — The date when the marketplace revenue share was created.
-//! * `LastModifiedDate` (Timestamp) — The date when the marketplace revenue share was last
-//!   modified.
-//! * `LatestRevision` (Integer) — The latest revision number of the marketplace revenue
-//!   share.
-//! * `ProductCode` (String) — The AWS Marketplace product code.
-//! * `ProductId` (MarketplaceProductId, len 18..18, pattern ^prod-[a-z0-9]{13}$) **required**
-//!   — The AWS Marketplace product identifier of the revenue share.
-//! * `ProductName` (String) — The display name of the AWS Marketplace product.
-//! * `Revision` (Integer) — The revision number of the retrieved marketplace revenue share.
-//! * `TotalActiveMarketplaceRevenueShareAllocationCount` (Integer) — The number of active
-//!   allocations under this marketplace revenue share.
-//! * `TotalMarketplaceRevenueShareAllocationCount` (Integer) — The total number of
-//!   allocations under this marketplace revenue share.
+//! * `CreatedDate` (Timestamp) **required** — The date when the marketplace revenue share was
+//!   created.
+//! * `EffectiveFrom` (AllocationEffectiveDateString, len 10..10, pattern ^\d{4}-\d{2}-\d{2}$)
+//!   — The date from which this share is effective, derived from the earliest ACTIVE
+//!   allocation start date. Absent when no ACTIVE allocation remains.
+//! * `EffectiveUntil` (AllocationEffectiveDateString, len 10..10, pattern ^\d{4}-\d{2}-\d{2}$)
+//!   — The date until which this share is effective, derived from the latest ACTIVE
+//!   allocation end date. Absent when no ACTIVE allocation remains.
+//! * `Id` (MarketplaceRevenueShareId, len 17..17, pattern ^mrs-[a-z0-9]{13}$) **required** —
+//!   The unique identifier of the marketplace revenue share, short ID form (mrs-...).
+//! * `LastModifiedDate` (Timestamp) **required** — The date when the marketplace revenue
+//!   share was last modified.
+//! * `LatestRevision` (RevisionToken, len 1..19, pattern ^[1-9][0-9]*$) **required** — The
+//!   latest revision of the marketplace revenue share.
+//! * `Products` (MarketplaceRevenueShareProductDetailList, len 0..25) **required** — The
+//!   products in the marketplace revenue share, each with its typed account lists and full
+//!   account IDs. Empty when the share is closed.
+//! * `Revision` (RevisionToken, len 1..19, pattern ^[1-9][0-9]*$) **required** — The revision
+//!   of the retrieved marketplace revenue share.
+//! * `TotalActiveMarketplaceRevenueShareAllocationCount` (AllocationCount, range 0..)
+//!   **required** — The number of active allocations under this marketplace revenue share.
+//! * `TotalMarketplaceRevenueShareAllocationCount` (AllocationCount, range 0..) **required**
+//!   — The total number of allocations under this marketplace revenue share.
 //!
 //! ## Errors
 //!
@@ -176,48 +186,57 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         };
 
         let catalog = crate::state::parse_catalog(&input.catalog).map_err(validation)?;
+        let share_id = crate::state::resolve_share_identifier(catalog, &input.identifier)
+            .map_err(GetMarketplaceRevenueShareErrorModeled::ResourceNotFoundException)?;
         let state = state.lock();
-        let Some(share) = state.share(catalog, &input.product_id) else {
+        let Some(share) = state.share(catalog, &share_id) else {
             return Err(GetMarketplaceRevenueShareErrorModeled::ResourceNotFoundException(
-                crate::state::share_not_found(catalog, &input.product_id),
+                crate::state::share_not_found(catalog, &input.identifier),
             )
             .into());
         };
 
         // `Revision` reads the share as it existed at that revision; omitting it
         // reads the latest. A revision the share never reached names nothing.
-        let revision = match input.revision {
-            Some(requested) if requested < 1 || requested > share.revision => {
-                return Err(GetMarketplaceRevenueShareErrorModeled::ResourceNotFoundException(
-                    crate::state::revision_not_found(
-                        "Revision",
-                        &input.product_id,
-                        &requested.to_string(),
-                        share.revision,
-                    ),
-                )
-                .into());
-            }
-            Some(requested) => requested,
-            None => share.revision,
+        let revision = match input.revision.as_deref() {
+            None => share.revision(),
+            Some(token) => match crate::state::parse_revision_token(token)
+                .filter(|revision| *revision <= share.revision())
+            {
+                Some(revision) => revision,
+                None => {
+                    return Err(
+                        GetMarketplaceRevenueShareErrorModeled::ResourceNotFoundException(
+                            crate::state::revision_not_found(
+                                "Revision",
+                                &share.share_id,
+                                token,
+                                share.revision(),
+                            ),
+                        )
+                        .into(),
+                    );
+                }
+            },
         };
 
-        // Both counts are derived from the stored allocations at `revision`,
+        // Every derived member is computed from the stored state AT `revision`,
         // never held as a field on the share.
         let (total, active) = share.allocation_counts_at(revision);
+        let (effective_from, effective_until) = share.effective_window_at(revision);
         Ok(GetMarketplaceRevenueShareOutput {
-            product_id: share.product_id.clone(),
+            id: share.share_id.clone(),
             arn: share.arn.clone(),
             catalog: share.catalog.as_wire().to_string(),
-            product_code: Some(share.product_code.clone()),
-            // Absent: see the note on `ProductName` in `crate::state`.
-            product_name: None,
-            created_date: Some(crate::state::wire_timestamp(share.created_date)),
-            last_modified_date: Some(crate::state::wire_timestamp(share.modified_at(revision))),
-            revision: Some(revision),
-            latest_revision: Some(share.revision),
-            total_marketplace_revenue_share_allocation_count: Some(total),
-            total_active_marketplace_revenue_share_allocation_count: Some(active),
+            products: crate::state::product_details(share.products_at(revision)),
+            created_date: crate::state::wire_timestamp(share.created_date),
+            last_modified_date: crate::state::wire_timestamp(share.modified_at(revision)),
+            revision: crate::state::revision_token(revision),
+            latest_revision: crate::state::revision_token(share.revision()),
+            effective_from,
+            effective_until,
+            total_marketplace_revenue_share_allocation_count: total,
+            total_active_marketplace_revenue_share_allocation_count: active,
         })
     }
 }

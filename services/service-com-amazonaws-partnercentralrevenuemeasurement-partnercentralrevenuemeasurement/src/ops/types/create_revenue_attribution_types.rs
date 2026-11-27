@@ -21,6 +21,7 @@ pub struct CreateRevenueAttributionInput {
     pub tenancy_model: String,
     pub product_identifier: Option<String>,
     pub tags: Option<Vec<Tag>>,
+    pub context: Option<std::collections::HashMap<String, String>>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.partnercentralrevenuemeasurement#CreateRevenueAttributionOutput")]
@@ -33,5 +34,6 @@ pub struct CreateRevenueAttributionOutput {
     pub tenancy_model: String,
     pub marketplace_product: Option<MarketplaceProductSummary>,
     pub revision: Option<String>,
+    pub context: Option<std::collections::HashMap<String, String>>,
 }
 

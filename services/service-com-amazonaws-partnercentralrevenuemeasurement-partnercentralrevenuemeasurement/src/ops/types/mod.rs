@@ -32,6 +32,7 @@ pub mod start_revenue_attribution_allocations_task_types;
 pub mod tag_resource_types;
 pub mod untag_resource_types;
 pub mod update_marketplace_revenue_share_allocation_types;
+pub mod update_marketplace_revenue_share_types;
 pub mod update_revenue_attribution_types;
 
 #[allow(ambiguous_glob_reexports, unused_imports)]
@@ -70,6 +71,8 @@ pub use tag_resource_types::*;
 pub use untag_resource_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use update_marketplace_revenue_share_allocation_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use update_marketplace_revenue_share_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use update_revenue_attribution_types::*;
 

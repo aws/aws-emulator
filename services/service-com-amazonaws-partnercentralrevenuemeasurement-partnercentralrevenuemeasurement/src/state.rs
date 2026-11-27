@@ -9,15 +9,16 @@
 //!
 //! # Revisions are held, not faked
 //!
-//! `ListMarketplaceRevenueShareAllocations` documents "Supports historical reads
-//! at a specific share revision", and `Get…`/`Get…Allocation` both take an
-//! optional revision that reads the resource "as it existed at this revision".
-//! A share therefore carries a revision counter plus the instant each revision
-//! was written ([`MarketplaceRevenueShare::revision_dates`]), and every
+//! `ListMarketplaceRevenueShareAllocations` documents "Optional share revision
+//! for historical list", and `Get…`/`Get…Allocation` both take an optional
+//! revision that reads the resource as it existed at that revision. A share
+//! therefore holds its whole revision history — the instant each revision was
+//! written and the products it held then ([`ShareRevision`]) — and every
 //! allocation keeps the ordered list of its own versions
 //! ([`MarketplaceRevenueShareAllocation::versions`]), each stamped with the share
 //! revision at which it became current. A read at revision `r` is then answered
-//! by [`MarketplaceRevenueShareAllocation::version_at`] — reconstructed from
+//! by [`MarketplaceRevenueShare::products_at`] and
+//! [`MarketplaceRevenueShareAllocation::version_at`] — reconstructed from
 //! state, never stored as a response literal.
 //!
 //! Two things this slice deliberately does NOT emulate, so a reader does not
@@ -28,12 +29,15 @@
 //! the framework, before any handler runs.
 
 use std::collections::{BTreeMap, HashMap};
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::ops::types::{
-    ConflictException, InternalServerException, ResourceNotFoundException,
-    ServiceQuotaExceededException, Tag, ValidationException, ValidationExceptionField,
-    CATALOG_NAME_VALUES,
+    ConflictException, InternalServerException, MarketplaceRevenueShareProductDetail,
+    MarketplaceRevenueShareProductEntry, MarketplaceRevenueShareProductSummary,
+    ResourceNotFoundException, RevenueShareProductAccountDetail,
+    RevenueShareProductAccountSummary, ServiceQuotaExceededException, Tag, ValidationException,
+    ValidationExceptionField, CATALOG_NAME_VALUES, REVENUE_SHARE_PRODUCT_ACCOUNT_TYPE_VALUES,
 };
 
 /// The Region an ARN carries when the request is unsigned, so no SigV4
@@ -45,16 +49,20 @@ pub const DEFAULT_REGION: &str = "us-east-1";
 /// (`OPERATIONS.md`: "ARN namespace: `partnercentral`").
 pub const ARN_SERVICE: &str = "partnercentral";
 
-/// The ARN resource prefix of a marketplace revenue share, as `ResourceARN`'s
-/// own pattern spells it
-/// (`…:catalog/[a-zA-Z]+/marketplace-revenue-share/prod-[a-z0-9]{13}`).
+/// The ARN resource prefix of a marketplace revenue share, as
+/// `MarketplaceRevenueShareArn`'s own pattern spells it
+/// (`…:catalog/[a-zA-Z]+/marketplace-revenue-share/mrs-[a-z0-9]{13}`).
 pub const MARKETPLACE_REVENUE_SHARE_RESOURCE: &str = "marketplace-revenue-share";
 
 /// The ARN sub-resource prefix of one allocation under a revenue share.
 pub const ALLOCATION_RESOURCE: &str = "allocation";
 
+/// The leading characters of every marketplace revenue share id this service
+/// mints (`MarketplaceRevenueShareId`: `^mrs-[a-z0-9]{13}$`).
+pub const SHARE_ID_PREFIX: &str = "mrs-";
+
 /// The leading characters of every allocation id this service mints
-/// (`MarketplaceRevenueShareAllocationId`: `^mrsa-[A-Za-z0-9]{13}$`).
+/// (`MarketplaceRevenueShareAllocationId`: `^mrsa-[a-z0-9]{13}$`).
 pub const ALLOCATION_ID_PREFIX: &str = "mrsa-";
 
 /// The most marketplace revenue shares this emulator holds at once.
@@ -67,29 +75,27 @@ pub const ALLOCATION_ID_PREFIX: &str = "mrsa-";
 pub const MAX_REVENUE_SHARES: usize = 100;
 
 /// The most allocations one revenue share holds at once, for the same reason.
-/// `CreateMarketplaceRevenueShareAllocation` models no quota error, so a create
-/// past this ceiling is refused with the modelled `ValidationException`.
+/// `CreateMarketplaceRevenueShareAllocation` models the same quota error, so a
+/// create past this ceiling is refused with `ServiceQuotaExceededException`.
 pub const MAX_ALLOCATIONS_PER_SHARE: usize = 250;
 
 /// The highest revision one revenue share reaches in this emulator.
 ///
-/// Every allocation write appends a version and bumps the share's revision, and
+/// Every write to a share or to one of its allocations appends a revision, and
 /// the history is what a historical read is answered from — so the history is
-/// also the store's growth vector. A write past this ceiling is refused with the
-/// modelled `ValidationException`. `RevisionToken` admits up to 19 digits, so
-/// this is the emulator's own ceiling and not a modelled one.
-pub const MAX_SHARE_REVISION: i32 = 10_000;
+/// also the store's growth vector, and a revision can carry a product set of
+/// its own. A write past this ceiling is refused with the modelled
+/// `ValidationException`. `RevisionToken` admits up to 19 digits, so this is the
+/// emulator's own ceiling and not a modelled one.
+pub const MAX_SHARE_REVISION: i32 = 1_000;
 
 /// The most items any `@paginated` list in this service returns in one page,
-/// including when `MaxResults` is absent or larger.
+/// including when `MaxResults` is absent.
 ///
-/// This is the EMULATOR's own ceiling: the generated contract headers render
-/// `MaxResults` as a plain `Integer` on both lists, so no modelled `@range`
-/// bounds it and one call could otherwise be asked for the whole store in a
-/// single response body. A caller that wants the rest follows `NextToken`. A
-/// value AT OR BELOW zero is refused with the modelled `ValidationException`
-/// rather than quietly clamped, because a page of "zero or fewer" items is not
-/// a request this service can honour.
+/// `MaxResults` carries `@range(min: 1, max: 100)` on both lists, so a value
+/// outside it is refused at the boundary before a handler runs. This is the
+/// page a caller that names no `MaxResults` gets, and the ceiling [`page`]
+/// clamps to; a caller that wants the rest follows `NextToken`.
 pub const MAX_PAGE_SIZE: i32 = 100;
 
 /// `CatalogName` — which catalog a resource lives in (`AWS` | `Sandbox`).
@@ -172,6 +178,83 @@ impl SortOrder {
     }
 }
 
+/// `RevenueShareProductAccountType` — which list of accounts a product entry
+/// carries (`DEPLOYMENT` | `ORGANIZATION`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum AccountType {
+    /// The accounts the product is deployed into.
+    Deployment,
+    /// The accounts of the organization the product belongs to.
+    Organization,
+}
+
+impl AccountType {
+    /// The value this account type serializes as.
+    pub fn as_wire(self) -> &'static str {
+        match self {
+            Self::Deployment => "DEPLOYMENT",
+            Self::Organization => "ORGANIZATION",
+        }
+    }
+
+    /// Parse a wire value, or `None` when it is not one the model declares.
+    pub fn from_wire(value: &str) -> Option<Self> {
+        match value {
+            "DEPLOYMENT" => Some(Self::Deployment),
+            "ORGANIZATION" => Some(Self::Organization),
+            _ => None,
+        }
+    }
+}
+
+/// One typed account list under a product, as the request supplied it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProductAccounts {
+    /// `AccountType`.
+    pub account_type: AccountType,
+    /// `AccountIds`. Held verbatim and never logged:
+    /// `RevenueShareProductAccountId` is `@sensitive`.
+    pub account_ids: Vec<String>,
+}
+
+/// One product in a marketplace revenue share, as this emulator holds it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProductRecord {
+    /// `ProductId` — the product id the entry named, which is what the share
+    /// "stores and returns" even when the entry carried a product ARN.
+    pub product_id: String,
+    /// The typed account lists, at most one per type, in the order the request
+    /// listed them.
+    ///
+    /// Empty when the entry carried none: the model documents an empty list as
+    /// the same as omitting the member and omitting it as "have the service
+    /// determine the accounts", and the accounts of an AWS Marketplace product
+    /// live in the Marketplace catalog, which this emulator does not have — so
+    /// no account is invented for it.
+    pub accounts: Vec<ProductAccounts>,
+}
+
+/// One revision of a marketplace revenue share: when it was written, and the
+/// products the share held from then on.
+///
+/// Every write to the share or to one of its allocations appends one of these,
+/// so a historical read (`Revision` on the get,
+/// `MarketplaceRevenueShareRevision` on the allocation reads) is answered from
+/// the revision that was current then rather than from the newest values.
+#[derive(Debug, Clone)]
+pub struct ShareRevision {
+    /// When this revision was written.
+    pub written_at: SystemTime,
+    /// The products the share held at this revision. Empty once the share is
+    /// closed.
+    ///
+    /// SHARED with the revisions either side of it: a write to one of the
+    /// share's allocations appends a revision without touching the products and
+    /// holds the same set rather than a copy of it, so the stored product
+    /// history grows only when `UpdateMarketplaceRevenueShare` replaces the set.
+    pub products: Arc<Vec<ProductRecord>>,
+}
+
 /// One version of an allocation: the mutable half of the record, plus the share
 /// revision at which this version became the current one.
 #[derive(Debug, Clone)]
@@ -181,8 +264,8 @@ pub struct AllocationVersion {
     pub revision: i32,
     /// `EffectiveFrom` — the first day of a month.
     pub effective_from: String,
-    /// `EffectiveUntil` — the last day of a month, or `None` for open-ended.
-    pub effective_until: Option<String>,
+    /// `EffectiveUntil` — the last day of a month.
+    pub effective_until: String,
     /// `RevenueSharePercent`, verbatim as the caller wrote it.
     pub revenue_share_percent: String,
     /// `Status`.
@@ -196,10 +279,6 @@ pub struct AllocationVersion {
 pub struct MarketplaceRevenueShareAllocation {
     /// `MarketplaceRevenueShareAllocationId` — minted by this service.
     pub allocation_id: String,
-    /// `Arn`.
-    pub arn: String,
-    /// `ProductId` of the parent revenue share.
-    pub product_id: String,
     /// `CreatedDate`.
     pub created_date: SystemTime,
     /// The version this allocation was created with.
@@ -252,20 +331,18 @@ impl MarketplaceRevenueShareAllocation {
 /// A marketplace revenue share, as this emulator holds it.
 #[derive(Debug, Clone)]
 pub struct MarketplaceRevenueShare {
-    /// `ProductId` — the caller's AWS Marketplace product identifier.
-    pub product_id: String,
+    /// `Id` — the `^mrs-[a-z0-9]{13}$` identifier this service minted for it.
+    pub share_id: String,
     /// `Arn`.
     pub arn: String,
     /// `Catalog`.
     pub catalog: CatalogName,
-    /// `ProductCode`.
-    pub product_code: String,
     /// `CreatedDate`.
     pub created_date: SystemTime,
-    /// The current revision; `1` right after the create.
-    pub revision: i32,
-    /// When each revision was written: `revision_dates[r - 1]` is revision `r`.
-    pub revision_dates: Vec<SystemTime>,
+    /// Every revision, oldest first: `revisions[r - 1]` is revision `r` and the
+    /// last one is current. Never empty — the create writes revision 1 — so
+    /// [`MarketplaceRevenueShare::revision`] is always at least 1.
+    pub revisions: Vec<ShareRevision>,
     /// The tags the create request carried.
     pub tags: Vec<Tag>,
     /// Every allocation under this share, keyed by id. A `BTreeMap` over
@@ -275,27 +352,79 @@ pub struct MarketplaceRevenueShare {
 }
 
 impl MarketplaceRevenueShare {
+    /// The current revision; `1` right after the create.
+    pub fn revision(&self) -> i32 {
+        i32::try_from(self.revisions.len()).unwrap_or(i32::MAX)
+    }
+
+    /// The revision `revision` names, or `None` for one this share never
+    /// reached.
+    pub fn revision_at(&self, revision: i32) -> Option<&ShareRevision> {
+        usize::try_from(revision)
+            .ok()
+            .and_then(|index| index.checked_sub(1))
+            .and_then(|index| self.revisions.get(index))
+    }
+
     /// `LastModifiedDate` — when the current revision was written.
     pub fn last_modified_date(&self) -> SystemTime {
-        *self.revision_dates.last().unwrap_or(&self.created_date)
+        self.revisions
+            .last()
+            .map(|revision| revision.written_at)
+            .unwrap_or(self.created_date)
     }
 
     /// When `revision` was written, falling back to the creation instant for a
     /// revision this share never reached.
     pub fn modified_at(&self, revision: i32) -> SystemTime {
-        usize::try_from(revision)
-            .ok()
-            .and_then(|index| index.checked_sub(1))
-            .and_then(|index| self.revision_dates.get(index))
-            .copied()
+        self.revision_at(revision)
+            .map(|revision| revision.written_at)
             .unwrap_or(self.created_date)
     }
 
-    /// Record a new revision written at `now` and answer its number.
+    /// The products the share held at `revision`, and none at a revision it
+    /// never reached.
+    pub fn products_at(&self, revision: i32) -> &[ProductRecord] {
+        self.revision_at(revision)
+            .map(|revision| revision.products.as_slice())
+            .unwrap_or_default()
+    }
+
+    /// The products the share holds now.
+    pub fn products(&self) -> &[ProductRecord] {
+        self.products_at(self.revision())
+    }
+
+    /// Whether the share is closed: its current revision holds no product.
+    /// Closing is one-way, so a share that reaches this stays here.
+    pub fn is_closed(&self) -> bool {
+        self.products().is_empty()
+    }
+
+    /// Record a new revision written at `now`, holding `products`, and answer
+    /// its number.
+    pub fn push_revision(&mut self, now: SystemTime, products: Vec<ProductRecord>) -> i32 {
+        self.revisions.push(ShareRevision {
+            written_at: now,
+            products: Arc::new(products),
+        });
+        self.revision()
+    }
+
+    /// Record a new revision that leaves the products as they are — what a
+    /// write to one of this share's allocations does to the share itself. The
+    /// new revision SHARES the product set rather than copying it.
     pub fn bump_revision(&mut self, now: SystemTime) -> i32 {
-        self.revision += 1;
-        self.revision_dates.push(now);
-        self.revision
+        let products = self
+            .revisions
+            .last()
+            .map(|revision| Arc::clone(&revision.products))
+            .unwrap_or_default();
+        self.revisions.push(ShareRevision {
+            written_at: now,
+            products,
+        });
+        self.revision()
     }
 
     /// Every allocation that existed at `revision`, paired with the version that
@@ -324,18 +453,46 @@ impl MarketplaceRevenueShare {
         (total, active)
     }
 
+    /// `EffectiveFrom` and `EffectiveUntil` as the share reports them at
+    /// `revision`: "derived from the earliest ACTIVE allocation start date" and
+    /// from "the latest ACTIVE allocation end date", and both absent when no
+    /// ACTIVE allocation remains.
+    pub fn effective_window_at(&self, revision: i32) -> (Option<String>, Option<String>) {
+        let mut from: Option<&str> = None;
+        let mut until: Option<&str> = None;
+        for (_, version) in self.allocations_at(revision) {
+            if version.status != AllocationStatus::Active {
+                continue;
+            }
+            // `YYYY-MM-DD` orders chronologically as a string.
+            from = Some(match from {
+                Some(held) if held <= version.effective_from.as_str() => held,
+                _ => version.effective_from.as_str(),
+            });
+            until = Some(match until {
+                Some(held) if held >= version.effective_until.as_str() => held,
+                _ => version.effective_until.as_str(),
+            });
+        }
+        (from.map(str::to_string), until.map(str::to_string))
+    }
+
     /// Whether this record is the one `CreateMarketplaceRevenueShare` would mint
     /// for these parameters — the comparison an idempotent replay makes before
     /// answering with it, so a `ClientToken` reused with DIFFERENT parameters
     /// conflicts instead of quietly answering with the first call's share.
+    ///
+    /// The products compared are the ones the CREATE wrote (revision 1), not
+    /// the ones the share holds now: a later `UpdateMarketplaceRevenueShare`
+    /// does not turn a faithful replay of the create into a conflict.
     pub fn matches_create(
         &self,
         catalog: CatalogName,
-        product_id: &str,
+        products: &[ProductRecord],
         tags: Option<&Vec<Tag>>,
     ) -> bool {
         self.catalog == catalog
-            && self.product_id == product_id
+            && self.products_at(1) == products
             && tag_pairs(Some(&self.tags)) == tag_pairs(tags)
     }
 }
@@ -356,25 +513,31 @@ pub fn tag_pairs(tags: Option<&Vec<Tag>>) -> Vec<(String, String)> {
 /// Per-service state for com-amazonaws-partnercentralrevenuemeasurement-partnercentralrevenuemeasurement. A handler reaches it through [`service_state`].
 #[derive(Debug, Default)]
 pub struct ComAmazonawsPartnercentralrevenuemeasurementPartnercentralrevenuemeasurementState {
-    /// Every revenue share, keyed by `(Catalog, ProductId)` — a `BTreeMap`, so
-    /// every list page is in a stable, resumable order and the two catalogs are
+    /// Every revenue share, keyed by `(Catalog, Id)` — a `BTreeMap`, so every
+    /// list page is in a stable, resumable order and the two catalogs are
     /// contiguous ranges.
     pub marketplace_revenue_shares: BTreeMap<(CatalogName, String), MarketplaceRevenueShare>,
     /// `ClientToken` -> the share key it created, so an `@idempotent` create
     /// replayed with the same token answers with the share it already minted.
     pub share_idempotency: HashMap<String, (CatalogName, String)>,
-    /// `ClientToken` -> `(Catalog, ProductId, allocation id)`, for the same
+    /// `ClientToken` -> `(Catalog, share id, the share revision the update
+    /// produced)`, so an `@idempotent` `UpdateMarketplaceRevenueShare` replayed
+    /// with the same token answers with the revision it wrote instead of
+    /// failing the optimistic concurrency check against a revision it has
+    /// itself already moved.
+    pub share_update_idempotency: HashMap<String, (CatalogName, String, i32)>,
+    /// `ClientToken` -> `(Catalog, share id, allocation id)`, for the same
     /// reason. Kept separate from `share_idempotency` because the two creates are
     /// different operations: one token reused across both must not make a
     /// `CreateMarketplaceRevenueShareAllocation` answer with a share.
     pub allocation_idempotency: HashMap<String, (CatalogName, String, String)>,
-    /// `ClientToken` -> `(Catalog, ProductId, allocation id, share revision the
+    /// `ClientToken` -> `(Catalog, share id, allocation id, share revision the
     /// update produced)`, so an `@idempotent` update replayed with the same token
     /// answers with the version it wrote instead of failing the optimistic
     /// concurrency check against a revision it has itself already moved.
     pub allocation_update_idempotency: HashMap<String, (CatalogName, String, String, i32)>,
-    /// Source of the sequence number behind every minted allocation id.
-    /// Monotonic, so no two allocations in one store ever share an id.
+    /// Source of the sequence number behind every minted share and allocation
+    /// id. Monotonic, so no two resources in one store ever share an id.
     pub next_sequence: u64,
 }
 
@@ -386,24 +549,20 @@ impl ComAmazonawsPartnercentralrevenuemeasurementPartnercentralrevenuemeasuremen
         self.next_sequence
     }
 
-    /// The share `(catalog, product_id)` names, if the store holds it.
-    pub fn share(
-        &self,
-        catalog: CatalogName,
-        product_id: &str,
-    ) -> Option<&MarketplaceRevenueShare> {
+    /// The share `(catalog, share_id)` names, if the store holds it.
+    pub fn share(&self, catalog: CatalogName, share_id: &str) -> Option<&MarketplaceRevenueShare> {
         self.marketplace_revenue_shares
-            .get(&(catalog, product_id.to_string()))
+            .get(&(catalog, share_id.to_string()))
     }
 
-    /// The share `(catalog, product_id)` names, for mutation.
+    /// The share `(catalog, share_id)` names, for mutation.
     pub fn share_mut(
         &mut self,
         catalog: CatalogName,
-        product_id: &str,
+        share_id: &str,
     ) -> Option<&mut MarketplaceRevenueShare> {
         self.marketplace_revenue_shares
-            .get_mut(&(catalog, product_id.to_string()))
+            .get_mut(&(catalog, share_id.to_string()))
     }
 }
 
@@ -462,45 +621,46 @@ pub fn audit(parts: &::http::request::Parts, operation: &str, resource: &str, ou
 
 /// The ARN of a marketplace revenue share, through the one ARN builder the
 /// framework vends (so the account segment is the canonical emulator account).
-pub fn share_arn(region: &str, catalog: CatalogName, product_id: &str) -> String {
+pub fn share_arn(region: &str, catalog: CatalogName, share_id: &str) -> String {
     ::engine::emulator_arn(
         ARN_SERVICE,
         region,
         &format!(
-            "catalog/{}/{MARKETPLACE_REVENUE_SHARE_RESOURCE}/{product_id}",
+            "catalog/{}/{MARKETPLACE_REVENUE_SHARE_RESOURCE}/{share_id}",
             catalog.as_wire()
         ),
     )
 }
 
 /// The ARN of one allocation: its parent share's ARN plus the allocation
-/// sub-resource. `Arn` on the allocation shapes carries no `@pattern`, and the
-/// model documents it as "the ARN of the allocation", so it is the share ARN
-/// extended rather than the share ARN repeated.
+/// sub-resource.
 ///
-/// Which of the two ARNs a response carries is per member, as the model words
-/// it: `CreateMarketplaceRevenueShareAllocationOutput`,
-/// `GetMarketplaceRevenueShareAllocationOutput` and the list summaries document
-/// `Arn` as the allocation's, so they carry this one, while
-/// `UpdateMarketplaceRevenueShareAllocationOutput` documents its `Arn` as "the
-/// ARN of the PARENT marketplace revenue share" and so carries
-/// [`AllocationView::share_arn`].
+/// No output shape in this service carries an allocation ARN, so this names the
+/// allocation in the AUDIT record a state-changing operation emits — one string
+/// that says which allocation under which share in which catalog changed.
 pub fn allocation_arn(
     region: &str,
     catalog: CatalogName,
-    product_id: &str,
+    share_id: &str,
     allocation_id: &str,
 ) -> String {
     format!(
         "{}/{ALLOCATION_RESOURCE}/{allocation_id}",
-        share_arn(region, catalog, product_id)
+        share_arn(region, catalog, share_id)
     )
 }
 
-/// An allocation id for sequence number `sequence`, matching
-/// `MarketplaceRevenueShareAllocationId`'s `^mrsa-[A-Za-z0-9]{13}$`. Zero-padded
-/// to exactly 13 digits, so id order is creation order and a list page resumes
+/// A marketplace revenue share id for sequence number `sequence`, matching
+/// `MarketplaceRevenueShareId`'s `^mrs-[a-z0-9]{13}$`. Zero-padded to exactly
+/// 13 digits, so id order is creation order and a list page resumes
 /// deterministically.
+pub fn share_id(sequence: u64) -> String {
+    format!("{SHARE_ID_PREFIX}{:013}", sequence % 10_000_000_000_000)
+}
+
+/// An allocation id for sequence number `sequence`, matching
+/// `MarketplaceRevenueShareAllocationId`'s `^mrsa-[a-z0-9]{13}$`. Zero-padded
+/// to exactly 13 digits, for the same reason.
 ///
 /// The modulo keeps the id exactly 13 characters however far the sequence runs;
 /// two ids could only collide past 10^13 writes, which
@@ -508,6 +668,34 @@ pub fn allocation_arn(
 /// reach of any store this emulator holds.
 pub fn allocation_id(sequence: u64) -> String {
     format!("{ALLOCATION_ID_PREFIX}{:013}", sequence % 10_000_000_000_000)
+}
+
+/// The share id a `MarketplaceRevenueShareIdentifier` names: the identifier
+/// itself in short form (`mrs-…`), or the resource segment of the ARN form.
+///
+/// The member's `@pattern` admits exactly those two forms and is enforced at
+/// the boundary, so this only has to pick the id out. The ARN form's Region and
+/// catalog segments are NOT read back: `Catalog` is its own `@required` member
+/// and the account is this emulator's, so the id is what identifies the share.
+pub fn parse_share_identifier(value: &str) -> Option<String> {
+    let candidate = match value.rsplit_once('/') {
+        Some((_, last)) => last,
+        None => value,
+    };
+    candidate
+        .starts_with(SHARE_ID_PREFIX)
+        .then(|| candidate.to_string())
+}
+
+/// The share id a `MarketplaceRevenueShareIdentifier` names, or the modelled
+/// 404 an identifier that names no share in this catalog earns. A value neither
+/// form fits names nothing either, so it is the same 404 rather than a second
+/// kind of refusal.
+pub fn resolve_share_identifier(
+    catalog: CatalogName,
+    identifier: &str,
+) -> Result<String, ResourceNotFoundException> {
+    parse_share_identifier(identifier).ok_or_else(|| share_not_found(catalog, identifier))
 }
 
 // A request that carries no `ClientToken` gets NO idempotency entry: an absent
@@ -522,27 +710,235 @@ pub fn allocation_id(sequence: u64) -> String {
 // leaves it absent rather than answering with generated prose that would read as
 // looked up. `ProductCode` IS answered, for the reason [`product_code`] states.
 
-/// The AWS Marketplace product code of `product_id`: the identifier's own
-/// suffix.
+/// `MarketplaceProductId`'s own length bounds, which are what the share
+/// ANSWERS a product id within (`len 3..256`).
+const PRODUCT_ID_LENGTH: ::std::ops::RangeInclusive<usize> = 3..=256;
+
+/// `ProductCode`'s own maximum length (`len 1..64`).
+const PRODUCT_CODE_MAX_LENGTH: usize = 64;
+
+/// Whether `value` is a `MarketplaceProductId`:
+/// `^[a-zA-Z0-9][.a-zA-Z0-9/-]{1,254}[a-zA-Z0-9]$`, `len 3..256`.
+fn is_product_id(value: &str) -> bool {
+    PRODUCT_ID_LENGTH.contains(&value.chars().count())
+        && value.starts_with(|c: char| c.is_ascii_alphanumeric())
+        && value.ends_with(|c: char| c.is_ascii_alphanumeric())
+        && value
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '/'))
+}
+
+/// The product id segment of a product identifier: the value itself, or the
+/// last segment of a product ARN — the model documents both forms wherever a
+/// product is named ("product IDs or product ARNs").
+pub fn product_id_segment(value: &str) -> &str {
+    if value.starts_with("arn:") {
+        value.rsplit(['/', ':']).next().unwrap_or(value)
+    } else {
+        value
+    }
+}
+
+/// The product id a `MarketplaceRevenueShareProductEntry` names: the entry's
+/// own value, or the last segment of a product ARN — the model documents the
+/// member as "the AWS Marketplace product ID or product ARN" and that "the
+/// share stores and returns the product ID".
+///
+/// The entry's own `@pattern` (`^[\w\-:/.]+$`) admits characters the product id
+/// this service answers with does not (`MarketplaceProductId`), so a value that
+/// names no product id is refused here rather than stored and answered as one.
+pub fn resolve_product_id(member: &str, value: &str) -> Result<String, ValidationException> {
+    let candidate = product_id_segment(value);
+    if is_product_id(candidate) {
+        return Ok(candidate.to_string());
+    }
+    Err(field_validation(
+        "REQUEST_VALIDATION_FAILED",
+        "INVALID_STRING_FORMAT",
+        member,
+        format!("{value:?} names no AWS Marketplace product id"),
+    ))
+}
+
+/// The AWS Marketplace product code of `product_id`: its alphanumeric
+/// characters, which is the one token this emulator has that `ProductCode`'s
+/// `^[A-Za-z0-9]+$` admits.
 ///
 /// Why this member is answered while `ProductName` is not. `ProductCode` is an
-/// opaque token — the model gives it neither a `@pattern` nor a `@length`, so
-/// every string is a legal one — and the emulator has exactly one opaque token
-/// that is unique per product, stable across every read, derived from a value
-/// the caller itself supplied, and never regenerated per request: the product
-/// identifier minus its `prod-` prefix. So the code is that token, and a
-/// `ProductCodes` filter is a real filter over state. `ProductName`, by
-/// contrast, is human-readable PROSE: there is no token to derive it from, only
-/// text to invent, so that member is left absent (see the note above).
+/// opaque alphanumeric token, and the emulator has exactly one such token that
+/// is unique per product, stable across every read, derived from a value the
+/// caller itself supplied, and never regenerated per request: the product id's
+/// own alphanumerics. So the code is that token, and a `ProductCodes` filter is
+/// a real filter over state. `ProductName`, by contrast, is human-readable
+/// PROSE: there is no token to derive it from, only text to invent, so that
+/// member is left absent (see the note above).
 ///
 /// The divergence this leaves is stated plainly: on real AWS the product code is
 /// a different string from the product id, assigned by AWS Marketplace, and this
 /// emulator holds no Marketplace catalog to read it out of.
-pub fn product_code(product_id: &str) -> String {
-    product_id
-        .strip_prefix("prod-")
-        .unwrap_or(product_id)
-        .to_string()
+pub fn product_code(product_id: &str) -> Option<String> {
+    let code: String = product_id
+        .chars()
+        .filter(char::is_ascii_alphanumeric)
+        .take(PRODUCT_CODE_MAX_LENGTH)
+        .collect();
+    (!code.is_empty()).then_some(code)
+}
+
+/// The products a `Products` member asks the share to hold, or the modelled 400
+/// the request earns.
+///
+/// `Products` is "the complete desired set of products", so one product may
+/// appear once; each product's `Accounts` carries "at most one entry per type",
+/// and "each entry must carry at least one account" with "an empty list \[\] the
+/// same as omitting the field". Every refusal names the member path it is
+/// about, so a caller can fix the request from the message alone.
+pub fn resolve_products(
+    entries: &[MarketplaceRevenueShareProductEntry],
+) -> Result<Vec<ProductRecord>, ValidationException> {
+    let mut products: Vec<ProductRecord> = Vec::with_capacity(entries.len());
+    for (index, entry) in entries.iter().enumerate() {
+        let member = format!("Products[{index}].ProductId");
+        let product_id = resolve_product_id(&member, &entry.product_id)?;
+        if products
+            .iter()
+            .any(|held| held.product_id == product_id)
+        {
+            return Err(field_validation(
+                "REQUEST_VALIDATION_FAILED",
+                "DUPLICATE_VALUE",
+                &member,
+                format!("product {product_id} is listed more than once"),
+            ));
+        }
+        let mut accounts: Vec<ProductAccounts> = Vec::new();
+        for (slot, supplied) in entry.accounts.iter().flatten().enumerate() {
+            let member = format!("Products[{index}].Accounts[{slot}].AccountType");
+            let Some(account_type) = AccountType::from_wire(&supplied.account_type) else {
+                return Err(invalid_enum(
+                    &member,
+                    REVENUE_SHARE_PRODUCT_ACCOUNT_TYPE_VALUES,
+                ));
+            };
+            if accounts.iter().any(|held| held.account_type == account_type) {
+                return Err(field_validation(
+                    "REQUEST_VALIDATION_FAILED",
+                    "DUPLICATE_VALUE",
+                    &member,
+                    format!(
+                        "{} is listed more than once for product {product_id}",
+                        account_type.as_wire()
+                    ),
+                ));
+            }
+            if supplied.account_ids.is_empty() {
+                return Err(invalid_value(
+                    &format!("Products[{index}].Accounts[{slot}].AccountIds"),
+                    "must carry at least one account",
+                ));
+            }
+            accounts.push(ProductAccounts {
+                account_type,
+                account_ids: supplied.account_ids.clone(),
+            });
+        }
+        products.push(ProductRecord {
+            product_id,
+            accounts,
+        });
+    }
+    Ok(products)
+}
+
+/// The most accounts one marketplace revenue share's product set names, summed
+/// over every product in it.
+///
+/// `Products` is `len 0..25`, each product's `Accounts` is `len 0..2` and each
+/// `AccountIds` is `len 1..1000`, and all three are refused at the boundary —
+/// so this is the product of those modelled maxima and no request the boundary
+/// admits reaches it. It is here so that the two operations which STORE a
+/// product set check, at the write itself, how much the store is about to grow
+/// by: one explicit ceiling in front of the allocation rather than three
+/// separate lengths a reader has to multiply. A set past it is refused with the
+/// modelled `ServiceQuotaExceededException`.
+pub const MAX_ACCOUNTS_PER_SHARE: usize = 50_000;
+
+/// How many accounts `products` names in total — what a write compares against
+/// [`MAX_ACCOUNTS_PER_SHARE`] before storing the set.
+pub fn account_total(products: &[ProductRecord]) -> usize {
+    products
+        .iter()
+        .map(|product| {
+            product
+                .accounts
+                .iter()
+                .map(|accounts| accounts.account_ids.len())
+                .sum::<usize>()
+        })
+        .sum()
+}
+
+/// `Products` as `MarketplaceRevenueShareProductSummary` carries it: the stored
+/// products with "per-type account counts but no account IDs".
+pub fn product_summaries(products: &[ProductRecord]) -> Vec<MarketplaceRevenueShareProductSummary> {
+    products
+        .iter()
+        .map(|product| MarketplaceRevenueShareProductSummary {
+            product_id: product.product_id.clone(),
+            product_code: product_code(&product.product_id),
+            // Absent: see the note on `ProductName` above.
+            product_name: None,
+            accounts: account_summaries(product),
+        })
+        .collect()
+}
+
+/// `Products` as `MarketplaceRevenueShareProductDetail` carries it: the stored
+/// products with "its count and full list of IDs" per type.
+pub fn product_details(products: &[ProductRecord]) -> Vec<MarketplaceRevenueShareProductDetail> {
+    products
+        .iter()
+        .map(|product| MarketplaceRevenueShareProductDetail {
+            product_id: product.product_id.clone(),
+            product_code: product_code(&product.product_id),
+            // Absent: see the note on `ProductName` above.
+            product_name: None,
+            accounts: (!product.accounts.is_empty()).then(|| {
+                product
+                    .accounts
+                    .iter()
+                    .map(|accounts| RevenueShareProductAccountDetail {
+                        account_type: accounts.account_type.as_wire().to_string(),
+                        count: account_count(accounts),
+                        account_ids: accounts.account_ids.clone(),
+                    })
+                    .collect()
+            }),
+        })
+        .collect()
+}
+
+/// The per-type counts of one product's accounts, and no member at all for a
+/// product whose entry carried no account list: an absent `Accounts` says the
+/// service holds no account list for the product, which a list of zero counts
+/// would not.
+fn account_summaries(product: &ProductRecord) -> Option<Vec<RevenueShareProductAccountSummary>> {
+    (!product.accounts.is_empty()).then(|| {
+        product
+            .accounts
+            .iter()
+            .map(|accounts| RevenueShareProductAccountSummary {
+                account_type: accounts.account_type.as_wire().to_string(),
+                count: account_count(accounts),
+            })
+            .collect()
+    })
+}
+
+/// `Count` for one typed account list, counted from the stored ids rather than
+/// held as a field.
+fn account_count(accounts: &ProductAccounts) -> i32 {
+    i32::try_from(accounts.account_ids.len()).unwrap_or(i32::MAX)
 }
 
 /// `Revision` / `MarketplaceRevenueShareRevision` as the wire carries it: a
@@ -717,18 +1113,21 @@ pub fn not_found(message: impl Into<String>) -> ResourceNotFoundException {
     }
 }
 
-/// The modelled 404 for a revenue share this catalog does not hold.
-pub fn share_not_found(catalog: CatalogName, product_id: &str) -> ResourceNotFoundException {
+/// The modelled 404 for a revenue share this catalog does not hold. The
+/// message names the IDENTIFIER the request sent, which is what the caller can
+/// act on, in either of the two forms the member admits.
+pub fn share_not_found(catalog: CatalogName, identifier: &str) -> ResourceNotFoundException {
     not_found(format!(
-        "no marketplace revenue share for ProductId {product_id} in catalog {}",
+        "no marketplace revenue share {identifier} in catalog {}",
         catalog.as_wire()
     ))
 }
 
 /// The modelled 404 for an allocation this share does not hold.
-pub fn allocation_not_found(product_id: &str, allocation_id: &str) -> ResourceNotFoundException {
+pub fn allocation_not_found(share_id: &str, allocation_id: &str) -> ResourceNotFoundException {
     not_found(format!(
-        "no marketplace revenue share allocation {allocation_id} under ProductId {product_id}"
+        "no marketplace revenue share allocation {allocation_id} under marketplace revenue share \
+         {share_id}"
     ))
 }
 
@@ -739,12 +1138,12 @@ pub fn allocation_not_found(product_id: &str, allocation_id: &str) -> ResourceNo
 /// report a revision the caller never sent.
 pub fn revision_not_found(
     member: &str,
-    product_id: &str,
+    share_id: &str,
     requested: &str,
     latest: i32,
 ) -> ResourceNotFoundException {
     not_found(format!(
-        "{member} {requested} does not exist for ProductId {product_id}; \
+        "{member} {requested} does not exist for marketplace revenue share {share_id}; \
          its latest revision is {latest}"
     ))
 }
@@ -756,17 +1155,6 @@ pub fn conflict(reason: &str, message: impl Into<String>) -> ConflictException {
         message: message.into(),
         reason: reason.to_string(),
     }
-}
-
-/// The modelled 409 for a create of a `ProductId` the catalog already holds.
-pub fn already_exists(catalog: CatalogName, product_id: &str) -> ConflictException {
-    conflict(
-        "RESOURCE_ALREADY_EXISTS",
-        format!(
-            "catalog {} already holds a marketplace revenue share for ProductId {product_id}",
-            catalog.as_wire()
-        ),
-    )
 }
 
 /// The modelled 409 for a `ClientToken` replayed with parameters that do not
@@ -783,15 +1171,21 @@ pub fn client_token_conflict() -> ConflictException {
     )
 }
 
-/// The modelled 409 for the optimistic concurrency check
-/// `MarketplaceRevenueShareRevision` carries: the caller's revision is not the
-/// share's current one, so the share moved under it.
-pub fn revision_mismatch(product_id: &str, supplied: &str, current: i32) -> ConflictException {
+/// The modelled 409 for the optimistic concurrency check a revision member
+/// carries: the caller's revision is not the share's current one, so the share
+/// moved under it. `member` is the one the request sent it in — `Revision` on
+/// the share update, `MarketplaceRevenueShareRevision` on an allocation write.
+pub fn revision_mismatch(
+    member: &str,
+    share_id: &str,
+    supplied: &str,
+    current: i32,
+) -> ConflictException {
     conflict(
         "REVISION_MISMATCH",
         format!(
-            "MarketplaceRevenueShareRevision {supplied} is not the current revision of \
-             ProductId {product_id}, which is {current}"
+            "{member} {supplied} is not the current revision of marketplace revenue share \
+             {share_id}, which is {current}"
         ),
     )
 }
@@ -902,19 +1296,16 @@ pub fn quota_exceeded(resource: &str, limit: usize) -> ServiceQuotaExceededExcep
 pub struct AllocationView {
     /// `MarketplaceRevenueShareAllocationId`.
     pub allocation_id: String,
-    /// `ProductId`.
-    pub product_id: String,
-    /// `Arn`, as the three outputs that document it as the ALLOCATION's ARN
-    /// carry it.
-    pub arn: String,
-    /// The parent share's ARN, which is what
-    /// `UpdateMarketplaceRevenueShareAllocationOutput` documents its own `Arn`
-    /// member as.
+    /// `MarketplaceRevenueShareIdentifier` — the parent share's `mrs-…` id,
+    /// which is the short form every allocation output declares.
+    pub share_id: String,
+    /// The parent share's ARN. No allocation output carries it; it is what the
+    /// audit record names the changed resource with.
     pub share_arn: String,
     /// `EffectiveFrom`.
     pub effective_from: String,
     /// `EffectiveUntil`.
-    pub effective_until: Option<String>,
+    pub effective_until: String,
     /// `RevenueSharePercent`.
     pub revenue_share_percent: String,
     /// `Status`.
@@ -923,9 +1314,12 @@ pub struct AllocationView {
     pub created_date: SystemTime,
     /// `LastModifiedDate`.
     pub last_modified_date: SystemTime,
-    /// `LatestMarketplaceRevenueShareRevision` — the parent share's LATEST
+    /// `MarketplaceRevenueShareRevision` — the parent share revision this view
+    /// was read at, which is the revision this version became current at.
+    pub marketplace_revenue_share_revision: String,
+    /// `MarketplaceRevenueShareLatestRevision` — the parent share's LATEST
     /// revision, which is not the revision the allocation was read at.
-    pub latest_marketplace_revenue_share_revision: String,
+    pub marketplace_revenue_share_latest_revision: String,
 }
 
 /// The view of `allocation` at `version`, under `share`.
@@ -936,8 +1330,7 @@ pub fn allocation_view(
 ) -> AllocationView {
     AllocationView {
         allocation_id: allocation.allocation_id.clone(),
-        product_id: allocation.product_id.clone(),
-        arn: allocation.arn.clone(),
+        share_id: share.share_id.clone(),
         share_arn: share.arn.clone(),
         effective_from: version.effective_from.clone(),
         effective_until: version.effective_until.clone(),
@@ -945,7 +1338,8 @@ pub fn allocation_view(
         status: version.status.as_wire().to_string(),
         created_date: allocation.created_date,
         last_modified_date: version.modified_date,
-        latest_marketplace_revenue_share_revision: revision_token(share.revision),
+        marketplace_revenue_share_revision: revision_token(version.revision),
+        marketplace_revenue_share_latest_revision: revision_token(share.revision()),
     }
 }
 

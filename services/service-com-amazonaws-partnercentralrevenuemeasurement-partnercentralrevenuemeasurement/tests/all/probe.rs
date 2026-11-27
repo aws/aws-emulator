@@ -26,7 +26,7 @@ use smithy_server_runtime::MultiServiceRouter;
 use prm::ops::types::{
     CreateMarketplaceRevenueShareInput, GetRevenueAttributionAllocationsTaskInput,
     GetRevenueAttributionInput, ListRevenueAttributionAllocationsInput,
-    ListRevenueAttributionsInput, ListTagsForResourceInput,
+    ListRevenueAttributionsInput, ListTagsForResourceInput, MarketplaceRevenueShareProductEntry,
     CREATE_MARKETPLACE_REVENUE_SHARE_INPUT_SCHEMA,
     GET_REVENUE_ATTRIBUTION_ALLOCATIONS_TASK_INPUT_SCHEMA, GET_REVENUE_ATTRIBUTION_INPUT_SCHEMA,
     LIST_REVENUE_ATTRIBUTIONS_INPUT_SCHEMA, LIST_REVENUE_ATTRIBUTION_ALLOCATIONS_INPUT_SCHEMA,
@@ -117,7 +117,10 @@ fn create_share_body() -> Vec<u8> {
         CREATE_MARKETPLACE_REVENUE_SHARE_INPUT_SCHEMA,
         &CreateMarketplaceRevenueShareInput {
             catalog: "AWS".to_string(),
-            product_id: "prod-abc1234567890".to_string(),
+            products: vec![MarketplaceRevenueShareProductEntry {
+                product_id: "prod-abc1234567890".to_string(),
+                accounts: None,
+            }],
             ..Default::default()
         },
     )
@@ -151,7 +154,7 @@ async fn a_success_carries_the_rpcv2_cbor_envelope() {
 #[tokio::test]
 async fn an_unimplemented_operation_answers_501_rather_than_an_empty_success() {
     let share_arn = format!(
-        "arn:aws:partnercentral:{REGION}:{ACCOUNT_ID}:catalog/AWS/marketplace-revenue-share/prod-abc1234567890"
+        "arn:aws:partnercentral:{REGION}:{ACCOUNT_ID}:catalog/AWS/marketplace-revenue-share/mrs-abc1234567890"
     );
     let attribution = "ra-abc1234567890".to_string();
     let rows: Vec<(&str, Vec<u8>)> = vec![

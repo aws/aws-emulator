@@ -52,24 +52,30 @@
 //!
 //! * `AfterEffectiveFrom` (AllocationEffectiveDateString, len 10..10, pattern
 //!   ^\d{4}-\d{2}-\d{2}$) — Inclusive lower bound for EffectiveFrom date filter.
+//! * `AfterEffectiveUntil` (AllocationEffectiveDateString, len 10..10, pattern
+//!   ^\d{4}-\d{2}-\d{2}$) — Inclusive lower bound for EffectiveUntil date filter.
 //! * `BeforeEffectiveFrom` (AllocationEffectiveDateString, len 10..10, pattern
 //!   ^\d{4}-\d{2}-\d{2}$) — Exclusive upper bound for EffectiveFrom date filter (half-open
 //!   range).
+//! * `BeforeEffectiveUntil` (AllocationEffectiveDateString, len 10..10, pattern
+//!   ^\d{4}-\d{2}-\d{2}$) — Exclusive upper bound for EffectiveUntil date filter (half-open
+//!   range).
 //! * `Catalog` (CatalogName, one of: AWS | Sandbox) **required** — The catalog containing the
 //!   allocations.
+//! * `MarketplaceRevenueShareIdentifier` (MarketplaceRevenueShareIdentifier, len 17..1011)
+//!   **required** — The parent marketplace revenue share, by ID (mrs-...) or ARN.
 //! * `MarketplaceRevenueShareRevision` (RevisionToken, len 1..19, pattern ^[1-9][0-9]*$) —
 //!   Optional share revision for historical list. Returns allocations as they existed at this
 //!   revision.
-//! * `MaxResults` (Integer) — Maximum number of results per page.
+//! * `MaxResults` (Integer, range 1..100) — Maximum number of results per page.
 //! * `NextToken` (NextToken, len 1..2048, pattern ^[\S]+$) — Pagination token from a previous
 //!   response.
-//! * `ProductId` (MarketplaceProductId, len 18..18, pattern ^prod-[a-z0-9]{13}$) **required**
-//!   — The AWS Marketplace product identifier for the parent revenue share.
 //! * `SortBy` (MarketplaceRevenueShareAllocationSortField, one of: EffectiveFrom) — The field
 //!   to sort marketplace revenue share allocations by.
 //! * `SortOrder` (SortOrder, one of: ASCENDING | DESCENDING) — The direction to sort results.
-//!   Defaults to DESCENDING.
-//! * `Status` (AllocationStatus, one of: ACTIVE | INACTIVE) — Filter by allocation status.
+//!   Defaults to ASCENDING.
+//! * `StatusFilter` (AllocationStatus, one of: ACTIVE | INACTIVE) — Filter by allocation
+//!   status.
 //!
 //! ## Output
 //!
@@ -178,13 +184,20 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         };
 
         let catalog = crate::state::parse_catalog(&input.catalog).map_err(validation)?;
-        let status_filter = match input.status.as_deref() {
+        let share_id = crate::state::resolve_share_identifier(
+            catalog,
+            &input.marketplace_revenue_share_identifier,
+        )
+        .map_err(
+            ListMarketplaceRevenueShareAllocationsErrorModeled::ResourceNotFoundException,
+        )?;
+        let status_filter = match input.status_filter.as_deref() {
             None | Some("") => None,
             Some(value) => match crate::state::AllocationStatus::from_wire(value) {
                 Some(status) => Some(status),
                 None => {
                     return Err(validation(crate::state::invalid_enum(
-                        "Status",
+                        "StatusFilter",
                         ALLOCATION_STATUS_VALUES,
                     )))
                 }
@@ -202,9 +215,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 )))
             }
         };
-        // The model documents "Defaults to DESCENDING".
+        // The model documents "Defaults to ASCENDING".
         let sort_order = match input.sort_order.as_deref() {
-            None | Some("") => crate::state::SortOrder::Descending,
+            None | Some("") => crate::state::SortOrder::Ascending,
             Some(value) => match crate::state::SortOrder::from_wire(value) {
                 Some(order) => order,
                 None => {
@@ -218,36 +231,43 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         if let Some(requested) = input.max_results.filter(|value| *value < 1) {
             return Err(validation(crate::state::invalid_max_results(requested)));
         }
-        if let Some(after) = input.after_effective_from.as_deref() {
-            if crate::state::parse_date(after).is_none() {
-                return Err(validation(crate::state::invalid_value(
-                    "AfterEffectiveFrom",
-                    format!("{after:?} is not a calendar date in YYYY-MM-DD"),
-                )));
-            }
-        }
-        if let Some(before) = input.before_effective_from.as_deref() {
-            if crate::state::parse_date(before).is_none() {
-                return Err(validation(crate::state::invalid_value(
-                    "BeforeEffectiveFrom",
-                    format!("{before:?} is not a calendar date in YYYY-MM-DD"),
-                )));
+        // Each of the four date bounds is a calendar date, and the `@pattern`
+        // the boundary enforces still admits a day no calendar has.
+        for (member, value) in [
+            ("AfterEffectiveFrom", input.after_effective_from.as_deref()),
+            ("BeforeEffectiveFrom", input.before_effective_from.as_deref()),
+            ("AfterEffectiveUntil", input.after_effective_until.as_deref()),
+            (
+                "BeforeEffectiveUntil",
+                input.before_effective_until.as_deref(),
+            ),
+        ] {
+            if let Some(value) = value {
+                if crate::state::parse_date(value).is_none() {
+                    return Err(validation(crate::state::invalid_value(
+                        member,
+                        format!("{value:?} is not a calendar date in YYYY-MM-DD"),
+                    )));
+                }
             }
         }
 
         let state = state.lock();
-        let Some(share) = state.share(catalog, &input.product_id) else {
+        let Some(share) = state.share(catalog, &share_id) else {
             return Err(
                 ListMarketplaceRevenueShareAllocationsErrorModeled::ResourceNotFoundException(
-                    crate::state::share_not_found(catalog, &input.product_id),
+                    crate::state::share_not_found(
+                        catalog,
+                        &input.marketplace_revenue_share_identifier,
+                    ),
                 )
                 .into(),
             );
         };
         let revision = match input.marketplace_revenue_share_revision.as_deref() {
-            None => share.revision,
+            None => share.revision(),
             Some(token) => match crate::state::parse_revision_token(token)
-                .filter(|revision| *revision <= share.revision)
+                .filter(|revision| *revision <= share.revision())
             {
                 Some(revision) => revision,
                 None => {
@@ -255,9 +275,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                         ListMarketplaceRevenueShareAllocationsErrorModeled::ResourceNotFoundException(
                             crate::state::revision_not_found(
                                 "MarketplaceRevenueShareRevision",
-                                &input.product_id,
+                                &share.share_id,
                                 token,
-                                share.revision,
+                                share.revision(),
                             ),
                         )
                         .into(),
@@ -273,11 +293,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             if status_filter.is_some_and(|wanted| version.status != wanted) {
                 continue;
             }
-            // The two bounds are MODELLED, and the contract header above quotes
-            // them verbatim: `AfterEffectiveFrom` is the "Inclusive lower bound
-            // for EffectiveFrom date filter" and `BeforeEffectiveFrom` the
-            // "Exclusive upper bound for EffectiveFrom date filter (half-open
-            // range)". `YYYY-MM-DD` orders chronologically as a string.
+            // The four bounds are MODELLED, and the contract header above
+            // quotes them verbatim: `AfterEffectiveFrom` /
+            // `AfterEffectiveUntil` are the "Inclusive lower bound" for their
+            // member and `BeforeEffectiveFrom` / `BeforeEffectiveUntil` the
+            // "Exclusive upper bound … (half-open range)". `YYYY-MM-DD` orders
+            // chronologically as a string.
             if input
                 .after_effective_from
                 .as_deref()
@@ -289,6 +310,20 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 .before_effective_from
                 .as_deref()
                 .is_some_and(|before| version.effective_from.as_str() >= before)
+            {
+                continue;
+            }
+            if input
+                .after_effective_until
+                .as_deref()
+                .is_some_and(|after| version.effective_until.as_str() < after)
+            {
+                continue;
+            }
+            if input
+                .before_effective_until
+                .as_deref()
+                .is_some_and(|before| version.effective_until.as_str() >= before)
             {
                 continue;
             }
@@ -333,15 +368,12 @@ fn validation(error: ValidationException) -> ListMarketplaceRevenueShareAllocati
 fn summary(view: &crate::state::AllocationView) -> MarketplaceRevenueShareAllocationSummary {
     MarketplaceRevenueShareAllocationSummary {
         marketplace_revenue_share_allocation_id: view.allocation_id.clone(),
-        product_id: view.product_id.clone(),
-        // Absent: see the note on `ProductName` in `crate::state`.
-        product_name: None,
-        arn: view.arn.clone(),
+        marketplace_revenue_share_identifier: view.share_id.clone(),
         effective_from: view.effective_from.clone(),
         effective_until: view.effective_until.clone(),
         revenue_share_percent: view.revenue_share_percent.clone(),
         status: view.status.clone(),
-        created_date: Some(crate::state::wire_timestamp(view.created_date)),
-        last_modified_date: Some(crate::state::wire_timestamp(view.last_modified_date)),
+        created_date: crate::state::wire_timestamp(view.created_date),
+        last_modified_date: crate::state::wire_timestamp(view.last_modified_date),
     }
 }

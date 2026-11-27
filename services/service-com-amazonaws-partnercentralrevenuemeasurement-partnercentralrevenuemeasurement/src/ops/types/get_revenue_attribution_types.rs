@@ -37,5 +37,6 @@ pub struct GetRevenueAttributionOutput {
     pub effective_until: Option<String>,
     pub total_active_revenue_attribution_allocation_count: Option<i32>,
     pub total_revenue_attribution_allocation_count: Option<i32>,
+    pub context: Option<std::collections::HashMap<String, String>>,
 }
 
