@@ -188,10 +188,32 @@ impl Started {
         headers: &[(&str, &str)],
         body: Vec<u8>,
     ) -> (u16, String) {
+        self.call_in_region(REGION, signing_name, method, path, headers, body)
+    }
+
+    /// The same call signed for — and addressed to the endpoint host of — `region`, which is
+    /// what a client configured for another Region makes: the Region travels in the credential
+    /// scope, and it is what names the Region the emulator serves the call in.
+    pub(crate) fn call_in_region(
+        &self,
+        region: &str,
+        signing_name: &str,
+        method: &str,
+        path: &str,
+        headers: &[(&str, &str)],
+        body: Vec<u8>,
+    ) -> (u16, String) {
         let dialled = format!("127.0.0.1:{}", self.port);
-        let host = format!("{signing_name}.{REGION}.amazonaws.com");
-        self.sent((&dialled, &host), signing_name, method, path, headers, body)
-            .unwrap_or_else(|error| panic!("the emulator answers: {error}"))
+        let host = format!("{signing_name}.{region}.amazonaws.com");
+        self.sent(
+            (&dialled, &host, region),
+            signing_name,
+            method,
+            path,
+            headers,
+            body,
+        )
+        .unwrap_or_else(|error| panic!("the emulator answers: {error}"))
     }
 
     /// One signed call DIALLED at `authority` rather than at the address this harness knows
@@ -211,7 +233,7 @@ impl Started {
         body: Vec<u8>,
     ) -> Result<(u16, String), String> {
         self.sent(
-            (authority, authority),
+            (authority, authority, REGION),
             signing_name,
             method,
             path,
@@ -225,19 +247,20 @@ impl Started {
     /// with the published key pair, and is sent over the connection the authority of
     /// `addressed` names — so neither caller can drift from the other on how a call is made.
     ///
-    /// `addressed` is the pair (the authority the connection is made to, the `Host` the
-    /// request carries), which a client addressing an AWS endpoint host on a local emulator
-    /// gives two different values.
+    /// `addressed` is the triple (the authority the connection is made to, the `Host` the
+    /// request carries, the Region the call is signed for): a client addressing an AWS endpoint
+    /// host on a local emulator gives the first two different values, and the third travels in
+    /// the credential scope.
     fn sent(
         &self,
-        addressed: (&str, &str),
+        addressed: (&str, &str, &str),
         signing_name: &str,
         method: &str,
         path: &str,
         headers: &[(&str, &str)],
         body: Vec<u8>,
     ) -> Result<(u16, String), String> {
-        let (authority, host) = addressed;
+        let (authority, host, region) = addressed;
         let uri = format!("https://{authority}{path}");
         let mut request = http::Request::builder().method(method).uri(&uri);
         request = request.header("host", host);
@@ -247,7 +270,7 @@ impl Started {
         let digest = hex::encode(<sha2::Sha256 as sha2::Digest>::digest(&body));
         request = request.header("x-amz-content-sha256", digest);
         let request = request.body(body).expect("a well-formed request");
-        let signed = self.signed(request, signing_name);
+        let signed = self.signed(request, region, signing_name);
         let sendable = signed
             .try_into()
             .map_err(|error| format!("{uri} is not a request reqwest can send: {error}"))?;
@@ -318,6 +341,7 @@ impl Started {
     fn signed(
         &self,
         mut request: http::Request<Vec<u8>>,
+        region: &str,
         signing_name: &str,
     ) -> http::Request<Vec<u8>> {
         use aws_sigv4::http_request::{sign, SignableBody, SignableRequest, SigningSettings};
@@ -333,7 +357,7 @@ impl Started {
         .into();
         let params = SigningParams::builder()
             .identity(&identity)
-            .region(REGION)
+            .region(region)
             .name(signing_name)
             .time(std::time::SystemTime::now())
             .settings(SigningSettings::default())
@@ -404,7 +428,20 @@ impl Started {
         content_type: &str,
         body: &Value,
     ) -> (u16, String) {
-        self.call(
+        self.rpc_in_region(REGION, signing_name, target, content_type, body)
+    }
+
+    /// The same RPC call signed for `region` ([`Self::call_in_region`]).
+    pub(crate) fn rpc_in_region(
+        &self,
+        region: &str,
+        signing_name: &str,
+        target: &str,
+        content_type: &str,
+        body: &Value,
+    ) -> (u16, String) {
+        self.call_in_region(
+            region,
             signing_name,
             "POST",
             "/",
