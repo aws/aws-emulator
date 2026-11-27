@@ -731,6 +731,27 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         ) {
             return Err(refusal);
         }
+        // And the caller has to be allowed to LAUNCH from it: the group's instances are
+        // launched from the template this request points it at, which is an Amazon EC2
+        // action on an Amazon EC2 resource, so IAM judges it as well as the Auto Scaling
+        // action above ([`crate::service::authorization::launch_template_refusal`]). Taken
+        // once the template has resolved — the ARN it is judged on names a template the
+        // account holds — and before anything is stored, so a caller who may not launch from
+        // it leaves no group behind.
+        if let Some(refusal) = crate::service::authorization::launch_template_refusal(
+            &*self.engine,
+            ctx,
+            input.launch_template.as_ref(),
+            input.mixed_instances_policy.as_ref(),
+        ) {
+            crate::state::audit(
+                ctx.parts(),
+                "CreateAutoScalingGroup",
+                &name,
+                "refused: not authorized to launch from the launch template",
+            );
+            return Err(refusal);
+        }
         // And the version it resolves to has to be one an instance could be launched FROM: a
         // group pointed at launch parameters that cannot launch anything would hold no
         // capacity ever, so the request is refused instead of stored

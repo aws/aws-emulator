@@ -290,6 +290,26 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             ) {
                 return Err(refusal);
             }
+            // And the caller has to be allowed to LAUNCH from it, exactly as it must when a
+            // group is created or updated: the instances the refresh replaces are launched
+            // from the template the desired configuration names, which is an Amazon EC2
+            // action on an Amazon EC2 resource that IAM judges beside this operation's own
+            // ([`crate::service::authorization::launch_template_refusal`]). Taken once the
+            // template has resolved and before any refresh is recorded.
+            if let Some(refusal) = crate::service::authorization::launch_template_refusal(
+                &*self.engine,
+                ctx,
+                desired.launch_template.as_ref(),
+                desired.mixed_instances_policy.as_ref(),
+            ) {
+                crate::state::audit(
+                    ctx.parts(),
+                    "StartInstanceRefresh",
+                    &name,
+                    "refused: not authorized to launch from the launch template",
+                );
+                return Err(refusal);
+            }
         }
 
         let now = ::std::time::SystemTime::now();

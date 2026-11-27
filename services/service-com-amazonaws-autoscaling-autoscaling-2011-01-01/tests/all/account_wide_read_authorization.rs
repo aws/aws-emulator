@@ -655,35 +655,46 @@ async fn a_refused_read_reports_nothing_and_changes_nothing() {
 /// hold no `Allow` of the action is refused 403 `AccessDenied` and nothing is created; a
 /// caller the documents allow is served.
 ///
-/// The rows span the documents in force on the principal: none at all, an allow of the whole
-/// service, an allow of this one action, and an explicit deny beside that allow.
+/// The rows span the documents in force on the principal about THIS service: none at all, an
+/// allow of the whole service, an allow of this one action, and an explicit deny beside that
+/// allow.
 #[tokio::test]
 async fn a_mutation_is_authorized_before_it_reaches_the_store() {
     let router = emulator();
     let action = format!("{ACTION_PREFIX}:CreateAutoScalingGroup");
     /// One row: the case, the role's name, its inline policies, and what the create answers.
     type MutationRow = (&'static str, &'static str, Vec<(&'static str, String)>, Expect);
+    // A group created from a launch template launches its instances from that template, so
+    // every row carries the Amazon EC2 grant that launch needs as well: what a row is judged
+    // on here is the AUTO SCALING action its documents state, which is this suite's subject.
+    let launch_allowed = || ("allow-launch", statement("Allow", "ec2:RunInstances", "*"));
     // (case, the role's inline policies, what the create must answer)
     let rows: Vec<MutationRow> = vec![
         (
-            "a role carrying no policy at all",
+            "a role carrying no policy of this service at all",
             "create-bare-role",
-            vec![],
+            vec![launch_allowed()],
             Expect::NoAllow,
         ),
         (
             "a role allowed the whole service",
             "create-service-role",
-            vec![("allow-all", statement("Allow", "autoscaling:*", "*"))],
+            vec![
+                ("allow-all", statement("Allow", "autoscaling:*", "*")),
+                launch_allowed(),
+            ],
             Expect::Served,
         ),
         (
             "a role allowed exactly this action",
             "create-action-role",
-            vec![(
-                "allow-create",
-                statement("Allow", "autoscaling:CreateAutoScalingGroup", "*"),
-            )],
+            vec![
+                (
+                    "allow-create",
+                    statement("Allow", "autoscaling:CreateAutoScalingGroup", "*"),
+                ),
+                launch_allowed(),
+            ],
             Expect::Served,
         ),
         (
@@ -695,6 +706,7 @@ async fn a_mutation_is_authorized_before_it_reaches_the_store() {
                     "deny-create",
                     statement("Deny", "autoscaling:CreateAutoScalingGroup", "*"),
                 ),
+                launch_allowed(),
             ],
             Expect::ExplicitDeny,
         ),

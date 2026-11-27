@@ -1299,6 +1299,39 @@ pub fn launch_template_data<Eng: Send + Sync + 'static>(
     template_data(&store, specification)
 }
 
+/// The ids of the launch templates a group configured by `launch_template` and
+/// `mixed_instances_policy` would launch from: the id Amazon EC2 holds each of them under,
+/// which is how Amazon EC2 identifies a launch template.
+///
+/// The set is the one every consumer of a group's templates reads ([`specifications`]), each
+/// resolved against the account's own Amazon EC2 store and listed once, in the order the
+/// request names them: two specifications naming one template name one template. A
+/// specification the account holds no template for contributes nothing — there is no template
+/// of it to name — and neither does an engine carrying no Amazon EC2 store at all.
+///
+/// EC2's store lock is taken for this one walk and released before the answer is returned,
+/// so no caller holds it; this reads only.
+pub fn launch_template_ids<Eng: Send + Sync + 'static>(
+    engine: &Eng,
+    launch_template: Option<&LaunchTemplateSpecification>,
+    mixed_instances_policy: Option<&MixedInstancesPolicy>,
+) -> Vec<String> {
+    let Some(state) = ec2::service_state(engine) else {
+        return Vec::new();
+    };
+    let store = state.lock();
+    let mut ids: Vec<String> = Vec::new();
+    for specification in specifications(launch_template, mixed_instances_policy) {
+        let Some((launch_template_id, _)) = resolved_version(&store, specification) else {
+            continue;
+        };
+        if !ids.contains(&launch_template_id) {
+            ids.push(launch_template_id);
+        }
+    }
+    ids
+}
+
 /// The launch parameters of the one launch-template version a group's specification
 /// names, from Amazon EC2's own launch-template store.
 ///

@@ -49,6 +49,13 @@
 //! take it before they read or write anything: the refusal then names the group's ARN, as
 //! IAM's own sentence does.
 //!
+//! A request can also ask for an action of ANOTHER service, which IAM judges beside the Auto
+//! Scaling one: a group configured to launch from a launch template launches its instances
+//! from that template, so pointing a group at one asks for a launch from it as well
+//! ([`launch_template_refusal`], judged as [`RUN_INSTANCES_ACTION`] against the template's
+//! own ARN). Such a decision rests on the same caller, the same documents and the same
+//! evaluation as the service's own action; only the action name and the resource differ.
+//!
 //! ## The callers this gate does not bound
 //!
 //! * **The account's own published credential.** A request whose access key id neither STS
@@ -214,6 +221,22 @@ fn authorize_on_resource<Eng: Send + Sync + 'static>(
     resource: &str,
 ) -> Result<(), Denied> {
     let action = format!("{ACTION_PREFIX}:{operation}");
+    authorize_action_on(engine, ctx, &action, resource)
+}
+
+/// Whether IAM lets this request perform `action` on `resource`.
+///
+/// `action` is the fully qualified action name, so this states the decision for an action of
+/// ANOTHER service the request asks for as well as for this service's own
+/// ([`launch_template_refusal`]): the caller, the documents in force on it and the evaluation
+/// are the same whichever service's action is judged, and only the action name and the
+/// resource differ.
+fn authorize_action_on<Eng: Send + Sync + 'static>(
+    engine: &Eng,
+    ctx: &::smithy_server_runtime::OperationContext<'_>,
+    action: &str,
+    resource: &str,
+) -> Result<(), Denied> {
     let caller = caller(engine, ctx);
     let documents = iam::prepare_documents(&caller.documents);
     let boundary = caller
@@ -224,10 +247,84 @@ fn authorize_on_resource<Eng: Send + Sync + 'static>(
         &caller,
         &documents,
         boundary.as_deref(),
-        &action,
+        action,
         resource,
         Some(resource),
     )
+}
+
+/// The Amazon EC2 action using a launch template to launch an instance requires.
+///
+/// A group configured to launch from a launch template launches its instances from that
+/// template, so a request that points a group at one asks for a launch from it as well as for
+/// the Auto Scaling action it names, and IAM judges that launch as `ec2:RunInstances` on the
+/// launch template — one of the resource types the IAM Service Authorization Reference lists
+/// for that action ("Resource types defined by Amazon EC2": `launch-template`).
+pub const RUN_INSTANCES_ACTION: &str = "ec2:RunInstances";
+
+/// The fixed text Amazon EC2 Auto Scaling refuses a caller that may not launch from the
+/// launch template a request names with. What follows it is the launch template the refusal is
+/// about, which is the only part taken from the request
+/// ([`unauthorized_launch_template_message`]).
+///
+/// The refusal is about the TEMPLATE rather than about the policy statement that withheld the
+/// grant, so this is the sentence whichever of IAM's rules withheld it — an explicit deny and
+/// a missing allow are refused alike, and nothing of the caller's policies is quoted back.
+const UNAUTHORIZED_LAUNCH_TEMPLATE_PREFIX: &str = "You are not authorized to use launch template: ";
+
+/// The refusal naming the launch template `launch_template_id` the caller may not launch from:
+/// the id Amazon EC2 holds that template under, which is how Amazon EC2 identifies a launch
+/// template and what every read of a group pointed at one reports.
+#[must_use]
+pub fn unauthorized_launch_template_message(launch_template_id: &str) -> String {
+    format!("{UNAUTHORIZED_LAUNCH_TEMPLATE_PREFIX}{launch_template_id}")
+}
+
+/// The ARN IAM judges a launch from the launch template `launch_template_id` against: Amazon
+/// EC2's own form for a launch template of this account in the Region the request was signed
+/// for, which is the resource a policy scoping the launch to particular templates names.
+fn launch_template_resource(region: &str, launch_template_id: &str) -> String {
+    ::engine::emulator_arn(
+        "ec2",
+        region,
+        &format!("launch-template/{launch_template_id}"),
+    )
+}
+
+/// This service's [`ACCESS_DENIED`] refusal of a request that would point a group at a launch
+/// template the caller may not launch from, or `None` when the IAM policies in force permit
+/// the launch from every template it names.
+///
+/// The decision is the SAME evaluation every action of a request takes
+/// ([`authorize_action_on`]), over [`RUN_INSTANCES_ACTION`] and the ARN of ONE launch template
+/// ([`launch_template_resource`]) — so a policy that grants the launch on one template does
+/// not grant it on another — and it is taken for each template the request names
+/// ([`crate::state::ec2_instances::launch_template_ids`]), in the order the request names
+/// them: the refusal is about the first template the caller may not launch from.
+///
+/// Taken by the handler that configures the group's launch source, once that source has
+/// resolved — the id judged names a template the account HOLDS — and before anything is
+/// written, because a refused request must leave the account exactly as it was.
+pub fn launch_template_refusal<Eng: Send + Sync + 'static, E>(
+    engine: &Eng,
+    ctx: &::smithy_server_runtime::OperationContext<'_>,
+    launch_template: Option<&crate::ops::types::LaunchTemplateSpecification>,
+    mixed_instances_policy: Option<&crate::ops::types::MixedInstancesPolicy>,
+) -> Option<crate::scaffolded::Scaffolded<E>> {
+    let region = crate::state::request_region(ctx.parts());
+    let refused = crate::state::ec2_instances::launch_template_ids(
+        engine,
+        launch_template,
+        mixed_instances_policy,
+    )
+    .into_iter()
+    .find(|launch_template_id| {
+        let resource = launch_template_resource(&region, launch_template_id);
+        authorize_action_on(engine, ctx, RUN_INSTANCES_ACTION, &resource).is_err()
+    })?;
+    Some(crate::scaffolded::Scaffolded::access_denied(
+        unauthorized_launch_template_message(&refused),
+    ))
 }
 
 /// Whether IAM lets this request perform the action of `operation` — the operation's own
