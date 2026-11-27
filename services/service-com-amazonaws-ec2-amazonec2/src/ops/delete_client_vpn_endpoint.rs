@@ -137,13 +137,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         use crate::state;
 
         // "The ID of the Client VPN to be deleted" (`ClientVpnEndpointId`) is `@required`
-        // but modelled `clientOptional`, so a request that left it out reaches this handler
+        // but modelled `clientOptional`, so a request that sent it empty reaches this handler
         // as an empty string rather than being refused at the boundary. A parameter the
-        // request did not carry is EC2's `MissingParameter`.
+        // request did not carry is EC2's `MissingParameter`, in the sentence THIS surface
+        // words it — the one the boundary answers for the same member when the request omits
+        // it altogether, so a caller reads one wording whichever side of dispatch resolved
+        // the absence.
         if input.client_vpn_endpoint_id.is_empty() {
-            return Err(state::missing_parameter(
-                "The request must contain the parameter clientVpnEndpointId",
-            ));
+            return Err(state::missing_required_parameter("ClientVpnEndpointId"));
         }
 
         // "Checks whether you have the required permissions for the action, WITHOUT
