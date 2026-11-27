@@ -15,9 +15,14 @@
 //!
 //! WHICH container of a two-container task reads (each reads its own document and the one
 //! task document), WHICH client the program asks with (`wget` writing the document to its own
-//! output, and `curl`), WHICH document is asked for (the container's, the task's, and a path
+//! output, and `curl`), WHICH document is asked for (the container's, the task's, and the paths
 //! under the endpoint it holds none of) and WHICH member of each document is asserted — every
 //! one of them against what `DescribeTasks` reports for the same task.
+//!
+//! The reading program and what each document has to answer are the shared ones
+//! ([`crate::task_metadata_readings`]), which the suite driving an execute-command session
+//! reads the same endpoint through ([`crate::exec_session_task_metadata`]): what this suite
+//! adds is the TRANSPORT — the container's own program, delivering to a log stream.
 //!
 //! Nothing is asserted off the store: the containers' programs run inside the emulator, their
 //! output is read back out of CloudWatch Logs' own store through that service's own
@@ -30,6 +35,9 @@ use serde_json::{json, Value};
 use smithy_server_runtime::MultiServiceRouter;
 
 use crate::ecs_wire::{cluster_with_capacity, list, logs, ok, poll_until, string, SIGNED_REGION};
+use crate::task_metadata_readings::{
+    assert_readings, reading_lines, Client, ExpectedReadings, METADATA_URI_VARIABLE,
+};
 
 /// The cluster the task of this suite runs in.
 const CLUSTER: &str = "metadataendpoint";
@@ -66,45 +74,9 @@ const SECOND_CONTAINER_CPU_UNITS: i64 = 64;
 /// (`TaskDefinition$cpu`).
 const TASK_VCPUS: f64 = 0.25;
 
-/// The address the endpoint is served at inside every task, as the four octets of the
-/// link-local address the ECS developer guide's task metadata endpoint version 4 names, and the
-/// version segment of the paths it answers. Written here rather than imported, so a wrong
-/// address in the implementation cannot make this pass — and held as octets, the way this
-/// emulator holds every link-local address it serves rather than dials.
-const METADATA_HOST_OCTETS: [u8; 4] = [169, 254, 170, 2];
-const METADATA_VERSION_SEGMENT: &str = "v4";
-
-/// Those two as the start of every address this endpoint answers at.
-fn metadata_uri_prefix() -> String {
-    format!(
-        "http://{}/{METADATA_VERSION_SEGMENT}/",
-        std::net::Ipv4Addr::from(METADATA_HOST_OCTETS)
-    )
-}
-
-/// The variable Amazon ECS injects that address into.
-const METADATA_URI_VARIABLE: &str = "ECS_CONTAINER_METADATA_URI_V4";
-
-/// The prefixes the containers' program writes each reading under.
-const URI_LINE: &str = "uri=";
-const SELF_DOCUMENT_LINE: &str = "self=";
-const SELF_STATUS_LINE: &str = "self-status=";
-const TASK_DOCUMENT_LINE: &str = "task=";
-const TASK_STATUS_LINE: &str = "task-status=";
-const MISSING_CURL_LINE: &str = "missing-curl=";
-const MISSING_WGET_STATUS_LINE: &str = "missing-wget-status=";
+/// The last line the containers' program writes before it stays up, which is what a case waits
+/// for in the stream the driver delivers its output to.
 const DONE_LINE: &str = "done";
-
-/// The status both clients exit with for a transfer that was answered.
-const ANSWERED: &str = "0";
-
-/// The status `wget` exits with for a response it reports as an error: "8   Server issued an
-/// error response" (the GNU Wget manual's exit-status list), which is what that client makes of
-/// the `404` a path the endpoint holds no document for is answered with.
-const WGET_SERVER_ERROR: &str = "8";
-
-/// The status that same path is answered with, as the write-out format reports it.
-const NOT_FOUND: &str = "404";
 
 /// A router carrying Amazon ECS and CloudWatch Logs over ONE shared engine — the two services
 /// a container's output travels through, mounted the way the production router mounts them.
@@ -123,36 +95,18 @@ fn emulator() -> MultiServiceRouter {
     router
 }
 
-/// The program every container of the task runs: it writes the address its environment carries,
-/// then reads its own document and its task's document at that address — one with each client —
-/// and then asks for a path under the endpoint that holds no document at all, with each client
-/// in turn. Each reading is followed by the status the client exited with, so what a row
-/// asserts is the client's own account of the request.
+/// The program every container of the task runs: the shared reading program
+/// ([`crate::task_metadata_readings::reading_lines`]), run as one command line, with its own
+/// document read by the downloader and its task's by the transfer client.
 ///
 /// It ends by staying up, so the task is still RUNNING while the rows read the lines back —
 /// what the documents report about a running container is what a running container reads.
 fn reading_program() -> String {
-    [
-        format!("echo {URI_LINE}${METADATA_URI_VARIABLE}"),
-        format!(
-            "printf '{SELF_DOCUMENT_LINE}'; wget -qO- ${METADATA_URI_VARIABLE}; S=$?; echo; \
-             echo {SELF_STATUS_LINE}$S"
-        ),
-        format!(
-            "printf '{TASK_DOCUMENT_LINE}'; curl -s ${METADATA_URI_VARIABLE}/task; S=$?; echo; \
-             echo {TASK_STATUS_LINE}$S"
-        ),
-        format!(
-            "curl -s -o /dev/null -w '{MISSING_CURL_LINE}%{{http_code}}\\n' \
-             ${METADATA_URI_VARIABLE}/stats"
-        ),
-        format!(
-            "wget -qO- ${METADATA_URI_VARIABLE}/stats; echo {MISSING_WGET_STATUS_LINE}$?"
-        ),
-        format!("echo {DONE_LINE}"),
-        "sleep infinity".to_string(),
-    ]
-    .join("; ")
+    reading_lines(Client::Downloader, Client::Transfer)
+        .into_iter()
+        .chain([format!("echo {DONE_LINE}"), "sleep infinity".to_string()])
+        .collect::<Vec<String>>()
+        .join("; ")
 }
 
 /// One container definition of [`FAMILY`]: the program above, delivering its output to
@@ -220,24 +174,6 @@ async fn delivered(router: &MultiServiceRouter, stream: &str) -> Vec<String> {
                 .collect()
         })
         .unwrap_or_default()
-}
-
-/// The one line of `lines` that starts with `prefix`, past the prefix — and a failure naming
-/// what was delivered instead when no line does.
-fn line_after(lines: &[String], prefix: &str, case: &str) -> String {
-    lines
-        .iter()
-        .find_map(|line| line.strip_prefix(prefix))
-        .map(str::to_string)
-        .unwrap_or_else(|| {
-            panic!("case {case:?}: expected a line starting {prefix:?}, got {lines:?}")
-        })
-}
-
-/// The document a line carries, parsed — and a failure naming the text when it is not one.
-fn document(text: &str, case: &str) -> Value {
-    serde_json::from_str(text)
-        .unwrap_or_else(|error| panic!("case {case:?}: expected a JSON document, got {text:?} ({error})"))
 }
 
 /// What one container's program wrote, waited for until its last line is among the lines
@@ -360,107 +296,41 @@ async fn a_container_reads_its_own_and_its_tasks_metadata_at_the_endpoint() {
         let case = format!("{case}: the reading of the container {container_name:?}");
         let case = case.as_str();
         let lines = readings(&router, &task_arn, container_name, case).await;
-        let described_container = described_container(&described, container_name, case);
-        let runtime_id = string(&described_container, "runtimeId", case);
-
-        // The address the container's environment carries: the endpoint, named by the id the
-        // agent gave this container.
-        let uri = line_after(&lines, URI_LINE, case);
-        let expected_uri = format!("{}{runtime_id}", metadata_uri_prefix());
-        assert_eq!(
-            uri, expected_uri,
-            "case {case:?}: expected the endpoint of this container, got {uri:?}"
-        );
-
-        // Its OWN document, read with the client that writes what it fetched to its own
-        // output, and the status that client exited with.
-        assert_eq!(
-            line_after(&lines, SELF_STATUS_LINE, case),
-            ANSWERED,
-            "case {case:?}: expected the client to report the transfer answered, got {lines:?}"
-        );
-        let own = document(&line_after(&lines, SELF_DOCUMENT_LINE, case), case);
-        for (member, expected) in [
-            ("DockerId", json!(runtime_id)),
-            ("Name", json!(container_name)),
-            ("Image", json!(IMAGE)),
-            ("ContainerARN", described_container["containerArn"].clone()),
-            ("DesiredStatus", json!("RUNNING")),
-            ("KnownStatus", json!("RUNNING")),
-            ("Type", json!("NORMAL")),
-            ("Limits", expected_container_limits(container_name)),
-            ("LogDriver", json!("awslogs")),
-        ] {
-            assert_eq!(
-                own[member], expected,
-                "case {case:?}: expected the container's {member} to be {expected}, got {own}"
-            );
-        }
-        // The labels the agent applies to a container it created name the task, its family and
-        // the cluster the task runs in.
-        for (label, expected) in [
-            ("com.amazonaws.ecs.cluster", json!(cluster_arn)),
-            ("com.amazonaws.ecs.container-name", json!(container_name)),
-            ("com.amazonaws.ecs.task-arn", json!(task_arn)),
-            ("com.amazonaws.ecs.task-definition-family", json!(FAMILY)),
-            ("com.amazonaws.ecs.task-definition-version", json!(revision)),
-        ] {
-            assert_eq!(
-                own["Labels"][label], expected,
-                "case {case:?}: expected the label {label:?} to be {expected}, got {own}"
-            );
-        }
-
-        // Its TASK's document, read with the other client: the task, and every container in it.
-        assert_eq!(
-            line_after(&lines, TASK_STATUS_LINE, case),
-            ANSWERED,
-            "case {case:?}: expected the client to report the transfer answered, got {lines:?}"
-        );
-        let task = document(&line_after(&lines, TASK_DOCUMENT_LINE, case), case);
-        for (member, expected) in [
-            ("Cluster", json!(cluster_arn)),
-            ("TaskARN", json!(task_arn)),
-            ("Family", json!(FAMILY)),
-            ("Revision", json!(revision)),
-            ("DesiredStatus", json!("RUNNING")),
-            ("KnownStatus", json!("RUNNING")),
-            ("LaunchType", json!("EC2")),
-            (
-                "Limits",
-                json!({ "CPU": TASK_VCPUS, "Memory": TASK_MEMORY_MIB }),
-            ),
-        ] {
-            assert_eq!(
-                task[member], expected,
-                "case {case:?}: expected the task's {member} to be {expected}, got {task}"
-            );
-        }
-        let names: Vec<Value> = list(&task, "Containers", case)
-            .iter()
-            .map(|container| container["Name"].clone())
-            .collect();
-        assert_eq!(
-            names,
-            vec![json!(FIRST_CONTAINER), json!(SECOND_CONTAINER)],
-            "case {case:?}: expected the task document to carry every container of the task, \
-             got {task}"
-        );
-        task_documents.push(task);
-
-        // A path under the endpoint it holds no document for: answered as a document that is
-        // not there, which each client reports in its own way.
-        assert_eq!(
-            line_after(&lines, MISSING_CURL_LINE, case),
-            NOT_FOUND,
-            "case {case:?}: expected the status of a path the endpoint holds none of, got \
-             {lines:?}"
-        );
-        assert_eq!(
-            line_after(&lines, MISSING_WGET_STATUS_LINE, case),
-            WGET_SERVER_ERROR,
-            "case {case:?}: expected the downloader to report the error response, got {lines:?}"
-        );
+        let container = described_container(&described, container_name, case);
+        let runtime_id = string(&container, "runtimeId", case);
+        task_documents.push(assert_readings(
+            &lines,
+            &ExpectedReadings {
+                case,
+                runtime_id: &runtime_id,
+                container_name,
+                cluster_arn: &cluster_arn,
+                task_arn: &task_arn,
+                family: FAMILY,
+                revision: &revision,
+                // What this container is beside the members every reading reports: the image it
+                // started from, its ARN, what it was given, and the log driver its definition
+                // configures — which the endpoint reports for the container it delivers
+                // through.
+                container_members: vec![
+                    ("Image", json!(IMAGE)),
+                    ("ContainerARN", container["containerArn"].clone()),
+                    ("Limits", expected_container_limits(container_name)),
+                    ("LogDriver", json!("awslogs")),
+                ],
+                // What the TASK was given, as the endpoint reports it: the vCPUs its `cpu`
+                // stands for and the mebibytes of its `memory`, beside the launch type it was
+                // placed with.
+                task_members: vec![
+                    ("LaunchType", json!("EC2")),
+                    (
+                        "Limits",
+                        json!({ "CPU": TASK_VCPUS, "Memory": TASK_MEMORY_MIB }),
+                    ),
+                ],
+                container_names: vec![FIRST_CONTAINER, SECOND_CONTAINER],
+            },
+        ));
     }
 
     // The two containers read ONE task document — the task is the same task from inside either
