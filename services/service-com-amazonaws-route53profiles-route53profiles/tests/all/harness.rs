@@ -258,6 +258,26 @@ impl Emulator {
         .await
     }
 
+    /// `DisassociateResourceFromProfile`: the Profile id and the resource ARN are both
+    /// path labels (`DELETE
+    /// /profileresourceassociation/profileid/{ProfileId}/resourcearn/{ResourceArn}`), so
+    /// the ARN is percent-encoded as ONE segment, exactly as an SDK sends it.
+    pub(crate) async fn disassociate_resource(
+        &self,
+        profile_id: &str,
+        resource_arn: &str,
+    ) -> Reply {
+        self.call(
+            "DELETE",
+            &format!(
+                "/profileresourceassociation/profileid/{profile_id}/resourcearn/{}",
+                path_label(resource_arn)
+            ),
+            None,
+        )
+        .await
+    }
+
     /// `ListProfileResourceAssociations`: the Profile is a path label and
     /// `ResourceType`, `MaxResults` and `NextToken` are query parameters, so
     /// `query` is appended as given (`""` for none).

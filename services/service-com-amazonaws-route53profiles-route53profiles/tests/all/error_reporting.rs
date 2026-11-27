@@ -20,6 +20,11 @@
 //!   the service will not accept (`ValidationException`, the shape every other "isn't
 //!   valid" refusal of this family uses), while an id of that form the store holds
 //!   nothing for is the association plane's own not-found template;
+//! * that plane's template answers for every id of its form the store resolves to
+//!   nothing, however it came to resolve to nothing — one minted and then removed, in
+//!   either phase an association can be removed in, as much as one never minted — and
+//!   stays off the other id-addressed planes, which keep reporting a missing resource
+//!   with the service's resource-kind-agnostic sentence;
 //! * `DeleteProfile` refuses a Profile an association still names with
 //!   `ConflictException`, and the message names the blocking ASSOCIATION, read off
 //!   the service's own state, so the caller is told what to delete first;
@@ -28,9 +33,14 @@
 //!   while re-associating the SAME pair reports the association as already existing;
 //! * every one of these refusals is HTTP 400.
 
+use std::thread::sleep;
+use std::time::{Duration, Instant};
+
 use serde_json::json;
 
-use super::harness::{association_not_found_message, invalid_association_id_message, Emulator};
+use super::harness::{
+    association_not_found_message, invalid_association_id_message, Emulator, ACCOUNT_ID,
+};
 
 /// The single message a missing resource of this service is reported with: the
 /// Resolver-family sub-error code, a fixed sentence, and the id from the request.
@@ -493,5 +503,234 @@ async fn an_id_no_resource_association_answers_to_is_refused_on_its_form_then_on
         "renamed",
         "case id={live_id:?}: the update must apply the Name it named, got {:?}",
         updated.body
+    );
+}
+
+/// How long a reading of a resource association is retried while waiting for the move
+/// to its settled phase the clock owes: generous, because nothing asserted here depends
+/// on how quickly that move arrives, and it is a deadline on a POLL rather than a span
+/// to sleep for.
+const SETTLE_DEADLINE: Duration = Duration::from_secs(120);
+
+/// How long to wait between two readings while polling for that move.
+const POLL_INTERVAL: Duration = Duration::from_millis(50);
+
+/// The phase a resource association reports once that move has fallen due.
+const SETTLED_STATUS: &str = "COMPLETE";
+
+/// The resources a Profile can hold, as `(ResourceArn, ResourceProperties)`: the kinds
+/// `ProfileResourceAssociation$ResourceType`'s documentation names ("Resource type, such
+/// as a private hosted zone, or DNS Firewall rule group") and a Resolver rule, which a
+/// Profile carries beside them. Only a DNS Firewall rule group's association carries a
+/// properties document, whose `priority`
+/// (`AssociateResourceToProfile$ResourceProperties`) is one of the values inside the
+/// documented range, so each row is a request the service accepts.
+fn removable_resources() -> Vec<(String, Option<&'static str>)> {
+    vec![
+        (
+            "arn:aws:route53:::hostedzone/Z22222222222BBBBBBBBB".to_string(),
+            None,
+        ),
+        (
+            format!(
+                "arn:aws:route53resolver:us-east-1:{ACCOUNT_ID}:firewall-rule-group/\
+                 rslvr-frg-2222222222222222"
+            ),
+            Some(r#"{"priority": 150}"#),
+        ),
+        (
+            format!(
+                "arn:aws:route53resolver:us-east-1:{ACCOUNT_ID}:resolver-rule/\
+                 rslvr-rr-3333333333333333"
+            ),
+            None,
+        ),
+    ]
+}
+
+#[tokio::test]
+async fn an_id_minted_and_then_removed_is_refused_in_the_association_plane_s_own_words() {
+    let em = Emulator::new();
+    let profile_id = em
+        .create_named("removed-resources")
+        .await
+        .nested_string("Profile", "Id");
+
+    // Rows spanning the kinds of resource a Profile holds, with and without a
+    // properties document, and both phases an association can be removed in: the first
+    // row waits for the move to the settled phase the clock owes before removing the
+    // association, the others remove one still being applied.
+    for (index, (resource_arn, properties)) in removable_resources().into_iter().enumerate() {
+        let settled_first = index == 0;
+        let case = format!("arn={resource_arn} settled_first={settled_first}");
+
+        let created = em
+            .associate_resource(
+                &profile_id,
+                &resource_arn,
+                &format!("removed-{index}"),
+                properties,
+            )
+            .await;
+        assert_eq!(
+            created.status, 200,
+            "case {case}: AssociateResourceToProfile expected 200, got {} / {:?}",
+            created.status, created.body
+        );
+        let id = created.nested_string("ProfileResourceAssociation", "Id");
+
+        if settled_first {
+            // The CONDITION is what is waited for, by reading the association again
+            // until it reports the settled phase or the deadline passes.
+            let deadline = Instant::now() + SETTLE_DEADLINE;
+            loop {
+                let reading = em.get_resource_association(&id).await;
+                if reading.nested_string("ProfileResourceAssociation", "Status") == SETTLED_STATUS {
+                    break;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "case {case}: the association never reported the settled phase, \
+                     last reading {:?}",
+                    reading.body
+                );
+                sleep(POLL_INTERVAL);
+            }
+        }
+
+        let removed = em.disassociate_resource(&profile_id, &resource_arn).await;
+        assert_eq!(
+            removed.status, 200,
+            "case {case}: DisassociateResourceFromProfile expected 200, got {} / {:?}",
+            removed.status, removed.body
+        );
+        assert_eq!(
+            removed.nested_string("ProfileResourceAssociation", "Id"),
+            id,
+            "case {case}: the removal must report the association removed, got {:?}",
+            removed.body
+        );
+
+        // The id was minted and the store now holds nothing for it, so every operation
+        // addressed by such an id reports an absent association in THIS plane's words —
+        // its own sub-error code, its own sentence and the id from the request — and
+        // never the resource-kind-agnostic sentence the rest of this service reports a
+        // missing resource with. Each read is repeated, because a read must report the
+        // same refusal however often it is asked for.
+        for attempt in 0..2 {
+            for (operation, reply) in [
+                (
+                    "GetProfileResourceAssociation",
+                    em.get_resource_association(&id).await,
+                ),
+                (
+                    "UpdateProfileResourceAssociation",
+                    em.update_resource_association(&id, json!({ "Name": "renamed" }))
+                        .await,
+                ),
+            ] {
+                let case = format!("{case} {operation} read={attempt} id={id}");
+                assert_eq!(
+                    reply.status, 400,
+                    "case {case}: expected HTTP 400, got {} / {:?}",
+                    reply.status, reply.body
+                );
+                assert_eq!(
+                    reply.error.as_deref(),
+                    Some("ResourceNotFoundException"),
+                    "case {case}: expected ResourceNotFoundException, got {:?}",
+                    reply.body
+                );
+                assert_eq!(
+                    reply.message(),
+                    association_not_found_message(&id),
+                    "case {case}: expected {:?}, got {:?}",
+                    association_not_found_message(&id),
+                    reply.message()
+                );
+                assert_ne!(
+                    reply.message(),
+                    not_found_message(&id),
+                    "case {case}: a removed resource association must not be reported with \
+                     the service's resource-kind-agnostic sentence"
+                );
+            }
+        }
+
+        // Associating the resource again mints a DIFFERENT id: the new one resolves,
+        // while the one that was removed keeps earning the same refusal.
+        let again = em
+            .associate_resource(
+                &profile_id,
+                &resource_arn,
+                &format!("again-{index}"),
+                properties,
+            )
+            .await;
+        assert_eq!(
+            again.status, 200,
+            "case {case}: re-associating the resource expected 200, got {} / {:?}",
+            again.status, again.body
+        );
+        let new_id = again.nested_string("ProfileResourceAssociation", "Id");
+        assert_ne!(
+            new_id, id,
+            "case {case}: a new association must not reuse the removed association's id"
+        );
+        let live = em.get_resource_association(&new_id).await;
+        assert_eq!(
+            live.status, 200,
+            "case {case}: the re-associated id expected 200, got {} / {:?}",
+            live.status, live.body
+        );
+        let still_gone = em.get_resource_association(&id).await;
+        assert_eq!(
+            still_gone.message(),
+            association_not_found_message(&id),
+            "case {case}: after a re-association the removed id expected {:?}, got {:?}",
+            association_not_found_message(&id),
+            still_gone.message()
+        );
+    }
+
+    // The contrast that makes the template this plane's own: the other id-addressed
+    // planes of this service report a resource that was minted and then removed with
+    // the resource-kind-agnostic sentence, so the two templates stay apart.
+    let vpc = "vpc-0b1c2d3e4f5061728";
+    let vpc_association = em
+        .associate(&profile_id, vpc, "vpc-assoc")
+        .await
+        .nested_string("ProfileAssociation", "Id");
+    let released = em.disassociate(&profile_id, vpc).await;
+    assert_eq!(
+        released.status, 200,
+        "case DisassociateProfile vpc={vpc}: expected 200, got {} / {:?}",
+        released.status, released.body
+    );
+    let gone = em.get_association(&vpc_association).await;
+    assert_eq!(
+        gone.message(),
+        not_found_message(&vpc_association),
+        "case GetProfileAssociation id={vpc_association}: expected {:?}, got {:?}",
+        not_found_message(&vpc_association),
+        gone.message()
+    );
+    let spare = em
+        .create_named("plane-contrast")
+        .await
+        .nested_string("Profile", "Id");
+    let deleted = em.delete_profile(&spare).await;
+    assert_eq!(
+        deleted.status, 200,
+        "case DeleteProfile id={spare}: expected 200, got {} / {:?}",
+        deleted.status, deleted.body
+    );
+    let missing = em.get_profile(&spare).await;
+    assert_eq!(
+        missing.message(),
+        not_found_message(&spare),
+        "case GetProfile id={spare}: expected {:?}, got {:?}",
+        not_found_message(&spare),
+        missing.message()
     );
 }

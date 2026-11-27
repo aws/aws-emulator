@@ -301,15 +301,14 @@ fn month_boundary(offset: i64) -> f64 {
 /// and the expectation has to name the instant the SERVICE recorded rather than
 /// one this suite made up.
 ///
-/// Taken as the WIRE carries that instant: a JSON timestamp of these protocols is
-/// an epoch-seconds number, and what the segments read above hold is the double
-/// that number parses to — which is the double the stored instant itself is
-/// ([`aws_smithy_types::DateTime::as_secs_f64`]). Rendering it through a decimal of
-/// fewer digits first would round the very same instant its own way, so the two
-/// would differ in the last bit a double has at this magnitude — a fraction of a
-/// microsecond, not a different instant, but enough to make an exact expectation a
-/// coin flip. Reading the instant as the number a client reads is what makes this
-/// expectation exact.
+/// Taken as the double the stored instant itself is
+/// ([`aws_smithy_types::DateTime::as_secs_f64`]), which is the instant the boundary
+/// is owed at. What a read answers is that instant rendered as an epoch-seconds
+/// decimal carrying NANOSECONDS — more significant digits than a double holds — so
+/// the number a JSON reader hands back for it can be the double next to this one:
+/// a quarter of a microsecond at this magnitude, not a different instant. That is
+/// what [`assert_segments`] compares the two to [`INSTANT_TOLERANCE`] for, instead
+/// of demanding the same bits.
 fn joined_at(engine: &Arc<engine::InMemoryEngine>) -> f64 {
     let organizations = engine.state::<OrganizationsState>();
     let organizations = organizations.lock();
@@ -392,10 +391,10 @@ async fn the_segments_follow_the_relationships_a_client_establishes() {
     // charges naming no other account.
     let case = "before any relationship exists";
     let standalone = segments(&router, case, &request).await;
-    assert_eq!(
-        standalone,
-        vec![segment(BILLABLE, period_begin, period_end, None, None)],
-        "case {case:?}: expected one BILLABLE segment over the whole period, got {standalone:?}"
+    assert_segments(
+        case,
+        &standalone,
+        &[segment(BILLABLE, period_begin, period_end, None, None)],
     );
 
     // The one request that puts the account in an organization.
@@ -414,20 +413,13 @@ async fn the_segments_follow_the_relationships_a_client_establishes() {
 
     let case = "after the organization is created over the wire";
     let in_organization = segments(&router, case, &request).await;
-    assert_eq!(
-        in_organization,
-        vec![
+    assert_segments(
+        case,
+        &in_organization,
+        &[
             segment(BILLABLE, period_begin, joined, None, None),
-            segment(
-                BILLABLE,
-                joined,
-                period_end,
-                Some(account_id()),
-                None,
-            ),
+            segment(BILLABLE, joined, period_end, Some(account_id()), None),
         ],
-        "case {case:?}: expected the period cut at the instant the account joined, \
-         got {in_organization:?}"
     );
     assert_ne!(
         in_organization, standalone,
@@ -466,14 +458,67 @@ async fn the_segments_follow_the_relationships_a_client_establishes() {
 
     let case = "after the billing group is created over the wire";
     let in_group = segments(&router, case, &request).await;
-    assert_eq!(
-        in_group, want,
-        "case {case:?}: expected the PRO_FORMA period the membership shapes, got {in_group:?}"
-    );
+    assert_segments(case, &in_group, &want);
     assert_ne!(
         in_group, in_organization,
         "case {case:?}: the same request must answer differently once the membership exists"
     );
+}
+
+/// How far two readings of the same instant may lie apart and still be that
+/// instant: a segment boundary is answered as an epoch-seconds decimal carrying
+/// nanoseconds, which is finer than the 17 significant digits a double holds, so
+/// the double a JSON reader hands back can be the one next to the instant's own —
+/// about a quarter of a microsecond at the magnitude of a current epoch second.
+/// A microsecond is generous room for that, and still far narrower than any
+/// boundary this suite tells apart: the periods it cuts are months and minutes.
+const INSTANT_TOLERANCE: f64 = 1e-6;
+
+/// Asserts the segments a read answered are the ones expected, naming `case`.
+///
+/// The domains and account ids are compared exactly; the two instants are compared
+/// to [`INSTANT_TOLERANCE`], for the reason [`joined_at`] states.
+fn assert_segments(case: &str, actual: &[Segment], expected: &[Segment]) {
+    assert_eq!(
+        actual.len(),
+        expected.len(),
+        "case {case:?}: expected {} segment(s), got {actual:?}",
+        expected.len()
+    );
+    for (index, (got, want)) in actual.iter().zip(expected).enumerate() {
+        assert_eq!(
+            got.domain, want.domain,
+            "case {case:?}: segment {index} must report domain {:?}, got {got:?}",
+            want.domain
+        );
+        assert_eq!(
+            got.management_account_id, want.management_account_id,
+            "case {case:?}: segment {index} must report managementAccountId {:?}, got {got:?}",
+            want.management_account_id
+        );
+        assert_eq!(
+            got.billing_group_primary_account_id, want.billing_group_primary_account_id,
+            "case {case:?}: segment {index} must report billingGroupPrimaryAccountId {:?}, \
+             got {got:?}",
+            want.billing_group_primary_account_id
+        );
+        assert_instant(case, index, "beginDateInclusive", got.begin, want.begin);
+        assert_instant(case, index, "endDateExclusive", got.end, want.end);
+    }
+}
+
+/// Asserts one bound of a segment's period names the instant expected.
+fn assert_instant(case: &str, index: usize, member: &str, got: Option<f64>, want: Option<f64>) {
+    match (got, want) {
+        (Some(got), Some(want)) => assert!(
+            (got - want).abs() <= INSTANT_TOLERANCE,
+            "case {case:?}: segment {index} must report {member} {want:?}, got {got:?}"
+        ),
+        (got, want) => assert_eq!(
+            got, want,
+            "case {case:?}: segment {index} must report {member} {want:?}, got {got:?}"
+        ),
+    }
 }
 
 /// Add the expected segment over `[begin, end)` to `want`, unless that period

@@ -488,6 +488,7 @@ dependencies = [
  "rustls",
  "rustls-webpki",
  "serde_json",
+ "service-com-amazonaws-abusesignal-abusereportapi",
  "service-com-amazonaws-accessanalyzer-accessanalyzer",
  "service-com-amazonaws-account-account",
  "service-com-amazonaws-accountaccess-awsaccountaccess",
@@ -10043,6 +10044,30 @@ checksum = "66cf8fedced2fcf12406bcb34223dffb92eaf34908ede12fed414c82b7f00b3e"
 dependencies = [
  "base16ct 1.0.0",
  "serde",
+]
+
+[[package]]
+name = "service-com-amazonaws-abusesignal-abusereportapi"
+version = "0.1.0"
+dependencies = [
+ "automod",
+ "aws-emulator-build-support",
+ "aws-emulator-emulator-telemetry",
+ "aws-emulator-engine",
+ "aws-emulator-server",
+ "aws-emulator-smithy-macros",
+ "aws-emulator-smithy-schema-server",
+ "aws-emulator-smithy-server-runtime",
+ "aws-smithy-runtime-api",
+ "aws-smithy-schema 0.2.1",
+ "aws-smithy-types",
+ "bytes",
+ "hex",
+ "http",
+ "serde_json",
+ "sha2 0.10.9",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
