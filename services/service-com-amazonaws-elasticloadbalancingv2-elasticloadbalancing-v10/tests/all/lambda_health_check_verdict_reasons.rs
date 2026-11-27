@@ -58,7 +58,7 @@ use smithy_server_runtime::MultiServiceRouter;
 use crate::alb_data_plane::{create_load_balancer, settle};
 use crate::alb_lambda_target_health_check::make_checks_due;
 use crate::alb_lambda_target_published_address::{activate_functions, lambda, HANDLER, RUNTIME};
-use crate::provisioning_loop::{action, call, first_text, members, p};
+use crate::provisioning_loop::{action, call, first_text, health_block, members, p};
 
 /// The one function every row registers: it answers what the destination the check requested
 /// names, so one package serves every class of answer the rule generalises over.
@@ -246,10 +246,15 @@ async fn described(router: &MultiServiceRouter, arn: &str) -> Vec<Reported> {
     );
     members(&reply.body, "TargetHealthDescriptions")
         .iter()
-        .map(|description| Reported {
-            state: first_text(description, "State").unwrap_or_default(),
-            reason: first_text(description, "Reason").unwrap_or_default(),
-            description: first_text(description, "Description").unwrap_or_default(),
+        .map(|description| {
+            // The health's own element, because the override beside it carries members of
+            // the same names ([`health_block`]).
+            let health = health_block(description);
+            Reported {
+                state: first_text(&health, "State").unwrap_or_default(),
+                reason: first_text(&health, "Reason").unwrap_or_default(),
+                description: first_text(&health, "Description").unwrap_or_default(),
+            }
         })
         .collect()
 }

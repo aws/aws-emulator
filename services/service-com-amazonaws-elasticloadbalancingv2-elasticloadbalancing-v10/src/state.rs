@@ -113,9 +113,10 @@ pub use condition_regex::{
 pub mod target_health;
 
 pub use target_health::{
-    deregistration_delay, health_check_interval, health_check_timeout,
-    registered_availability_zone, SchedulerRegistration, ServedPorts, TargetProbe,
-    ALL_AVAILABILITY_ZONES, DEREGISTRATION_DELAY_ATTRIBUTE,
+    administrative_override, anomaly_detection, deregistration_delay, health_check_interval,
+    health_check_timeout, registered_availability_zone, IncludedBlocks, SchedulerRegistration,
+    ServedPorts, TargetProbe, ALL_AVAILABILITY_ZONES, DEREGISTRATION_DELAY_ATTRIBUTE,
+    INCLUDE_ALL, INCLUDE_ANOMALY_DETECTION,
 };
 
 /// Whether the security groups of a target's own network interface let a health check of it

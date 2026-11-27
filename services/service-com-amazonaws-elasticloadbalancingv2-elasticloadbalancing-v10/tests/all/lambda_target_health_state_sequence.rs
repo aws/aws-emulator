@@ -52,7 +52,7 @@ use crate::alb_lambda_target_published_address::lambda;
 // the sibling suite's: one function and one emulator for every suite whose rows turn on what a
 // health check's invocation answers, so none of them drifts on what is mounted or answered.
 use crate::lambda_health_check_verdict_reasons::{create_function, emulator, FUNCTION};
-use crate::provisioning_loop::{action, call, first_text, members, p};
+use crate::provisioning_loop::{action, call, first_text, health_block, members, p};
 
 /// The cadence every checked group is created with, and the span one of its checks may wait for
 /// an answer.
@@ -276,10 +276,13 @@ async fn described(router: &MultiServiceRouter, case: &str, arn: &str) -> Readin
         reply.body
     );
     let description = &descriptions[0];
+    // The health's own element, because the override beside it carries members of the same
+    // names ([`health_block`]).
+    let health = health_block(description);
     (
-        first_text(description, "State").unwrap_or_default(),
-        first_text(description, "Reason").unwrap_or_default(),
-        first_text(description, "Description").unwrap_or_default(),
+        first_text(&health, "State").unwrap_or_default(),
+        first_text(&health, "Reason").unwrap_or_default(),
+        first_text(&health, "Description").unwrap_or_default(),
     )
 }
 

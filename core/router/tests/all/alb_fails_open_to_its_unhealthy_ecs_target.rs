@@ -35,7 +35,9 @@ use smithy_server_runtime::MultiServiceRouter;
 
 // The ONE percent-encoder and element readers this test crate keeps for awsQuery suites
 // (`all/query_wire.rs`: "Nothing new should write another one — call this module").
-use crate::query_wire::{element, elements, form_encode, members_of, opt_element};
+use crate::query_wire::{
+    element, elements, form_encode, members_of, opt_element, target_health_of,
+};
 // The ONE hand-written raw HTTP/1.1 exchange on a load balancer's own published address and the
 // in-process request beside it, from the sibling suite that owns the fixtures for this topology —
 // nothing here keeps a second copy of them.
@@ -471,17 +473,20 @@ async fn health(router: &MultiServiceRouter, group: &str) -> Vec<Reported> {
     members_of(&body)
         .into_iter()
         .map(|description| {
-            let text = |tag: &str| {
-                elements(description, tag)
+            // The health's own block, because the override beside it carries members of the
+            // same names ([`target_health_of`]).
+            let health = target_health_of(description);
+            let text = |body: &str, tag: &str| {
+                elements(body, tag)
                     .into_iter()
                     .next()
                     .unwrap_or_default()
             };
             Reported {
-                id: text("Id"),
-                state: text("State"),
-                reason: text("Reason"),
-                description: text("Description"),
+                id: text(description, "Id"),
+                state: text(health, "State"),
+                reason: text(health, "Reason"),
+                description: text(health, "Description"),
             }
         })
         .collect()

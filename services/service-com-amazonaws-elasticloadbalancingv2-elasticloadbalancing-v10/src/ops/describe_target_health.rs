@@ -9,6 +9,10 @@
 //! long ago the target was registered. A `Targets` filter narrows the answer to the
 //! named targets, and one that is not registered is reported as such.
 //!
+//! Every description also carries the administrative override in effect on its target, and
+//! the optional blocks the request's `Include` options select — both read off
+//! [`crate::state`], which decides them for every reader of a registration.
+//!
 //! ## Shape of an operation
 //!
 //! Each operation is a struct that owns the shared engine and implements
@@ -192,6 +196,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         group.settle_draining(now);
         let group = &*group;
 
+        // Which OPTIONAL blocks this answer carries, read off the request's `Include`
+        // options: "used to include anomaly detection information", so the block is present
+        // on every description exactly when an option selecting it was named
+        // ([`crate::state::IncludedBlocks`]).
+        let included = crate::state::IncludedBlocks::selected_by(input.include.as_deref());
+
         let descriptions = match input.targets.as_deref() {
             // "Describes the health of the specified targets": each named target, in
             // the order named, whether or not it is registered.
@@ -200,8 +210,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 .map(|target| {
                     let port = target.port.or(group.port);
                     match group.targets.get(&(target.id.clone(), port)) {
-                        Some(registered) => group.health_description_of(registered, now),
-                        None => group.unregistered_health_description(target),
+                        Some(registered) => group.health_description_of(registered, now, included),
+                        None => group.unregistered_health_description(target, included),
                     }
                 })
                 .collect(),
@@ -209,7 +219,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             None => group
                 .targets
                 .values()
-                .map(|registered| group.health_description_of(registered, now))
+                .map(|registered| group.health_description_of(registered, now, included))
                 .collect(),
         };
 

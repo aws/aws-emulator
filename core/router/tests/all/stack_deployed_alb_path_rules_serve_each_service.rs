@@ -60,7 +60,7 @@ use crate::cfn_deployed_pipeline_on_a_started_emulator::Started;
 // of this emulator's own — a `host:port` on the interface the core binds rather than a name in
 // Elastic Load Balancing's zone, which resolves to nothing on this machine.
 use crate::elbv2_published_address_enforces_its_web_acl::dialable_port;
-use crate::query_wire::{elements, opt_element, outputs_of};
+use crate::query_wire::{elements, members_of, opt_element, outputs_of, target_health_of};
 
 /// The stack this suite deploys, and the status its create settles in.
 const STACK: &str = "pathfanout";
@@ -367,7 +367,13 @@ fn reported_states(emulator: &Started, group: &str) -> Vec<String> {
         code, 200,
         "expected 200 from DescribeTargetHealth on {group}, got {code} with {body}"
     );
-    elements(&body, "State")
+    // One state per registration, read inside that registration's own health block: the
+    // administrative override reported beside it carries a `State` of its own
+    // ([`target_health_of`]).
+    members_of(&body)
+        .into_iter()
+        .flat_map(|description| elements(target_health_of(description), "State"))
+        .collect()
 }
 
 /// One exchange on the address the stack published: a connection in the clear, HTTP/1.1, closed

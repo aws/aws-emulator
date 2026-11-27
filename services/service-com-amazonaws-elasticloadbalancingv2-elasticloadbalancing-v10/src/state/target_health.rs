@@ -55,12 +55,21 @@
 //! Every span is stored as the instant it comes due, never slept for; a read
 //! materialises what the clock already owes ([`TargetGroupRecord::settle_draining`]) and
 //! writes nothing else.
+//!
+//! A description carries two MEMBERS BESIDE that health, and this module is where both are
+//! decided as well, so every reader of a registration reports them alike: the administrative
+//! override in effect on the target ([`administrative_override`]), which every description
+//! carries, and the anomaly detection of it ([`anomaly_detection`]), which is one of the
+//! optional blocks a request's `Include` options select ([`IncludedBlocks`]).
 
 use std::ops::RangeInclusive;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
-use crate::ops::types::{TargetDescription, TargetHealth, TargetHealthDescription};
+use crate::ops::types::{
+    AdministrativeOverride, AnomalyDetection, TargetDescription, TargetHealth,
+    TargetHealthDescription,
+};
 
 use super::{
     target_group_attribute, targets_per_target_group, GuardingGroups, RegisteredTarget,
@@ -606,6 +615,116 @@ fn reported(state: (&str, &str, &str)) -> TargetHealth {
     }
 }
 
+/// The administrative override a target NOTHING overrides is under: the
+/// `TargetAdministrativeOverrideStateEnum` value that says so, the
+/// `TargetAdministrativeOverrideReasonEnum` reason code for it, and how Elastic Load
+/// Balancing describes that state
+/// (`smithy_query(query="shape",shape="TargetAdministrativeOverrideStateEnum")` and its
+/// reason enum beside it).
+const NO_OVERRIDE: (&str, &str, &str) = (
+    "no_override",
+    "AdministrativeOverride.NoOverride",
+    "No override is currently active on target",
+);
+
+/// What `TargetHealthDescription$AdministrativeOverride` carries for one reported target:
+/// "the administrative override information for the target".
+///
+/// The states the model names are `no_override` and the ones a ZONAL SHIFT puts a target in
+/// (`TargetAdministrativeOverrideStateEnum`). A zonal shift is another service's resource —
+/// started, updated and cancelled through Amazon Application Recovery Controller and held in
+/// that service's own store, which this one cannot read — and no call of this service, and
+/// nothing this store holds, puts an override in effect on a target of a target group. So
+/// every target a health read reports here is one no override is active on, and the member
+/// carries exactly the state the model names for that, never nothing: a client reading it to
+/// decide whether a target is administratively drained has to be able to tell "no override"
+/// from "not reported".
+///
+/// Answered for EVERY description, for a registered target and for one the group holds no
+/// registration of alike: the member is the override in effect on the target the request
+/// named, which is a fact about that target rather than about a registration.
+pub fn administrative_override() -> AdministrativeOverride {
+    AdministrativeOverride {
+        state: Some(NO_OVERRIDE.0.to_string()),
+        reason: Some(NO_OVERRIDE.1.to_string()),
+        description: Some(NO_OVERRIDE.2.to_string()),
+    }
+}
+
+/// The `AnomalyResultEnum` value a target no anomaly has been detected for is reported
+/// under: "if no anomalies were detected, the result is `normal`"
+/// (`TargetHealthDescription$AnomalyDetection`).
+const NO_ANOMALY_DETECTED: &str = "normal";
+
+/// The `MitigationInEffectEnum` value reported where no anomaly mitigation is in progress —
+/// `AnomalyDetection$MitigationInEffect` "indicates whether anomaly mitigation is in
+/// progress".
+const MITIGATION_NOT_IN_EFFECT: &str = "no";
+
+/// What `TargetHealthDescription$AnomalyDetection` carries for one reported target: "the
+/// anomaly detection result for the target".
+///
+/// `Result` is "the latest anomaly detection result", and the model gives its baseline: "if
+/// no anomalies were detected, the result is `normal`". Nothing in this emulator has found a
+/// target's traffic anomalous — an anomaly is a deviation the load balancer detects in the
+/// responses a target gives the traffic it is sent, which nothing here records a finding of —
+/// so every target is reported at that baseline. `MitigationInEffect` is whether mitigation
+/// "is in progress", which takes an anomaly to mitigate, so no target is under mitigation
+/// either.
+///
+/// Reported only where the request's `Include` options select the block
+/// ([`IncludedBlocks`]), which is the whole observable effect of that member.
+pub fn anomaly_detection() -> AnomalyDetection {
+    AnomalyDetection {
+        result: Some(NO_ANOMALY_DETECTED.to_string()),
+        mitigation_in_effect: Some(MITIGATION_NOT_IN_EFFECT.to_string()),
+    }
+}
+
+/// The `DescribeTargetHealthInputIncludeEnum` option that selects the anomaly-detection
+/// block of a description (`smithy_query(query="shape",
+/// shape="DescribeTargetHealthInputIncludeEnum")`).
+pub const INCLUDE_ANOMALY_DETECTION: &str = "AnomalyDetection";
+
+/// The option of that same enum that selects EVERY optional block, so a caller that wants
+/// them all names one value rather than enumerating them.
+pub const INCLUDE_ALL: &str = "All";
+
+/// Which OPTIONAL blocks of a target health description a read reports.
+///
+/// `DescribeTargetHealthInput$Include` is "used to include anomaly detection information":
+/// the member selects blocks that are otherwise left out, so a block it does not name is
+/// absent from the answer and one it names is present on every description the answer
+/// carries. Read once, where the request is read, so the handler and the descriptions it
+/// builds cannot disagree about what was asked for.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct IncludedBlocks {
+    /// Whether the anomaly-detection block is part of the answer.
+    pub anomaly_detection: bool,
+}
+
+impl IncludedBlocks {
+    /// The blocks the `Include` options of a request select — none for a request that names
+    /// no option at all, which is the answer without any optional block.
+    ///
+    /// The values are the enum's own ([`INCLUDE_ANOMALY_DETECTION`], [`INCLUDE_ALL`]); a
+    /// value outside the enum never reaches here, because the member targets an enum and the
+    /// request walk refuses one that is not among its values.
+    pub fn selected_by(include: Option<&[String]>) -> Self {
+        let options = include.unwrap_or_default();
+        let selects = |option: &str| options.iter().any(|named| named == option);
+        Self {
+            anomaly_detection: selects(INCLUDE_ANOMALY_DETECTION) || selects(INCLUDE_ALL),
+        }
+    }
+
+    /// The anomaly-detection block of one description under these options: the target's own
+    /// anomaly detection where the options select it, and nothing where they do not.
+    pub fn reported_anomaly_detection(self) -> Option<AnomalyDetection> {
+        self.anomaly_detection.then(anomaly_detection)
+    }
+}
+
 /// What another emulated service's SCHEDULER declares about one registration it makes in a
 /// target group on behalf of a workload it runs ([`TargetGroupRecord::register_for`]).
 ///
@@ -987,6 +1106,7 @@ impl TargetGroupRecord {
     pub fn unregistered_health_description(
         &self,
         target: &TargetDescription,
+        included: IncludedBlocks,
     ) -> TargetHealthDescription {
         TargetHealthDescription {
             target: Some(TargetDescription {
@@ -995,16 +1115,25 @@ impl TargetGroupRecord {
             }),
             health_check_port: self.health_check_port_for(target.port),
             target_health: Some(reported(UNUSED_NOT_REGISTERED)),
-            anomaly_detection: None,
-            administrative_override: None,
+            // The optional block the request asked for, and the override in effect on the
+            // target the request named — neither of which a registration is needed for
+            // ([`anomaly_detection`], [`administrative_override`]).
+            anomaly_detection: included.reported_anomaly_detection(),
+            administrative_override: Some(administrative_override()),
         }
     }
 
     /// The health description of one registered target.
+    ///
+    /// `included` is what the request's `Include` options select ([`IncludedBlocks`]), which
+    /// decides the optional blocks this description carries; the `AdministrativeOverride` is
+    /// not one of those — it is reported on every description
+    /// ([`administrative_override`]).
     pub fn health_description_of(
         &self,
         target: &RegisteredTarget,
         now: SystemTime,
+        included: IncludedBlocks,
     ) -> TargetHealthDescription {
         TargetHealthDescription {
             target: Some(TargetDescription {
@@ -1015,8 +1144,8 @@ impl TargetGroupRecord {
             }),
             health_check_port: self.health_check_port_of(target),
             target_health: Some(self.health_of(target, now)),
-            anomaly_detection: None,
-            administrative_override: None,
+            anomaly_detection: included.reported_anomaly_detection(),
+            administrative_override: Some(administrative_override()),
         }
     }
 }

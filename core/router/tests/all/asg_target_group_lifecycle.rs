@@ -48,7 +48,7 @@ use smithy_server_runtime::MultiServiceRouter;
 
 // The ONE percent-encoder and element readers this test crate keeps for awsQuery suites
 // (`all/query_wire.rs`: "Nothing new should write another one — call this module").
-use crate::query_wire::{element, elements, form_encode, opt_element};
+use crate::query_wire::{element, elements, form_encode, members_of, opt_element, target_health_of};
 
 /// The Region every request below is signed for.
 const REGION: &str = "us-east-1";
@@ -268,25 +268,26 @@ struct Reported {
 /// Every registration the target group `arn` holds right now, as a client reads it.
 async fn target_health(router: &MultiServiceRouter, arn: &str) -> Vec<Reported> {
     let body = elbv2(router, "DescribeTargetHealth", &[("TargetGroupArn", arn)]).await;
-    let ids = elements(&body, "Id");
-    ids.into_iter()
-        .map(|id| {
-            // One registration per member, each carrying its own health; the readers take
-            // document order, which pairs them.
+    members_of(&body)
+        .into_iter()
+        .map(|description| {
+            // One registration per member, each read inside its OWN member: the state and
+            // the reason come out of that member's health block, because the administrative
+            // override beside it carries members of the same names
+            // ([`target_health_of`]).
+            let health = target_health_of(description);
+            let text = |body: &str, tag: &str| {
+                elements(body, tag)
+                    .into_iter()
+                    .next()
+                    .unwrap_or_default()
+            };
             Reported {
-                id,
-                state: String::new(),
-                reason: String::new(),
+                id: text(description, "Id"),
+                state: text(health, "State"),
+                reason: text(health, "Reason"),
             }
         })
-        .zip(elements(&body, "State"))
-        .map(|(reported, state)| Reported { state, ..reported })
-        .zip(
-            elements(&body, "Reason")
-                .into_iter()
-                .chain(std::iter::repeat(String::new())),
-        )
-        .map(|(reported, reason)| Reported { reason, ..reported })
         .collect()
 }
 

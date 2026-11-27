@@ -276,6 +276,20 @@ pub(crate) fn members(xml: &str, container: &str) -> Vec<String> {
     found
 }
 
+/// The `TargetHealth` block of one target health description — the element the health's own
+/// `State`, `Reason` and `Description` are read out of.
+///
+/// `pub(crate)` because every suite that reads a reported health reads it through this: a
+/// description also carries an `AdministrativeOverride` whose members are named `State`,
+/// `Reason` and `Description` too, so a read of the health is scoped to the health's own
+/// element rather than taking the first element of that name in the description — which is
+/// the override's for a `healthy` target, whose health carries neither a reason nor a
+/// description ("if the target state is healthy, a reason code is not provided",
+/// `TargetHealth$Reason`).
+pub(crate) fn health_block(description: &str) -> String {
+    first_text(description, "TargetHealth").unwrap_or_default()
+}
+
 /// The `Key`/`Value` pairs of every `<member>` of the first `Attributes` list of `body`,
 /// IN ORDER.
 ///

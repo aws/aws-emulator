@@ -34,7 +34,7 @@ use smithy_server_runtime::MultiServiceRouter;
 
 // The ONE percent-encoder and element readers this test crate keeps for awsQuery suites
 // (`all/query_wire.rs`: "Nothing new should write another one — call this module").
-use crate::query_wire::{elements, form_encode, opt_element};
+use crate::query_wire::{elements, form_encode, opt_element, target_health_of};
 
 /// The region every request below is signed for.
 const REGION: &str = "us-west-2";
@@ -385,18 +385,21 @@ async fn health(
     crate::query_wire::members_of(&body)
         .into_iter()
         .map(|description| {
-            let text = |tag: &str| {
-                elements(description, tag)
+            // The health's own block, because the override beside it carries members of the
+            // same names ([`target_health_of`]).
+            let health = target_health_of(description);
+            let text = |body: &str, tag: &str| {
+                elements(body, tag)
                     .into_iter()
                     .next()
                     .unwrap_or_default()
             };
             (
-                text("Id"),
-                text("State"),
-                text("Reason"),
-                text("Description"),
-                text("HealthCheckPort"),
+                text(description, "Id"),
+                text(health, "State"),
+                text(health, "Reason"),
+                text(health, "Description"),
+                text(description, "HealthCheckPort"),
             )
         })
         .collect()

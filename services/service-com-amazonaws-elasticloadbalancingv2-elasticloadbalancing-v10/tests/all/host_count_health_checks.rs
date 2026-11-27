@@ -49,7 +49,7 @@ use service_com_amazonaws_elasticloadbalancingv2_elasticloadbalancing_v10::state
 use smithy_server_runtime::MultiServiceRouter;
 
 use crate::listener_rules::{create_listener, create_load_balancer};
-use crate::provisioning_loop::{action, call, emulator, first_text, members, p};
+use crate::provisioning_loop::{action, call, emulator, first_text, health_block, members, p};
 
 /// How long a row waits for the verdict the group's own health-check cadence reaches, and how
 /// often it looks. Generous on purpose — many times the longest cadence a row configures —
@@ -172,10 +172,13 @@ async fn health(
     members(&reply.body, "TargetHealthDescriptions")
         .iter()
         .map(|description| {
+            // The health's own element, because the override beside it carries members of
+            // the same names ([`health_block`]).
+            let health = health_block(description);
             (
-                first_text(description, "State").unwrap_or_default(),
-                first_text(description, "Reason").unwrap_or_default(),
-                first_text(description, "Description").unwrap_or_default(),
+                first_text(&health, "State").unwrap_or_default(),
+                first_text(&health, "Reason").unwrap_or_default(),
+                first_text(&health, "Description").unwrap_or_default(),
             )
         })
         .collect()

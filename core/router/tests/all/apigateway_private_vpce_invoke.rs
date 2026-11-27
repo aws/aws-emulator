@@ -37,7 +37,7 @@ use serde_json::Value;
 use smithy_server_runtime::MultiServiceRouter;
 
 use crate::elbv2_network_resolution::{ec2, ec2_ok, elbv2, Answer, BOOT_STACK_SIZE, REGION};
-use crate::query_wire::{block_of, element, elements};
+use crate::query_wire::{block_of, element, elements, members_of, target_health_of};
 
 /// How long a readiness poll here is given before it is called a non-convergence.
 ///
@@ -478,7 +478,13 @@ fn a_private_api_is_reached_through_the_endpoint_its_policy_names() {
                     health.status, 200,
                     "case \"the targets' health\": expected 200, got {health:?}"
                 );
-                elements(&health.text, "State")
+                // One state per registration, read inside that registration's own health
+                // block: the administrative override reported beside it carries a `State`
+                // of its own ([`target_health_of`]).
+                members_of(&health.text)
+                    .into_iter()
+                    .flat_map(|description| elements(target_health_of(description), "State"))
+                    .collect::<Vec<String>>()
             };
             let states = poll_until(
                 "both endpoint targets become healthy with nobody calling in between",

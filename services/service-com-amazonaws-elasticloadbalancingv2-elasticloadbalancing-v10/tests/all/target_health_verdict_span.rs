@@ -47,7 +47,7 @@ use std::time::{Duration, Instant};
 
 use smithy_server_runtime::MultiServiceRouter;
 
-use crate::provisioning_loop::{action, call, first_text, members, p};
+use crate::provisioning_loop::{action, call, first_text, health_block, members, p};
 use crate::target_security_group_health_check::{ec2_ok, emulator_with_ec2, reported};
 
 /// How long a leg waits for the verdict a group's own checks reach, and how often it looks.
@@ -375,13 +375,18 @@ async fn health(router: &MultiServiceRouter, case: &str, arn: &str) -> Vec<Repor
     );
     members(&reply.body, "TargetHealthDescriptions")
         .iter()
-        .map(|description| Reported {
-            id: first_text(description, "Id").unwrap_or_default(),
-            port: first_text(description, "Port"),
-            state: first_text(description, "State").unwrap_or_default(),
-            reason: first_text(description, "Reason"),
-            description: first_text(description, "Description"),
-            health_check_port: first_text(description, "HealthCheckPort"),
+        .map(|description| {
+            // The health's own element, because the override beside it carries members of
+            // the same names ([`health_block`]).
+            let health = health_block(description);
+            Reported {
+                id: first_text(description, "Id").unwrap_or_default(),
+                port: first_text(description, "Port"),
+                state: first_text(&health, "State").unwrap_or_default(),
+                reason: first_text(&health, "Reason"),
+                description: first_text(&health, "Description"),
+                health_check_port: first_text(description, "HealthCheckPort"),
+            }
         })
         .collect()
 }

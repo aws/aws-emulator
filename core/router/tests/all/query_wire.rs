@@ -220,6 +220,19 @@ pub(crate) fn members_of(xml: &str) -> Vec<&str> {
         .collect()
 }
 
+/// The `TargetHealth` block of one Elastic Load Balancing target health description — the
+/// element a reported health's own `State`, `Reason` and `Description` are read out of.
+///
+/// Scoped, for the reason this module exists: a `TargetHealthDescription` also carries an
+/// `AdministrativeOverride`, whose members are named `State`, `Reason` and `Description`
+/// too, so a read that is not scoped to the health's own block takes the override's values
+/// for a `healthy` target — whose health carries neither a reason nor a description. Answers
+/// the empty string for a description carrying no health at all, which reads as "none" in
+/// every suite below.
+pub(crate) fn target_health_of(description: &str) -> &str {
+    block_of(description, "TargetHealth").unwrap_or_default()
+}
+
 /// Each `<item>` block of an ec2Query answer's LIST, in document order.
 ///
 /// [`members_of`] reads the awsQuery `<member>` form; an ec2Query list wraps each entry in

@@ -46,7 +46,9 @@ use serde_json::{json, Value};
 use smithy_server_runtime::MultiServiceRouter;
 
 use crate::ecs_wire::{list, ok, AWSVPC_SUBNET, AWSVPC_START};
-use crate::load_balancer_target_groups::{attach_load_balancer, elb_call, emulator, VPC};
+use crate::load_balancer_target_groups::{
+    attach_load_balancer, elb_call, emulator, target_health_of, VPC,
+};
 use crate::task_lifecycle::container;
 use service_com_amazonaws_ecs_amazonec2containerservicev20141113::state::MAX_SERVED_PORT_RANGES;
 
@@ -417,11 +419,14 @@ async fn health(
         .filter_map(|block| block.split_once('>'))
         .filter_map(|(_, rest)| rest.split("</member>").next())
         .map(|block| {
+            // The health's own element, because the override reported beside it carries
+            // members of the same names ([`target_health_of`]).
+            let health = target_health_of(block);
             (
                 text(block, "Id"),
-                text(block, "State"),
-                text(block, "Reason"),
-                text(block, "Description"),
+                text(health, "State"),
+                text(health, "Reason"),
+                text(health, "Description"),
                 text(block, "HealthCheckPort"),
             )
         })

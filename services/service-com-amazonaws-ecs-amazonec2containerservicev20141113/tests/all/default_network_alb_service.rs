@@ -50,7 +50,7 @@ use serde_json::{json, Value};
 use smithy_server_runtime::MultiServiceRouter;
 
 use crate::ecs_wire::{count, create_cluster, ec2_element, ec2_form, list, ok, string, AWSVPC_START};
-use crate::load_balancer_target_groups::{all_texts, elb_call, first_text};
+use crate::load_balancer_target_groups::{all_texts, elb_call, first_text, health_texts};
 
 /// The cluster every row's service runs in.
 const CLUSTER: &str = "defaultnet";
@@ -544,7 +544,10 @@ async fn target_health(router: &MultiServiceRouter, group: &str, case: &str) -> 
 async fn health(router: &MultiServiceRouter, group: &str, case: &str) -> Vec<(String, String)> {
     let body = target_health(router, group, case).await;
     let ids = all_texts(&body, "Id");
-    let states = all_texts(&body, "State");
+    // One state per DESCRIPTION, read inside that description's own health block: the
+    // administrative override reported beside it carries a `State` of its own
+    // ([`health_texts`]).
+    let states = health_texts(&body, "State");
     ids.into_iter().zip(states).collect()
 }
 

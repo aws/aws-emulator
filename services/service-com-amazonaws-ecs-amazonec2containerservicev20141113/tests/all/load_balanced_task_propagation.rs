@@ -49,7 +49,9 @@ use serde_json::{json, Value};
 use smithy_server_runtime::MultiServiceRouter;
 
 use crate::ecs_wire::{list, ok, string, AWSVPC_START, SIGNED_REGION};
-use crate::load_balancer_target_groups::{all_texts, create_target_group, elb_call};
+use crate::load_balancer_target_groups::{
+    all_texts, create_target_group, elb_call, health_texts,
+};
 use crate::task_lifecycle::container;
 
 /// The `source` and `detail-type` Amazon ECS publishes a task state change under, spelled
@@ -302,7 +304,10 @@ async fn target_health(
         "case {case:?}: DescribeTargetHealth must succeed, got {status} with {body}"
     );
     let ids = all_texts(&body, "Id");
-    let states = all_texts(&body, "State");
+    // One state per DESCRIPTION, read inside that description's own health block: the
+    // administrative override reported beside it carries a `State` of its own
+    // ([`health_texts`]).
+    let states = health_texts(&body, "State");
     assert_eq!(
         ids.len(),
         states.len(),

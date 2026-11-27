@@ -36,7 +36,9 @@
 //! whether the group configures a health-check port of its own, and how many targets one
 //! read names.
 
-use crate::provisioning_loop::{account, action, call, emulator, first_text, members, p, Reply, REGION};
+use crate::provisioning_loop::{
+    account, action, call, emulator, first_text, health_block, members, p, Reply, REGION,
+};
 use crate::target_group_attributes_and_modification::unescaped;
 use crate::target_group_health_check_port::create_group;
 use smithy_server_runtime::MultiServiceRouter;
@@ -215,12 +217,15 @@ pub(crate) async fn reported_for(
             // The target's own id and port are read out of its `Target`, so neither can be
             // confused with the health-check port reported beside it.
             let target = first_text(description, "Target").unwrap_or_default();
+            // The health's own element, because the override beside it carries members of
+            // the same names ([`health_block`]).
+            let health = health_block(description);
             ReportedTarget {
                 id: first_text(&target, "Id"),
                 port: first_text(&target, "Port"),
                 health_check_port: first_text(description, "HealthCheckPort"),
-                state: first_text(description, "State"),
-                reason: first_text(description, "Reason"),
+                state: first_text(&health, "State"),
+                reason: first_text(&health, "Reason"),
             }
         })
         .collect()

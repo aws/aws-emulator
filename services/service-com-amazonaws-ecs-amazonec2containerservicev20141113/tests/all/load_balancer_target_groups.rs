@@ -134,6 +134,48 @@ pub(crate) fn all_texts(xml: &str, tag: &str) -> Vec<String> {
     found
 }
 
+/// Each `<member>` block of an awsQuery list, in document order — the blocks a
+/// `DescribeTargetHealth` answer's target health descriptions come in.
+///
+/// The serializer writes the first member of a list with the service's namespace attribute
+/// (`<member xmlns="…">`) and the rest bare, so a block starts past its own tag's closing
+/// bracket.
+pub(crate) fn member_blocks(xml: &str) -> Vec<&str> {
+    xml.split("<member")
+        .skip(1)
+        .filter_map(|block| block.split_once('>'))
+        .filter_map(|(_, rest)| rest.split("</member>").next())
+        .collect()
+}
+
+/// The `TargetHealth` block of one target health description — the element a reported
+/// health's own `State`, `Reason` and `Description` are read out of.
+///
+/// Scoped for the reason the readers above are shared: a description also carries an
+/// `AdministrativeOverride`, whose members are named `State`, `Reason` and `Description`
+/// too, so a read that is not scoped to the health's own block takes the override's values
+/// for a `healthy` target — whose health carries neither a reason nor a description.
+pub(crate) fn target_health_of(description: &str) -> &str {
+    description
+        .split_once("<TargetHealth")
+        .and_then(|(_, rest)| rest.split_once('>'))
+        .and_then(|(_, inner)| inner.split_once("</TargetHealth>"))
+        .map(|(inner, _)| inner)
+        .unwrap_or_default()
+}
+
+/// One `tag` of each described target's own `TargetHealth`, in the order the answer reports
+/// the descriptions — empty for a description whose health carries no such member.
+///
+/// The health counterpart of [`all_texts`]: one entry per DESCRIPTION, so it pairs with the
+/// leaves read off the descriptions themselves ([`target_health_of`]).
+pub(crate) fn health_texts(xml: &str, tag: &str) -> Vec<String> {
+    member_blocks(xml)
+        .into_iter()
+        .map(|description| first_text(target_health_of(description), tag).unwrap_or_default())
+        .collect()
+}
+
 /// One ELBv2 awsQuery call through the shared router, returning the status and the body.
 ///
 /// `pub(crate)`: shared with the sibling suites that drive the Elastic Load Balancing v2

@@ -54,7 +54,7 @@ use crate::ecs_wire::{
     cluster_with_capacity, list, ok, present_count, seed_awsvpc_subnets, string, AWSVPC_START,
     AWSVPC_SUBNET,
 };
-use crate::load_balancer_target_groups::{all_texts, elb_call};
+use crate::load_balancer_target_groups::{all_texts, elb_call, health_texts};
 
 /// The image every container below names. Nothing is fetched from it: what the emulator runs
 /// is the `command` the revision states, and the point of these rows is that it cannot.
@@ -562,7 +562,10 @@ async fn target_health(
         "case {case:?}: DescribeTargetHealth must succeed, got {status} with {body}"
     );
     let ids = all_texts(&body, "Id");
-    let states = all_texts(&body, "State");
+    // One state per DESCRIPTION, read inside that description's own health block: the
+    // administrative override reported beside it carries a `State` of its own
+    // ([`health_texts`]).
+    let states = health_texts(&body, "State");
     assert_eq!(
         ids.len(),
         states.len(),

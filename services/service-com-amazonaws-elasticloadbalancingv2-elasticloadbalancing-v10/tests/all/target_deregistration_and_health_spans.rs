@@ -35,7 +35,7 @@ use crate::listener_rules::{
     add_rule, create_listener, create_load_balancer, forward_to, host_header,
 };
 use crate::provisioning_loop::{
-    action, call, create_http_target_group, emulator, first_text, members, p, Reply,
+    action, call, create_http_target_group, emulator, first_text, health_block, members, p, Reply,
 };
 use service_com_amazonaws_elasticloadbalancingv2_elasticloadbalancing_v10::state::{
     DEREGISTRATION_DELAY_ATTRIBUTE, SETTLE_AFTER,
@@ -110,10 +110,13 @@ async fn health(router: &MultiServiceRouter, case: &str, arn: &str) -> Vec<(Stri
     members(&reply.body, "TargetHealthDescriptions")
         .iter()
         .map(|description| {
+            // The health's own element, because the override beside it carries members of
+            // the same names ([`health_block`]).
+            let health = health_block(description);
             (
                 first_text(description, "Id").unwrap_or_default(),
-                first_text(description, "State").unwrap_or_default(),
-                first_text(description, "Reason").unwrap_or_default(),
+                first_text(&health, "State").unwrap_or_default(),
+                first_text(&health, "Reason").unwrap_or_default(),
             )
         })
         .collect()
@@ -131,9 +134,12 @@ async fn health_of(router: &MultiServiceRouter, case: &str, arn: &str, id: &str)
         "case {case:?}: expected 200 from DescribeTargetHealth, got {} body {}",
         reply.status, reply.body
     );
+    // The health's own element, because the override beside it carries members of the same
+    // names ([`health_block`]).
+    let health = health_block(&reply.body);
     (
-        reply.text("State").unwrap_or_default(),
-        reply.text("Reason").unwrap_or_default(),
+        first_text(&health, "State").unwrap_or_default(),
+        first_text(&health, "Reason").unwrap_or_default(),
     )
 }
 
