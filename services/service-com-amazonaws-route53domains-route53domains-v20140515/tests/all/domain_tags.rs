@@ -20,7 +20,10 @@ use crate::domain_lifecycle::{error_code, register, Emulator};
 use serde_json::json;
 
 /// The tags `ListTagsForDomain` reports for `name`, as (key, value) pairs sorted by key.
-async fn tags_of(emulator: &Emulator, name: &str) -> Vec<(String, String)> {
+///
+/// `pub(crate)` so the restore suite in `tests/all/domain_lifecycle.rs` can read a
+/// restored registration's tags back through the one helper that reads them.
+pub(crate) async fn tags_of(emulator: &Emulator, name: &str) -> Vec<(String, String)> {
     let (status, body) = emulator
         .call("ListTagsForDomain", &json!({ "DomainName": name }))
         .await;

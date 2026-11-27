@@ -137,6 +137,7 @@ impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
             renew_domain::RenewDomain,
             resend_contact_reachability_email::ResendContactReachabilityEmail,
             resend_operation_authorization::ResendOperationAuthorization,
+            restore_domain::RestoreDomain,
             retrieve_domain_auth_code::RetrieveDomainAuthCode,
             transfer_domain::TransferDomain,
             transfer_domain_to_another_aws_account::TransferDomainToAnotherAwsAccount,

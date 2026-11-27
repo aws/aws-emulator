@@ -4,8 +4,10 @@
 //! Removes the domain from the account's store and appends the `DELETE_DOMAIN` operation
 //! record that tracks the deletion, returning that record's `OperationId`. After it,
 //! `GetDomainDetail` fails, `ListDomains` no longer lists the name and
-//! `CheckDomainAvailability` reports it `AVAILABLE` again. Deleting a name the account
-//! does not hold is refused with `InvalidInput`.
+//! `CheckDomainAvailability` reports it `AVAILABLE` again. The registration itself is kept
+//! restorable (`crate::state::record_deletion`), because `RestoreDomain` restores "a
+//! domain that has expired, or was deleted". Deleting a name the account does not hold is
+//! refused with `InvalidInput`.
 //!
 //! ## Shape of an operation
 //!
@@ -179,18 +181,20 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .ok_or_else(|| crate::state::state_unavailable(Self::NAME))?;
         let mut state = state.lock();
 
-        if state.domains.remove(&name).is_none() {
+        let Some(domain) = state.domains.remove(&name) else {
             return Err(DeleteDomainErrorModeled::InvalidInput(InvalidInput {
                 message: Some(crate::state::unknown_domain_message(&name)),
             })
             .into());
-        }
+        };
 
-        let operation_id = state.record_operation(
-            &name,
-            crate::state::TYPE_DELETE_DOMAIN,
-            crate::state::now_millis(),
-        );
+        let now = crate::state::now_millis();
+        // The deleted registration stays restorable: `RestoreDomain` restores "a domain
+        // that has expired, or was deleted, before it becomes available for others to
+        // register", so what it restores is the record this account held.
+        state.record_deletion(domain, now);
+
+        let operation_id = state.record_operation(&name, crate::state::TYPE_DELETE_DOMAIN, now);
         Ok(DeleteDomainOutput {
             operation_id: Some(operation_id),
         })

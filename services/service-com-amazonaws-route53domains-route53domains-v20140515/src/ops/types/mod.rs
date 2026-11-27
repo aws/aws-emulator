@@ -41,6 +41,7 @@ pub mod reject_domain_transfer_from_another_aws_account_types;
 pub mod renew_domain_types;
 pub mod resend_contact_reachability_email_types;
 pub mod resend_operation_authorization_types;
+pub mod restore_domain_types;
 pub mod retrieve_domain_auth_code_types;
 pub mod shared_types;
 pub mod transfer_domain_to_another_aws_account_types;
@@ -105,6 +106,8 @@ pub use renew_domain_types::*;
 pub use resend_contact_reachability_email_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use resend_operation_authorization_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use restore_domain_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use retrieve_domain_auth_code_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]

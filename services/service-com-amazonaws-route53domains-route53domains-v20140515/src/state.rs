@@ -21,10 +21,10 @@
 
 mod registry;
 pub use registry::{
-    change_ownership_price, price_record, priced_tlds, restoration_price, seeded_registrations,
-    standard_registration_price, standard_registration_rate, standard_renewal_price,
-    standard_transfer_price, unavailable_domain_message, Transferability, AVAILABILITY_AVAILABLE,
-    AVAILABILITY_UNAVAILABLE, CHANGE_OWNERSHIP_RATE, CURRENCY_USD,
+    change_ownership_price, consent_shortfall, price_record, priced_tlds, restoration_price,
+    seeded_registrations, standard_registration_price, standard_registration_rate,
+    standard_renewal_price, standard_transfer_price, unavailable_domain_message, Transferability,
+    AVAILABILITY_AVAILABLE, AVAILABILITY_UNAVAILABLE, CHANGE_OWNERSHIP_RATE, CURRENCY_USD,
     DEFAULT_STANDARD_REGISTRATION_RATE, PRICE_TYPE_STANDARD, RESTORATION_RATE,
     STANDARD_REGISTRATION_RATES, TRANSFERABLE_DOMAIN_IN_OWN_ACCOUNT, TRANSFERABLE_UNTRANSFERABLE,
 };
@@ -61,6 +61,11 @@ pub const TYPE_DISABLE_AUTORENEW: &str = "DISABLE_AUTORENEW";
 /// transfer-lock operations append (`DisableDomainTransferLock` "removes the transfer
 /// lock on the domain").
 pub const TYPE_DOMAIN_LOCK: &str = "DOMAIN_LOCK";
+/// `RESTORE_DOMAIN`, from the model's `OperationType` enum: the type of the record
+/// `RestoreDomain` appends ("[r]estoration is asynchronous. The response includes an
+/// operation ID that you can use with GetOperationDetail to track the progress of the
+/// request").
+pub const TYPE_RESTORE_DOMAIN: &str = "RESTORE_DOMAIN";
 
 /// `PENDING`, from the model's `ReachabilityStatus` enum
 /// (`crate::ops::types::REACHABILITY_STATUS_VALUES`): "We sent the confirmation email
@@ -135,6 +140,20 @@ pub const MAX_OPERATION_RECORDS: usize = 1000;
 /// request that would take a domain past it is refused with the modelled `InvalidInput`
 /// rather than silently dropping a tag the caller asked for.
 pub const MAX_TAGS_PER_DOMAIN: usize = 100;
+/// The most deleted registrations this emulator keeps restorable.
+///
+/// `RestoreDomain` restores "a domain that has expired, or was deleted, before it becomes
+/// available for others to register", so a deleted registration has to be kept somewhere
+/// for a later call to restore. That store is caller-driven — every `DeleteDomain` adds to
+/// it and nothing a client calls empties it — so it needs a ceiling of its own, for the
+/// reason [`MAX_DOMAINS`] has one. Route 53 Domains publishes no quota for it ("the period
+/// during which a domain can be restored varies by TLD"), so this is this emulator's
+/// stated ceiling, and it is the domain store's: a restorable record is a registration
+/// this account held. Past it,
+/// [`record_deletion`](ComAmazonawsRoute53domainsRoute53domainsV20140515State::record_deletion)
+/// drops the registration deleted longest ago — the one whose restoration window a
+/// registry would have let lapse first.
+pub const MAX_RESTORABLE_DOMAINS: usize = MAX_DOMAINS;
 
 // ---------------------------------------------------------------------------
 // Records
@@ -191,6 +210,20 @@ impl Domain {
     }
 }
 
+/// A registration this account deleted, kept for `RestoreDomain` to put back.
+///
+/// `DeleteDomain` takes the name out of
+/// [`ComAmazonawsRoute53domainsRoute53domainsV20140515State::domains`], and `RestoreDomain`
+/// "[r]estores a domain that has expired, or was deleted": the record the account held is
+/// therefore what a restoration brings back, so it is kept here as it stood rather than
+/// rebuilt from a later request. `deleted_millis` is the instant it left the account's
+/// store, which is the order [`MAX_RESTORABLE_DOMAINS`] drops records in.
+#[derive(Debug, Clone)]
+pub struct DeletedDomain {
+    pub domain: Domain,
+    pub deleted_millis: i64,
+}
+
 /// One asynchronous operation record, as `GetOperationDetail` and `ListOperations`
 /// report it.
 #[derive(Debug, Clone)]
@@ -212,6 +245,10 @@ pub struct OperationRecord {
 pub struct ComAmazonawsRoute53domainsRoute53domainsV20140515State {
     /// The account's domains, keyed by the lower-cased domain name.
     pub domains: BTreeMap<String, Domain>,
+    /// The registrations this account deleted, keyed the same way: what `DeleteDomain`
+    /// moves out of [`Self::domains`] and `RestoreDomain` moves back. Bounded by
+    /// [`MAX_RESTORABLE_DOMAINS`].
+    pub deleted: BTreeMap<String, DeletedDomain>,
     /// Every operation record, in submission order — the order `ListOperations` sorts.
     pub operations: Vec<OperationRecord>,
     /// The names this registry holds for somebody else — see [`seeded_registrations`].
@@ -220,12 +257,14 @@ pub struct ComAmazonawsRoute53domainsRoute53domainsV20140515State {
     pub registered_elsewhere: BTreeSet<String>,
 }
 
-/// The store a fresh process starts from: no domains of its own, no operation records,
-/// and the registry's standing third-party registrations.
+/// The store a fresh process starts from: no domains of its own, nothing deleted and so
+/// nothing to restore, no operation records, and the registry's standing third-party
+/// registrations.
 impl Default for ComAmazonawsRoute53domainsRoute53domainsV20140515State {
     fn default() -> Self {
         Self {
             domains: BTreeMap::new(),
+            deleted: BTreeMap::new(),
             operations: Vec::new(),
             registered_elsewhere: seeded_registrations(),
         }
@@ -290,6 +329,55 @@ impl ComAmazonawsRoute53domainsRoute53domainsV20140515State {
             settles_at_millis: now_millis.saturating_add(OPERATION_SETTLE_MILLIS),
         });
         operation_id
+    }
+
+    /// Keep `domain` restorable as of `now_millis`: the record `DeleteDomain` took out of
+    /// [`Self::domains`] is what a later `RestoreDomain` puts back.
+    ///
+    /// Deleting a name that is already restorable replaces the earlier record: the
+    /// registration deleted last is the one a restoration brings back.
+    ///
+    /// The store is capped at [`MAX_RESTORABLE_DOMAINS`] by dropping the registration
+    /// deleted longest ago, so however many deletions arrive it cannot grow past that.
+    pub fn record_deletion(&mut self, domain: Domain, now_millis: i64) {
+        self.deleted.insert(
+            domain.name.clone(),
+            DeletedDomain {
+                domain,
+                deleted_millis: now_millis,
+            },
+        );
+        while self.deleted.len() > MAX_RESTORABLE_DOMAINS {
+            let oldest = self
+                .deleted
+                .iter()
+                .min_by(|(left_name, left), (right_name, right)| {
+                    left.deleted_millis
+                        .cmp(&right.deleted_millis)
+                        .then_with(|| left_name.cmp(right_name))
+                })
+                .map(|(name, _)| name.clone());
+            match oldest {
+                Some(name) => {
+                    self.deleted.remove(&name);
+                }
+                None => break,
+            }
+        }
+    }
+
+    /// Whether an operation of type `op_type` for `domain_name` is still `SUBMITTED` —
+    /// the condition the modelled `DuplicateRequest` names: "The request is already in
+    /// progress for the domain."
+    ///
+    /// Asked AFTER [`Self::settle_operations`], so a record whose completion the clock has
+    /// already made due is not read as a request still in progress.
+    pub fn operation_in_progress(&self, domain_name: &str, op_type: &str) -> bool {
+        self.operations.iter().any(|record| {
+            record.status == STATUS_SUBMITTED
+                && record.op_type == op_type
+                && record.domain_name == domain_name
+        })
     }
 
     /// Materialise every operation completion the clock has already made due.

@@ -21,7 +21,8 @@
 //!   stable table here: the same name always costs the same, and two names under one TLD
 //!   cost the same.
 
-use crate::ops::types::{DomainPrice, PriceWithCurrency};
+use crate::ops::types::{Consent, DomainPrice, PriceWithCurrency};
+use crate::state::request_problem;
 use std::collections::BTreeSet;
 
 // ---------------------------------------------------------------------------
@@ -203,6 +204,38 @@ pub fn price_record(name: &str, tld: &str) -> DomainPrice {
         change_ownership_price: Some(change_ownership_price()),
         restoration_price: Some(restoration_price()),
     }
+}
+
+// ---------------------------------------------------------------------------
+// What a caller agreed to pay
+// ---------------------------------------------------------------------------
+
+/// The problem to refuse a request with when its `Consent` does not cover `price`, or
+/// `None` when it does.
+///
+/// `Consent` is "[t]he maximum amount that you agree to pay for an operation, and the
+/// currency for that amount", and an operation that takes one states the rule it applies:
+/// if the request includes it and the operation's price "is more than MaxPrice, the
+/// request fails". So consent covers a price when it is denominated in the currency the
+/// price is quoted in — every quote here is in [`CURRENCY_USD`] — and its `MaxPrice` is at
+/// least that price. A currency code is not case sensitive, so the codes are compared
+/// ignoring case.
+///
+/// The problem is stated in the envelope this service words a request-level problem in
+/// ([`request_problem`]). It names the MEMBER the caller has to change and the currency
+/// this registrar quotes in, and never the amount the request carried: the price and the
+/// currency are this registrar's and the member name is the model's, while the submitted
+/// amount is the caller's own value.
+pub fn consent_shortfall(consent: &Consent, price: &PriceWithCurrency) -> Option<String> {
+    if !consent.currency.eq_ignore_ascii_case(&price.currency) {
+        return Some(request_problem(&format!(
+            "The Currency of MaxPrice must be {}",
+            price.currency
+        )));
+    }
+    (consent.max_price < price.price).then(|| {
+        request_problem("The price of this operation is more than the MaxPrice you agreed to pay")
+    })
 }
 
 /// Every TLD this registrar publishes a price for, in ascending TLD order.

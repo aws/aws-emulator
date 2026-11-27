@@ -2,7 +2,7 @@
 
 //! The registered-domain lifecycle over awsJson1_1: `CheckDomainAvailability`,
 //! `RegisterDomain`, `GetOperationDetail`, `GetDomainDetail`, `ListDomains`,
-//! `DeleteDomain`, plus the auto-renew pair and `ListOperations`.
+//! `DeleteDomain` and `RestoreDomain`, plus the auto-renew pair and `ListOperations`.
 //!
 //! Every test drives the real wire path — `POST /` with
 //! `X-Amz-Target: Route53Domains_v20140515.<Operation>` and a JSON body of modelled
@@ -1363,5 +1363,476 @@ async fn an_operation_id_that_names_no_record_is_refused_as_a_request_problem() 
         (status, detail["OperationId"].as_str()),
         (200, Some(issued.as_str())),
         "the issued OperationId must still be reported, got {status} {detail}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The rule: a deleted registration is restorable, and comes back as it stood
+// ---------------------------------------------------------------------------
+
+/// This emulator's stated ceiling on the restorable store
+/// (`crate::state::MAX_RESTORABLE_DOMAINS`), restated here so the test fails loudly if it
+/// moves.
+const MAX_RESTORABLE_DOMAINS: usize = 200;
+
+/// `GetDomainDetail` for `name`, whatever it answers.
+async fn detail(emulator: &Emulator, name: &str) -> (u16, Value) {
+    emulator
+        .call("GetDomainDetail", &json!({ "DomainName": name }))
+        .await
+}
+
+/// The tags `ListTagsForDomain` reports for `name`: read through the one helper that
+/// reads them (`tests/all/domain_tags.rs`, which pins what the two tag operations do),
+/// here only to show that a restored registration keeps the tags the deleted one had.
+async fn tag_pairs(emulator: &Emulator, name: &str) -> Vec<(String, String)> {
+    crate::domain_tags::tags_of(emulator, name).await
+}
+
+/// Register `name`, tag it, delete it, and return the detail body the account held.
+async fn register_and_delete(emulator: &Emulator, name: &str) -> Value {
+    register(emulator, name).await;
+    let (status, tagged) = emulator
+        .call(
+            "UpdateTagsForDomain",
+            &json!({
+                "DomainName": name,
+                "TagsToUpdate": [{ "Key": "Env", "Value": "prod" }]
+            }),
+        )
+        .await;
+    assert_eq!(
+        status, 200,
+        "case {name:?}: expected UpdateTagsForDomain to answer 200, got {status} {tagged}"
+    );
+    let (status, held) = detail(emulator, name).await;
+    assert_eq!(
+        status, 200,
+        "case {name:?}: expected GetDomainDetail to answer 200 while held, got {status} {held}"
+    );
+
+    let (status, deleted) = emulator
+        .call("DeleteDomain", &json!({ "DomainName": name }))
+        .await;
+    assert_eq!(
+        status, 200,
+        "case {name:?}: expected DeleteDomain to answer 200, got {status} {deleted}"
+    );
+    held
+}
+
+/// `RestoreDomain` for `name`, with `consent` when there is one.
+async fn restore(emulator: &Emulator, name: &str, consent: Option<Value>) -> (u16, Value) {
+    let mut request = serde_json::Map::new();
+    request.insert("DomainName".to_string(), json!(name));
+    if let Some(consent) = consent {
+        request.insert("Consent".to_string(), consent);
+    }
+    emulator
+        .call("RestoreDomain", &Value::Object(request))
+        .await
+}
+
+#[tokio::test]
+async fn a_deleted_registration_is_restored_with_the_record_the_account_held() {
+    // The rule: restoring a deleted registration puts back the record this account held,
+    // so every member a read reported before the deletion is reported again. Rows differ
+    // along the shape of the name — three TLDs including a multi-label public suffix, a
+    // label at the 63-octet DNS maximum, and a name given in another case, since domain
+    // names are not case sensitive — because the rule is about the STORE, not the name.
+    let long_label = format!("{}.net", "r".repeat(63));
+    let cases: &[(&str, &str)] = &[
+        ("restore-probe.com", "restore-probe.com"),
+        ("restore-probe.io", "restore-probe.io"),
+        ("restore-probe.co.uk", "restore-probe.co.uk"),
+        (&long_label, &long_label),
+        ("RESTORE-Probe.ORG", "restore-probe.org"),
+    ];
+    let emulator = Emulator::new();
+
+    for (requested, reported) in cases {
+        let held = register_and_delete(&emulator, requested).await;
+
+        // Deleted: the reader refuses the name, so the restore below is what brings it
+        // back rather than something that never left.
+        let (status, gone) = detail(&emulator, requested).await;
+        assert_eq!(
+            (status, error_code(&gone).as_str()),
+            (400, "InvalidInput"),
+            "case {requested:?}: a deleted domain must not read back, got {status} {gone}"
+        );
+
+        let (status, restored) = restore(&emulator, requested, None).await;
+        assert_eq!(
+            status, 200,
+            "case {requested:?}: expected RestoreDomain to answer 200, got {status} {restored}"
+        );
+        let operation_id = restored["OperationId"]
+            .as_str()
+            .unwrap_or_else(|| panic!("case {requested:?}: expected an OperationId, got {restored}"))
+            .to_string();
+
+        // Restoration is asynchronous: the id it returns is the record that tracks it.
+        let (status, record) = emulator
+            .call("GetOperationDetail", &json!({ "OperationId": operation_id }))
+            .await;
+        assert_eq!(
+            (
+                status,
+                record["Type"].as_str(),
+                record["DomainName"].as_str()
+            ),
+            (200, Some("RESTORE_DOMAIN"), Some(*reported)),
+            "case {requested:?}: expected a RESTORE_DOMAIN record for this domain, got \
+             {status} {record}"
+        );
+
+        // ...and the registration itself is back, member for member.
+        let (status, back) = detail(&emulator, requested).await;
+        assert_eq!(
+            status, 200,
+            "case {requested:?}: expected GetDomainDetail to answer 200 after the restore, \
+             got {status} {back}"
+        );
+        for member in [
+            "DomainName",
+            "CreationDate",
+            "ExpirationDate",
+            "Nameservers",
+            "AdminContact",
+            "RegistrantContact",
+            "TechContact",
+            "StatusList",
+            "RegistrarName",
+            "AutoRenew",
+        ] {
+            assert_eq!(
+                back[member], held[member],
+                "case {requested:?}/{member}: the restored registration must report what \
+                 the account held, got {} against {}",
+                back[member], held[member]
+            );
+        }
+        // The tags are the domain's, so they come back with it.
+        assert_eq!(
+            tag_pairs(&emulator, requested).await,
+            vec![("Env".to_string(), "prod".to_string())],
+            "case {requested:?}: the restored registration must keep its tags"
+        );
+        // "When the restoration succeeds, the domain reappears in the response to
+        // ListDomains."
+        let (status, listed) = emulator.call("ListDomains", &json!({})).await;
+        assert_eq!(status, 200, "ListDomains: got {status} {listed}");
+        assert!(
+            domain_names(&listed).contains(&(*reported).to_string()),
+            "case {requested:?}: expected ListDomains to list the restored name, got {listed}"
+        );
+
+        // Leave the store empty for the next row.
+        let (status, body) = emulator
+            .call("DeleteDomain", &json!({ "DomainName": requested }))
+            .await;
+        assert_eq!(status, 200, "case {requested:?}: DeleteDomain got {status} {body}");
+    }
+}
+
+#[tokio::test]
+async fn a_name_this_account_never_deleted_is_not_restored() {
+    // Restoration applies to a registration that is no longer in the account's store.
+    // Rows differ along WHY this name is not one: never registered at all, held in the
+    // registry by a third party, held by this account right now, and a name that does not
+    // resolve to a registration at all (a TLD the registrar does not offer, and a blank
+    // name).
+    let emulator = Emulator::new();
+    register(&emulator, "restore-live.com").await;
+
+    let cases: &[(&str, &str, &str, String)] = &[
+        (
+            "never registered",
+            "restore-absent.com",
+            "InvalidInput",
+            "Invalid request. Problems: Domain restore-absent.com not found in account.".to_string(),
+        ),
+        (
+            "held in the registry by a third party",
+            "iana.org",
+            "InvalidInput",
+            "Invalid request. Problems: Domain iana.org not found in account.".to_string(),
+        ),
+        (
+            "held by this account right now",
+            "restore-live.com",
+            "InvalidInput",
+            "Invalid request. Problems: Domain restore-live.com has not been deleted, so it \
+             cannot be restored."
+                .to_string(),
+        ),
+        (
+            "under a TLD this registrar does not offer",
+            "restore-absent.doesnotexisttld",
+            "UnsupportedTLD",
+            "The doesnotexisttld TLD is not supported".to_string(),
+        ),
+        (
+            "a name with nothing in it",
+            "",
+            "InvalidInput",
+            "Invalid request. Problems: Domain name cannot be blank".to_string(),
+        ),
+    ];
+
+    for (case, name, expected_code, expected_message) in cases {
+        let (status, body) = restore(&emulator, name, None).await;
+        assert_eq!(
+            (status, error_code(&body)),
+            (400, (*expected_code).to_string()),
+            "case {case:?}: expected 400 {expected_code}, got {status} {body}"
+        );
+        assert_eq!(
+            body["message"].as_str(),
+            Some(expected_message.as_str()),
+            "case {case:?}: expected {expected_message:?}, got {body}"
+        );
+    }
+
+    // A refused restore created nothing: the name nobody registered is still available
+    // and still reads back as a name the account does not hold.
+    assert_eq!(
+        availability(&emulator, "restore-absent.com").await,
+        "AVAILABLE",
+        "a refused restore must not have registered the name"
+    );
+    let (status, body) = detail(&emulator, "restore-absent.com").await;
+    assert_eq!(
+        (status, error_code(&body).as_str()),
+        (400, "InvalidInput"),
+        "a refused restore must leave the name unheld, got {status} {body}"
+    );
+}
+
+#[tokio::test]
+async fn a_restoration_still_in_progress_is_refused_as_a_duplicate_request() {
+    // "Restoration is asynchronous": while the record the first call appended is still
+    // SUBMITTED, a second call for the same domain is the condition `DuplicateRequest`
+    // names. Rows differ along the TLD. The second call is made with nothing in between,
+    // so the first restoration is still in progress when it arrives.
+    let emulator = Emulator::new();
+
+    for name in [
+        "restore-twice.com",
+        "restore-twice.io",
+        "restore-twice.co.uk",
+    ] {
+        register_and_delete(&emulator, name).await;
+        let (status, first) = restore(&emulator, name, None).await;
+        assert_eq!(
+            status, 200,
+            "case {name:?}: expected the first RestoreDomain to answer 200, got {status} \
+             {first}"
+        );
+
+        let (status, second) = restore(&emulator, name, None).await;
+        assert_eq!(
+            (status, error_code(&second)),
+            (400, "DuplicateRequest".to_string()),
+            "case {name:?}: expected 400 DuplicateRequest while the restoration is in \
+             progress, got {status} {second}"
+        );
+        assert_eq!(
+            second["message"].as_str(),
+            Some(format!("The request is already in progress for the domain {name}").as_str()),
+            "case {name:?}: expected the in-progress sentence, got {second}"
+        );
+
+        // The refused second call restored nothing twice: one registration, one record.
+        let (status, listed) = emulator.call("ListDomains", &json!({})).await;
+        assert_eq!(status, 200, "ListDomains: got {status} {listed}");
+        assert_eq!(
+            domain_names(&listed)
+                .iter()
+                .filter(|listed| listed.as_str() == name)
+                .count(),
+            1,
+            "case {name:?}: the restored name must be held exactly once, got {listed}"
+        );
+        let (status, body) = emulator
+            .call("DeleteDomain", &json!({ "DomainName": name }))
+            .await;
+        assert_eq!(status, 200, "case {name:?}: DeleteDomain got {status} {body}");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The rule: a Consent caps what the caller agreed to pay for the operation
+// ---------------------------------------------------------------------------
+
+/// The restoration price this registrar quotes for `tld`, as `ListPrices` reports it:
+/// the `RestorationPrice` of the TLD's price record (`DomainPrice$RestorationPrice`,
+/// smithy_query shape DomainPrice).
+async fn restoration_price(emulator: &Emulator, tld: &str) -> (f64, String) {
+    let (status, body) = emulator.call("ListPrices", &json!({ "Tld": tld })).await;
+    assert_eq!(
+        status, 200,
+        "case {tld:?}: expected ListPrices to answer 200, got {status} {body}"
+    );
+    let price = &body["Prices"][0]["RestorationPrice"];
+    (
+        price["Price"]
+            .as_f64()
+            .unwrap_or_else(|| panic!("case {tld:?}: expected a restoration price, got {body}")),
+        price["Currency"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string(),
+    )
+}
+
+#[tokio::test]
+async fn a_consent_below_the_restoration_price_refuses_the_restore() {
+    // "If you include it and the restoration price is more than MaxPrice, the request
+    // fails." Rows differ along where the consent sits relative to the quoted restoration
+    // price and along its currency: at the price, above it, in the quoted currency given
+    // in another case (a currency code is not case sensitive), just below the price, at
+    // nothing at all, and in a currency the price is not quoted in.
+    let emulator = Emulator::new();
+    let (price, currency) = restoration_price(&emulator, "com").await;
+    let too_low = "Invalid request. Problems: The price of this operation is more than the \
+                   MaxPrice you agreed to pay";
+    let wrong_currency =
+        format!("Invalid request. Problems: The Currency of MaxPrice must be {currency}");
+
+    let cases: Vec<(&str, Value, Option<String>)> = vec![
+        (
+            "exactly the quoted price",
+            json!({ "MaxPrice": price, "Currency": currency }),
+            None,
+        ),
+        (
+            "well above the quoted price",
+            json!({ "MaxPrice": price + 25.0, "Currency": currency }),
+            None,
+        ),
+        (
+            "the quoted currency in another case",
+            json!({ "MaxPrice": price, "Currency": currency.to_lowercase() }),
+            None,
+        ),
+        (
+            "a shade below the quoted price",
+            json!({ "MaxPrice": price - 0.01, "Currency": currency }),
+            Some(too_low.to_string()),
+        ),
+        (
+            "nothing at all",
+            json!({ "MaxPrice": 0.0, "Currency": currency }),
+            Some(too_low.to_string()),
+        ),
+        (
+            "another currency altogether",
+            json!({ "MaxPrice": price + 25.0, "Currency": "EUR" }),
+            Some(wrong_currency),
+        ),
+    ];
+
+    for (index, (case, consent, expected_message)) in cases.iter().enumerate() {
+        let name = format!("restore-consent-{index}.com");
+        register_and_delete(&emulator, &name).await;
+
+        let (status, body) = restore(&emulator, &name, Some(consent.clone())).await;
+        match expected_message {
+            None => {
+                assert_eq!(
+                    status, 200,
+                    "case {case:?}: expected the restore to be served, got {status} {body}"
+                );
+                let (status, back) = detail(&emulator, &name).await;
+                assert_eq!(
+                    status, 200,
+                    "case {case:?}: expected the restored domain to read back, got {status} \
+                     {back}"
+                );
+            }
+            Some(message) => {
+                assert_eq!(
+                    (status, error_code(&body)),
+                    (400, "InvalidInput".to_string()),
+                    "case {case:?}: expected 400 InvalidInput, got {status} {body}"
+                );
+                assert_eq!(
+                    body["message"].as_str(),
+                    Some(message.as_str()),
+                    "case {case:?}: expected {message:?}, got {body}"
+                );
+                // A refused restore changed nothing: the name is still unheld, and still
+                // restorable once the caller agrees to the price.
+                let (status, still_gone) = detail(&emulator, &name).await;
+                assert_eq!(
+                    (status, error_code(&still_gone).as_str()),
+                    (400, "InvalidInput"),
+                    "case {case:?}: a refused restore must not have restored the domain, \
+                     got {status} {still_gone}"
+                );
+                let (status, served) = restore(
+                    &emulator,
+                    &name,
+                    Some(json!({ "MaxPrice": price, "Currency": currency })),
+                )
+                .await;
+                assert_eq!(
+                    status, 200,
+                    "case {case:?}: a consenting restore must still be served, got {status} \
+                     {served}"
+                );
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn the_restorable_store_does_not_grow_past_its_ceiling() {
+    // The restorable store is caller-driven, so it has a stated ceiling: past it the
+    // registration deleted longest ago is dropped, and a restore of that name is refused
+    // like any other name the account does not hold — never answered with a fabricated
+    // success.
+    let emulator = Emulator::new();
+    let name_at = |index: usize| format!("restorable-{index:04}.com");
+
+    for index in 0..=MAX_RESTORABLE_DOMAINS {
+        register(&emulator, &name_at(index)).await;
+        let (status, body) = emulator
+            .call("DeleteDomain", &json!({ "DomainName": name_at(index) }))
+            .await;
+        assert_eq!(
+            status, 200,
+            "case {index}: expected DeleteDomain to answer 200, got {status} {body}"
+        );
+    }
+
+    // One deletion past the ceiling, so the oldest restorable registration is gone...
+    let evicted = name_at(0);
+    let (status, body) = restore(&emulator, &evicted, None).await;
+    assert_eq!(
+        (status, error_code(&body)),
+        (400, "InvalidInput".to_string()),
+        "case {evicted:?}: an evicted registration must be refused, got {status} {body}"
+    );
+    assert_eq!(
+        body["message"].as_str(),
+        Some(format!("Invalid request. Problems: Domain {evicted} not found in account.").as_str()),
+        "case {evicted:?}: expected the not-found-in-account sentence, got {body}"
+    );
+
+    // ...while the one deleted last is still restorable.
+    let newest = name_at(MAX_RESTORABLE_DOMAINS);
+    let (status, body) = restore(&emulator, &newest, None).await;
+    assert_eq!(
+        status, 200,
+        "case {newest:?}: the registration deleted last must still restore, got {status} {body}"
+    );
+    let (status, back) = detail(&emulator, &newest).await;
+    assert_eq!(
+        (status, back["DomainName"].as_str()),
+        (200, Some(newest.as_str())),
+        "case {newest:?}: expected the restored registration to read back, got {status} {back}"
     );
 }
