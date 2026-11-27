@@ -31,6 +31,7 @@ use serde_json::{json, Value};
 use smithy_server_runtime::MultiServiceRouter;
 
 use crate::harness::{error_code, message};
+use crate::relayed_catalog_refusal_agreement::database_miss;
 use crate::table_metadata::{athena, athena_ok, emulator, glue_ok, GLUE_CATALOG};
 
 /// The database the rows that address an EXISTING database use, and the one table it holds.
@@ -52,20 +53,6 @@ const CATALOG_CODE: &str = "EntityNotFoundException";
 /// `pub(crate)` because `tests/all` is ONE crate: the suite over a drop and a recreate of
 /// the same table asserts this same sentence rather than keeping a second copy of it.
 pub(crate) const TABLE_MISS: &str = "Entity Not Found";
-
-/// The catalog's own sentence for a DATABASE the catalog holds none of, whose one variable
-/// part is the database as the catalog KEYS it (Glue's own
-/// `state::messages::database_not_found`).
-///
-/// The name is rendered through the catalog's OWN Hive-compatible fold
-/// (`glue::state::fold_name`), which is the rule the refusal follows, rather than a folding
-/// of this suite's own that could agree with it only for the names used here.
-fn database_miss(database_name: &str) -> String {
-    format!(
-        "Database {} not found.",
-        ::service_com_amazonaws_glue_awsglue::state::fold_name(database_name)
-    )
-}
 
 /// Create the seeded database and its one table over Glue's own API.
 async fn seed(router: &MultiServiceRouter) {
