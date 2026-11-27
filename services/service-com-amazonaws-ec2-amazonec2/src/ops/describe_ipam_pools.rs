@@ -230,16 +230,24 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         // The FORM of every id the request names, before anything is resolved: "not an id of
         // this kind" is a fact about the request, so it is answered `.Malformed` ahead of the
-        // DryRun arm below and never as a missing pool — the order
-        // [`crate::state::require_well_formed_id`] holds every resource of this crate to, and
-        // the one `crate::ops::delete_ipam_pool` asks the same two questions about the same
-        // kind of id in.
-        for pool_id in requested {
-            crate::state::require_well_formed_id(
-                crate::state::IPAM_POOL_ID_PREFIX,
-                pool_id,
+        // DryRun arm below and never as a missing pool — the two-step order (syntax, then
+        // existence) every id this crate resolves is held to.
+        //
+        // WHICH values this operation reads as pool ids is its own validator's, read off its
+        // recorded refusal: a value inside this id space
+        // ([`crate::state::value_is_in_id_space`] — the pool's prefix and a run of lowercase
+        // alphanumeric characters) is looked up and reported absent, so only a value OUTSIDE
+        // the space is malformed. The stricter hexadecimal reading
+        // [`crate::state::require_well_formed_id`] makes is what the operations that resolve an
+        // `IpamPoolId` as a PARAMETER of another action keep.
+        if let Some(malformed) = requested.iter().find(|pool_id| {
+            !crate::state::value_is_in_id_space(crate::state::IPAM_POOL_ID_PREFIX, pool_id)
+        }) {
+            return Err(crate::scaffolded::Scaffolded::service_error(
                 crate::state::INVALID_IPAM_POOL_ID_MALFORMED,
-            )?;
+                400,
+                crate::state::invalid_id_message(malformed),
+            ));
         }
 
         // "A check for whether you have the required permissions for the action without
@@ -272,11 +280,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .iter()
             .find(|pool_id| !store.ipam_pools.contains_key(pool_id.as_str()))
         {
-            return Err(crate::state::id_not_found(
-                crate::state::INVALID_IPAM_POOL_ID_NOT_FOUND,
-                crate::state::IPAM_POOL_ID_KIND,
-                unknown,
-            ));
+            // The sentence is this operation's own, read off its recorded refusal — `The IPAM
+            // pool (<id>) does not exist.`, the parenthesised form the IPAM family's refusals
+            // take ([`crate::state::ipam_pool_does_not_exist`]) — rather than the
+            // `ipam-pool ID '<id>'` template the operations that take a pool id as a parameter
+            // of another action answer.
+            return Err(crate::state::ipam_pool_does_not_exist(unknown));
         }
 
         // Everything the account holds, narrowed to the ids named, with every filter then

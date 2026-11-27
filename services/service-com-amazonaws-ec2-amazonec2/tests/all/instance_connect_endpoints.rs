@@ -414,8 +414,8 @@ async fn described_ids(
         .collect()
 }
 
-/// An `InstanceConnectEndpointId` is `eice-` followed by 8 or 17 lowercase hex digits — the
-/// service's own id rule, imported rather than re-derived so the two cannot drift.
+/// An `InstanceConnectEndpointId` belongs to the `eice-` id space — the service's own id rule,
+/// imported rather than re-derived so the two cannot drift.
 fn is_endpoint_id(candidate: &str) -> bool {
     instance_connect_endpoint_id_is_well_formed(candidate)
 }
@@ -970,9 +970,13 @@ async fn an_unresolvable_filter_or_id_is_refused() {
             "InvalidInstanceConnectEndpointId.Malformed",
         ),
         (
+            // A value INSIDE this id space — the prefix and lowercase alphanumeric
+            // characters — is looked up and reported absent, whatever its length and
+            // whether or not its digits are hexadecimal: this kind's recorded refusal of
+            // such a value is its `NotFound`, not its `Malformed`.
             "an id with a non-hex suffix",
             indexed("InstanceConnectEndpointId", &["eice-zzzzzzzz"]),
-            "InvalidInstanceConnectEndpointId.Malformed",
+            "InvalidInstanceConnectEndpointId.NotFound",
         ),
         (
             "a well-formed id no endpoint of the account has",
@@ -1695,9 +1699,8 @@ async fn deleting_an_endpoint_starts_a_clock_owed_deletion() {
 /// RULE 6: an id a delete cannot resolve is REFUSED — malformed before unknown, in the
 /// wording EC2 uses for the class — and nothing in the store moves.
 ///
-/// The rows differ along why the id does not resolve: the shape of the text, the length of
-/// the suffix, the resource the prefix names, and a well-formed id of each id era the
-/// account holds no endpoint for.
+/// The rows differ along why the id does not resolve: the shape of the text, the resource the
+/// prefix names, and an id inside this id space the account holds no endpoint for.
 #[tokio::test]
 async fn a_delete_that_cannot_resolve_its_endpoint_is_refused() {
     let fixture = fixture();
@@ -1710,14 +1713,16 @@ async fn a_delete_that_cannot_resolve_its_endpoint_is_refused() {
             "InvalidInstanceConnectEndpointId.Malformed",
         ),
         (
+            // Inside the id space, so absent rather than unreadable — see the describe
+            // suite above for the recorded reading of this kind.
             "an id with a non-hex suffix",
             vec![p("InstanceConnectEndpointId", "eice-zzzzzzzz")],
-            "InvalidInstanceConnectEndpointId.Malformed",
+            "InvalidInstanceConnectEndpointId.NotFound",
         ),
         (
             "an id whose suffix is of neither published length",
             vec![p("InstanceConnectEndpointId", "eice-0123456789")],
-            "InvalidInstanceConnectEndpointId.Malformed",
+            "InvalidInstanceConnectEndpointId.NotFound",
         ),
         (
             "a well-formed id of another resource",
@@ -2368,12 +2373,14 @@ async fn a_modify_that_cannot_resolve_what_it_names_is_refused() {
             "InvalidInstanceConnectEndpointId.Malformed",
         ),
         (
+            // Inside the id space, so it is READ and reported absent whatever its length —
+            // this kind's recorded refusal of such a value is its `NotFound`.
             "an endpoint id whose suffix is of no id era",
             vec![p(
                 "InstanceConnectEndpointId",
                 format!("{INSTANCE_CONNECT_ENDPOINT_ID_PREFIX}0123456"),
             )],
-            "InvalidInstanceConnectEndpointId.Malformed",
+            "InvalidInstanceConnectEndpointId.NotFound",
         ),
         (
             "a well-formed short id the account holds no endpoint for",

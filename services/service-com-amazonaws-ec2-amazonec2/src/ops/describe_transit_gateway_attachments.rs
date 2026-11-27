@@ -292,9 +292,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .iter()
             .find(|attachment_id| !store.transit_gateway_attachments.contains_key(*attachment_id))
         {
-            return Err(state::invalid_transit_gateway_attachment_id_not_found(
-                unknown,
-            ));
+            // The sentence is the one the transit gateway family words for one of its OWN
+            // resources that is not there — `Transit Gateway Attachment <id> was deleted or
+            // does not exist.`, this operation's own recorded refusal
+            // ([`crate::state::transit_gateway_attachment_deleted_or_absent`]) — rather than
+            // the `transit-gateway-attachment ID '<id>'` template the operations that take an
+            // attachment id as a parameter of some other action answer.
+            return Err(state::transit_gateway_attachment_deleted_or_absent(unknown));
         }
 
         // "By default, all attachments are described. Alternatively, you can filter the

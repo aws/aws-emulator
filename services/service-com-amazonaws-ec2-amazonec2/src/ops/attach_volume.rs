@@ -200,11 +200,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             ATTACHMENT_DELETE_ON_TERMINATION, DEFAULT_EBS_CARD_INDEX, InstanceStateName,
             MAX_DEVICE_NAME_CHARS, MULTI_ATTACH_INSTANCE_LIMIT, TRANSITION_DELAY,
             VOLUME_ATTACHMENT_STATE_ATTACHING, VOLUME_STATE_AVAILABLE, VolumeRecord,
-            attachment_limit_exceeded, dry_run_operation, ebs_attachment_limit,
-            incorrect_state_of, instance_id_is_well_formed, invalid_volume_id_malformed,
-            invalid_volume_zone_mismatch, require_instance_record, require_service_state,
-            require_volume, require_volume_mut, system_time_to_date_time,
-            volume_already_attached, volume_id_is_well_formed,
+            attachment_limit_exceeded, attach_volume_id_malformed, dry_run_operation,
+            ebs_attachment_limit, incorrect_state_of, instance_id_is_well_formed,
+            invalid_volume_id_malformed, invalid_volume_zone_mismatch, require_held_volume,
+            require_instance_record, require_service_state, require_volume_mut,
+            system_time_to_date_time, volume_already_attached, volume_id_is_readable,
+            volume_id_is_well_formed,
         };
 
         // Both resources carry their own Availability Zone, and both are resources of the
@@ -212,6 +213,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // an id naming an instance of another Region names no instance here.
         let region = crate::state::request_region(ctx.parts());
 
+        // The PRINTED form of the volume id, before anything is resolved: a value that is no
+        // volume id at all is refused with the id KIND's own code and sentence
+        // ([`crate::state::invalid_volume_id_malformed`]), the way every operation that
+        // resolves a `VolumeId` refuses one.
         if !volume_id_is_well_formed(&input.volume_id) {
             return Err(invalid_volume_id_malformed(&input.volume_id));
         }
@@ -255,6 +260,22 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         store.materialize_due_transitions();
         let now = ::std::time::Instant::now();
 
+        // The second half of the volume id's FORM question, which needs the store: a long-form
+        // id is an obfuscated identifier, so one this service never issued names no volume it
+        // could ever have held and is unreadable rather than absent
+        // ([`crate::state::volume_id_is_readable`]). THIS half carries this operation's own
+        // code, read off its recorded refusal: an attach answers a value whose identifier it
+        // cannot decode `InvalidParameterValue` — the value is one the service will not take —
+        // around the kind's own malformed sentence
+        // ([`crate::state::attach_volume_id_malformed`]), where the printed-form half above
+        // carries the id kind's `InvalidVolumeID.Malformed`. Asked BEFORE any resource is
+        // resolved, the way that half is: a value that can never name a volume is a fact about
+        // the REQUEST, so it does not wait on the instance the request names. Only a readable
+        // id is looked up, which is what keeps the not-found half of the pair reachable.
+        if !volume_id_is_readable(&store, &input.volume_id) {
+            return Err(attach_volume_id_malformed(&input.volume_id));
+        }
+
         // ONE lookup each: the readers hand back the records they resolved, so no id is
         // looked up twice and no branch is left for an id that resolved and could then not
         // be read. The instance is resolved first, because it is the resource the volume is
@@ -276,7 +297,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             ));
         }
 
-        let volume = require_volume(&store, &input.volume_id)?;
+        let volume = require_held_volume(&store, &input.volume_id)?;
         // "The volume and instance must be within the same Availability Zone" (`VolumeId`).
         let volume_zone = volume.view.availability_zone.clone().unwrap_or_default();
         if volume_zone != instance_zone {

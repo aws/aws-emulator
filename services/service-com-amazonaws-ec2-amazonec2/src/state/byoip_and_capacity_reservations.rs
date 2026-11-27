@@ -2013,21 +2013,20 @@ pub fn instance_connect_endpoint_payload_bytes(tags: &[Tag], client_token: Optio
     tag_list_bytes(tags).saturating_add(client_token.map_or(0, str::len))
 }
 
-/// Whether `id` is a well-formed EC2 Instance Connect Endpoint id.
+/// Whether `id` belongs to the EC2 Instance Connect Endpoint id SPACE.
 ///
 /// The model declares no `@pattern` on `InstanceConnectEndpointId`
-/// (`smithy_query(query="shape",shape="InstanceConnectEndpointId")`), so the id form is
-/// EC2's own: `eice-` followed by 8 or 17 lowercase hexadecimal digits — the short and the
-/// long id form every other EC2 resource id takes, as [`volume_id_is_well_formed`] reads a
-/// volume id.
+/// (`smithy_query(query="shape",shape="InstanceConnectEndpointId")`), and this kind's recorded
+/// refusal shows EC2 screening only the SPACE a value belongs to: `eice-` followed by lowercase
+/// alphanumeric characters ([`value_is_in_id_space`]). A value of that form the account holds no
+/// endpoint for is reported ABSENT — it is not held to the hexadecimal alphabet or to one of the
+/// two published digit counts, which is the stricter reading [`volume_id_is_well_formed`] makes
+/// of a volume id on its own recorded evidence.
 pub fn instance_connect_endpoint_id_is_well_formed(id: &str) -> bool {
-    let Some(suffix) = id.strip_prefix(INSTANCE_CONNECT_ENDPOINT_ID_PREFIX) else {
-        return false;
-    };
-    matches!(suffix.len(), 8 | 17)
-        && suffix
-            .bytes()
-            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+    value_is_in_id_space(
+        INSTANCE_CONNECT_ENDPOINT_ID_PREFIX.trim_end_matches('-'),
+        id,
+    )
 }
 
 /// Refuse an EC2 Instance Connect Endpoint id the request named that this service cannot
@@ -2072,11 +2071,14 @@ pub fn invalid_instance_connect_endpoint_id_not_found<E>(
 /// label, the id is stated UNQUOTED, and the verdict is followed by the remedy — what the
 /// caller has to send instead — so the whole message is `The <display name> <id> does not
 /// exist. Add an existing <display name> ID and retry your request.` with the id the only
-/// part taken from the request.
+/// part taken from the request, named to the bound every echoed id of this crate is held to
+/// ([`echoed_resource_id`]), so an id kind whose reader takes a value of any length cannot
+/// amplify a small request into an arbitrarily long response.
 pub fn instance_connect_endpoint_not_found_message(endpoint_id: &str) -> String {
     format!(
-        "The {INSTANCE_CONNECT_ENDPOINT_DISPLAY_NAME} {endpoint_id} does not exist. Add an \
-         existing {INSTANCE_CONNECT_ENDPOINT_DISPLAY_NAME} ID and retry your request."
+        "The {INSTANCE_CONNECT_ENDPOINT_DISPLAY_NAME} {} does not exist. Add an \
+         existing {INSTANCE_CONNECT_ENDPOINT_DISPLAY_NAME} ID and retry your request.",
+        echoed_resource_id(endpoint_id)
     )
 }
 

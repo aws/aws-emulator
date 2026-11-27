@@ -1015,6 +1015,21 @@ pub fn malformed_volume_id_message(volume_id: &str) -> String {
     )
 }
 
+/// Refuse a volume id an ATTACH cannot DECODE: HTTP 400 `InvalidParameterValue` with the
+/// volume kind's own malformed sentence ([`malformed_volume_id_message`]).
+///
+/// The sentence is the kind's; the CODE is this operation's, read off its own recorded refusal
+/// — `AttachVolume` answers a value in the printed long form whose identifier the mint never
+/// handed out (a fabricated documentation-shaped id) `InvalidParameterValue`, a value it will
+/// not take, where the operations that resolve a volume as the SUBJECT of a read or a change
+/// answer [`INVALID_VOLUME_ID_MALFORMED`] for the same class
+/// ([`invalid_volume_id_malformed`], which this operation keeps for a value outside the
+/// PRINTED form). A client branches on the code it is answered, so the two are kept apart
+/// rather than folded into one.
+pub fn attach_volume_id_malformed<E>(volume_id: &str) -> crate::scaffolded::Scaffolded<E> {
+    crate::scaffolded::Scaffolded::invalid_parameter_value(malformed_volume_id_message(volume_id))
+}
+
 /// Refuse a `VolumeId` the Recycle Bin holds no entry for: HTTP 400
 /// `InvalidVolumeID.Malformed`, the one code the service answers for every id
 /// `RestoreVolumeFromRecycleBin` cannot resolve in the bin — an id that is not shaped like

@@ -224,14 +224,22 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // An id that is not a VPC endpoint id at all is refused as malformed, so "not an
         // endpoint id" never reads as "no such endpoint" and is never answered by the
         // DryRun arm below either.
-        if let Some(malformed) = requested
-            .iter()
-            .find(|endpoint_id| !state::vpc_endpoint_id_is_well_formed(endpoint_id))
-        {
-            return Err(crate::scaffolded::Scaffolded::service_error(
-                state::INVALID_VPC_ENDPOINT_ID_MALFORMED,
-                400,
-                state::invalid_id_message(malformed),
+        //
+        // WHICH values this operation reads as endpoint ids is its own validator's, read off
+        // its recorded refusal: a value inside this id space
+        // ([`crate::state::value_is_in_id_space`] — the endpoint's prefix and a run of
+        // lowercase alphanumeric characters, which is the character rule the refusal below
+        // names) is looked up and reported absent, so only a value OUTSIDE the space — another
+        // resource family's prefix, the extended `vpce-svc-`/`vpce-conn-` prefixes, an
+        // upper-case value, the prefix alone — is malformed. The stricter hexadecimal reading
+        // [`crate::state::vpc_endpoint_id_is_well_formed`] makes is what the validators of the
+        // operations that take an endpoint id as a parameter of another action (a route
+        // target, a traffic mirror target) keep, on their own recorded refusals.
+        if let Some(malformed) = requested.iter().find(|endpoint_id| {
+            !state::value_is_in_id_space(state::VPC_ENDPOINT_ID_PREFIX, endpoint_id)
+        }) {
+            return Err(state::invalid_vpc_endpoint_id_malformed_expecting_vpce(
+                malformed,
             ));
         }
 

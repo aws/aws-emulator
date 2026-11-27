@@ -3458,3 +3458,28 @@ pub fn invalid_network_interface_id_not_found<E>(network_interface_id: &str) -> 
         format!("The networkInterface ID '{network_interface_id}' does not exist"),
     )
 }
+
+/// Refuse a value the DESCRIBE of the account's network interfaces cannot read as an interface
+/// id: HTTP 400 [`INVALID_NETWORK_INTERFACE_ID_MALFORMED`], in that operation's own recorded
+/// sentence — the service's shared id-parser template [`invalid_id_message`], `Invalid id:
+/// "<value>"`, around the value the REQUEST sent.
+///
+/// NOT [`invalid_network_interface_id_malformed`]'s `The interface ID '<id>' is malformed`,
+/// which is what the operations that ACT on one interface (an assignment, an attachment, a
+/// delete, an attribute change) were recorded answering and keep: which sentence an operation
+/// words is a fact of THAT operation's validator, read off its own recorded refusal — the same
+/// split this crate already carries under one code for an AMI id
+/// ([`invalid_ami_id_malformed`] beside [`invalid_ami_id_malformed_expecting_ami`]).
+///
+/// Answered BEFORE the id is looked up, so a value that can never name an interface is never
+/// reported as an interface that does not exist
+/// ([`invalid_network_interface_id_not_found`]).
+pub fn invalid_network_interface_id_malformed_invalid_id<E>(
+    network_interface_id: &str,
+) -> Scaffolded<E> {
+    Scaffolded::service_error(
+        INVALID_NETWORK_INTERFACE_ID_MALFORMED,
+        400,
+        invalid_id_message(network_interface_id),
+    )
+}

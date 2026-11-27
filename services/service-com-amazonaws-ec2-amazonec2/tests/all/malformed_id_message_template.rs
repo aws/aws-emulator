@@ -17,7 +17,10 @@
 //! outside this suite — an Amazon FPGA Image id (`Image ID '<id>' is invalid.`, pinned by
 //! [`super::fpga_image_id_form`]), an AMI usage report id, and an EBS VOLUME id (`The volume
 //! ID '<id>' is malformed`, pinned by [`super::volume_id_issued_form`] and
-//! [`super::delete_volume`]) — each pinned by the suite that owns its resource.
+//! [`super::delete_volume`]) — each pinned by the suite that owns its resource. So is a single
+//! operation whose own recorded refusal words one of these kinds differently, which is a fact
+//! of that operation's validator: `DescribeVpcEndpoints` is one, pinned by
+//! [`super::id_refusal_class_before_lookup`].
 //!
 //! Each row is a distinct input along what the rule generalises over:
 //!
@@ -92,8 +95,12 @@ fn rows() -> Vec<Row> {
             code: INVALID_INSTANCE_ID_MALFORMED,
         },
         Row {
+            // The template is the id SPACE's, not one operation's: the read of a VPC
+            // endpoint's associations words it this way. (`DescribeVpcEndpoints` has its own
+            // recorded sentence for the same code, pinned by
+            // [`super::id_refusal_class_before_lookup`].)
             case: "the prefix alone, as a VPC endpoint id",
-            action: "DescribeVpcEndpoints",
+            action: "DescribeVpcEndpointAssociations",
             field: "VpcEndpointId.1",
             id: "vpce-".to_string(),
             code: INVALID_VPC_ENDPOINT_ID_MALFORMED,
@@ -142,7 +149,7 @@ fn rows() -> Vec<Row> {
         },
         Row {
             case: "a non-hexadecimal digit, as a VPC endpoint id",
-            action: "DescribeVpcEndpoints",
+            action: "DescribeVpcEndpointAssociations",
             field: "VpcEndpointId.1",
             id: "vpce-0a1b2c3z".to_string(),
             code: INVALID_VPC_ENDPOINT_ID_MALFORMED,

@@ -736,6 +736,37 @@ pub fn resource_id_shaped(value: &str) -> bool {
             .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
 }
 
+/// Whether `value` belongs to the id SPACE the kind `prefix` names: `<prefix>-` followed by a
+/// non-empty run of lowercase letters and digits, and nothing else.
+///
+/// The LOOSEST of this module's id readings, for the kinds whose refusals show EC2 screening
+/// only the space a value belongs to and reporting everything inside it as absent: AWS answers
+/// a `vpce-` value of this form `InvalidVpcEndpointId.NotFound` and names the character rule in
+/// the refusal of a value outside it — "the Id may only contain lowercase alphanumeric
+/// characters and a single dash" — so the digits are NOT held to the hexadecimal alphabet or to
+/// one of the two published lengths that [`prefixed_id_is_well_formed`] requires. The same
+/// reading the IPAM pool and the EC2 Instance Connect Endpoint are recorded taking.
+///
+/// Which reading a kind (or one operation's validator) takes is a fact recorded with it, exactly
+/// as it is for the stricter readings beside this one: a kind recorded answering
+/// `Invalid<Kind>.Malformed` for a value merely outside the hexadecimal form keeps
+/// [`prefixed_id_is_well_formed`], and one recorded refusing anything but an id EC2 could have
+/// issued keeps [`issued_long_id_is_well_formed`] or
+/// [`ComAmazonawsEc2Amazonec2State::id_was_issued`]. `prefix` carries no trailing separator,
+/// the way every other reader of this module takes it.
+pub fn value_is_in_id_space(prefix: &str, value: &str) -> bool {
+    let Some(suffix) = value
+        .strip_prefix(prefix)
+        .and_then(|rest| rest.strip_prefix('-'))
+    else {
+        return false;
+    };
+    !suffix.is_empty()
+        && suffix
+            .bytes()
+            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'z'))
+}
+
 /// The most characters of a refused resource id that [`invalid_id_message`] repeats back.
 ///
 /// The message names the value the REQUEST sent, and a resource id member is a bare string
@@ -2853,6 +2884,33 @@ pub const INVALID_VPC_ENDPOINT_ID_MALFORMED: &str = "InvalidVpcEndpointId.Malfor
 /// identically.
 pub const VPC_ENDPOINT_ID_KIND: &str = "Vpc Endpoint Id";
 
+/// Refuse a value a VPC endpoint describe cannot read as an endpoint id: HTTP 400
+/// [`INVALID_VPC_ENDPOINT_ID_MALFORMED`], in the sentence that operation's own recorded refusal
+/// carries — `Invalid Id: '<value>' (expecting '<prefix>-...; the Id may only contain lowercase
+/// alphanumeric characters and a single dash')`, naming the id form EXPECTED and the character
+/// rule behind it, with the value from the REQUEST (bounded by [`echoed_resource_id`]).
+///
+/// NOT [`invalid_id_message`]'s `Invalid id: "<value>"`: that shorter template is what the other
+/// validators of this id space answer, and which sentence an operation words is a fact of THAT
+/// operation's validator, read off its own recorded refusal — the split this crate already
+/// carries under one code for an AMI id ([`invalid_ami_id_malformed`] beside
+/// [`invalid_ami_id_malformed_expecting_ami`]) and for a VPC endpoint named as a ROUTE TARGET
+/// ([`invalid_vpc_endpoint_route_target_malformed`]).
+///
+/// The expected form is built from [`VPC_ENDPOINT_ID_PREFIX`] rather than spelt out, so the one
+/// definition of this id space's prefix is what the hint names.
+pub fn invalid_vpc_endpoint_id_malformed_expecting_vpce<E>(value: &str) -> Scaffolded<E> {
+    Scaffolded::service_error(
+        INVALID_VPC_ENDPOINT_ID_MALFORMED,
+        400,
+        format!(
+            "Invalid Id: '{}' (expecting '{VPC_ENDPOINT_ID_PREFIX}-...; the Id may only contain \
+             lowercase alphanumeric characters and a single dash')",
+            echoed_resource_id(value)
+        ),
+    )
+}
+
 /// Refuse a well-formed VPC endpoint id this account holds no endpoint for: HTTP 400
 /// [`INVALID_VPC_ENDPOINT_ID_NOT_FOUND`].
 ///
@@ -2985,6 +3043,32 @@ pub const IPAM_POOL_ID_KIND: &str = "ipam-pool ID";
 /// `InvalidIpamPoolId.Malformed` (HTTP 400).
 pub const INVALID_IPAM_POOL_ID_MALFORMED: &str = "InvalidIpamPoolId.Malformed";
 
+/// How AWS names an IPAM pool in the refusal the DESCRIBE of the pools themselves answers: the
+/// resource in prose, the way [`invalid_ipam_scope_id_not_found`] names the scope beside it,
+/// rather than by the `ipam-pool` wire token [`IPAM_POOL_ID_KIND`] spells.
+pub const IPAM_POOL_DISPLAY_NAME: &str = "IPAM pool";
+
+/// Refuse an IPAM pool id the DESCRIBE of the account's pools holds no pool for: HTTP 400
+/// [`INVALID_IPAM_POOL_ID_NOT_FOUND`], in that operation's own recorded sentence — `The IPAM
+/// pool (<id>) does not exist.`, the parenthesised form the IPAM family's own refusals take
+/// ([`invalid_ipam_scope_id_not_found`] is the scope's) — built from the id the REQUEST named.
+///
+/// NOT the sentence [`id_not_found`] builds around [`IPAM_POOL_ID_KIND`], which is what the
+/// operations that resolve an `IpamPoolId` as a PARAMETER of some other action (a provision, a
+/// deprovision, an allocation, a read of the pool's ranges) were recorded answering and keep:
+/// which sentence an operation words is a fact of THAT operation's validator, read off its own
+/// recorded refusal.
+pub fn ipam_pool_does_not_exist<E>(ipam_pool_id: &str) -> Scaffolded<E> {
+    Scaffolded::service_error(
+        INVALID_IPAM_POOL_ID_NOT_FOUND,
+        400,
+        format!(
+            "The {IPAM_POOL_DISPLAY_NAME} ({}) does not exist.",
+            echoed_resource_id(ipam_pool_id)
+        ),
+    )
+}
+
 /// `InvalidIpamScopeId.NotFound` (HTTP 400): the request named an IPAM scope id this account
 /// holds no scope for — the code AWS answers a `CreateIpamPool` naming an unknown scope
 /// with, as the wire corpus records.
@@ -3043,8 +3127,13 @@ pub fn id_not_found<E>(code: &'static str, kind: &str, id: &str) -> Scaffolded<E
 /// Separate from the refusal because a BULK operation reports this same cause PER ITEM, in an
 /// `Unsuccessful` entry rather than as the call's error — the code and the sentence travel
 /// inside a 200 there — and the two must not word one cause two ways.
+///
+/// The id is named the way every refusal of this crate that quotes a value the caller chose
+/// names one: its leading [`MAX_ECHOED_RESOURCE_ID_CHARS`] characters ([`echoed_resource_id`]),
+/// far above the longest id EC2 issues, so a caller cannot turn a small request into an
+/// arbitrarily long response through an id kind whose reader takes a value of any length.
 pub fn id_not_found_message(kind: &str, id: &str) -> String {
-    format!("The {kind} '{id}' does not exist")
+    format!("The {kind} '{}' does not exist", echoed_resource_id(id))
 }
 
 /// What the owner of an attached resource decided about a transit gateway attachment.

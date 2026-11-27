@@ -285,9 +285,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                         == state::TRANSIT_GATEWAY_ATTACHMENT_RESOURCE_TYPE_PEERING
                 })
         }) {
-            return Err(state::invalid_transit_gateway_attachment_id_not_found(
-                unknown,
-            ));
+            // The sentence is the one the transit gateway family words for one of its OWN
+            // resources that is not there — `Transit Gateway Attachment <id> was deleted or
+            // does not exist.` ([`crate::state::transit_gateway_attachment_deleted_or_absent`])
+            // — the wording the recorded refusals of the attachment describes carry, and the
+            // one the acceptance and rejection of a PEERING attachment already answer, rather
+            // than the `transit-gateway-attachment ID '<id>'` template the operations that take
+            // an attachment id as a parameter of some other action answer.
+            return Err(state::transit_gateway_attachment_deleted_or_absent(unknown));
         }
 
         // "Describes your transit gateway peering attachments": by default every peering

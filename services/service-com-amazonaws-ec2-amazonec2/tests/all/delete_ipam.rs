@@ -584,7 +584,7 @@ async fn a_delete_records_the_transient_state_and_the_clock_removes_the_ipam() {
                 &[param("IpamPoolId.1", pool_id)],
                 REFUSAL_STATUS,
                 INVALID_IPAM_POOL_ID_NOT_FOUND,
-                &format!("The ipam-pool ID '{pool_id}' does not exist"),
+                &format!("The IPAM pool ({pool_id}) does not exist."),
             )
             .await;
         }

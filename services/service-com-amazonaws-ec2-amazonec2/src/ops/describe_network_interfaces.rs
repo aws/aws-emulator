@@ -217,6 +217,24 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             )));
         }
 
+        // The FORM of every id the request names, before anything is resolved: a value that is
+        // no interface id at all can never name an interface, so it is refused
+        // `InvalidNetworkInterfaceId.Malformed` rather than reported as an interface that does
+        // not exist — the two-step order (syntax, then existence) every id this crate resolves
+        // is held to, in the sentence THIS operation's own recorded refusal carries
+        // ([`crate::state::invalid_network_interface_id_malformed_invalid_id`]). Asked before
+        // the store is read, so whether a value is reported unreadable never depends on what
+        // the account holds, and in the same place the other describes of this crate ask it —
+        // right after the id list itself has been read.
+        if let Some(malformed) = requested
+            .iter()
+            .find(|id| !crate::state::network_interface_id_is_well_formed(id))
+        {
+            return Err(crate::state::invalid_network_interface_id_malformed_invalid_id(
+                malformed,
+            ));
+        }
+
         // Matching cost is filters x values x value length x stored interfaces, and the
         // model bounds none of them (`FilterList` and `Filter$Values` carry no `@length`),
         // so every request-controlled factor is capped HERE, before any work proportional

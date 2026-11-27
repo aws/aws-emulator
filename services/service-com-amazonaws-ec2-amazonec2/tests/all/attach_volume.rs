@@ -422,10 +422,14 @@ async fn an_attach_is_refused_unless_the_request_and_the_state_behind_it_admit_i
             "InvalidInstanceID.Malformed",
         ),
         (
+            // The DECODE half of the id's form question carries this operation's own code:
+            // a value in the printed long form whose identifier the mint never handed out
+            // is one the service will not take, where a value outside the printed form is
+            // the id kind's own `InvalidVolumeID.Malformed` above.
             "a volume id whose long-form identifier the mint never handed out",
             attach_params(UNKNOWN_VOLUME, &instance_id, "/dev/sdf"),
             400,
-            "InvalidVolumeID.Malformed",
+            "InvalidParameterValue",
         ),
         (
             "a well-formed instance id the account holds no instance for",
