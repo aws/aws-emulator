@@ -2770,3 +2770,94 @@ fn a_caller_reporting_both_streams_keeps_a_diagnostic_off_the_console() {
         apart.errors()
     );
 }
+
+/// RULE: the operands a nested `sh -c PROGRAM [NAME [ARGUMENT…]]` invocation carries after the
+/// program text are that program's POSITIONAL PARAMETERS — POSIX (`sh`): "command_name … shall
+/// be assigned to special parameter 0" and the operands after it "shall be assigned to the
+/// positional parameters" from `1` on, while an invocation with "no operands after
+/// command_string" leaves "the name that the shell was invoked by" as `$0`. `$#` counts the
+/// arguments without that name, `$@` and `$*` are those arguments, and a position the
+/// invocation gave nothing at expands to nothing, the way an unset parameter does.
+#[test]
+fn a_nested_programs_operands_are_its_positional_parameters() {
+    // (case, the line, the line it wrote last)
+    let written: [(&str, &str, &str); 8] = [
+        (
+            "the first operand is the name the program runs under",
+            "sh -c 'echo name=$0' runner",
+            "name=runner",
+        ),
+        (
+            "an invocation with no operands keeps the shell's own name",
+            "sh -c 'echo name=$0'",
+            "name=sh",
+        ),
+        (
+            "the operands after that name are its arguments",
+            "sh -c 'echo args=$1,$2' runner alpha beta",
+            "args=alpha,beta",
+        ),
+        (
+            "a position the invocation gave nothing at expands to nothing",
+            "sh -c 'echo third=[$3]' runner alpha",
+            "third=[]",
+        ),
+        (
+            "the count is of the arguments and not of the name",
+            "sh -c 'echo count=$#' runner alpha beta",
+            "count=2",
+        ),
+        (
+            "a program given a name only has no arguments to count",
+            "sh -c 'echo count=$#' runner",
+            "count=0",
+        ),
+        (
+            "all the arguments, joined",
+            "sh -c 'echo all=$@' runner alpha beta",
+            "all=alpha beta",
+        ),
+        (
+            "and the other spelling of them",
+            "sh -c 'echo star=$*' runner alpha beta",
+            "star=alpha beta",
+        ),
+    ];
+    for (case, line, expected) in written {
+        let mut held = working_tree_session();
+        held.run(line);
+        let wrote = held.output().last().cloned().unwrap_or_default();
+        assert_eq!(
+            wrote, expected,
+            "case {case:?}: expected {expected:?}, got {wrote:?}"
+        );
+    }
+
+    // And what the program DOES with one: the status it exits with is the operand's.
+    // (case, the line, the status the session ends with)
+    let statuses: [(&str, &str, i32); 3] = [
+        (
+            "the status is the name the program was invoked under",
+            "sh -c 'exit \"$0\"' 3",
+            3,
+        ),
+        (
+            "the status is one of its arguments",
+            "sh -c 'exit \"$1\"' runner 4",
+            4,
+        ),
+        (
+            "an operand that is no number at all is the shell's own usage failure",
+            "sh -c 'exit \"$1\"' runner not-a-number",
+            Statuses::default().failure,
+        ),
+    ];
+    for (case, line, expected) in statuses {
+        let mut held = working_tree_session();
+        let answered = held.run(line);
+        assert_eq!(
+            answered, expected,
+            "case {case:?}: expected the status {expected}, got {answered}"
+        );
+    }
+}

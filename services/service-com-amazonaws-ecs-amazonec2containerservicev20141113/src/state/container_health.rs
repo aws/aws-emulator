@@ -394,7 +394,7 @@ pub fn health_probe_program(command: &[String]) -> Option<ContainerProgram> {
     match first.as_str() {
         HEALTH_CHECK_SHELL_FORM => {
             let text = rest.join(" ");
-            (!text.trim().is_empty()).then_some(ContainerProgram::Script(text))
+            (!text.trim().is_empty()).then(|| ContainerProgram::shell_script(text))
         }
         HEALTH_CHECK_EXEC_FORM => (!rest.is_empty()).then(|| ContainerProgram::Argv(rest.to_vec())),
         _ => Some(ContainerProgram::Argv(command.to_vec())),

@@ -18,8 +18,10 @@
 //! the record keeps the queue ARN, the resolved
 //! revision's ARN, `createdAt` in epoch milliseconds, the parameters (the definition's
 //! defaults with the request's applied over them), the effective container
-//! (`containerProperties` with `containerOverrides` applied) and the submit request's own
-//! members, so `DescribeJobs` reports exactly what was submitted.
+//! (`containerProperties` with `containerOverrides` applied, and every `Ref::` parameter
+//! substitution placeholder in it filled from those parameters —
+//! [`crate::state::substituted_container`]) and the submit request's own
+//! members, so `DescribeJobs` reports exactly what the job runs.
 //!
 //! The job is returned in the non-terminal `SUBMITTED` status; the clock owns every move
 //! out of it (see [`crate::state`]). A job state change event reports a job MOVING, so no
@@ -464,6 +466,18 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             let job_id = state.new_uuid();
             let submitted_place = state.next_submission_sequence();
             let arn = batch::job_arn(&region, &job_id);
+            // The job's EFFECTIVE parameters — the definition's defaults with this request's
+            // over them — and the container they resolve: the definition's properties with
+            // this request's `containerOverrides` applied, and every `Ref::` placeholder in
+            // what that merge produced filled from those parameters
+            // (`state::job_parameters`), so the container the job reports is the one it runs.
+            let parameters =
+                batch::merged_parameters(definition.parameters.as_ref(), input.parameters.as_ref());
+            let container = batch::effective_container(
+                definition.container_properties.as_ref(),
+                input.container_overrides.as_ref(),
+            )
+            .map(|container| batch::substituted_container(container, parameters.as_ref()));
             let job = batch::Job {
                 job_id: job_id.clone(),
                 job_arn: arn.clone(),
@@ -488,14 +502,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 // Nothing has asked for this job to be cancelled yet (`CancelJob` records
                 // a cancel here when the job is PENDING on its dependencies).
                 cancel_requested: None,
-                parameters: batch::merged_parameters(
-                    definition.parameters.as_ref(),
-                    input.parameters.as_ref(),
-                ),
-                container: batch::effective_container(
-                    definition.container_properties.as_ref(),
-                    input.container_overrides.as_ref(),
-                ),
+                parameters,
+                container,
                 // No placement has started an attempt for this job yet: the scheduler
                 // records one when it places the job (`state::place_job`).
                 attempts: Vec::new(),

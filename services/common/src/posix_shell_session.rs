@@ -3887,14 +3887,21 @@ impl ShellSession {
             return self.config.statuses.could_not_run;
         };
         // The POSITIONAL PARAMETERS the nested program is given, which is what the operands
-        // after the program are: `sh -c PROGRAM NAME ARG…` names the program itself and then
-        // its operands, and `sh FILE ARG…` gives the script its own path as the name it was
-        // invoked under.
+        // after the program are: `sh -c PROGRAM NAME ARG…` names the program text, then the
+        // NAME that program is invoked under and the arguments after it, and `sh FILE ARG…`
+        // gives the script its own path as the name it was invoked under.
         let (program, nested_arguments) = if first == "-c" {
             match rest.split_first() {
                 Some((program, operands)) => {
-                    let mut named = vec![SHELL_NAME.to_string()];
-                    named.extend(operands.iter().cloned());
+                    // The FIRST operand after the program text is the NAME the program was
+                    // invoked under — `$0` — and the ones after it are its `$1`, `$2`, …; an
+                    // invocation that names none leaves the shell's own name as `$0`.
+                    let mut named = Vec::with_capacity(operands.len().max(1));
+                    if operands.is_empty() {
+                        named.push(SHELL_NAME.to_string());
+                    } else {
+                        named.extend(operands.iter().cloned());
+                    }
                     (program.clone(), named)
                 }
                 None => return self.config.statuses.could_not_run,

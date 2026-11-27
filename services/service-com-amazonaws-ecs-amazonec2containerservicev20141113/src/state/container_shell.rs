@@ -613,14 +613,49 @@ struct Capture {
 /// the program it is.
 #[derive(Debug, Clone)]
 pub enum ContainerProgram {
-    /// A shell program: the vector named a shell with `-c`, and this is the text after it.
-    Script(String),
+    /// A shell program: the vector named a shell with `-c`, and this is the text after it,
+    /// beside the POSITIONAL PARAMETERS the words after that text give it.
+    Script {
+        /// The program text the `-c` names.
+        text: String,
+        /// The positional parameters the program runs with: `arguments[0]` is the name it
+        /// was invoked under (`$0`) and the words after it are `$1`, `$2` and so on
+        /// ([`script_positional_parameters`]).
+        arguments: Vec<String>,
+    },
     /// A utility and its arguments: the vector is exec'd as written, with no shell to
     /// expand or split anything.
     Argv(Vec<String>),
 }
 
+/// The POSITIONAL PARAMETERS a `sh -c PROGRAM [NAME [ARGUMENT…]]` invocation gives its
+/// program: `NAME` is the name the program is invoked under — what `$0` expands to — and the
+/// arguments after it are `$1`, `$2` and so on.
+///
+/// POSIX, `sh`: with `-c`, "if there are no operands after command_string, the value of the
+/// special parameter 0 shall be set to … the name that the shell was invoked by", and
+/// otherwise "command_name … shall be assigned to special parameter 0" with the remaining
+/// operands "assigned to the positional parameters" from `1` on. So an invocation naming no
+/// operands leaves the shell's own name as `$0` ([`SHELL_NAME`]).
+fn script_positional_parameters(operands: &[String]) -> Vec<String> {
+    if operands.is_empty() {
+        return vec![SHELL_NAME.to_string()];
+    }
+    operands.to_vec()
+}
+
 impl ContainerProgram {
+    /// The shell program `text`, invoked with no operands: `$0` is the shell's own name and
+    /// the program has no positional arguments — what a caller that names a program and
+    /// nothing else hands it ([`script_positional_parameters`]).
+    #[must_use]
+    pub fn shell_script(text: String) -> Self {
+        Self::Script {
+            text,
+            arguments: script_positional_parameters(&[]),
+        }
+    }
+
     /// The program the argument vector `entry_point` followed by `command` runs, or `None`
     /// when the launch named no vector at all — a container whose image's own entry point
     /// is what would run, which this emulator does not hold and therefore does not invent.
@@ -644,15 +679,20 @@ impl ContainerProgram {
         let utility = first.rsplit('/').next().unwrap_or(first);
         if SHELL_COMMAND_NAMES.contains(&utility) {
             // `sh [option...] -c <program> [name [argument...]]`: the word after `-c` is
-            // the program, and the words after it are its positional parameters, which this
-            // session does not provide.
+            // the program, and the words after it are its POSITIONAL PARAMETERS — the name
+            // it runs under and the arguments after that name
+            // ([`script_positional_parameters`]).
             for (index, word) in argv.iter().enumerate().skip(1) {
                 if !word.starts_with('-') || word == "--" {
                     break;
                 }
                 if word == "-c" {
                     if let Some(text) = argv.get(index + 1) {
-                        return Some(Self::Script(text.clone()));
+                        let operands = argv.get(index.saturating_add(2)..).unwrap_or_default();
+                        return Some(Self::Script {
+                            text: text.clone(),
+                            arguments: script_positional_parameters(operands),
+                        });
                     }
                     // A `-c` with nothing after it names no program: the vector is left as
                     // the one the image exec's, which this container has no program for,
@@ -811,6 +851,12 @@ pub struct ContainerShell {
     /// The variables this session holds — the container's environment — which is what a
     /// word's parameter expansion resolves against.
     variables: BTreeMap<String, String>,
+    /// The POSITIONAL PARAMETERS the program this session performs was given: index 0 is the
+    /// name it was invoked under (`$0`) and the ones after it are `$1`, `$2` and so on
+    /// ([`script_positional_parameters`]). Empty for a session performing no program of its
+    /// own yet, and then `$0` is the shell's own name and every other one expands to nothing,
+    /// the way an unset parameter does.
+    positional: Vec<String>,
     /// How many bytes those variables' names and values come to, kept as they are written
     /// rather than recomputed, so the [`MAX_SESSION_BYTES`] check costs one addition.
     held_bytes: usize,
@@ -975,6 +1021,7 @@ impl ContainerShell {
             .sum();
         Self {
             variables,
+            positional: Vec::new(),
             held_bytes,
             traps: BTreeMap::new(),
             expansion_left: MAX_LINE_EXPANSION_BYTES,
@@ -1138,7 +1185,12 @@ impl ContainerShell {
     /// spend is this emulator's ([`wait_ceiling`]); see the module docs.
     pub async fn run(&mut self, program: &ContainerProgram) -> ContainerOutcome {
         let mut status = match program {
-            ContainerProgram::Script(text) => self.run_text(text).await,
+            ContainerProgram::Script { text, arguments } => {
+                // The operands the invocation gave the program are its positional parameters
+                // for the whole run ([`script_positional_parameters`]).
+                self.positional = arguments.clone();
+                self.run_text(text).await
+            }
             ContainerProgram::Argv(argv) => self.run_argv(argv).await,
         };
         // A program that ends while the signal it installed a handler for is outstanding
@@ -3479,10 +3531,15 @@ impl ContainerShell {
     /// is unset, so a variable the container's environment sets to the empty string keeps it
     /// under the second form — and neither form reads an unset parameter as an error, because
     /// each STATES what to use instead. The length form (`${#NAME}`) is how many characters
-    /// that value has. The two SPECIAL parameters a session answers about itself are resolved
-    /// too: `$?`, "the decimal exit status of the most recent pipeline", and `$0`, "the name of
-    /// the shell". Every other form — a substring, a replacement, an indirection, a positional
-    /// parameter or another special one — is one this container does not resolve.
+    /// that value has. The POSITIONAL parameters are the operands the program was invoked with
+    /// ([`script_positional_parameters`]): `$1`, `$2` and so on are those arguments, and one the
+    /// invocation gave nothing at expands to nothing, the way an unset parameter does. The
+    /// SPECIAL parameters a session answers about itself are resolved too: `$?`, "the decimal
+    /// exit status of the most recent pipeline", `$0`, "the name of the shell or shell script",
+    /// `$#`, "the number of positional parameters", and `$@`/`$*`, those parameters — joined by
+    /// one space, since field splitting is a form this session does not perform. Every other
+    /// form — a substring, a replacement, an indirection or another special parameter — is one
+    /// this container does not resolve.
     fn expand_parameter(
         &mut self,
         parameter: &::brush_parser::word::ParameterExpr,
@@ -3518,8 +3575,56 @@ impl ContainerShell {
                 indirect: false,
             } => {
                 // "0: Expands to the name of the shell or shell script", which is the name
-                // this container's program was invoked under.
-                Some(SHELL_NAME.to_string())
+                // this container's program was invoked under — the one its invocation gave it,
+                // and the shell's own for a program invoked with no name at all.
+                Some(
+                    self.positional
+                        .first()
+                        .cloned()
+                        .unwrap_or_else(|| SHELL_NAME.to_string()),
+                )
+            }
+            ::brush_parser::word::ParameterExpr::Parameter {
+                parameter: ::brush_parser::word::Parameter::Positional(position),
+                indirect: false,
+            } => {
+                // "$1, $2, …": the arguments the program was invoked with, which stand after
+                // the name at index 0.
+                Some(
+                    self.positional
+                        .get(*position as usize)
+                        .cloned()
+                        .unwrap_or_default(),
+                )
+            }
+            ::brush_parser::word::ParameterExpr::Parameter {
+                parameter:
+                    ::brush_parser::word::Parameter::Special(
+                        ::brush_parser::word::SpecialParameter::PositionalParameterCount,
+                    ),
+                indirect: false,
+            } => {
+                // "#: Expands to the decimal number of positional parameters", which counts the
+                // arguments and not the name the program was invoked under.
+                Some(self.positional.len().saturating_sub(1).to_string())
+            }
+            ::brush_parser::word::ParameterExpr::Parameter {
+                parameter:
+                    ::brush_parser::word::Parameter::Special(
+                        ::brush_parser::word::SpecialParameter::AllPositionalParameters { .. },
+                    ),
+                indirect: false,
+            } => {
+                // "@" and "*": the positional parameters, joined by one space — this session
+                // performs no field splitting, so both forms expand to the same word.
+                Some(
+                    self.positional
+                        .iter()
+                        .skip(1)
+                        .cloned()
+                        .collect::<Vec<String>>()
+                        .join(" "),
+                )
             }
             ::brush_parser::word::ParameterExpr::UseDefaultValues {
                 parameter: ::brush_parser::word::Parameter::Named(name),

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: CC0-1.0
 
-//! The PARAMETER SUBSTITUTION a job's container command carries, applied where that
-//! command is about to be run.
+//! The PARAMETER SUBSTITUTION a job's container command carries, applied to the container the
+//! submit resolved for the job.
 //!
 //! `RegisterJobDefinition$parameters` is "default parameter substitution PLACEHOLDERS to set
 //! in the job definition", and `SubmitJob$parameters` is "additional parameters passed to the
@@ -14,13 +14,21 @@
 //! replaces it is the job's EFFECTIVE parameter — the submit's over the definition's default,
 //! which is the map [`super::merged_parameters`] recorded on the job when it was accepted.
 //!
-//! The substitution belongs to the RUN, not to the record: a job's `parameters`, its
-//! `container.command` and its `container.environment` are all reported as the requests
-//! stated them, so a client reads the placeholders and the values that fill them, and what
-//! the container is given is those properties with the values in them. One reading of that
-//! container therefore serves both places a job's program is run — the Amazon ECS task it
-//! runs as ([`super::ecs_task`]) and the program this process performs for a job placed on
-//! capacity that can take no task ([`super::container_run`]).
+//! The substitution is made ONCE, where the submit resolves the container the job will run
+//! ([`effective_container`] merges the definition's properties with the submit's overrides, and
+//! this fills the placeholders in what that merge produced), so the job's record holds the
+//! RESOLVED container: the command and the environment a `DescribeJobs` reports are the ones
+//! the container is given, and `JobDetail$parameters` echoes the effective map those values
+//! came from — the placeholders a client wrote are no longer in the command, because they are
+//! not in the command the job runs. One container therefore serves every place a job's program
+//! is read: the Amazon ECS task it runs as ([`super::ecs_task`]), the program this process
+//! performs for a job placed on capacity that can take no task ([`super::container_run`]) and
+//! the detail every reader of the job is answered with.
+//!
+//! A `containerOverrides.command` "overrides the default command from the Docker image or the
+//! job definition", so it REPLACES the definition's command outright — and the words it
+//! supplies may carry placeholders of their own, which are filled the same way, because the
+//! substitution is made over the container that merge produced.
 //!
 //! A placeholder naming a parameter the job carries no value for is left exactly as written:
 //! nothing is invented for it, so the container is given the word the job definition declared
@@ -188,25 +196,32 @@ pub fn substituted_environment(
     )
 }
 
+/// `container` with `parameters` substituted into the words of its command and the values of
+/// its environment variables — the container a job submitted with those parameters RUNS, and
+/// so the container its record holds.
+///
+/// The whole substitution shares ONE budget ([`SubstitutionBudget`]), so what it can add to
+/// what the requests stated is a constant. A container carrying no placeholder, and a job
+/// carrying no parameters, comes back as it was.
+#[must_use]
+pub fn substituted_container(
+    mut container: ContainerDetail,
+    parameters: Option<&HashMap<String, String>>,
+) -> ContainerDetail {
+    let mut budget = SubstitutionBudget::default();
+    container.command = substituted_command(container.command.as_ref(), parameters, &mut budget);
+    container.environment =
+        substituted_environment(container.environment.as_ref(), parameters, &mut budget);
+    container
+}
+
 impl ComAmazonawsBatchAwsbatchv20160810State {
-    /// The container the job `id` is actually RUN with: the effective container stored on the
-    /// job when its submit was accepted ([`effective_container`] built it), with this job's
-    /// parameters substituted into the words of its command and the values of its environment
-    /// variables.
+    /// The container the job `id` is RUN with: the container its submit resolved for it, whose
+    /// placeholders that submit already filled ([`substituted_container`]), so the program a
+    /// run is performed from is the one the job reports.
     ///
-    /// `None` for a job this store holds no container for. The job's own record is untouched:
-    /// a `DescribeJobs` reports the command, the environment and the `parameters` as the
-    /// requests stated them, and this is what the container is given. The whole substitution
-    /// shares ONE budget ([`SubstitutionBudget`]), so what it can add is a constant.
+    /// `None` for a job this store holds no container for.
     pub(super) fn job_run_container(&self, id: &str) -> Option<ContainerDetail> {
-        let job = self.jobs.get(id)?;
-        let mut container = job.container.clone()?;
-        let parameters = job.parameters.as_ref();
-        let mut budget = SubstitutionBudget::default();
-        container.command =
-            substituted_command(container.command.as_ref(), parameters, &mut budget);
-        container.environment =
-            substituted_environment(container.environment.as_ref(), parameters, &mut budget);
-        Some(container)
+        self.jobs.get(id)?.container.clone()
     }
 }

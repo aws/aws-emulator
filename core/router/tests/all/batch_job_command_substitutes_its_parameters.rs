@@ -12,9 +12,9 @@
 //! substitution placeholders to set in the job definition" and `SubmitJob$parameters` is
 //! "additional parameters passed to the job that replace parameter substitution placeholders
 //! that are set in the job definition … Parameters in a `SubmitJob` request override any
-//! corresponding parameter defaults from the job definition". The job's own RECORD is
-//! unchanged by it: `DescribeJobs` reports the `parameters` and the declared `command` and
-//! `environment`, so a client reads the placeholders and the values that fill them.
+//! corresponding parameter defaults from the job definition". The job REPORTS that resolved
+//! container: `DescribeJobs` answers the `command` the container was given — no `Ref::`
+//! placeholder stands in it — beside the `parameters` whose values fill it.
 //!
 //! Sources: `smithy_query(query="doc",shape="RegisterJobDefinitionRequest",member="parameters")`
 //! and `smithy_query(query="doc",shape="SubmitJobRequest",member="parameters")` for the rule;
@@ -29,9 +29,9 @@
 //! capacity that can take no task takes.
 //!
 //! The rows differ along what the rule generalises over: WHERE the placeholder stands (a
-//! command word, an environment variable's value, both), WHERE its value comes from (the job
-//! definition's default, the submit's override), and the status the substituted program exits
-//! with.
+//! command word, an OPERAND the program reads as a positional parameter, an environment
+//! variable's value, both), WHERE its value comes from (the job definition's default, the
+//! submit's override), and the status the substituted program exits with.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -300,6 +300,8 @@ struct Row {
     defaults: Vec<(&'static str, &'static str)>,
     /// The submit's own `parameters`, which override those defaults.
     overrides: Vec<(&'static str, &'static str)>,
+    /// The command the job must then report, which is the one its container was given.
+    resolved: Vec<&'static str>,
     /// The status the program must exit with.
     exit_code: i64,
 }
@@ -312,6 +314,7 @@ fn rows() -> Vec<Row> {
             environment: Vec::new(),
             defaults: vec![("code", "0")],
             overrides: Vec::new(),
+            resolved: vec!["sh", "-c", "exit 0"],
             exit_code: 0,
         },
         Row {
@@ -320,7 +323,26 @@ fn rows() -> Vec<Row> {
             environment: Vec::new(),
             defaults: vec![("code", "0")],
             overrides: vec![("code", "5")],
+            resolved: vec!["sh", "-c", "exit 5"],
             exit_code: 5,
+        },
+        Row {
+            case: "a placeholder in an OPERAND the program reads as a positional parameter",
+            command: vec!["sh", "-c", "exit \"$0\"", "Ref::code"],
+            environment: Vec::new(),
+            defaults: vec![("code", "0")],
+            overrides: Vec::new(),
+            resolved: vec!["sh", "-c", "exit \"$0\"", "0"],
+            exit_code: 0,
+        },
+        Row {
+            case: "that same operand, decided by the submit",
+            command: vec!["sh", "-c", "exit \"$0\"", "Ref::code"],
+            environment: Vec::new(),
+            defaults: vec![("code", "0")],
+            overrides: vec![("code", "7")],
+            resolved: vec!["sh", "-c", "exit \"$0\"", "7"],
+            exit_code: 7,
         },
         Row {
             case: "a placeholder in an environment value, filled by the default",
@@ -328,6 +350,7 @@ fn rows() -> Vec<Row> {
             environment: vec![("EXIT_CODE", "Ref::code")],
             defaults: vec![("code", "0")],
             overrides: Vec::new(),
+            resolved: vec!["sh", "-c", "exit $EXIT_CODE"],
             exit_code: 0,
         },
         Row {
@@ -336,6 +359,7 @@ fn rows() -> Vec<Row> {
             environment: vec![("EXIT_CODE", "Ref::code")],
             defaults: vec![("code", "0")],
             overrides: vec![("code", "3")],
+            resolved: vec!["sh", "-c", "exit $EXIT_CODE"],
             exit_code: 3,
         },
         Row {
@@ -344,6 +368,7 @@ fn rows() -> Vec<Row> {
             environment: vec![("EXIT_CODE", "Ref::code")],
             defaults: vec![("code", "9")],
             overrides: vec![("code", "0"), ("label", "shard-7")],
+            resolved: vec!["sh", "-c", "echo shard-7; exit $EXIT_CODE"],
             exit_code: 0,
         },
     ]
@@ -472,12 +497,18 @@ async fn a_jobs_container_runs_with_its_parameters_substituted() {
             "case {case:?}: expected the program to exit {}, got {detail}",
             row.exit_code
         );
-        // The RECORD is what the requests stated: the placeholders and the parameters that
-        // fill them are both reported, so a client can resolve what ran.
+        // The RECORD is the container the job RUNS: the values stand where the placeholders
+        // were, beside the parameters they came from, so a client reads what ran.
         assert_eq!(
             detail["container"]["command"],
-            json!(row.command),
-            "case {case:?}: the reported command is the one declared, got {detail}"
+            json!(row.resolved),
+            "case {case:?}: expected the resolved command to be reported, got {detail}"
+        );
+        assert!(
+            !detail["container"]["command"]
+                .to_string()
+                .contains("Ref::"),
+            "case {case:?}: no placeholder may stand in the command the job ran, got {detail}"
         );
         for (name, value) in &row.overrides {
             assert_eq!(

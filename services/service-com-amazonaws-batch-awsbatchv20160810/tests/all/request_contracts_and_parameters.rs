@@ -563,7 +563,8 @@ fn parameterised_container() -> Value {
 /// RULE: the program a job's container is given is its declared command with the job's
 /// effective parameters substituted into every `Ref::<name>` placeholder — the submit's
 /// `parameters` over the job definition's defaults — so the status that program exits with
-/// decides the job's terminal status and its `container.exitCode`.
+/// decides the job's terminal status and its `container.exitCode`, and the command the job
+/// reports is the resolved one.
 ///
 /// Rows differ along where the value comes from (the definition's default, the submit's
 /// override, both) and the status it makes the program exit with.
@@ -590,36 +591,40 @@ async fn a_container_command_substitutes_the_jobs_effective_parameters() {
         .to_string();
 
     // (case, the submit's own parameters, the exit status the program must reach, the
-    // terminal status that status decides)
-    let rows: &[(&str, Option<Value>, i64, &str)] = &[
-        ("the definition's default", None, 0, SUCCEEDED),
+    // terminal status that status decides, the resolved program the job must report)
+    let rows: &[(&str, Option<Value>, i64, &str, &str)] = &[
+        ("the definition's default", None, 0, SUCCEEDED, "exit 0"),
         (
             "an override that keeps the default value",
             Some(json!({"code": "0"})),
             0,
             SUCCEEDED,
+            "exit 0",
         ),
         (
             "an override the definition has a default for",
             Some(json!({"code": "7"})),
             7,
             FAILED,
+            "exit 7",
         ),
         (
             "an override naming another status",
             Some(json!({"code": "1"})),
             1,
             FAILED,
+            "exit 1",
         ),
         (
             "an override beside a parameter nothing substitutes",
             Some(json!({"code": "0", "unused": "9"})),
             0,
             SUCCEEDED,
+            "exit 0",
         ),
     ];
 
-    for (index, (case, parameters, exit_code, terminal)) in rows.iter().enumerate() {
+    for (index, (case, parameters, exit_code, terminal, resolved)) in rows.iter().enumerate() {
         let mut request = json!({
             "jobName": format!("param-{index}"),
             "jobQueue": &queue_arn,
@@ -639,12 +644,12 @@ async fn a_container_command_substitutes_the_jobs_effective_parameters() {
             Some(*exit_code),
             "case {case}: expected the substituted program to exit {exit_code}, got {detail}"
         );
-        // The RECORD is what the request stated: the placeholders and the parameters that
-        // fill them are both reported, so a client can resolve what ran.
+        // The RECORD is the container the job RUNS: the values stand where the placeholders
+        // were, beside the parameters they came from, so a client reads what ran.
         assert_eq!(
             detail["container"]["command"],
-            json!(["/bin/sh", "-c", "exit Ref::code"]),
-            "case {case}: the reported command is the one declared, got {detail}"
+            json!(["/bin/sh", "-c", resolved]),
+            "case {case}: expected the resolved command to be reported, got {detail}"
         );
     }
 }
