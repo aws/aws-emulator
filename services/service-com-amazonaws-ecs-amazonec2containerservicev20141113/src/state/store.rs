@@ -349,7 +349,13 @@ impl ComAmazonawsEcsAmazonec2containerservicev20141113State {
         // account's event bus as well as reported to a caller that reads the task set
         // ([`super::service_action_events`]).
         for (task_set_arn, cluster_arn, due) in stabilised {
-            self.record_service_action(&task_set_arn, &cluster_arn, TASKSET_STEADY_STATE, due);
+            self.record_service_action(
+                &task_set_arn,
+                &cluster_arn,
+                TASKSET_STEADY_STATE,
+                None,
+                due,
+            );
         }
         // The drain a `DeleteTaskSet` started: once it is due the task set it was draining
         // away is gone, whether or not anybody called to look.
@@ -668,7 +674,13 @@ impl ComAmazonawsEcsAmazonec2containerservicev20141113State {
                     ),
                     None => continue,
                 };
-                self.record_service_action(&service_arn, &cluster_arn, SERVICE_STEADY_STATE, due);
+                self.record_service_action(
+                    &service_arn,
+                    &cluster_arn,
+                    SERVICE_STEADY_STATE,
+                    None,
+                    due,
+                );
                 // That steady state is also where the ROLLOUT ends: "When the service
                 // reaches a steady state, the deployment transitions to a COMPLETED state",
                 // so the deployment's own state machine moves here too and the move is

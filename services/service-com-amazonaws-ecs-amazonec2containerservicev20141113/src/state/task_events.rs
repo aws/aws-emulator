@@ -36,7 +36,9 @@
 //! Amazon ECS could not launch the containers of at all is an action of the scheduler that
 //! placed it, published as an `ECS Service Action`
 //! ([`super::service_action_events::SERVICE_TASK_CONFIGURATION_FAILURE`]) beside the task's
-//! own move, from the one place that already sees every move exactly once.
+//! own move, from the one place that already sees every move exactly once — carrying the
+//! `stoppedReason` that stop earned as the action's `reason`, so the event says what the
+//! launch failed on and not merely that one did.
 //!
 //! A queued change is published with no lock held ([`publish_pending`]): EventBridge is
 //! reached the way every emulated service reaches another, through the framework's
@@ -166,8 +168,9 @@ impl ComAmazonawsEcsAmazonec2containerservicev20141113State {
             .retain(|task_arn, _| tasks.contains_key(task_arn));
         let mut observed: Vec<(String, TaskStatusPair, TaskStateChange)> = Vec::new();
         // The launches a SERVICE lost in this comparison, as the action the scheduler took by
-        // losing them names them: `(serviceArn, clusterArn, the instant it was lost at)`.
-        let mut lost_launches: Vec<(String, String, SystemTime)> = Vec::new();
+        // losing them names them: `(serviceArn, clusterArn, why the launch was lost, the
+        // instant it was lost at)`.
+        let mut lost_launches: Vec<(String, String, Option<String>, SystemTime)> = Vec::new();
         // And the tasks a service's scheduler STARTED in it, as the entries that account for
         // them ([`super::service_scheduler_task_reports::ServiceTaskReport`]).
         let mut started_tasks: Vec<ServiceTaskReport> = Vec::new();
@@ -184,7 +187,8 @@ impl ComAmazonawsEcsAmazonec2containerservicev20141113State {
             // as an `ECS Service Action`
             // ([`super::service_action_events::SERVICE_TASK_CONFIGURATION_FAILURE`]), so a
             // client watching the service learns that what it asked for cannot be launched
-            // without reading every task the scheduler keeps replacing. Only on the move that
+            // without reading every task the scheduler keeps replacing, and WHY: the action
+            // carries the stop's own `stoppedReason` as its `reason`. Only on the move that
             // TURNED the task away from running — the published pair still wanted it running —
             // so the steps it then takes on its way out publish the action once rather than
             // once per status.
@@ -194,7 +198,12 @@ impl ComAmazonawsEcsAmazonec2containerservicev20141113State {
                     self.services
                         .get(&(task.cluster_name.clone(), name.to_string()))
                 }) {
-                    lost_launches.push((service.arn.clone(), service.cluster_arn.clone(), at));
+                    lost_launches.push((
+                        service.arn.clone(),
+                        service.cluster_arn.clone(),
+                        task.stopped_reason.clone(),
+                        at,
+                    ));
                 }
             }
             // A task that has reached `RUNNING` since the last comparison is a task the
@@ -220,12 +229,13 @@ impl ComAmazonawsEcsAmazonec2containerservicev20141113State {
             ));
         }
         observed.sort_by_key(|(_, _, change)| change.at);
-        lost_launches.sort_by_key(|(_, _, at)| *at);
-        for (service_arn, cluster_arn, at) in lost_launches {
+        lost_launches.sort_by_key(|(_, _, _, at)| *at);
+        for (service_arn, cluster_arn, reason, at) in lost_launches {
             self.record_service_action(
                 &service_arn,
                 &cluster_arn,
                 SERVICE_TASK_CONFIGURATION_FAILURE,
+                reason.as_deref(),
                 at,
             );
         }

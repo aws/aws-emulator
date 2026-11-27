@@ -240,8 +240,16 @@ async fn queued_occurrences_take_effect_in_schedule_order() {
 
     let emulator = Emulator::empty();
     let target = emulator.given_target(DIMENSION, 1, 20).await;
-    for row in QUEUE {
-        let (schedule, _) = at_schedule_in(row.due_in);
+    // Every occurrence's instant is read off ONE moment, before the first put: the expressions
+    // this suite writes carry a wall clock of one-second resolution, so a schedule computed
+    // between two puts is measured from a later moment and the spacing the queue relies on
+    // would narrow — or invert — by however long the puts before it took on the host. Reading
+    // them together keeps the queue's order the SCHEDULE's, whatever the machine is doing.
+    let schedules: Vec<String> = QUEUE
+        .iter()
+        .map(|row| at_schedule_in(row.due_in).0)
+        .collect();
+    for (row, schedule) in QUEUE.iter().zip(&schedules) {
         let mut action = target.clone();
         action["ScheduledActionName"] = json!(row.name);
         action["Schedule"] = json!(schedule);

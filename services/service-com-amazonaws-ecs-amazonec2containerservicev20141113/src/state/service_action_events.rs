@@ -17,6 +17,14 @@
 //! remediating one automatically — observes the scheduler's actions without calling Amazon
 //! ECS again.
 //!
+//! An action the scheduler took because it COULD NOT do what the service asks carries one
+//! member more: `reason`, the sentence that says what stopped it. The severity alone states
+//! that something went wrong, and a client alerting on such an action has to act on WHAT went
+//! wrong, so the reason is the very sentence the records already hold for it — the
+//! `stoppedReason` of the task whose launch was lost ([`super::image_pull`] words those) —
+//! rather than a second wording of this module's. An action that reports progress has no
+//! reason to carry and carries none.
+//!
 //! WHICH actions: the ones the scheduler takes, each under the name Amazon ECS publishes it
 //! by ([`SERVICE_ACTION_SEVERITIES`]). The steady state a service's rollout settles into is
 //! [`SERVICE_STEADY_STATE`], and the one a task set of a service whose deployments another
@@ -126,7 +134,11 @@ pub struct ServiceActionEvent {
 
 impl ComAmazonawsEcsAmazonec2containerservicev20141113State {
     /// Queue the service action `event_name`, taken at `at` on the resource `resource_arn`
-    /// of the cluster `cluster_arn`.
+    /// of the cluster `cluster_arn`, for `reason` where the action has one.
+    ///
+    /// `reason` is the sentence that says why the scheduler could not do what the service
+    /// asked of it, which is carried only where the action HAS one: an action that reports
+    /// progress is not explained, so nothing is invented for it.
     ///
     /// Called by the pass that MATERIALISES the action, under the store's own lock, so the
     /// event is queued exactly where the action happened and no second comparison has to
@@ -138,6 +150,7 @@ impl ComAmazonawsEcsAmazonec2containerservicev20141113State {
         resource_arn: &str,
         cluster_arn: &str,
         event_name: &str,
+        reason: Option<&str>,
         at: SystemTime,
     ) {
         let Some(event_type) = service_action_event_type(event_name) else {
@@ -166,6 +179,15 @@ impl ComAmazonawsEcsAmazonec2containerservicev20141113State {
             detail.insert(
                 "createdAt".to_string(),
                 ::serde_json::Value::String(created_at),
+            );
+        }
+        // And WHY the scheduler could not do what it was asked, for an action that failed:
+        // the same sentence the records hold for that failure, so the event and a read of
+        // what failed cannot disagree about it.
+        if let Some(reason) = reason {
+            detail.insert(
+                "reason".to_string(),
+                ::serde_json::Value::String(reason.to_string()),
             );
         }
         while self.pending_service_action_events.len() >= MAX_PENDING_SERVICE_ACTIONS {
