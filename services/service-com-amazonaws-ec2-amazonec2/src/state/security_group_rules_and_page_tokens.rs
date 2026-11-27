@@ -2575,9 +2575,18 @@ pub fn validate_ip_permission_port_range<E>(
     };
     for (port_member, value) in [("fromPort", from_port), ("toPort", to_port)] {
         if value != ALL_PORTS && !(0..=highest).contains(&value) {
+            // The member a value outside what it admits is reported as is the WIRE member it
+            // arrived in — `fromPort` or `toPort` — and not an entry number of ours: EC2's
+            // refusals about a rule's ports name neither `ipPermissions` nor its position,
+            // which is what the recorded refusal of an out-of-order range shows
+            // ([`invalid_tcp_udp_port_range`]). The sentence states the range that member
+            // admits: the value that stands for all of them, and every number up to the
+            // highest this protocol has — ports for TCP and UDP, an ICMP type and code for
+            // ICMP ("this is the ICMP type", "this is the ICMP code" —
+            // `IpPermission$FromPort` and `$ToPort`).
             return Err(invalid_parameter_value(format!(
-                "Invalid value '{value}' for {member}.{port_member}: it must be \
-                 between 0 and {highest}, or {ALL_PORTS} for all values"
+                "Invalid value '{value}' for {port_member}. Value must be between \
+                 {ALL_PORTS} and {highest}."
             )));
         }
     }
@@ -2595,14 +2604,20 @@ pub fn validate_ip_permission_port_range<E>(
         // `$ToPort`), so there is no order between them to hold.
         && !protocol_is_icmp(protocol)
     {
-        // The range is the member EC2 reports as the bad VALUE, and the sentence it words
-        // that with is fixed text around the two ends as the request sent them, with no
-        // member name and no entry number of ours in it.
-        return Err(invalid_parameter_value(format!(
-            "Invalid TCP/UDP port range({from_port}:{to_port})"
-        )));
+        return Err(invalid_tcp_udp_port_range(from_port, to_port));
     }
     Ok(())
+}
+
+/// Refuse a TCP or UDP rule whose two port members are not a port range: HTTP 400
+/// [`INVALID_PARAMETER_VALUE`], `Invalid TCP/UDP port range(<fromPort>:<toPort>)`.
+///
+/// The RANGE is what EC2 reports as the bad value, and the sentence it words that with is
+/// fixed text around the two ends as the REQUEST sent them, with no member name and no entry
+/// number of ours in it — the sentence the wire corpus records for a range that ends before it
+/// starts. The ONE place it lives, so no handler words it a second way.
+fn invalid_tcp_udp_port_range<E>(from_port: i32, to_port: i32) -> Scaffolded<E> {
+    invalid_parameter_value(format!("Invalid TCP/UDP port range({from_port}:{to_port})"))
 }
 
 /// Hold a rule's description to the bounds the model publishes for one.
@@ -2759,6 +2774,19 @@ pub fn prepared_ip_permission<E>(
 pub const RESOURCES_IN_DIFFERENT_NETWORKS: &str =
     "You have specified two resources that belong to different networks.";
 
+/// Refuse a rule whose referenced security group is in a network of its own: HTTP 400
+/// [`crate::state::INVALID_GROUP_NOT_FOUND`] with [`RESOURCES_IN_DIFFERENT_NETWORKS`].
+///
+/// The ONE place that refusal is built, so a reference the request spelled as an ID and one it
+/// spelled as a NAME cannot word the same cross-network reference two ways.
+pub fn resources_in_different_networks<E>() -> Scaffolded<E> {
+    Scaffolded::service_error(
+        INVALID_GROUP_NOT_FOUND,
+        400,
+        RESOURCES_IN_DIFFERENT_NETWORKS.to_string(),
+    )
+}
+
 /// One referenced-group grant in the form the rule that names it is stored in: the group by
 /// the ID a rule references it by, and the account that owns it.
 ///
@@ -2868,18 +2896,24 @@ pub fn prepared_user_id_group_pair<E>(
                     // this class, the generic sentence it answers whenever two resources a
                     // request names sit in different networks, which names neither the group
                     // nor either network.
-                    return Err(Scaffolded::service_error(
-                        INVALID_GROUP_NOT_FOUND,
-                        400,
-                        RESOURCES_IN_DIFFERENT_NETWORKS.to_string(),
-                    ));
+                    return Err(resources_in_different_networks());
                 }
             }
             group_id.to_string()
         }
-        (None, Some(group_name)) => store
-            .security_group_id_for_name(vpc_id, group_name)
-            .ok_or_else(|| invalid_group_not_found(group_name))?,
+        // A NAME names at most one group per VPC ("names are case-insensitive and must be
+        // unique within the VPC"), so it is resolved inside the rule's own VPC — and a name
+        // the account holds a group under in ANOTHER VPC is the same cross-network reference
+        // the id arm above refuses, worded the same way: which network the referenced group is
+        // in is a fact of that group, not of how the request spelled the reference. Only a
+        // name no group of the account answers to is a group that is not there.
+        (None, Some(group_name)) => match store.security_group_id_for_name(vpc_id, group_name) {
+            Some(group_id) => group_id,
+            None if store.security_group_named_in_another_vpc(vpc_id, group_name) => {
+                return Err(resources_in_different_networks())
+            }
+            None => return Err(invalid_group_not_found(group_name)),
+        },
         (None, None) => {
             return Err(invalid_permission_malformed(format!(
                 "{member} names a security group with neither a groupId nor \

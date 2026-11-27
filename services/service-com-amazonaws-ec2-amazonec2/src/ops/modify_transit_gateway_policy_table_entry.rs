@@ -178,14 +178,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // "The ID of the transit gateway route table to use for traffic matching this rule"
         // (`$TargetRouteTableId`) is OPTIONAL on a modify, so a request that names none
         // leaves the entry targeting the route table it already did; one that IS named is
-        // held to the route table id's own form here, before anything is resolved.
+        // resolved below, where the entry's target route table is resolved.
         let target_route_table_id = input
             .target_route_table_id
             .as_deref()
             .filter(|value| !value.is_empty());
-        if let Some(target_route_table_id) = target_route_table_id {
-            state::require_well_formed_transit_gateway_route_table_id(target_route_table_id)?;
-        }
 
         // "Checks whether you have the required permissions for the action, WITHOUT ACTUALLY
         // MAKING THE REQUEST, and provides an error response. If you have the required
@@ -248,16 +245,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // A route table the entry is to route matching traffic to has to exist: an id that
         // names no route table of the account is a dangling reference, and storing it would
         // leave an entry routing traffic to a table that can never receive it — asked of the
-        // id the entry will carry, so an update cannot smuggle one past the create's check.
+        // id the entry will carry, so an update cannot smuggle one past the create's check,
+        // and through the one place this crate words the refusals for an entry's target route
+        // table, so the two operations cannot word one dangling target two ways.
         if let Some(target_route_table_id) = target_route_table_id.as_deref() {
-            if !store
-                .transit_gateway_route_tables
-                .contains_key(target_route_table_id)
-            {
-                return Err(state::invalid_transit_gateway_route_table_id_not_found(
-                    target_route_table_id,
-                ));
-            }
+            state::require_known_policy_table_entry_target_route_table(
+                &store,
+                target_route_table_id,
+            )?;
         }
 
         // What this call would leave behind, computed by the ONE definition of a stored

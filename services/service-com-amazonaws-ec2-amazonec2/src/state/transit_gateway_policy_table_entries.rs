@@ -388,6 +388,72 @@ pub fn invalid_transit_gateway_policy_table_entry_not_found<E>(
     )
 }
 
+/// `InvalidTransitGatewayRouteTableId.NotFound` (HTTP 400): the route table an entry would
+/// route matching traffic TO names no route table of the account.
+///
+/// The route table's own not-found class, rather than the one every operation ON a transit
+/// gateway route table answers ([`super::INVALID_ROUTE_TABLE_ID_NOT_FOUND`]): here the id is a
+/// PARAMETER of an action on another resource — the policy table entry — and that is the class
+/// the recorded refusal of such a create carries.
+pub const INVALID_TRANSIT_GATEWAY_ROUTE_TABLE_ID_NOT_FOUND: &str =
+    "InvalidTransitGatewayRouteTableId.NotFound";
+
+/// The kind that refusal names the id by: the word the `ResourceType` enum spells this
+/// resource with ([`super::RESOURCE_TYPE_TRANSIT_GATEWAY_ROUTE_TABLE`]) followed by `ID`, the
+/// way every "does not exist" sentence [`super::id_not_found`] builds names the kind of the id
+/// it could not resolve.
+pub const TRANSIT_GATEWAY_ROUTE_TABLE_ID_KIND: &str = "transit-gateway-route-table ID";
+
+/// Whether `id` READS as the transit gateway route table a policy table entry targets: this
+/// resource's prefix, and a suffix of lowercase hexadecimal digits.
+///
+/// Weaker than [`super::prefixed_id_is_well_formed`], which also holds the suffix to the two
+/// digit counts EC2 MINTS: a value in this form that is none EC2 could have issued is LOOKED UP
+/// here and reported as a route table the account does not hold, which is what the recorded
+/// refusal of an entry create naming such a value carries. The digit counts still separate the
+/// id kinds that share this prefix in the readers that need them — a route table ANNOUNCEMENT
+/// id extends it ([`super::TRANSIT_GATEWAY_ROUTE_TABLE_ANNOUNCEMENT_ID_PREFIX`]) — and they are
+/// separated here by the prefix being asked for EXACTLY, so an announcement id reads as no
+/// route table id.
+fn reads_as_transit_gateway_route_table_id(id: &str) -> bool {
+    super::resource_id_shaped(id)
+        && id
+            .rsplit_once('-')
+            .is_some_and(|(prefix, _)| prefix == super::TRANSIT_GATEWAY_ROUTE_TABLE_ID_PREFIX)
+}
+
+/// Resolve the route table a policy table entry is to route matching traffic to: a value that
+/// is no route table id at all with that resource's malformed refusal, then an id the account
+/// holds no route table for with [`INVALID_TRANSIT_GATEWAY_ROUTE_TABLE_ID_NOT_FOUND`] —
+/// "The transit-gateway-route-table ID '`<id>`' does not exist".
+///
+/// The ONE place the rule the entry-writing operations follow for their `TargetRouteTableId`
+/// lives, so the create and the modify cannot word one dangling target two ways. The refusal
+/// is the id's own class because the route table is a PARAMETER of an action on the policy
+/// table entry here, not the subject of the call; an operation whose SUBJECT is the route
+/// table answers [`super::invalid_transit_gateway_route_table_id_not_found`] instead.
+pub fn require_known_policy_table_entry_target_route_table<E>(
+    store: &ComAmazonawsEc2Amazonec2State,
+    target_route_table_id: &str,
+) -> Result<(), Scaffolded<E>> {
+    if !reads_as_transit_gateway_route_table_id(target_route_table_id) {
+        return Err(super::invalid_transit_gateway_route_table_id_malformed(
+            target_route_table_id,
+        ));
+    }
+    if !store
+        .transit_gateway_route_tables
+        .contains_key(target_route_table_id)
+    {
+        return Err(super::id_not_found(
+            INVALID_TRANSIT_GATEWAY_ROUTE_TABLE_ID_NOT_FOUND,
+            TRANSIT_GATEWAY_ROUTE_TABLE_ID_KIND,
+            &echoed_resource_id(target_route_table_id),
+        ));
+    }
+    Ok(())
+}
+
 /// The caller-chosen bytes ONE stored policy table entry holds: the text of its rule's
 /// matching criteria and metadata, of the route table it targets, and of the rule number and
 /// state as they are reported.

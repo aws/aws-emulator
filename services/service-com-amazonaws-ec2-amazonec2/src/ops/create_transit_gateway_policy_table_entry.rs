@@ -153,20 +153,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // "The ID of the transit gateway policy table" (`$TransitGatewayPolicyTableId`) is
         // `@required` but modelled `clientOptional`, so a request that left it out reaches
         // this handler as an empty string rather than being refused at the boundary. A
-        // parameter the request did not carry is EC2's `MissingParameter`; a value that IS
-        // given is held to the id's FORM before the store is touched, so "not an id of this
-        // kind" is never reported as "no such policy table".
+        // parameter the request did not carry is EC2's `MissingParameter`; whether a value
+        // that IS given is an id of this kind is asked where the policy table is RESOLVED
+        // below, because this operation reads the route table its entry targets first.
         let policy_table_id = input.transit_gateway_policy_table_id.as_str();
         if policy_table_id.is_empty() {
             return Err(state::missing_parameter(
                 "The request must contain the parameter transitGatewayPolicyTableId",
             ));
         }
-        state::require_well_formed_id(
-            state::TRANSIT_GATEWAY_POLICY_TABLE_ID_PREFIX,
-            policy_table_id,
-            state::INVALID_TRANSIT_GATEWAY_POLICY_TABLE_ID_MALFORMED,
-        )?;
 
         // "The rule number for the policy table entry. Lower rule numbers are evaluated
         // first and take precedence" (`$PolicyRuleNumber`): required, so a request that left
@@ -183,15 +178,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let rule_number = state::transit_gateway_policy_table_rule_number(rule_number_text)?;
 
         // "The ID of the transit gateway route table to use for traffic matching this rule"
-        // (`$TargetRouteTableId`): required too, and held to the route table id's own form
-        // through the one place this crate words that refusal.
+        // (`$TargetRouteTableId`): required too, and resolved below through the one place this
+        // crate words the refusals for an entry's target route table.
         let target_route_table_id = input.target_route_table_id.as_str();
         if target_route_table_id.is_empty() {
             return Err(state::missing_parameter(
                 "The request must contain the parameter targetRouteTableId",
             ));
         }
-        state::require_well_formed_transit_gateway_route_table_id(target_route_table_id)?;
 
         // "The matching criteria for the policy table entry" (`$PolicyRule`), every member of
         // it optional, read into the form it will be STORED in by the crate's one reading of
@@ -218,9 +212,27 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // in.
         store.materialize_due_transitions();
 
-        // An entry has nowhere to live without the table that holds it, so an id this account
-        // holds no policy table for is refused with the one refusal every reader of a
+        // The route table the rule routes matching traffic to is the FIRST parameter this
+        // operation resolves — before the policy table the entry would belong to, and so
+        // before the policy table id's own form is read — which is the order the recorded
+        // refusal of a create whose BOTH parents are unresolvable shows: it names the target
+        // route table. An id that names no route table of the account is a dangling
+        // reference, and storing it would leave an entry routing traffic to a table that can
+        // never receive it; the refusal is the one this crate answers wherever a route table
+        // id is a PARAMETER of some other action.
+        state::require_known_policy_table_entry_target_route_table(
+            &store,
+            target_route_table_id,
+        )?;
+        // An entry has nowhere to live without the table that holds it: a value that is not a
+        // policy table id at all is refused before the store is asked about it, and an id this
+        // account holds no policy table for with the one refusal every reader of a
         // `TransitGatewayPolicyTableId` answers for an id it cannot resolve.
+        state::require_well_formed_id(
+            state::TRANSIT_GATEWAY_POLICY_TABLE_ID_PREFIX,
+            policy_table_id,
+            state::INVALID_TRANSIT_GATEWAY_POLICY_TABLE_ID_MALFORMED,
+        )?;
         if !store
             .transit_gateway_policy_tables
             .contains_key(policy_table_id)
@@ -230,19 +242,6 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     policy_table_id,
                 ),
             );
-        }
-        // The route table the rule routes matching traffic to has to exist as well: an id
-        // that names no route table of the account is a dangling reference, and storing it
-        // would leave an entry routing traffic to a table that can never receive it — the
-        // refusal this crate answers wherever a route table id is a PARAMETER of some other
-        // action.
-        if !store
-            .transit_gateway_route_tables
-            .contains_key(target_route_table_id)
-        {
-            return Err(state::invalid_transit_gateway_route_table_id_not_found(
-                target_route_table_id,
-            ));
         }
         // "Lower rule numbers are evaluated first and take precedence" (`$PolicyRuleNumber`)
         // and `ModifyTransitGatewayPolicyTableEntry` is what changes an entry in place, so one

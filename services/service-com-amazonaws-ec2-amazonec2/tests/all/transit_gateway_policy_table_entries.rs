@@ -926,7 +926,7 @@ async fn an_unresolvable_id_is_refused_with_that_resources_own_code() {
             "a route table id nothing holds",
             &fixtures.policy_table_id,
             "tgw-rtb-0123456789abcdef0",
-            "InvalidRouteTableID.NotFound",
+            "InvalidTransitGatewayRouteTableId.NotFound",
         ),
         (
             "a route table id of no kind",

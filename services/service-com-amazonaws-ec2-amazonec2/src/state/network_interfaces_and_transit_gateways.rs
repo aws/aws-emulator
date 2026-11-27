@@ -2271,11 +2271,27 @@ pub fn require_well_formed_transit_gateway_route_table_id<E>(
     if prefixed_id_is_well_formed(TRANSIT_GATEWAY_ROUTE_TABLE_ID_PREFIX, route_table_id) {
         return Ok(());
     }
-    Err(Scaffolded::service_error(
+    Err(invalid_transit_gateway_route_table_id_malformed(
+        route_table_id,
+    ))
+}
+
+/// The refusal [`require_well_formed_transit_gateway_route_table_id`] answers, on its own:
+/// HTTP 400 [`INVALID_ROUTE_TABLE_ID_MALFORMED`], `Invalid Transit Gateway Route Table id
+/// <id>.`.
+///
+/// Separate from the check because WHICH values an operation can READ as a route table id is
+/// a fact of that operation — the creates that take this id as the route table their new
+/// resource TARGETS are recorded looking an id of any issued length up rather than holding it
+/// to the two lengths EC2 mints
+/// ([`super::require_known_policy_table_entry_target_route_table`]) — while a value that is no
+/// id of this kind at all is refused with this one sentence either way.
+pub fn invalid_transit_gateway_route_table_id_malformed<E>(route_table_id: &str) -> Scaffolded<E> {
+    Scaffolded::service_error(
         INVALID_ROUTE_TABLE_ID_MALFORMED,
         400,
         format!("Invalid Transit Gateway Route Table id {route_table_id}."),
-    ))
+    )
 }
 
 /// A propagation whose enable is being carried out: the `TransitGatewayPropagationState`

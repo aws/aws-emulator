@@ -730,13 +730,13 @@ async fn an_unservable_request_is_refused_and_writes_nothing() {
             "a user the endpoint has never seen",
             vec![p("ClientVpnEndpointId", endpoint), p("Username", UNKNOWN_USER)],
             "InvalidClientVpnConnection.UserNotFound",
-            format!("User {UNKNOWN_USER} does not exist"),
+            format!("No connections exists for the given username {UNKNOWN_USER}"),
         ),
         (
             "a user whose name is the id of a connection, which is no user",
             vec![p("ClientVpnEndpointId", endpoint), p("Username", connection)],
             "InvalidClientVpnConnection.UserNotFound",
-            format!("User {connection} does not exist"),
+            format!("No connections exists for the given username {connection}"),
         ),
     ];
 

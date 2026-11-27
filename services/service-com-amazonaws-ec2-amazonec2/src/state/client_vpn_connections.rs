@@ -87,7 +87,15 @@ pub fn invalid_client_vpn_connection_id_not_found<E>(connection_id: &str) -> Sca
 }
 
 /// Refuse a request that named a user the endpoint holds no active client connection for:
-/// HTTP 400 [`INVALID_CLIENT_VPN_CONNECTION_USER_NOT_FOUND`], in that same wording.
+/// HTTP 400 [`INVALID_CLIENT_VPN_CONNECTION_USER_NOT_FOUND`].
+///
+/// The sentence is about the CONNECTIONS rather than about the identity: a `Username` selects
+/// "all active connections for the specified user" (`$Username`), so what the endpoint holds
+/// none of is connections of that user, not the user — `No connections exists for the given
+/// username <value>`, fixed text followed by the name the REQUEST sent, of which the first
+/// [`MAX_ECHOED_CLIENT_VPN_CONNECTION_SELECTOR_CHARS`] characters are named. That is the
+/// difference this refusal carries from [`invalid_client_vpn_connection_id_not_found`] beside
+/// it, where a connection ID really does name a resource the endpoint does not hold.
 pub fn invalid_client_vpn_connection_user_not_found<E>(username: &str) -> Scaffolded<E> {
     let echoed: String = username
         .chars()
@@ -96,7 +104,7 @@ pub fn invalid_client_vpn_connection_user_not_found<E>(username: &str) -> Scaffo
     Scaffolded::service_error(
         INVALID_CLIENT_VPN_CONNECTION_USER_NOT_FOUND,
         400,
-        format!("User {echoed} does not exist"),
+        format!("No connections exists for the given username {echoed}"),
     )
 }
 

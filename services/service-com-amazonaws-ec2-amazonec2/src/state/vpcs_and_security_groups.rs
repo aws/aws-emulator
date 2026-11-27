@@ -1820,6 +1820,26 @@ impl ComAmazonawsEc2Amazonec2State {
             .and_then(|group| group.group_id.clone())
     }
 
+    /// Whether this account holds a security group under `group_name` in a VPC OTHER than
+    /// `vpc_id`.
+    ///
+    /// "Names are case-insensitive and must be unique within the VPC"
+    /// (`CreateSecurityGroupRequest$GroupName`), so one name may name a group in every VPC of
+    /// the account and naming it says nothing about which network that group is in. The
+    /// question a reference scoped to one VPC asks once [`Self::security_group_id_for_name`]
+    /// has answered `None`: the group the name names is a group of the account, in another
+    /// network, rather than a group that is not there — which are two different things to tell
+    /// the caller. The same scan, bounded by [`MAX_SECURITY_GROUPS`].
+    pub fn security_group_named_in_another_vpc(&self, vpc_id: &str, group_name: &str) -> bool {
+        self.security_groups.values().any(|group| {
+            group.vpc_id.as_deref().is_some_and(|held| held != vpc_id)
+                && group
+                    .group_name
+                    .as_deref()
+                    .is_some_and(|held| held.eq_ignore_ascii_case(group_name))
+        })
+    }
+
     /// The security group this account holds in `vpc_id` under `group_name`, as the
     /// `GroupIdentifier` a report carries — the id AND the name, however the caller named
     /// it.

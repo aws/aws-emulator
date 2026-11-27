@@ -200,9 +200,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // A permission is a grant over an interface the account holds, so an id it holds no
         // interface for is a refusal rather than a grant over nothing.
         let Some(interface) = store.network_interfaces.get(network_interface_id) else {
-            return Err(state::invalid_network_interface_id_not_found(
-                network_interface_id,
-            ));
+            return Err(interface_does_not_exist(network_interface_id));
         };
         // "Indicates whether the network interface is being managed by Amazon Web Services"
         // (`NetworkInterface$RequesterManaged`): an interface another service created for its
@@ -276,6 +274,32 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             interface_permission: Some(permission),
         })
     }
+}
+
+/// Refuse a grant over a network interface id this account holds no interface for: HTTP 400
+/// `InvalidNetworkInterfaceID.NotFound`, naming the interface `The interface ID '<id>' does not
+/// exist`.
+///
+/// This validator names the resource the way it names it when it cannot READ the id at all —
+/// `The interface ID '<id>' is malformed`
+/// ([`crate::state::invalid_network_interface_id_malformed`], the sentence this handler answers
+/// just above) — so one operation words one resource one way whether the id is unreadable or
+/// merely names nothing. It is not the sentence every reader of a `NetworkInterfaceId` answers:
+/// the describes and the address assignments name the resource `networkInterface ID`
+/// ([`crate::state::invalid_network_interface_id_not_found`]), each on its own recorded refusal,
+/// so the name belongs to the validator rather than to the id kind. The id is the REQUEST's,
+/// bounded by the ceiling this crate repeats every caller-chosen id back under.
+fn interface_does_not_exist(
+    network_interface_id: &str,
+) -> CreateNetworkInterfacePermissionError {
+    crate::scaffolded::Scaffolded::service_error(
+        crate::state::INVALID_NETWORK_INTERFACE_ID_NOT_FOUND,
+        400,
+        crate::state::id_not_found_message(
+            "interface ID",
+            &crate::state::echoed_resource_id(network_interface_id),
+        ),
+    )
 }
 
 /// The account the request grants to, or the refusal the grantee it names earns.
