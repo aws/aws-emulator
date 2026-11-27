@@ -11,9 +11,9 @@
 //! echoed back byte for byte, and the `PolicyHash` is an opaque token minted for each write.
 //! A resource carrying no policy is a miss for the read and the delete alike (400
 //! `EntityNotFoundException`, "Policy not found"), each condition a request carries is
-//! checked BEFORE anything is stored, and `GetResourcePolicies` enumerates the policies of
-//! individual resources without the account-level catalog policy among them, answering a
-//! continuation token for every first page.
+//! checked BEFORE anything is stored, and `GetResourcePolicies` enumerates every policy
+//! the account has attached — the account-level catalog policy among them — as a walk whose
+//! opening page reports no entry and the token the rest of the walk follows.
 //!
 //! Each suite is a TABLE whose rows differ along what the rule generalises over: which
 //! resource the policy is attached to, which document it carries (size, statement count,
@@ -37,7 +37,8 @@ const CATALOG_ARN: &str = "arn:aws:glue:us-east-1:000000000000:catalog";
 
 /// ARNs of individual Glue resources of this account and Region, one per documented
 /// resource portion (`database/<name>`, `table/<database>/<name>`, `connection/<name>`,
-/// `crawler/<name>`) — the ARNs whose policies `GetResourcePolicies` enumerates.
+/// `crawler/<name>`) — among the ARNs whose policies `GetResourcePolicies` enumerates
+/// beside the catalog's own.
 const DATABASE_ARN: &str = "arn:aws:glue:us-east-1:000000000000:database/sales";
 const TABLE_ARN: &str = "arn:aws:glue:us-east-1:000000000000:table/sales/orders";
 const CONNECTION_ARN: &str = "arn:aws:glue:us-east-1:000000000000:connection/warehouse";
@@ -152,17 +153,89 @@ async fn assert_no_policy(router: &MultiServiceRouter, case: &str, arn: Option<&
     }
 }
 
-/// The `GetResourcePoliciesResponseList` of one page, as the documents it carries.
-fn listed_documents(page: &Value, case: &str) -> Vec<Value> {
+/// The `GetResourcePoliciesResponseList` of one page, entry by entry as it stands on the
+/// wire.
+fn listed_entries(page: &Value, case: &str) -> Vec<Value> {
     page["GetResourcePoliciesResponseList"]
         .as_array()
         .unwrap_or_else(|| {
             panic!("case {case}: GetResourcePolicies must report a list, got {page}")
         })
+        .clone()
+}
+
+/// Walk the whole enumeration the way a paginator does and answer every entry the pages
+/// reported, in the order they reported them.
+///
+/// The walk opens with a request carrying no `NextToken` — which reports no policy and the
+/// token to resume from, the recorded shape of this operation's opening page (the suites
+/// below assert the ENTRIES against what the store holds, so a handler that reported
+/// nothing anywhere would fail them) — and then follows each page's token until a page
+/// carries none. `page_size` is the `MaxResults` every request states, or none to let the
+/// service choose; `allowed` bounds how many pages a terminating walk may take.
+async fn walk_entries(
+    router: &MultiServiceRouter,
+    case: &str,
+    page_size: Option<i64>,
+    allowed: usize,
+) -> Vec<Value> {
+    let mut walked: Vec<Value> = Vec::new();
+    let mut token: Option<String> = None;
+    let mut pages = 0usize;
+    loop {
+        let mut request = json!({});
+        if let Some(size) = page_size {
+            request["MaxResults"] = json!(size);
+        }
+        if let Some(cursor) = &token {
+            request["NextToken"] = json!(cursor);
+        }
+        let page = ok(router, "GetResourcePolicies", &request).await;
+        pages += 1;
+        assert!(
+            pages <= allowed,
+            "case {case}: the walk must terminate within {allowed} pages, got {pages}"
+        );
+        let entries = listed_entries(&page, case);
+        if pages == 1 {
+            assert!(
+                entries.is_empty(),
+                "case {case}: the walk's opening page reports no policy, got {page}"
+            );
+            assert!(
+                page.get("NextToken").and_then(Value::as_str).is_some(),
+                "case {case}: the walk's opening page answers the token to resume from, got \
+                 {page}"
+            );
+        }
+        if let Some(size) = page_size {
+            assert!(
+                entries.len() as i64 <= size,
+                "case {case}: a page holds at most MaxResults entries, got {page}"
+            );
+        }
+        walked.extend(entries);
+        match page.get("NextToken").and_then(Value::as_str) {
+            Some(cursor) => token = Some(cursor.to_string()),
+            None => break,
+        }
+    }
+    walked
+}
+
+/// [`walk_entries`] as the documents the walked entries carry.
+async fn walk_documents(
+    router: &MultiServiceRouter,
+    case: &str,
+    page_size: Option<i64>,
+    allowed: usize,
+) -> Vec<Value> {
+    walk_entries(router, case, page_size, allowed)
+        .await
         .iter()
         .map(|policy| {
             let text = policy["PolicyInJson"].as_str().unwrap_or_else(|| {
-                panic!("case {case}: every listed policy carries its document, got {page}")
+                panic!("case {case}: every listed policy carries its document, got {policy}")
             });
             parsed(text, case)
         })
@@ -229,13 +302,12 @@ async fn a_resource_with_no_policy_is_a_miss_for_the_read_and_the_delete() {
         assert_no_policy(&router, case, *arn).await;
     }
 
-    // Nothing above attached anything, so the list of individual resources' policies is
-    // still empty.
-    let page = ok(&router, "GetResourcePolicies", &json!({})).await;
+    // Nothing above attached anything, so the whole enumeration reports no policy.
+    let walked = walk_documents(&router, "after only refused calls", None, 3).await;
     assert_eq!(
-        listed_documents(&page, "after only refused calls"),
-        Vec::<String>::new(),
-        "case after only refused calls: expected no policies listed, got {page}"
+        walked,
+        Vec::<Value>::new(),
+        "case after only refused calls: expected no policies enumerated, got {walked:?}"
     );
 }
 
@@ -749,104 +821,144 @@ async fn the_hash_condition_admits_only_the_attached_policys_hash() {
     assert_no_policy(&router, "the matching hash", None).await;
 }
 
-/// `GetResourcePolicies` enumerates the policies attached to individual resources, in ARN
-/// order, and never the account-level catalog policy — which stays readable through
-/// `GetResourcePolicy`.
+/// `GetResourcePolicies` enumerates EVERY policy this account has attached, in ARN order —
+/// the account-level Data Catalog policy among them, which stays readable through
+/// `GetResourcePolicy` as well — as a walk a client follows from the opening page's token.
 #[tokio::test]
-async fn get_resource_policies_lists_individual_resources_without_the_catalog_policy() {
+async fn get_resource_policies_lists_every_attached_policy_including_the_catalogs() {
     let router = emulator();
-    let catalog_document = policy_document(&["glue:GetDatabase"], CATALOG_ARN);
-    attach(&router, "the catalog policy alone", &catalog_document, None).await;
+    let catalog_document = policy_document(&["glue:GetDatabases"], CATALOG_ARN);
+    let catalog_hash = attach(&router, "the catalog policy alone", &catalog_document, None).await;
 
-    // With only the catalog's own policy attached, the list is empty.
-    let page = ok(&router, "GetResourcePolicies", &json!({})).await;
+    // With only the catalog's own policy attached, that policy is the whole enumeration:
+    // one entry carrying the document that was put, the hash the put answered and both
+    // instants of the attachment.
+    let walked = walk_entries(&router, "the catalog policy alone", None, 3).await;
     assert_eq!(
-        listed_documents(&page, "the catalog policy alone"),
-        Vec::<Value>::new(),
-        "case the catalog policy alone: the account-level catalog policy is not listed, got \
-         {page}"
+        walked.len(),
+        1,
+        "case the catalog policy alone: the account-level catalog policy is one entry of the \
+         enumeration, got {walked:?}"
+    );
+    let entry = &walked[0];
+    assert_eq!(
+        parsed(
+            entry["PolicyInJson"]
+                .as_str()
+                .unwrap_or_else(|| panic!("case the catalog policy alone: {entry} carries a \
+                                           PolicyInJson")),
+            "the catalog policy alone"
+        ),
+        parsed(&catalog_document, "the catalog policy alone"),
+        "case the catalog policy alone: the listed entry carries the document that was put, \
+         got {entry}"
+    );
+    assert_eq!(
+        entry["PolicyHash"],
+        json!(catalog_hash),
+        "case the catalog policy alone: the listed entry carries the hash the put answered, \
+         got {entry}"
     );
     assert!(
-        page.get("NextToken").and_then(Value::as_str).is_some(),
-        "case the catalog policy alone: a first listing answers a continuation token even \
-         with nothing to report, got {page}"
+        entry["CreateTime"].as_f64().is_some() && entry["UpdateTime"].as_f64().is_some(),
+        "case the catalog policy alone: the listed entry carries both instants of the \
+         attachment, got {entry}"
     );
+    let catalog = attached(&router, "the catalog policy alone", None).await;
+    assert_reports_document(&catalog, &catalog_document, "the catalog policy alone");
 
-    // Attach one policy per individual resource. The expected order is the ARNs' own.
-    let mut individual: Vec<(&str, String)> = vec![
+    // Attach one policy per individual resource too. The expected order is the ARNs' own,
+    // with the catalog's among them rather than apart from them.
+    let mut attachments: Vec<(&str, String, String)> = vec![
+        (CATALOG_ARN, catalog_document.clone(), catalog_hash.clone()),
         (
             TABLE_ARN,
             policy_document(&["glue:GetTable"], TABLE_ARN),
+            String::new(),
         ),
         (
             DATABASE_ARN,
             policy_document(&["glue:GetTables"], DATABASE_ARN),
+            String::new(),
         ),
         (
             CONNECTION_ARN,
             policy_document(&["glue:GetConnection"], CONNECTION_ARN),
+            String::new(),
         ),
         (
             CRAWLER_ARN,
             policy_document(&["glue:GetCrawler"], CRAWLER_ARN),
+            String::new(),
         ),
     ];
-    for (arn, document) in &individual {
-        attach(&router, arn, document, Some(arn)).await;
+    for (arn, document, hash) in &mut attachments {
+        if *arn != CATALOG_ARN {
+            *hash = attach(&router, arn, document, Some(arn)).await;
+        }
     }
-    individual.sort_by(|left, right| left.0.cmp(right.0));
-    let expected: Vec<Value> = individual
+    attachments.sort_by(|left, right| left.0.cmp(right.0));
+    let expected: Vec<Value> = attachments
         .iter()
-        .map(|(arn, document)| parsed(document, arn))
+        .map(|(arn, document, _)| parsed(document, arn))
+        .collect();
+    let expected_hashes: Vec<Value> = attachments
+        .iter()
+        .map(|(_, _, hash)| json!(hash))
         .collect();
 
-    let page = ok(&router, "GetResourcePolicies", &json!({})).await;
+    // One page per entry, plus the opening page and the one that reports the tail of the
+    // set: a walk that asks for more than that is not terminating.
+    let allowed = expected.len() + 2;
+    let entries = walk_entries(&router, "every attached policy", None, allowed).await;
+    let walked: Vec<Value> = entries
+        .iter()
+        .map(|entry| {
+            parsed(
+                entry["PolicyInJson"].as_str().unwrap_or_else(|| {
+                    panic!("case every attached policy: {entry} carries a PolicyInJson")
+                }),
+                "every attached policy",
+            )
+        })
+        .collect();
     assert_eq!(
-        listed_documents(&page, "every individual resource"),
+        walked,
         expected,
-        "case every individual resource: expected the four documents in ARN order, got {page}"
+        "case every attached policy: expected the {} documents in ARN order, got {walked:?}",
+        expected.len()
     );
     assert!(
-        !listed_documents(&page, "every individual resource")
-            .contains(&parsed(&catalog_document, "the catalog policy")),
-        "case every individual resource: the catalog's own policy must not be listed, got {page}"
+        walked.contains(&parsed(&catalog_document, "the catalog policy")),
+        "case every attached policy: the catalog's own policy is enumerated too, got {walked:?}"
     );
-    let catalog = attached(&router, "every individual resource", None).await;
-    assert_reports_document(&catalog, &catalog_document, "every individual resource");
+    // Each entry is the record its own put wrote: the hash that put answered, and both
+    // instants of the attachment.
+    let walked_hashes: Vec<Value> = entries
+        .iter()
+        .map(|entry| entry["PolicyHash"].clone())
+        .collect();
+    assert_eq!(
+        walked_hashes, expected_hashes,
+        "case every attached policy: every entry must carry the hash its own put answered, \
+         got {walked_hashes:?}"
+    );
+    for entry in &entries {
+        assert!(
+            entry["CreateTime"].as_f64().is_some() && entry["UpdateTime"].as_f64().is_some(),
+            "case every attached policy: every entry carries both instants of its \
+             attachment, got {entry}"
+        );
+    }
+    let catalog = attached(&router, "every attached policy", None).await;
+    assert_reports_document(&catalog, &catalog_document, "every attached policy");
 
-    // Paged, one entry at a time: the pages concatenate to the whole set, in the same
-    // order, and the walk terminates — the page a continuation reaches past the last entry
-    // carries no token of its own.
+    // Cut into pages of every size, one entry at a time included: the pages concatenate to
+    // the whole set, in the same order, and the walk terminates — the page reached past the
+    // last entry carries no token of its own.
     for page_size in [1_i64, 2, 3, MAX_PAGE_SIZE] {
         let case = format!("MaxResults {page_size}");
-        let mut walked: Vec<Value> = Vec::new();
-        let mut token: Option<String> = None;
-        // One page per entry, plus the first page and the one that reports the tail of the
-        // set: a walk that asks for more than that is not terminating.
-        let mut pages = 0usize;
-        let allowed = expected.len() + 2;
-        loop {
-            let mut request = json!({ "MaxResults": page_size });
-            if let Some(cursor) = &token {
-                request["NextToken"] = json!(cursor);
-            }
-            let page = ok(&router, "GetResourcePolicies", &request).await;
-            pages += 1;
-            assert!(
-                pages <= allowed,
-                "case {case}: the walk must terminate within {allowed} pages, got {pages}"
-            );
-            let documents = listed_documents(&page, &case);
-            assert!(
-                documents.len() as i64 <= page_size,
-                "case {case}: a page holds at most MaxResults entries, got {page}"
-            );
-            walked.extend(documents);
-            match page.get("NextToken").and_then(Value::as_str) {
-                Some(cursor) => token = Some(cursor.to_string()),
-                None => break,
-            }
-        }
+        let walked = walk_documents(&router, &case, Some(page_size), allowed).await;
         assert_eq!(
             walked, expected,
             "case {case}: the pages must concatenate to the whole set in ARN order, got \
@@ -898,19 +1010,20 @@ async fn get_resource_policies_lists_individual_resources_without_the_catalog_po
         );
     }
 
-    // A detached policy leaves the list.
-    ok(
-        &router,
-        "DeleteResourcePolicy",
-        &arn_request(Some(TABLE_ARN)),
-    )
-    .await;
-    let page = ok(&router, "GetResourcePolicies", &json!({})).await;
-    let listed = listed_documents(&page, "after a detach");
+    // A detached policy leaves the enumeration, the catalog's own included.
+    for detached in [Some(TABLE_ARN), None] {
+        ok(&router, "DeleteResourcePolicy", &arn_request(detached)).await;
+    }
+    let walked = walk_documents(&router, "after a detach", None, allowed).await;
     assert_eq!(
-        listed.len(),
-        expected.len() - 1,
-        "case after a detach: the detached policy must leave the list, got {page}"
+        walked.len(),
+        expected.len() - 2,
+        "case after a detach: a detached policy must leave the enumeration, got {walked:?}"
+    );
+    assert!(
+        !walked.contains(&parsed(&catalog_document, "the catalog policy")),
+        "case after a detach: the detached catalog policy must leave the enumeration, got \
+         {walked:?}"
     );
 }
 
@@ -1179,12 +1292,17 @@ async fn a_policy_document_is_reported_in_the_services_own_layout() {
         // The listing reports the same text for the same attachment, so no reader renders
         // a document of its own.
         attach(&router, case, document, Some(DATABASE_ARN)).await;
-        let page = ok(&router, "GetResourcePolicies", &json!({})).await;
-        let listed = page["GetResourcePoliciesResponseList"][0]["PolicyInJson"].clone();
+        let walked = walk_entries(&router, case, None, 4).await;
+        let listed = walked
+            .first()
+            .map(|entry| entry["PolicyInJson"].clone())
+            .unwrap_or_else(|| {
+                panic!("case {case}: the enumeration must report the attached policies")
+            });
         assert_eq!(
             listed,
             json!(reported_text),
-            "case {case}: the listing must report the same text as the read, got {page}"
+            "case {case}: the listing must report the same text as the read, got {walked:?}"
         );
     }
 }

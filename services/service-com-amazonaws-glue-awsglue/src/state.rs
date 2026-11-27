@@ -2379,17 +2379,18 @@ impl ComAmazonawsGlueAwsglueState {
         self.resource_policies.remove(resource_arn).is_some()
     }
 
-    /// The policies attached to INDIVIDUAL resources, in the order their ARNs sort in.
+    /// Every resource policy this account holds, in the order their resources' ARNs sort
+    /// in.
     ///
-    /// Every stored policy except an account-level Data Catalog policy
-    /// ([`names_a_catalog`]), which is the set `GetResourcePolicies` enumerates: the
-    /// catalog's own policy is reported by `GetResourcePolicy`, which addresses it
-    /// directly, and is not one of the individual resources' policies that list reports.
-    pub fn individual_resource_policies(&self) -> Vec<(&String, &ResourcePolicyEntry)> {
-        self.resource_policies
-            .iter()
-            .filter(|(resource_arn, _)| !names_a_catalog(resource_arn))
-            .collect()
+    /// This is the set `GetResourcePolicies` enumerates — "a list of the individual
+    /// resource policies AND the account-level resource policy"
+    /// (`GetResourcePoliciesResponse$GetResourcePoliciesResponseList`) — so the Data
+    /// Catalog's own policy is one element of it like any individual resource's, beside
+    /// being readable on its own through `GetResourcePolicy`. Keyed by ARN in a
+    /// [`BTreeMap`], so the order is the ARNs' own and one page follows another
+    /// deterministically.
+    pub fn attached_resource_policies(&self) -> Vec<(&String, &ResourcePolicyEntry)> {
+        self.resource_policies.iter().collect()
     }
 
     /// Whether the store can hold another workflow, i.e. is below [`MAX_WORKFLOWS`].

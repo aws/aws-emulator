@@ -538,16 +538,6 @@ pub fn resolve_policy_resource_arn(
     }
 }
 
-/// Whether `resource_arn` names a Data Catalog ITSELF rather than a resource inside one:
-/// its resource portion is [`CATALOG_ARN_RESOURCE`] alone, with no name after it.
-///
-/// This is what separates the ACCOUNT-LEVEL Data Catalog policy — the one a
-/// `PutResourcePolicy` that names no `ResourceArn` sets — from a policy attached to an
-/// individual resource, which is the distinction `GetResourcePolicies` enumerates by.
-pub fn names_a_catalog(resource_arn: &str) -> bool {
-    parse_glue_arn(resource_arn).is_some_and(|parsed| parsed.resource == CATALOG_ARN_RESOURCE)
-}
-
 /// A stored database, plus the tables it contains.
 #[derive(Debug, Clone)]
 pub struct DatabaseEntry {

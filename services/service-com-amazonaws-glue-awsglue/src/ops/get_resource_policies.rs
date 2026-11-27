@@ -2,26 +2,43 @@
 
 //! @op GetResourcePolicies
 //!
-//! Reports the policies this account has attached to INDIVIDUAL Glue resources, one
-//! page at a time, in the order their resources' ARNs sort in, so one page follows
-//! another deterministically. The account-level Data Catalog policy is NOT one of them:
-//! that policy is addressed directly by `GetResourcePolicy`, and this list does not
-//! enumerate it. A pure read: it stores nothing, and an account with no policy attached
-//! to any individual resource reports an empty list rather than a miss.
+//! Reports EVERY resource policy this account holds, one page at a time, in the order
+//! their resources' ARNs sort in, so one page follows another deterministically. The set
+//! is "the individual resource policies and the account-level resource policy"
+//! (`GetResourcePoliciesResponse$GetResourcePoliciesResponseList`), so the Data Catalog's
+//! own policy is one element of the list like any individual resource's, beside staying
+//! readable on its own through `GetResourcePolicy`. A pure read: it stores nothing, and an
+//! account with no policy attached anywhere reports an empty list rather than a miss.
 //!
-//! The catalog policy's absence from the list is what the recorded traffic shows, and it
-//! is the one place the recording and this operation's documentation sentence disagree:
-//! the recorded lifecycle attaches a policy to the Data Catalog, reads it back through
-//! `GetResourcePolicy`, and then requires that no policy this operation lists carries
-//! that catalog's ARN in its document. The recording is followed over the prose.
+//! ## The enumeration OPENS on a token, which is recorded behaviour
 //!
-//! A FIRST listing — a request carrying no `NextToken` — always answers a continuation
-//! token, which is also what the recorded traffic shows: the token is the position a client
-//! resumes the enumeration from, and its presence states nothing about whether more
-//! policies exist (an account with no individual policy at all still gets one). A page
-//! reached WITH a token carries one only while the set holds entries past it, so a client
-//! walking the pages terminates. The token itself is opaque and minted by this store
-//! ([`crate::state::pagination`]).
+//! A request carrying no `NextToken` opens the walk: it reports no policy and answers the
+//! continuation token the walk resumes from, whatever the account holds. The policies are
+//! reported from the page that token reaches onward, a page of at most `MaxResults` entries
+//! at a time, until a page carries no token of its own and the walk ends. A client reads
+//! the set by following `NextToken` — which is what a paginator of this `@paginated`
+//! operation does, the model binding `outputToken` to `NextToken` and `items` to the list.
+//!
+//! That is what the recorded traffic of this operation shows, and the model documents
+//! nothing about which page carries the entries:
+//!
+//! * `glue-account-policy-paginated-listing#task#3` — `GetResourcePolicies` after an
+//!   earlier step of the same run attached the account's Data Catalog policy (and a
+//!   `GetResourcePolicy` read it back): the response carries an empty
+//!   `GetResourcePoliciesResponseList` and a `NextToken`.
+//! * `glue-account-policy-paginated-listing#task#4` — the request carrying that token: the
+//!   response carries the attached policy as element 0 of the list, with its
+//!   `PolicyInJson`, `PolicyHash`, `CreateTime` and `UpdateTime`.
+//! * `glue-account-wide-readonly-settings#task#2`, `glue-resource-policies-listing#task#1`
+//!   and `glue-resource-policy-lifecycle#task#4` — each a `GetResourcePolicies` carrying no
+//!   token, each answering a `NextToken` and no entry, the last of them in a run that had
+//!   attached a catalog policy too.
+//!
+//! So a page's entries follow from the store either way, and reporting them on the
+//! tokenless page instead diverges from the recording on the first of those steps. The
+//! token itself is opaque and minted by this store ([`crate::state::pagination`]), so the
+//! position a page resumes from is one this listing handed out and nothing a client can
+//! spell.
 //!
 //! ## Shape of an operation
 //!
@@ -92,6 +109,10 @@ use super::types::*;
 /// (`GetResourcePoliciesRequest$MaxResults`, `PageSize` range 1..1000) — and so the page
 /// size for a request that names none.
 const MAX_PAGE_SIZE: i32 = 1_000;
+
+/// The position the walk opens at: before the first record, so the page a client reaches
+/// with the opening token reports the set from its first entry on.
+const OPENING_CURSOR: &str = "";
 
 // `#[operation_error]` below expands to an invocation of the LOCAL declarative
 // `smithy!` macro, which this line is what emits into the module. Without it the
@@ -191,32 +212,39 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // ([`crate::state::pagination`]), so a value this store did not mint for it names no
         // position and is refused rather than resolved against an ARN that happens to sort
         // somewhere; it also keeps the ARNs of this account's resources out of a value
-        // clients log and pass around. The account-level Data Catalog policy is left out of
-        // the set: this list reports "the resource policies set on individual resources",
-        // and the catalog's own is what `GetResourcePolicy` answers.
+        // clients log and pass around. Every attached policy is in the set, the
+        // account-level Data Catalog's own among them, which is what the output member
+        // reports: "the individual resource policies AND the account-level resource policy".
         let store = state.lock();
         let token_scope = crate::state::listing_scope(Self::NAME, &[]);
-        let resumed = input.next_token.is_some();
-        let attached = store.individual_resource_policies();
-        let start = match input.next_token.as_deref() {
-            Some(token) => {
-                let Some(cursor) =
-                    crate::state::decode_page_token(&store.page_token_key, &token_scope, token)
-                else {
-                    return Err(GetResourcePoliciesErrorModeled::InvalidInputException(
-                        InvalidInputException {
-                            message: Some(
-                                crate::state::messages::INVALID_PAGINATION_TOKEN.to_string(),
-                            ),
-                            from_federation_source: None,
-                        },
-                    )
-                    .into());
-                };
-                attached.partition_point(|(arn, _)| arn.as_str() <= cursor.as_str())
-            }
-            None => 0,
+        let attached = store.attached_resource_policies();
+
+        // The walk OPENS on a token: a request carrying no `NextToken` reports no policy
+        // and hands back the token naming the position before the first record, and the
+        // entries are reported from the page that token reaches onward. The module header
+        // cites the recorded steps this follows.
+        let Some(token) = input.next_token.as_deref() else {
+            return Ok(GetResourcePoliciesOutput {
+                get_resource_policies_response_list: Some(Vec::new()),
+                next_token: Some(crate::state::encode_page_token(
+                    &store.page_token_key,
+                    &token_scope,
+                    OPENING_CURSOR,
+                )),
+            });
         };
+        let Some(cursor) =
+            crate::state::decode_page_token(&store.page_token_key, &token_scope, token)
+        else {
+            return Err(GetResourcePoliciesErrorModeled::InvalidInputException(
+                InvalidInputException {
+                    message: Some(crate::state::messages::INVALID_PAGINATION_TOKEN.to_string()),
+                    from_federation_source: None,
+                },
+            )
+            .into());
+        };
+        let start = attached.partition_point(|(arn, _)| arn.as_str() <= cursor.as_str());
         // Taken with `skip`/`take` rather than by slicing, so a cursor the request chose
         // can never index outside the set.
         let page: Vec<(&String, &crate::state::ResourcePolicyEntry)> =
@@ -228,13 +256,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let cursor = page
             .last()
             .map_or_else(String::new, |(arn, _)| (*arn).clone());
-        // A FIRST listing always hands back a continuation token, even when the page it
-        // reported was the whole set and even when there was nothing to report: the token
-        // is what a client resumes the enumeration from, and whether more policies exist is
-        // not what its presence states. A page reached WITH a token carries one only while
-        // the set holds entries past it, so a continuation terminates rather than handing
-        // out tokens for ever.
-        let next_token = (end < attached.len() || !resumed).then(|| {
+        // A page reached with a token carries one of its own only while the set holds
+        // entries past it, so the walk a client started terminates rather than handing out
+        // tokens for ever.
+        let next_token = (end < attached.len()).then(|| {
             crate::state::encode_page_token(&store.page_token_key, &token_scope, &cursor)
         });
 
