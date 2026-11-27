@@ -63,7 +63,51 @@ mod filesystem;
 mod functions;
 mod parquet;
 mod sql;
+mod statements;
 mod types;
+
+/// The module the INTERPRETER registers a Spark session's engine on, under which a program's
+/// statements are planned and run ([`SessionSql`]).
+///
+/// Named here, beside the runtime source that imports it ([`statements`]), because it is this
+/// runtime's seam rather than any one interpreter's: the embedded interpreter registers the
+/// module under this name for a run whose caller supplied an engine, exactly as it registers
+/// the rest of a guest's host surface.
+pub const HOST_MODULE: &str = "_spark_host";
+
+/// The one function on that module: the submitted statement in, what the engine answered out.
+pub const HOST_QUERY_FUNCTION: &str = "query";
+
+/// The class a statement's ANALYSIS failure is raised as — a name the catalog holds nothing
+/// under, say — which is the class Spark's own driver raises such a failure as.
+pub const ANALYSIS_FAILURE_CLASS: &str = "AnalysisException";
+
+/// The class every OTHER failure of the engine is raised as, carrying the engine's own
+/// message: the failure class a Spark driver reports a failure of the engine itself as.
+pub const ENGINE_FAILURE_CLASS: &str = "SparkException";
+
+/// Where the SQL a Spark session is asked to run is really PLANNED AND RUN: the engine the
+/// calling service holds, over its own catalog and the data behind it.
+///
+/// A Spark driver resolves the names a statement carries in the session's catalog, reads the
+/// data those tables point at and runs the statement over it — none of which the Python client
+/// does. So the service whose data plane submits the program supplies that engine, and this is
+/// the seam it is reached through: one submitted statement in, what the engine answered out,
+/// both as JSON documents, for the reason every other guest-to-host seam of this workspace
+/// carries documents rather than objects.
+///
+/// What arrives: `{"query": "<the statement>", "database": "<the session's current
+/// database>"}`.
+///
+/// What goes back, either the answer
+/// `{"columns": [{"name": "<name>", "type": "<the Spark type it holds, where the engine states
+/// one>"}], "rows": [[<value>, …]]}` — a statement that CHANGED the catalog rather than reading
+/// answers no columns and no rows — or the refusal `{"error": {"class": "<the class the driver
+/// raises it as>", "message": "<the engine's own message>"}}`.
+pub trait SessionSql: ::std::fmt::Debug + Send + Sync {
+    /// What the engine answered for the statement `document` carries.
+    fn answered(&self, document: &str) -> String;
+}
 
 /// What the environment one Spark program runs IN states about itself — the two things that
 /// are not the same for every caller of this runtime.
@@ -175,7 +219,22 @@ pub fn pyspark_modules_of(environment: SparkEnvironment<'_>) -> Vec<(String, Str
             "pyspark/sql/expression.py".to_string(),
             expression::EXPRESSION_SOURCE.to_string(),
         ),
+        (
+            "pyspark/sql/statements.py".to_string(),
+            statements_source(),
+        ),
     ]
+}
+
+/// `pyspark.sql.statements`: the client half of a session's statements, with the seam it
+/// reaches the engine through written into it — so the module imports the module the
+/// interpreter really registers ([`HOST_MODULE`]) rather than a name spelled twice.
+fn statements_source() -> String {
+    statements::STATEMENTS_SOURCE
+        .replace("@@HOST_MODULE@@", HOST_MODULE)
+        .replace("@@HOST_FUNCTION@@", HOST_QUERY_FUNCTION)
+        .replace("@@ANALYSIS_CLASS@@", ANALYSIS_FAILURE_CLASS)
+        .replace("@@ENGINE_CLASS@@", ENGINE_FAILURE_CLASS)
 }
 
 /// `pyspark.release`: what this ENVIRONMENT states about itself — the version of Spark it

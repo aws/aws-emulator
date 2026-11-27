@@ -435,6 +435,20 @@ impl EnvironmentPrograms for StepObjectCli {
 }
 
 impl StepObjectCli {
+    /// The same program with its transfer budget BEGUN AGAIN.
+    ///
+    /// One command's transfers share one budget ([`TRANSFER_BUDGET`]), which is what a command
+    /// line gets. A caller that performs piece after piece of a step's work through this one
+    /// program — the statements a submitted application's session runs, each reading the data of
+    /// the relations it names ([`super::spark_session_sql`]) — gives each piece that same budget
+    /// rather than holding the whole run to the first one's, which is what this answers.
+    pub(super) fn renewed(&self) -> Self {
+        Self {
+            deadline: ::std::time::Instant::now() + TRANSFER_BUDGET,
+            ..self.clone()
+        }
+    }
+
     /// Perform one asked-for transfer and answer what the command exits with and the line it
     /// wrote, the way the CLI reports one.
     ///

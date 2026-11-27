@@ -371,6 +371,25 @@ pub async fn run_due_step_applications<Eng: Send + Sync + 'static>(
     // its own presents, which is nothing at all where that profile carries no role those
     // instances may assume.
     let instance_credentials = cluster_step_credentials(ctx, region, &job_flow_role).await;
+    // Whether the cluster's Hive metastore is the one this emulator holds, which is what the
+    // statements a submitted application's own session resolve their table names in
+    // ([`super::spark_session_sql`]). Read once for this call.
+    let metastore_is_the_catalog = {
+        let store = state.lock();
+        match store.clusters.get(cluster_id) {
+            Some(cluster) => uses_glue_data_catalog(cluster),
+            None => return,
+        }
+    };
+    // The ROLE the cluster's instances run as, resolved once for this call as well: the
+    // permissions in force on it are what decide the metastore calls an application's
+    // statements make. Nothing resolved is nothing known about those permissions, which
+    // withholds no call — and a cluster whose metastore this emulator does not hold resolves
+    // nothing in one, so there is no call of it to decide and nothing to resolve.
+    let instance_role = match metastore_is_the_catalog {
+        true => work_role_arn(ctx, region, &job_flow_role).await,
+        false => None,
+    };
     // What this CALL may spend starting them: a further application is started only while a
     // whole first wait still fits, so the rest stay owed to the next call.
     let started = ::std::time::Instant::now();
@@ -423,7 +442,31 @@ pub async fn run_due_step_applications<Eng: Send + Sync + 'static>(
                     Some(role_arn) => StepCredentials::Role(role_arn.to_string()),
                     None => instance_credentials.clone(),
                 };
-                match run_step_application(engine, ctx, region, &plan, &credentials, now).await {
+                // And the role the statements its session submits reach the metastore as,
+                // which is the same role: its own runtime role where it carries one. A cluster
+                // with no metastore of this emulator's resolves nothing in one, so no role of
+                // it is resolved either.
+                let metastore = SessionMetastore {
+                    is_the_catalog: metastore_is_the_catalog,
+                    work_role_arn: match plan.execution_role_arn.as_deref() {
+                        Some(role_arn) if metastore_is_the_catalog => {
+                            work_role_arn(ctx, region, role_arn).await
+                        }
+                        Some(_) => None,
+                        None => instance_role.clone(),
+                    },
+                };
+                match run_step_application(
+                    engine,
+                    ctx,
+                    region,
+                    &plan,
+                    &credentials,
+                    &metastore,
+                    now,
+                )
+                .await
+                {
                     StartAttempt::Started(StartedApplication::Answered(outcome)) => Some(outcome),
                     StartAttempt::Started(StartedApplication::Pending(pending)) => {
                         state.lock().hold_step_application_run(key, pending);
@@ -606,6 +649,21 @@ enum StartAttempt {
     NoAnswer,
 }
 
+/// What the SESSION of a submitted application resolves its statements against: whether the
+/// cluster's Hive metastore is the AWS Glue Data Catalog this emulator holds
+/// ([`uses_glue_data_catalog`]), and the role its statements reach that metastore as.
+///
+/// Both are the CLUSTER's, so both are resolved once for a call that runs what the cluster owes
+/// rather than per application ([`run_due_step_applications`]).
+#[derive(Debug, Clone)]
+struct SessionMetastore {
+    /// Whether the catalog this emulator holds is that metastore.
+    is_the_catalog: bool,
+    /// The role the statements reach it as, and `None` where nothing is known about one —
+    /// which withholds no call.
+    work_role_arn: Option<String>,
+}
+
 /// Start ONE owed application and answer what its step ends in, the run itself when it is
 /// still going, or why nothing of it ran.
 async fn run_step_application<Eng: Send + Sync + 'static>(
@@ -614,6 +672,7 @@ async fn run_step_application<Eng: Send + Sync + 'static>(
     region: &str,
     plan: &StepApplicationPlan,
     credentials: &StepCredentials,
+    metastore: &SessionMetastore,
     now: SystemTime,
 ) -> StartAttempt {
     let source = match read_application(ctx, region, &plan.application).await {
@@ -646,6 +705,27 @@ async fn run_step_application<Eng: Send + Sync + 'static>(
         }
         StepCredentials::Absent => None,
     };
+    // WHERE the statements the application's own session submits are planned and run: the
+    // cluster's Hive metastore and the data its tables point at, read as the role the step runs
+    // as — the same engine a step's SQL client runs a statement on. It travels with the seam
+    // above because it is the same thing: what this run reaches of the rest of this emulator.
+    // A cluster whose metastore this emulator does not hold reads no relation's data and makes
+    // no call of that metastore, so neither the program that reads it nor the decision over it
+    // is built for one.
+    let access = access.map(|access| {
+        access.running_statements_on(Some(::std::sync::Arc::new(spark_session_sql(
+            engine,
+            metastore.is_the_catalog,
+            metastore
+                .is_the_catalog
+                .then(|| step_object_cli(engine, ctx, region, credentials, &plan.step_id))
+                .flatten(),
+            metastore
+                .work_role_arn
+                .as_deref()
+                .and_then(|role_arn| step_catalog_access(ctx, region, role_arn, &plan.step_id)),
+        ))))
+    });
     match run_application(plan, &source, access, permit, now).await {
         Some(started) => StartAttempt::Started(started),
         None => StartAttempt::NoAnswer,

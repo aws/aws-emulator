@@ -132,6 +132,13 @@ use super::run_memory::{faulted_bytes, Held};
 /// The name of the module the host functions live on, as the runtime source imports it.
 const HOST_MODULE: &str = "_lambda_host";
 
+/// The name of the module a SPARK program's statements are planned and run through, as the
+/// Spark runtime this workspace supplies such a program imports it
+/// ([`spark_host_module`]). It is that runtime's own name, read from where that runtime is
+/// stated, so the module this interpreter registers and the module its source imports cannot
+/// drift apart.
+const SPARK_HOST_MODULE: &str = ::service_common::spark_runtime::HOST_MODULE;
+
 /// How many CHILD PROCESSES one invocation may start.
 ///
 /// A child is a program of the execution environment performed in this process
@@ -258,7 +265,7 @@ const ALLOWED_NATIVE_MODULES: &[&str] = &[
 
 /// The modules this emulator SUPPLIES in place of ones it does not register: the host
 /// functions the runtime source calls.
-const SUPPLIED_MODULES: &[&str] = &[HOST_MODULE, "posix"];
+const SUPPLIED_MODULES: &[&str] = &[HOST_MODULE, SPARK_HOST_MODULE, "posix"];
 
 /// One invocation to run: the package, the handler, and everything the runtime reports to
 /// it.
@@ -1236,6 +1243,14 @@ fn prepare(vm: &VirtualMachine, session: &Arc<Session>) -> PyResult<EnvironmentS
     // module table ([`ALLOWED_NATIVE_MODULES`]), so there is no other module of that name
     // to be had: a guest that drops this one cannot import a second.
     modules.set_item(HOST_MODULE, host_module(vm, session)?.into(), vm)?;
+    // And the module a SPARK program's statements are planned and run through, registered the
+    // same way and for the same reason: the name is not in the native module table either, so
+    // a guest that drops it cannot import a second.
+    modules.set_item(
+        SPARK_HOST_MODULE,
+        spark_host_module(vm, session)?.into(),
+        vm,
+    )?;
     // A built-in module can no longer be CREATED: every one the guest can reach is the
     // patched object already in `sys.modules`, and a guest that drops one cannot build
     // itself an unpatched replacement. `is_builtin` stays, because the import system asks
@@ -2409,6 +2424,74 @@ fn host_module(vm: &VirtualMachine, session: &Arc<Session>) -> PyResult<PyRef<Py
     }
     Ok(module)
 }
+
+/// The module a SPARK program's STATEMENTS are planned and run through: one statement in, what
+/// the engine answered out.
+///
+/// The ENGINE is the calling service's (`service_common::spark_runtime::SessionSql`) — it holds
+/// the catalog the names a statement carries resolve in and the data behind them — and a run
+/// reaches it through the seam the invocation was given, exactly as it reaches the rest of this
+/// emulator. A run given no engine is answered the refusal that says so, so a program that
+/// submits a statement is told nothing ran rather than handed a value nothing computed.
+///
+/// The bounds that are the RUN's are held here, where no guest code can reach them: a run whose
+/// budget is spent runs no further statement, and one statement spends one of the calls one run
+/// may make, because running it reaches the catalog and the store the data lives in.
+fn spark_host_module(vm: &VirtualMachine, session: &Arc<Session>) -> PyResult<PyRef<PyModule>> {
+    let module = vm.new_module(SPARK_HOST_MODULE, vm.ctx.new_dict(), None);
+    let querying = Arc::clone(session);
+    set_function(
+        vm,
+        &module,
+        ::service_common::spark_runtime::HOST_QUERY_FUNCTION,
+        move |args: FuncArgs, vm: &VirtualMachine| {
+            let document: String = args.bind(vm)?;
+            let bounds = querying.bounds();
+            if let Some(stop) = bounds.stopped() {
+                return Err(vm.new_runtime_error(stop.reason().to_owned()));
+            }
+            if bounds.remaining().is_zero() {
+                return Err(vm.new_runtime_error(Stop::Deadline.reason().to_owned()));
+            }
+            if !querying.may_call() {
+                return Err(vm.new_runtime_error(format!(
+                    "one invocation may make at most {MAX_CALLS_PER_RUN} calls into this \
+                     emulator"
+                )));
+            }
+            let engine = querying
+                .aws()
+                .and_then(|access| access.session_sql().cloned());
+            let answered = match engine {
+                Some(engine) => engine.answered(&document),
+                None => NO_ENGINE_ANSWER.to_string(),
+            };
+            Ok(vm.ctx.new_str(answered).into())
+        },
+    );
+    // CHECKED, for the reason the surface above is: a function that did not take its place is
+    // reported here rather than left for guest code to meet as a missing name.
+    if module
+        .as_object()
+        .get_attr(::service_common::spark_runtime::HOST_QUERY_FUNCTION, vm)
+        .is_err()
+    {
+        return Err(vm.new_runtime_error(format!(
+            "the host function {SPARK_HOST_MODULE}.{} could not be installed, so no program is \
+             run in this interpreter",
+            ::service_common::spark_runtime::HOST_QUERY_FUNCTION
+        )));
+    }
+    Ok(module)
+}
+
+/// What a run that was given NO engine answers a statement with: the refusal shape that seam
+/// carries, saying nothing ran — never an empty answer, which would say the statement ran and
+/// found nothing.
+const NO_ENGINE_ANSWER: &str = concat!(
+    r#"{"error":{"class":"SparkException","message":"this program was given no engine to plan "#,
+    r#"and run a statement on, so none was run"}}"#,
+);
 
 /// The whole of what guest code can call of this process ([`host_module`]), which is also
 /// what that function checks it really installed.

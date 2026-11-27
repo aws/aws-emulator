@@ -2098,6 +2098,12 @@ pub struct AwsAccess {
     /// ([`::service_common::vpc_endpoint_calls`]). `None` for a run with no such control in
     /// force on it, whose calls are decided by the called service alone.
     egress: Option<::std::sync::Arc<dyn ::service_common::vpc_endpoint_calls::CallEgress>>,
+    /// WHERE the SQL a Spark program of this run submits is planned and run
+    /// ([`::service_common::spark_runtime::SessionSql`]): the engine the service that submitted
+    /// the program holds, over the catalog the statement's names resolve in and the data behind
+    /// them. `None` for a run that was given no engine — every run that is no Spark program's —
+    /// whose statements are answered by nothing rather than by an engine holding no catalog.
+    session_sql: Option<::std::sync::Arc<dyn ::service_common::spark_runtime::SessionSql>>,
 }
 
 impl AwsAccess {
@@ -2119,7 +2125,31 @@ impl AwsAccess {
             client_endpoint: None,
             sandbox: None,
             egress: None,
+            session_sql: None,
         })
+    }
+
+    /// The same access, with `engine` planning and running the SQL a Spark program of this run
+    /// submits — the engine of the service that submitted it, over its own catalog.
+    ///
+    /// `None` leaves a statement answered by nothing, which is the position every run that
+    /// submits no Spark program is in.
+    #[must_use]
+    pub fn running_statements_on(
+        mut self,
+        engine: Option<::std::sync::Arc<dyn ::service_common::spark_runtime::SessionSql>>,
+    ) -> Self {
+        self.session_sql = engine;
+        self
+    }
+
+    /// The engine the SQL a Spark program of this run submits is planned and run by, where it
+    /// was given one.
+    #[must_use]
+    pub fn session_sql(
+        &self,
+    ) -> Option<&::std::sync::Arc<dyn ::service_common::spark_runtime::SessionSql>> {
+        self.session_sql.as_ref()
     }
 
     /// The same access, with `egress` deciding whether a call of it leaves the network the run

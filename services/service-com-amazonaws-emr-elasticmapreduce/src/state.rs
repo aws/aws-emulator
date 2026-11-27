@@ -242,6 +242,12 @@ pub use spark_submission::*;
 mod spark_step_run;
 pub use spark_step_run::*;
 
+/// The SQL the SESSION of such an application runs — the statements its own `spark.sql`
+/// submits, planned and run against the cluster's Hive metastore — split out and re-exported
+/// the same way.
+mod spark_session_sql;
+pub use spark_session_sql::*;
+
 /// PERFORMING the command a step submitted — the command line its arguments are, and the
 /// status it exits with, answered by a parse and a fixed allow-list of session-local
 /// utilities with no host command, process or shell started — split out and re-exported the

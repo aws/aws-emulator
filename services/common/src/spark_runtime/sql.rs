@@ -130,6 +130,10 @@ from pyspark.sql.column import (
 # expression surface it builds ([`pyspark.sql.expression`]).
 from pyspark.sql.expression import read_sql_expression
 
+# WHERE a statement this session submits is planned and run: the engine the environment the
+# program runs in supplies, reached as [`pyspark.sql.statements`] reaches it.
+from pyspark.sql.statements import run as _submitted_statement
+
 
 def _range_aggregate(function, span):
     """The aggregate of an arithmetic progression, from the progression's own definition.
@@ -1485,6 +1489,26 @@ def _flattened(columns):
     return held
 
 
+def _frame_of(answered):
+    """The dataset the engine's answer to a statement IS: its columns, their types, its rows.
+
+    The engine names each column of its answer and states the type it holds where it knows
+    one — a column of a table carries the type the catalog declares for it, while a computed
+    one has none stated and takes the type of the values the engine answered. A statement that
+    changed the catalog rather than reading answers neither columns nor rows, which is the
+    empty dataset Spark answers such a statement with.
+    """
+    columns, rows = answered
+    names = [str(column.get("name") or "") for column in columns]
+    types = {}
+    for column in columns:
+        declared = type_by_name(str(column.get("type") or ""))
+        if declared is not None:
+            types[str(column.get("name") or "")] = declared.simpleString()
+    built = [Row(**dict(zip(names, list(row)))) for row in rows]
+    return DataFrame(built, names, 1, None, types)
+
+
 class GroupedData(object):
     """The groups a dataset's rows fall into, and the aggregates over each of them.
 
@@ -1709,6 +1733,32 @@ class SparkSession(object):
     @property
     def _sc(self):
         return self._context
+
+    def sql(self, sqlQuery, args=None, **kwargs):
+        """Returns a `DataFrame` representing the result of the given query.
+
+        The statement is resolved and run where a driver resolves and runs one: against the
+        catalog this session's table names resolve in and the data its tables point at, by the
+        engine the environment supplies ([`pyspark.sql.statements`]). What this answers is the
+        columns and rows that engine computed. A name the statement spells without a database
+        is resolved in the session's current database, exactly as every other name this session
+        resolves is.
+        """
+        if args is not None:
+            raise SparkException(
+                "this engine runs a statement as it stands, so a parameterised one is not run"
+            )
+        return _frame_of(_submitted_statement(sqlQuery, self.catalog.currentDatabase()))
+
+    def table(self, tableName):
+        """Returns the specified table as a `DataFrame`.
+
+        The table is the one the session's catalog holds under that name — the database it
+        names, or the session's current one — and its rows are read the way the statement that
+        names it reads them.
+        """
+        database, name = catalog.resolve(tableName, self.catalog.currentDatabase())
+        return self.sql("SELECT * FROM `%s`.`%s`" % (database, name))
 
     def createDataFrame(self, data, schema=None, **named):
         """The dataset the values hold, under the schema one was stated as.

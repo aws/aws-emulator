@@ -32,7 +32,7 @@ use ::std::time::SystemTime;
 
 use ::service_com_amazonaws_glue_awsglue::state as glue_state;
 use ::service_common::catalog_table_rows as catalog_rows;
-use ::service_common::sql_wire_planes::sql_engine::{Cell, DatabaseEngine, EngineView};
+use ::service_common::sql_wire_planes::sql_engine::{Cell, DatabaseEngine, EngineView, ResultSet};
 use sqlparser::ast::{visit_relations_mut, ObjectName, ObjectNamePart, Statement};
 
 use super::*;
@@ -81,6 +81,19 @@ pub(super) enum StatementAnswer {
     Rows(Vec<String>),
 }
 
+/// The same, as the ENGINE answered it: the rows with their columns and their values, before
+/// any one caller renders them.
+///
+/// A SQL client prints them ([`printed_rows`]); a Spark session hands them to the program that
+/// submitted the statement as the columns and values they are
+/// ([`super::spark_session_sql`]), which is why the engine's own answer is what this carries.
+pub(super) enum StatementResult {
+    /// A change the metastore applied.
+    Applied,
+    /// What the engine answered: its columns, and its rows in the order it answered them.
+    Answered(ResultSet),
+}
+
 /// Why a statement answered nothing.
 #[derive(Debug, Clone)]
 pub(super) enum SqlFault {
@@ -121,13 +134,33 @@ pub(super) fn run_statement(
     database: &str,
     now: SystemTime,
 ) -> Result<StatementAnswer, SqlFault> {
+    match run_statement_for(catalog, objects, access, statement, database, now)? {
+        StatementResult::Applied => Ok(StatementAnswer::Applied),
+        StatementResult::Answered(answered) => {
+            printed_rows(&answered.rows).map(StatementAnswer::Rows)
+        }
+    }
+}
+
+/// Run ONE statement and answer what the ENGINE answered, for a caller that reports a
+/// statement's answer as the columns and values it holds rather than as printed lines
+/// ([`StatementResult`]). Every decision above is this function's; [`run_statement`] is this
+/// one with the answer rendered the way a SQL client prints it.
+pub(super) fn run_statement_for(
+    catalog: &::engine::ServiceState<glue_state::ComAmazonawsGlueAwsglueState>,
+    objects: Option<&StepObjectCli>,
+    access: Option<&StepCatalogAccess>,
+    statement: &Statement,
+    database: &str,
+    now: SystemTime,
+) -> Result<StatementResult, SqlFault> {
     let catalog_id = glue_state::resolve_catalog_id(None);
     if let Some(change) = metastore_change(statement, database) {
         if let Some(refused) = access.and_then(|access| access.change_refusal(&change)) {
             return Err(SqlFault::Driver(refused));
         }
         return match apply_metastore_change(&mut catalog.lock(), &catalog_id, &change, now) {
-            Ok(()) => Ok(StatementAnswer::Applied),
+            Ok(()) => Ok(StatementResult::Applied),
             Err(failure) => Err(SqlFault::Driver(failure)),
         };
     }
@@ -144,6 +177,7 @@ pub(super) fn run_statement(
         }
     }
     answer_query(catalog, &catalog_id, objects, statement, database)
+        .map(StatementResult::Answered)
 }
 
 /// One relation of a statement, as the catalog describes it: the table the engine holds it
@@ -172,7 +206,7 @@ fn answer_query(
     objects: Option<&StepObjectCli>,
     statement: &Statement,
     database: &str,
-) -> Result<StatementAnswer, SqlFault> {
+) -> Result<ResultSet, SqlFault> {
     // The relations the statement names, each ONCE: the walk that collects them keeps a name
     // it has already seen out ([`statement_tables`]), so a self-join or a name used in two
     // subqueries is one relation here — read, loaded and counted against the bound once.
@@ -223,7 +257,7 @@ fn answer_query(
     let answered = engine
         .execute_as(&mut view, &rewritten)
         .map_err(|error| SqlFault::driver(QUERY_FAILED_REASON, error.message))?;
-    printed_rows(&answered.rows).map(StatementAnswer::Rows)
+    Ok(answered)
 }
 
 /// The rows an answer PRINTS, bounded by what one client invocation writes.

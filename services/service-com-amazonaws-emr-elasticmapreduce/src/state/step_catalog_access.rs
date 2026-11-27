@@ -403,6 +403,17 @@ pub fn step_catalog_access(
 }
 
 impl StepCatalogAccess {
+    /// The same decision with its budget BEGUN AGAIN, for the reason the object program's own
+    /// is ([`StepObjectCli::renewed`]): each piece of a step's work is decided inside the
+    /// budget one piece gets. What has already been DECIDED is carried over, so a pair this
+    /// role has been answered about is not asked about twice.
+    pub(super) fn renewed(&self) -> Self {
+        Self {
+            deadline: ::std::time::Instant::now() + TRANSFER_BUDGET,
+            ..self.clone()
+        }
+    }
+
     /// The refusal RESOLVING `table` answers, or `None` when nothing in the role's permissions
     /// denies it.
     #[must_use]
