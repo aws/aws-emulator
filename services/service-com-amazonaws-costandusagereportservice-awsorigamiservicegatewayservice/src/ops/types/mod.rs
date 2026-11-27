@@ -19,6 +19,10 @@ pub mod describe_report_definitions_types;
 pub mod list_tags_for_resource_types;
 pub mod modify_report_definition_types;
 pub mod put_report_definition_types;
+/// `ReportDefinition`, declared from the local overlay model rather than from
+/// the published snapshot: AWS carries a member the snapshot does not declare
+/// (see `smithy-model/LOCAL-ADDITIONS.md`).
+pub mod report_definition_types;
 pub mod shared_types;
 pub mod tag_resource_types;
 pub mod untag_resource_types;
@@ -33,6 +37,8 @@ pub use list_tags_for_resource_types::*;
 pub use modify_report_definition_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use put_report_definition_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use report_definition_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use shared_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]

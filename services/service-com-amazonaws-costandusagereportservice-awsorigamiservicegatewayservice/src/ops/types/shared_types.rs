@@ -23,24 +23,12 @@ pub struct ValidationException {
     pub message: Option<String>,
 }
 
-#[smithy_macros::smithy(shape = "com.amazonaws.costandusagereportservice#ReportDefinition")]
-#[derive(Debug, Clone, Default)]
-pub struct ReportDefinition {
-    pub report_name: String,
-    pub time_unit: String,
-    pub format: String,
-    pub compression: String,
-    pub additional_schema_elements: Vec<String>,
-    pub s3_bucket: String,
-    pub s3_prefix: String,
-    pub s3_region: String,
-    pub additional_artifacts: Option<Vec<String>>,
-    pub refresh_closed_reports: Option<bool>,
-    pub report_versioning: Option<String>,
-    pub billing_view_arn: Option<String>,
-    pub report_status: Option<ReportStatus>,
-    pub report_creation_date: Option<String>,
-}
+// `ReportDefinition` is NOT declared here, although `PutReportDefinitionRequest`,
+// `ModifyReportDefinitionRequest` and `ReportDefinitionList` all reach it: AWS
+// answers with a member the published snapshot does not declare, so the shape is
+// declared in `report_definition_types` from the local overlay model instead
+// (see `smithy-model/LOCAL-ADDITIONS.md`). `types/mod.rs` re-exports it, so
+// `use super::types::*` resolves it from here as it does any other shape.
 
 #[smithy_macros::smithy(shape = "com.amazonaws.costandusagereportservice#ReportStatus")]
 #[derive(Debug, Clone, Default)]
