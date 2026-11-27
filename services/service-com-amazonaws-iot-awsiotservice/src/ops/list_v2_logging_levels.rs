@@ -52,11 +52,9 @@
 //!   at one time.
 //! * `nextToken` (NextToken) — To retrieve the next set of results, the nextToken value from
 //!   a previous response; otherwise null to receive the first set of results.
-//! * `targetType` (LogTargetType, one of: CLIENT_ID | DEFAULT | DEVICE_DEFENDER |
-//!   PRINCIPAL_ID | SOURCE_IP | THING_GROUP) — The type of resource for which you are
-//!   configuring logging. Must be DEFAULT, THING_GROUP, CLIENT_ID, SOURCE_IP, or
-//!   PRINCIPAL_ID. (That last sentence is AWS's own prose for this member and predates
-//!   DEVICE_DEFENDER, which the value set above admits.)
+//! * `targetType` (LogTargetType, one of: CLIENT_ID | DEFAULT | PRINCIPAL_ID | SOURCE_IP |
+//!   THING_GROUP) — The type of resource for which you are configuring logging. Must be
+//!   DEFAULT, THING_GROUP, CLIENT_ID, SOURCE_IP, or PRINCIPAL_ID.
 //!
 //! ## Output
 //!

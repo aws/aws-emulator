@@ -50,11 +50,9 @@
 //!
 //! * `targetName` (LogTargetName) **required** — The name of the resource for which you are
 //!   configuring logging.
-//! * `targetType` (LogTargetType, one of: CLIENT_ID | DEFAULT | DEVICE_DEFENDER |
-//!   PRINCIPAL_ID | SOURCE_IP | THING_GROUP) **required** — The type of resource for which
-//!   you are configuring logging. Must be DEFAULT, THING_GROUP, CLIENT_ID, SOURCE_IP, or
-//!   PRINCIPAL_ID. (That last sentence is AWS's own prose for this member and predates
-//!   DEVICE_DEFENDER, which the value set above admits.)
+//! * `targetType` (LogTargetType, one of: CLIENT_ID | DEFAULT | PRINCIPAL_ID | SOURCE_IP |
+//!   THING_GROUP) **required** — The type of resource for which you are configuring logging.
+//!   Must be DEFAULT, THING_GROUP, CLIENT_ID, SOURCE_IP, or PRINCIPAL_ID.
 //!
 //! ## Errors
 //!

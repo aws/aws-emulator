@@ -143,6 +143,67 @@ pub fn action_types_defined(params: &MitigationActionParams) -> Vec<&'static str
         .collect()
 }
 
+/// Whether two `MitigationActionParams` define the SAME change: the same type of action,
+/// with the same parameters for it.
+///
+/// Read member by member off the modelled shape
+/// (`smithy_query(query="shape",shape="MitigationActionParams")`) rather than through a
+/// derived comparison, because the shape and the per-type parameter structures it holds are
+/// rendered from the upstream model and carry only the derives the generator writes: a
+/// comparison of the VALUES a caller sent belongs to this module, where the rule that uses
+/// it lives, and keeps holding across a model re-render.
+pub fn defines_the_same_action(
+    left: &MitigationActionParams,
+    right: &MitigationActionParams,
+) -> bool {
+    same_params(
+        &left.update_device_certificate_params,
+        &right.update_device_certificate_params,
+        |left, right| left.action == right.action,
+    ) && same_params(
+        &left.update_ca_certificate_params,
+        &right.update_ca_certificate_params,
+        |left, right| left.action == right.action,
+    ) && same_params(
+        &left.add_things_to_thing_group_params,
+        &right.add_things_to_thing_group_params,
+        |left, right| {
+            left.thing_group_names == right.thing_group_names
+                && left.override_dynamic_groups == right.override_dynamic_groups
+        },
+    ) && same_params(
+        &left.replace_default_policy_version_params,
+        &right.replace_default_policy_version_params,
+        |left, right| left.template_name == right.template_name,
+    ) && same_params(
+        &left.enable_io_t_logging_params,
+        &right.enable_io_t_logging_params,
+        |left, right| {
+            left.role_arn_for_logging == right.role_arn_for_logging
+                && left.log_level == right.log_level
+        },
+    ) && same_params(
+        &left.publish_finding_to_sns_params,
+        &right.publish_finding_to_sns_params,
+        |left, right| left.topic_arn == right.topic_arn,
+    )
+}
+
+/// One optional per-type parameter member of two `MitigationActionParams` compared: both
+/// absent is the same change, both present is whatever `same` makes of the two values, and
+/// one of each is a different change — the type itself differs.
+fn same_params<T>(
+    left: &Option<T>,
+    right: &Option<T>,
+    same: impl FnOnce(&T, &T) -> bool,
+) -> bool {
+    match (left, right) {
+        (None, None) => true,
+        (Some(left), Some(right)) => same(left, right),
+        _ => false,
+    }
+}
+
 /// How this service refuses `actionParams` that do not define exactly one type of change —
 /// parameters defining NONE and parameters defining more than one alike.
 ///
@@ -258,7 +319,7 @@ impl RegisteredMitigationAction {
         role_arn: &str,
         action_params: &MitigationActionParams,
     ) -> bool {
-        self.role_arn == role_arn && self.action_params == *action_params
+        self.role_arn == role_arn && defines_the_same_action(&self.action_params, action_params)
     }
 
     /// Apply an `UpdateMitigationAction`: the members the request carried replace what the

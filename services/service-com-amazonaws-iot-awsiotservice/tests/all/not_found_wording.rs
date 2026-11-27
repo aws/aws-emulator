@@ -602,13 +602,12 @@ async fn a_recognised_index_is_served_once_it_is_enabled() {
 }
 
 /// The `LogTargetType` members as a refusal LISTS them: the order of the hash table the
-/// front door holds an enumerated type's admissible values in, which for this type's six
+/// front door holds an enumerated type's admissible values in, which for this type's five
 /// declared members (`smithy_query(query="shape",shape="LogTargetType")`: DEFAULT,
-/// THING_GROUP, CLIENT_ID, SOURCE_IP, PRINCIPAL_ID, DEVICE_DEFENDER) is neither their
-/// declaration order nor the alphabetical one. Written out here so the order is pinned by
-/// this suite rather than by the code under test.
-const LOG_TARGET_TYPES: &str =
-    "DEFAULT, SOURCE_IP, DEVICE_DEFENDER, PRINCIPAL_ID, THING_GROUP, CLIENT_ID";
+/// THING_GROUP, CLIENT_ID, SOURCE_IP, PRINCIPAL_ID) is neither their declaration order nor
+/// the alphabetical one. Written out here so the order is pinned by this suite rather than
+/// by the code under test.
+const LOG_TARGET_TYPES: &str = "DEFAULT, SOURCE_IP, PRINCIPAL_ID, THING_GROUP, CLIENT_ID";
 
 /// One request this service's validation layer will not accept, and the clause the
 /// refusal must state for it.

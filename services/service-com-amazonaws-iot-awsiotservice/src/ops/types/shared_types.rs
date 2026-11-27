@@ -398,7 +398,7 @@ pub struct KeyPair {
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.iot#MitigationActionParams")]
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default)]
 pub struct MitigationActionParams {
     pub update_device_certificate_params: Option<UpdateDeviceCertificateParams>,
     pub update_ca_certificate_params: Option<UpdateCACertificateParams>,
@@ -409,39 +409,39 @@ pub struct MitigationActionParams {
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.iot#UpdateDeviceCertificateParams")]
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default)]
 pub struct UpdateDeviceCertificateParams {
     pub action: String,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.iot#UpdateCACertificateParams")]
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default)]
 pub struct UpdateCACertificateParams {
     pub action: String,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.iot#AddThingsToThingGroupParams")]
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default)]
 pub struct AddThingsToThingGroupParams {
     pub thing_group_names: Vec<String>,
     pub override_dynamic_groups: Option<bool>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.iot#ReplaceDefaultPolicyVersionParams")]
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default)]
 pub struct ReplaceDefaultPolicyVersionParams {
     pub template_name: String,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.iot#EnableIoTLoggingParams")]
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default)]
 pub struct EnableIoTLoggingParams {
     pub role_arn_for_logging: String,
     pub log_level: String,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.iot#PublishFindingToSnsParams")]
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default)]
 pub struct PublishFindingToSnsParams {
     pub topic_arn: String,
 }
@@ -1659,7 +1659,7 @@ pub const LOG_LEVEL_VALUES: &[&str] = &["DEBUG", "DISABLED", "ERROR", "INFO", "W
 
 
 /// The values `LogTargetType` accepts on the wire.
-pub const LOG_TARGET_TYPE_VALUES: &[&str] = &["CLIENT_ID", "DEFAULT", "DEVICE_DEFENDER", "PRINCIPAL_ID", "SOURCE_IP", "THING_GROUP"];
+pub const LOG_TARGET_TYPE_VALUES: &[&str] = &["CLIENT_ID", "DEFAULT", "PRINCIPAL_ID", "SOURCE_IP", "THING_GROUP"];
 
 
 /// The values `MessageFormat` accepts on the wire.

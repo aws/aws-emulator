@@ -423,11 +423,9 @@ mod tests {
             ),
             (
                 // `LogTargetType`, declared DEFAULT, THING_GROUP, CLIENT_ID, SOURCE_IP,
-                // PRINCIPAL_ID, DEVICE_DEFENDER
-                // (`smithy_query(query="shape",shape="LogTargetType")`), is stated in its
-                // hash table's bucket order — 1, 11, 12, 12, 14, 15 — which is neither the
-                // declaration order nor the alphabetical one, and where two values share a
-                // bucket the later-declared one is stated first.
+                // PRINCIPAL_ID (`smithy_query(query="shape",shape="LogTargetType")`), is
+                // stated in its hash table's bucket order — 1, 11, 12, 14, 15 — which is
+                // neither the declaration order nor the alphabetical one.
                 "a member outside a value set of several members",
                 violation(
                     "targetType",
@@ -437,13 +435,12 @@ mod tests {
                         "CLIENT_ID".to_owned(),
                         "SOURCE_IP".to_owned(),
                         "PRINCIPAL_ID".to_owned(),
-                        "DEVICE_DEFENDER".to_owned(),
                     ]),
                     Some("NOT_A_REAL_TYPE"),
                 ),
                 "1 validation error detected: Value 'NOT_A_REAL_TYPE' at 'targetType' failed \
                  to satisfy constraint: Member must satisfy enum value set: [DEFAULT, \
-                 SOURCE_IP, DEVICE_DEFENDER, PRINCIPAL_ID, THING_GROUP, CLIENT_ID]",
+                 SOURCE_IP, PRINCIPAL_ID, THING_GROUP, CLIENT_ID]",
             ),
         ];
 

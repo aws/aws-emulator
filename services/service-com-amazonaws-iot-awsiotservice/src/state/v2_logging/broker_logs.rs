@@ -143,12 +143,11 @@ fn configures(configured_type: &str, event_type: &str) -> bool {
 /// The LOG TARGETS one session matches, most specific first: the client id it connected under
 /// and the address it connected from, then the account's own default target.
 ///
-/// `LogTargetType` declares six types (`smithy_query(query="shape",shape="LogTargetType")`).
+/// `LogTargetType` declares five types (`smithy_query(query="shape",shape="LogTargetType")`).
 /// Three of them are resolved here, because a session is exactly what they name: `CLIENT_ID`,
 /// `SOURCE_IP` and the account's own `DEFAULT`. `PRINCIPAL_ID` and `THING_GROUP` name facts a
-/// connection to this broker does not carry (see this module's own note on the principal), and
-/// `DEVICE_DEFENDER` names no broker session at all, so a level set for one of those three
-/// decides nothing about a session's events.
+/// connection to this broker does not carry (see this module's own note on the principal), so
+/// a level set for one of those two decides nothing about a session's events.
 fn session_targets(client_id: &str, source_ip: Option<&str>) -> Vec<LoggedTarget> {
     let mut targets = vec![LoggedTarget {
         target_type: "CLIENT_ID".to_string(),

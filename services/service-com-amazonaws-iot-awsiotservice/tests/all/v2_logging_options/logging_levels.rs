@@ -348,8 +348,8 @@ async fn a_level_set_for_a_target_is_reported_for_that_target() {
     // The rows span what the rule generalises over: every `LogTargetType` value the
     // model declares (`smithy_query(query="shape",shape="LogTargetType")`, re-exported
     // as `LOG_TARGET_TYPE_VALUES`) against every `LogLevel` value it declares
-    // (`LOG_LEVEL_VALUES`) — including DEVICE_DEFENDER and DISABLED, which the issue
-    // this suite was written for cited neither of.
+    // (`LOG_LEVEL_VALUES`) — including DISABLED, which the issue this suite was written
+    // for cited neither a level nor a target type for.
     for target_type in LOG_TARGET_TYPE_VALUES {
         for log_level in LOG_LEVEL_VALUES {
             let case = format!("{target_type} at {log_level}");
