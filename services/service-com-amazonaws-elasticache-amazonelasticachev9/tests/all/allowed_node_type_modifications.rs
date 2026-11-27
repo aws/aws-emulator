@@ -102,7 +102,10 @@ async fn the_lists_are_the_catalogue_split_around_the_stored_node_type() {
     // generation it belongs to, and which engine version it runs — the engine
     // version is what decides whether the catalogue's gated families (M6g, R6g,
     // T4g: "available only for Redis OSS engine version 5.0.6 onward and for
-    // Memcached engine version 1.5.16 onward") are offered at all.
+    // Memcached engine version 1.5.16 onward") are offered at all. Every row
+    // names a node type, because a create that provisions its own nodes has to;
+    // the unplaceable branch of the split is asserted on the function the
+    // handler calls, below.
     let cases = [
         Case {
             // `micro` is the bottom of the ladder, so there is nothing below it.
@@ -204,17 +207,6 @@ async fn the_lists_are_the_catalogue_split_around_the_stored_node_type() {
             absent: &["cache.r5.24xlarge"],
             up_is_empty: true,
             down_is_empty: false,
-        },
-        Case {
-            // No node type stored: no position on the ladder, so nothing is
-            // reported rather than a guess.
-            id: "no-node-type",
-            extra: &[("Engine", "redis")],
-            up: &[],
-            down: &[],
-            absent: &["cache.t3.micro", "cache.m7g.large"],
-            up_is_empty: true,
-            down_is_empty: true,
         },
         Case {
             // A cluster RUNNING a previous-generation type still scales, onto

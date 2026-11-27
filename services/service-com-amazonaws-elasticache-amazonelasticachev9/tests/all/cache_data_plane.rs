@@ -352,8 +352,7 @@ async fn read_line(case: &str, session: &mut Session, sent: &[&str]) -> String {
 /// Create one cache cluster and wait until the clock has made it `available`, then answer
 /// the endpoint it publishes for its one node: `(address, port)`.
 async fn cluster_endpoint(emulator: &Emulator, id: &str, extra: &[(&str, &str)]) -> (String, String) {
-    let mut pairs = params(&[("CacheClusterId", id)]);
-    pairs.extend(params(extra));
+    let pairs = crate::harness::cluster_create_params(id, extra);
     let created = emulator.call("CreateCacheCluster", &pairs).await;
     assert_eq!(
         created.status, 200,

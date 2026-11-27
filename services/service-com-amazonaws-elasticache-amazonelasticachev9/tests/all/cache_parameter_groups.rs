@@ -873,10 +873,10 @@ async fn a_cluster_joins_a_group_the_account_holds_and_nothing_else() {
         ("joins-memcached", "default.memcached1.6", "default.memcached1.6"),
     ];
     for (id, requested, stored) in accepted {
-        let mut pairs = params(&[
-            ("CacheClusterId", id),
-            ("CacheParameterGroupName", requested),
-        ]);
+        let mut pairs = crate::harness::cluster_create_params(
+            id,
+            &[("CacheParameterGroupName", requested)],
+        );
         // A memcached family only fits a memcached cluster's engine; the group a
         // cluster joins is not checked against its engine here, but keeping the
         // row's engine with its family keeps the row realistic.
@@ -908,10 +908,10 @@ async fn a_cluster_joins_a_group_the_account_holds_and_nothing_else() {
         let refused = emulator
             .call(
                 "CreateCacheCluster",
-                &params(&[
-                    ("CacheClusterId", "rejected"),
-                    ("CacheParameterGroupName", requested),
-                ]),
+                &crate::harness::cluster_create_params(
+                    "rejected",
+                    &[("CacheParameterGroupName", requested)],
+                ),
             )
             .await;
         assert_eq!(
@@ -942,7 +942,7 @@ async fn a_cluster_joins_a_group_the_account_holds_and_nothing_else() {
         let created = emulator
             .call(
                 "CreateCacheCluster",
-                &params(&[("CacheClusterId", id), ("EngineVersion", version)]),
+                &crate::harness::cluster_create_params(id, &[("EngineVersion", version)]),
             )
             .await;
         match expected {

@@ -819,7 +819,7 @@ async fn a_cluster_created_without_a_version_runs_a_published_one() {
         let created = emulator
             .call(
                 "CreateCacheCluster",
-                &params(&[("CacheClusterId", id.as_str()), ("Engine", engine)]),
+                &crate::harness::cluster_create_params(&id, &[("Engine", engine)]),
             )
             .await;
         assert_eq!(

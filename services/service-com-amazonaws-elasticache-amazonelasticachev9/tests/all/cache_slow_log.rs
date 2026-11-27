@@ -116,12 +116,14 @@ pub(crate) async fn session_on(
     let created = emulator
         .call(
             "CreateCacheCluster",
-            &params(&[
-                ("CacheClusterId", case),
-                ("Engine", "redis"),
-                ("NumCacheNodes", "1"),
-                ("CacheParameterGroupName", &group),
-            ]),
+            &crate::harness::cluster_create_params(
+                case,
+                &[
+                    ("Engine", "redis"),
+                    ("NumCacheNodes", "1"),
+                    ("CacheParameterGroupName", &group),
+                ],
+            ),
         )
         .await;
     assert_eq!(

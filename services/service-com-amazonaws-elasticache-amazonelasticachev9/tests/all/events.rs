@@ -189,11 +189,10 @@ async fn run_step(emulator: &Emulator, case: &str, step: Step) {
             pairs.extend(params(extra));
             ("CreateCacheParameterGroup", pairs)
         }
-        Step::Cluster(id, extra) => {
-            let mut pairs = params(&[("CacheClusterId", id)]);
-            pairs.extend(params(extra));
-            ("CreateCacheCluster", pairs)
-        }
+        Step::Cluster(id, extra) => (
+            "CreateCacheCluster",
+            crate::harness::cluster_create_params(id, extra),
+        ),
         Step::Modify(id, extra) => {
             let mut pairs = params(&[("CacheClusterId", id)]);
             pairs.extend(params(extra));

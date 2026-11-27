@@ -245,9 +245,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     return Err(
                         StartMigrationErrorModeled::ReplicationGroupNotFoundFault(
                             ReplicationGroupNotFoundFault {
-                                message: Some(crate::state::replication_group_not_found_message(
-                                    replication_group_id,
-                                )),
+                                message: Some(
+                                    crate::service::replication_group_not_found::quoted_sentence(
+                                        replication_group_id,
+                                    ),
+                                ),
                             },
                         )
                         .into(),
@@ -269,6 +271,19 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                         )
                         .into(),
                     );
+                }
+                // Online migration replaces the data set of the group's primary
+                // while clients keep reading through its endpoints, and
+                // ElastiCache carries that out only on a group that can promote
+                // a replica in the primary's place: a group whose automatic
+                // failover is off hosts no migration at all, so the request is
+                // refused before any state changes — the one sentence both
+                // migration operations state
+                // (`crate::state::MIGRATION_NEEDS_AUTO_FAILOVER_MESSAGE`).
+                if group.automatic_failover != crate::state::SETTING_ENABLED {
+                    return Err(invalid_value(
+                        crate::state::MIGRATION_NEEDS_AUTO_FAILOVER_MESSAGE,
+                    ));
                 }
                 // One migration per target: a group that already carries an open
                 // one is refused rather than having its source endpoints

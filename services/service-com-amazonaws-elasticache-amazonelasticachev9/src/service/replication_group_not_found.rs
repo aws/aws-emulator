@@ -9,20 +9,23 @@
 //! ```text
 //! ReplicationGroup <id> not found.           <- the shape's spelling, a trailing stop
 //! Replication group '<id>' not found         <- prose, the id quoted, no trailing stop
+//! Replication group '<id>' not found.        <- the same, with a trailing stop
 //! Replication group <id> does not exist.     <- prose, unquoted, a trailing stop
 //! Specified replication group does not exist <- the delete's own, naming no id at all
 //! ```
 //!
-//! The first is [`crate::state::replication_group_not_found_message`], which the describe and
-//! the migration answer. [`quoted_message`] is the second, which the settings change
+//! The first is [`crate::state::replication_group_not_found_message`], which the describe
+//! answers. [`quoted_message`] is the second, which the settings change
 //! (`ModifyReplicationGroup`), the shard reconfiguration
-//! (`ModifyReplicationGroupShardConfiguration`) and the Global datastore create
-//! (`CreateGlobalReplicationGroup`) answer for the group each resolves.
-//! [`does_not_exist_message`] is the third, which the failover test answers, and
-//! [`DELETE_MESSAGE`] the fourth, which `DeleteReplicationGroup` answers.
+//! (`ModifyReplicationGroupShardConfiguration`), the Global datastore create
+//! (`CreateGlobalReplicationGroup`) and the migration CUTOVER (`CompleteMigration`) answer
+//! for the group each resolves. [`quoted_sentence`] is the third, which the two operations
+//! that OPEN or test an online migration (`StartMigration`, `TestMigration`) answer.
+//! [`does_not_exist_message`] is the fourth, which the failover test answers, and
+//! [`DELETE_MESSAGE`] the fifth, which `DeleteReplicationGroup` answers.
 //!
 //! Stated here once so the handlers answering one cannot drift apart about its text: the
-//! message is the only place a client reads WHY a call was refused, and for three of the four
+//! message is the only place a client reads WHY a call was refused, and for four of the five
 //! WHICH group could not be resolved.
 
 /// The template `Replication group '<id>' not found` — the id single-quoted, and no
@@ -32,6 +35,18 @@
 /// because the message is built from the request and from nothing else.
 pub fn quoted_message(replication_group_id: &str) -> String {
     format!("Replication group '{replication_group_id}' not found")
+}
+
+/// How the two operations that OPEN or test an online migration word a replication group
+/// this account does not hold: `Replication group '<id>' not found.` — [`quoted_message`]
+/// with a trailing stop.
+///
+/// `StartMigration` and `TestMigration` state the same sentence, so a client that tests the
+/// connection and then starts the sync reads one wording for the group it names; the cutover
+/// that finishes the migration words it without the stop ([`quoted_message`]). The id is the
+/// one variable part and comes from the request, as the request spelled it.
+pub fn quoted_sentence(replication_group_id: &str) -> String {
+    format!("{}.", quoted_message(replication_group_id))
 }
 
 /// How `TestFailover` words a replication group this account does not hold:

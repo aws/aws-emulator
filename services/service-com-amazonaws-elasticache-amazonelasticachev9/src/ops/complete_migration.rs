@@ -230,9 +230,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 let Some(group) = store.settled_replication_group_mut(&key, now) else {
                     return Err(CompleteMigrationErrorModeled::ReplicationGroupNotFoundFault(
                         ReplicationGroupNotFoundFault {
-                            message: Some(crate::state::replication_group_not_found_message(
-                                replication_group_id,
-                            )),
+                            message: Some(
+                                crate::service::replication_group_not_found::quoted_message(
+                                    replication_group_id,
+                                ),
+                            ),
                         },
                     )
                     .into());

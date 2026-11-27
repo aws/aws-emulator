@@ -142,8 +142,7 @@ async fn a_single_node_cluster_serves_the_endpoint_its_first_available_read_publ
     // cluster runs for all of them at once, so the suite waits for one span rather than one
     // per row.
     for row in &rows {
-        let mut request = params(&[("CacheClusterId", row.id)]);
-        request.extend(params(row.extra));
+        let mut request = crate::harness::cluster_create_params(row.id, row.extra);
         if row.placed {
             request.extend(params(&[
                 ("CacheSubnetGroupName", SUBNET_GROUP),

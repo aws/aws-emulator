@@ -52,6 +52,19 @@ pub const MIGRATION_START_STATE_MESSAGE: &str =
 pub const MIGRATION_TEST_STATE_MESSAGE: &str =
     "Replication group must be in available status to test migration.";
 
+/// How ElastiCache refuses an online migration into a replication group whose
+/// automatic failover is turned off.
+///
+/// Migrating live data into a group replaces its primary's data set, and the
+/// service only carries that out on a group that can promote a replica in its
+/// place, so a group with automatic failover disabled hosts no migration at
+/// all — which is what the sentence states, in wholly fixed text, naming
+/// neither the group nor the request. Both operations that touch an online
+/// migration of a replication group hold it to this precondition
+/// (`StartMigration` and `TestMigration`), so the one sentence is stated here.
+pub const MIGRATION_NEEDS_AUTO_FAILOVER_MESSAGE: &str =
+    "Migration is not supported for auto failover disabled replication group.";
+
 /// How ElastiCache refuses a migration source list that names more than one endpoint:
 /// `TestMigration$CustomerNodeEndpointList`'s own rule, stated as the model states it
 /// ("List of endpoints from which data should be migrated. List should have only one

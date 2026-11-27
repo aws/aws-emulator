@@ -47,6 +47,21 @@ pub fn absent_parameter_refusal(refusal: &Refusal) -> Option<Refused> {
     })
 }
 
+/// How this service words a parameter a HANDLER found missing: `The parameter
+/// <Name> must be provided and must not be null.`
+///
+/// A member whose requirement is CONDITIONAL — one the model leaves optional
+/// because whether the service needs it depends on the rest of the request — is
+/// absent only as far as the handler that reads the rest of the request can
+/// tell, so the boundary walk above never sees it and the sentence is worded
+/// here. ElastiCache states such a requirement with the null the member arrived
+/// as beside the absence, and the only variable part is the parameter's own
+/// public name; the handler that raises it answers the same
+/// `InvalidParameterValue`, HTTP 400, as every other bad parameter value.
+pub fn conditionally_required_message(parameter: &str) -> String {
+    format!("The parameter {parameter} must be provided and must not be null.")
+}
+
 /// The public name of the parameter `violation` is about.
 ///
 /// A violation names its member by the dotted, lowerCamel path the framework spells

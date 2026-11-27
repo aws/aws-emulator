@@ -578,7 +578,13 @@ async fn a_migration_in_flight_closes_the_gates_that_follow_it() {
         &emulator,
         "a migration in flight",
         "migrating-group",
-        &[("ReplicasPerNodeGroup", "1"), ("NumNodeGroups", "1")],
+        &[
+            ("ReplicasPerNodeGroup", "1"),
+            ("NumNodeGroups", "1"),
+            // A migration is only ever carried into a group that can promote a
+            // replica in its primary's place.
+            ("AutomaticFailoverEnabled", "true"),
+        ],
     )
     .await;
     let start_request = params(&[

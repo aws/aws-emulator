@@ -240,11 +240,10 @@ async fn the_version_catalog_reports_the_versions_the_service_offers_and_no_othe
                 let refused = emulator
                     .call(
                         "CreateCacheCluster",
-                        &params(&[
-                            ("CacheClusterId", &format!("retired-{}", version.replace('.', "-"))),
-                            ("Engine", engine),
-                            ("EngineVersion", version),
-                        ]),
+                        &crate::harness::cluster_create_params(
+                            &format!("retired-{}", version.replace('.', "-")),
+                            &[("Engine", engine), ("EngineVersion", version)],
+                        ),
                     )
                     .await;
                 assert_eq!(

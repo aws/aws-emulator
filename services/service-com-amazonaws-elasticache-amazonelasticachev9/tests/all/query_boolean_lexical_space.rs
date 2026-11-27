@@ -57,7 +57,12 @@ const BOOLEAN_MEMBERS: &[BooleanMember] = &[
     BooleanMember {
         case: "the minor-version flag of a cluster create",
         action: "CreateCacheCluster",
-        rest: &[("CacheClusterId", "boolean-row-cluster")],
+        rest: &[
+            ("CacheClusterId", "boolean-row-cluster"),
+            // A create that provisions its own nodes names the node type they
+            // run on; this row is about the boolean beside it.
+            ("CacheNodeType", "cache.t3.micro"),
+        ],
         member: "AutoMinorVersionUpgrade",
     },
     BooleanMember {
@@ -151,7 +156,7 @@ async fn every_spelling_of_the_space_is_read_as_the_boolean_it_spells() {
     let created = emulator
         .call(
             "CreateCacheCluster",
-            &params(&[("CacheClusterId", "spelled-flags")]),
+            &crate::harness::cluster_create_params("spelled-flags", &[]),
         )
         .await;
     assert_eq!(

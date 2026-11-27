@@ -91,8 +91,7 @@ fn offers(catalogue: &[String], version: &str) -> bool {
 
 /// Create one cache cluster.
 async fn create_cluster(emulator: &Emulator, id: &str, pairs: &[(&str, &str)]) -> Reply {
-    let mut request = params(&[("CacheClusterId", id)]);
-    request.extend(params(pairs));
+    let request = crate::harness::cluster_create_params(id, pairs);
     emulator.call("CreateCacheCluster", &request).await
 }
 

@@ -200,9 +200,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let Some(group) = store.settled_replication_group_mut(&key, now) else {
             return Err(TestMigrationErrorModeled::ReplicationGroupNotFoundFault(
                 ReplicationGroupNotFoundFault {
-                    message: Some(crate::state::replication_group_not_found_message(
-                        &input.replication_group_id,
-                    )),
+                    message: Some(
+                        crate::service::replication_group_not_found::quoted_sentence(
+                            &input.replication_group_id,
+                        ),
+                    ),
                 },
             )
             .into());
@@ -219,6 +221,18 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 )
                 .into(),
             );
+        }
+        // The connection this call tests is the one a migration would read
+        // through, and a migration is only ever started into a group that can
+        // promote a replica in its primary's place: a group whose automatic
+        // failover is off hosts no migration, so there is no migration to test
+        // and the request is refused with the one sentence both migration
+        // operations state
+        // (`crate::state::MIGRATION_NEEDS_AUTO_FAILOVER_MESSAGE`).
+        if group.automatic_failover != crate::state::SETTING_ENABLED {
+            return Err(invalid_value(
+                crate::state::MIGRATION_NEEDS_AUTO_FAILOVER_MESSAGE,
+            ));
         }
         // A group whose data sync is already IN FLIGHT has nothing left to test:
         // the connection this call would test is the one that migration is

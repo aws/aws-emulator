@@ -32,6 +32,17 @@ pub const ACCOUNT_KEY_ID: &str = "AKIDEXAMPLE";
 /// service version (`smithy_query(query="service_info")`: `version 2015-02-02`).
 pub const API_VERSION: &str = "2015-02-02";
 
+/// The cache node type a suite names when its case is not about node types.
+///
+/// `CacheNodeType` is a parameter the service requires of a create that
+/// provisions nodes of its own, so every suite that creates a cluster or a
+/// replication group names one. This is one of the current-generation types the
+/// member's own documentation publishes
+/// (`smithy_query(query="doc",shape="CreateCacheClusterMessage",member="CacheNodeType")`),
+/// held here once so a suite that does not care which type it runs on does not
+/// write down a second one.
+pub const TEST_NODE_TYPE: &str = "cache.t3.micro";
+
 /// Long enough past [`state::CLUSTER_TRANSITION`] that the clock owes a
 /// resource its next status; the handlers never sleep, so only the test waits.
 ///
@@ -1037,6 +1048,37 @@ pub fn params(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
         .iter()
         .map(|(key, value)| ((*key).to_string(), (*value).to_string()))
         .collect()
+}
+
+/// The form pairs of a `CreateCacheCluster` for the cluster `id`, with `extra`
+/// beside them.
+///
+/// `CacheNodeType` is a parameter the service requires of a create that
+/// provisions nodes of its own, so a caller whose case is not about the node
+/// type gets [`TEST_NODE_TYPE`] and one that names its own keeps it. One place,
+/// so every suite that creates a cluster builds the same request.
+pub fn cluster_create_params(id: &str, extra: &[(&str, &str)]) -> Vec<(String, String)> {
+    let mut pairs = params(&[("CacheClusterId", id)]);
+    if !extra.iter().any(|(member, _)| *member == "CacheNodeType") {
+        pairs.extend(params(&[("CacheNodeType", TEST_NODE_TYPE)]));
+    }
+    pairs.extend(params(extra));
+    pairs
+}
+
+/// `pairs` as a request, with `CacheNodeType` added when they name none — for a
+/// row that writes the whole `CreateCacheCluster` request out, identifier
+/// included.
+///
+/// Same reason as [`cluster_create_params`]: the node type is a parameter the
+/// service requires of such a create, so a row about something else still has
+/// to carry one.
+pub fn with_node_type(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
+    let mut request = params(pairs);
+    if !pairs.iter().any(|(member, _)| *member == "CacheNodeType") {
+        request.extend(params(&[("CacheNodeType", TEST_NODE_TYPE)]));
+    }
+    request
 }
 
 /// Take one snapshot named `name` of `cluster` and assert it was accepted.

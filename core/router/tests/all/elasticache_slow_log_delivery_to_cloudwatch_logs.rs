@@ -591,6 +591,9 @@ async fn available_cluster(
         ("CacheClusterId", id),
         ("Engine", ENGINE),
         ("NumCacheNodes", "1"),
+        // A create that provisions its own nodes names the node type they run on;
+        // this suite is about the slow log those nodes record.
+        ("CacheNodeType", "cache.t3.micro"),
     ]);
     request.extend(extra.iter().cloned());
     elasticache(router, "CreateCacheCluster", &request)

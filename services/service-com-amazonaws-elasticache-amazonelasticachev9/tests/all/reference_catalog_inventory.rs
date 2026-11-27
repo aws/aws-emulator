@@ -237,11 +237,10 @@ async fn a_create_may_name_the_versions_the_catalog_offers_and_no_others() {
         let created = emulator
             .call(
                 "CreateCacheCluster",
-                &params(&[
-                    ("CacheClusterId", &id),
-                    ("Engine", cache_engine),
-                    ("EngineVersion", version),
-                ]),
+                &crate::harness::cluster_create_params(
+                    &id,
+                    &[("Engine", cache_engine), ("EngineVersion", version)],
+                ),
             )
             .await;
         assert_eq!(
@@ -281,11 +280,10 @@ async fn a_create_may_name_the_versions_the_catalog_offers_and_no_others() {
         let refused = emulator
             .call(
                 "CreateCacheCluster",
-                &params(&[
-                    ("CacheClusterId", &format!("unoffered-{index}")),
-                    ("Engine", cache_engine),
-                    ("EngineVersion", version),
-                ]),
+                &crate::harness::cluster_create_params(
+                    &format!("unoffered-{index}"),
+                    &[("Engine", cache_engine), ("EngineVersion", version)],
+                ),
             )
             .await;
         assert_eq!(

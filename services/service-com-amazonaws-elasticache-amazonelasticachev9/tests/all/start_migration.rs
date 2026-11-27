@@ -68,6 +68,10 @@ async fn create_replication_group(emulator: &Emulator, id: &str, shards: i32) {
                 ("CacheNodeType", "cache.m7g.large"),
                 ("NumNodeGroups", &shards.to_string()),
                 ("ReplicasPerNodeGroup", "1"),
+                // A migration is only ever carried into a group that can
+                // promote a replica in its primary's place, so every group a
+                // migration row names has automatic failover on.
+                ("AutomaticFailoverEnabled", "true"),
             ]),
         )
         .await;

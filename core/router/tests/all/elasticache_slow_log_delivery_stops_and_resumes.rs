@@ -286,6 +286,9 @@ async fn planted(router: &MultiServiceRouter, case: &str) -> (String, u16) {
         ("Engine", ENGINE),
         ("NumCacheNodes", "1"),
         ("CacheParameterGroupName", &group),
+        // A create that provisions its own nodes names the node type they run on;
+        // this suite is about the log delivery those nodes carry.
+        ("CacheNodeType", "cache.t3.micro"),
     ]);
     request.extend(slow_log_delivery(true));
     let created = elasticache(router, "CreateCacheCluster", &request)

@@ -40,6 +40,11 @@ async fn create_settled_group(emulator: &Emulator, case: &str, id: &str, extra: 
         ("ReplicationGroupDescription", "a migration target"),
         ("Engine", state::DEFAULT_ENGINE),
         ("CacheNodeType", "cache.m7g.large"),
+        // A migration is only ever carried into a group that can promote a
+        // replica in its primary's place, so every group here has automatic
+        // failover on — which takes a second cache cluster in the group.
+        ("NumCacheClusters", "2"),
+        ("AutomaticFailoverEnabled", "true"),
     ]);
     pairs.extend(params(extra));
     let created = emulator.call("CreateReplicationGroup", &pairs).await;

@@ -588,11 +588,10 @@ async fn a_group_built_on_an_existing_primary_cluster_adopts_it() {
     let cluster = emulator
         .call(
             "CreateCacheCluster",
-            &params(&[
-                ("CacheClusterId", "legacy-primary"),
-                ("Engine", "valkey"),
-                ("Port", "7111"),
-            ]),
+            &crate::harness::cluster_create_params(
+                "legacy-primary",
+                &[("Engine", "valkey"), ("Port", "7111")],
+            ),
         )
         .await;
     assert_eq!(
@@ -1216,7 +1215,7 @@ async fn seeding_a_group_from_a_snapshot_is_refused_by_whether_that_snapshot_exi
     let cluster = emulator
         .call(
             "CreateCacheCluster",
-            &params(&[("CacheClusterId", "seed-source"), ("Engine", "redis")]),
+            &crate::harness::cluster_create_params("seed-source", &[("Engine", "redis")]),
         )
         .await;
     assert_eq!(

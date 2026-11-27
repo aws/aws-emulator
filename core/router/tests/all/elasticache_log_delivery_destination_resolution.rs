@@ -434,6 +434,9 @@ async fn provision(router: &MultiServiceRouter, row: &Row) {
                 ("CacheClusterId", row.id),
                 ("Engine", ENGINE),
                 ("NumCacheNodes", "1"),
+                // A create that provisions its own nodes names the node type they
+                // run on; this suite is about where their logs are delivered.
+                ("CacheNodeType", "cache.t3.micro"),
             ]),
         ),
         Cache::ReplicationGroup => (
@@ -545,6 +548,7 @@ fn a_re_pointed_log_delivery_settles_against_the_destination_it_now_names() {
                     ("CacheClusterId", cluster),
                     ("Engine", ENGINE),
                     ("NumCacheNodes", "1"),
+                    ("CacheNodeType", "cache.t3.micro"),
                 ]);
                 request.extend(delivery_params(
                     "slow-log",
@@ -665,6 +669,7 @@ fn a_cache_holds_one_log_delivery_configuration_per_modelled_log_type() {
                     ("CacheClusterId", cluster),
                     ("Engine", ENGINE),
                     ("NumCacheNodes", "1"),
+                    ("CacheNodeType", "cache.t3.micro"),
                 ]);
                 request.extend(delivery_params(
                     "slow-log",

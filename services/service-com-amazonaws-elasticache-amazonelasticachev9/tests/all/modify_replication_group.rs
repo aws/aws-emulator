@@ -899,7 +899,7 @@ async fn a_request_this_service_cannot_satisfy_is_refused_with_its_modelled_erro
     let standalone = emulator
         .call(
             "CreateCacheCluster",
-            &params(&[("CacheClusterId", "standalone"), ("Engine", "redis")]),
+            &crate::harness::cluster_create_params("standalone", &[("Engine", "redis")]),
         )
         .await;
     assert_eq!(
@@ -907,7 +907,23 @@ async fn a_request_this_service_cannot_satisfy_is_refused_with_its_modelled_erro
         "CreateCacheCluster must answer 200, got {} {}",
         standalone.status, standalone.body
     );
-    std::thread::sleep(PAST_TRANSITION);
+    // Every resource the rows name must be settled before they run, or a row would be
+    // refused for the status the clock still owes its resource rather than for what the
+    // request asks. Reached by looking again at each one until it reports its settled
+    // status, so the setup does not depend on how fast the host runs.
+    for group in ["encrypted-rg", "solo-rg"] {
+        poll_group_available(&emulator, "setup", group).await;
+    }
+    poll_until(
+        &emulator,
+        REGION,
+        "setup",
+        "the standalone cluster settling at available",
+        "DescribeCacheClusters",
+        &params(&[("CacheClusterId", "standalone")]),
+        |reply| reply.text("CacheCluster/CacheClusterStatus") == Some("available"),
+    )
+    .await;
 
     // The axis: which part of the request is wrong — the group named, a value,
     // two values that cannot hold together, a resource that does not exist, or a

@@ -188,6 +188,26 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .into());
         }
 
+        // The built-in `default` user is the one ElastiCache gives every account
+        // and the one every user group must contain
+        // (`crate::state::DEFAULT_USER_ID`): it governs the access an
+        // unauthenticated client of every RBAC user group gets, so the service
+        // keeps it as it ships — no call creates it, none deletes it (see
+        // `DeleteUser`) and none changes it. The refusal is about the built-in
+        // user the id RESOLVES to rather than the characters the request wrote
+        // it with, so it is worded from that one id alone and every spelling of
+        // it is answered the same way.
+        if user_id == crate::state::DEFAULT_USER_ID {
+            return Err(ModifyUserErrorModeled::InvalidParameterValueException(
+                InvalidParameterValueException {
+                    message: Some(crate::service::refusal_messages::built_in_user_refusal(
+                        "modified",
+                    )),
+                },
+            )
+            .into());
+        }
+
         // The two access-string members ask for opposite things about the same
         // rule list: `AccessString` is "Access permissions string used for this
         // user" — the whole list — while `AppendAccessString` "adds additional

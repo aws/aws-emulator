@@ -128,7 +128,7 @@ async fn create_cluster_with_group(emulator: &Emulator, id: &str, name: &str) ->
     emulator
         .call(
             "CreateCacheCluster",
-            &params(&[("CacheClusterId", id), ("CacheParameterGroupName", name)]),
+            &crate::harness::cluster_create_params(id, &[("CacheParameterGroupName", name)]),
         )
         .await
 }

@@ -277,8 +277,7 @@ async fn every_projection_of_a_cache_cluster_carries_the_members_the_service_res
     let emulator = Emulator::new();
     for row in CLUSTER_ROWS {
         let expected = cluster_expectations(row);
-        let mut pairs = params(&[("CacheClusterId", row.id)]);
-        pairs.extend(params(row.extra));
+        let pairs = crate::harness::cluster_create_params(row.id, row.extra);
         let created = emulator.call("CreateCacheCluster", &pairs).await;
         assert_eq!(
             created.status, 200,

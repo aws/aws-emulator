@@ -658,7 +658,7 @@ async fn only_a_create_the_clock_owes_a_transition_records_an_event() {
         ("AccessString", "on ~* +@all"),
         ("NoPasswordRequired", "true"),
     ]);
-    let cluster = params(&[("CacheClusterId", "Owed-Cluster")]);
+    let cluster = crate::harness::cluster_create_params("Owed-Cluster", &[]);
     let serverless = params(&[
         ("ServerlessCacheName", "Owed-Serverless"),
         ("Engine", "redis"),

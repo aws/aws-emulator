@@ -532,10 +532,10 @@ async fn naming_a_cache_security_group_is_the_account_wide_closure() {
         (
             "CreateCacheCluster",
             "CreateCacheCluster",
-            params(&[
-                ("CacheClusterId", "sg-create"),
-                ("CacheSecurityGroupNames.CacheSecurityGroupName.1", "sg-a"),
-            ]),
+            crate::harness::cluster_create_params(
+                "sg-create",
+                &[("CacheSecurityGroupNames.CacheSecurityGroupName.1", "sg-a")],
+            ),
         ),
         (
             "ModifyCacheCluster",

@@ -19,7 +19,7 @@
 //! cannot name a group that does not exist, and the matching pair of each row is the control
 //! that shows the refusal is about the ENGINE and nothing else.
 
-use crate::harness::{params, Emulator, Reply, PAST_TRANSITION};
+use crate::harness::{params, poll_until, Emulator, Reply, REGION};
 
 /// The `awsQuery` error code the refusal carries, from the model:
 /// `InvalidParameterCombinationException` has `awsQueryError` code
@@ -92,11 +92,10 @@ async fn a_create_naming_a_parameter_group_of_another_engine_is_refused() {
             let created = emulator
                 .call(
                     "CreateCacheCluster",
-                    &params(&[
-                        ("CacheClusterId", &cluster),
-                        ("Engine", engine),
-                        ("CacheParameterGroupName", group),
-                    ]),
+                    &crate::harness::cluster_create_params(
+                        &cluster,
+                        &[("Engine", engine), ("CacheParameterGroupName", group)],
+                    ),
                 )
                 .await;
             if engine == *group_engine {
@@ -184,7 +183,7 @@ async fn a_change_naming_a_parameter_group_of_another_engine_is_refused() {
     for (action, request) in [
         (
             "CreateCacheCluster",
-            params(&[("CacheClusterId", cluster), ("Engine", "redis")]),
+            crate::harness::cluster_create_params(cluster, &[("Engine", "redis")]),
         ),
         (
             "CreateReplicationGroup",
@@ -202,8 +201,29 @@ async fn a_change_naming_a_parameter_group_of_another_engine_is_refused() {
             created.status, created.body
         );
     }
-    // A resource takes no change until the clock owes it its usable status.
-    std::thread::sleep(PAST_TRANSITION);
+    // A resource takes no change until the clock owes it its usable status, which is
+    // reached by looking again at each resource until it reports that status rather than
+    // by waiting a fixed time.
+    poll_until(
+        &emulator,
+        REGION,
+        "the engine pair",
+        &format!("the cluster {cluster} settling at available"),
+        "DescribeCacheClusters",
+        &params(&[("CacheClusterId", cluster)]),
+        |reply| reply.text("CacheCluster/CacheClusterStatus") == Some("available"),
+    )
+    .await;
+    poll_until(
+        &emulator,
+        REGION,
+        "the engine pair",
+        &format!("the replication group {replication_group} settling at available"),
+        "DescribeReplicationGroups",
+        &params(&[("ReplicationGroupId", replication_group)]),
+        |reply| reply.text("ReplicationGroup/Status") == Some("available"),
+    )
+    .await;
 
     // Both of the other engines' groups, against a resource running Redis OSS.
     for (group_engine, group) in GROUPS.iter().filter(|(engine, _)| *engine != "redis") {

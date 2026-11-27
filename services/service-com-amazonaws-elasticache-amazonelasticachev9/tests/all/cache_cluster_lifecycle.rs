@@ -87,10 +87,18 @@ pub(crate) fn subnet_group_params(
 }
 
 /// Create one cluster with `CacheClusterId` and whatever else `extra` names.
+///
+/// `CacheNodeType` is a parameter the service requires of a create that
+/// provisions its own nodes, so a row that is not about the node type is given
+/// the shared default ([`crate::harness::TEST_NODE_TYPE`]) and a row that names
+/// one of its own keeps it.
 pub(crate) async fn create_cluster(emulator: &Emulator, id: &str, extra: &[(&str, &str)]) -> Reply {
-    let mut pairs = params(&[("CacheClusterId", id)]);
-    pairs.extend(params(extra));
-    emulator.call("CreateCacheCluster", &pairs).await
+    emulator
+        .call(
+            "CreateCacheCluster",
+            &crate::harness::cluster_create_params(id, extra),
+        )
+        .await
 }
 
 /// Describe one cluster by id, with its node list.
@@ -678,8 +686,7 @@ async fn a_create_naming_a_resource_this_emulator_does_not_hold_is_refused() {
     ];
 
     for (case, extra, status, code) in cases {
-        let mut pairs = params(&[("CacheClusterId", "refused")]);
-        pairs.extend(params(extra));
+        let mut pairs = crate::harness::cluster_create_params("refused", extra);
         // The duplicate row carries its own id, which must win.
         for (key, value) in params(extra) {
             if key == "CacheClusterId" {
@@ -1458,7 +1465,9 @@ async fn node_placement_follows_the_zones_the_request_asked_for() {
         ),
     ];
     for (case, pairs, status, code) in refusals {
-        let reply = emulator.call("CreateCacheCluster", &params(pairs)).await;
+        let reply = emulator
+            .call("CreateCacheCluster", &crate::harness::with_node_type(pairs))
+            .await;
         assert_eq!(
             reply.status, status,
             "case {case}: expected HTTP {status}, got {} {}",
@@ -1526,7 +1535,9 @@ async fn a_member_this_emulator_cannot_honour_is_refused_not_dropped() {
         ),
     ];
     for (case, pairs, status, code) in cases {
-        let reply = emulator.call("CreateCacheCluster", &params(pairs)).await;
+        let reply = emulator
+            .call("CreateCacheCluster", &crate::harness::with_node_type(pairs))
+            .await;
         assert_eq!(
             reply.status, status,
             "case {case}: expected HTTP {status}, got {} {}",
@@ -2600,7 +2611,7 @@ async fn the_documented_identifier_port_and_tag_constraints_are_enforced() {
     // "The maximum number of tags permitted on a resource is 50": the bound is a
     // row and so is one past it.
     for (count, accepted) in [(50usize, true), (51usize, false)] {
-        let mut pairs = params(&[("CacheClusterId", &format!("tags-{count}"))]);
+        let mut pairs = crate::harness::cluster_create_params(&format!("tags-{count}"), &[]);
         for index in 1..=count {
             pairs.push((format!("Tags.Tag.{index}.Key"), format!("k{index}")));
             pairs.push((format!("Tags.Tag.{index}.Value"), format!("v{index}")));
@@ -2632,10 +2643,10 @@ async fn the_documented_identifier_port_and_tag_constraints_are_enforced() {
     let keyless = emulator
         .call(
             "CreateCacheCluster",
-            &params(&[
-                ("CacheClusterId", "keyless-tag"),
-                ("Tags.Tag.1.Value", "orphan"),
-            ]),
+            &crate::harness::cluster_create_params(
+                "keyless-tag",
+                &[("Tags.Tag.1.Value", "orphan")],
+            ),
         )
         .await;
     assert_eq!(
@@ -2802,7 +2813,7 @@ async fn arns_and_endpoints_name_the_region_the_request_was_signed_for() {
             .call_in(
                 region,
                 "CreateCacheCluster",
-                &params(&[("CacheClusterId", "regional")]),
+                &crate::harness::cluster_create_params("regional", &[]),
             )
             .await;
         assert_eq!(

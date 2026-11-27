@@ -249,10 +249,10 @@ async fn a_create_naming_a_cache_security_group_is_refused_by_the_same_closure()
     let reply = emulator
         .call(
             "CreateCacheCluster",
-            &params(&[
-                ("CacheClusterId", "closure-probe"),
-                ("CacheSecurityGroupNames.CacheSecurityGroupName.1", "sg-a"),
-            ]),
+            &crate::harness::cluster_create_params(
+                "closure-probe",
+                &[("CacheSecurityGroupNames.CacheSecurityGroupName.1", "sg-a")],
+            ),
         )
         .await;
     assert_refused("CreateCacheCluster", &reply, 400, "InvalidParameterValue");
@@ -2222,8 +2222,7 @@ async fn a_cluster_is_rebooted_only_from_a_status_the_service_reboots_from() {
         ),
     ];
     for (id, extra, nodes) in cases {
-        let mut create = params(&[("CacheClusterId", id)]);
-        create.extend(params(extra));
+        let create = crate::harness::cluster_create_params(id, extra);
         let created = emulator.call("CreateCacheCluster", &create).await;
         assert_eq!(
             created.status, 200,

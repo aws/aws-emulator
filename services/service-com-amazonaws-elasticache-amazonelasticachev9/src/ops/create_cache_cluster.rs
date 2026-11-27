@@ -397,6 +397,30 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .into());
         }
 
+        // `CacheNodeType` is "the compute and memory capacity of the nodes in
+        // the node group (shard)" — the shape of the nodes this create
+        // provisions — and the service has no node type of its own to give
+        // them. The member is optional in the model because a cluster that
+        // JOINS a replication group takes that group's node type, which is why
+        // the requirement is conditional and is read here, where the rest of
+        // the request is known: a create that provisions nodes of its own
+        // (`ReplicationGroupId` absent) must name one, and a request that does
+        // not is refused before anything is written rather than persisting a
+        // cluster of a size nobody asked for. The sentence is the one this
+        // service words a parameter a handler requires with; see
+        // `crate::service::absent_parameter`.
+        if input.cache_node_type.is_none() && input.replication_group_id.is_none() {
+            return Err(CreateCacheClusterErrorModeled::InvalidParameterValueException(
+                InvalidParameterValueException {
+                    message: Some(
+                        crate::service::absent_parameter::conditionally_required_message(
+                            "CacheNodeType",
+                        ),
+                    ),
+                },
+            )
+            .into());
+        }
         // `CacheNodeType` carries no modelled enum or `@pattern`, so the
         // catalogue the member's own documentation publishes is what says which
         // names exist; a name outside it is no node type the service could ever

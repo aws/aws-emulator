@@ -35,7 +35,7 @@
 use service_com_amazonaws_elasticache_amazonelasticachev9::state;
 
 use crate::cache_cluster_lifecycle::subnet_group_params;
-use crate::harness::{params, Emulator, Reply, PAST_TRANSITION, REGION};
+use crate::harness::{params, poll_until, Emulator, Reply, PAST_TRANSITION, REGION};
 
 /// The `awsQuery` error code a refusal for an identifier that resolves to nothing carries,
 /// from the model: `InvalidParameterValueException` has `awsQueryError` code
@@ -179,7 +179,9 @@ impl Target {
     /// The form pairs that identify the resource, plus whatever else a create of it needs.
     fn identity(self, name: &str) -> Vec<(String, String)> {
         match self {
-            Self::Cluster => params(&[("CacheClusterId", name)]),
+            // A create that provisions its own nodes names the node type they
+            // run on, which this suite is not about.
+            Self::Cluster => crate::harness::cluster_create_params(name, &[]),
             Self::ReplicationGroup => params(&[
                 ("ReplicationGroupId", name),
                 (
@@ -725,10 +727,10 @@ async fn a_security_group_of_another_vpc_than_the_placement_is_refused() {
     for (operation, identity) in [
         (
             "CreateCacheCluster",
-            params(&[
-                ("CacheClusterId", "vpc-mismatch-cluster"),
-                ("CacheSubnetGroupName", subnet_group),
-            ]),
+            crate::harness::cluster_create_params(
+                "vpc-mismatch-cluster",
+                &[("CacheSubnetGroupName", subnet_group)],
+            ),
         ),
         (
             "CreateReplicationGroup",
@@ -770,9 +772,29 @@ async fn a_security_group_of_another_vpc_than_the_placement_is_refused() {
 
     // The two modifies: the placement is the one the resource was created in, so the rule
     // holds for a change too. Both resources above were created with the placement's own
-    // group; they settle first, because a resource takes no change until the clock owes it
-    // its usable status.
-    std::thread::sleep(PAST_TRANSITION);
+    // group; a resource takes no change until the clock owes it its usable status, which is
+    // reached by looking again at each one until it reports that status rather than by
+    // waiting a fixed time.
+    poll_until(
+        &emulator,
+        REGION,
+        "the VPC mismatch rule",
+        "the cluster vpc-mismatch-cluster settling at available",
+        "DescribeCacheClusters",
+        &params(&[("CacheClusterId", "vpc-mismatch-cluster")]),
+        |reply| reply.text("CacheCluster/CacheClusterStatus") == Some(state::STATUS_AVAILABLE),
+    )
+    .await;
+    poll_until(
+        &emulator,
+        REGION,
+        "the VPC mismatch rule",
+        "the replication group vpc-mismatch-rg settling at available",
+        "DescribeReplicationGroups",
+        &params(&[("ReplicationGroupId", "vpc-mismatch-rg")]),
+        |reply| reply.text("ReplicationGroup/Status") == Some(state::STATUS_AVAILABLE),
+    )
+    .await;
     for (operation, identity, target, name) in [
         (
             "ModifyCacheCluster",

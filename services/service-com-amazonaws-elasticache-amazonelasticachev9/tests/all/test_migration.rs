@@ -25,7 +25,7 @@
 
 use std::time::{Duration, SystemTime};
 
-use service_com_amazonaws_elasticache_amazonelasticachev9::state;
+use service_com_amazonaws_elasticache_amazonelasticachev9::{service, state};
 
 use crate::harness::{params, poll_until, Emulator, Reply, REGION};
 
@@ -107,6 +107,10 @@ pub(crate) async fn create_settled_group(emulator: &Emulator, case: &str, id: &s
                 ("CacheNodeType", "cache.m7g.large"),
                 ("NumNodeGroups", &shards.to_string()),
                 ("ReplicasPerNodeGroup", "1"),
+                // A migration is only ever carried into a group that can
+                // promote a replica in its primary's place, so every group a
+                // migration row names has automatic failover on.
+                ("AutomaticFailoverEnabled", "true"),
             ]),
         )
         .await;
@@ -269,7 +273,7 @@ async fn a_test_that_has_no_migration_to_test_is_refused_with_its_own_fault() {
             &[("10.0.0.1", 6379)],
             404,
             "ReplicationGroupNotFoundFault",
-            state::replication_group_not_found_message("never-created-group"),
+            service::replication_group_not_found::quoted_sentence("never-created-group"),
         ),
         (
             "a group still coming up",

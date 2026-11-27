@@ -416,16 +416,6 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             ));
         }
 
-        // Same for user groups: `CreateUserGroup` is a scaffolded 501.
-        if let Some(id) = input.user_group_ids.as_deref().unwrap_or_default().first() {
-            return Err(CreateReplicationGroupErrorModeled::UserGroupNotFoundFault(
-                UserGroupNotFoundFault {
-                    message: Some(format!("User group {id} not found.")),
-                },
-            )
-            .into());
-        }
-
         // A serverless cache snapshot cannot exist: every serverless-cache
         // operation is a scaffolded 501 that owns its own issue. A `SnapshotArns`
         // entry would have to be read out of Amazon S3, which this emulator does
@@ -542,6 +532,29 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // A group whose data is partitioned across more than one shard is
         // cluster mode enabled; `ClusterMode` may also ask for it with a single
         // shard, and cannot contradict the partitioning the request asks for.
+        //
+        // So may the PARAMETER GROUP: cluster mode is an engine parameter
+        // (`crate::state::CLUSTER_ENABLED_PARAMETER`), and this member's own
+        // documentation names the group that sets it as how a cluster mode
+        // enabled group is created ("To create a Valkey or Redis OSS (cluster
+        // mode enabled) replication group, use
+        // CacheParameterGroupName=default.redis3.2.cluster.on"), so a group
+        // joining a parameter group that turns it on is cluster mode enabled
+        // whatever its shard count. It is read off the STORED group — any group
+        // that parameter is set on, not only the published cluster-mode-on
+        // default — under a lock of its own, given back before the hops below,
+        // because nothing may hold the store across an await. A name no group of
+        // this account holds leaves the flag off here and is answered with the
+        // modelled not-found where the group is resolved for storing.
+        let parameter_group_cluster_mode = match input.cache_parameter_group_name.as_deref() {
+            Some(name) => {
+                let store = state.lock();
+                store
+                    .parameter_group(name)
+                    .is_some_and(|group| group.cluster_mode_on())
+            }
+            None => false,
+        };
         let requested_cluster_mode = input.cluster_mode.as_deref();
         if num_node_groups > 1 && requested_cluster_mode == Some(crate::state::SETTING_DISABLED) {
             return Err(invalid_combination(format!(
@@ -550,8 +563,20 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                  enabled."
             )));
         }
-        let cluster_enabled =
-            num_node_groups > 1 || requested_cluster_mode == Some(crate::state::SETTING_ENABLED);
+        if parameter_group_cluster_mode
+            && requested_cluster_mode == Some(crate::state::SETTING_DISABLED)
+        {
+            return Err(invalid_combination(format!(
+                "ClusterMode disabled cannot be combined with a cache parameter group whose {} \
+                 is '{}': a replication group running that parameter group is cluster mode \
+                 enabled.",
+                crate::state::CLUSTER_ENABLED_PARAMETER,
+                crate::state::CLUSTER_ENABLED_ON
+            )));
+        }
+        let cluster_enabled = num_node_groups > 1
+            || parameter_group_cluster_mode
+            || requested_cluster_mode == Some(crate::state::SETTING_ENABLED);
         let cluster_mode = requested_cluster_mode
             .unwrap_or(if cluster_enabled {
                 crate::state::SETTING_ENABLED
@@ -876,6 +901,75 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             }
             None => None,
         };
+
+        // Every user group the request names has to be one this account holds:
+        // `UserGroupNotFoundFault` is "the user group was not found or does not
+        // exist", and the ids are resolved against the groups `CreateUserGroup`
+        // stored, by the same reading `ModifyReplicationGroup` attaches one by —
+        // so a group created with RBAC and a group given RBAC later resolve the
+        // same ids. Resolved BEFORE the parameter group below, so a request that
+        // is wrong about both is answered for its user groups first, and the
+        // status change the clock owes a group is materialised before it is
+        // read.
+        //
+        // A group still coming up is attachable: this create provisions its own
+        // clusters over a span of its own, so the two settle side by side, and a
+        // caller that creates the group and the replication group in one go is
+        // not refused for the span between. What cannot be attached is a group
+        // on its way OUT — the users it holds are about to stop existing for
+        // this group — which is the modelled `InvalidUserGroupStateFault` ("the
+        // user group is not in an active state").
+        let requested_user_groups = input.user_group_ids.clone().unwrap_or_default();
+        // The list is caller-chosen and the model bounds its length only from
+        // below (`UserGroupIdListInput` is `@length(min: 1)` with no maximum), so
+        // the count is refused here before anything walks or stores it — the same
+        // bound `ModifyUserGroup` holds its own caller-chosen lists to: no legal
+        // request can name more distinct user groups than an account holds, which
+        // `crate::state::USER_GROUP_QUOTA` bounds.
+        if requested_user_groups.len() > crate::state::USER_GROUP_QUOTA {
+            return Err(invalid_value(format!(
+                "Invalid value for UserGroupIds: {} user group ids were named; an account holds \
+                 at most {} user groups.",
+                requested_user_groups.len(),
+                crate::state::USER_GROUP_QUOTA
+            )));
+        }
+        if !requested_user_groups.is_empty() {
+            store.settle_user_groups(now);
+        }
+        // The groups the create ATTACHES, each named once: a request may name one
+        // group twice, and an attachment is a membership rather than a list, so
+        // what is stored below is the distinct groups it resolved — bounded by the
+        // groups the account holds rather than by the length of the request.
+        let mut attached_user_groups: Vec<String> = Vec::new();
+        for user_group_id in &requested_user_groups {
+            let Some(user_group) = store.user_groups.get(user_group_id) else {
+                return Err(CreateReplicationGroupErrorModeled::UserGroupNotFoundFault(
+                    UserGroupNotFoundFault {
+                        message: Some(format!("User group {user_group_id} not found.")),
+                    },
+                )
+                .into());
+            };
+            // A group on its way out cannot be attached; the sentence reports the
+            // group's own status, through the one helper that words this gate.
+            if let Some(message) =
+                crate::service::refusal_messages::user_group_attachment_state_refusal(user_group)
+            {
+                return Err(
+                    CreateReplicationGroupErrorModeled::InvalidUserGroupStateFault(
+                        InvalidUserGroupStateFault {
+                            message: Some(message),
+                        },
+                    )
+                    .into(),
+                );
+            }
+            // The STORED id of the group it resolved, named once.
+            if !attached_user_groups.contains(&user_group.user_group_id) {
+                attached_user_groups.push(user_group.user_group_id.clone());
+            }
+        }
 
         // The parameter group the group's clusters join has to be one this
         // account holds, so the name is resolved against the stored groups — the
@@ -1343,9 +1437,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             data_tiering,
             network_type: input.network_type,
             ip_discovery: input.ip_discovery,
-            // No user group can exist to associate; the request is refused
-            // above when it names one.
-            user_group_ids: Vec::new(),
+            // The RBAC user groups whose users may authenticate to this group:
+            // the distinct groups the request resolved against the store above.
+            user_group_ids: attached_user_groups.clone(),
             log_delivery_configurations: {
                 let mut stored = Vec::new();
                 crate::state::apply_log_delivery(
@@ -1379,6 +1473,22 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // owes it `available` once the transition span has passed. The response
         // is read back out of the store, so it reports what was persisted.
         store.insert_replication_group(new);
+        // A user group reports "the replication groups that the user group is
+        // associated to" (`UserGroup$ReplicationGroups`), which is the other end
+        // of the attachment this create just made — held once, on the user
+        // group, so the two reads cannot disagree.
+        for user_group_id in &attached_user_groups {
+            if let Some(user_group) = store.user_groups.get_mut(user_group_id) {
+                if !user_group
+                    .replication_group_ids
+                    .contains(&replication_group_id)
+                {
+                    user_group
+                        .replication_group_ids
+                        .push(replication_group_id.clone());
+                }
+            }
+        }
         // A group created with a Global datastore named joins it as a
         // SECONDARY: the datastore accepts writes through its primary and
         // replicates to this group, so both records report the membership from
