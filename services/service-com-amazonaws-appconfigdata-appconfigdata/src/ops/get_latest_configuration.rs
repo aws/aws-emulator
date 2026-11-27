@@ -29,10 +29,12 @@
 //! persisted state: the session out of this service's own store, the configuration out
 //! of AppConfig's.
 //!
-//! Whether the CALLER may poll at all is decided first, against its own identity-based
-//! IAM policies ([`crate::state::identity_authorization`]), as AWS decides it: a caller
-//! granted none of this service's actions is refused `AccessDeniedException` rather than
-//! told anything about the session or the configuration behind the token.
+//! Whether the CALLER may poll at all is decided first — ahead of this handler's own
+//! reading of the request's input — against its own identity-based IAM policies
+//! ([`crate::state::identity_authorization`]), as AWS decides it: a caller granted none of
+//! this service's actions is refused `AccessDeniedException` whatever value it supplied for
+//! the token, rather than told anything about its request, about the session, or about the
+//! configuration behind the token.
 //!
 //! ## Shape of an operation
 //!
@@ -301,20 +303,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let region =
             ::service_com_amazonaws_appconfig_amazonappconfig::state::request_region(ctx.parts());
 
-        // STEP 0 — a request that supplies no usable value for the token member supplied
-        // no token, and is refused as the validation failure it is BEFORE any lookup: the
-        // verdict path below answers for a token the caller actually presented. A blank
-        // value cannot be one — the member targets `Token`, whose modelled pattern is
-        // `^\S{1,8192}$` (smithy_query query="shape" shape="Token"), which no run of
-        // whitespace satisfies.
-        if token.trim().is_empty() {
-            return Err(configuration_token_required());
-        }
-
-        // STEP 0b — whether the CALLER may poll at all, decided against its own
-        // identity-based IAM policies before any verdict about the token's state: AWS
-        // decides authorization at the IAM layer, ahead of the service's own reading of
-        // the request ([`crate::state::identity_authorization`]).
+        // STEP 0 — whether the CALLER may poll at all, decided against its own
+        // identity-based IAM policies before any verdict about the token's state AND
+        // before this handler reads the request's own input at all: AWS decides
+        // authorization at the IAM layer, ahead of the service's own reading of the
+        // request ([`crate::state::identity_authorization`]), so this is the FIRST thing
+        // this handler does — exactly as the sibling handler takes it
+        // (`crate::ops::start_configuration_session`). A caller granted none of this
+        // service's actions is therefore answered the same way whatever it put in the
+        // parameter, and the refusal tells it nothing about its request.
         //
         // A poll's own input names only the token, so the configuration the action is
         // judged against is the one the session that token resolves to is over — the
@@ -350,6 +347,16 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 "refused a poll the caller's identity policies do not allow"
             );
             return Err(crate::scaffolded::Scaffolded::access_denied(denial));
+        }
+
+        // STEP 0b — past the gate, a request that supplies no usable value for the token
+        // member supplied no token, and is refused as the validation failure it is BEFORE
+        // any lookup: the verdict path below answers for a token the caller actually
+        // presented. A blank value cannot be one — the member targets `Token`, whose
+        // modelled pattern is `^\S{1,8192}$` (smithy_query query="shape" shape="Token"),
+        // which no run of whitespace satisfies.
+        if token.trim().is_empty() {
+            return Err(configuration_token_required());
         }
 
         // STEP 1 — resolve the token and check it may be used, under this service's

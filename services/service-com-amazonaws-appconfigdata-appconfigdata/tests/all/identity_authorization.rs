@@ -17,6 +17,10 @@
 //! that resolves to nothing, which is the modelled `ResourceNotFoundException` with HTTP 404 —
 //! the two faults an operator has to tell apart.
 //!
+//! "Before the service reads the request" is load-bearing: a caller the gate refuses is answered
+//! the same way whatever it supplied, including a value the handler itself would refuse as input
+//! it cannot use, so the input refusal is only ever what a caller PAST the gate is told.
+//!
 //! The rows span what the rule generalises over: which of the two operations is asked for,
 //! whether the principal holds no policy at all / a broad grant / a grant scoped to THIS
 //! configuration / a grant scoped to ANOTHER one / a grant plus an explicit deny, and — for
@@ -397,14 +401,19 @@ impl Deployed {
     /// under test — as AppConfig's Service Authorization Reference spells the `configuration`
     /// resource type.
     fn arn(&self) -> String {
-        format!(
-            "arn:aws:{ACTION_PREFIX}:{REGION}:{}:application/{}/environment/{}/configuration/{}",
-            engine::emulator_account_id(),
-            self.application,
-            self.environment,
-            self.profile
-        )
+        configuration_arn(&self.application, &self.environment, &self.profile)
     }
+}
+
+/// The configuration ARN a session over one triple addresses, spelled here independently of
+/// the crate under test — as AppConfig's Service Authorization Reference spells the
+/// `configuration` resource type — whatever the three identifiers themselves read like.
+fn configuration_arn(application: &str, environment: &str, profile: &str) -> String {
+    format!(
+        "arn:aws:{ACTION_PREFIX}:{REGION}:{}:application/{application}/environment/{environment}\
+         /configuration/{profile}",
+        engine::emulator_account_id()
+    )
 }
 
 /// Create an application, an environment and a hosted configuration profile and deploy
@@ -1089,5 +1098,213 @@ async fn a_poll_whose_token_resolves_to_nothing_needs_only_a_grant_of_the_action
                 "case {case:?}: expected IAM's own sentence naming {arn}, got {parsed}"
             );
         }
+    }
+}
+
+/// Every way a poll can spell "no usable value" for its token on the wire: the whole
+/// `configuration_token` query parameter value as it travels (`%20` a space, `%09` a tab,
+/// `%0A` a newline, `+` a space per application/x-www-form-urlencoded). None of them
+/// satisfies the modelled `Token` pattern `^\S{1,8192}$` (smithy_query query="shape"
+/// shape="Token"), so each is a request the POLL's own handler refuses for its form —
+/// the leg that must not be reached before the gate has decided the caller.
+const BLANK_TOKENS: &[(&str, &str)] = &[
+    ("a single space", "%20"),
+    ("a tab", "%09"),
+    ("a newline", "%0A"),
+    ("spaces and tabs together", "%20%09%20"),
+    ("a form-encoded space", "+"),
+];
+
+/// The sentence a poll that supplied no usable token is refused with, spelled here rather
+/// than read off the crate under test: it names the input member and the operation that
+/// mints a token, and interpolates nothing from the request.
+const TOKEN_REQUIRED_MESSAGE: &str = "ConfigurationToken must be provided. \
+     Use the StartConfigurationSession API to obtain an InitialConfigurationToken";
+
+/// An identifier written as an Amazon Resource Name — neither an id nor a name, so it is a
+/// request `StartConfigurationSession`'s own handler refuses for its form: the sibling
+/// operation's equivalent of a blank token, and well inside the member's modelled 1..128
+/// length so nothing refuses it before the handler runs.
+const ARN_SHAPED_IDENTIFIER: &str = "arn:aws:appconfig:us-east-1:000000000000:application/other";
+
+/// One principal every request-form refusal below is decided for.
+struct GatePrecedenceRow {
+    case: &'static str,
+    /// The documents the role carries, built from the configuration ARN a well-formed call
+    /// addresses.
+    policies: fn(&str) -> Vec<String>,
+    /// `Some(explicit_deny)` when the gate refuses this caller — `explicit_deny` telling which
+    /// of IAM's rules refused — and `None` when it passes the gate and reaches the handler's
+    /// own refusal of the request's form.
+    refused: Option<bool>,
+}
+
+/// The rows differ along what the rule generalises over on the CALLER's side: a principal no
+/// statement grants the action to at all, one granted some other service's action, one granted
+/// every action of this one, and one granted every action with both of them explicitly denied.
+/// Each row's grant decides BOTH operations the same way, so one table answers for both legs.
+const GATE_PRECEDENCE_ROWS: &[GatePrecedenceRow] = &[
+    GatePrecedenceRow {
+        case: "a role carrying no policy at all",
+        policies: |_arn| Vec::new(),
+        refused: Some(false),
+    },
+    GatePrecedenceRow {
+        case: "a role granted another service's action on every resource",
+        policies: |_arn| vec![statement("Allow", &["s3:GetObject"], "*")],
+        refused: Some(false),
+    },
+    GatePrecedenceRow {
+        case: "a role granted every AppConfig action on every resource",
+        policies: |_arn| vec![statement("Allow", &["appconfig:*"], "*")],
+        refused: None,
+    },
+    GatePrecedenceRow {
+        case: "a role granted every action with both of these explicitly denied",
+        policies: |_arn| {
+            vec![
+                statement("Allow", &["appconfig:*"], "*"),
+                statement(
+                    "Deny",
+                    &[
+                        "appconfig:StartConfigurationSession",
+                        "appconfig:GetLatestConfiguration",
+                    ],
+                    "*",
+                ),
+            ]
+        },
+        refused: Some(true),
+    },
+];
+
+/// RULE: authorization is decided at the IAM layer AHEAD of the service's own reading of the
+/// request's input, so a caller whose identity-based policies do not allow the action is
+/// answered `AccessDeniedException` (403) whatever it supplied — including a value the
+/// handler would itself refuse as input it cannot use — and only a caller past that gate is
+/// told its request was malformed (`BadRequestException`, 400). Both operations of this data
+/// plane take that order: the poll, whose own handler refuses a `configuration_token` with no
+/// usable value, and the session, whose own handler refuses an identifier whose FORM its
+/// members do not accept. Either refusal mints nothing.
+#[tokio::test]
+async fn authorization_is_decided_before_each_handler_reads_its_own_request() {
+    let aws = Emulator::new();
+    let deployed = deploy(&aws).await;
+    let arn = deployed.arn();
+    // The resource a session over the ARN-shaped identifier addresses: built from the
+    // identifiers the REQUEST carried, whatever they read like.
+    let malformed_session_arn =
+        configuration_arn(ARN_SHAPED_IDENTIFIER, &deployed.environment, &deployed.profile);
+
+    for (index, row) in GATE_PRECEDENCE_ROWS.iter().enumerate() {
+        let caller = assumed_role(
+            &aws,
+            &format!("appconfig-precedence-{index}"),
+            &(row.policies)(&arn),
+        )
+        .await;
+
+        // The poll leg: every spelling of a token with no usable value.
+        for (spelling, token) in BLANK_TOKENS {
+            let case = format!("{}, polling with {spelling}", row.case);
+            let minted_before = aws.sessions();
+            let (status, _body, parsed, error_type) =
+                aws.poll(&caller.access_key_id, token).await;
+            match row.refused {
+                // A blank token resolves to no session, so the call this service can name no
+                // configuration for is decided on the action alone, against every resource.
+                Some(explicit_deny) => {
+                    refusal(
+                        status,
+                        &parsed,
+                        &error_type,
+                        &case,
+                        ACCESS_DENIED,
+                        ACCESS_DENIED_STATUS,
+                    );
+                    assert_eq!(
+                        parsed["Message"].as_str(),
+                        Some(denial(&caller.arn, GET_CONFIGURATION, "*", explicit_deny).as_str()),
+                        "case {case:?}: expected IAM's own sentence, got {parsed}"
+                    );
+                }
+                None => {
+                    refusal(
+                        status,
+                        &parsed,
+                        &error_type,
+                        &case,
+                        BAD_REQUEST,
+                        BAD_REQUEST_STATUS,
+                    );
+                    assert_eq!(
+                        parsed["Message"].as_str(),
+                        Some(TOKEN_REQUIRED_MESSAGE),
+                        "case {case:?}: expected the missing-parameter sentence, got {parsed}"
+                    );
+                    assert!(
+                        parsed["Reason"].is_null() && parsed["Details"].is_null(),
+                        "case {case:?}: a request that presented no token carries no verdict \
+                         about one, got {parsed}"
+                    );
+                }
+            }
+            assert_eq!(
+                aws.sessions(),
+                minted_before,
+                "case {case:?}: a refused poll must mint nothing"
+            );
+        }
+
+        // The session leg: the same precedence in the sibling handler, whose own
+        // request-form refusal is an identifier that is neither an id nor a name.
+        let case = format!("{}, opening a session over an ARN-shaped identifier", row.case);
+        let minted_before = aws.sessions();
+        let (status, parsed, error_type) = aws
+            .start_session(
+                &caller.access_key_id,
+                ARN_SHAPED_IDENTIFIER,
+                &deployed.environment,
+                &deployed.profile,
+            )
+            .await;
+        match row.refused {
+            Some(explicit_deny) => {
+                refusal(
+                    status,
+                    &parsed,
+                    &error_type,
+                    &case,
+                    ACCESS_DENIED,
+                    ACCESS_DENIED_STATUS,
+                );
+                assert_eq!(
+                    parsed["Message"].as_str(),
+                    Some(
+                        denial(
+                            &caller.arn,
+                            START_SESSION,
+                            &malformed_session_arn,
+                            explicit_deny
+                        )
+                        .as_str()
+                    ),
+                    "case {case:?}: expected IAM's own sentence, got {parsed}"
+                );
+            }
+            None => refusal(
+                status,
+                &parsed,
+                &error_type,
+                &case,
+                BAD_REQUEST,
+                BAD_REQUEST_STATUS,
+            ),
+        }
+        assert_eq!(
+            aws.sessions(),
+            minted_before,
+            "case {case:?}: a refused session must mint nothing"
+        );
     }
 }
