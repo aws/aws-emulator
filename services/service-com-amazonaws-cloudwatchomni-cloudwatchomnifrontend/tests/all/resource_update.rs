@@ -69,13 +69,11 @@ use omni::ops::get_omni_dashboard::{
 };
 use omni::ops::get_space::{GetSpace, GetSpaceError, GetSpaceErrorModeled};
 use omni::ops::get_view::{GetView, GetViewError, GetViewErrorModeled};
-use omni::ops::list_access_grants::{
-    ListAccessGrants, ListAccessGrantsError, ListAccessGrantsErrorModeled,
-};
+use omni::ops::list_access_grants::{ListAccessGrants, ListAccessGrantsError};
 use omni::ops::list_omni_dashboards::{
     ListOmniDashboards, ListOmniDashboardsError, ListOmniDashboardsErrorModeled,
 };
-use omni::ops::list_spaces::{ListSpaces, ListSpacesError, ListSpacesErrorModeled};
+use omni::ops::list_spaces::{ListSpaces, ListSpacesError};
 use omni::ops::types::{
     AccessGrant, AccessGrantPrincipal, AccessProfile, CreateAccessGrantInput,
     CreateAccessProfileInput, CreateDomainInput, CreateOmniDashboardInput, CreateSpaceInput,
@@ -2605,26 +2603,24 @@ async fn a_domain_the_store_does_not_hold_is_one_text_whichever_operation_report
             NOT_FOUND.0,
             NOT_FOUND.1
         );
-        let spaces = refusal_message!(
-            case,
-            omni.list_spaces_in(&domain_id).await,
-            ListSpacesErrorModeled::ResourceNotFoundException,
-            NOT_FOUND.0,
-            NOT_FOUND.1
+        // The listings take `domainId` as a FILTER rather than a resource they address,
+        // so they report no miss at all: a value nothing matches is an empty page.
+        let spaces = omni.list_spaces_in(&domain_id).await;
+        assert_eq!(
+            spaces.as_ref().map(|page| page.items.len()).ok(),
+            Some(0),
+            "case {case:?}: ListSpaces expected an empty page, got {spaces:?}"
         );
-        let grants = refusal_message!(
-            case,
-            omni.list_grants(Some(&domain_id), None).await,
-            ListAccessGrantsErrorModeled::ResourceNotFoundException,
-            NOT_FOUND.0,
-            NOT_FOUND.1
+        let grants = omni.list_grants(Some(&domain_id), None).await;
+        assert_eq!(
+            grants.as_ref().map(|page| page.items.len()).ok(),
+            Some(0),
+            "case {case:?}: ListAccessGrants expected an empty page, got {grants:?}"
         );
         for (operation, actual) in [
             ("GetDomain", read),
             ("UpdateDomain", patched),
             ("CreateSpace", created),
-            ("ListSpaces", spaces),
-            ("ListAccessGrants", grants),
         ] {
             assert_eq!(
                 actual, DOMAIN_MISS,
@@ -2731,12 +2727,13 @@ async fn a_space_the_store_does_not_hold_is_one_text_whichever_operation_reports
             NOT_FOUND.0,
             NOT_FOUND.1
         );
-        let grants = refusal_message!(
-            case,
-            omni.list_grants(None, Some(&space_id)).await,
-            ListAccessGrantsErrorModeled::ResourceNotFoundException,
-            NOT_FOUND.0,
-            NOT_FOUND.1
+        // `ListAccessGrants` takes `spaceId` as a FILTER rather than a resource it
+        // addresses, so a value nothing matches is an empty page, not a miss.
+        let listed = omni.list_grants(None, Some(&space_id)).await;
+        assert_eq!(
+            listed.as_ref().map(|page| page.items.len()).ok(),
+            Some(0),
+            "case {case:?}: ListAccessGrants expected an empty page, got {listed:?}"
         );
         // A create whose space is missing UNDER a domain that exists reports the space
         // that is missing, and says nothing of the domain that is not.
@@ -2750,7 +2747,6 @@ async fn a_space_the_store_does_not_hold_is_one_text_whichever_operation_reports
         );
         for (operation, actual) in [
             ("ListOmniDashboards", dashboards),
-            ("ListAccessGrants", grants),
             ("CreateAccessGrant", grant),
         ] {
             assert_eq!(

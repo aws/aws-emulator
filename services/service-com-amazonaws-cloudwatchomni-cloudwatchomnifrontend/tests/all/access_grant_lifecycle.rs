@@ -2224,7 +2224,8 @@ async fn the_grant_listing_reports_the_grants_matching_every_filter() {
         "listing twice answered different pages"
     );
 
-    // A filter naming a parent the store does not hold is the modelled miss.
+    // A filter is not an existence precondition: a value the store holds no record for
+    // matches no grant, so the listing answers an empty page rather than a miss.
     for (case, input) in [
         (
             "a domain the store does not hold",
@@ -2241,7 +2242,16 @@ async fn the_grant_listing_reports_the_grants_matching_every_filter() {
             },
         ),
     ] {
-        expect_modelled_error(case, omni.list_access_grants(&input).await, 404, "ResourceNotFoundException");
+        let page = omni
+            .list_access_grants(&input)
+            .await
+            .unwrap_or_else(|error| panic!("case {case:?}: the listing failed: {error:?}"));
+        assert_eq!(
+            (page.items.len(), page.next_token.clone()),
+            (0, None),
+            "case {case:?}: expected an empty page, got {:?}",
+            page.items
+        );
     }
 
     // A `nextToken` this service did not mint for THIS collection cannot name a resume

@@ -930,10 +930,16 @@ async fn a_resource_the_store_does_not_hold_is_not_found() {
             .await,
         DOMAIN_NOT_FOUND,
     );
-    expect_not_found(
-        "spaces filtered by an unknown domain",
-        omni.list_spaces(Some(MISSING_DOMAIN_ID), None, None).await,
-        DOMAIN_NOT_FOUND,
+    // `domainId` is a filter, not a resource the request addresses: a value the store
+    // holds no domain for matches no space, so the listing is an empty page.
+    let filtered = omni
+        .list_spaces(Some(MISSING_DOMAIN_ID), None, None)
+        .await
+        .expect("a listing filtered by a domain nothing holds succeeds");
+    assert!(
+        filtered.items.is_empty(),
+        "case \"spaces filtered by an unknown domain\": expected no spaces, got {:?}",
+        filtered.items
     );
     // The unfiltered listing names no resource, so it is an empty page rather than a miss.
     let unfiltered = omni
