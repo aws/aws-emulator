@@ -174,4 +174,7 @@ pub fn type_name(document: &Json, type_name: &str) -> Json {
 /// The members of a `__Schema` and a `__Type` this module reads: the list of every type the
 /// schema holds, and a type's own name.
 const TYPES_MEMBER: &str = "types";
-const NAME_MEMBER: &str = "name";
+
+/// A `__Type`'s own name, which is what says WHICH type of the schema a reported `__Type`
+/// is — read by the walk that answers a selection on one ([`super::execution`]).
+pub const NAME_MEMBER: &str = "name";

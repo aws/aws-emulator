@@ -436,6 +436,24 @@ const ITEM_ENVELOPE_MEMBERS: &[&str] = &[
 const REQUEST_FUNCTION: &str = "request";
 const RESPONSE_FUNCTION: &str = "response";
 
+/// Whether the API `context` serves holds NO type system at this instant, so there is no
+/// schema for a document to be executed against.
+///
+/// Read through the same settling an execution of the API begins with, so the question is
+/// answered against the schema the API serves NOW: a merge or a disassociation the clock
+/// already owes is materialised first, which is what leaves a Merged API whose last
+/// association has been withdrawn holding no type system at all. An API this service no
+/// longer holds is not an API without a schema — such a request names no API, which the
+/// execution reports itself.
+pub fn serves_no_schema(context: &PlaneContext) -> bool {
+    let mut store = context.state.lock();
+    store.settle_associations(SystemTime::now());
+    store
+        .graphql_apis
+        .get(&context.api_id)
+        .is_some_and(|api| api.types.is_empty())
+}
+
 /// Execute `request` against the API `context` serves.
 ///
 /// The store is read once per field, never across a run of the engine: a resolver's
@@ -1072,7 +1090,7 @@ impl Execution<'_> {
                 None => match plan {
                     // A field the API attaches no resolver to is the member of the object its
                     // parent resolved to, which is what a GraphQL object's own field is.
-                    None => Ok(source.get(&field.name).cloned().unwrap_or(Json::Null)),
+                    None => Ok(self.member_of(type_name, source, &field.name, path)),
                     Some(plan) => {
                         if self.runs >= MAX_RESOLVER_RUNS {
                             self.fault(field_error(
@@ -1394,6 +1412,60 @@ impl Execution<'_> {
             }
             _ => None,
         }
+    }
+
+    /// The member `field_name` of the object `source` a field of `type_name` is resolved from.
+    ///
+    /// A GraphQL object's own field IS the member of the value its parent resolved to, which
+    /// is every field this reads — except on a `__Type`, which the INTROSPECTION system's
+    /// report of a type system carries in two forms: in full, as the entry the report's own
+    /// list of types holds, and as a REFERENCE — the name and the kind — wherever one type
+    /// names another. Both ARE the type the schema holds under that name, so a selection on
+    /// either is answered from that type's own entry: the fields of `__Schema`'s three root
+    /// operation types, of an interface a type implements, of a union's members and of the
+    /// type a field resolves to are the fields the schema declares on them, not nothing.
+    ///
+    /// A `__Type` that names no type — the `LIST` and `NON_NULL` wrappers, whose own name is
+    /// null — holds only what it carries, which is what GraphQL reports for a wrapper.
+    ///
+    /// A member EXPANDED out of the request's type-system snapshot is introspection answer, so
+    /// it is counted down from what one request's introspection may hold, exactly as the root
+    /// meta-fields' own answers are: a document reaching one type through many references
+    /// chooses that amplification as much as one selecting `__schema` many times does
+    /// ([`MAX_INTROSPECTED_BYTES`]), and the field that meets the bound resolves to `null` and
+    /// is reported as having met it.
+    fn member_of(
+        &mut self,
+        type_name: &str,
+        source: &Json,
+        field_name: &str,
+        path: &[Json],
+    ) -> Json {
+        if let Some(member) = source.get(field_name) {
+            return member.clone();
+        }
+        if type_name != super::introspection::TYPE_TYPE {
+            return Json::Null;
+        }
+        let Some(named) = source
+            .get(super::introspection::NAME_MEMBER)
+            .and_then(Json::as_str)
+            .map(str::to_string)
+        else {
+            return Json::Null;
+        };
+        let expanded = super::introspection::named_type(self.introspection_document(), &named)
+            .get(field_name)
+            .cloned()
+            .unwrap_or(Json::Null);
+        if !self.affordable_introspection(&expanded) {
+            self.fault(field_error(
+                path,
+                &format!("{TOO_MUCH_INTROSPECTION} {MAX_INTROSPECTED_BYTES} bytes."),
+            ));
+            return Json::Null;
+        }
+        expanded
     }
 
     /// `value` where this request's result may still hold it, and `null` where it may not —

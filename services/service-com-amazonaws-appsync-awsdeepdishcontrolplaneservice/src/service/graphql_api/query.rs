@@ -657,6 +657,28 @@ async fn served_request(
     }
     // Beside the fields the authorizer withheld, where there was one.
     request.unauthorized.extend(judged.refused);
+    // A document is EXECUTED against the API's schema, so an API that serves none has nothing
+    // to execute this request against: the request is refused rather than served — no `data`
+    // at all and one error of the class AppSync names an API whose schema cannot be served
+    // by, which is the same class the control-plane read of that schema is refused with. That
+    // is the state a MERGED API is left in once the associations whose merges carried its
+    // types are gone, and the one an API no schema has ever been created on is in.
+    if execution::serves_no_schema(context) {
+        ::tracing::info!(
+            api_id = %context.api_id,
+            "this API serves no schema, so there is nothing to execute this request against"
+        );
+        return refusal_logged(
+            context,
+            request_id,
+            started,
+            clock,
+            SCHEMA_EXCEPTION_STATUS,
+            SCHEMA_EXCEPTION_ERROR_TYPE,
+            NO_SCHEMA_CONFIGURED,
+        )
+        .await;
+    }
     let answered = execution::execute(context, &request).await;
     field_logs::delivered(
         context,
@@ -1311,6 +1333,15 @@ pub const PERMISSION_DENIED: &str = "Permission denied";
 /// request reached no field of the API, so it is refused rather than served — the status every
 /// unauthorized call on a GraphQL API's data plane is answered with.
 const UNAUTHORIZED_STATUS: u16 = 401;
+
+/// How a request on an API that serves NO schema is refused: the class AppSync names such a
+/// failure by — the same `GraphQLSchemaException` the control-plane read of an unservable
+/// schema is refused with (`GetIntrospectionSchema`) — the sentence it states, and the status
+/// it carries. A request nothing was wrong with reached an API that cannot answer it, which is
+/// a failure of the service's own side of the exchange rather than of the request.
+const SCHEMA_EXCEPTION_ERROR_TYPE: &str = "GraphQLSchemaException";
+const NO_SCHEMA_CONFIGURED: &str = "Schema is not configured on api.";
+const SCHEMA_EXCEPTION_STATUS: u16 = 502;
 
 #[cfg(test)]
 mod tests {

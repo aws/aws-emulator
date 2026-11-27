@@ -53,28 +53,29 @@ const RUNTIME: (&str, &str) = ("APPSYNC_JS", "1.0.0");
 /// no data source", so a request half's own `payload` is the result.
 const DATA_SOURCE: &str = "local";
 
-/// The IAM action an execution of a source API's field performs, and the `errorType` AppSync
-/// reports a field the execution role may not run under. The service's own copies are
-/// `service::graphql_api::merged_api::SOURCE_GRAPHQL_ACTION` and
-/// `service::graphql_api::field_auth::UNAUTHORIZED_FIELD_ERROR_TYPE`.
-const SOURCE_GRAPHQL_ACTION: &str = "appsync:SourceGraphQL";
-const UNAUTHORIZED_ERROR_TYPE: &str = "Unauthorized";
+/// The IAM action an execution of a source API's field performs. The service's own copy is
+/// `service::graphql_api::merged_api::SOURCE_GRAPHQL_ACTION`.
+pub(crate) const SOURCE_GRAPHQL_ACTION: &str = "appsync:SourceGraphQL";
 
 /// How long a wait for a clock-owed schema creation or merge keeps looking, and how often it
 /// looks again. Generous: what is under test is what the endpoint answers, never how fast the
 /// host runs.
-const SETTLE_DEADLINE: Duration = Duration::from_secs(90);
-const POLL_SPACING: Duration = Duration::from_millis(50);
+pub(crate) const SETTLE_DEADLINE: Duration = Duration::from_secs(90);
+pub(crate) const POLL_SPACING: Duration = Duration::from_millis(50);
+
+/// The `errorType` AppSync reports a field the execution role may not run under. The
+/// service's own copy is `service::graphql_api::field_auth::UNAUTHORIZED_FIELD_ERROR_TYPE`.
+const UNAUTHORIZED_ERROR_TYPE: &str = "Unauthorized";
 
 /// The `SourceApiAssociationStatus` a performed merge reports, and the ones a merge can END
 /// in. Source: `smithy_query(query="shape", shape="SourceApiAssociationStatus")`.
-const MERGE_SUCCESS: &str = "MERGE_SUCCESS";
+pub(crate) const MERGE_SUCCESS: &str = "MERGE_SUCCESS";
 const TERMINAL_MERGE_STATUSES: &[&str] =
     &["MERGE_SUCCESS", "MERGE_FAILED", "AUTO_MERGE_SCHEDULE_FAILED"];
 
 /// A router with AppSync and IAM over ONE engine: the execution role and its documents belong
 /// to IAM, and both the source APIs and the Merged API to AppSync.
-fn emulator() -> MultiServiceRouter {
+pub(crate) fn emulator() -> MultiServiceRouter {
     let engine: Arc<engine::InMemoryEngine> = Arc::new(engine::InMemoryEngine::new());
     let mut router = MultiServiceRouter::new();
     // What a case pins is what the endpoint ANSWERS; signature verification is the emulator's
@@ -89,11 +90,11 @@ fn emulator() -> MultiServiceRouter {
 
 /// One created GraphQL API: how the control plane names it, and how a client reaches it.
 #[derive(Debug, Clone)]
-struct Api {
-    api_id: String,
-    arn: String,
-    graphql: String,
-    api_key: String,
+pub(crate) struct Api {
+    pub(crate) api_id: String,
+    pub(crate) arn: String,
+    pub(crate) graphql: String,
+    pub(crate) api_key: String,
 }
 
 #[tokio::test]
@@ -768,7 +769,9 @@ async fn a_disassociation_withdraws_the_source_apis_fields_from_the_merged_endpo
     );
 
     // And once the LAST association is withdrawn the Merged API serves no schema at all, so
-    // the field that one contributed is undefined too.
+    // there is nothing left to execute a document against: the endpoint comes to refuse the
+    // request rather than to answer it — the whole rule of that refusal is asserted in
+    // [`crate::graphql_api_served_schema`].
     let (status, disassociated) = appsync(
         &router,
         "DELETE",
@@ -786,14 +789,28 @@ async fn a_disassociation_withdraws_the_source_apis_fields_from_the_merged_endpo
     let case = "the merged endpoint once the last association is withdrawn";
     let deadline = tokio::time::Instant::now() + SETTLE_DEADLINE;
     loop {
-        let answered = query(case, &merged, &json!({"query": "query { muCoded }"})).await;
-        let reported = answered["errors"][0]["message"].as_str().unwrap_or_default();
-        if answered.get("data").is_some_and(Value::is_null) && reported.contains("muCoded") {
+        let (status, answered) =
+            try_query(case, &merged, &json!({"query": "query { muCoded }"})).await;
+        if status != 200 {
+            assert_eq!(
+                status, 502,
+                "case {case:?}: expected the schema refusal's status, got {status} with \
+                 {answered}"
+            );
+            assert!(
+                answered.get("data").is_none(),
+                "case {case:?}: expected no data member, got {answered}"
+            );
+            assert_eq!(
+                answered["errors"][0]["errorType"].as_str(),
+                Some("GraphQLSchemaException"),
+                "case {case:?}: expected the schema exception, got {answered}"
+            );
             break;
         }
         assert!(
             tokio::time::Instant::now() < deadline,
-            "case {case:?}: expected the last withdrawn field to stop being declared, last \
+            "case {case:?}: expected the last withdrawn field to stop being served, last \
              answer {answered}"
         );
         tokio::time::sleep(POLL_SPACING).await;
@@ -803,6 +820,17 @@ async fn a_disassociation_withdraws_the_source_apis_fields_from_the_merged_endpo
 /// POST one GraphQL document to the address `api` publishes, carrying that API's own key, and
 /// answer the document it was served, having insisted the request was answered `200`.
 async fn query(case: &str, api: &Api, document: &Value) -> Value {
+    let (status, answered) = try_query(case, api, document).await;
+    assert_eq!(
+        status, 200,
+        "case {case:?}: a GraphQL request is answered 200, got {status} and {answered}"
+    );
+    answered
+}
+
+/// The same, answering the status as well — the seam for a row that reads what the endpoint
+/// answers once the API serves no schema to execute a document against.
+pub(crate) async fn try_query(case: &str, api: &Api, document: &Value) -> (u16, Value) {
     let (status, _fields, answered) = try_post_answer(
         case,
         &api.graphql,
@@ -818,16 +846,12 @@ async fn query(case: &str, api: &Api, document: &Value) -> Value {
             api.graphql
         )
     });
-    assert_eq!(
-        status, 200,
-        "case {case:?}: a GraphQL request is answered 200, got {status} and {answered}"
-    );
-    answered
+    (status, answered)
 }
 
 /// Create one standard source API called `name` whose schema declares `fields` on the query
 /// root, with one APPSYNC_JS resolver per field answering `<field>-value`.
-async fn source_api(router: &MultiServiceRouter, name: &str, fields: &[&str]) -> Api {
+pub(crate) async fn source_api(router: &MultiServiceRouter, name: &str, fields: &[&str]) -> Api {
     let api = create_api(router, &format!("{name}-source"), None).await;
     let declared: String = fields
         .iter()
@@ -877,7 +901,11 @@ async fn merged_world(
 }
 
 /// Create one GraphQL API of the MERGED kind, under the execution role `role_arn`.
-async fn create_merged_api(router: &MultiServiceRouter, name: &str, role_arn: &str) -> Api {
+pub(crate) async fn create_merged_api(
+    router: &MultiServiceRouter,
+    name: &str,
+    role_arn: &str,
+) -> Api {
     create_api(
         router,
         &format!("{name}-merged"),
@@ -1125,7 +1153,7 @@ async fn create_pipeline_resolver(
 }
 
 /// Associate `source` with `merged` under `merge_type`, answering the `associationId`.
-async fn associate(
+pub(crate) async fn associate(
     router: &MultiServiceRouter,
     source: &Api,
     merged: &Api,
@@ -1153,7 +1181,7 @@ async fn associate(
 
 /// Read the association until the merge the clock owes it has been performed, and answer what
 /// it then reports — a wait on the CONDITION the clock owes, never on a fixed time.
-async fn await_terminal_merge(
+pub(crate) async fn await_terminal_merge(
     router: &MultiServiceRouter,
     merged_api_id: &str,
     association_id: &str,
@@ -1202,7 +1230,7 @@ fn field_path(api_arn: &str) -> String {
 /// The `{Effect, Action, Resource}` statements as one inline policy document, written
 /// compactly and free of the characters an `application/x-www-form-urlencoded` body treats
 /// specially.
-fn statements(statements: &[(&str, &str, &str)]) -> String {
+pub(crate) fn statements(statements: &[(&str, &str, &str)]) -> String {
     let written: Vec<String> = statements
         .iter()
         .map(|(effect, action, resource)| {
@@ -1219,7 +1247,7 @@ fn statements(statements: &[(&str, &str, &str)]) -> String {
 
 /// Create an IAM role called `role_name`, trusted by AppSync and carrying `policy` as its
 /// inline document when one is given, through IAM's OWN operations; answer its ARN.
-async fn given_role(
+pub(crate) async fn given_role(
     router: &MultiServiceRouter,
     role_name: &str,
     policy: Option<&str>,

@@ -10,7 +10,9 @@
 //! > query root's `__schema` and `__type(name:)` report that type system — the same one
 //! > `GetIntrospectionSchema` answers with, so the control plane and the data plane cannot
 //! > be told two different things about one API. No resolver is attached to any of them. An
-//! > API that holds no type system introspects to nothing.
+//! > API that holds no type system has no schema to introspect, so its data plane refuses the
+//! > request rather than reporting an empty type system
+//! > ([`crate::graphql_api_served_schema`]).
 //!
 //! The rows span what the rule generalises over: which of the three fields the document
 //! selects, where in the selection it sits (the root, inside a resolved object, inside an
@@ -327,39 +329,73 @@ async fn the_schema_field_reports_the_type_system_the_control_plane_reports() {
     );
 }
 
-/// An API that holds NO type system introspects to nothing: there is no type to name and no
-/// schema to report, so none is invented for it.
+/// An API that holds NO type system has no schema to introspect: there is nothing for the
+/// introspection system to report, so the request is refused rather than answered with an
+/// empty type system — the refusal the whole rule lives in
+/// [`crate::graphql_api_served_schema`].
 #[tokio::test]
 async fn an_api_with_no_type_system_introspects_to_nothing() {
     let router = emulator();
     let api = create_bare_api(&router, "bare").await;
 
-    // (case, the document, the data the API must answer)
-    let rows: &[(&str, &str, Value)] = &[
+    // (case, the document) — each of the three introspection fields, on an API holding none
+    // of the type system they report.
+    let rows: &[(&str, &str)] = &[
         (
             "the type system of an API that holds none",
             "query { __schema { queryType { name } } }",
-            json!({"__schema": Value::Null}),
         ),
         (
             "a type of an API that declares none",
             "query { __type(name: \"Query\") { name } }",
-            json!({"__type": Value::Null}),
         ),
-        (
-            "the name of a type no schema declares",
-            "query { __typename }",
-            json!({"__typename": Value::Null}),
-        ),
+        ("the name of a type no schema declares", "query { __typename }"),
     ];
 
-    for (case, document, expected) in rows {
-        let data = query(case, &api, document).await;
+    for (case, document) in rows {
+        let (status, answered) = refused(case, &api, document).await;
         assert_eq!(
-            &data, expected,
-            "case {case:?}: expected the data {expected}, got {data}"
+            status, 502,
+            "case {case:?}: expected the schema refusal's status, got {status} with {answered}"
+        );
+        assert!(
+            answered.get("data").is_none(),
+            "case {case:?}: expected no data member, got {answered}"
+        );
+        assert_eq!(
+            answered["errors"].as_array().map(Vec::len),
+            Some(1),
+            "case {case:?}: expected exactly one error, got {answered}"
+        );
+        assert_eq!(
+            answered["errors"][0]["errorType"].as_str(),
+            Some("GraphQLSchemaException"),
+            "case {case:?}: expected the schema exception, got {answered}"
         );
     }
+}
+
+/// POST one document to `api`'s published endpoint and answer the status and the body,
+/// whatever the status — the one this suite's refused rows read, where [`query`] insists on a
+/// served answer.
+async fn refused(case: &str, api: &GraphqlApi, document: &str) -> (u16, Value) {
+    let body = json!({"query": document});
+    let (status, _, answered) = try_post_answer(
+        case,
+        &api.graphql,
+        GRAPHQL_PATH,
+        "POST",
+        &body,
+        &[("x-api-key", api.api_key.as_str())],
+    )
+    .await
+    .unwrap_or_else(|| {
+        panic!(
+            "case {case:?}: the published GraphQL endpoint {:?} must answer this request",
+            api.graphql
+        )
+    });
+    (status, answered)
 }
 
 /// One request's introspection answers are BOUNDED: `__schema` answers the whole type

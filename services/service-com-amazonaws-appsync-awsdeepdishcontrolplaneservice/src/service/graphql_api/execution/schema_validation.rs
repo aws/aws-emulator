@@ -25,8 +25,10 @@ use super::*;
 /// naming the class of the failure, the field and the type that does not declare it, and the
 /// query path it sits at. An API whose schema does not declare the ROOT operation type the
 /// operation selects on declares none of its fields either, so every selection of it is
-/// reported — the schema a Merged API serves once the associations that contributed its types
-/// are gone, and the one an API that holds no type system at all serves.
+/// reported — the schema a Merged API serves for a mutation no source API of it declares a
+/// mutation root for. An API holding NO type system at all is not validated against: there is
+/// no schema to execute the document against, which the request is refused for before it
+/// reaches this stage ([`super::serves_no_schema`]).
 ///
 /// The walk descends while the type a field resolves to is an OBJECT type the schema
 /// declares. A selection on an INTERFACE or a UNION type is written under a type condition
@@ -60,10 +62,8 @@ pub(super) fn schema_validation_errors(
     };
     let types = &api.types;
     // A root operation type the API's schema does not declare holds no field at all, so
-    // EVERY selection of the operation is undefined: that is the schema a Merged API serves
-    // once the associations whose merges carried its types are gone, and what an API that
-    // holds no type system at all serves — a document validated against nothing is not a
-    // document whose every field resolves to nothing.
+    // EVERY selection of the operation is undefined — a document validated against nothing is
+    // not a document whose every field resolves to nothing.
     if !types.contains_key(root_type) {
         let mut errors = Vec::new();
         for field in fields {
