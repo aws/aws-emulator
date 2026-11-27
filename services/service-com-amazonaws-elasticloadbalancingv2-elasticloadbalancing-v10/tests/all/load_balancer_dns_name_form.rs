@@ -15,17 +15,18 @@
 //!   VPC for the load balancer"), and in this emulator every such client — a function, an
 //!   instance, a CloudFront VPC origin, a client on this machine — reaches the load balancer
 //!   at the one address this emulator serves it on;
-//! * a Gateway Load Balancer of either scheme gets no socket: its `GENEVE` listeners carry no
+//! * a Gateway Load Balancer gets no socket: its `GENEVE` listeners carry no
 //!   request of that kind, so it keeps the host Elastic Load Balancing's own zone gives it,
 //!   `<name>-<hexadecimal id>.elb.<region>.amazonaws.com`
 //!   (`my-network-load-balancer-1234567890abcdef.elb.us-west-2.amazonaws.com`), whose id
-//!   is the very one its ARN carries, and whose host states its scheme nowhere.
+//!   is the very one its ARN carries, and whose host states no scheme — it carries none at
+//!   all ("you can't specify a scheme for a Gateway Load Balancer").
 //!
 //! The rows span what the rule generalises over: every family the model's
-//! `LoadBalancerTypeEnum` names, both schemes its `LoadBalancerSchemeEnum` names, names of
-//! different shapes, and two Regions — the Region and the family are exactly what the
-//! published value is keyed on. Every assertion is made on what a later
-//! `DescribeLoadBalancers` reports as well as on what the create answered, and no row
+//! `LoadBalancerTypeEnum` names, both schemes its `LoadBalancerSchemeEnum` names for the
+//! families that carry one, names of different shapes, and two Regions — the Region and the
+//! family are exactly what the published value is keyed on. Every assertion is made on what a
+//! later `DescribeLoadBalancers` reports as well as on what the create answered, and no row
 //! asserts a literal id or port: both are assigned, so what is under test is the FORM and
 //! that the two reads agree on it.
 //!
@@ -45,74 +46,77 @@ const REGIONS: [&str; 2] = ["us-west-2", "eu-west-1"];
 /// id its own ARN carries.
 const HEX_ID_DIGITS: usize = 16;
 
-/// One row: the case name, the load balancer's `Name`, the `Type` and `Scheme` it is
-/// created with, and how many subnets it is placed in.
+/// One row: the case name, the load balancer's `Name`, the `Type` it is created with, the
+/// `Scheme` it names (`None` for a family that carries none), and how many subnets it is
+/// placed in.
 struct Row {
     case: &'static str,
     name: &'static str,
     lb_type: &'static str,
-    scheme: &'static str,
+    scheme: Option<&'static str>,
     subnets: usize,
 }
 
-/// Every family against both schemes, with names of different shapes and lengths — the
-/// name is carried into the host verbatim, so a row with hyphens and digits in it is a
-/// different input from a plain one.
+/// Every family against both schemes it can carry, with names of different shapes and
+/// lengths — the name is carried into the host verbatim, so a row with hyphens and digits in
+/// it is a different input from a plain one.
 const ROWS: &[Row] = &[
     Row {
         case: "an internet-facing application load balancer",
         name: "alb-public",
         lb_type: "application",
-        scheme: "internet-facing",
+        scheme: Some("internet-facing"),
         subnets: 2,
     },
     Row {
         case: "an internal application load balancer",
         name: "alb-private",
         lb_type: "application",
-        scheme: "internal",
+        scheme: Some("internal"),
         subnets: 2,
     },
     Row {
         case: "an application load balancer with digits and hyphens in its name",
         name: "alb-7-edge-01",
         lb_type: "application",
-        scheme: "internet-facing",
+        scheme: Some("internet-facing"),
         subnets: 3,
     },
     Row {
         case: "an application load balancer with a one-character name",
         name: "a",
         lb_type: "application",
-        scheme: "internal",
+        scheme: Some("internal"),
         subnets: 2,
     },
     Row {
         case: "an internet-facing network load balancer",
         name: "nlb-public",
         lb_type: "network",
-        scheme: "internet-facing",
+        scheme: Some("internet-facing"),
         subnets: 1,
     },
     Row {
         case: "an internal network load balancer",
         name: "nlb-private",
         lb_type: "network",
-        scheme: "internal",
+        scheme: Some("internal"),
         subnets: 3,
     },
     Row {
-        case: "an internet-facing gateway load balancer",
+        // A Gateway Load Balancer carries no scheme at all, so neither gateway row names
+        // one; what they vary is the name and the placement.
+        case: "a gateway load balancer in one subnet",
         name: "gwlb-public",
         lb_type: "gateway",
-        scheme: "internet-facing",
+        scheme: None,
         subnets: 1,
     },
     Row {
-        case: "an internal gateway load balancer",
+        case: "a gateway load balancer in two subnets",
         name: "gwlb-private",
         lb_type: "gateway",
-        scheme: "internal",
+        scheme: None,
         subnets: 2,
     },
 ];
@@ -205,7 +209,9 @@ async fn create(router: &MultiServiceRouter, region: &str, row: &Row) -> Reply {
     let mut form = action("CreateLoadBalancer");
     form.push(p("Name", row.name));
     form.push(p("Type", row.lb_type));
-    form.push(p("Scheme", row.scheme));
+    if let Some(scheme) = row.scheme {
+        form.push(p("Scheme", scheme));
+    }
     if row.lb_type == "gateway" {
         // A Gateway Load Balancer carries IPv4 addresses alone.
         form.push(p("IpAddressType", "ipv4"));

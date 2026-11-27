@@ -354,8 +354,8 @@ pub(super) const SDK_SERVICE_NAMES: &[(&str, &str, SdkDiagnostic)] = &[
     // evaluates a rule at carries it (`"<the service's sentence> (Service:
     // ElasticLoadBalancingV2, Status Code: 400, Request ID: …)"`, where Amazon Route 53's
     // below carries `(SDK Attempt Count: …)` past the closing parenthesis). The LOAD
-    // BALANCER's own provider words the ATTEMPT-counting shape, which is recorded per provider
-    // ([`SDK_PROVIDER_SHAPES`]).
+    // BALANCER's and the TARGET GROUP's own providers word the ATTEMPT-counting shape, which is
+    // recorded per provider ([`SDK_PROVIDER_SHAPES`]).
     (
         "elasticloadbalancing",
         "ElasticLoadBalancingV2",
@@ -1085,13 +1085,49 @@ const SDK_PROVIDER_SHAPES: &[(&str, &str, SdkDiagnostic)] = &[
         "DeleteLoadBalancer",
         SdkDiagnostic::Attempts,
     ),
+    // The `AWS::ElasticLoadBalancingV2::TargetGroup` type's provider words the ATTEMPT-counting
+    // shape too, where that service's entry above carries the bare envelope its LISTENER RULE
+    // provider words. Read from the recorded `ResourceStatusReason` of a target group declared on
+    // a port its protocol does not support (in the behavioral corpus
+    // `simparity-behavioral-aws-v1`, check `cloudformation__elbv2.cfn-elbv2-geneve-target-group-\
+    // wrong-port-rejected`, whose reason reads `Resource handler returned message: "<the
+    // service's sentence> (Service: ElasticLoadBalancingV2, Status Code: 400, Request ID: …) (SDK
+    // Attempt Count: …)" (RequestToken: …, HandlerErrorCode: InvalidRequest)`). The rows beside
+    // the create are the same provider's other calls — the attributes it applies, the targets it
+    // registers, the modification an update makes and the delete — which word the shape it words;
+    // a recording of one of them is what would correct them.
+    (
+        "elasticloadbalancing",
+        "CreateTargetGroup",
+        SdkDiagnostic::Attempts,
+    ),
+    (
+        "elasticloadbalancing",
+        "ModifyTargetGroup",
+        SdkDiagnostic::Attempts,
+    ),
+    (
+        "elasticloadbalancing",
+        "ModifyTargetGroupAttributes",
+        SdkDiagnostic::Attempts,
+    ),
+    (
+        "elasticloadbalancing",
+        "RegisterTargets",
+        SdkDiagnostic::Attempts,
+    ),
+    (
+        "elasticloadbalancing",
+        "DeleteTargetGroup",
+        SdkDiagnostic::Attempts,
+    ),
     // The calls that act on a listener's CERTIFICATE LIST are CloudFormation's own, not a
     // registry provider's: an `AWS::ElasticLoadBalancingV2::ListenerCertificate` is deployed by
     // a handler CloudFormation ships ([`provisioning::elbv2_listener_certificate`]), built
     // against a generation of that service's SDK that words the PROXIED shape — where the
     // providers of the types that ARE resources of that service word the two comma-separated
-    // shapes above: the load balancer's counts its SDK's attempts, and the other three word its
-    // entry's bare envelope.
+    // shapes above: the load balancer's and the target group's count their SDK's attempts, and
+    // the other two word its entry's bare envelope.
     // Read from the recorded `ResourceStatusReason` of a `ListenerCertificate` pointed at a
     // well-formed certificate ARN that service resolves to nothing (in the behavioral corpus
     // `simparity-behavioral-aws-v1`, check `acm__cloudformation__ec2__elbv2.cfn-\

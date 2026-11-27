@@ -547,7 +547,10 @@ async fn a_link_over_a_load_balancer_the_stack_creates_comes_up_and_resolves() {
         let (refused, message) = refusal(&body);
         assert_eq!(
             (refused.as_str(), message.as_str()),
-            ("LoadBalancerNotFound", "One or more load balancers not found"),
+            (
+                "LoadBalancerNotFound",
+                format!("Load balancers '[{load_balancer_arn}]' not found").as_str()
+            ),
             "case {case:?}: expected that service's own not-found, got {body}"
         );
     }

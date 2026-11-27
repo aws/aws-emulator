@@ -56,7 +56,11 @@ async fn create_load_balancer(
     let mut form = action("CreateLoadBalancer");
     form.push(p("Name", name));
     form.push(p("Type", lb_type));
-    form.push(p("Scheme", "internal"));
+    // A Gateway Load Balancer carries no scheme at all — "you can't specify a scheme for a
+    // Gateway Load Balancer" — so one is named only for the families that do.
+    if lb_type != "gateway" {
+        form.push(p("Scheme", "internal"));
+    }
     for (index, subnet) in subnets.iter().enumerate() {
         form.push(p(&format!("Subnets.member.{}", index + 1), subnet));
     }

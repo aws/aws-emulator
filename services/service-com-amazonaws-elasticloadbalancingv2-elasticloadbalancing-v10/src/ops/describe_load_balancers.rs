@@ -255,29 +255,26 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let filtered = input.load_balancer_arns.is_some() || input.names.is_some();
         let selected: Vec<&crate::state::LoadBalancerRecord> = if filtered {
             let mut arns: Vec<String> = Vec::new();
-            // The two selectors are refused differently (see [`not_found`]), so what did
-            // not resolve is kept apart by the member it came from.
-            let mut missing_arns = 0usize;
-            let mut missing_names: Vec<&str> = Vec::new();
+            // What did not resolve, kept in the order the request named it: both selectors
+            // are refused in the same words, naming the identifiers themselves (see
+            // [`not_found`]), and the ARNs are the first selector this read resolves.
+            let mut missing: Vec<&str> = Vec::new();
             for arn in input.load_balancer_arns.iter().flatten() {
                 match guard.load_balancers.contains_key(arn) {
-                    false => missing_arns += 1,
+                    false => missing.push(arn.as_str()),
                     true if !arns.contains(arn) => arns.push(arn.clone()),
                     true => {}
                 }
             }
             for name in input.names.iter().flatten() {
                 match guard.name_to_lb_arn.get(name) {
-                    None => missing_names.push(name.as_str()),
+                    None => missing.push(name.as_str()),
                     Some(arn) if !arns.contains(arn) => arns.push(arn.clone()),
                     Some(_) => {}
                 }
             }
-            if missing_arns > 0 {
-                return Err(not_found_by_arn());
-            }
-            if !missing_names.is_empty() {
-                return Err(not_found_by_name(missing_names));
+            if !missing.is_empty() {
+                return Err(not_found(missing));
             }
             arns.iter()
                 .filter_map(|arn| guard.load_balancers.get(arn))
@@ -318,28 +315,18 @@ fn too_many_load_balancers(asked_about: usize) -> DescribeLoadBalancersError {
     ))
 }
 
-/// The modelled refusal for a `Names` entry no load balancer in state carries: the names
-/// that did not resolve, under the plural noun, rendered as the list the request carried
-/// ([`crate::state::load_balancers_not_found_message`]).
-fn not_found_by_name(identifiers: Vec<&str>) -> DescribeLoadBalancersError {
+/// The modelled refusal for an identifier this read resolved no load balancer for: the
+/// identifiers that did not resolve, under the plural noun, rendered as the list the request
+/// carried ([`crate::state::load_balancers_not_found_message`]).
+///
+/// Both selectors of this one read are refused in the same words, naming what they could not
+/// resolve: the recorded refusal of a read by `Names` of an absent name and the recorded
+/// refusal of a read by `LoadBalancerArns` of the ARN of a load balancer that was deleted are
+/// one form, with the identifier the request named in it. The identifiers are reported in the
+/// order the read resolved them, so the ARNs come before the names.
+fn not_found(identifiers: Vec<&str>) -> DescribeLoadBalancersError {
     DescribeLoadBalancersErrorModeled::LoadBalancerNotFoundException(LoadBalancerNotFoundException {
         message: Some(crate::state::load_balancers_not_found_message(identifiers)),
-    })
-    .into()
-}
-
-/// The modelled refusal for a `LoadBalancerArns` entry no load balancer in state carries.
-///
-/// The two selectors of this one read are refused in different words, and the difference
-/// is which member the request selected by: a selection by NAME names the names that did
-/// not resolve, while a selection by ARN names no value at all
-/// ([`crate::state::load_balancer_selection_not_found_message`]) — which is what the
-/// recorded answer to a `DescribeLoadBalancers(LoadBalancerArns=[...])` of an absent ARN
-/// carries. An ARN that did not resolve is reported before a name that did not, because
-/// the ARNs are the first selector this read resolves.
-fn not_found_by_arn() -> DescribeLoadBalancersError {
-    DescribeLoadBalancersErrorModeled::LoadBalancerNotFoundException(LoadBalancerNotFoundException {
-        message: Some(crate::state::load_balancer_selection_not_found_message()),
     })
     .into()
 }

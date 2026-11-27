@@ -12,8 +12,9 @@
 //! Nothing is minted for a request the model's own documentation says this operation
 //! cannot serve, so a refused create leaves the name free: a `Name` outside its documented
 //! form (`ValidationError`), a placement with fewer subnets than the family requires, an
-//! `IpAddressType` the family and scheme cannot carry or a `SubnetMapping` member
-//! documented for another family or scheme (`InvalidConfigurationRequest`), a subnet
+//! `IpAddressType` the family and scheme cannot carry, a `SubnetMapping` member
+//! documented for another family or scheme, or a `Scheme` on a family the member is
+//! documented against (`InvalidConfigurationRequest`), a subnet
 //! or Elastic IP allocation EC2 — which owns both — holds none of (`SubnetNotFound`,
 //! `AllocationIdNotFound`), and a VPC with no internet gateway attached for an
 //! internet-facing load balancer, whose nodes carry public addresses (`InvalidSubnet`).
@@ -27,7 +28,9 @@
 //! address a client that honours that name can actually reach it at, and otherwise the form
 //! its FAMILY and SCHEME publish ([`crate::state::load_balancer_dns_name`]) — and, for an
 //! Application Load Balancer a request names no `SecurityGroups` for, the default security
-//! group of the VPC it is placed in ([`starting_security_groups`]).
+//! group of the VPC it is placed in ([`starting_security_groups`]) — and the `Scheme` the
+//! load balancer carries, which is the family's to have at all
+//! ([`crate::state::created_scheme`]).
 //!
 //! ## Shape of an operation
 //!
@@ -256,20 +259,26 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         crate::state::check_load_balancer_name(&input.name)
             .map_err(crate::scaffolded::Scaffolded::validation_error)?;
 
-        // The modelled defaults: "the default is an Internet-facing load balancer"
-        // (`Scheme`), "the default is application" (`Type`), and `ipv4` for
+        // The modelled defaults: "the default is application" (`Type`) and `ipv4` for
         // `IpAddressType`. Resolved before anything is judged, because every rule below is
         // about the load balancer the request asks for rather than about what it spelled
         // out.
-        let scheme = input
-            .scheme
-            .clone()
-            .unwrap_or_else(|| "internet-facing".to_string());
         let lb_type = input
             .r#type
             .clone()
             .unwrap_or_else(|| "application".to_string());
         let family = crate::state::load_balancer_family(&lb_type);
+        // Whether this load balancer carries a `Scheme` at all is its FAMILY's to decide, and
+        // the member's own documentation decides it: "the default is an Internet-facing load
+        // balancer" for the families it applies to, and "you can't specify a scheme for a
+        // Gateway Load Balancer" for the one it does not — which carries none, so nothing is
+        // defaulted in for it and a request that names one is refused
+        // ([`crate::state::created_scheme`]).
+        let scheme = crate::state::created_scheme(family, input.scheme.as_deref())
+            .map_err(refuse)?;
+        // The scheme every rule below reads: the one this load balancer carries, and none at
+        // all for a family that carries none.
+        let judged_scheme = scheme.clone().unwrap_or_default();
         let ip_address_type = input
             .ip_address_type
             .clone()
@@ -322,7 +331,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // one scheme of it, so an address pinned on a load balancer that could never carry
         // it is refused rather than stored.
         for mapping in subnet_mappings {
-            if let Err(rule) = crate::state::check_subnet_mapping(family, &scheme, mapping) {
+            if let Err(rule) = crate::state::check_subnet_mapping(family, &judged_scheme, mapping)
+            {
                 return Err(invalid_configuration(&rule));
             }
         }
@@ -439,7 +449,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // attached to that VPC — so a VPC that has none can carry no such load balancer, and
         // the placement is refused rather than provisioned ([`ungatewayed_public_placement`]).
         if let Some(refusal) =
-            ungatewayed_public_placement(ctx, &region, family, &scheme, vpc_id.as_deref()).await
+            ungatewayed_public_placement(ctx, &region, family, &judged_scheme, vpc_id.as_deref())
+                .await
         {
             return Err(refusal);
         }
@@ -585,7 +596,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             Some(endpoint) => endpoint.authority().to_string(),
             None => crate::state::load_balancer_dns_name(
                 &candidate.name,
-                &candidate.scheme,
+                candidate.scheme.as_deref(),
                 family,
                 &guard.dns_id(family, &id),
                 &region,

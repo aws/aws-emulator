@@ -2017,7 +2017,7 @@ mod tests {
             region: "us-east-1".to_string(),
             dns_name: String::new(),
             created_time: SystemTime::UNIX_EPOCH,
-            scheme: "internal".to_string(),
+            scheme: Some("internal".to_string()),
             vpc_id: None,
             state_code: "active".to_string(),
             active_at: SystemTime::UNIX_EPOCH,

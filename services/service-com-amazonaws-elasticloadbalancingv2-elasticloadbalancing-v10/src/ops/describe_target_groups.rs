@@ -244,25 +244,25 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let named = input.target_group_arns.is_some() || input.names.is_some();
         let mut selected: Vec<&crate::state::TargetGroupRecord> = if named {
             let mut arns: Vec<String> = Vec::new();
-            // Whether any identifier the request asked for is one nothing holds; the
-            // refusal is about the selection, so it names none of them.
-            let mut missing = false;
+            // The identifiers nothing holds, kept in the order the request named them: the
+            // refusal names them, under either selector (see [`not_found`]).
+            let mut missing: Vec<&str> = Vec::new();
             for arn in input.target_group_arns.iter().flatten() {
                 match guard.target_groups.contains_key(arn) {
-                    false => missing = true,
+                    false => missing.push(arn.as_str()),
                     true if !arns.contains(arn) => arns.push(arn.clone()),
                     true => {}
                 }
             }
             for name in input.names.iter().flatten() {
                 match guard.name_to_tg_arn.get(name) {
-                    None => missing = true,
+                    None => missing.push(name.as_str()),
                     Some(arn) if !arns.contains(arn) => arns.push(arn.clone()),
                     Some(_) => {}
                 }
             }
-            if missing {
-                return Err(not_found());
+            if !missing.is_empty() {
+                return Err(not_found(missing));
             }
             arns.iter()
                 .filter_map(|arn| guard.target_groups.get(arn))
@@ -300,15 +300,20 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
     }
 }
 
-/// The modelled refusal for a selection this read could not resolve.
+/// The modelled refusal for a selection this read could not resolve: the identifiers that did
+/// not resolve, under the plural noun, rendered as the LIST the request carried
+/// ([`crate::state::target_groups_not_found_list_message`]).
 ///
-/// `TargetGroupArns` and `Names` are both LISTS, so the refusal is about the request's
-/// whole selection rather than one entry of it, and the service names no value — unlike
-/// an operation acting on ONE `TargetGroupArn`, which names that identifier
+/// `TargetGroupArns` and `Names` are both LISTS, and the refusal names what it could not
+/// resolve out of them, exactly as the sibling load-balancer read does
+/// ([`crate::state::load_balancers_not_found_message`]) — an operation acting on ONE
+/// `TargetGroupArn` names that identifier without the list around it
 /// ([`crate::state::target_groups_not_found_message`]).
-fn not_found() -> DescribeTargetGroupsError {
+fn not_found(identifiers: Vec<&str>) -> DescribeTargetGroupsError {
     DescribeTargetGroupsErrorModeled::TargetGroupNotFoundException(TargetGroupNotFoundException {
-        message: Some(crate::state::target_group_selection_not_found_message()),
+        message: Some(crate::state::target_groups_not_found_list_message(
+            identifiers,
+        )),
     })
     .into()
 }

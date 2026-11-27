@@ -778,13 +778,15 @@ async fn the_provisioning_loop_is_persisted_and_read_back() {
 #[tokio::test]
 async fn load_balancer_identity_follows_name_scheme_and_type() {
     // `Type` and `Scheme` values are the model's `LoadBalancerTypeEnum` /
-    // `LoadBalancerSchemeEnum`; the ARN segment is the one AWS publishes per type.
+    // `LoadBalancerSchemeEnum`; the ARN segment is the one AWS publishes per type. A Gateway
+    // Load Balancer names NO scheme — "you can't specify a scheme for a Gateway Load
+    // Balancer" — and carries none, so its row expects no `Scheme` reported back.
     let cases = [
-        ("alb-public", "application", "internet-facing", "app", 2),
-        ("alb-private", "application", "internal", "app", 2),
-        ("nlb-public", "network", "internet-facing", "net", 1),
-        ("nlb-private", "network", "internal", "net", 3),
-        ("glb-one", "gateway", "internet-facing", "gwy", 1),
+        ("alb-public", "application", Some("internet-facing"), "app", 2),
+        ("alb-private", "application", Some("internal"), "app", 2),
+        ("nlb-public", "network", Some("internet-facing"), "net", 1),
+        ("nlb-private", "network", Some("internal"), "net", 3),
+        ("glb-one", "gateway", None, "gwy", 1),
     ];
 
     let router = router();
@@ -794,7 +796,9 @@ async fn load_balancer_identity_follows_name_scheme_and_type() {
         let mut form = action("CreateLoadBalancer");
         form.push(p("Name", name));
         form.push(p("Type", lb_type));
-        form.push(p("Scheme", scheme));
+        if let Some(scheme) = scheme {
+            form.push(p("Scheme", scheme));
+        }
         for index in 1..=subnet_count {
             form.push(p(
                 &format!("Subnets.member.{index}"),
@@ -804,7 +808,7 @@ async fn load_balancer_identity_follows_name_scheme_and_type() {
         let created = call(&router, &form).await;
         assert_eq!(
             created.status, 200,
-            "case {name}/{lb_type}/{scheme}: expected 200, got {} body {}",
+            "case {name}/{lb_type}/{scheme:?}: expected 200, got {} body {}",
             created.status, created.body
         );
 
@@ -819,23 +823,23 @@ async fn load_balancer_identity_follows_name_scheme_and_type() {
         );
         assert!(
             arn.starts_with(&prefix),
-            "case {name}/{lb_type}/{scheme}: expected ARN prefix {prefix}, got {arn}"
+            "case {name}/{lb_type}/{scheme:?}: expected ARN prefix {prefix}, got {arn}"
         );
         let id = arn[prefix.len()..].to_string();
         assert!(
             is_hex_id(&id),
-            "case {name}/{lb_type}/{scheme}: expected a 16-hex id, got {id:?}"
+            "case {name}/{lb_type}/{scheme:?}: expected a 16-hex id, got {id:?}"
         );
         assert!(
             !seen_ids.contains(&id),
-            "case {name}/{lb_type}/{scheme}: ids must be unique within a run, {id} repeated"
+            "case {name}/{lb_type}/{scheme:?}: ids must be unique within a run, {id} repeated"
         );
         seen_ids.push(id.clone());
 
         // What each load balancer publishes as its `DNSName`: a Gateway Load Balancer's
         // `GENEVE` listeners carry no traffic of this kind, so it keeps the host Elastic Load
         // Balancing's own zone gives it (the ARN's own id, the `elb` label ahead of the
-        // Region, its scheme stated nowhere), while an Application or Network Load Balancer —
+        // Region, no scheme stated in it), while an Application or Network Load Balancer —
         // whose listeners carry a client's own traffic — publishes the address of the socket
         // this emulator opened for it, an address a client can dial, whatever its scheme. The
         // whole table of forms is `load_balancer_dns_name_form.rs`.
@@ -844,25 +848,27 @@ async fn load_balancer_identity_follows_name_scheme_and_type() {
             let host = format!("{name}-{id}.elb.{REGION}.amazonaws.com");
             assert_eq!(
                 dns_name, host,
-                "case {name}/{lb_type}/{scheme}: unexpected DNS name {dns_name:?}"
+                "case {name}/{lb_type}/{scheme:?}: unexpected DNS name {dns_name:?}"
             );
         } else {
             assert!(
                 dns_name.parse::<std::net::SocketAddr>().is_ok(),
-                "case {name}/{lb_type}/{scheme}: expected an address a client can dial, got \
+                "case {name}/{lb_type}/{scheme:?}: expected an address a client can dial, got \
                  {dns_name:?}"
             );
         }
         assert_eq!(
             reply.text("Type").as_deref(),
             Some(lb_type),
-            "case {name}/{lb_type}/{scheme}: unexpected Type {:?}",
+            "case {name}/{lb_type}/{scheme:?}: unexpected Type {:?}",
             reply.text("Type")
         );
+        // The scheme the load balancer carries — and NO `Scheme` member at all for the
+        // family that carries none.
         assert_eq!(
             reply.text("Scheme").as_deref(),
-            Some(scheme),
-            "case {name}/{lb_type}/{scheme}: unexpected Scheme {:?}",
+            scheme,
+            "case {name}/{lb_type}/{scheme:?}: unexpected Scheme {:?}",
             reply.text("Scheme")
         );
 
@@ -870,7 +876,7 @@ async fn load_balancer_identity_follows_name_scheme_and_type() {
         assert_eq!(
             found.len(),
             1,
-            "case {name}/{lb_type}/{scheme}: expected exactly 1 load balancer, got {}",
+            "case {name}/{lb_type}/{scheme:?}: expected exactly 1 load balancer, got {}",
             reply.body
         );
         let zone_names: Vec<String> = members(&found[0], "AvailabilityZones")
@@ -880,12 +886,13 @@ async fn load_balancer_identity_follows_name_scheme_and_type() {
         assert_eq!(
             zone_names.len(),
             subnet_count,
-            "case {name}/{lb_type}/{scheme}: expected one zone per subnet, got {zone_names:?}"
+            "case {name}/{lb_type}/{scheme:?}: expected one zone per subnet, got {zone_names:?}"
         );
         for zone in &zone_names {
             assert!(
                 zone.starts_with(REGION),
-                "case {name}/{lb_type}/{scheme}: a zone must be in the request's region, got {zone}"
+                "case {name}/{lb_type}/{scheme:?}: a zone must be in the request's region, got \
+                 {zone}"
             );
         }
         let mut distinct = zone_names.clone();
@@ -894,7 +901,7 @@ async fn load_balancer_identity_follows_name_scheme_and_type() {
         assert_eq!(
             distinct.len(),
             zone_names.len(),
-            "case {name}/{lb_type}/{scheme}: one subnet per zone, got {zone_names:?}"
+            "case {name}/{lb_type}/{scheme:?}: one subnet per zone, got {zone_names:?}"
         );
     }
 }

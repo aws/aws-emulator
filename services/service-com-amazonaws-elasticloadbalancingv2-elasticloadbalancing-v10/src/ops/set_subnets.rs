@@ -246,7 +246,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             };
             (
                 load_balancer.family(),
-                load_balancer.scheme.clone(),
+                // A load balancer of a family that carries no scheme is judged on none, which
+                // is what the rules keyed on a scheme read for it.
+                load_balancer.scheme.clone().unwrap_or_default(),
                 load_balancer.ip_address_type.clone(),
                 load_balancer.vpc_id.clone(),
             )

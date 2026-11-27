@@ -202,7 +202,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // no length on, so nothing else bounds how much work a request can ask for, and
         // past the quota no work at all is owed. Every step before that refusal is linear
         // in the list the body already carried.
-        let (target_type, vpc_id, ip_address_type, requested) = {
+        let (target_type, vpc_id, ip_address_type, protocol, requested) = {
             let guard = state.lock();
             let Some(group) = guard.target_groups.get(&input.target_group_arn) else {
                 return Err(group_not_found(&input.target_group_arn));
@@ -221,9 +221,25 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 group.target_type.clone(),
                 group.vpc_id.clone(),
                 group.ip_address_type.clone(),
+                group.protocol.clone(),
                 requested,
             )
         };
+
+        // A registration's port is bounded by the group's PROTOCOL just as the port the
+        // group itself was created with is: "the port on which the target is listening. If
+        // the target group protocol is GENEVE, the supported port is 6081"
+        // (`TargetDescription$Port`) — the one reading of that rule, which
+        // `CreateTargetGroup` applies to the port a target group STARTS on
+        // ([`crate::state::check_protocol_port`]). A target on any other port is one the
+        // load balancer could never route this group's traffic to, which is the modelled
+        // refusal for a target this target group cannot carry; it is raised before anything
+        // is resolved or stored, so a refused request registers nothing.
+        for (_, port) in &requested {
+            if let Err(refusal) = crate::state::check_protocol_port(protocol.as_deref(), *port) {
+                return Err(invalid_target(refusal.message()));
+            }
+        }
 
         // Every target is resolved against the service that OWNS it before any of them
         // is stored, so a refusal registers nothing — and the zone an `ip` target takes

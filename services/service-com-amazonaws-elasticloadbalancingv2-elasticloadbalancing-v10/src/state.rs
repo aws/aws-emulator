@@ -255,6 +255,20 @@ pub use target_type_protocol::{
     LOAD_BALANCER_TARGET_TYPE,
 };
 
+/// The ONE port a target group's protocol admits, read once for every operation that states
+/// a port for a target group.
+pub mod protocol_ports;
+
+pub use protocol_ports::{
+    check_protocol_port, protocol_fixed_port, protocol_port_message, GENEVE_PORT,
+    GENEVE_PROTOCOL,
+};
+
+/// Which load balancers carry a `Scheme` at all, and the one a create gives the ones that do.
+pub mod load_balancer_scheme;
+
+pub use load_balancer_scheme::{created_scheme, family_carries_scheme, unsupported_scheme_message};
+
 /// Which members a target group HAS for the kind of target it holds: the target type whose
 /// targets are invoked rather than connected to carries no network identity at all.
 pub mod lambda_target_group_members;
@@ -564,7 +578,10 @@ pub struct LoadBalancerRecord {
     pub region: String,
     pub dns_name: String,
     pub created_time: SystemTime,
-    pub scheme: String,
+    /// Where this load balancer's nodes are reachable from, as its FAMILY and the create
+    /// settled it ([`created_scheme`]): `None` for a family that carries no scheme at all,
+    /// whose reads report no `Scheme` member.
+    pub scheme: Option<String>,
     pub vpc_id: Option<String>,
     pub state_code: String,
     /// When the clock owes this load balancer its move to `active`.
@@ -622,7 +639,10 @@ impl LoadBalancerRecord {
             canonical_hosted_zone_id: self.canonical_hosted_zone_id(),
             created_time: Some(::aws_smithy_types::DateTime::from(self.created_time)),
             load_balancer_name: Some(self.name.clone()),
-            scheme: Some(self.scheme.clone()),
+            // "You can't specify a scheme for a Gateway Load Balancer": a load balancer of a
+            // family that carries no scheme reports no `Scheme` member at all, which is how
+            // an optional member says this load balancer has none.
+            scheme: self.scheme.clone(),
             vpc_id: self.vpc_id.clone(),
             state: Some(LoadBalancerState {
                 code: Some(self.state_code.clone()),
@@ -900,13 +920,18 @@ pub fn target_groups_not_found_message<'a>(
 /// over a LIST of identifiers (`DescribeTargetGroups`, whose `TargetGroupArns` and
 /// `Names` are both lists).
 ///
-/// There the refusal is about the request's whole selection rather than one entry of it,
-/// and the service names no value — the same shape of message its sibling list reads
-/// answer ('One or more listeners not found'), and what the recorded
-/// `DescribeTargetGroups` of an absent ARN answers (a replay of that step accepts this
-/// sentence and rejects one naming the ARN, which is why the two wordings differ).
-pub fn target_group_selection_not_found_message() -> String {
-    "One or more target groups not found".to_string()
+/// Built from the request, like the message above: the identifiers that did not resolve,
+/// under the plural noun, rendered as the LIST the request carried — the form the sibling
+/// load-balancer read answers with ([`load_balancers_not_found_message`]). The recorded
+/// answer to a `DescribeTargetGroups` naming the ARN of a target group a deleted stack took
+/// away is `Target groups '[arn:aws:elasticloadbalancing:…:targetgroup/…/…]' not found`:
+/// the brackets are what makes it the request's list rather than one identifier, which is
+/// what tells a caller WHICH entry of its selection is gone.
+pub fn target_groups_not_found_list_message<'a>(
+    identifiers: impl IntoIterator<Item = &'a str>,
+) -> String {
+    let named: Vec<&str> = identifiers.into_iter().collect();
+    format!("Target groups '[{}]' not found", named.join(", "))
 }
 
 /// The message Elastic Load Balancing answers a `ListenerNotFound` with for an
@@ -926,10 +951,11 @@ pub fn listener_not_found_message(arn: &str) -> String {
 /// about the selection the request asked for rather than one listener the call
 /// addresses.
 ///
-/// The service names no value there — the same shape of message its sibling target
-/// group reads answer ([`target_group_selection_not_found_message`]), and what the
-/// recorded `DescribeListeners`, `DescribeListenerCertificates` and `DescribeRules` of
-/// an absent listener answer.
+/// The service names no value there, which is what the recorded `DescribeListeners`,
+/// `DescribeListenerCertificates` and `DescribeRules` of an absent listener answer — unlike
+/// the reads that select LOAD BALANCERS and TARGET GROUPS by identifier, whose recorded
+/// refusals name the identifiers they could not resolve
+/// ([`load_balancers_not_found_message`], [`target_groups_not_found_list_message`]).
 pub fn listener_selection_not_found_message() -> String {
     "One or more listeners not found".to_string()
 }
@@ -1588,14 +1614,14 @@ pub const APPLICATION_DNS_ID_DIGITS: u32 = 10;
 /// [`ComAmazonawsElasticloadbalancingv2ElasticloadbalancingV10State::dns_id`] answers.
 pub fn load_balancer_dns_name(
     name: &str,
-    scheme: &str,
+    scheme: Option<&str>,
     family: LoadBalancerFamily,
     dns_id: &str,
     region: &str,
 ) -> String {
     match family {
         LoadBalancerFamily::Application => {
-            let prefix = if scheme == INTERNAL_SCHEME {
+            let prefix = if scheme == Some(INTERNAL_SCHEME) {
                 RESERVED_LOAD_BALANCER_NAME_PREFIX
             } else {
                 ""
@@ -2336,9 +2362,9 @@ pub fn trust_store_policy_not_found_message(arn: &str) -> String {
 ///
 /// Built from the request: the identifier it names is the only thing the caller can act
 /// on, exactly as the listener-addressing operations quote their `ListenerArn` back
-/// ([`listener_not_found_message`]), while a read over a LIST of load balancers names
-/// either the identifiers it could not resolve ([`load_balancers_not_found_message`]) or
-/// no value at all ([`load_balancer_selection_not_found_message`]).
+/// ([`listener_not_found_message`]), while a read over a LIST of load balancers names the
+/// identifiers it could not resolve ([`load_balancers_not_found_message`]) and a TAG read or
+/// write names no value at all ([`load_balancer_selection_not_found_message`]).
 pub fn load_balancer_not_found_message(arn: &str) -> String {
     format!("Load balancer '{arn}' not found")
 }
@@ -2362,8 +2388,11 @@ pub fn deletion_protection_message(arn: &str) -> String {
 /// did not resolve, under the PLURAL noun, rendered as the LIST the request carried —
 /// `Load balancers '[my-alb]' not found` for one name, and the same form with more
 /// entries for more of them. The brackets are what makes it a list rather than one
-/// resource, which is what the recorded answer to a `DescribeLoadBalancers(Names=[...])`
-/// of an absent name carries.
+/// resource, which is what the recorded answer to a `DescribeLoadBalancers` of an absent
+/// identifier carries under EITHER selector: the recorded refusal of a read by `Names` of an
+/// absent name, and the recorded refusal of a read by `LoadBalancerArns` of the ARN of a load
+/// balancer a deleted stack took away, are one form with the identifier the request named in
+/// it.
 pub fn load_balancers_not_found_message<'a>(
     identifiers: impl IntoIterator<Item = &'a str>,
 ) -> String {
@@ -2371,15 +2400,15 @@ pub fn load_balancers_not_found_message<'a>(
     format!("Load balancers '[{}]' not found", named.join(", "))
 }
 
-/// The message Elastic Load Balancing answers a `LoadBalancerNotFound` with for a read
-/// that selected by ARN (`DescribeLoadBalancers`' `LoadBalancerArns`).
+/// The message Elastic Load Balancing answers a `LoadBalancerNotFound` with where the
+/// refusal names no value of the request at all: the TAG reads and writes, whose subject is
+/// the resource the request addressed rather than a list of load balancers
+/// ([`taggable_not_found_message`]).
 ///
-/// The same read's two selectors are refused in different words: a selection by NAME
-/// lists the names that did not resolve ([`load_balancers_not_found_message`]), while a
-/// selection by ARN names no value at all — the shape of message this service's sibling
-/// list reads answer ([`listener_selection_not_found_message`],
-/// [`target_group_selection_not_found_message`]), and what the recorded answer to a
-/// `DescribeLoadBalancers(LoadBalancerArns=[...])` of an absent ARN carries.
+/// The shape of message this service's sibling list reads answer
+/// ([`listener_selection_not_found_message`], [`rule_selection_not_found_message`]).
+/// `DescribeLoadBalancers` does NOT answer it: both of its selectors name the identifiers
+/// that did not resolve ([`load_balancers_not_found_message`]).
 pub fn load_balancer_selection_not_found_message() -> String {
     "One or more load balancers not found".to_string()
 }

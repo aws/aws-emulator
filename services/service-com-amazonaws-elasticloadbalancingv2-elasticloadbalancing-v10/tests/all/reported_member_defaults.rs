@@ -44,8 +44,9 @@ type LoadBalancerCase = (&'static str, &'static [(&'static str, &'static str)]);
 
 /// The load balancers these tables run against: every family the model's
 /// `LoadBalancerTypeEnum` names (`application`, `network`, `gateway`), both schemes its
-/// `LoadBalancerSchemeEnum` names, and address types and placements of one, two and three
-/// zones — none of which the rules below depend on, which is what the rows show.
+/// `LoadBalancerSchemeEnum` names for the families that carry one, and address types and
+/// placements of one, two and three zones — none of which the rules below depend on, which is
+/// what the rows show.
 const LOAD_BALANCERS: &[LoadBalancerCase] = &[
     ("an internet-facing application load balancer", &[]),
     (
@@ -73,12 +74,10 @@ const LOAD_BALANCERS: &[LoadBalancerCase] = &[
         ],
     ),
     (
-        "an internal gateway load balancer",
-        &[
-            ("Type", "gateway"),
-            ("Scheme", "internal"),
-            ("IpAddressType", "ipv4"),
-        ],
+        // A Gateway Load Balancer carries no scheme at all — "you can't specify a scheme for
+        // a Gateway Load Balancer" — so this row names none.
+        "a gateway load balancer",
+        &[("Type", "gateway"), ("IpAddressType", "ipv4")],
     ),
 ];
 

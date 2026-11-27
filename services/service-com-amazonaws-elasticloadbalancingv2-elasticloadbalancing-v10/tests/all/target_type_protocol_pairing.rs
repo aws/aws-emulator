@@ -80,7 +80,11 @@ async fn a_target_group_carries_only_a_protocol_its_target_type_is_reached_over(
             form.push(p("Name", &name));
             form.push(p("TargetType", target_type));
             form.push(p("Protocol", protocol));
-            form.push(p("Port", "8080"));
+            // "If the protocol is GENEVE, the supported port is 6081"
+            // (`CreateTargetGroupInput$Port`) — every other protocol takes any port the
+            // member's range admits, so the row sends the port its protocol supports and
+            // what it varies stays the PAIRING under test.
+            form.push(p("Port", if *protocol == "GENEVE" { "6081" } else { "8080" }));
             form.push(p("VpcId", "vpc-12345678"));
             let reply = call(&router, &form).await;
 

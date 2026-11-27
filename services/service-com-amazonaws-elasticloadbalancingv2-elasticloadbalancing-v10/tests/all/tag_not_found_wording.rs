@@ -279,22 +279,27 @@ async fn an_operation_addressing_one_resource_still_names_its_identifier() {
         );
     }
 
-    // The same selection shape as the tag operations, on a read that is NOT a tag call:
-    // a list of load balancer ARNs names no value either, which is the wording the tag
-    // operations share with it for that kind.
+    // The same selection shape on a read that is NOT a tag call: the wording belongs to the
+    // OPERATION as much as to the kind. A tag operation addressing a load balancer names no
+    // value of the request, while `DescribeLoadBalancers` over the same selector names the
+    // identifier it could not resolve — the two are asserted together here, so neither can be
+    // changed into the other's wording unnoticed.
     let mut form = action("DescribeLoadBalancers");
     form.push(p("LoadBalancerArns.member.1", &absent_lb));
     let refused = call(&router, &form).await;
     let said = unescaped(&message(&refused));
+    let tagged = tag_not_found_message("LoadBalancerNotFound", &absent_lb);
+    let expected = format!("Load balancers '[{absent_lb}]' not found");
     assert_eq!(
         (refused.status, refused.error_code().as_str(), said.as_str()),
-        (
-            400,
-            "LoadBalancerNotFound",
-            tag_not_found_message("LoadBalancerNotFound", &absent_lb).as_str()
-        ),
+        (400, "LoadBalancerNotFound", expected.as_str()),
         "case a selection of load balancers by ARN: got {} body {}",
         refused.status,
         refused.body
+    );
+    assert_ne!(
+        said, tagged,
+        "case a selection of load balancers by ARN: the read names the identifier where a tag \
+         operation names none, got {said:?} for both"
     );
 }

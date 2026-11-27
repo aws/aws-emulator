@@ -166,7 +166,7 @@ fn place_in_subnets(
     // which refuses such a placement in a VPC whose public addresses route nowhere).
     let public_nodes = super::internet_facing_placement::placement_needs_internet_gateway(
         record.family(),
-        &record.scheme,
+        record.scheme.as_deref().unwrap_or_default(),
     );
     // The groups the load balancer carries govern traffic to its network interfaces
     // (`CreateLoadBalancer$SecurityGroups`), so they are the groups of those interfaces.

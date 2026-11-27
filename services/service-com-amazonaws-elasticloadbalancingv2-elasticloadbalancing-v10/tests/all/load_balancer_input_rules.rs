@@ -247,9 +247,11 @@ async fn a_subnet_mapping_pins_only_what_the_family_and_scheme_carry() {
             false,
         ),
         (
+            // A Gateway Load Balancer carries no scheme, so this row names none: what it
+            // asserts is that the family carries no Elastic IP.
             "an elastic ip on a gateway load balancer",
             "gateway",
-            "internet-facing",
+            "",
             "AllocationId",
             "eipalloc-0abc4",
             false,
@@ -317,7 +319,10 @@ async fn a_subnet_mapping_pins_only_what_the_family_and_scheme_carry() {
         let mut form = action("CreateLoadBalancer");
         form.push(p("Name", &name));
         form.push(p("Type", lb_type));
-        form.push(p("Scheme", scheme));
+        // A row whose family carries no scheme names none.
+        if !scheme.is_empty() {
+            form.push(p("Scheme", scheme));
+        }
         // Two mappings, so an Application Load Balancer's own floor of two zones is met
         // whatever the row asserts, and the pinned member is on the first of them.
         form.push(p(

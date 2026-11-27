@@ -1012,7 +1012,7 @@ mod tests {
                 region: "us-west-2".to_string(),
                 dns_name: "127.0.0.1:40115".to_string(),
                 created_time: at(),
-                scheme: "internet-facing".to_string(),
+                scheme: Some("internet-facing".to_string()),
                 vpc_id: None,
                 state_code: "active".to_string(),
                 active_at: at(),

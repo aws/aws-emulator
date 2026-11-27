@@ -58,7 +58,9 @@ struct Row {
     case: &'static str,
     name: &'static str,
     lb_type: &'static str,
-    scheme: &'static str,
+    /// The `Scheme` the create names, or `None` where the family carries none — "you can't
+    /// specify a scheme for a Gateway Load Balancer" (`CreateLoadBalancerInput$Scheme`).
+    scheme: Option<&'static str>,
     /// How many of the network's subnets it is placed in — one interface each.
     subnets: usize,
     /// Whether its nodes carry PUBLIC addresses, which is what each interface then holds an
@@ -73,7 +75,7 @@ const ROWS: &[Row] = &[
         case: "an internet-facing application load balancer in two subnets",
         name: "nodes-alb-public",
         lb_type: "application",
-        scheme: "internet-facing",
+        scheme: Some("internet-facing"),
         subnets: 2,
         public_nodes: true,
         dialable: true,
@@ -82,7 +84,7 @@ const ROWS: &[Row] = &[
         case: "an internal application load balancer in two subnets",
         name: "nodes-alb-private",
         lb_type: "application",
-        scheme: "internal",
+        scheme: Some("internal"),
         subnets: 2,
         public_nodes: false,
         dialable: true,
@@ -91,7 +93,7 @@ const ROWS: &[Row] = &[
         case: "an internet-facing network load balancer in one subnet",
         name: "nodes-nlb-public",
         lb_type: "network",
-        scheme: "internet-facing",
+        scheme: Some("internet-facing"),
         subnets: 1,
         public_nodes: true,
         dialable: true,
@@ -100,7 +102,7 @@ const ROWS: &[Row] = &[
         case: "an internal network load balancer in two subnets",
         name: "nodes-nlb-private",
         lb_type: "network",
-        scheme: "internal",
+        scheme: Some("internal"),
         subnets: 2,
         public_nodes: false,
         dialable: true,
@@ -109,7 +111,7 @@ const ROWS: &[Row] = &[
         case: "a gateway load balancer, whose nodes carry no scheme at all",
         name: "nodes-gwlb",
         lb_type: "gateway",
-        scheme: "internet-facing",
+        scheme: None,
         subnets: 1,
         public_nodes: false,
         dialable: false,
@@ -228,11 +230,11 @@ fn a_load_balancers_nodes_carry_the_addresses_its_scheme_gives_them() {
 
             for row in ROWS {
                 let before = service_interface_ids(&router, &runtime);
-                let mut params: Vec<(&str, &str)> = vec![
-                    ("Name", row.name),
-                    ("Type", row.lb_type),
-                    ("Scheme", row.scheme),
-                ];
+                let mut params: Vec<(&str, &str)> =
+                    vec![("Name", row.name), ("Type", row.lb_type)];
+                if let Some(scheme) = row.scheme {
+                    params.push(("Scheme", scheme));
+                }
                 if row.lb_type == "gateway" {
                     // A Gateway Load Balancer carries IPv4 addresses alone.
                     params.push(("IpAddressType", "ipv4"));

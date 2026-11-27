@@ -123,9 +123,13 @@ const ACTIVE: &str = "active";
 
 /// The refusal Elastic Load Balancing answers a `DescribeLoadBalancers` naming an ARN it holds
 /// no load balancer for with — correct for an ARN that names nothing, and what the last leg
-/// holds the service to.
+/// holds the service to. The message names the identifier the read could not resolve, which is
+/// the one form both of that read's selectors answer with; it is compared as the SERIALIZER
+/// writes it, since the quotes around the list are XML entities on the wire.
 const NOT_FOUND_CODE: &str = "LoadBalancerNotFound";
-const NOT_FOUND_MESSAGE: &str = "One or more load balancers not found";
+fn not_found_message(identifier: &str) -> String {
+    crate::query_wire::xml_escape(&format!("Load balancers '[{identifier}]' not found"))
+}
 
 /// How long a wait gives a state the clock owes (a stack's status, a launch reaching
 /// `InService`, a load balancer reaching `active`) and how often it looks. Generous — a stack
@@ -836,7 +840,8 @@ async fn a_create_complete_estate_is_served_by_the_services_that_own_it() {
         status, 400,
         "case {case:?}: expected {absent} to be refused 400, got {status} with body {body}"
     );
-    for (member, expected) in [("Code", NOT_FOUND_CODE), ("Message", NOT_FOUND_MESSAGE)] {
+    let not_found = not_found_message(&absent);
+    for (member, expected) in [("Code", NOT_FOUND_CODE), ("Message", not_found.as_str())] {
         let reported = opt_element(&body, member);
         assert_eq!(
             reported.as_deref(),

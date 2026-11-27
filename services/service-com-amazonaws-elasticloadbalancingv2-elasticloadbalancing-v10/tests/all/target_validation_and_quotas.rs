@@ -718,9 +718,10 @@ async fn a_not_found_refusal_names_the_identifiers_the_lookup_carried() {
             "Load balancers '[no-such-alb, nor-this-one]' not found".to_string(),
         ),
         (
-            // A lookup by ARN names no value: the same read's two selectors are refused
-            // in different words, which is what the recorded answer to a
-            // `DescribeLoadBalancers(LoadBalancerArns=[...])` of an absent ARN carries.
+            // A lookup by ARN names the ARN it could not resolve: both of this read's
+            // selectors are refused in the same words, which is what the recorded answer to
+            // a `DescribeLoadBalancers(LoadBalancerArns=[...])` of the ARN of a load balancer
+            // that was deleted carries.
             "DescribeLoadBalancers by an absent ARN",
             vec![
                 p("Action", "DescribeLoadBalancers"),
@@ -735,7 +736,9 @@ async fn a_not_found_refusal_names_the_identifiers_the_lookup_carried() {
                      /0123456789abcdef",
                 ),
             ],
-            "One or more load balancers not found".to_string(),
+            "Load balancers '[arn:aws:elasticloadbalancing:us-west-2:000000000000:loadbalancer\
+             /app/ghost/0123456789abcdef]' not found"
+                .to_string(),
         ),
     ];
 

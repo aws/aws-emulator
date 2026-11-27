@@ -197,8 +197,8 @@ async fn modify_attribute(
 ///
 /// The rows span the shapes of such an operation: a list read, a read of one group's
 /// attributes, two writes of one group, and the two registration calls. A `Describe`
-/// over a LIST of identifiers words the refusal in the plural (AWS: 'One or more target
-/// groups not found'); an operation naming ONE `TargetGroupArn` names that ARN.
+/// over a LIST of identifiers names the identifiers it could not resolve, rendered as that
+/// list; an operation naming ONE `TargetGroupArn` names that ARN without a list around it.
 #[tokio::test]
 async fn every_operation_naming_an_absent_target_group_answers_the_modelled_refusal() {
     let (router, _engine) = emulator();
@@ -207,20 +207,21 @@ async fn every_operation_naming_an_absent_target_group_answers_the_modelled_refu
     // (case, form fields, the message the refusal must answer)
     //
     // The wording follows the shape of the lookup, as the recorded answers do: a
-    // `Describe` over a LIST of identifiers refuses the whole selection and names no
-    // value, while an operation acting on ONE `TargetGroupArn` names that identifier.
-    let selection = "One or more target groups not found".to_string();
+    // `Describe` over a LIST of identifiers names what it could not resolve out of that
+    // list, while an operation acting on ONE `TargetGroupArn` names that identifier with no
+    // list around it.
+    let selection = |identifier: &str| format!("Target groups '[{identifier}]' not found");
     let named = |identifier: &str| format!("Target groups '{identifier}' not found");
     let cases: Vec<NotFoundCase> = vec![
         (
             "DescribeTargetGroups by ARN",
             vec![p("TargetGroupArns.member.1", &absent)],
-            selection.clone(),
+            selection(&absent),
         ),
         (
             "DescribeTargetGroups by name",
             vec![p("Names.member.1", "not-here")],
-            selection.clone(),
+            selection("not-here"),
         ),
         (
             "DescribeTargetGroupAttributes",

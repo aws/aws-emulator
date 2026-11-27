@@ -313,6 +313,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // perfectly good on their own and it is the combination no target group can hold.
         crate::state::check_target_type_protocol(&target_type, input.protocol.as_deref())
             .map_err(refuse)?;
+        // And what port its targets receive traffic on is not independent of that protocol
+        // either: a protocol the model documents ONE supported port for admits that port
+        // alone ("if the protocol is GENEVE, the supported port is 6081"), whatever the
+        // member's own range allows ([`crate::state::check_protocol_port`]). Refused as the
+        // modelled "the requested configuration is not valid" for the same reason: both
+        // values are admitted on their own and it is the pairing no target group can hold.
+        crate::state::check_protocol_port(input.protocol.as_deref(), input.port)
+            .map_err(refuse)?;
         validate_health_check_protocol(
             input.health_check_protocol.as_deref(),
             input.protocol.as_deref(),

@@ -145,12 +145,13 @@ enum Expected {
     None,
 }
 
-/// One row: the case, the family and scheme the load balancer is created with, how many of
-/// the VPC's own groups the request names, and what it must then report.
+/// One row: the case, the family and scheme the load balancer is created with (`None` where
+/// the family carries no scheme — "you can't specify a scheme for a Gateway Load Balancer"),
+/// how many of the VPC's own groups the request names, and what it must then report.
 struct Row {
     case: &'static str,
     lb_type: &'static str,
-    scheme: &'static str,
+    scheme: Option<&'static str>,
     /// Whether the request names the VPC's own group (`CreateSecurityGroup`'s id).
     names_group: bool,
     expected: Expected,
@@ -163,42 +164,42 @@ const ROWS: &[Row] = &[
     Row {
         case: "an internet-facing application load balancer naming no group",
         lb_type: "application",
-        scheme: "internet-facing",
+        scheme: Some("internet-facing"),
         names_group: false,
         expected: Expected::VpcDefault,
     },
     Row {
         case: "an internal application load balancer naming no group",
         lb_type: "application",
-        scheme: "internal",
+        scheme: Some("internal"),
         names_group: false,
         expected: Expected::VpcDefault,
     },
     Row {
         case: "an application load balancer naming a group of its own VPC",
         lb_type: "application",
-        scheme: "internet-facing",
+        scheme: Some("internet-facing"),
         names_group: true,
         expected: Expected::AsNamed,
     },
     Row {
         case: "a network load balancer naming no group",
         lb_type: "network",
-        scheme: "internet-facing",
+        scheme: Some("internet-facing"),
         names_group: false,
         expected: Expected::None,
     },
     Row {
         case: "a network load balancer naming a group of its own VPC",
         lb_type: "network",
-        scheme: "internal",
+        scheme: Some("internal"),
         names_group: true,
         expected: Expected::AsNamed,
     },
     Row {
         case: "a gateway load balancer naming no group",
         lb_type: "gateway",
-        scheme: "internet-facing",
+        scheme: None,
         names_group: false,
         expected: Expected::None,
     },
@@ -236,10 +237,12 @@ fn a_load_balancer_carries_the_groups_it_was_created_with_or_its_vpcs_default() 
                     let mut params = vec![
                         ("Name", name.as_str()),
                         ("Type", row.lb_type),
-                        ("Scheme", row.scheme),
                         ("Subnets.member.1", vpc.subnets[0].as_str()),
                         ("Subnets.member.2", vpc.subnets[1].as_str()),
                     ];
+                    if let Some(scheme) = row.scheme {
+                        params.push(("Scheme", scheme));
+                    }
                     if row.names_group {
                         params.push(("SecurityGroups.member.1", vpc.named_group.as_str()));
                     }
