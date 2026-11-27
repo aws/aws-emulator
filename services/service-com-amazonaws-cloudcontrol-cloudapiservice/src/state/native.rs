@@ -79,9 +79,11 @@ use ::std::time::{SystemTime, UNIX_EPOCH};
 /// A call the OWNING service would have refused for want of a grant is one of those
 /// downstream errors too ([`Self::Rejected`]): the handler made that call with the role's
 /// credentials, that service answered its own authorization refusal, and the handler maps
-/// that answer to no verdict of its own — so it is reported exactly as that service's other
-/// errors are, under `GeneralServiceException` and in the handler's own sentence about the
-/// call it was making.
+/// that answer to no verdict of its own — so it is reported under `GeneralServiceException`
+/// as that service's other errors on the call are. A handler reads an authorization refusal
+/// on a branch of its OWN, though, so what it states about one is the call it was making and
+/// never the refusal's own wording, whichever of the two a type's handler states about the
+/// others ([`NativeResourceProvider::relayed_client`]).
 #[derive(Debug, PartialEq, Eq)]
 pub enum NativeRefusal {
     /// The owning service holds no such resource.
@@ -171,16 +173,18 @@ pub fn declared_properties(type_name: &str) -> &'static [&'static str] {
 /// The sentence a resource type's handler states when a call it made on the OWNING service
 /// raised an error it maps to no verdict of its own ([`NativeRefusal::Rejected`]).
 ///
-/// The handler does not relay what the downstream service said: it reports the fixed text of
-/// that class around its one variable part, the owning service's API operation it was
-/// making — which is the action named without the namespace an IAM action carries it under.
-/// So a caller reading a failed request learns which downstream call did not happen, and
-/// nothing of the downstream service's own wording is passed through as Cloud Control API's.
+/// What a handler that states a sentence of its OWN reports, rather than the exception its
+/// client raised ([`NativeResourceProvider::relayed_client`] answers which of the two a
+/// type's handler does): the fixed text of that class around its one variable part, the
+/// owning service's API operation it was making — which is the action named without the
+/// namespace an IAM action carries it under. So a caller reading a failed request learns
+/// which downstream call did not happen, and nothing of the downstream service's own wording
+/// is passed off as Cloud Control API's.
 ///
-/// ONE sentence for every resource type, because it is the sentence of that FAILURE CLASS
-/// rather than of a type: what differs between two types' handlers is which call they make,
-/// which is why the call is read from each provider's own published calls
-/// ([`downstream_call`]) instead of being written per type.
+/// ONE sentence for every such type, because it is the sentence of that FAILURE CLASS rather
+/// than of a type: what differs between two of those handlers is which call they make, which
+/// is why the call is read from each provider's own published calls ([`downstream_call`])
+/// instead of being written per type.
 pub fn downstream_failure(call: &str) -> String {
     let operation = call.rsplit_once(':').map_or(call, |(_, operation)| operation);
     format!("Error occurred during operation '{operation}'.")
@@ -334,6 +338,26 @@ pub trait NativeResourceProvider: Send + Sync {
     /// resource unmade rather than made against an ARN nothing answers to.
     fn resource_arn(&self, region: &str, identifier: &str) -> Option<String> {
         let _ = (region, identifier);
+        None
+    }
+
+    /// The owning service's SDK CLIENT this type's handler reports an error that service
+    /// raised through, named as that client's rendering of an exception names the service —
+    /// or `None` for a handler that reports such an error as a sentence of its own.
+    ///
+    /// A handler reaches the service that owns its type through that service's SDK, and the
+    /// two ways a handler reports an error it maps to no verdict of its own differ in WHAT it
+    /// states about the failure: one states the exception its client RAISED, so the owning
+    /// service's own diagnostic travels out with the client's rendering of the refused call
+    /// around it, and one states only the sentence about the CALL it was making
+    /// ([`downstream_failure`]), which carries no diagnosis. Which of the two a type's
+    /// handler does is a property of that handler, exactly as the sentence it words a
+    /// resource it cannot find in is ([`::service_common::cfn_resource_handlers`]), so each
+    /// provider answers for its own.
+    ///
+    /// `None` is the answer for every type whose handler is not recorded relaying one, the
+    /// position every catalogue of this crate takes about what it does not state.
+    fn relayed_client(&self) -> Option<&'static str> {
         None
     }
 }

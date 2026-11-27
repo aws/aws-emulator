@@ -1105,16 +1105,16 @@ async fn a_type_the_registry_does_not_hold_is_refused_before_anything_it_names_i
 /// own sentence followed by the SDK's diagnostic of the call it made. That diagnostic is
 /// how a client of this API recovers the downstream call, so each of its groups is fixed
 /// text around one per-call value.
-const RELAYED_SERVICE: &str = " (Service: ";
+pub(crate) const RELAYED_SERVICE: &str = " (Service: ";
 
 /// The fixed text between the service and the status that service answered.
-const RELAYED_STATUS: &str = ", Status Code: ";
+pub(crate) const RELAYED_STATUS: &str = ", Status Code: ";
 
 /// The fixed text that introduces the id of the call the handler made.
-const RELAYED_REQUEST_ID: &str = ", Request ID: ";
+pub(crate) const RELAYED_REQUEST_ID: &str = ", Request ID: ";
 
 /// The fixed text between the id of that call and how many attempts the SDK made at it.
-const RELAYED_ATTEMPTS: &str = ") (SDK Attempt Count: ";
+pub(crate) const RELAYED_ATTEMPTS: &str = ") (SDK Attempt Count: ";
 
 /// The sentence the service that owns `AWS::SNS::Topic` words a topic it does not hold in,
 /// which the relayed exception opens with.
@@ -1126,21 +1126,25 @@ const RELAYED_SDK_SERVICE: &str = "Sns";
 /// What a relayed SDK diagnostic states about the refused call, taken apart at the fixed
 /// text between its groups — so a case asserts on each fact rather than on one opaque
 /// sentence, and a diagnostic that drops any group fails here.
-struct RelayedCall {
+///
+/// Read by every suite that holds a relayed exception to its groups
+/// (`relayed_downstream_diagnosis` holds the ones an owning service's refusal of a handler's
+/// call carries), so the form is taken apart in one place.
+pub(crate) struct RelayedCall {
     /// The owning service's own sentence, which the SDK's diagnostic follows.
-    sentence: String,
+    pub(crate) sentence: String,
     /// The service the handler called, as that service's SDK client names it.
-    service: String,
+    pub(crate) service: String,
     /// The HTTP status that service answered.
-    status: u16,
+    pub(crate) status: u16,
     /// The id of the call the handler made, which that service mints per call.
-    request_id: String,
+    pub(crate) request_id: String,
     /// How many attempts the SDK made at that call.
-    attempts: u32,
+    pub(crate) attempts: u32,
 }
 
 /// Take `detail` apart as the relayed SDK diagnostic it must be.
-fn relayed_call(detail: &str, case: &str) -> RelayedCall {
+pub(crate) fn relayed_call(detail: &str, case: &str) -> RelayedCall {
     let (sentence, diagnostic) = detail.split_once(RELAYED_SERVICE).unwrap_or_else(|| {
         panic!("case {case:?}: expected a diagnostic naming the called service after {RELAYED_SERVICE:?}, got {detail:?}")
     });

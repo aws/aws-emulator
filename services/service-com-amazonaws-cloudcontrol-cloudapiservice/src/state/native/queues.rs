@@ -70,6 +70,16 @@ const QUEUE_NAME: &str = "QueueName";
 /// the shared reading of a tag set every provider uses.
 const TAGS: &str = "Tags";
 
+/// The Amazon SQS client this type's handler reaches the owning service through, named as
+/// that client's rendering of an exception names the service.
+///
+/// This handler reports an error the owning service raised which it maps to no verdict of
+/// its own as the exception its CLIENT raised, so that service's own diagnostic of the
+/// refused call travels out with that client's rendering of the call around it
+/// ([`NativeResourceProvider::relayed_client`]) — a caller of a failed request reads why
+/// Amazon SQS would not make the queue, in Amazon SQS's own words.
+const SDK_CLIENT: &str = "Sqs";
+
 /// The Amazon SQS queues of one engine, as Cloud Control API resources.
 pub struct QueueProvider {
     /// The owning service's store. A handle, so every answer is read from the live store.
@@ -146,6 +156,11 @@ impl NativeResourceProvider for QueueProvider {
             crate::state::OPERATION_DELETE => REMOVE,
             _ => &[],
         }
+    }
+
+    /// The exception this type's handler relays is its Amazon SQS client's ([`SDK_CLIENT`]).
+    fn relayed_client(&self) -> Option<&'static str> {
+        Some(SDK_CLIENT)
     }
 
     /// The queue's own ARN, as the OWNING service builds it from the Region and the name the

@@ -53,6 +53,11 @@ use sha2::{Digest, Sha256};
 
 use native::{NativeRefusal, NativeResources};
 
+/// The workspace's ONE rendering of the envelope an SDK layer states around a call it
+/// relayed — what a handler that carries its client's rendering of the owning service's
+/// exception reports the service, the status, the call's own id and the attempts in.
+use ::service_common::relayed_refusal::{relayed_refusal_message, RelayedCall};
+
 /// The secret this service's `NextToken`s are authenticated under — the shared one every
 /// paginated read of this emulator uses, so no two services disagree about what makes a
 /// continuation token one the service ISSUED.
@@ -476,13 +481,46 @@ impl EffectFailure {
     /// A provider's refusal of work this record owed, as the record reports it.
     ///
     /// A refusal the OWNING service raised that the type's handler maps to no verdict of its
-    /// own is reported in the handler's own sentence about the CALL it was making
-    /// ([`native::downstream_failure`]) rather than in the downstream service's words: the
-    /// handler does not relay that service's diagnosis, so neither does the request's
-    /// terminal event — and a call that service refused for want of a grant is one of those
-    /// errors, so it carries that same sentence. Every other refusal is the handler's own
-    /// verdict and keeps its own wording ([`Self::from`]).
+    /// own is reported the way THAT type's handler reports one, which is what the two kinds
+    /// of handler differ in: one carries its client's rendering of the exception, so the
+    /// owning service's own diagnostic of the refused call is what the request's terminal
+    /// event states ([`native::NativeResourceProvider::relayed_client`] names the client);
+    /// one states only its own sentence about the CALL it was making
+    /// ([`native::downstream_failure`]), relaying nothing that service said. Every other
+    /// refusal is the handler's own verdict and keeps its own wording ([`Self::from`]).
     fn of(
+        refusal: NativeRefusal,
+        provider: &dyn native::NativeResourceProvider,
+        operation: &str,
+    ) -> Self {
+        match (&refusal, provider.relayed_client()) {
+            (NativeRefusal::Rejected(detail), Some(client)) => Self::Owning {
+                code: refusal.handler_error_code(),
+                detail: relayed_refusal_message(
+                    detail,
+                    RelayedCall::once(client, HANDLER_REFUSED_CALL_STATUS),
+                ),
+            },
+            _ => Self::of_named_call(refusal, provider, operation),
+        }
+    }
+
+    /// A call the ROLE a request named may not make, as the record reports it.
+    ///
+    /// A handler reads an authorization refusal on a branch of its own: what it states about
+    /// one is the CALL it was making ([`native::downstream_failure`]), so a type whose
+    /// handler relays the exception its client raised for the owning service's other errors
+    /// ([`Self::of`]) reports this one exactly as every other type does.
+    fn of_withheld_call(
+        refusal: NativeRefusal,
+        provider: &dyn native::NativeResourceProvider,
+        operation: &str,
+    ) -> Self {
+        Self::of_named_call(refusal, provider, operation)
+    }
+
+    /// The refusal as a handler that states its own sentence about the call reports it.
+    fn of_named_call(
         refusal: NativeRefusal,
         provider: &dyn native::NativeResourceProvider,
         operation: &str,
@@ -642,8 +680,8 @@ impl ComAmazonawsCloudcontrolCloudapiserviceState {
             // The work is carried out with the permissions of the role the request named, so
             // a call that role may not make is refused HERE — before the provider writes
             // anything, which is what leaves the owning service's resource as it was. It is
-            // the OWNING service's refusal of a call the handler made, so it is reported the
-            // way that service's other errors on that call are ([`EffectFailure::of`]).
+            // the OWNING service's refusal of a call the handler made, read on the handler's
+            // own authorization branch ([`EffectFailure::of_withheld_call`]).
             if let Some(denied) = native.roles().refusal(
                 record.role_arn.as_deref(),
                 provider,
@@ -651,7 +689,11 @@ impl ComAmazonawsCloudcontrolCloudapiserviceState {
                 &owning_api::region_of(&effect),
                 &identifier,
             ) {
-                return Err(EffectFailure::of(denied, provider, &record.operation));
+                return Err(EffectFailure::of_withheld_call(
+                    denied,
+                    provider,
+                    &record.operation,
+                ));
             }
             return match effect {
                 ResourceEffect::Create {
@@ -1945,14 +1987,11 @@ const HANDLER_ALREADY_EXISTS_DIAGNOSTICS: &[(&str, &str)] = &[(
 /// The status code an owning service reports for a resource that is not there.
 const HANDLER_NOT_FOUND_STATUS: u16 = 404;
 
-/// How many attempts the SDK a handler reaches the owning service through states for a call
-/// refused because the resource is not there.
-///
-/// An SDK counts the attempts it made at the call and retries only a refusal that can clear
-/// on its own — a throttled call, an exhausted limit, a service reporting that it failed. A
-/// resource that is not there is none of those: the answer stands however often it is asked
-/// for, so the SDK raises it from the single attempt it was asked to make.
-const HANDLER_NOT_FOUND_SDK_ATTEMPTS: u32 = 1;
+/// The status an owning service answers a call it REFUSED with: what the call carried, or
+/// the state of the resource it named, is not something that service will act on, which is
+/// the caller's to fix rather than anything that clears on its own — the class of answer a
+/// service states a client-error status for.
+const HANDLER_REFUSED_CALL_STATUS: u16 = 400;
 
 /// How every operation of this service words "a resource with the specified identifier
 /// can't be found", with the type the request named and the resource as the owning
@@ -1985,11 +2024,9 @@ pub fn handler_not_found_detail(type_name: &str, identifier: &str) -> String {
 /// API's, which reports a whole handler invocation.
 ///
 /// A handler that carries its client's rendering reports the WHOLE diagnostic that client
-/// appends to the exception it raises: the owning service, the status it answered, the id of
-/// the call the handler made of it and how many attempts the SDK made at that call
-/// ([`HANDLER_NOT_FOUND_SDK_ATTEMPTS`]) — the facts a client reading the relayed message
-/// recovers the downstream call by, none of which it could recover from a diagnostic that
-/// dropped one of them.
+/// states around the call it relayed ([`relayed_refusal_message`], the workspace's one
+/// rendering of it), the call having been made once: a resource that is not there is not an
+/// answer a second attempt could change.
 fn owning_not_found_detail(type_name: &str, identifier: &str) -> Option<String> {
     let diagnostic =
         ::service_common::cfn_resource_handlers::not_found_diagnostic(type_name, identifier)?;
@@ -1998,10 +2035,9 @@ fn owning_not_found_detail(type_name: &str, identifier: &str) -> Option<String> 
         // The handler carries its client's rendering of the owning service's own
         // exception: the service it called, the status that service answered, the id of the
         // call it made and the attempts its SDK made at it.
-        Some(service) => format!(
-            "{sentence} (Service: {service}, Status Code: {HANDLER_NOT_FOUND_STATUS}, \
-             Request ID: {}) (SDK Attempt Count: {HANDLER_NOT_FOUND_SDK_ATTEMPTS})",
-            mint_token()
+        Some(service) => relayed_refusal_message(
+            &sentence,
+            RelayedCall::once(service, HANDLER_NOT_FOUND_STATUS),
         ),
         None => sentence,
     })

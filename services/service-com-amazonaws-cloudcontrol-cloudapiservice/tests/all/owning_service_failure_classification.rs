@@ -9,9 +9,11 @@
 //! `GeneralServiceException`, because that is the code for "the downstream service generated
 //! an error that doesn't map to any other handler error code"
 //! (`smithy_query(query="doc",shape="GeneralServiceException")`), and its `StatusMessage` is
-//! the handler's own sentence about the CALL it was making rather than the downstream
-//! service's diagnosis, which the handler does not relay; `InvalidRequest`, which is
-//! the code for "invalid input from the user has generated a generic exception"
+//! what THAT type's handler states about such an error — for a type whose handler carries its
+//! client's rendering, the owning service's own diagnosis of the refused call
+//! (`relayed_downstream_diagnosis`), and for one that states a sentence of its own, that
+//! sentence about the CALL it was making (`downstream_refusal_reporting`); `InvalidRequest`,
+//! which is the code for "invalid input from the user has generated a generic exception"
 //! (`smithy_query(query="doc",shape="InvalidRequestException")`), is the code for a fault in
 //! the model against what the type's schema publishes — a property that schema declares which
 //! this handler does not apply, and a value outside the domain it publishes for the property
@@ -39,12 +41,18 @@ use super::sqs_queue_read_through::{queue_url, QUEUE};
 /// no other verdict.
 const DOWNSTREAM: &str = "GeneralServiceException";
 
-/// The sentence such a refusal carries on the CREATE path of `AWS::SQS::Queue`: the handler
-/// names the call it was making, which for a create of a queue is `sqs:CreateQueue`.
-const DOWNSTREAM_CREATE: &str = "Error occurred during operation 'CreateQueue'.";
+/// The sentence such a refusal carries on the CREATE path of `AWS::SQS::Queue`: this type's
+/// handler carries its Amazon SQS client's rendering of the refusal, so the diagnosis is that
+/// service's own — here, the rule it holds a FIFO queue's name to
+/// (`relayed_downstream_diagnosis` holds the whole rendering to its groups).
+const DOWNSTREAM_FIFO_NAME: &str = "The name of a FIFO queue can only include";
 
-/// The same sentence on the UPDATE path, where the handler changes a queue it already holds.
-const DOWNSTREAM_UPDATE: &str = "Error occurred during operation 'SetQueueAttributes'.";
+/// The same for a name that is no queue name of either kind.
+const DOWNSTREAM_QUEUE_NAME: &str = "Can only include alphanumeric characters";
+
+/// The same on the UPDATE path, where that service answers for an attribute the queue the
+/// write addresses does not have.
+const DOWNSTREAM_UNKNOWN_ATTRIBUTE: &str = "Unknown Attribute ContentBasedDeduplication.";
 
 /// The handler code for a fault the handler itself judges in the model.
 const MODEL_FAULT: &str = "InvalidRequest";
@@ -101,21 +109,20 @@ async fn a_create_the_owning_service_refuses_carries_the_downstream_handler_code
             "a name ending in the FIFO suffix on a queue that is not one",
             json!({ "QueueName": "classified-standard.fifo", "FifoQueue": false }),
             DOWNSTREAM,
-            // The sentence the handler states about the call it was making, whichever rule of
-            // the owning service's own refused that call.
-            DOWNSTREAM_CREATE,
+            // The diagnosis the owning service worded, which this type's handler relays.
+            DOWNSTREAM_QUEUE_NAME,
         ),
         (
             "a FIFO queue whose name lacks the suffix",
             json!({ "QueueName": "classified-fifo", "FifoQueue": true }),
             DOWNSTREAM,
-            DOWNSTREAM_CREATE,
+            DOWNSTREAM_FIFO_NAME,
         ),
         (
             "a name carrying a character the owning service's charset excludes",
             json!({ "QueueName": "classified queue!" }),
             DOWNSTREAM,
-            DOWNSTREAM_CREATE,
+            DOWNSTREAM_QUEUE_NAME,
         ),
         (
             "a property the type's schema does not declare",
@@ -144,7 +151,7 @@ async fn a_create_the_owning_service_refuses_carries_the_downstream_handler_code
              {detail:?}"
         );
         // A refusal the handler judged states the handler's own diagnostic; one the owning
-        // service raised states the call the handler was making.
+        // service raised states that service's own diagnosis of the call it refused.
         assert!(
             detail.contains(expected_detail),
             "case {case:?}: expected a diagnostic carrying {expected_detail:?}, got {detail:?}"
@@ -314,7 +321,7 @@ async fn an_update_the_owning_service_refuses_carries_the_downstream_handler_cod
             // queues", and this queue is a standard one.
             json!([{ "op": "add", "path": "/ContentBasedDeduplication", "value": true }]),
             DOWNSTREAM,
-            DOWNSTREAM_UPDATE,
+            DOWNSTREAM_UNKNOWN_ATTRIBUTE,
         ),
         (
             "a property the type's schema does not declare",
