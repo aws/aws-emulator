@@ -183,25 +183,20 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // `AccountName`'s length and pattern, and `AccountId`'s `^\d{12}$`, are
         // modelled constraints, so the boundary already refused anything outside
         // them with HTTP 400 `ValidationException` before this handler ran.
-        // The account this call acts on. An absent `AccountId` is the standalone
-        // call on the caller's own account; a PRESENT one names a member account
-        // of the caller's organization, which the caller's own account is not —
-        // so naming it is the modelled authorization refusal, decided before
-        // anything is written.
-        let account_id = match crate::state::target_account_id(input.account_id.as_deref()) {
-            Ok(account_id) => account_id,
-            Err(denied) => {
-                return Err(PutAccountNameErrorModeled::AccessDeniedException(denied).into())
-            }
-        };
+        // The account this call acts on, resolved by the ONE composition of the
+        // account-target rule for a write that brings the record into existence
+        // on first touch
+        // (`state::ComAmazonawsAccountAccountState::target_account_or_create`):
+        // an absent `AccountId` is the standalone call on the caller's own
+        // account; a PRESENT one names a member account of the caller's
+        // organization, which the caller's own account is not — so naming it is
+        // the modelled authorization refusal, decided before anything is
+        // written, and so is a record the emulator can hold no more of.
         let now = ::std::time::SystemTime::now();
         let mut store = state.lock();
-        let Some(account) = store.account_mut(&account_id, now) else {
-            return Err(PutAccountNameErrorModeled::AccessDeniedException(
-                crate::state::account_store_full(&account_id),
-            )
-            .into());
-        };
+        let account = store
+            .target_account_or_create(input.account_id.as_deref(), now)
+            .map_err(PutAccountNameErrorModeled::AccessDeniedException)?;
         account.account_name = input.account_name;
 
         Ok(PutAccountNameOutput)

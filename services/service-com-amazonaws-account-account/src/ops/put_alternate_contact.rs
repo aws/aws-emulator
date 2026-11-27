@@ -205,17 +205,16 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .into());
         };
 
-        // The account this call acts on. An absent `AccountId` is the standalone
-        // call on the caller's own account; a PRESENT one names a member account
-        // of the caller's organization, which the caller's own account is not —
-        // so naming it is the modelled authorization refusal, decided before
-        // anything is written.
-        let account_id = match crate::state::target_account_id(input.account_id.as_deref()) {
-            Ok(account_id) => account_id,
-            Err(denied) => {
-                return Err(PutAlternateContactErrorModeled::AccessDeniedException(denied).into())
-            }
-        };
+        // The account this call acts on, resolved by the ONE composition of the
+        // account-target rule for a write that brings the record into existence
+        // on first touch
+        // (`state::ComAmazonawsAccountAccountState::target_account_or_create`):
+        // an absent `AccountId` is the standalone call on the caller's own
+        // account; a PRESENT one names a member account of the caller's
+        // organization, which the caller's own account is not — so naming it is
+        // the modelled authorization refusal, decided before anything is
+        // written. The record is built first so nothing but that decision
+        // stands between the lock and the write.
         let now = ::std::time::SystemTime::now();
         let record = crate::state::AlternateContactRecord {
             name: input.name,
@@ -225,12 +224,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             contact_type,
         };
         let mut store = state.lock();
-        let Some(account) = store.account_mut(&account_id, now) else {
-            return Err(PutAlternateContactErrorModeled::AccessDeniedException(
-                crate::state::account_store_full(&account_id),
-            )
-            .into());
-        };
+        let account = store
+            .target_account_or_create(input.account_id.as_deref(), now)
+            .map_err(PutAlternateContactErrorModeled::AccessDeniedException)?;
         // Keyed by the contact type, so this is an upsert: the operation is
         // `@idempotent` and an account holds at most one contact of each type.
         account.alternate_contacts.insert(contact_type, record);

@@ -190,6 +190,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // another input member, so a request that is both an account-target
         // refusal and carries a contact structure this service would refuse
         // answers the authorization refusal — and before anything is written.
+        // Its own refusal stands between the two halves of the account-target
+        // composition, so the halves are called in order
+        // (`state::target_account_id`, then
+        // `state::ComAmazonawsAccountAccountState::creatable_account_mut`)
+        // rather than as `target_account_or_create`: the rule, and its two
+        // refusals, are the same ones.
         let account_id = match crate::state::target_account_id(input.account_id.as_deref()) {
             Ok(account_id) => account_id,
             Err(denied) => {
@@ -211,12 +217,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         }
         let now = ::std::time::SystemTime::now();
         let mut store = state.lock();
-        let Some(account) = store.account_mut(&account_id, now) else {
-            return Err(PutContactInformationErrorModeled::AccessDeniedException(
-                crate::state::account_store_full(&account_id),
-            )
-            .into());
-        };
+        let account = store
+            .creatable_account_mut(&account_id, now)
+            .map_err(PutContactInformationErrorModeled::AccessDeniedException)?;
         // One primary contact per account: the put replaces the whole structure,
         // so a member the request leaves out is absent afterwards rather than
         // carried over from an earlier put or from the contact the record was

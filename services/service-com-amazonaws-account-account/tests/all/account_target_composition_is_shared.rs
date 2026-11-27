@@ -842,3 +842,206 @@ async fn the_self_target_refusal_outranks_every_member_those_handlers_refuse() {
         regions_after.body
     );
 }
+
+// This service's catalog status for a Region no account has opted into or out
+// of, and the lookup that reports it: what makes a Region one the opt calls can
+// act on rather than refuse.
+use service_com_amazonaws_account_account::state::{catalog_region_status, DISABLED_REGION_STATUS};
+
+/// One row of an operation whose account-id member may bring the record into
+/// existence: a label, the operation's URI, and its request body for the
+/// account the row names.
+type CreatingRow = (&'static str, &'static str, fn(&str) -> Value);
+
+/// A Region this service's catalog holds as an opt-in Region, for the opt-IN
+/// row: the test asserts the catalog really reports it `DISABLED` before any
+/// opt call rather than assuming it, so the row drives the write and never a
+/// refusal of its `RegionName`.
+const OPT_IN_REGION_TO_ENABLE: &str = "ap-southeast-4";
+
+/// A second such Region, for the opt-OUT row: an account whose record does not
+/// exist yet has it `DISABLED`, so the opt-out asks for the state it is already
+/// in and the only thing the call writes is the record itself.
+const OPT_IN_REGION_TO_DISABLE: &str = "me-south-1";
+
+/// Account ids inside `AccountId`'s modelled `^\d{12}$` that no request has
+/// touched, one per row below, so every row's write is a FIRST touch.
+const UNTOUCHED_ACCOUNTS: [&str; 6] = [
+    "500000000001",
+    "500000000002",
+    "500000000003",
+    "500000000004",
+    "500000000005",
+    "500000000006",
+];
+
+/// Every operation whose account-id member may CREATE the record it writes, one
+/// row each, with the account id under test in that member.
+///
+/// The rows differ in which operation runs, in which part of the record it
+/// writes (the name, an alternate contact, the primary contact, a Region's opt
+/// status either way, a primary email update) and in the shape of the request
+/// (an account id plus a name, plus a whole contact structure, plus an enum,
+/// plus a Region, plus an address) — which is what the composition generalises
+/// over.
+fn creating_rows() -> Vec<CreatingRow> {
+    vec![
+        ("PutAccountName", "/putAccountName", |id| {
+            json!({"AccountId": id, "AccountName": "Created On First Touch"})
+        }),
+        ("PutAlternateContact", "/putAlternateContact", |id| {
+            json!({
+                "AccountId": id,
+                "AlternateContactType": "BILLING",
+                "Name": "Ada Lovelace",
+                "Title": "Billing Lead",
+                "EmailAddress": "billing@example.com",
+                "PhoneNumber": "+12065550100",
+            })
+        }),
+        ("PutContactInformation", "/putContactInformation", |id| {
+            json!({
+                "AccountId": id,
+                "ContactInformation": contact_information("US", Some("WA")),
+            })
+        }),
+        ("EnableRegion", "/enableRegion", |id| {
+            json!({"AccountId": id, "RegionName": OPT_IN_REGION_TO_ENABLE})
+        }),
+        ("DisableRegion", "/disableRegion", |id| {
+            json!({"AccountId": id, "RegionName": OPT_IN_REGION_TO_DISABLE})
+        }),
+        (
+            "StartPrimaryEmailUpdate",
+            "/startPrimaryEmailUpdate",
+            |id| {
+                json!({
+                    "AccountId": id,
+                    "PrimaryEmail": format!("first-touch-{id}@example.com"),
+                })
+            },
+        ),
+    ]
+}
+
+/// The THIRD composition of the same account-target rule — resolve the
+/// account-id member, then hand back the record, creating it on first touch —
+/// over every operation whose account-id member may bring that record into
+/// existence.
+///
+/// Both halves are asserted through each operation: the account the row names
+/// has no record (the reporting composition refuses it), the call answers 200
+/// and the record now EXISTS (the reporting composition reports it), and the
+/// same call naming the caller's own account answers the IDENTICAL refusal the
+/// bare request for that account earns — one payload, status, error code and
+/// message alike, whichever of those operations the request names.
+#[tokio::test]
+async fn a_write_that_may_create_the_record_shares_one_composition() {
+    let router = emulator();
+    let own = default_account_id().to_string();
+
+    // The two Region rows are only writes if the catalog admits their Region as
+    // an opt-in one, which is what makes them drive the composition.
+    for region in [OPT_IN_REGION_TO_ENABLE, OPT_IN_REGION_TO_DISABLE] {
+        assert_eq!(
+            catalog_region_status(region),
+            Some(DISABLED_REGION_STATUS),
+            "case {region:?}: the row's Region must be an opt-in Region of this service's \
+             catalog, got {:?}",
+            catalog_region_status(region)
+        );
+    }
+
+    let rows = creating_rows();
+    assert_eq!(
+        rows.len(),
+        UNTOUCHED_ACCOUNTS.len(),
+        "every row needs an account id of its own, got {} rows for {} ids",
+        rows.len(),
+        UNTOUCHED_ACCOUNTS.len()
+    );
+
+    // The refusal the caller's own account earns with nothing else in the
+    // request to refuse: the resolving half of the composition answers it, so
+    // every row below must answer it too.
+    let bare = call(&router, "/getAccountInformation", json!({"AccountId": own})).await;
+    assert_eq!(
+        (bare.status, bare.error_code()),
+        DENIED,
+        "case \"bare\": the bare request must be the account-target refusal, got {} with {:?}",
+        bare.status,
+        bare.body
+    );
+    let self_target = bare.refusal(&own);
+
+    for ((label, uri, body), account_id) in rows.into_iter().zip(UNTOUCHED_ACCOUNTS) {
+        assert_ne!(
+            account_id,
+            default_account_id(),
+            "case {account_id:?}: the test's account id must not be the caller's own account"
+        );
+        let case = format!("{label} on the untouched account {account_id}");
+
+        // Nothing holds a record of that account yet: the no-create
+        // compositions refuse it.
+        let before = call(
+            &router,
+            "/getAccountInformation",
+            json!({"AccountId": account_id}),
+        )
+        .await;
+        assert_eq!(
+            (before.status, before.error_code()),
+            DENIED,
+            "case {case:?}: the account must hold no record before the write, got {} with {:?}",
+            before.status,
+            before.body
+        );
+
+        let answer = call(&router, uri, body(account_id)).await;
+        assert_eq!(
+            answer.status, 200,
+            "case {case:?}: expected 200, got {} with {:?}",
+            answer.status, answer.body
+        );
+
+        // The creating half: the write brought the record into existence, which
+        // the reporting composition now resolves to that very account.
+        let after = call(
+            &router,
+            "/getAccountInformation",
+            json!({"AccountId": account_id}),
+        )
+        .await;
+        assert_eq!(
+            (
+                after.status,
+                after.body["AccountId"].as_str().unwrap_or_default()
+            ),
+            (200, account_id),
+            "case {case:?}: the write must have brought the record into existence, got {} \
+             with {:?}",
+            after.status,
+            after.body
+        );
+
+        // The resolving half: the member naming the caller's own account is the
+        // one refusal that reaches these operations, and it is the same payload
+        // for every one of them.
+        let own_case = format!("{label} naming the caller's own account");
+        let refused = call(&router, uri, body(&own)).await;
+        assert_eq!(
+            (refused.status, refused.error_code()),
+            DENIED,
+            "case {own_case:?}: expected {DENIED:?}, got {} with {:?}",
+            refused.status,
+            refused.body
+        );
+        let observed = refused.refusal(&own);
+        assert_eq!(
+            observed, self_target,
+            "case {own_case:?}: expected the same refusal as the bare request \
+             ({self_target:?}), got {observed:?}"
+        );
+    }
+}

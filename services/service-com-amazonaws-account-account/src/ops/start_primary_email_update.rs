@@ -192,7 +192,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // the reporting operations), so it always names an account — and a
         // named account is resolved by the one resolution every operation
         // taking an account id goes through, which is what refuses the caller's
-        // own.
+        // own. The store-wide address question below stands between the two
+        // halves of the account-target composition, so the halves are called in
+        // order (`state::target_account_id`, then
+        // `state::ComAmazonawsAccountAccountState::creatable_account_mut`)
+        // rather than as `target_account_or_create`: the rule, and its two
+        // refusals, are the same ones.
         let account_id = match crate::state::target_account_id(Some(&input.account_id)) {
             Ok(account_id) => account_id,
             Err(denied) => {
@@ -243,12 +248,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             )
             .into());
         }
-        let Some(account) = store.account_mut(&account_id, now) else {
-            return Err(StartPrimaryEmailUpdateErrorModeled::AccessDeniedException(
-                crate::state::account_store_full(&account_id),
-            )
-            .into());
-        };
+        let account = store
+            .creatable_account_mut(&account_id, now)
+            .map_err(StartPrimaryEmailUpdateErrorModeled::AccessDeniedException)?;
         // What the settle above leaves ACCEPTED is an update whose completion is
         // still OWED: the service has already confirmed that address change and
         // the clock has not applied it yet. A change the clock owes is never

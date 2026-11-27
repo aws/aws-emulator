@@ -26,11 +26,17 @@
 //! ALREADY exist refuses an id this emulator holds no record of in one place
 //! too ([`ComAmazonawsAccountAccountState::accessible_account`], and
 //! [`ComAmazonawsAccountAccountState::accessible_account_mut`] where the record
-//! is then changed), and the COMPOSITION of the two —
+//! is then changed), while a write that MAY bring the record into existence has
+//! its own second half in one place
+//! ([`ComAmazonawsAccountAccountState::creatable_account_mut`]), and the
+//! COMPOSITION of the two —
 //! [`ComAmazonawsAccountAccountState::target_account`] for a read,
 //! [`ComAmazonawsAccountAccountState::target_account_mut`] for a write that
-//! must not create a record — is what those handlers call, keeping only the
-//! mapping into their own operation's error enum. That decision is taken WHOLE
+//! must not create a record,
+//! [`ComAmazonawsAccountAccountState::target_account_or_create`] for a write
+//! that creates one on first touch — is what those handlers call, keeping only
+//! the mapping into their own operation's error enum. That decision is taken
+//! WHOLE
 //! and FIRST: a handler resolves its account target before it decides any
 //! refusal of its own about another input member (which Region a `RegionName`
 //! names, which countries an address is admitted for, which page a token
@@ -1469,6 +1475,50 @@ impl ComAmazonawsAccountAccountState {
     ) -> Result<&mut Account, AccessDeniedException> {
         let account_id = target_account_id(requested)?;
         self.accessible_account_mut(&account_id)
+    }
+
+    /// The same half as [`accessible_account_mut`](Self::accessible_account_mut)
+    /// for a write that MAY bring the record into existence: the record is
+    /// created on first touch ([`account_mut`](Self::account_mut)), so the only
+    /// id refused here is one this emulator holds no record of while the store
+    /// already sits at [`MAX_ACCOUNTS`] ([`account_store_full`]) — that arm
+    /// creates nothing and writes nothing.
+    pub fn creatable_account_mut(
+        &mut self,
+        account_id: &str,
+        now: SystemTime,
+    ) -> Result<&mut Account, AccessDeniedException> {
+        self.account_mut(account_id, now)
+            .ok_or_else(|| account_store_full(account_id))
+    }
+
+    /// The account a WRITE that may bring the record into existence TARGETS:
+    /// the account-id member resolved by [`target_account_id`], then
+    /// [`creatable_account_mut`](Self::creatable_account_mut) — the third
+    /// composition of the account-target rule, beside
+    /// [`target_account`](Self::target_account) for a read and
+    /// [`target_account_mut`](Self::target_account_mut) for a write that must
+    /// not create a record.
+    ///
+    /// `Err` carries the modelled `AccessDeniedException` of either half: the
+    /// member named the caller's own account
+    /// ([`cannot_target_own_account`]), or the write would add a record past
+    /// [`MAX_ACCOUNTS`] ([`account_store_full`]). A caller keeps only the
+    /// mapping into its own operation's error enum.
+    ///
+    /// A handler that must decide a refusal of its OWN about another input
+    /// member in between — after the account target, which is decided whole and
+    /// first, and before any record is created, so a refused call writes
+    /// nothing — calls the two halves in that order instead, exactly as the
+    /// no-create handlers that read the store between them do. Both paths
+    /// decide the same rule with the same two refusals.
+    pub fn target_account_or_create(
+        &mut self,
+        requested: Option<&str>,
+        now: SystemTime,
+    ) -> Result<&mut Account, AccessDeniedException> {
+        let account_id = target_account_id(requested)?;
+        self.creatable_account_mut(&account_id, now)
     }
 }
 

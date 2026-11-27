@@ -202,7 +202,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // taken WHOLE before this handler decides anything of its own about
         // another input member, so a request that is both an account-target
         // refusal and names a Region this service would refuse answers the
-        // authorization refusal — and before anything is written.
+        // authorization refusal — and before anything is written. The Region
+        // refusal stands between the two halves of the account-target
+        // composition, so the halves are called in order
+        // (`state::target_account_id`, then
+        // `state::ComAmazonawsAccountAccountState::creatable_account_mut`)
+        // rather than as `target_account_or_create`: the rule, and its two
+        // refusals, are the same ones.
         let account_id = match crate::state::target_account_id(input.account_id.as_deref()) {
             Ok(account_id) => account_id,
             Err(denied) => {
@@ -221,12 +227,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         }
         let now = ::std::time::SystemTime::now();
         let mut store = state.lock();
-        let Some(account) = store.account_mut(&account_id, now) else {
-            return Err(DisableRegionErrorModeled::AccessDeniedException(
-                crate::state::account_store_full(&account_id),
-            )
-            .into());
-        };
+        let account = store
+            .creatable_account_mut(&account_id, now)
+            .map_err(DisableRegionErrorModeled::AccessDeniedException)?;
         account.settle_region_opts(now);
         match account.region_opt_state(&region_name, RegionKind::OptIn, now) {
             // Opted in: the opt-out starts now and completes once the clock
