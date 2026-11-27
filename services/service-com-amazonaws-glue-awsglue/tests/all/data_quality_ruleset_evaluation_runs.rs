@@ -38,10 +38,11 @@ use std::time::{Duration, SystemTime};
 use serde_json::{json, Value};
 use service_com_amazonaws_glue_awsglue::state::{
     ComAmazonawsGlueAwsglueState, DataQualityRulesetEvaluationRunEntry,
-    DATA_QUALITY_RULESET_EVALUATION_RUN_SETTLES_AFTER, DATA_QUALITY_RUN_STATE_FAILED,
-    DATA_QUALITY_RUN_STATE_STARTING, DATA_QUALITY_RUN_STATE_SUCCEEDED,
-    DEFAULT_DATA_QUALITY_RUN_TIMEOUT_MINUTES, DEFAULT_DATA_QUALITY_RUN_WORKERS,
-    MAX_DATA_QUALITY_RULESET_EVALUATION_RUNS, TERMINAL_DATA_QUALITY_RUN_STATES,
+    DATA_QUALITY_RULESET_EVALUATION_RUN_SETTLES_AFTER, DATA_QUALITY_RUN_ID_PREFIX,
+    DATA_QUALITY_RUN_STATE_FAILED, DATA_QUALITY_RUN_STATE_STARTING,
+    DATA_QUALITY_RUN_STATE_SUCCEEDED, DEFAULT_DATA_QUALITY_RUN_TIMEOUT_MINUTES,
+    DEFAULT_DATA_QUALITY_RUN_WORKERS, MAX_DATA_QUALITY_RULESET_EVALUATION_RUNS,
+    TERMINAL_DATA_QUALITY_RUN_STATES,
 };
 use smithy_server_runtime::MultiServiceRouter;
 
@@ -247,6 +248,14 @@ fn is_minted_id(id: &str) -> bool {
             .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
 }
 
+/// Whether `id` is one of this service's minted data quality RUN ids: the grammar every run
+/// id carries ([`DATA_QUALITY_RUN_ID_PREFIX`]) over a minted token ([`is_minted_id`]). An id
+/// outside that grammar addresses no run, so the reads refuse it rather than miss.
+fn is_minted_run_id(id: &str) -> bool {
+    id.strip_prefix(DATA_QUALITY_RUN_ID_PREFIX)
+        .is_some_and(is_minted_id)
+}
+
 // ---------------------------------------------------------------------------
 // Start, then read back
 // ---------------------------------------------------------------------------
@@ -389,8 +398,9 @@ async fn a_started_run_is_read_back_through_get_data_quality_ruleset_evaluation_
         store_table(&router, database, table).await;
         let run_id = start_run(&router, &start_body(&data_source, rulesets, extra.clone())).await;
         assert!(
-            is_minted_id(&run_id),
-            "case {case:?}: the run id must be 32 lowercase hex characters, got {run_id:?}"
+            is_minted_run_id(&run_id),
+            "case {case:?}: the run id must be '{DATA_QUALITY_RUN_ID_PREFIX}' and 32 lowercase \
+             hex characters, got {run_id:?}"
         );
 
         // Hold the owed transition open, so the run is read in its transient status.
@@ -1144,16 +1154,21 @@ async fn a_read_of_a_run_nothing_minted_is_refused() {
     )
     .await;
 
-    // (case, the run id the read addresses)
+    // (case, the run id the read addresses) — each OF the grammar every run id carries
+    // (`DATA_QUALITY_RUN_ID_PREFIX`), so each is a well-formed address that reaches the
+    // lookup and misses there; an id OUTSIDE that grammar addresses no run at all and is
+    // refused before the lookup, which `tests/all/data_quality_run_id_grammar.rs` covers.
     let changed = {
         let mut other = started.clone();
-        let first = if started.starts_with('a') { "b" } else { "a" };
-        other.replace_range(0..1, first);
+        let last = if started.ends_with('a') { "b" } else { "a" };
+        other.replace_range(other.len() - 1.., last);
         other
     };
+    let nothing_minted = format!("{DATA_QUALITY_RUN_ID_PREFIX}{}", "f".repeat(32));
+    let another_shape = format!("{DATA_QUALITY_RUN_ID_PREFIX}not-a-run-id");
     let misses: Vec<(&str, &str)> = vec![
-        ("an id nothing minted", "ffffffffffffffffffffffffffffffff"),
-        ("an id of another shape", "not-a-run-id"),
+        ("an id nothing minted", nothing_minted.as_str()),
+        ("an id of another shape", another_shape.as_str()),
         (
             "the started run's id with one character changed",
             changed.as_str(),

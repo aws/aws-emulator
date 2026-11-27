@@ -2269,8 +2269,11 @@ fn data_quality_not_found(resource: &str, id: &str) -> String {
     )
 }
 
-/// A `RunId` that is no data quality run id at all
-/// (`GetDataQualityRuleRecommendationRun`, `CancelDataQualityRuleRecommendationRun`).
+/// A `RunId` that is no data quality run id at all — on any operation that addresses one of
+/// the service's data quality runs by id, a rule recommendation run
+/// (`GetDataQualityRuleRecommendationRun`, `CancelDataQualityRuleRecommendationRun`) or a
+/// ruleset evaluation run (`GetDataQualityRulesetEvaluationRun`,
+/// `BatchGetDataQualityRulesetEvaluationRun`) alike.
 ///
 /// RECORDED constant apart from the grammar it quotes, which is the one prefix the store
 /// MINTS a run id with ([`crate::state::DATA_QUALITY_RUN_ID_PREFIX`]) rather than a second

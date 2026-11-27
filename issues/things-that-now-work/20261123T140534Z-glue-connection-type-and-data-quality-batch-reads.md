@@ -67,3 +67,21 @@ Cause 2 — divergence_key service=glue|BatchGetDataQualityRulesetEvaluationRun|
 3. Cause 1: replay fixture glue-connection-type-catalog and inspect step task#2 — the DescribeConnectionType call for a known connection type. Compare the 200 body against the recorded one: AuthenticationConfiguration, Capabilities, Categories, ConnectionOptions, ConnectionProperties, Description, DisplayName, LogoUrl, PhysicalConnectionRequirements and Vendor are all absent from the emulator's response.
 4. Cause 2: replay fixture glue-data-quality-statistic-annotation-and-batch-run-reads and inspect step task#2 — the BatchGetDataQualityRulesetEvaluationRun call whose RunIds input AWS rejects. The emulator answers HTTP 200 with a success body; AWS answers HTTP 400 with __type InvalidInputException.
 5. Both steps must pass (status, error code and the listed members) before this issue is closed.
+
+## Resolution
+
+Cause 2 is FIXED: `BatchGetDataQualityRulesetEvaluationRun` (and the single-run read beside it)
+now refuse a `RunId` outside the grammar every data quality run id is minted in, with the
+modelled `InvalidInputException` (400) before any lookup. Fixture
+`glue-data-quality-statistic-annotation-and-batch-run-reads` passes end to end.
+
+Cause 1 is DECLINED, and its ten `Issue-Key` lines still diverge on VALUES rather than on the
+absence this report describes. `DescribeConnectionType` is now a read of a per-connection-type
+catalog and answers `Description`, `Capabilities`, `ConnectionProperties`, `ConnectionOptions`,
+`AuthenticationConfiguration`, `ComputeEnvironmentConfigurations` and
+`PhysicalConnectionRequirements` from it. What remains is not reachable from the contract:
+`Categories`, `DisplayName`, `LogoUrl` and `Vendor` are not members of
+`DescribeConnectionTypeResponse` in the checked-in model (as this report itself notes), and the
+rest would require transcribing one vendor connector's published catalogue text, which no rule
+derives from the request, the model or stored state. A recording or model revision that states
+that catalogue is what would reopen it.

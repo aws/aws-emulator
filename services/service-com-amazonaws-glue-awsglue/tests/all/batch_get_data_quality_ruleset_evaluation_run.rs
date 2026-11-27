@@ -12,6 +12,11 @@
 //! failure of the whole batch, and the call changes nothing a later caller sees beyond the
 //! status the CLOCK had already made due.
 //!
+//! Every id below therefore carries the grammar a data quality run id has
+//! ([`DATA_QUALITY_RUN_ID_PREFIX`]): an id outside it addresses no run that could exist, so
+//! it is refused rather than reported as an absence, which
+//! `tests/all/data_quality_run_id_grammar.rs` covers.
+//!
 //! The recorded case — two started runs read back beside one id nothing minted — is ONE row
 //! of the tables below; the rows differ along how many ids are asked for, how many of them
 //! are stored, where the misses sit in the order, whether an id repeats, which `DataSource`
@@ -27,7 +32,8 @@ use std::time::{Duration, SystemTime};
 
 use serde_json::{json, Value};
 use service_com_amazonaws_glue_awsglue::state::{
-    ComAmazonawsGlueAwsglueState, DATA_QUALITY_RUN_STATE_STARTING, TERMINAL_DATA_QUALITY_RUN_STATES,
+    ComAmazonawsGlueAwsglueState, DATA_QUALITY_RUN_ID_PREFIX, DATA_QUALITY_RUN_STATE_STARTING,
+    TERMINAL_DATA_QUALITY_RUN_STATES,
 };
 use smithy_server_runtime::MultiServiceRouter;
 
@@ -190,6 +196,14 @@ async fn batch_get(router: &MultiServiceRouter, run_ids: &[String]) -> Value {
     .await
 }
 
+/// An address of a run nothing minted: OF the grammar every data quality run id carries
+/// ([`DATA_QUALITY_RUN_ID_PREFIX`]), so it reaches the lookup and is reported as the absence
+/// it is. An id OUTSIDE that grammar addresses no run at all and refuses the whole batch,
+/// which `tests/all/data_quality_run_id_grammar.rs` covers.
+fn unknown_id(token: &str) -> String {
+    format!("{DATA_QUALITY_RUN_ID_PREFIX}{token}")
+}
+
 /// The runs one answer reports, in the order it reports them.
 fn batched_runs(body: &Value) -> Vec<Value> {
     body.get("Runs")
@@ -329,13 +343,17 @@ async fn every_requested_run_id_is_reported_exactly_once() {
     set_due_instant(&engine, far_future());
 
     let stored: Vec<String> = started.clone();
-    let absent: Vec<String> = (0..3).map(|index| format!("no-such-run-{index}")).collect();
+    let absent: Vec<String> = (0..3)
+        .map(|index| unknown_id(&format!("no-such-run-{index}")))
+        .collect();
     // A batch standing exactly at the modelled ceiling: every stored run plus enough ids
     // nothing minted to fill it.
     let ceiling: Vec<String> = stored
         .iter()
         .cloned()
-        .chain((0..MAX_RUN_IDS - stored.len()).map(|index| format!("filler-{index:03}")))
+        .chain(
+            (0..MAX_RUN_IDS - stored.len()).map(|index| unknown_id(&format!("filler-{index:03}"))),
+        )
         .collect();
 
     let cases: Vec<BatchCase> = vec![
@@ -514,17 +532,18 @@ async fn a_batched_run_is_the_run_the_single_read_reports() {
 /// Source for both bounds:
 /// `smithy_query(query="shape",shape="DataQualityRulesetEvaluationRunIdList")` — the list is
 /// `length 1..100` and its member targets `HashString`, `length 1..255`. Each published bound
-/// is exercised, plus one past it.
+/// is exercised, plus one past it; at the element MINIMUM no value can carry the grammar a run
+/// id has, so that bound is a malformed address rather than a miss.
 #[tokio::test]
 async fn run_ids_outside_the_modeled_bounds_are_refused() {
     let (router, engine) = emulator_with_engine();
     let started = started_runs(&router).await;
     set_due_instant(&engine, far_future());
 
-    // At each published element bound the id is a legal address, so it is simply unknown —
-    // reported as a miss rather than refused.
-    for length in [MIN_RUN_ID_LENGTH, MAX_RUN_ID_LENGTH] {
-        let id = "r".repeat(length);
+    // At the published element CEILING an id of the grammar is a legal address, so it is
+    // simply unknown — reported as a miss rather than refused.
+    for length in [DATA_QUALITY_RUN_ID_PREFIX.len() + 1, MAX_RUN_ID_LENGTH] {
+        let id = unknown_id(&"r".repeat(length - DATA_QUALITY_RUN_ID_PREFIX.len()));
         let body = batch_get(&router, std::slice::from_ref(&id)).await;
         assert_eq!(
             string_list(&body, "RunsNotFound"),
@@ -537,10 +556,32 @@ async fn run_ids_outside_the_modeled_bounds_are_refused() {
         );
     }
 
+    // At the published element MINIMUM no id can carry the grammar every run id has — the
+    // prefix alone is longer — so that bound is a malformed address rather than a miss.
+    let shortest = "r".repeat(MIN_RUN_ID_LENGTH);
+    let (status, answer) = call(
+        &router,
+        "BatchGetDataQualityRulesetEvaluationRun",
+        &json!({ "RunIds": [&shortest] }),
+    )
+    .await;
+    assert_eq!(
+        status, 400,
+        "case an id at the element minimum: no id that short carries the run grammar, got \
+         {status} with {answer}"
+    );
+    assert!(
+        error_code(&answer).ends_with("InvalidInputException"),
+        "case an id at the element minimum: expected InvalidInputException, got {} in {answer}",
+        error_code(&answer)
+    );
+
     // A batch at each published list bound is served: the smallest the model admits, and the
     // largest.
     for size in [MIN_RUN_IDS, MAX_RUN_IDS] {
-        let ids: Vec<String> = (0..size).map(|index| format!("bounded-{index:03}")).collect();
+        let ids: Vec<String> = (0..size)
+            .map(|index| unknown_id(&format!("bounded-{index:03}")))
+            .collect();
         let body = batch_get(&router, &ids).await;
         assert_eq!(
             string_list(&body, "RunsNotFound"),
@@ -551,7 +592,7 @@ async fn run_ids_outside_the_modeled_bounds_are_refused() {
 
     // One past each bound is refused, and so is a request naming no `RunIds` at all.
     let over_ceiling: Vec<String> = (0..=MAX_RUN_IDS)
-        .map(|index| format!("over-{index:03}"))
+        .map(|index| unknown_id(&format!("over-{index:03}")))
         .collect();
     let refusals: Vec<(&str, Value)> = vec![
         ("an empty batch, one below the list's minimum", json!({ "RunIds": [] })),

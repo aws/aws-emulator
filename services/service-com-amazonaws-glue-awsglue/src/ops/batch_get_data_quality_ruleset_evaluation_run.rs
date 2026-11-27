@@ -18,6 +18,14 @@
 //! this answer REPORTS, not a failure of the whole batch, which is what distinguishes this
 //! read from the single-run one that answers `EntityNotFoundException`.
 //!
+//! An id that is no data quality run id at all — one outside the `@pattern` its member
+//! declares, or one without the grammar every run id this service mints carries
+//! ([`crate::state::DATA_QUALITY_RUN_ID_PREFIX`]) — is NOT such an absence: it addresses no
+//! run that could ever exist, so one of them anywhere in `RunIds` makes the whole request
+//! malformed and it is refused with the operation's modelled `InvalidInputException` before
+//! any lookup, the way every other read of a data quality run refuses one
+//! ([`crate::ops::get_data_quality_ruleset_evaluation_run`]).
+//!
 //! ## Shape of an operation
 //!
 //! Each operation is a struct that owns the shared engine and implements
@@ -78,6 +86,15 @@
 
 #[allow(unused_imports)]
 use super::types::*;
+
+/// The member path a constraint clause names ONE element of `RunIds` by: the list member as
+/// the wire spells it, lower-camel-cased, then the element's index and the list's own member
+/// step — the spelling the request walk gives a list element's leaf
+/// (`vendor/smithy-schema-server/src/constraints.rs`), so a clause this operation states
+/// itself reads exactly like one the boundary states for a pattern it CAN compile.
+fn run_ids_member_path(index: usize) -> String {
+    format!("runIds.{index}.member")
+}
 
 // `#[operation_error]` below expands to an invocation of the LOCAL declarative
 // `smithy!` macro, which this line is what emits into the module. Without it the
@@ -150,6 +167,39 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
         let _ = ctx;
+        // A malformed address is refused BEFORE anything is read: an element outside the
+        // `@pattern` its member declares, or one without the grammar every data quality run
+        // id carries, names no run that could ever exist, so reporting it in `RunsNotFound`
+        // would tell the caller the request was well-formed and that the run simply does not
+        // exist. ONE such element refuses the whole batch, because what is malformed is the
+        // request's `RunIds` and not one answer within it.
+        for (index, run_id) in input.run_ids.iter().enumerate() {
+            if let Some(message) =
+                crate::service::hash_string_pattern_refusal(&run_ids_member_path(index), run_id)
+            {
+                return Err(
+                    BatchGetDataQualityRulesetEvaluationRunErrorModeled::InvalidInputException(
+                        InvalidInputException {
+                            message: Some(message),
+                            from_federation_source: None,
+                        },
+                    )
+                    .into(),
+                );
+            }
+            if !crate::state::is_data_quality_run_id(run_id) {
+                return Err(
+                    BatchGetDataQualityRulesetEvaluationRunErrorModeled::InvalidInputException(
+                        InvalidInputException {
+                            message: Some(crate::state::messages::invalid_data_quality_run_id()),
+                            from_federation_source: None,
+                        },
+                    )
+                    .into(),
+                );
+            }
+        }
+
         let Some(state) = crate::state::service_state(&*self.engine) else {
             // This operation models no store fault that fits an unreachable store, so it is
             // reported as its timeout error — the wording the single-run read uses.
@@ -164,9 +214,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         };
 
         // `RunIds` is `@required` with `length 1..100`, and each of its elements
-        // `length 1..255` with a pattern, so a batch too large to serve and an id too long
-        // or too short to address a run are both refused at the request boundary: reaching
-        // here, the only question per id is whether this account holds a run under it. The
+        // `length 1..255`, so a batch too large to serve and an id too long or too short to
+        // address a run are both refused at the request boundary, and each element's pattern
+        // and grammar were applied above: reaching here, the only question per id is whether
+        // this account holds a run under it. The
         // walk keeps the request's order and its repeats — one answer per REQUESTED id, not
         // per distinct id — in a critical section scoped to the lookups alone, bounded above
         // by that modelled list length, with the guard dropped before the answer is built.

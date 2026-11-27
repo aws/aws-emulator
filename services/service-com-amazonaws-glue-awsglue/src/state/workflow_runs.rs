@@ -520,7 +520,9 @@ pub fn new_data_quality_rule_recommendation_run_id() -> String {
     )
 }
 
-/// What every data quality rule recommendation run id begins with.
+/// What every data quality run id begins with — a rule recommendation run's
+/// ([`new_data_quality_rule_recommendation_run_id`]) and a ruleset evaluation run's
+/// ([`new_data_quality_ruleset_evaluation_run_id`]) alike.
 ///
 /// RECORDED grammar: the service states the requirement itself
 /// ([`crate::state::messages::invalid_data_quality_run_id`]), so the ids this store MINTS
@@ -528,7 +530,7 @@ pub fn new_data_quality_rule_recommendation_run_id() -> String {
 /// halves, so a minted id can never be one the reads reject.
 pub const DATA_QUALITY_RUN_ID_PREFIX: &str = "dqrun-";
 
-/// Whether `run_id` has the grammar a data quality rule recommendation run id has
+/// Whether `run_id` has the grammar a data quality run id has — either kind of run
 /// ([`DATA_QUALITY_RUN_ID_PREFIX`]).
 ///
 /// The one question the reads ask before they look anything up: an id outside the grammar
@@ -888,23 +890,25 @@ pub(super) static MINTED_DATA_QUALITY_RULESET_EVALUATION_RUN_IDS: AtomicU64 = At
 /// A fresh `RunId`: the id the service assigns a data quality ruleset evaluation run when it
 /// starts.
 ///
-/// 32 lowercase hexadecimal characters, i.e. 128 bits, which is inside `HashString`'s
-/// `length 1..255`, drawn from the same [`mint_hex_id`] source a recommendation run's id is
-/// ([`new_data_quality_rule_recommendation_run_id`]). It carries no
-/// [`DATA_QUALITY_RUN_ID_PREFIX`]: the grammar is stated by the operations that address a
-/// RECOMMENDATION run, which are the ones a recording shows stating it, so nothing refuses
-/// an evaluation run id for the want of it. An evaluation-run recording that shows the same
-/// grammar is what would move this id onto that prefix and put the check on the operations
-/// that read one.
+/// [`DATA_QUALITY_RUN_ID_PREFIX`] followed by 32 lowercase hexadecimal characters, i.e. 128
+/// bits, which is inside `HashString`'s `length 1..255`, drawn from the same [`mint_hex_id`]
+/// source a recommendation run's id is
+/// ([`new_data_quality_rule_recommendation_run_id`]). An evaluation run is one of this
+/// service's DATA QUALITY RUNS, so it is addressed by an id of that one grammar
+/// ([`is_data_quality_run_id`]) — one prefix, read by both mints and by every read, so a
+/// minted id can never be one the reads reject.
 ///
 /// It is stored on the run, so every later read of that run reports the same id.
 ///
 /// This names a RESOURCE, not a credential: a credential would come from the credential
 /// store, never from here.
 pub fn new_data_quality_ruleset_evaluation_run_id() -> String {
-    mint_hex_id(
-        &MINTED_DATA_QUALITY_RULESET_EVALUATION_RUN_IDS,
-        DATA_QUALITY_RUN_ID_WORDS,
+    format!(
+        "{DATA_QUALITY_RUN_ID_PREFIX}{}",
+        mint_hex_id(
+            &MINTED_DATA_QUALITY_RULESET_EVALUATION_RUN_IDS,
+            DATA_QUALITY_RUN_ID_WORDS,
+        )
     )
 }
 
