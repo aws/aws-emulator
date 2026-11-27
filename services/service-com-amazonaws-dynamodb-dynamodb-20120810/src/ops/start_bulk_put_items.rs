@@ -30,7 +30,7 @@
 //! ([`crate::state::read_import_source`], [`crate::state::imported_items`]), with the
 //! calling principal's own S3 permissions — though the FORMATS it admits are its own and
 //! narrower than an import's
-//! (`smithy_query(query="shape", shape="com.amazonaws.dynamodb#BulkPutInputFormat")`), and
+//! (`smithy_query(query="shape", shape="com.amazonaws.dynamodb#BulkOperationInputFormat")`), and
 //! each decoded item is then held to exactly
 //! what a single-item write holds one to (its numbers canonicalized, its values held to the
 //! documented domain, the documented 400 KB ceiling, the table's own key schema) and stored
@@ -54,12 +54,12 @@
 //! the request addressed, and a table whose resource-based policy denies the caller this
 //! call is `AccessDeniedException`, both decided before the source is read.
 //!
-//! WHERE THIS OPERATION'S CONTRACT COMES FROM. The service's Smithy model carried no
-//! `StartBulkPutItems` shape when this was written, so there is no modelled doc text to
-//! quote: the members are the ones the recorded calls carry — the table, the input and
-//! output S3 configurations, the write-unit ceiling, the performance tier and the client
-//! token the recording replays to confirm one operation is returned — and the shapes this
-//! crate is built from now declare them.
+//! WHERE THIS OPERATION'S CONTRACT COMES FROM. The model this crate is built from declares
+//! the operation and the record it answers (`smithy_query(query="closure",
+//! operation="StartBulkPutItems")`): the table, the input and output S3 configurations, the
+//! write-unit ceiling, the performance tier and the client token a retry replays, and the
+//! `BulkOperationDescription` the answer carries — the operation's ARN and status, the table
+//! it acts on, the instants it ran between and the figures its task settled on.
 //!
 //! ## Reaching this service's state
 //!
@@ -73,16 +73,25 @@ use super::types::*;
 smithy_macros::smithy_model!("smithy-model/com-amazonaws-dynamodb-dynamodb-20120810.json");
 
 /// The operation's MODELED errors.
-#[smithy_macros::operation_error("com.amazonaws.dynamodb#StartBulkPutItems")]
+///
+/// `InternalServerError` is widened in through `extra_errors`, for the reason the sibling
+/// bulk-operation calls widen it in (`super::cancel_bulk_operation`): this SERVICE models the
+/// shape, this operation's own `errors` list omits it
+/// (`smithy_query(query="operation", operation="StartBulkPutItems")`), and a bulk put that
+/// cannot reach this service's store — or the Amazon S3 store its source is staged in — has
+/// failed on the server's side of the call.
+#[smithy_macros::operation_error(
+    "com.amazonaws.dynamodb#StartBulkPutItems",
+    extra_errors = ["InternalServerError"]
+)]
 #[derive(Debug)]
 pub enum StartBulkPutItemsErrorModeled {
     IdempotentParameterMismatchException(IdempotentParameterMismatchException),
     InternalServerError(InternalServerError),
     InvalidEndpointException(InvalidEndpointException),
     LimitExceededException(LimitExceededException),
-    RequestLimitExceeded(RequestLimitExceeded),
+    ResourceInUseException(ResourceInUseException),
     ResourceNotFoundException(ResourceNotFoundException),
-    ThrottlingException(ThrottlingException),
 }
 
 /// This operation's error channel, as the generated `impl Operation` names it
@@ -138,13 +147,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let state = crate::state::service_state(&*self.engine).ok_or_else(store_unavailable)?;
         let name = crate::state::resolve_table_name_in(&input.table_name, &region).map_err(lift)?;
         let source = &input.input_s3_configuration;
-        // The format and the compression the source is read with, resolved to what each
-        // member defaults to where the request named none — the same two values an import
-        // reads its own source with.
-        let format = source
-            .input_format
-            .clone()
-            .unwrap_or_else(|| crate::state::INPUT_FORMAT_DYNAMODB_JSON.to_string());
+        // The format the source is read in, which every request states
+        // (`InputS3Configuration$InputFormat` is `@required`), and the compression it is
+        // read with, resolved to what that member defaults to where the request named none —
+        // the same two values an import reads its own source with.
+        let format = source.input_format.clone();
         let compression = source
             .input_compression_type
             .clone()
@@ -167,7 +174,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let signature = crate::state::bulk_put_request_signature(
             &name,
             source,
-            Some(&input.output_s3_configuration),
+            &input.output_s3_configuration,
             input.max_write_request_units,
             input.performance_tier.as_deref(),
         );
@@ -226,8 +233,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // principal are ([`crate::state::import_listing_denial`],
         // [`crate::state::import_read_denial`]). A bucket that store holds none of, and a
         // read the policies refuse, are a source nothing can be read from — the operation is
-        // accepted and SETTLES FAILED, because what could not be read is the task's own
-        // outcome rather than a fault in this request.
+        // accepted and SETTLES FAILED, reporting that reason as its own failure, because what
+        // could not be read is the task's own outcome rather than a fault in this request.
         let s3_source = source_of(source);
         let objects = match crate::state::read_import_source(&*self.engine, &s3_source) {
             Ok(objects) => {
@@ -242,8 +249,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                             )
                         });
                 match denied {
-                    Some(_) => None,
-                    None => Some(objects),
+                    Some(denial) => Err(denial),
+                    None => Ok(objects),
                 }
             }
             Err(crate::state::ImportSourceFault::StoreUnavailable) => {
@@ -254,12 +261,25 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 )
                 .into())
             }
-            Err(crate::state::ImportSourceFault::NoSuchBucket) => None,
+            Err(crate::state::ImportSourceFault::NoSuchBucket) => {
+                Err(crate::state::ImportFailure {
+                    code: crate::state::IMPORT_FAILURE_NO_SUCH_BUCKET.to_string(),
+                    message: crate::state::IMPORT_FAILURE_NO_SUCH_BUCKET_MESSAGE.to_string(),
+                })
+            }
+            // A selection past what one call of this emulator reads is REFUSED rather than
+            // accepted and settled FAILED: it is this emulator's own ceiling on the request,
+            // and it is answered before the objects are held.
+            Err(crate::state::ImportSourceFault::TooLarge) => {
+                return Err(limit_exceeded(crate::state::import_too_large_message(
+                    &s3_source.s3_bucket,
+                )))
+            }
         };
         // Decoding the source is CPU-bound and sized by the objects read, so it runs on a
         // BLOCKING task rather than on a runtime worker a large source would starve.
         let read = match objects {
-            Some(objects) => {
+            Ok(objects) => {
                 let decoded = ::tokio::task::spawn_blocking(move || {
                     crate::state::imported_items(
                         &objects,
@@ -271,7 +291,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 })
                 .await;
                 match decoded {
-                    Ok(Ok(read)) => Some(read),
+                    Ok(Ok(read)) => Ok(read),
                     // A source past this emulator's own ceilings is refused BEFORE anything
                     // is written, with the modelled limit error.
                     Ok(Err(crate::state::ImportTooLarge)) => {
@@ -291,7 +311,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     }
                 }
             }
-            None => None,
+            Err(failure) => Err(failure),
         };
 
         let mut store = state.lock();
@@ -302,6 +322,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // call rather than whatever stood when it started.
         let table = store.active_table_named(&region, &name, now).map_err(lift)?;
         authorize(&caller, table, now)?;
+        // The table's own id, which a reader reports beside its name as the one entry of the
+        // operation's `TableDetails`: read from the table the writes land in, so the identity
+        // reported cannot drift from the one that table reports for itself.
+        let table_id = table.id.clone();
         // Asked again under the same guard: a concurrent replay must answer the operation
         // the token already started rather than record a second one.
         if let Some(started) =
@@ -311,16 +335,25 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         }
         let mut written: Vec<(crate::state::ItemKey, crate::state::Item)> = Vec::new();
         let mut counts = Counts::default();
-        if let Some(read) = read {
-            counts.read_its_source = true;
-            counts.processed = read.processed_item_count;
-            counts.errors = read.error_count;
-            // Each decoded item is keyed against the table it is written into, and one the
-            // table cannot hold is counted among the errors instead
-            // ([`crate::state::keyed_items`], the one rule an imported item is held to).
-            let table = store.active_table_named(&region, &name, now).map_err(lift)?;
-            let keyed = crate::state::keyed_items(table, read.items);            counts.errors = counts.errors.saturating_add(keyed.error_count);
-            written.extend(keyed.items);
+        // Why the task could not read its source at all, where it could not: what a FAILED
+        // operation reports as its own failure.
+        let mut failure = None;
+        match read {
+            Ok(read) => {
+                counts.read_its_source = true;
+                counts.processed = read.processed_item_count;
+                counts.failed = read.error_count;
+                counts.input_bytes = read.processed_size_bytes;
+                // Each decoded item is keyed against the table it is written into, and one the
+                // table cannot hold is counted among the failures instead
+                // ([`crate::state::keyed_items`], the one rule an imported item is held to).
+                let table = store.active_table_named(&region, &name, now).map_err(lift)?;
+                let keyed = crate::state::keyed_items(table, read.items);
+                counts.failed = counts.failed.saturating_add(keyed.error_count);
+                counts.stored_bytes = keyed.stored_bytes;
+                written.extend(keyed.items);
+            }
+            Err(reason) => failure = Some(reason),
         }
         counts.written = i64::try_from(written.len()).unwrap_or(i64::MAX);
         for (key, item) in written {
@@ -336,9 +369,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             arn: crate::state::new_bulk_operation_arn(&region, now),
             region: region.clone(),
             table_name: name.clone(),
+            table_id,
             client_token: input.client_token.clone(),
             input_s3_configuration: input.input_s3_configuration.clone(),
-            output_s3_configuration: Some(input.output_s3_configuration.clone()),
+            output_s3_configuration: input.output_s3_configuration.clone(),
             max_write_request_units: input.max_write_request_units,
             performance_tier: input.performance_tier.clone(),
             started_at: crate::state::at_timestamp_precision(now),
@@ -347,16 +381,22 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             // ([`crate::state::BulkOperation::cancel`]).
             cancelled_at: None,
             // What the task SETTLES INTO: a source it could not read at all is the one
-            // outcome that fails, and anything it read — per-record errors included — is an
-            // operation that completed, the way an import task that logged errors completes.
-            status: if counts.read_its_source {
-                crate::state::BULK_OPERATION_STATUS_COMPLETED.to_string()
-            } else {
-                crate::state::BULK_OPERATION_STATUS_FAILED.to_string()
+            // outcome that fails; a source it read every record of is a completion; and one
+            // whose records did not all land completed WITH ERRORS, which is what that status
+            // states and what the count beside it reports.
+            status: match (counts.read_its_source, counts.failed) {
+                (false, _) => crate::state::BULK_OPERATION_STATUS_FAILED.to_string(),
+                (true, 0) => crate::state::BULK_OPERATION_STATUS_COMPLETED.to_string(),
+                (true, _) => {
+                    crate::state::BULK_OPERATION_STATUS_COMPLETED_WITH_ERRORS.to_string()
+                }
             },
             processed_item_count: counts.processed,
             written_item_count: counts.written,
-            error_count: counts.errors,
+            failed_item_count: counts.failed,
+            processed_input_bytes: counts.input_bytes,
+            bulk_put_bytes: counts.stored_bytes,
+            failure,
         };
         audited(Self::NAME, ctx, &operation, &s3_source.s3_bucket);
         let answer = started_output(&operation, now);
@@ -375,12 +415,16 @@ struct Counts {
     /// The items that landed in the table.
     written: i64,
     /// The records the task read and could not write.
-    errors: i64,
+    failed: i64,
+    /// The bytes of the source objects the task read.
+    input_bytes: i64,
+    /// The item bytes the writes it made added to the table.
+    stored_bytes: i64,
 }
 
 /// The `S3BucketSource` an `InputS3Configuration` names, so the source is read and
 /// authorized through the one reader this service reads a staged source with.
-fn source_of(configuration: &BulkPutInputS3Configuration) -> S3BucketSource {
+fn source_of(configuration: &InputS3Configuration) -> S3BucketSource {
     S3BucketSource {
         s3_bucket: configuration.s3_bucket.clone(),
         s3_key_prefix: configuration.s3_key_prefix.clone(),
@@ -483,7 +527,7 @@ fn audited(
         source_bucket = ?source_bucket,
         processed = started.processed_item_count,
         written = started.written_item_count,
-        errors = started.error_count,
+        failed = started.failed_item_count,
         outcome = ?started.status,
         "bulk put items started"
     );

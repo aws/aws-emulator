@@ -13,52 +13,16 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-dynamodb-dynamodb-20120
 #[smithy_macros::smithy(shape = "com.amazonaws.dynamodb#StartBulkPutItemsInput")]
 #[derive(Debug, Clone, Default)]
 pub struct StartBulkPutItemsInput {
+    pub client_token: Option<String>,
+    pub input_s3_configuration: InputS3Configuration,
+    pub output_s3_configuration: OutputS3Configuration,
     pub table_name: String,
-    pub input_s3_configuration: BulkPutInputS3Configuration,
-    pub output_s3_configuration: BulkPutOutputS3Configuration,
     pub max_write_request_units: Option<i64>,
     pub performance_tier: Option<String>,
-    pub client_token: Option<String>,
-}
-
-#[smithy_macros::smithy(shape = "com.amazonaws.dynamodb#BulkPutInputS3Configuration")]
-#[derive(Debug, Clone, Default)]
-pub struct BulkPutInputS3Configuration {
-    pub s3_bucket: String,
-    pub s3_key_prefix: Option<String>,
-    pub s3_bucket_owner: Option<String>,
-    pub input_format: Option<String>,
-    pub input_compression_type: Option<String>,
-}
-
-#[smithy_macros::smithy(shape = "com.amazonaws.dynamodb#BulkPutOutputS3Configuration")]
-#[derive(Debug, Clone, Default)]
-pub struct BulkPutOutputS3Configuration {
-    pub s3_bucket: String,
-    pub s3_key_prefix: Option<String>,
-    pub s3_bucket_owner: Option<String>,
-    pub output_type: Option<Vec<String>>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.dynamodb#StartBulkPutItemsOutput")]
 #[derive(Debug, Clone, Default)]
 pub struct StartBulkPutItemsOutput {
     pub bulk_operation_description: BulkOperationDescription,
-}
-
-#[smithy_macros::smithy(shape = "com.amazonaws.dynamodb#BulkOperationDescription")]
-#[derive(Debug, Clone, Default)]
-pub struct BulkOperationDescription {
-    pub bulk_operation_arn: Option<String>,
-    pub bulk_operation_status: Option<String>,
-    pub table_arn: Option<String>,
-    pub client_token: Option<String>,
-    pub input_s3_configuration: Option<BulkPutInputS3Configuration>,
-    pub output_s3_configuration: Option<BulkPutOutputS3Configuration>,
-    pub max_write_request_units: Option<i64>,
-    pub performance_tier: Option<String>,
-    pub start_time: Option<::aws_smithy_types::DateTime>,
-    pub end_time: Option<::aws_smithy_types::DateTime>,
-    pub processed_item_count: Option<i64>,
-    pub error_count: Option<i64>,
 }

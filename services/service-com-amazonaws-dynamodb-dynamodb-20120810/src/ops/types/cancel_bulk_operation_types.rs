@@ -19,5 +19,6 @@ pub struct CancelBulkOperationInput {
 #[smithy_macros::smithy(shape = "com.amazonaws.dynamodb#CancelBulkOperationOutput")]
 #[derive(Debug, Clone, Default)]
 pub struct CancelBulkOperationOutput {
-    pub bulk_operation_description: BulkOperationDescription,
+    pub bulk_operation_arn: String,
+    pub bulk_operation_status: String,
 }

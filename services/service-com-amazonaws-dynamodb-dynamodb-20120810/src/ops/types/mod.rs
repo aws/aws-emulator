@@ -43,6 +43,10 @@ pub mod enable_kinesis_streaming_destination_types;
 pub mod execute_statement_types;
 pub mod execute_transaction_types;
 pub mod export_table_to_point_in_time_types;
+/// `ExportDescription` and `ExportSummary`, declared from the local overlay model rather than
+/// from the published snapshot: AWS carries a member the snapshot does not declare (see
+/// `smithy-model/LOCAL-ADDITIONS.md`).
+pub mod export_description_types;
 pub mod get_item_types;
 pub mod get_resource_policy_types;
 pub mod import_table_types;
@@ -56,6 +60,10 @@ pub mod list_tables_types;
 pub mod list_tags_of_resource_types;
 pub mod put_item_types;
 pub mod put_resource_policy_types;
+/// `PointInTimeRecoveryDescription`, declared from the local overlay model rather than from
+/// the published snapshot: AWS carries a member the snapshot does not declare (see
+/// `smithy-model/LOCAL-ADDITIONS.md`).
+pub mod point_in_time_recovery_types;
 pub mod query_types;
 pub mod restore_table_from_backup_types;
 pub mod restore_table_to_point_in_time_types;
@@ -63,6 +71,13 @@ pub mod scan_types;
 pub mod search_vectors_types;
 pub mod shared_types;
 pub mod start_bulk_put_items_types;
+/// `TableDescription` and its `TableThroughputModeSummary`, declared from the local overlay
+/// model rather than from the published snapshot: AWS carries a member the snapshot does not
+/// declare (see `smithy-model/LOCAL-ADDITIONS.md`).
+pub mod table_description_types;
+/// `CreateTableInput` and `UpdateTableInput`, declared from the same overlay: AWS accepts a
+/// throughput-mode member on both that the snapshot does not declare.
+pub mod table_throughput_mode_types;
 pub mod tag_resource_types;
 pub mod transact_get_items_types;
 pub mod transact_write_items_types;
@@ -76,6 +91,10 @@ pub mod update_kinesis_streaming_destination_types;
 pub mod update_table_replica_auto_scaling_types;
 pub mod update_table_types;
 pub mod update_time_to_live_types;
+/// `VectorCapacity`, declared from the local overlay model rather than from the published
+/// snapshot: AWS carries a member the snapshot does not declare (see
+/// `smithy-model/LOCAL-ADDITIONS.md`).
+pub mod vector_capacity_types;
 
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use batch_execute_statement_types::*;
@@ -136,6 +155,8 @@ pub use execute_transaction_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use export_table_to_point_in_time_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use export_description_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use get_item_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use get_resource_policy_types::*;
@@ -162,6 +183,8 @@ pub use put_item_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use put_resource_policy_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use point_in_time_recovery_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use query_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use restore_table_from_backup_types::*;
@@ -175,6 +198,10 @@ pub use search_vectors_types::*;
 pub use shared_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use start_bulk_put_items_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use table_description_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use table_throughput_mode_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use tag_resource_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
@@ -201,4 +228,6 @@ pub use update_table_replica_auto_scaling_types::*;
 pub use update_table_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use update_time_to_live_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use vector_capacity_types::*;
 

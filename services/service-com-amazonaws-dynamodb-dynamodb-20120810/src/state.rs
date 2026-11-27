@@ -18,8 +18,9 @@ use bigdecimal::BigDecimal;
 
 use crate::ops::types::{
     AttributeDefinition, AttributeValue, AttributeValueUpdate, BackupDescription, BackupDetails,
-    BackupSummary, BillingModeSummary, BulkOperationDescription, BulkOperationSummary,
-    BulkPutInputS3Configuration, BulkPutOutputS3Configuration, CancellationReason, Capacity,
+    BackupSummary, BillingModeSummary, BulkOperationBytes, BulkOperationDescription,
+    BulkOperationSummary, BulkOperationTableDetail, BulkOperationUsage,
+    CancellationReason, Capacity,
     Condition,
     ConsumedCapacity, ContinuousBackupsDescription, ContributorInsightsSummary,
     CsvOptions,
@@ -28,10 +29,11 @@ use crate::ops::types::{
     ExportSummary,
     GlobalSecondaryIndexDescription, GlobalSecondaryIndexInfo,
     GlobalSecondaryIndexWarmThroughputDescription,
-    ImportSummary, ImportTableDescription, InputFormatOptions,
+    ImportSummary, ImportTableDescription, InputFormatOptions, InputS3Configuration,
     ItemCollectionMetrics, KeySchemaElement, KinesisDataStreamDestination,
     LocalSecondaryIndexDescription,
     LocalSecondaryIndexInfo,
+    OutputS3Configuration,
     PointInTimeRecoveryDescription, Projection,
     ProvisionedThroughput, ProvisionedThroughputDescription, RestoreSummary, S3BucketSource,
     ProvisionedThroughputExceededException,
@@ -135,6 +137,15 @@ pub const EXPRESSION_ATTRIBUTE_VALUES_TOO_LARGE_MESSAGE: &str =
 /// neither the ceiling nor the offending size appended. Both figures are
 /// internal to the check; the caller is told which quota it crossed.
 pub const ITEM_SIZE_EXCEEDED_MESSAGE: &str = "Item size has exceeded the maximum allowed size";
+
+/// How a write of an item whose attributes nest deeper than [`MAX_ATTRIBUTE_DEPTH`] is
+/// refused: AWS's FIXED sentence for that quota, naming the quota and nothing of which
+/// attribute reached it. Stated here, beside the other quota sentences this store refuses
+/// with, rather than among the types rendered from the model: a wording is this emulator's
+/// own and a rendered file is rewritten by the next model update.
+pub const NESTING_LEVELS_EXCEEDED_MESSAGE: &str =
+    "Nesting Levels have exceeded supported limits: Attributes in the item have nested levels \
+     beyond supported limit";
 
 /// How a write that GROWS a stored item past [`MAX_ITEM_SIZE_BYTES`] is refused.
 ///
@@ -898,7 +909,7 @@ pub fn return_values_must_be_old_or_none() -> RequestError {
 /// `TransactItems` entry is a member of that entry ([`unenveloped`] is where each of
 /// those readers states it).
 pub fn nesting_levels_exceeded() -> RequestError {
-    refused(crate::ops::types::NESTING_LEVELS_EXCEEDED_MESSAGE.to_string())
+    refused(NESTING_LEVELS_EXCEEDED_MESSAGE.to_string())
 }
 
 /// How a write path states a refusal about a value a change would leave in the STORED

@@ -11,35 +11,11 @@ use super::*;
 
 smithy_macros::smithy_model!("smithy-model/com-amazonaws-dynamodb-dynamodb-20120810.json");
 
-#[smithy_macros::smithy(shape = "com.amazonaws.dynamodb#CreateTableInput")]
-#[derive(Debug, Clone, Default)]
-pub struct CreateTableInput {
-    pub attribute_definitions: Option<Vec<AttributeDefinition>>,
-    pub table_name: String,
-    pub key_schema: Option<Vec<KeySchemaElement>>,
-    pub local_secondary_indexes: Option<Vec<LocalSecondaryIndex>>,
-    pub global_secondary_indexes: Option<Vec<GlobalSecondaryIndex>>,
-    pub billing_mode: Option<String>,
-    /// The throughput-mode spelling of `billing_mode`, which the model declares beside it:
-    /// both members target the `BillingMode` enum and name the same read/write capacity
-    /// mode, and a request states the mode through one of them. It is written AFTER
-    /// `billing_mode` because the validating walk reports a violated member in the order
-    /// the members are written, and a request that breaks both is refused with the
-    /// billing-mode clause first.
-    pub table_throughput_mode: Option<String>,
-    pub provisioned_throughput: Option<ProvisionedThroughput>,
-    pub stream_specification: Option<StreamSpecification>,
-    pub sse_specification: Option<SSESpecification>,
-    pub tags: Option<Vec<Tag>>,
-    pub table_class: Option<String>,
-    pub deletion_protection_enabled: Option<bool>,
-    pub warm_throughput: Option<WarmThroughput>,
-    pub resource_policy: Option<String>,
-    pub on_demand_throughput: Option<OnDemandThroughput>,
-    pub global_table_source_arn: Option<String>,
-    pub global_table_settings_replication_mode: Option<String>,
-    pub vector_indexes: Option<Vec<VectorIndex>>,
-}
+// `CreateTableInput` is NOT declared here: AWS accepts a throughput-mode member the
+// published snapshot does not declare, so the shape is declared in
+// `table_throughput_mode_types` from the local overlay model instead (see
+// `smithy-model/LOCAL-ADDITIONS.md`). `types/mod.rs` re-exports it, so `use super::types::*`
+// resolves it from here as it does any other shape.
 
 #[smithy_macros::smithy(shape = "com.amazonaws.dynamodb#CreateTableOutput")]
 #[derive(Debug, Clone, Default)]

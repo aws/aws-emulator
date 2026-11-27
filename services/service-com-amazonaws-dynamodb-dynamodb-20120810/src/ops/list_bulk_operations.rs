@@ -2,24 +2,20 @@
 
 //! @op ListBulkOperations
 //! IMPLEMENTED: reports one `BulkOperationSummary` per bulk operation of the region the
-//! request reached — the operation's own ARN, the status it is in, the table it acts on and
-//! the instants it began and (once it has) ended — narrowed to one table when the request
-//! names one, and paged by `MaxResults` with a `NextToken` that stands for the entry the
-//! page stopped on.
+//! request reached — the operation's own ARN, the status it is in and the instants it began
+//! and (once it has) ended — paged by `MaxResults` with a `NextToken` that stands for the
+//! entry the page stopped on.
+//!
+//! THE WHOLE REGION'S OPERATIONS: the request carries no member that narrows the listing
+//! (`smithy_query(query="operation", operation="ListBulkOperations")` gives `MaxResults` and
+//! `NextToken` and nothing else), so every bulk operation the account holds in the region
+//! the endpoint serves is reported, and the table each one acted on is read back through
+//! `DescribeBulkOperation`.
 //!
 //! A REPORTING operation: every summary is read from the bulk-operation catalogue
 //! `StartBulkPutItems` writes ([`crate::state::BulkOperation`]), and the status each one
 //! reports is derived from the clock at every read, so the only write it makes is what the
 //! clock had already made due and two callers reading it see the same thing.
-//!
-//! A request that NARROWS the listing to a table the account does not hold is refused with
-//! the modelled `ResourceNotFoundException` rather than answered with an empty page: it
-//! named a resource whose operations cannot be read.
-//!
-//! WHERE THIS OPERATION'S CONTRACT COMES FROM. The service's Smithy model carried no
-//! bulk-operation shape when this was written, so there is no modelled doc text to quote:
-//! the members are the ones the recorded calls name — the summary list, and the ARN, status
-//! and instants of each entry — and the shapes this crate is built from now declare them.
 //!
 //! ## Reaching this service's state
 //!
@@ -33,13 +29,20 @@ use super::types::*;
 smithy_macros::smithy_model!("smithy-model/com-amazonaws-dynamodb-dynamodb-20120810.json");
 
 /// The operation's MODELED errors.
-#[smithy_macros::operation_error("com.amazonaws.dynamodb#ListBulkOperations")]
+///
+/// `InternalServerError` is widened in through `extra_errors`, for the reason the sibling
+/// bulk-operation readers widen it in (`super::describe_bulk_operation`): this SERVICE models
+/// the shape, this operation's own `errors` list omits it
+/// (`smithy_query(query="operation", operation="ListBulkOperations")`), and a listing that
+/// cannot reach this service's store has failed on the server's side of the call.
+#[smithy_macros::operation_error(
+    "com.amazonaws.dynamodb#ListBulkOperations",
+    extra_errors = ["InternalServerError"]
+)]
 #[derive(Debug)]
 pub enum ListBulkOperationsErrorModeled {
     InternalServerError(InternalServerError),
     InvalidEndpointException(InvalidEndpointException),
-    ResourceNotFoundException(ResourceNotFoundException),
-    ThrottlingException(ThrottlingException),
 }
 
 /// This operation's error channel, as the generated `impl Operation` names it
@@ -93,54 +96,31 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let region = crate::state::request_region(ctx.parts());
         let now = ::std::time::SystemTime::now();
         let state = crate::state::service_state(&*self.engine).ok_or_else(store_unavailable)?;
-        // The member narrows the listing to one table's bulk operations, and a request that
-        // names none is answered over every table's. It accepts the two spellings every
-        // table-addressing member of this service accepts.
-        let table = input
-            .table_name
-            .as_deref()
-            .map(|named| crate::state::resolve_table_name_in(named, &region))
-            .transpose()
-            .map_err(lift)?;
         // A `NextToken` must be one this operation minted, so a token it did not stands for
         // no page and is refused rather than quietly taken for the first one.
         let cursor = input.next_token.as_deref().map(decode_token).transpose()?;
         // WHO this request speaks for, resolved before this service's store is locked: the
         // listing is authorized against the caller's own identity-based policies, over the
-        // table it narrows itself to or the account's whole table namespace when it names
-        // none ([`crate::state::authorization`]).
+        // account's whole table namespace, since the request narrows itself to no table
+        // ([`crate::state::authorization`]).
         let caller = crate::state::request_caller(&*self.engine, ctx);
         if let Some(denial) = crate::state::authorization::account_denial(
             &caller,
             ACTION,
-            &crate::state::authorization::account_resource(&region, table.as_deref()),
+            &crate::state::authorization::account_resource(&region, None),
         ) {
             return Err(crate::scaffolded::Scaffolded::access_denied(denial));
         }
 
         let mut store = state.lock();
-        // Finish what the clock has already made due before reporting: a table whose
-        // `DeleteTable` span has elapsed is gone, and a listing narrowed to it names a table
-        // that is not there. This is a read, so that is the only write it makes.
+        // Finish what the clock has already made due before reporting. This is a read, so
+        // that is the only write it makes.
         store.apply_due_transitions(now);
-        // A listing NARROWED to one table is refused when the account holds no such table:
-        // the request named a resource whose operations cannot be read, which is the
-        // modelled `ResourceNotFoundException` rather than an empty page — exactly as the
-        // sibling listing that narrows itself to a table answers it
-        // (`super::list_contributor_insights`).
-        if let Some(named) = table.as_deref() {
-            store.table(&region, named).map_err(lift)?;
-        }
         // A reporting operation, and one that reports nothing a WRITE could settle: a
         // bulk-operation record is fixed once written and the status it reports is derived
         // from the clock on each read. So this reads only.
         let mut summaries: Vec<BulkOperationSummary> = store
             .bulk_operations_in(&region)
-            .filter(|operation| {
-                table
-                    .as_deref()
-                    .is_none_or(|named| operation.table_name == named)
-            })
             // The cursor: this page starts strictly after the entry the previous one
             // stopped on, which that page's `NextToken` carried.
             .filter(|operation| {
@@ -166,8 +146,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .then(|| {
                 summaries
                     .last()
-                    .and_then(|summary| summary.bulk_operation_arn.as_deref())
-                    .map(encode_token)
+                    .map(|summary| encode_token(&summary.bulk_operation_arn))
             })
             .flatten();
 
@@ -180,7 +159,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
 /// The page size this operation reports when the request names no `MaxResults`: the ceiling
 /// the model declares for that member
-/// (`smithy_query(query="shape", shape="com.amazonaws.dynamodb#ListBulkOperationsMaxResults")`
+/// (`smithy_query(query="shape", shape="com.amazonaws.dynamodb#ListBulkOperationsMaxLimit")`
 /// gives `@range` 1..25), so a request that asks for no bound is answered with as many
 /// operations as one page may carry.
 const DEFAULT_MAX_RESULTS: i32 = 25;
@@ -239,19 +218,4 @@ fn store_unavailable() -> ListBulkOperationsError {
         message: Some("the DynamoDB table store is unavailable".to_string()),
     })
     .into()
-}
-
-/// Lift a store refusal into this operation's error channel.
-fn lift(error: crate::state::RequestError) -> ListBulkOperationsError {
-    match error {
-        crate::state::RequestError::NotFound(message) => {
-            ListBulkOperationsErrorModeled::ResourceNotFoundException(ResourceNotFoundException {
-                message: Some(message),
-            })
-            .into()
-        }
-        crate::state::RequestError::Validation(message) => {
-            crate::scaffolded::Scaffolded::validation(message)
-        }
-    }
 }

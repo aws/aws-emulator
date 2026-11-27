@@ -441,6 +441,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     message: crate::state::IMPORT_FAILURE_NO_SUCH_BUCKET_MESSAGE.to_string(),
                 })
             }
+            // A selection past what one call of this emulator reads is REFUSED rather than
+            // accepted and failed: it is this emulator's own ceiling on the request, which
+            // is what the limit error says ([`crate::state::import_too_large_message`]), and
+            // it is answered before the objects are held.
+            Err(crate::state::ImportSourceFault::TooLarge) => {
+                return Err(limit_exceeded(crate::state::import_too_large_message(
+                    &source_bucket,
+                )))
+            }
         };
         // The source read is the CALLER's: an import reads its source with the permissions
         // of the principal that asked for it, so the listing that selects the objects and

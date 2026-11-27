@@ -2,7 +2,10 @@
 
 //! @op CancelBulkOperation
 //! IMPLEMENTED: stops the ONE bulk operation its request addresses by ARN, and answers that
-//! operation's own description as it stands once it has been asked to stop.
+//! operation's ARN with the status it stands in once it has been asked to stop
+//! (`smithy_query(query="operation", operation="CancelBulkOperation")`: the output carries
+//! those two members and nothing else, so what a caller reads the rest of the record back
+//! through is `DescribeBulkOperation`).
 //!
 //! A MUTATION, and the one bulk-operation call that is: the record the catalogue holds is
 //! changed, and every reader of it — `DescribeBulkOperation` and `ListBulkOperations` —
@@ -38,13 +41,21 @@ use super::types::*;
 smithy_macros::smithy_model!("smithy-model/com-amazonaws-dynamodb-dynamodb-20120810.json");
 
 /// The operation's MODELED errors.
-#[smithy_macros::operation_error("com.amazonaws.dynamodb#CancelBulkOperation")]
+///
+/// `InternalServerError` is widened in through `extra_errors`: this SERVICE models that
+/// shape and this operation's own `errors` list omits it
+/// (`smithy_query(query="operation", operation="CancelBulkOperation")`), but a cancel that
+/// cannot reach this service's own store has failed on the server's side of the call, which
+/// is the one class that fault belongs to.
+#[smithy_macros::operation_error(
+    "com.amazonaws.dynamodb#CancelBulkOperation",
+    extra_errors = ["InternalServerError"]
+)]
 #[derive(Debug)]
 pub enum CancelBulkOperationErrorModeled {
     InternalServerError(InternalServerError),
     InvalidEndpointException(InvalidEndpointException),
     ResourceNotFoundException(ResourceNotFoundException),
-    ThrottlingException(ThrottlingException),
 }
 
 /// This operation's error channel, as the generated `impl Operation` names it
@@ -125,12 +136,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             )));
         }
         operation.cancel(now);
-        let answered = operation.describe(now);
         let outcome = operation.status(now).to_string();
         drop(store);
         audited(Self::NAME, ctx, &addressed, &outcome);
         Ok(CancelBulkOperationOutput {
-            bulk_operation_description: answered,
+            bulk_operation_arn: addressed,
+            bulk_operation_status: outcome,
         })
     }
 }

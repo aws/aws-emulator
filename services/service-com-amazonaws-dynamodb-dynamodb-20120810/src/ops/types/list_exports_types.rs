@@ -26,12 +26,9 @@ pub struct ListExportsOutput {
     pub next_token: Option<String>,
 }
 
-#[smithy_macros::smithy(shape = "com.amazonaws.dynamodb#ExportSummary")]
-#[derive(Debug, Clone, Default)]
-pub struct ExportSummary {
-    pub destination_type: Option<String>,
-    pub export_arn: Option<String>,
-    pub export_status: Option<String>,
-    pub export_type: Option<String>,
-}
+// `ExportSummary` is NOT declared here: AWS answers with a member the published snapshot
+// does not declare (`DestinationType`), so the shape is declared in
+// `export_description_types` from the local overlay model instead (see
+// `smithy-model/LOCAL-ADDITIONS.md`). `types/mod.rs` re-exports it, so `use super::types::*`
+// resolves it from here as it does any other shape.
 

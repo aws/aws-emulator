@@ -1,0 +1,396 @@
+{
+  "smithy": "2.0",
+  "shapes": {
+    "com.amazonaws.dynamodb#TableDescription": {
+      "type": "structure",
+      "members": {
+        "AttributeDefinitions": { "target": "com.amazonaws.dynamodb#AttributeDefinitions" },
+        "TableName": { "target": "com.amazonaws.dynamodb#TableName" },
+        "KeySchema": { "target": "com.amazonaws.dynamodb#KeySchema" },
+        "TableStatus": { "target": "com.amazonaws.dynamodb#TableStatus" },
+        "CreationDateTime": { "target": "com.amazonaws.dynamodb#Date" },
+        "ProvisionedThroughput": { "target": "com.amazonaws.dynamodb#ProvisionedThroughputDescription" },
+        "TableSizeBytes": { "target": "com.amazonaws.dynamodb#LongObject" },
+        "ItemCount": { "target": "com.amazonaws.dynamodb#LongObject" },
+        "TableArn": { "target": "com.amazonaws.dynamodb#String" },
+        "TableId": { "target": "com.amazonaws.dynamodb#TableId" },
+        "BillingModeSummary": { "target": "com.amazonaws.dynamodb#BillingModeSummary" },
+        "TableThroughputModeSummary": { "target": "com.amazonaws.dynamodb#TableThroughputModeSummary" },
+        "LocalSecondaryIndexes": { "target": "com.amazonaws.dynamodb#LocalSecondaryIndexDescriptionList" },
+        "GlobalSecondaryIndexes": { "target": "com.amazonaws.dynamodb#GlobalSecondaryIndexDescriptionList" },
+        "StreamSpecification": { "target": "com.amazonaws.dynamodb#StreamSpecification" },
+        "LatestStreamLabel": { "target": "com.amazonaws.dynamodb#String" },
+        "LatestStreamArn": { "target": "com.amazonaws.dynamodb#StreamArn" },
+        "GlobalTableVersion": { "target": "com.amazonaws.dynamodb#String" },
+        "Replicas": { "target": "com.amazonaws.dynamodb#ReplicaDescriptionList" },
+        "GlobalTableWitnesses": { "target": "com.amazonaws.dynamodb#GlobalTableWitnessDescriptionList" },
+        "GlobalTableSettingsReplicationMode": { "target": "com.amazonaws.dynamodb#GlobalTableSettingsReplicationMode" },
+        "RestoreSummary": { "target": "com.amazonaws.dynamodb#RestoreSummary" },
+        "SSEDescription": { "target": "com.amazonaws.dynamodb#SSEDescription" },
+        "ArchivalSummary": { "target": "com.amazonaws.dynamodb#ArchivalSummary" },
+        "TableClassSummary": { "target": "com.amazonaws.dynamodb#TableClassSummary" },
+        "DeletionProtectionEnabled": { "target": "com.amazonaws.dynamodb#DeletionProtectionEnabled" },
+        "DisassociationProtectionEnabled": { "target": "com.amazonaws.dynamodb#DisassociationProtectionEnabled" },
+        "OnDemandThroughput": { "target": "com.amazonaws.dynamodb#OnDemandThroughput" },
+        "WarmThroughput": { "target": "com.amazonaws.dynamodb#TableWarmThroughputDescription" },
+        "MultiRegionConsistency": { "target": "com.amazonaws.dynamodb#MultiRegionConsistency" },
+        "VectorIndexes": { "target": "com.amazonaws.dynamodb#VectorIndexDescriptionList" }
+      }
+    },
+    "com.amazonaws.dynamodb#TableThroughputModeSummary": {
+      "type": "structure",
+      "members": {
+        "TableThroughputMode": { "target": "com.amazonaws.dynamodb#BillingMode" },
+        "LastUpdateToPayPerRequestDateTime": { "target": "com.amazonaws.dynamodb#Date" }
+      }
+    },
+    "com.amazonaws.dynamodb#CreateTableInput": {
+      "type": "structure",
+      "members": {
+        "AttributeDefinitions": { "target": "com.amazonaws.dynamodb#AttributeDefinitions" },
+        "TableName": { "target": "com.amazonaws.dynamodb#TableArn", "traits": { "smithy.api#required": {} } },
+        "KeySchema": { "target": "com.amazonaws.dynamodb#KeySchema" },
+        "LocalSecondaryIndexes": { "target": "com.amazonaws.dynamodb#LocalSecondaryIndexList" },
+        "GlobalSecondaryIndexes": { "target": "com.amazonaws.dynamodb#GlobalSecondaryIndexList" },
+        "BillingMode": { "target": "com.amazonaws.dynamodb#BillingMode" },
+        "TableThroughputMode": { "target": "com.amazonaws.dynamodb#BillingMode" },
+        "ProvisionedThroughput": { "target": "com.amazonaws.dynamodb#ProvisionedThroughput" },
+        "StreamSpecification": { "target": "com.amazonaws.dynamodb#StreamSpecification" },
+        "SSESpecification": { "target": "com.amazonaws.dynamodb#SSESpecification" },
+        "Tags": { "target": "com.amazonaws.dynamodb#TagList" },
+        "TableClass": { "target": "com.amazonaws.dynamodb#TableClass" },
+        "DeletionProtectionEnabled": { "target": "com.amazonaws.dynamodb#DeletionProtectionEnabled" },
+        "WarmThroughput": { "target": "com.amazonaws.dynamodb#WarmThroughput" },
+        "ResourcePolicy": { "target": "com.amazonaws.dynamodb#ResourcePolicy" },
+        "OnDemandThroughput": { "target": "com.amazonaws.dynamodb#OnDemandThroughput" },
+        "GlobalTableSourceArn": { "target": "com.amazonaws.dynamodb#TableArn" },
+        "GlobalTableSettingsReplicationMode": { "target": "com.amazonaws.dynamodb#GlobalTableSettingsReplicationMode" },
+        "VectorIndexes": { "target": "com.amazonaws.dynamodb#VectorIndexList" }
+      },
+      "traits": { "smithy.api#input": {} }
+    },
+    "com.amazonaws.dynamodb#UpdateTableInput": {
+      "type": "structure",
+      "members": {
+        "AttributeDefinitions": { "target": "com.amazonaws.dynamodb#AttributeDefinitions" },
+        "TableName": { "target": "com.amazonaws.dynamodb#TableArn", "traits": { "smithy.api#required": {} } },
+        "BillingMode": { "target": "com.amazonaws.dynamodb#BillingMode" },
+        "TableThroughputMode": { "target": "com.amazonaws.dynamodb#BillingMode" },
+        "ProvisionedThroughput": { "target": "com.amazonaws.dynamodb#ProvisionedThroughput" },
+        "GlobalSecondaryIndexUpdates": { "target": "com.amazonaws.dynamodb#GlobalSecondaryIndexUpdateList" },
+        "StreamSpecification": { "target": "com.amazonaws.dynamodb#StreamSpecification" },
+        "SSESpecification": { "target": "com.amazonaws.dynamodb#SSESpecification" },
+        "ReplicaUpdates": { "target": "com.amazonaws.dynamodb#ReplicationGroupUpdateList" },
+        "TableClass": { "target": "com.amazonaws.dynamodb#TableClass" },
+        "DeletionProtectionEnabled": { "target": "com.amazonaws.dynamodb#DeletionProtectionEnabled" },
+        "MultiRegionConsistency": { "target": "com.amazonaws.dynamodb#MultiRegionConsistency" },
+        "GlobalTableWitnessUpdates": { "target": "com.amazonaws.dynamodb#GlobalTableWitnessGroupUpdateList" },
+        "OnDemandThroughput": { "target": "com.amazonaws.dynamodb#OnDemandThroughput" },
+        "WarmThroughput": { "target": "com.amazonaws.dynamodb#WarmThroughput" },
+        "GlobalTableSettingsReplicationMode": { "target": "com.amazonaws.dynamodb#GlobalTableSettingsReplicationMode" },
+        "DisassociationProtectionEnabled": { "target": "com.amazonaws.dynamodb#DisassociationProtectionEnabled" },
+        "VectorIndexUpdates": { "target": "com.amazonaws.dynamodb#VectorIndexUpdateList" }
+      },
+      "traits": { "smithy.api#input": {} }
+    },
+    "com.amazonaws.dynamodb#VectorCapacity": {
+      "type": "structure",
+      "members": {
+        "VectorSearchRequestBytes": { "target": "com.amazonaws.dynamodb#ConsumedCapacityUnits" },
+        "VectorWriteRequestBytes": { "target": "com.amazonaws.dynamodb#ConsumedCapacityUnits" },
+        "VectorWriteRequestUnits": { "target": "com.amazonaws.dynamodb#ConsumedCapacityUnits" }
+      }
+    },
+    "com.amazonaws.dynamodb#PointInTimeRecoveryDescription": {
+      "type": "structure",
+      "members": {
+        "PointInTimeRecoveryStatus": { "target": "com.amazonaws.dynamodb#PointInTimeRecoveryStatus" },
+        "PointInTimeRecoveryWindowDays": { "target": "com.amazonaws.dynamodb#RecoveryPeriodInDays" },
+        "RecoveryPeriodInDays": { "target": "com.amazonaws.dynamodb#RecoveryPeriodInDays" },
+        "EarliestRestorableDateTime": { "target": "com.amazonaws.dynamodb#Date" },
+        "LatestRestorableDateTime": { "target": "com.amazonaws.dynamodb#Date" }
+      }
+    },
+    "com.amazonaws.dynamodb#PointInTimeRecoveryStatus": {
+      "type": "enum",
+      "members": {
+        "ENABLED": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "ENABLED" } },
+        "DISABLED": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "DISABLED" } }
+      }
+    },
+    "com.amazonaws.dynamodb#RecoveryPeriodInDays": {
+      "type": "integer",
+      "traits": { "smithy.api#range": { "min": 1, "max": 35 } }
+    },
+    "com.amazonaws.dynamodb#ExportDescription": {
+      "type": "structure",
+      "members": {
+        "ExportArn": { "target": "com.amazonaws.dynamodb#ExportArn" },
+        "ExportStatus": { "target": "com.amazonaws.dynamodb#ExportStatus" },
+        "StartTime": { "target": "com.amazonaws.dynamodb#ExportStartTime" },
+        "EndTime": { "target": "com.amazonaws.dynamodb#ExportEndTime" },
+        "ExportManifest": { "target": "com.amazonaws.dynamodb#ExportManifest" },
+        "TableArn": { "target": "com.amazonaws.dynamodb#TableArn" },
+        "TableId": { "target": "com.amazonaws.dynamodb#TableId" },
+        "ExportTime": { "target": "com.amazonaws.dynamodb#ExportTime" },
+        "ClientToken": { "target": "com.amazonaws.dynamodb#ClientToken" },
+        "S3Bucket": { "target": "com.amazonaws.dynamodb#S3Bucket" },
+        "S3BucketOwner": { "target": "com.amazonaws.dynamodb#S3BucketOwner" },
+        "S3Prefix": { "target": "com.amazonaws.dynamodb#S3Prefix" },
+        "S3SseAlgorithm": { "target": "com.amazonaws.dynamodb#S3SseAlgorithm" },
+        "S3SseKmsKeyId": { "target": "com.amazonaws.dynamodb#S3SseKmsKeyId" },
+        "FailureCode": { "target": "com.amazonaws.dynamodb#FailureCode" },
+        "FailureMessage": { "target": "com.amazonaws.dynamodb#FailureMessage" },
+        "ExportFormat": { "target": "com.amazonaws.dynamodb#ExportFormat" },
+        "BilledSizeBytes": { "target": "com.amazonaws.dynamodb#BilledSizeBytes" },
+        "ItemCount": { "target": "com.amazonaws.dynamodb#ItemCount" },
+        "ExportType": { "target": "com.amazonaws.dynamodb#ExportType" },
+        "IncrementalExportSpecification": { "target": "com.amazonaws.dynamodb#IncrementalExportSpecification" },
+        "FilterSpecification": { "target": "com.amazonaws.dynamodb#FilterSpecification" },
+        "DestinationType": { "target": "com.amazonaws.dynamodb#ExportDestinationType" }
+      }
+    },
+    "com.amazonaws.dynamodb#ExportSummary": {
+      "type": "structure",
+      "members": {
+        "ExportArn": { "target": "com.amazonaws.dynamodb#ExportArn" },
+        "ExportStatus": { "target": "com.amazonaws.dynamodb#ExportStatus" },
+        "ExportType": { "target": "com.amazonaws.dynamodb#ExportType" },
+        "DestinationType": { "target": "com.amazonaws.dynamodb#ExportDestinationType" }
+      }
+    },
+    "com.amazonaws.dynamodb#ExportDestinationType": { "type": "string" },
+    "com.amazonaws.dynamodb#ExportArn": {
+      "type": "string",
+      "traits": { "smithy.api#length": { "min": 37, "max": 1024 } }
+    },
+    "com.amazonaws.dynamodb#ExportStatus": {
+      "type": "enum",
+      "members": {
+        "IN_PROGRESS": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "IN_PROGRESS" } },
+        "COMPLETED": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "COMPLETED" } },
+        "FAILED": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "FAILED" } }
+      }
+    },
+    "com.amazonaws.dynamodb#ExportFormat": {
+      "type": "enum",
+      "members": {
+        "DYNAMODB_JSON": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "DYNAMODB_JSON" } },
+        "ION": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "ION" } }
+      }
+    },
+    "com.amazonaws.dynamodb#ExportType": {
+      "type": "enum",
+      "members": {
+        "FULL_EXPORT": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "FULL_EXPORT" } },
+        "INCREMENTAL_EXPORT": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "INCREMENTAL_EXPORT" } }
+      }
+    },
+    "com.amazonaws.dynamodb#ExportStartTime": { "type": "timestamp" },
+    "com.amazonaws.dynamodb#ExportEndTime": { "type": "timestamp" },
+    "com.amazonaws.dynamodb#ExportTime": { "type": "timestamp" },
+    "com.amazonaws.dynamodb#ExportManifest": { "type": "string" },
+    "com.amazonaws.dynamodb#FailureCode": { "type": "string" },
+    "com.amazonaws.dynamodb#FailureMessage": { "type": "string" },
+    "com.amazonaws.dynamodb#BilledSizeBytes": {
+      "type": "long",
+      "traits": { "smithy.api#range": { "min": 0 } }
+    },
+    "com.amazonaws.dynamodb#ItemCount": {
+      "type": "long",
+      "traits": { "smithy.api#range": { "min": 0 } }
+    },
+    "com.amazonaws.dynamodb#ClientToken": {
+      "type": "string",
+      "traits": { "smithy.api#pattern": "^[^\\$]+$" }
+    },
+    "com.amazonaws.dynamodb#S3Bucket": {
+      "type": "string",
+      "traits": {
+        "smithy.api#length": { "min": 0, "max": 255 },
+        "smithy.api#pattern": "^[a-z0-9A-Z]+[\\.\\-\\w]*[a-z0-9A-Z]+$"
+      }
+    },
+    "com.amazonaws.dynamodb#S3BucketOwner": {
+      "type": "string",
+      "traits": { "smithy.api#pattern": "^[0-9]{12}$" }
+    },
+    "com.amazonaws.dynamodb#S3Prefix": {
+      "type": "string",
+      "traits": { "smithy.api#length": { "min": 0, "max": 1024 } }
+    },
+    "com.amazonaws.dynamodb#S3SseAlgorithm": {
+      "type": "enum",
+      "members": {
+        "AES256": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "AES256" } },
+        "KMS": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "KMS" } }
+      }
+    },
+    "com.amazonaws.dynamodb#S3SseKmsKeyId": {
+      "type": "string",
+      "traits": { "smithy.api#length": { "min": 1, "max": 2048 } }
+    },
+    "com.amazonaws.dynamodb#IncrementalExportSpecification": { "type": "structure", "members": {} },
+    "com.amazonaws.dynamodb#FilterSpecification": { "type": "structure", "members": {} },
+    "com.amazonaws.dynamodb#TableArn": {
+      "type": "string",
+      "traits": { "smithy.api#length": { "min": 1, "max": 1024 } }
+    },
+    "com.amazonaws.dynamodb#ResourcePolicy": { "type": "string" },
+    "com.amazonaws.dynamodb#ConsumedCapacityUnits": { "type": "double" },
+    "com.amazonaws.dynamodb#TableClass": {
+      "type": "enum",
+      "members": {
+        "STANDARD": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "STANDARD" } },
+        "STANDARD_INFREQUENT_ACCESS": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "STANDARD_INFREQUENT_ACCESS" } }
+      }
+    },
+    "com.amazonaws.dynamodb#ProvisionedThroughput": { "type": "structure", "members": {} },
+    "com.amazonaws.dynamodb#SSESpecification": { "type": "structure", "members": {} },
+    "com.amazonaws.dynamodb#WarmThroughput": { "type": "structure", "members": {} },
+    "com.amazonaws.dynamodb#TagList": {
+      "type": "list",
+      "member": { "target": "com.amazonaws.dynamodb#Tag" }
+    },
+    "com.amazonaws.dynamodb#Tag": { "type": "structure", "members": {} },
+    "com.amazonaws.dynamodb#LocalSecondaryIndexList": {
+      "type": "list",
+      "member": { "target": "com.amazonaws.dynamodb#LocalSecondaryIndex" }
+    },
+    "com.amazonaws.dynamodb#LocalSecondaryIndex": { "type": "structure", "members": {} },
+    "com.amazonaws.dynamodb#GlobalSecondaryIndexList": {
+      "type": "list",
+      "member": { "target": "com.amazonaws.dynamodb#GlobalSecondaryIndex" }
+    },
+    "com.amazonaws.dynamodb#GlobalSecondaryIndex": { "type": "structure", "members": {} },
+    "com.amazonaws.dynamodb#VectorIndexList": {
+      "type": "list",
+      "member": { "target": "com.amazonaws.dynamodb#VectorIndex" }
+    },
+    "com.amazonaws.dynamodb#VectorIndex": { "type": "structure", "members": {} },
+    "com.amazonaws.dynamodb#GlobalSecondaryIndexUpdateList": {
+      "type": "list",
+      "member": { "target": "com.amazonaws.dynamodb#GlobalSecondaryIndexUpdate" }
+    },
+    "com.amazonaws.dynamodb#GlobalSecondaryIndexUpdate": { "type": "structure", "members": {} },
+    "com.amazonaws.dynamodb#ReplicationGroupUpdateList": {
+      "type": "list",
+      "member": { "target": "com.amazonaws.dynamodb#ReplicationGroupUpdate" },
+      "traits": { "smithy.api#length": { "min": 1 } }
+    },
+    "com.amazonaws.dynamodb#ReplicationGroupUpdate": { "type": "structure", "members": {} },
+    "com.amazonaws.dynamodb#GlobalTableWitnessGroupUpdateList": {
+      "type": "list",
+      "member": { "target": "com.amazonaws.dynamodb#GlobalTableWitnessGroupUpdate" },
+      "traits": { "smithy.api#length": { "min": 1, "max": 1 } }
+    },
+    "com.amazonaws.dynamodb#GlobalTableWitnessGroupUpdate": { "type": "structure", "members": {} },
+    "com.amazonaws.dynamodb#VectorIndexUpdateList": {
+      "type": "list",
+      "member": { "target": "com.amazonaws.dynamodb#VectorIndexUpdate" }
+    },
+    "com.amazonaws.dynamodb#VectorIndexUpdate": { "type": "structure", "members": {} },
+    "com.amazonaws.dynamodb#AttributeDefinitions": {
+      "type": "list",
+      "member": { "target": "com.amazonaws.dynamodb#AttributeDefinition" }
+    },
+    "com.amazonaws.dynamodb#AttributeDefinition": { "type": "structure", "members": {} },
+    "com.amazonaws.dynamodb#KeySchema": {
+      "type": "list",
+      "member": { "target": "com.amazonaws.dynamodb#KeySchemaElement" },
+      "traits": { "smithy.api#length": { "min": 1 } }
+    },
+    "com.amazonaws.dynamodb#KeySchemaElement": { "type": "structure", "members": {} },
+    "com.amazonaws.dynamodb#LocalSecondaryIndexDescriptionList": {
+      "type": "list",
+      "member": { "target": "com.amazonaws.dynamodb#LocalSecondaryIndexDescription" }
+    },
+    "com.amazonaws.dynamodb#LocalSecondaryIndexDescription": { "type": "structure", "members": {} },
+    "com.amazonaws.dynamodb#GlobalSecondaryIndexDescriptionList": {
+      "type": "list",
+      "member": { "target": "com.amazonaws.dynamodb#GlobalSecondaryIndexDescription" }
+    },
+    "com.amazonaws.dynamodb#GlobalSecondaryIndexDescription": { "type": "structure", "members": {} },
+    "com.amazonaws.dynamodb#ReplicaDescriptionList": {
+      "type": "list",
+      "member": { "target": "com.amazonaws.dynamodb#ReplicaDescription" }
+    },
+    "com.amazonaws.dynamodb#ReplicaDescription": { "type": "structure", "members": {} },
+    "com.amazonaws.dynamodb#GlobalTableWitnessDescriptionList": {
+      "type": "list",
+      "member": { "target": "com.amazonaws.dynamodb#GlobalTableWitnessDescription" }
+    },
+    "com.amazonaws.dynamodb#GlobalTableWitnessDescription": { "type": "structure", "members": {} },
+    "com.amazonaws.dynamodb#VectorIndexDescriptionList": {
+      "type": "list",
+      "member": { "target": "com.amazonaws.dynamodb#VectorIndexDescription" }
+    },
+    "com.amazonaws.dynamodb#VectorIndexDescription": { "type": "structure", "members": {} },
+    "com.amazonaws.dynamodb#ProvisionedThroughputDescription": { "type": "structure", "members": {} },
+    "com.amazonaws.dynamodb#BillingModeSummary": { "type": "structure", "members": {} },
+    "com.amazonaws.dynamodb#StreamSpecification": { "type": "structure", "members": {} },
+    "com.amazonaws.dynamodb#RestoreSummary": { "type": "structure", "members": {} },
+    "com.amazonaws.dynamodb#SSEDescription": { "type": "structure", "members": {} },
+    "com.amazonaws.dynamodb#ArchivalSummary": { "type": "structure", "members": {} },
+    "com.amazonaws.dynamodb#TableClassSummary": { "type": "structure", "members": {} },
+    "com.amazonaws.dynamodb#OnDemandThroughput": { "type": "structure", "members": {} },
+    "com.amazonaws.dynamodb#TableWarmThroughputDescription": { "type": "structure", "members": {} },
+    "com.amazonaws.dynamodb#TableStatus": {
+      "type": "enum",
+      "members": {
+        "CREATING": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "CREATING" } },
+        "UPDATING": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "UPDATING" } },
+        "DELETING": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "DELETING" } },
+        "ACTIVE": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "ACTIVE" } },
+        "INACCESSIBLE_ENCRYPTION_CREDENTIALS": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "INACCESSIBLE_ENCRYPTION_CREDENTIALS" } },
+        "ARCHIVING": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "ARCHIVING" } },
+        "ARCHIVED": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "ARCHIVED" } },
+        "REPLICATION_NOT_AUTHORIZED": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "REPLICATION_NOT_AUTHORIZED" } }
+      }
+    },
+    "com.amazonaws.dynamodb#BillingMode": {
+      "type": "enum",
+      "members": {
+        "PROVISIONED": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "PROVISIONED" } },
+        "PAY_PER_REQUEST": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "PAY_PER_REQUEST" } }
+      }
+    },
+    "com.amazonaws.dynamodb#GlobalTableSettingsReplicationMode": {
+      "type": "enum",
+      "members": {
+        "ENABLED": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "ENABLED" } },
+        "DISABLED": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "DISABLED" } },
+        "ENABLED_WITH_OVERRIDES": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "ENABLED_WITH_OVERRIDES" } }
+      }
+    },
+    "com.amazonaws.dynamodb#MultiRegionConsistency": {
+      "type": "enum",
+      "members": {
+        "EVENTUAL": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "EVENTUAL" } },
+        "STRONG": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "STRONG" } }
+      }
+    },
+    "com.amazonaws.dynamodb#DeletionProtectionEnabled": { "type": "boolean" },
+    "com.amazonaws.dynamodb#DisassociationProtectionEnabled": { "type": "boolean" },
+    "com.amazonaws.dynamodb#LongObject": { "type": "long" },
+    "com.amazonaws.dynamodb#Date": { "type": "timestamp" },
+    "com.amazonaws.dynamodb#String": { "type": "string" },
+    "com.amazonaws.dynamodb#TableId": {
+      "type": "string",
+      "traits": {
+        "smithy.api#pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+      }
+    },
+    "com.amazonaws.dynamodb#TableName": {
+      "type": "string",
+      "traits": {
+        "smithy.api#length": { "min": 3, "max": 255 },
+        "smithy.api#pattern": "^[a-zA-Z0-9_.-]+$"
+      }
+    },
+    "com.amazonaws.dynamodb#StreamArn": {
+      "type": "string",
+      "traits": { "smithy.api#length": { "min": 37, "max": 1024 } }
+    }
+  }
+}

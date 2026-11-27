@@ -30,13 +30,20 @@ use super::types::*;
 smithy_macros::smithy_model!("smithy-model/com-amazonaws-dynamodb-dynamodb-20120810.json");
 
 /// The operation's MODELED errors.
-#[smithy_macros::operation_error("com.amazonaws.dynamodb#DescribeBulkOperation")]
+///
+/// `InternalServerError` is widened in through `extra_errors`, for the reason the sibling
+/// cancel widens it in (`super::cancel_bulk_operation`): this SERVICE models the shape, this
+/// operation's own `errors` list omits it, and a read that cannot reach this service's store
+/// has failed on the server's side of the call.
+#[smithy_macros::operation_error(
+    "com.amazonaws.dynamodb#DescribeBulkOperation",
+    extra_errors = ["InternalServerError"]
+)]
 #[derive(Debug)]
 pub enum DescribeBulkOperationErrorModeled {
     InternalServerError(InternalServerError),
     InvalidEndpointException(InvalidEndpointException),
     ResourceNotFoundException(ResourceNotFoundException),
-    ThrottlingException(ThrottlingException),
 }
 
 /// This operation's error channel, as the generated `impl Operation` names it

@@ -8,12 +8,13 @@
 //! rather than inside it, like the import and export catalogues next door; `super`
 //! re-exports everything here, so every caller still names it `crate::state::…`.
 //!
-//! WHERE THE SHAPE OF THIS COMES FROM. The service's Smithy model carried no
-//! bulk-operation shape when this was written, so the members a record holds are the ones
-//! the recorded calls name: the operation's own ARN, its status, the table it acts on and
-//! the instants it began and ended, which is what a listing reports for each of them. The
-//! model this crate is built from now declares those shapes (`BulkOperationSummary`), and
-//! this is the state they are reported from.
+//! WHERE THE SHAPE OF THIS COMES FROM. The model this crate is built from declares the
+//! bulk-operation shapes (`smithy_query(query="closure",
+//! operation="StartBulkPutItems")`), so a record holds exactly what the two readers report:
+//! the operation's own ARN, its status, the table it acted on and that table's id, the source
+//! it read and the location it reports into, the instants it began and ended, and the figures
+//! its task settled on — the items it processed, the ones it could not write, the source bytes
+//! it read and the item bytes it wrote.
 
 use super::*;
 
@@ -24,6 +25,13 @@ pub const BULK_OPERATION_STATUS_IN_PROGRESS: &str = "IN_PROGRESS";
 
 /// The `BulkOperationStatus` a bulk operation reports once its span has elapsed.
 pub const BULK_OPERATION_STATUS_COMPLETED: &str = "COMPLETED";
+
+/// The `BulkOperationStatus` of a bulk operation that read its source and could not write
+/// every record it read: the status says exactly that — the work ran to the end of the
+/// source and some of its items did not land, which is what `FailedItemCount` counts beside
+/// it (`smithy_query(query="shape",
+/// shape="com.amazonaws.dynamodb#BulkOperationStatus")` declares it).
+pub const BULK_OPERATION_STATUS_COMPLETED_WITH_ERRORS: &str = "COMPLETED_WITH_ERRORS";
 
 /// The `BulkOperationStatus` of a bulk operation whose source could not be read at all,
 /// which it reports once its span has elapsed rather than a completion it did not achieve.
@@ -178,14 +186,13 @@ pub fn new_bulk_operation_arn(region: &str, requested_at: SystemTime) -> String 
 ///
 /// One rendering of those members, so the comparison is member for member however deeply a
 /// member nests, and a request that changes any of them is a conflicting replay rather than
-/// a second operation. The members are compared as the request STATED them, except the two
-/// that RESOLVE — the source's format and its compression, each resolved to the value its
-/// member defaults to, so a request naming `NONE` and one naming no compression ask for the
-/// same operation.
+/// a second operation. The members are compared as the request STATED them, except the one
+/// that RESOLVES — the source's compression, resolved to the value its member defaults to,
+/// so a request naming `NONE` and one naming no compression ask for the same operation.
 pub fn bulk_put_request_signature(
     table_name: &str,
-    input: &BulkPutInputS3Configuration,
-    output: Option<&BulkPutOutputS3Configuration>,
+    input: &InputS3Configuration,
+    output: &OutputS3Configuration,
     max_write_request_units: Option<i64>,
     performance_tier: Option<&str>,
 ) -> String {
@@ -196,22 +203,19 @@ pub fn bulk_put_request_signature(
             &input.s3_bucket,
             &input.s3_bucket_owner,
             &input.s3_key_prefix,
-            input
-                .input_format
-                .as_deref()
-                .unwrap_or(INPUT_FORMAT_DYNAMODB_JSON),
+            &input.input_format,
             input
                 .input_compression_type
                 .as_deref()
                 .unwrap_or(DEFAULT_INPUT_COMPRESSION_TYPE),
-            output.map(|output| {
-                (
-                    &output.s3_bucket,
-                    &output.s3_bucket_owner,
-                    &output.s3_key_prefix,
-                    &output.output_type,
-                )
-            }),
+            (
+                &output.s3_bucket,
+                &output.s3_bucket_owner,
+                &output.s3_key_prefix,
+                &output.s3_sse_algorithm,
+                &output.s3_sse_kms_key_id,
+                &output.output_type,
+            ),
             max_write_request_units,
             performance_tier,
         )
@@ -244,31 +248,50 @@ pub struct BulkOperation {
     /// The region this operation lives in — the one the table it wrote into lives in,
     /// which is the scope every bulk-operation call resolves inside.
     pub region: String,
-    /// The name of the table this operation wrote into. The `TableArn` a reader reports is
-    /// minted from it and this region ([`table_arn`]), so one stored table identity cannot
-    /// drift from the ARN the table reports for itself.
+    /// The name of the table this operation wrote into, which a reader reports as the one
+    /// entry of its `TableDetails` beside that table's own id.
     pub table_name: String,
+    /// The `TableId` of that table, as the table was minted with it ([`Table`]'s `id`): "the
+    /// name or ARN of the table associated with the bulk operation" and its id are what one
+    /// `BulkOperationTableDetail` carries.
+    pub table_id: String,
     /// The `ClientToken` the call that started it carried, or `None` where it carried
     /// none: what makes a repeated call answer this operation instead of starting a second
     /// one ([`BULK_OPERATION_CLIENT_TOKEN_WINDOW`]).
     pub client_token: Option<String>,
     /// The S3 location the call named as the source of its items, as it named it.
-    pub input_s3_configuration: BulkPutInputS3Configuration,
-    /// The S3 location the call named for the operation's own outcome report, where it
-    /// named one.
-    pub output_s3_configuration: Option<BulkPutOutputS3Configuration>,
+    pub input_s3_configuration: InputS3Configuration,
+    /// The S3 location the call named for the operation's own outcome report — a member
+    /// every request states (`StartBulkPutItems$OutputS3Configuration` is `@required`).
+    pub output_s3_configuration: OutputS3Configuration,
     /// The write-unit ceiling the call asked the operation to run under, where it asked for
     /// one.
     pub max_write_request_units: Option<i64>,
     /// The performance tier the call asked the operation to run in, where it asked for one.
     pub performance_tier: Option<String>,
-    /// How many records the task READ, the ones it could not decode included — the figure
-    /// the audit record of the call states.
+    /// "The number of input items that DynamoDB has processed"
+    /// (`BulkOperationDescription$ProcessedItemCount`): every record the task READ, the ones
+    /// it could not decode included.
     pub processed_item_count: i64,
     /// How many items LANDED in the table.
     pub written_item_count: i64,
-    /// How many records the task read and could not write.
-    pub error_count: i64,
+    /// "The number of processed input items that failed because of parsing or validation
+    /// errors" (`$FailedItemCount`): the records the task read and could not write.
+    pub failed_item_count: i64,
+    /// "The number of bytes that DynamoDB has read from the Amazon S3 input objects"
+    /// (`$ProcessedInputBytes`), which is also the source's whole size (`$TotalInputBytes`):
+    /// this emulator applies the whole source under the call that started it, so what was
+    /// read is what there was.
+    pub processed_input_bytes: i64,
+    /// "The total number of bulk put bytes used by the operation"
+    /// (`BulkOperationUsage$BulkPutBytes`): the item bytes the writes this operation made
+    /// added to the table, as that table meters what it stores.
+    pub bulk_put_bytes: i64,
+    /// Why the task could not read its source at all, where it could not: the `FailureCode`
+    /// and `FailureMessage` a FAILED operation reports, recorded on it so that every reader
+    /// reports the same reason — in the one form this service records a staged source's
+    /// failure in ([`ImportFailure`], which the import surface next door reports from).
+    pub failure: Option<ImportFailure>,
     /// The instant the operation began, which a reader reports as its `StartTime`.
     pub started_at: SystemTime,
     /// The instant it is due to end, which is one transition span after it began
@@ -341,7 +364,7 @@ impl BulkOperation {
         bulk_put_request_signature(
             &self.table_name,
             &self.input_s3_configuration,
-            self.output_s3_configuration.as_ref(),
+            &self.output_s3_configuration,
             self.max_write_request_units,
             self.performance_tier.as_deref(),
         )
@@ -351,39 +374,82 @@ impl BulkOperation {
     /// member read from the record.
     pub fn summary(&self, now: SystemTime) -> BulkOperationSummary {
         BulkOperationSummary {
-            bulk_operation_arn: Some(self.arn.clone()),
-            bulk_operation_status: Some(self.status(now).to_string()),
-            table_arn: Some(table_arn(&self.region, &self.table_name)),
-            start_time: Some(super::reported_date(self.started_at)),
+            bulk_operation_arn: self.arn.clone(),
+            bulk_operation_status: self.status(now).to_string(),
+            start_time: super::reported_date(self.started_at),
             end_time: self.ended_at(now).map(super::reported_date),
         }
     }
 
-    /// This operation as the call that started it — and every call that replays its token —
-    /// reports it, as it stands at `now`.
+    /// This operation as the call that started it — and every call that replays its token, and
+    /// its own describe — reports it, as it stands at `now`.
     ///
     /// The figures a FINISHED task reports are reported only once the task has finished, the
     /// way an import's are: while it runs the counters stand at zero, because nothing has
-    /// been counted yet.
+    /// been counted yet, and the source's total size is left out until it is known —
+    /// "DynamoDB omits this value until the initial input-size calculation completes"
+    /// (`BulkOperationDescription$TotalInputBytes`).
+    ///
+    /// The failure is reported for the one status it belongs to: "DynamoDB returns this value
+    /// only when `BulkOperationStatus` is `FAILED` or `CANCELLED`" (`$FailureCode`) — a
+    /// cancelled operation stopped because a caller asked it to and carries no failure of its
+    /// own, so what is reported is the recorded reason of one that FAILED.
     pub fn describe(&self, now: SystemTime) -> BulkOperationDescription {
         let finished = self.ended_at(now).is_some();
+        let status = self.status(now).to_string();
+        let failed = self
+            .failure
+            .as_ref()
+            .filter(|_| status == BULK_OPERATION_STATUS_FAILED);
         BulkOperationDescription {
             bulk_operation_arn: Some(self.arn.clone()),
-            bulk_operation_status: Some(self.status(now).to_string()),
-            table_arn: Some(table_arn(&self.region, &self.table_name)),
+            bulk_operation_status: Some(status),
+            table_details: Some(vec![BulkOperationTableDetail {
+                table_name: Some(self.table_name.clone()),
+                table_id: Some(self.table_id.clone()),
+            }]),
             client_token: self.client_token.clone(),
             input_s3_configuration: Some(self.input_s3_configuration.clone()),
-            output_s3_configuration: self.output_s3_configuration.clone(),
-            max_write_request_units: self.max_write_request_units,
-            performance_tier: self.performance_tier.clone(),
+            output_s3_configuration: Some(self.output_s3_configuration.clone()),
             start_time: Some(super::reported_date(self.started_at)),
             end_time: self.ended_at(now).map(super::reported_date),
-            processed_item_count: Some(if finished {
+            processed_item_count: if finished {
                 self.processed_item_count
             } else {
                 0
+            },
+            processed_input_bytes: Some(if finished {
+                self.processed_input_bytes
+            } else {
+                0
             }),
-            error_count: Some(if finished { self.error_count } else { 0 }),
+            total_input_bytes: finished.then_some(self.processed_input_bytes),
+            bulk_operation_usage: finished.then(|| vec![self.usage()]),
+            failed_item_count: if finished { self.failed_item_count } else { 0 },
+            failure_code: failed.map(|failure| failure.code.clone()),
+            failure_message: failed.map(|failure| failure.message.clone()),
+            max_write_request_units: self.max_write_request_units,
+            performance_tier: self.performance_tier.clone(),
+        }
+    }
+
+    /// What this operation's writes USED, which a finished operation reports one entry of per
+    /// table it wrote into — one, since a bulk put addresses one table.
+    ///
+    /// "The number of bulk put bytes for the table, excluding its indexes"
+    /// (`BulkOperationUsage$Table`) is the item bytes the writes added to the table, and
+    /// "the total number of bulk put bytes used by the operation" (`$BulkPutBytes`) is that
+    /// same figure here: this service keeps no stored entry per secondary index — every index
+    /// is projected from the table's own items on each read — so there are no index bytes to
+    /// report beside it and the per-index maps are left out.
+    fn usage(&self) -> BulkOperationUsage {
+        BulkOperationUsage {
+            table_name: Some(self.table_name.clone()),
+            bulk_put_bytes: Some(self.bulk_put_bytes),
+            table: Some(BulkOperationBytes {
+                bulk_put_bytes: Some(self.bulk_put_bytes),
+            }),
+            ..BulkOperationUsage::default()
         }
     }
 }

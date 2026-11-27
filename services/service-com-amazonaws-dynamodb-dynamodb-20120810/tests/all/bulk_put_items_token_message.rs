@@ -55,9 +55,9 @@ const TRANSACTION_MISMATCH: &str = "Specified idempotent token was used with dif
 /// One `StartBulkPutItems` body carrying [`TOKEN`]: the table it writes into, the source it
 /// reads and the write-unit ceiling it asks for.
 ///
-/// `OutputS3Configuration` is required of the input
-/// (`smithy_query(query="operation", operation="StartBulkPutItems")`), so every body names
-/// it.
+/// `OutputS3Configuration` — and the `OutputType` it reports — are required of the input
+/// (`smithy_query(query="closure", operation="StartBulkPutItems")`), so every body names
+/// them.
 fn start_body(table: &str, prefix: &str, max_write_request_units: i64) -> Value {
     json!({
         "TableName": table,
@@ -70,6 +70,7 @@ fn start_body(table: &str, prefix: &str, max_write_request_units: i64) -> Value 
         "OutputS3Configuration": {
             "S3Bucket": BUCKET,
             "S3KeyPrefix": "outcomes/",
+            "OutputType": ["ERROR"],
         },
         "MaxWriteRequestUnits": max_write_request_units,
     })

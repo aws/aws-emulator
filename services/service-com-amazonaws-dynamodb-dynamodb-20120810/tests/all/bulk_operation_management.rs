@@ -28,7 +28,9 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use serde_json::{json, Value};
-use service_com_amazonaws_dynamodb_dynamodb_20120810::ops::types::BulkPutInputS3Configuration;
+use service_com_amazonaws_dynamodb_dynamodb_20120810::ops::types::{
+    InputS3Configuration, OutputS3Configuration,
+};
 use service_com_amazonaws_dynamodb_dynamodb_20120810::state::{
     self, BulkOperation, STATUS_TRANSITION,
 };
@@ -95,17 +97,26 @@ fn seed_operation(
         arn: arn.clone(),
         region: REGION.to_string(),
         table_name: TABLE.to_string(),
+        table_id: "00000000-0000-4000-8000-000000000001".to_string(),
         client_token: None,
-        input_s3_configuration: BulkPutInputS3Configuration {
+        input_s3_configuration: InputS3Configuration {
             s3_bucket: "bulk-operation-management-source".to_string(),
-            ..BulkPutInputS3Configuration::default()
+            input_format: "DYNAMODB_JSON".to_string(),
+            ..InputS3Configuration::default()
         },
-        output_s3_configuration: None,
+        output_s3_configuration: OutputS3Configuration {
+            s3_bucket: Some("bulk-operation-management-outcomes".to_string()),
+            output_type: vec!["ERROR".to_string()],
+            ..OutputS3Configuration::default()
+        },
         max_write_request_units: None,
         performance_tier: None,
         processed_item_count: 7,
         written_item_count: 7,
-        error_count: 0,
+        failed_item_count: 0,
+        processed_input_bytes: 512,
+        bulk_put_bytes: 448,
+        failure: None,
         started_at: began,
         ended_at: ends_at,
         cancelled_at: None,
@@ -193,10 +204,18 @@ async fn a_value_that_addresses_no_bulk_operation_is_refused_as_that_fault() {
     let (router, _engine) = seeded().await;
 
     // Each row: the case, and the value the request addresses. They span the ways a value
-    // fails the form a bulk operation's ARN takes.
+    // fails the form a bulk operation's ARN takes. Every row is at least as long as the
+    // member's own minimum (the length bound below), so what refuses it is the form and not
+    // that bound.
     let rows: Vec<(&str, Value)> = vec![
-        ("no ARN at all", json!("not-an-arn")),
-        ("the ARN prefix alone", json!("arn:")),
+        (
+            "no ARN at all",
+            json!("not-an-arn-nor-anything-else-of-that-shape"),
+        ),
+        (
+            "the ARN prefix with no fields after it",
+            json!("arn:no-fields-after-the-prefix-at-all-here"),
+        ),
         (
             "too few fields",
             json!("arn:aws:dynamodb:us-east-1:000000000000"),
@@ -255,8 +274,8 @@ async fn a_value_that_addresses_no_bulk_operation_is_refused_as_that_fault() {
     // A value outside the LENGTH the member declares is refused by that bound instead, in
     // the clause the validating walk states for it — the member declares it
     // (`smithy_query(query="shape", shape="com.amazonaws.dynamodb#BulkOperationArn")` gives
-    // `@length` 1..1024), so no handler reads it: the empty value is below the minimum and a
-    // value one past 1024 characters is above the maximum.
+    // `@length` 37..1024), so no handler reads it: the empty value and one character short of
+    // the minimum are below it, and a value one past 1024 characters is above it.
     let too_long = format!(
         "arn:aws:dynamodb:{REGION}:000000000000:bulk-operation/{}",
         "a".repeat(1025)
@@ -265,7 +284,12 @@ async fn a_value_that_addresses_no_bulk_operation_is_refused_as_that_fault() {
         (
             "the empty value",
             String::new(),
-            "Member must have length greater than or equal to 1",
+            "Member must have length greater than or equal to 37",
+        ),
+        (
+            "one character short of the minimum",
+            "a".repeat(36),
+            "Member must have length greater than or equal to 37",
         ),
         (
             "one character past the maximum",
@@ -414,8 +438,16 @@ async fn a_started_bulk_operation_is_reported_by_its_own_describe() {
             "StartBulkPutItems",
             json!({
                 "TableName": TABLE,
-                "InputS3Configuration": {"S3Bucket": bucket, "S3KeyPrefix": "described/"},
-                "OutputS3Configuration": {"S3Bucket": bucket, "S3KeyPrefix": "outcomes/"},
+                "InputS3Configuration": {
+                    "S3Bucket": bucket,
+                    "S3KeyPrefix": "described/",
+                    "InputFormat": "DYNAMODB_JSON",
+                },
+                "OutputS3Configuration": {
+                    "S3Bucket": bucket,
+                    "S3KeyPrefix": "outcomes/",
+                    "OutputType": ["ERROR"],
+                },
             }),
         )
         .await,
@@ -440,8 +472,8 @@ async fn a_started_bulk_operation_is_reported_by_its_own_describe() {
         "the reader answers the operation that was started, got {read}"
     );
     assert_eq!(
-        read["TableArn"],
-        json!(state::table_arn(REGION, TABLE)),
+        read["TableDetails"][0]["TableName"],
+        json!(TABLE),
         "the reader names the table the operation acts on, got {read}"
     );
     assert_eq!(
@@ -475,14 +507,15 @@ async fn a_cancel_stops_the_operation_and_every_reader_reports_it() {
         "a running operation reports its work, got {before:?}"
     );
 
-    let cancelled = described(
-        &ok(
-            &router,
-            "CancelBulkOperation",
-            json!({"BulkOperationArn": arn}),
-        )
-        .await,
-    );
+    // The cancel answers the operation's ARN and the status it stands in, which is the whole
+    // output the model declares for it
+    // (`smithy_query(query="operation", operation="CancelBulkOperation")`).
+    let cancelled = ok(
+        &router,
+        "CancelBulkOperation",
+        json!({"BulkOperationArn": arn}),
+    )
+    .await;
     assert_eq!(
         cancelled["BulkOperationArn"],
         json!(arn),
@@ -511,14 +544,12 @@ async fn a_cancel_stops_the_operation_and_every_reader_reports_it() {
 
     // A REPEATED cancel asks for the cancellation that is already under way: it answers the
     // same operation and does not start the span again.
-    let again = described(
-        &ok(
-            &router,
-            "CancelBulkOperation",
-            json!({"BulkOperationArn": arn}),
-        )
-        .await,
-    );
+    let again = ok(
+        &router,
+        "CancelBulkOperation",
+        json!({"BulkOperationArn": arn}),
+    )
+    .await;
     assert_eq!(
         again["BulkOperationArn"],
         json!(arn),
@@ -596,30 +627,23 @@ async fn a_cancel_of_work_that_is_over_is_refused_and_changes_nothing() {
 }
 
 #[tokio::test]
-async fn a_listing_is_held_to_the_table_it_names_and_the_page_size_it_asks_for() {
+async fn a_listing_reports_the_regions_operations_and_the_page_size_it_asks_for() {
     let (router, engine) = seeded().await;
-    seed_running(&engine);
+    let running = seed_running(&engine);
 
-    // A listing NARROWED to a table the account does not hold names a resource whose
-    // operations cannot be read.
-    for absent in ["BulkOperationManagementAbsent", "AnotherAbsentTable"] {
-        let (status, answered) = call(&router, "ListBulkOperations", json!({"TableName": absent})).await;
-        assert_eq!(
-            (status, error_type(&answered)),
-            (400, NOT_FOUND_TYPE.to_string()),
-            "case an absent table {absent:?}: expected 400 {NOT_FOUND_TYPE}, got {status} with \
-             {answered}"
-        );
-        let expected = format!("Requested resource not found: Table: {absent} not found");
-        let stated = message(&answered);
-        assert_eq!(
-            stated, expected,
-            "case an absent table {absent:?}: expected the message {expected:?}, got {stated:?}"
-        );
-    }
+    // The listing takes NO member that narrows it
+    // (`smithy_query(query="operation", operation="ListBulkOperations")` gives `MaxResults`
+    // and `NextToken` and nothing else), so every bulk operation of the region the endpoint
+    // serves is reported.
+    let listed = listed_summary(&router, &running).await;
+    assert_eq!(
+        listed["BulkOperationArn"],
+        json!(running),
+        "the listing reports the region's operations, got {listed}"
+    );
 
     // The page size is held to the range the model declares for the member
-    // (`smithy_query(query="shape", shape="com.amazonaws.dynamodb#ListBulkOperationsMaxResults")`
+    // (`smithy_query(query="shape", shape="com.amazonaws.dynamodb#ListBulkOperationsMaxLimit")`
     // gives `@range` 1..25, which is the bound AWS's own refusal of this member states):
     // each published bound is served, and one past either end is refused, naming the member
     // and the bound it broke.
@@ -627,7 +651,7 @@ async fn a_listing_is_held_to_the_table_it_names_and_the_page_size_it_asks_for()
         let page = ok(
             &router,
             "ListBulkOperations",
-            json!({"TableName": TABLE, "MaxResults": served}),
+            json!({"MaxResults": served}),
         )
         .await;
         assert!(
@@ -644,7 +668,7 @@ async fn a_listing_is_held_to_the_table_it_names_and_the_page_size_it_asks_for()
         let (status, answered) = call(
             &router,
             "ListBulkOperations",
-            json!({"TableName": TABLE, "MaxResults": refused}),
+            json!({"MaxResults": refused}),
         )
         .await;
         assert_eq!(
@@ -674,14 +698,15 @@ async fn a_listing_cursor_is_held_to_the_form_its_member_models() {
     // A value outside the form the member models is refused by that bound, naming the
     // member, echoing the value and stating the expression it must satisfy
     // (`smithy_query(query="shape", shape="com.amazonaws.dynamodb#BulkOperationNextToken")`
-    // gives `@pattern ^([0-9a-f]{16})+$`, which a refusal states without its anchors). The
-    // rows span the ways a value falls outside it.
-    for (case, cursor) in [
-        ("a value that is not hex at all", "not-a-cursor"),
-        ("hex in the other case", "ABCDEF0123456789"),
-        ("fewer digits than one group", "00112233"),
-        ("a part-filled second group", "0011223344556677aabb"),
-        ("the empty value", ""),
+    // gives `@length` 1..1024 and `@pattern ^([0-9a-f]{16})+$`, which a refusal states
+    // without its anchors). The rows span the ways a value falls outside it, and the empty
+    // value \u2014 which is below the member's own minimum as well \u2014 earns both clauses.
+    for (case, cursor, clauses) in [
+        ("a value that is not hex at all", "not-a-cursor", 1),
+        ("hex in the other case", "ABCDEF0123456789", 1),
+        ("fewer digits than one group", "00112233", 1),
+        ("a part-filled second group", "0011223344556677aabb", 1),
+        ("the empty value", "", 2),
     ] {
         let (status, answered) = call(
             &router,
@@ -689,10 +714,21 @@ async fn a_listing_cursor_is_held_to_the_form_its_member_models() {
             json!({"NextToken": cursor}),
         )
         .await;
-        let expected = validation_envelope(&[format!(
+        let pattern = format!(
             "Value '{cursor}' at 'nextToken' failed to satisfy constraint: Member must satisfy \
              regular expression pattern: ([0-9a-f]{{16}})+"
-        )]);
+        );
+        let expected = if clauses == 2 {
+            validation_envelope(&[
+                format!(
+                    "Value '{cursor}' at 'nextToken' failed to satisfy constraint: Member must \
+                     have length greater than or equal to 1"
+                ),
+                pattern,
+            ])
+        } else {
+            validation_envelope(&[pattern])
+        };
         let stated = message(&answered);
         assert_eq!(
             (status, error_type(&answered), stated.clone()),

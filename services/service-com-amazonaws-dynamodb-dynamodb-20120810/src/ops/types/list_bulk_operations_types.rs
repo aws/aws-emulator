@@ -13,7 +13,6 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-dynamodb-dynamodb-20120
 #[smithy_macros::smithy(shape = "com.amazonaws.dynamodb#ListBulkOperationsInput")]
 #[derive(Debug, Clone, Default)]
 pub struct ListBulkOperationsInput {
-    pub table_name: Option<String>,
     pub max_results: Option<i32>,
     pub next_token: Option<String>,
 }
@@ -26,11 +25,10 @@ pub struct ListBulkOperationsOutput {
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.dynamodb#BulkOperationSummary")]
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct BulkOperationSummary {
-    pub bulk_operation_arn: Option<String>,
-    pub bulk_operation_status: Option<String>,
-    pub table_arn: Option<String>,
-    pub start_time: Option<::aws_smithy_types::DateTime>,
+    pub bulk_operation_arn: String,
+    pub bulk_operation_status: String,
+    pub start_time: ::aws_smithy_types::DateTime,
     pub end_time: Option<::aws_smithy_types::DateTime>,
 }

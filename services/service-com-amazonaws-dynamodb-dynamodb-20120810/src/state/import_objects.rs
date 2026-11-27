@@ -73,6 +73,10 @@ pub enum ImportSourceFault {
     /// The store holds no bucket under the name the source names, so there is nothing
     /// the import could read.
     NoSuchBucket,
+    /// The objects the source selects come to more than one call of this emulator reads
+    /// ([`MAX_IMPORT_SOURCE_BYTES`]), which is a request to be REFUSED
+    /// ([`import_too_large_message`]) rather than a source that could not be read.
+    TooLarge,
 }
 
 /// The objects the source selects, read out of Amazon S3's own store on this engine.
@@ -85,6 +89,13 @@ pub enum ImportSourceFault {
 ///
 /// A bucket the store holds none of is [`ImportSourceFault::NoSuchBucket`]: an import
 /// cannot read a source that does not exist, and that is the reason its task reports.
+///
+/// The ceiling is applied AS the objects are selected, not after: the bytes already taken
+/// are counted before each further body is copied out of the object store, and a selection
+/// that passes [`MAX_IMPORT_SOURCE_BYTES`] stops there with
+/// [`ImportSourceFault::TooLarge`] — the request names only a bucket and a prefix, and the
+/// empty prefix selects the whole bucket, so a reader that copied first and counted
+/// afterwards would hold the whole of whatever that bucket already stores.
 pub fn read_import_source<Eng: Send + Sync + 'static>(
     engine: &Eng,
     source: &S3BucketSource,
@@ -96,14 +107,19 @@ pub fn read_import_source<Eng: Send + Sync + 'static>(
         .bucket(&source.s3_bucket)
         .ok_or(ImportSourceFault::NoSuchBucket)?;
     let prefix = source.s3_key_prefix.as_deref().unwrap_or_default();
-    Ok(bucket
-        .objects()
-        .filter(|(key, _)| key.starts_with(prefix))
-        .map(|(key, object)| ImportObject {
+    let mut selected: Vec<ImportObject> = Vec::new();
+    let mut taken: i64 = 0;
+    for (key, object) in bucket.objects().filter(|(key, _)| key.starts_with(prefix)) {
+        taken = taken.saturating_add(i64::try_from(object.body.len()).unwrap_or(i64::MAX));
+        if taken > MAX_IMPORT_SOURCE_BYTES {
+            return Err(ImportSourceFault::TooLarge);
+        }
+        selected.push(ImportObject {
             key: key.to_string(),
             body: object.body.clone(),
-        })
-        .collect())
+        });
+    }
+    Ok(selected)
 }
 
 /// What one import's task made of the objects it read.
@@ -211,12 +227,13 @@ pub fn imported_items(
                 input_format_options.and_then(|options| options.csv.as_ref()),
                 key_attribute_types,
                 &mut read,
+                &mut budget,
             )?,
             // The DynamoDB JSON form is the one a table export writes, and the default
             // this reader falls back to: `InputFormat` is a modelled enum, so the only
             // values that reach here are the ones the model declares, and `ION` is
             // refused before the import is recorded.
-            _ => read_dynamodb_json_object(&decoded, &mut read)?,
+            _ => read_dynamodb_json_object(&decoded, &mut read, &mut budget)?,
         }
     }
     Ok(read)
@@ -227,12 +244,26 @@ pub fn imported_items(
 /// The documented maximum item size is applied HERE, as each item is decoded, rather than
 /// only where the items are keyed ([`keyed_items`]): an item past it is one no write could
 /// store, so there is no reason to hold it in the meantime.
-fn retained(item: Item, read: &mut ImportedData) {
-    if item_size(&item) > MAX_ITEM_SIZE_BYTES {
+///
+/// What IS held is spent from the import's own budget before it is kept, which is what makes
+/// the aggregate this reader can hold [`MAX_IMPORT_SOURCE_BYTES`] whatever the source is
+/// shaped like ([`ImportBudget`]): decoded bytes and retained bytes are not proportional — a
+/// source whose every record repeats one long attribute name costs those bytes once in the
+/// stream and once per item — so a reader that charged only the stream would hold as much as
+/// the item COUNT allows rather than as much as the budget does.
+fn retained(
+    item: Item,
+    read: &mut ImportedData,
+    budget: &mut ImportBudget,
+) -> Result<(), ImportTooLarge> {
+    let size = item_size(&item);
+    if size > MAX_ITEM_SIZE_BYTES {
         read.error_count = read.error_count.saturating_add(1);
-        return;
+        return Ok(());
     }
+    budget.spend(usize::try_from(size).unwrap_or(usize::MAX))?;
     read.items.push(item);
+    Ok(())
 }
 
 /// What one import's items became once keyed against the table they are written into.
@@ -344,6 +375,7 @@ fn decompressed(
 fn read_dynamodb_json_object(
     body: &[u8],
     read: &mut ImportedData,
+    budget: &mut ImportBudget,
 ) -> Result<(), ImportTooLarge> {
     for line in body.split(|byte| *byte == b'\n') {
         if line.iter().all(u8::is_ascii_whitespace) {
@@ -357,7 +389,7 @@ fn read_dynamodb_json_object(
             .ok()
             .and_then(|value| item_from_json(&value))
         {
-            Some(item) => retained(item, read),
+            Some(item) => retained(item, read, budget)?,
             None => read.error_count = read.error_count.saturating_add(1),
         }
     }
@@ -383,6 +415,7 @@ fn read_csv_object(
     options: Option<&CsvOptions>,
     key_attribute_types: &BTreeMap<String, String>,
     read: &mut ImportedData,
+    budget: &mut ImportBudget,
 ) -> Result<(), ImportTooLarge> {
     let headers: Option<Vec<String>> = options
         .and_then(|options| options.header_list.clone())
@@ -434,7 +467,7 @@ fn read_csv_object(
             }
         }
         if readable {
-            retained(item, read);
+            retained(item, read, budget)?;
         } else {
             read.error_count = read.error_count.saturating_add(1);
         }
@@ -509,7 +542,7 @@ fn attribute_value_from_json(
     }
     let members = value.as_object()?;
     // "must contain exactly one of the supported datatypes"
-    // ([`crate::ops::types::AMBIGUOUS_ATTRIBUTE_VALUE_MESSAGE`]): a value naming none or
+    // (`crate::service::attribute_value_members`'s own wording): a value naming none or
     // several is no attribute value at all.
     if members.len() != 1 {
         return None;

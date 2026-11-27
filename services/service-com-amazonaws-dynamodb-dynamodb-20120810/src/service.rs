@@ -1066,6 +1066,15 @@ impl<Eng: Send + Sync + 'static> ErasedOperation for OperationScopedClauseForm<E
             if let Some(message) = attribute_value_members::enveloped_refusal(operation, req) {
                 return front_door::announced(req, reported(validation_refusal(message)));
             }
+            // And the same rules over every OTHER position an attribute value stands in,
+            // which state the fact alone rather than an envelope of a member's own
+            // ([`attribute_value_members::value_refusal`]): the union's arity, and a `null`
+            // listed as a member of a set. Such a value never becomes an input either \u2014 the
+            // codec names the union rather than the rule, or reads one of several datatypes
+            // and serves a request AWS refuses \u2014 so it is answered while the body is in hand.
+            if let Some(message) = attribute_value_members::value_refusal(operation, req) {
+                return front_door::announced(req, reported(validation_refusal(message)));
+            }
             // What serving this request TAKES is measured around the operation's own run,
             // which is the elapsed time its latency series reports
             // ([`request_latency_metrics`]).

@@ -11,30 +11,7 @@ use super::*;
 
 smithy_macros::smithy_model!("smithy-model/com-amazonaws-dynamodb-dynamodb-20120810.json");
 
-/// "Represents the data for an attribute. Each attribute value is described as a
-/// name-value pair. The name is the data type, and the value is the data itself"
-/// (`AttributeValue`'s own documentation) — a union of exactly one of the ten datatypes
-/// `smithy_query(query="shape", shape="com.amazonaws.dynamodb#AttributeValue")` lists:
-/// `S N B SS NS BS M L NULL BOOL`.
-///
-/// Written out rather than carrying `#[smithy_macros::smithy(union_for = ...)]` for ONE
-/// reason: the wording of the refusal a value that sets NO datatype, or more than one,
-/// gets. The generated codec refuses those with `union '<Shape>' had no member set` /
-/// `... had more than one member set`, which names the wire-layer term and the
-/// implementation's own idea of a member instead of the API concept the caller has to
-/// fix. Everything else below — the member schemas, their indices, the write and read
-/// arms — mirrors what that macro emits for this union, member for member; only
-/// [`EMPTY_ATTRIBUTE_VALUE_MESSAGE`] and [`AMBIGUOUS_ATTRIBUTE_VALUE_MESSAGE`] replace
-/// its two `SerdeError::custom` texts, and the read carries the nesting bound its own
-/// recursion needs ([`MAX_ATTRIBUTE_VALUE_READ_DEPTH`]) and this service's own refusal of
-/// a `null` listed as a SET member ([`null_set_member_message`]).
-///
-/// The cost of the copy: this declaration no longer tracks the model automatically, so
-/// a model change to `AttributeValue` (a renamed, added or `@jsonName`d member) has to
-/// be carried here by hand. The seam that would avoid it is in the vendored codegen
-/// (`vendor/smithy-macros`), which is read-only here, and the service's own
-/// `override_refusal` seam cannot reach this failure either: a codec
-/// `SerdeError::custom` is not one `refusal_of` describes structurally.
+#[smithy_macros::smithy(union_for = "com.amazonaws.dynamodb#AttributeValue")]
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone)]
 pub enum AttributeValue {
@@ -48,394 +25,6 @@ pub enum AttributeValue {
     L(Vec<AttributeValue>),
     Null(bool),
     Bool(bool),
-}
-
-/// Why an `AttributeValue` carrying NO datatype at all is refused: AWS's fixed text for
-/// this constraint, which names the API concept (the value, and the datatypes it may
-/// carry) rather than the wire encoding.
-pub const EMPTY_ATTRIBUTE_VALUE_MESSAGE: &str =
-    "Supplied AttributeValue is empty, must contain exactly one of the supported datatypes";
-
-/// Why an `AttributeValue` carrying MORE than one datatype is refused: the same
-/// constraint, stated for the other way to break it.
-pub const AMBIGUOUS_ATTRIBUTE_VALUE_MESSAGE: &str = "Supplied AttributeValue has more than one \
-     datatypes set, must contain exactly one of the supported datatypes";
-
-/// Why a SET a request carries a `null` MEMBER in is refused: AWS's fixed sentence for
-/// that parameter-value defect, one per set type.
-///
-/// A `null` INSIDE a collection states no member's absence — no member of the model stands
-/// at that position for it to be about — so it is not a defect of the body the request was
-/// carried in but a value the caller listed as a set member and DynamoDB admits no set
-/// member of: the parameter-value class ("One or more parameter values were invalid: …")
-/// every other rule about a value a request carried is stated in. Each of the three set
-/// members the model declares (`smithy_query(query="shape",
-/// shape="com.amazonaws.dynamodb#AttributeValue")` gives `SS` as a String Set, `NS` as a
-/// Number Set and `BS` as a Binary Set) carries its OWN sentence, exactly as that class's
-/// empty-set clauses do (`crate::state::check_collection_rules` words those), so the three
-/// are written out here rather than generated from one template. None of them carries any
-/// part of the request: they name neither the attribute nor the position in the set.
-const STRING_SET_NULL_MEMBER_CLAUSE: &str = "An string set may not have a null string as a member";
-const NUMBER_SET_NULL_MEMBER_CLAUSE: &str = "Numeric sets may not contain null";
-const BINARY_SET_NULL_MEMBER_CLAUSE: &str = "Binary sets may not contain null or empty values";
-
-/// One of those sentences as the whole refusal: the parameter-value class in front of the
-/// clause for the set type that carried the `null`.
-fn null_set_member_message(clause: &str) -> String {
-    format!("One or more parameter values were invalid: {clause}")
-}
-
-/// Why a value nesting past the levels DynamoDB supports is refused: AWS's fixed clause
-/// for that quota, which every surface that holds a value to it states
-/// ([`crate::state::nesting_levels_exceeded`] wraps this same sentence in the envelope a
-/// member's clause is reported in).
-pub const NESTING_LEVELS_EXCEEDED_MESSAGE: &str =
-    "Nesting Levels have exceeded supported limits: Attributes in the item have nested \
-     levels beyond supported limit";
-
-/// How deep a value READ FROM THE WIRE may nest before this reader refuses it.
-///
-/// `M` and `L` nest, so the reader below descends once per level and the levels are the
-/// CALLER's: without a bound the frames one request takes would be a function of the
-/// request, and a Rust stack overflow aborts the whole process rather than failing that
-/// one call. The bound is this reader's OWN — stated here so this function's stack use
-/// follows from this constant alone, whatever the codec underneath admits (it counts
-/// nested SHAPES, two per level of this union, so in practice it refuses a document
-/// shallower than this).
-///
-/// It sits ABOVE the documented item ceiling (32 levels — "DynamoDB supports nested
-/// attributes up to 32 levels deep", "Service, Account, and Table Quotas", held as
-/// [`crate::state::MAX_ATTRIBUTE_DEPTH`]) rather than at it, so every value a surface
-/// could accept is still READ and the surfaces that hold a value to that quota are the
-/// ones that state it, in the envelope each member's clause carries. What is refused here
-/// is only a document no surface would have admitted anyway, and it is refused with that
-/// same quota's sentence ([`NESTING_LEVELS_EXCEEDED_MESSAGE`]).
-///
-/// The WRITE path recurses over the same two datatypes and needs no bound of its own: a
-/// value it writes was either read through this reader or held to the documented ceiling
-/// before it was stored, so its depth is bounded before it is ever serialized.
-const MAX_ATTRIBUTE_VALUE_READ_DEPTH: usize = 64;
-
-#[allow(non_upper_case_globals)]
-impl AttributeValue {
-    const M_S: ::aws_smithy_schema::Schema = ::aws_smithy_schema::Schema::new_member(
-        ::aws_smithy_schema::ShapeId::from_static(
-            "com.amazonaws.dynamodb#AttributeValue$S",
-            "com.amazonaws.dynamodb",
-            "S",
-        ),
-        ::aws_smithy_schema::ShapeType::String,
-        "S",
-        0,
-    );
-
-    const M_N: ::aws_smithy_schema::Schema = ::aws_smithy_schema::Schema::new_member(
-        ::aws_smithy_schema::ShapeId::from_static(
-            "com.amazonaws.dynamodb#AttributeValue$N",
-            "com.amazonaws.dynamodb",
-            "N",
-        ),
-        ::aws_smithy_schema::ShapeType::String,
-        "N",
-        1,
-    );
-
-    const M_B: ::aws_smithy_schema::Schema = ::aws_smithy_schema::Schema::new_member(
-        ::aws_smithy_schema::ShapeId::from_static(
-            "com.amazonaws.dynamodb#AttributeValue$B",
-            "com.amazonaws.dynamodb",
-            "B",
-        ),
-        ::aws_smithy_schema::ShapeType::Blob,
-        "B",
-        2,
-    );
-
-    const M_SS: ::aws_smithy_schema::Schema = ::aws_smithy_schema::Schema::new_member(
-        ::aws_smithy_schema::ShapeId::from_static(
-            "com.amazonaws.dynamodb#AttributeValue$SS",
-            "com.amazonaws.dynamodb",
-            "SS",
-        ),
-        ::aws_smithy_schema::ShapeType::List,
-        "SS",
-        3,
-    );
-
-    const M_NS: ::aws_smithy_schema::Schema = ::aws_smithy_schema::Schema::new_member(
-        ::aws_smithy_schema::ShapeId::from_static(
-            "com.amazonaws.dynamodb#AttributeValue$NS",
-            "com.amazonaws.dynamodb",
-            "NS",
-        ),
-        ::aws_smithy_schema::ShapeType::List,
-        "NS",
-        4,
-    );
-
-    const M_BS: ::aws_smithy_schema::Schema = ::aws_smithy_schema::Schema::new_member(
-        ::aws_smithy_schema::ShapeId::from_static(
-            "com.amazonaws.dynamodb#AttributeValue$BS",
-            "com.amazonaws.dynamodb",
-            "BS",
-        ),
-        ::aws_smithy_schema::ShapeType::List,
-        "BS",
-        5,
-    );
-
-    const M_M: ::aws_smithy_schema::Schema = ::aws_smithy_schema::Schema::new_member(
-        ::aws_smithy_schema::ShapeId::from_static(
-            "com.amazonaws.dynamodb#AttributeValue$M",
-            "com.amazonaws.dynamodb",
-            "M",
-        ),
-        ::aws_smithy_schema::ShapeType::Map,
-        "M",
-        6,
-    );
-
-    const M_L: ::aws_smithy_schema::Schema = ::aws_smithy_schema::Schema::new_member(
-        ::aws_smithy_schema::ShapeId::from_static(
-            "com.amazonaws.dynamodb#AttributeValue$L",
-            "com.amazonaws.dynamodb",
-            "L",
-        ),
-        ::aws_smithy_schema::ShapeType::List,
-        "L",
-        7,
-    );
-
-    const M_NULL: ::aws_smithy_schema::Schema = ::aws_smithy_schema::Schema::new_member(
-        ::aws_smithy_schema::ShapeId::from_static(
-            "com.amazonaws.dynamodb#AttributeValue$NULL",
-            "com.amazonaws.dynamodb",
-            "NULL",
-        ),
-        ::aws_smithy_schema::ShapeType::Boolean,
-        "NULL",
-        8,
-    );
-
-    const M_BOOL: ::aws_smithy_schema::Schema = ::aws_smithy_schema::Schema::new_member(
-        ::aws_smithy_schema::ShapeId::from_static(
-            "com.amazonaws.dynamodb#AttributeValue$BOOL",
-            "com.amazonaws.dynamodb",
-            "BOOL",
-        ),
-        ::aws_smithy_schema::ShapeType::Boolean,
-        "BOOL",
-        9,
-    );
-
-    pub const SCHEMA: ::aws_smithy_schema::Schema = ::aws_smithy_schema::Schema::new_struct(
-        ::aws_smithy_schema::ShapeId::from_static(
-            "com.amazonaws.dynamodb#AttributeValue",
-            "com.amazonaws.dynamodb",
-            "AttributeValue",
-        ),
-        ::aws_smithy_schema::ShapeType::Union,
-        &[
-            &Self::M_S,
-            &Self::M_N,
-            &Self::M_B,
-            &Self::M_SS,
-            &Self::M_NS,
-            &Self::M_BS,
-            &Self::M_M,
-            &Self::M_L,
-            &Self::M_NULL,
-            &Self::M_BOOL,
-        ],
-    );
-}
-
-pub static ATTRIBUTE_VALUE_SCHEMA: &::aws_smithy_schema::Schema = &AttributeValue::SCHEMA;
-
-impl ::aws_smithy_schema::serde::SerializableStruct for AttributeValue {
-    fn serialize_members(
-        &self,
-        serializer: &mut dyn ::aws_smithy_schema::serde::ShapeSerializer,
-    ) -> ::std::result::Result<(), ::aws_smithy_schema::serde::SerdeError> {
-        match self {
-            Self::S(value) => serializer.write_string(&Self::M_S, value.as_str())?,
-            Self::N(value) => serializer.write_string(&Self::M_N, value.as_str())?,
-            Self::B(value) => serializer.write_blob(&Self::M_B, value.as_slice())?,
-            Self::Ss(values) => serializer.write_list(&Self::M_SS, &|list| {
-                for value in values.iter() {
-                    list.write_string(&Self::M_SS, value.as_str())?;
-                }
-                Ok(())
-            })?,
-            Self::Ns(values) => serializer.write_list(&Self::M_NS, &|list| {
-                for value in values.iter() {
-                    list.write_string(&Self::M_NS, value.as_str())?;
-                }
-                Ok(())
-            })?,
-            Self::Bs(values) => serializer.write_list(&Self::M_BS, &|list| {
-                for value in values.iter() {
-                    list.write_blob(&Self::M_BS, value.as_slice())?;
-                }
-                Ok(())
-            })?,
-            Self::M(entries) => serializer.write_map(&Self::M_M, &|map| {
-                for (name, value) in entries.iter() {
-                    map.write_string(&Self::M_M, name.as_str())?;
-                    map.write_struct(&Self::M_M, value)?;
-                }
-                Ok(())
-            })?,
-            Self::L(values) => serializer.write_list(&Self::M_L, &|list| {
-                for value in values.iter() {
-                    list.write_struct(&Self::SCHEMA, value)?;
-                }
-                Ok(())
-            })?,
-            Self::Null(value) => serializer.write_boolean(&Self::M_NULL, *value)?,
-            Self::Bool(value) => serializer.write_boolean(&Self::M_BOOL, *value)?,
-        }
-        Ok(())
-    }
-}
-
-impl ::aws_smithy_schema_server::DeserializableStruct for AttributeValue {
-    fn deserialize(
-        deserializer: &mut dyn ::aws_smithy_schema::serde::ShapeDeserializer,
-    ) -> ::std::result::Result<Self, ::aws_smithy_schema::serde::SerdeError> {
-        // The value a request carries is the first level of nesting.
-        Self::read_at_depth(deserializer, 1)
-    }
-}
-
-impl AttributeValue {
-    /// Read one value that sits `depth` levels deep, refusing past
-    /// [`MAX_ATTRIBUTE_VALUE_READ_DEPTH`] so the frames this reader takes are bounded by
-    /// that constant rather than by how deep the request nested.
-    ///
-    /// Every arm but `M` and `L` reads a scalar or a set of scalars and cannot descend; the
-    /// two that do pass `depth + 1` to the values inside them.
-    fn read_at_depth(
-        deserializer: &mut dyn ::aws_smithy_schema::serde::ShapeDeserializer,
-        depth: usize,
-    ) -> ::std::result::Result<Self, ::aws_smithy_schema::serde::SerdeError> {
-        if depth > MAX_ATTRIBUTE_VALUE_READ_DEPTH {
-            return ::std::result::Result::Err(::aws_smithy_schema::serde::SerdeError::custom(
-                NESTING_LEVELS_EXCEEDED_MESSAGE,
-            ));
-        }
-        let mut out: ::std::option::Option<Self> = ::std::option::Option::None;
-        deserializer.read_struct(&Self::SCHEMA, &mut |member, deserializer| {
-            match member.member_index() {
-                // A union carries EXACTLY one member, so a second datatype on the wire
-                // is ambiguous and is refused rather than overwritten: overwriting
-                // would answer 200 for a value the caller did not send.
-                ::std::option::Option::Some(0..=9) if out.is_some() => {
-                    return ::std::result::Result::Err(
-                        ::aws_smithy_schema::serde::SerdeError::custom(
-                            AMBIGUOUS_ATTRIBUTE_VALUE_MESSAGE,
-                        ),
-                    );
-                }
-                ::std::option::Option::Some(0) => {
-                    out = Some(Self::S(deserializer.read_string(&Self::M_S)?));
-                }
-                ::std::option::Option::Some(1) => {
-                    out = Some(Self::N(deserializer.read_string(&Self::M_N)?));
-                }
-                ::std::option::Option::Some(2) => {
-                    out = Some(Self::B(deserializer.read_blob(&Self::M_B)?.into_inner()));
-                }
-                ::std::option::Option::Some(3) => {
-                    let mut members: Vec<String> = Vec::new();
-                    deserializer.read_list(&Self::M_SS, &mut |element| {
-                        // A `null` where a MEMBER stands is the parameter-value refusal
-                        // this service words for it ([`null_set_member_message`]), raised
-                        // before the member is read: the reader's own complaint about the
-                        // class it found names neither the parameter nor the set.
-                        if element.is_null() {
-                            return ::std::result::Result::Err(
-                                ::aws_smithy_schema::serde::SerdeError::custom(
-                                    null_set_member_message(STRING_SET_NULL_MEMBER_CLAUSE),
-                                ),
-                            );
-                        }
-                        members.push(element.read_string(&Self::M_SS)?);
-                        Ok(())
-                    })?;
-                    out = Some(Self::Ss(members));
-                }
-                ::std::option::Option::Some(4) => {
-                    let mut members: Vec<String> = Vec::new();
-                    deserializer.read_list(&Self::M_NS, &mut |element| {
-                        if element.is_null() {
-                            return ::std::result::Result::Err(
-                                ::aws_smithy_schema::serde::SerdeError::custom(
-                                    null_set_member_message(NUMBER_SET_NULL_MEMBER_CLAUSE),
-                                ),
-                            );
-                        }
-                        members.push(element.read_string(&Self::M_NS)?);
-                        Ok(())
-                    })?;
-                    out = Some(Self::Ns(members));
-                }
-                ::std::option::Option::Some(5) => {
-                    let mut members: Vec<Vec<u8>> = Vec::new();
-                    deserializer.read_list(&Self::M_BS, &mut |element| {
-                        if element.is_null() {
-                            return ::std::result::Result::Err(
-                                ::aws_smithy_schema::serde::SerdeError::custom(
-                                    null_set_member_message(BINARY_SET_NULL_MEMBER_CLAUSE),
-                                ),
-                            );
-                        }
-                        members.push(element.read_blob(&Self::M_BS)?.into_inner());
-                        Ok(())
-                    })?;
-                    out = Some(Self::Bs(members));
-                }
-                ::std::option::Option::Some(6) => {
-                    let mut entries: std::collections::HashMap<String, AttributeValue> =
-                        ::std::default::Default::default();
-                    deserializer.read_map(&Self::M_M, &mut |name, entry| {
-                        let value = Self::read_at_depth(entry, depth + 1)
-                            .map_err(|error| {
-                                ::aws_smithy_schema_server::within_map_entry(error, &name)
-                            })?;
-                        entries.insert(name, value);
-                        Ok(())
-                    })?;
-                    out = Some(Self::M(entries));
-                }
-                ::std::option::Option::Some(7) => {
-                    let mut members: Vec<AttributeValue> = Vec::new();
-                    let mut position = 0usize;
-                    deserializer
-                        .read_list(&Self::M_L, &mut |element| {
-                            position += 1;
-                            members.push(Self::read_at_depth(element, depth + 1)?);
-                            Ok(())
-                        })
-                        .map_err(|error| {
-                            ::aws_smithy_schema_server::within_list_element(error, position)
-                        })?;
-                    out = Some(Self::L(members));
-                }
-                ::std::option::Option::Some(8) => {
-                    out = Some(Self::Null(deserializer.read_boolean(&Self::M_NULL)?));
-                }
-                ::std::option::Option::Some(9) => {
-                    out = Some(Self::Bool(deserializer.read_boolean(&Self::M_BOOL)?));
-                }
-                _ => {}
-            }
-            Ok(())
-        })?;
-        out.ok_or_else(|| {
-            ::aws_smithy_schema::serde::SerdeError::custom(EMPTY_ATTRIBUTE_VALUE_MESSAGE)
-        })
-    }
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.dynamodb#ConsumedCapacity")]
@@ -459,137 +48,11 @@ pub struct Capacity {
     pub capacity_units: Option<f64>,
 }
 
-/// `VectorCapacity` — hand-written rather than expanded from the model, because a
-/// recorded `ConsumedCapacity$VectorIndexes` entry carries one member more than this
-/// snapshot of the model declares.
-///
-/// The model declares the two BYTE figures (`VectorSearchRequestBytes` and
-/// `VectorWriteRequestBytes`, `smithy_query(query="shape",
-/// shape="com.amazonaws.dynamodb#VectorCapacity")`); every recorded entry of a write to a
-/// table carrying vector indexes reports `VectorWriteRequestUnits` beside the byte member,
-/// carrying the same metered figure — the write-request figure a capacity-aware client
-/// budgets and throttles from, which it reads as absent while only the byte member is
-/// written. The `#[smithy_macros::smithy(shape = …)]` expansion derives every member from
-/// the model and cannot be told about one the model does not declare, and the model itself
-/// is codegen input this emulator leaves exactly as shipped.
-///
-/// Everything below is what that expansion emits for a structure of scalar members — the
-/// member statics, the `SCHEMA` an enclosing member writes it with, `SerializableStruct`
-/// and `DeserializableStruct` — plus the one member the model does not declare.
-#[derive(Debug, Clone, Default)]
-pub struct VectorCapacity {
-    pub vector_search_request_bytes: Option<f64>,
-    pub vector_write_request_bytes: Option<f64>,
-    /// NOT a modelled member: the write-request figure every recorded entry carries beside
-    /// [`Self::vector_write_request_bytes`], which is the same meter
-    /// ([`crate::state::VectorIndex::write_request_bytes`]).
-    pub vector_write_request_units: Option<f64>,
-}
-
-static VECTOR_CAPACITY_M_SEARCH_REQUEST_BYTES: ::aws_smithy_schema::Schema =
-    ::aws_smithy_schema::Schema::new_member(
-        ::aws_smithy_schema::ShapeId::from_static(
-            "com.amazonaws.dynamodb#VectorCapacity$VectorSearchRequestBytes",
-            "com.amazonaws.dynamodb",
-            "VectorSearchRequestBytes",
-        ),
-        ::aws_smithy_schema::ShapeType::Double,
-        "VectorSearchRequestBytes",
-        0,
-    );
-
-static VECTOR_CAPACITY_M_WRITE_REQUEST_BYTES: ::aws_smithy_schema::Schema =
-    ::aws_smithy_schema::Schema::new_member(
-        ::aws_smithy_schema::ShapeId::from_static(
-            "com.amazonaws.dynamodb#VectorCapacity$VectorWriteRequestBytes",
-            "com.amazonaws.dynamodb",
-            "VectorWriteRequestBytes",
-        ),
-        ::aws_smithy_schema::ShapeType::Double,
-        "VectorWriteRequestBytes",
-        1,
-    );
-
-/// The schema of the member the model does not declare, spelled the way the expansion
-/// spells a modelled one: the member NAME is the wire key the awsJson codec writes.
-static VECTOR_CAPACITY_M_WRITE_REQUEST_UNITS: ::aws_smithy_schema::Schema =
-    ::aws_smithy_schema::Schema::new_member(
-        ::aws_smithy_schema::ShapeId::from_static(
-            "com.amazonaws.dynamodb#VectorCapacity$VectorWriteRequestUnits",
-            "com.amazonaws.dynamodb",
-            "VectorWriteRequestUnits",
-        ),
-        ::aws_smithy_schema::ShapeType::Double,
-        "VectorWriteRequestUnits",
-        2,
-    );
-
-/// The members of [`VectorCapacity`], as the one `'static` slice its `SCHEMA` borrows (an
-/// associated `const` cannot borrow a temporary one).
-static VECTOR_CAPACITY_MEMBERS: &[&::aws_smithy_schema::Schema] = &[
-    &VECTOR_CAPACITY_M_SEARCH_REQUEST_BYTES,
-    &VECTOR_CAPACITY_M_WRITE_REQUEST_BYTES,
-    &VECTOR_CAPACITY_M_WRITE_REQUEST_UNITS,
-];
-
-impl VectorCapacity {
-    /// The schema an enclosing member writes this structure with.
-    pub const SCHEMA: ::aws_smithy_schema::Schema = ::aws_smithy_schema::Schema::new_struct(
-        ::aws_smithy_schema::ShapeId::from_static(
-            "com.amazonaws.dynamodb#VectorCapacity",
-            "com.amazonaws.dynamodb",
-            "VectorCapacity",
-        ),
-        ::aws_smithy_schema::ShapeType::Structure,
-        VECTOR_CAPACITY_MEMBERS,
-    );
-}
-
-impl ::aws_smithy_schema_server::DeserializableStruct for VectorCapacity {
-    fn deserialize(
-        deserializer: &mut dyn ::aws_smithy_schema::serde::ShapeDeserializer,
-    ) -> ::std::result::Result<Self, ::aws_smithy_schema::serde::SerdeError> {
-        let mut out = Self::default();
-        deserializer.read_struct(&Self::SCHEMA, &mut |member, deserializer| {
-            match member.member_index() {
-                ::std::option::Option::Some(0) => {
-                    out.vector_search_request_bytes = Some(
-                        deserializer.read_double(&VECTOR_CAPACITY_M_SEARCH_REQUEST_BYTES)?,
-                    );
-                }
-                ::std::option::Option::Some(1) => {
-                    out.vector_write_request_bytes =
-                        Some(deserializer.read_double(&VECTOR_CAPACITY_M_WRITE_REQUEST_BYTES)?);
-                }
-                ::std::option::Option::Some(2) => {
-                    out.vector_write_request_units =
-                        Some(deserializer.read_double(&VECTOR_CAPACITY_M_WRITE_REQUEST_UNITS)?);
-                }
-                _ => {}
-            }
-            Ok(())
-        })?;
-        Ok(out)
-    }
-}
-
-impl ::aws_smithy_schema::serde::SerializableStruct for VectorCapacity {
-    fn serialize_members(
-        &self,
-        serializer: &mut dyn ::aws_smithy_schema::serde::ShapeSerializer,
-    ) -> ::std::result::Result<(), ::aws_smithy_schema::serde::SerdeError> {
-        if let Some(bytes) = self.vector_search_request_bytes {
-            serializer.write_double(&VECTOR_CAPACITY_M_SEARCH_REQUEST_BYTES, bytes)?;
-        }
-        if let Some(bytes) = self.vector_write_request_bytes {
-            serializer.write_double(&VECTOR_CAPACITY_M_WRITE_REQUEST_BYTES, bytes)?;
-        }
-        if let Some(units) = self.vector_write_request_units {
-            serializer.write_double(&VECTOR_CAPACITY_M_WRITE_REQUEST_UNITS, units)?;
-        }
-        Ok(())
-    }
-}
+// `VectorCapacity` is NOT declared here, although a search and every write reach it: AWS
+// answers with a member the published snapshot does not declare (`VectorWriteRequestUnits`),
+// so the shape is declared in `vector_capacity_types` from the local overlay model instead
+// (see `smithy-model/LOCAL-ADDITIONS.md`). `types/mod.rs` re-exports it, so
+// `use super::types::*` resolves it from here as it does any other shape.
 
 #[smithy_macros::smithy(shape = "com.amazonaws.dynamodb#InternalServerError")]
 #[derive(Debug, Clone, Default)]
@@ -883,41 +346,11 @@ pub struct SearchSchemaElement {
     pub search_schema_element_type: String,
 }
 
-#[smithy_macros::smithy(shape = "com.amazonaws.dynamodb#TableDescription")]
-#[derive(Debug, Clone, Default)]
-pub struct TableDescription {
-    pub attribute_definitions: Option<Vec<AttributeDefinition>>,
-    pub table_name: Option<String>,
-    pub key_schema: Option<Vec<KeySchemaElement>>,
-    pub table_status: Option<String>,
-    pub creation_date_time: Option<::aws_smithy_types::DateTime>,
-    pub provisioned_throughput: Option<ProvisionedThroughputDescription>,
-    pub table_size_bytes: Option<i64>,
-    pub item_count: Option<i64>,
-    pub table_arn: Option<String>,
-    pub table_id: Option<String>,
-    pub billing_mode_summary: Option<BillingModeSummary>,
-    pub local_secondary_indexes: Option<Vec<LocalSecondaryIndexDescription>>,
-    pub global_secondary_indexes: Option<Vec<GlobalSecondaryIndexDescription>>,
-    pub stream_specification: Option<StreamSpecification>,
-    pub latest_stream_label: Option<String>,
-    pub latest_stream_arn: Option<String>,
-    pub global_table_version: Option<String>,
-    pub replicas: Option<Vec<ReplicaDescription>>,
-    pub global_table_witnesses: Option<Vec<GlobalTableWitnessDescription>>,
-    pub global_table_settings_replication_mode: Option<String>,
-    pub restore_summary: Option<RestoreSummary>,
-    pub sse_description: Option<SSEDescription>,
-    pub archival_summary: Option<ArchivalSummary>,
-    pub table_class_summary: Option<TableClassSummary>,
-    pub deletion_protection_enabled: Option<bool>,
-    pub disassociation_protection_enabled: Option<bool>,
-    pub on_demand_throughput: Option<OnDemandThroughput>,
-    pub table_throughput_mode_summary: Option<TableThroughputModeSummary>,
-    pub warm_throughput: Option<TableWarmThroughputDescription>,
-    pub multi_region_consistency: Option<String>,
-    pub vector_indexes: Option<Vec<VectorIndexDescription>>,
-}
+// `TableDescription` is NOT declared here, although every table operation reaches it: AWS
+// answers with a member the published snapshot does not declare
+// (`TableThroughputModeSummary`), so the shape is declared in `table_description_types` from
+// the local overlay model instead (see `smithy-model/LOCAL-ADDITIONS.md`). `types/mod.rs`
+// re-exports it, so `use super::types::*` resolves it from here as it does any other shape.
 
 #[smithy_macros::smithy(shape = "com.amazonaws.dynamodb#ProvisionedThroughputDescription")]
 #[derive(Debug, Clone, Default)]
@@ -933,13 +366,6 @@ pub struct ProvisionedThroughputDescription {
 #[derive(Debug, Clone, Default)]
 pub struct BillingModeSummary {
     pub billing_mode: Option<String>,
-    pub last_update_to_pay_per_request_date_time: Option<::aws_smithy_types::DateTime>,
-}
-
-#[smithy_macros::smithy(shape = "com.amazonaws.dynamodb#TableThroughputModeSummary")]
-#[derive(Debug, Clone, Default)]
-pub struct TableThroughputModeSummary {
-    pub table_throughput_mode: Option<String>,
     pub last_update_to_pay_per_request_date_time: Option<::aws_smithy_types::DateTime>,
 }
 
@@ -1129,6 +555,79 @@ pub struct PolicyNotFoundException {
     pub message: Option<String>,
 }
 
+#[smithy_macros::smithy(shape = "com.amazonaws.dynamodb#BulkOperationDescription")]
+#[derive(Debug, Clone, Default)]
+pub struct BulkOperationDescription {
+    pub bulk_operation_arn: Option<String>,
+    pub bulk_operation_status: Option<String>,
+    pub table_details: Option<Vec<BulkOperationTableDetail>>,
+    pub client_token: Option<String>,
+    pub input_s3_configuration: Option<InputS3Configuration>,
+    pub output_s3_configuration: Option<OutputS3Configuration>,
+    pub start_time: Option<::aws_smithy_types::DateTime>,
+    pub end_time: Option<::aws_smithy_types::DateTime>,
+    pub processed_item_count: i64,
+    pub processed_input_bytes: Option<i64>,
+    pub total_input_bytes: Option<i64>,
+    pub bulk_operation_usage: Option<Vec<BulkOperationUsage>>,
+    pub failed_item_count: i64,
+    pub failure_code: Option<String>,
+    pub failure_message: Option<String>,
+    pub max_write_request_units: Option<i64>,
+    pub performance_tier: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.dynamodb#BulkOperationTableDetail")]
+#[derive(Debug, Clone, Default)]
+pub struct BulkOperationTableDetail {
+    pub table_name: Option<String>,
+    pub table_id: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.dynamodb#InputS3Configuration")]
+#[derive(Debug, Clone, Default)]
+pub struct InputS3Configuration {
+    pub s3_bucket_owner: Option<String>,
+    pub s3_bucket: String,
+    pub s3_key_prefix: Option<String>,
+    pub input_format: String,
+    pub input_compression_type: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.dynamodb#OutputS3Configuration")]
+#[derive(Debug, Clone, Default)]
+pub struct OutputS3Configuration {
+    pub s3_bucket_owner: Option<String>,
+    pub s3_bucket: Option<String>,
+    pub s3_key_prefix: Option<String>,
+    pub s3_sse_algorithm: Option<String>,
+    pub s3_sse_kms_key_id: Option<String>,
+    pub output_type: Vec<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.dynamodb#BulkOperationUsage")]
+#[derive(Debug, Clone, Default)]
+pub struct BulkOperationUsage {
+    pub table_name: Option<String>,
+    pub bulk_put_bytes: Option<i64>,
+    pub table: Option<BulkOperationBytes>,
+    pub local_secondary_indexes: Option<std::collections::HashMap<String, BulkOperationBytes>>,
+    pub global_secondary_indexes: Option<std::collections::HashMap<String, BulkOperationBytes>>,
+    pub vector_indexes: Option<std::collections::HashMap<String, BulkOperationVectorBytes>>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.dynamodb#BulkOperationBytes")]
+#[derive(Debug, Clone, Default)]
+pub struct BulkOperationBytes {
+    pub bulk_put_bytes: Option<i64>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.dynamodb#BulkOperationVectorBytes")]
+#[derive(Debug, Clone, Default)]
+pub struct BulkOperationVectorBytes {
+    pub bulk_put_vector_bytes: Option<i64>,
+}
+
 #[smithy_macros::smithy(shape = "com.amazonaws.dynamodb#ContinuousBackupsDescription")]
 #[derive(Debug, Clone, Default)]
 pub struct ContinuousBackupsDescription {
@@ -1136,46 +635,17 @@ pub struct ContinuousBackupsDescription {
     pub point_in_time_recovery_description: Option<PointInTimeRecoveryDescription>,
 }
 
-#[smithy_macros::smithy(shape = "com.amazonaws.dynamodb#PointInTimeRecoveryDescription")]
-#[derive(Debug, Clone, Default)]
-pub struct PointInTimeRecoveryDescription {
-    pub point_in_time_recovery_status: Option<String>,
-    /// The recovery window DynamoDB reports the setting under, beside the member the
-    /// published model names the same setting by: both carry the number of preceding days
-    /// the table's continuous backups cover.
-    pub point_in_time_recovery_window_days: Option<i32>,
-    pub recovery_period_in_days: Option<i32>,
-    pub earliest_restorable_date_time: Option<::aws_smithy_types::DateTime>,
-    pub latest_restorable_date_time: Option<::aws_smithy_types::DateTime>,
-}
+// `PointInTimeRecoveryDescription` is NOT declared here: AWS answers with a member the
+// published snapshot does not declare (`PointInTimeRecoveryWindowDays`), so the shape is
+// declared in `point_in_time_recovery_types` from the local overlay model instead (see
+// `smithy-model/LOCAL-ADDITIONS.md`). `types/mod.rs` re-exports it, so `use super::types::*`
+// resolves it from here as it does any other shape.
 
-#[smithy_macros::smithy(shape = "com.amazonaws.dynamodb#ExportDescription")]
-#[derive(Debug, Clone, Default)]
-pub struct ExportDescription {
-    pub export_arn: Option<String>,
-    pub export_status: Option<String>,
-    pub start_time: Option<::aws_smithy_types::DateTime>,
-    pub end_time: Option<::aws_smithy_types::DateTime>,
-    pub export_manifest: Option<String>,
-    pub table_arn: Option<String>,
-    pub table_id: Option<String>,
-    pub export_time: Option<::aws_smithy_types::DateTime>,
-    pub client_token: Option<String>,
-    pub s3_bucket: Option<String>,
-    pub s3_bucket_owner: Option<String>,
-    pub s3_prefix: Option<String>,
-    pub s3_sse_algorithm: Option<String>,
-    pub s3_sse_kms_key_id: Option<String>,
-    pub failure_code: Option<String>,
-    pub failure_message: Option<String>,
-    pub export_format: Option<String>,
-    pub billed_size_bytes: Option<i64>,
-    pub item_count: Option<i64>,
-    pub destination_type: Option<String>,
-    pub export_type: Option<String>,
-    pub incremental_export_specification: Option<IncrementalExportSpecification>,
-    pub filter_specification: Option<FilterSpecification>,
-}
+// `ExportDescription` is NOT declared here, although every export reader reaches it: AWS
+// answers with a member the published snapshot does not declare (`DestinationType`), so the
+// shape is declared in `export_description_types` from the local overlay model instead (see
+// `smithy-model/LOCAL-ADDITIONS.md`). `types/mod.rs` re-exports it, so `use super::types::*`
+// resolves it from here as it does any other shape.
 
 #[smithy_macros::smithy(shape = "com.amazonaws.dynamodb#IncrementalExportSpecification")]
 #[derive(Debug, Clone, Default)]
@@ -1473,6 +943,18 @@ pub const BATCH_STATEMENT_ERROR_CODE_ENUM_VALUES: &[&str] = &["AccessDenied", "C
 pub const BILLING_MODE_VALUES: &[&str] = &["PAY_PER_REQUEST", "PROVISIONED"];
 
 
+/// The values `BulkOperationInputFormat` accepts on the wire.
+pub const BULK_OPERATION_INPUT_FORMAT_VALUES: &[&str] = &["DYNAMODB_JSON", "ION"];
+
+
+/// The values `BulkOperationPerformanceTier` accepts on the wire.
+pub const BULK_OPERATION_PERFORMANCE_TIER_VALUES: &[&str] = &["ACCELERATED", "STANDARD"];
+
+
+/// The values `BulkOperationStatus` accepts on the wire.
+pub const BULK_OPERATION_STATUS_VALUES: &[&str] = &["CANCELLED", "CANCELLING", "COMPLETED", "COMPLETED_WITH_ERRORS", "FAILED", "IN_PROGRESS"];
+
+
 /// The values `ComparisonOperator` accepts on the wire.
 pub const COMPARISON_OPERATOR_VALUES: &[&str] = &["BEGINS_WITH", "BETWEEN", "CONTAINS", "EQ", "GE", "GT", "IN", "LE", "LT", "NE", "NOT_CONTAINS", "NOT_NULL", "NULL"];
 
@@ -1551,6 +1033,10 @@ pub const KEY_TYPE_VALUES: &[&str] = &["HASH", "RANGE"];
 
 /// The values `MultiRegionConsistency` accepts on the wire.
 pub const MULTI_REGION_CONSISTENCY_VALUES: &[&str] = &["EVENTUAL", "STRONG"];
+
+
+/// The values `OutputTypeEnum` accepts on the wire.
+pub const OUTPUT_TYPE_ENUM_VALUES: &[&str] = &["CONDITION_CHECK_FAILURE", "ERROR"];
 
 
 /// The values `PointInTimeRecoveryStatus` accepts on the wire.

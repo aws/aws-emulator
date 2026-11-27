@@ -67,10 +67,12 @@ fn gzipped(bytes: &[u8]) -> Vec<u8> {
 /// One `StartBulkPutItems` body: the table, the source prefix, the compression the source
 /// is staged with, and the token when the row carries one.
 ///
-/// Every request names an `OutputS3Configuration`, the location the operation reports its
-/// per-record outcomes into: the member is one the input REQUIRES
-/// (`smithy_query(query="operation", operation="StartBulkPutItems")`), so a body that omits
-/// it is refused before the call is served (the row below that pins it).
+/// Every request names an `InputS3Configuration` stating the format its records are staged
+/// in and an `OutputS3Configuration` stating where the operation reports its per-record
+/// outcomes and which of them it reports: `InputFormat`, `OutputS3Configuration` and that
+/// configuration's `OutputType` are members the input REQUIRES
+/// (`smithy_query(query="closure", operation="StartBulkPutItems")`), so a body that omits
+/// one is refused before the call is served (the rows below that pin it).
 fn start_body(
     table: &str,
     prefix: &str,
@@ -87,6 +89,7 @@ fn start_body(
         "OutputS3Configuration": {
             "S3Bucket": BUCKET,
             "S3KeyPrefix": "outcomes/",
+            "OutputType": ["ERROR"],
         },
     });
     if let Some(compression) = compression {
@@ -135,9 +138,11 @@ async fn stored(router: &MultiServiceRouter, table: &str, key: Value) -> Value {
     read.get("Item").cloned().unwrap_or(Value::Null)
 }
 
-/// The summaries `ListBulkOperations` reports for `table`, in the order it reports them.
-async fn listed(router: &MultiServiceRouter, table: &str) -> Vec<Value> {
-    let answered = ok(router, "ListBulkOperations", json!({"TableName": table})).await;
+/// The summaries `ListBulkOperations` reports, in the order it reports them: every bulk
+/// operation of the region the endpoint serves, since the request carries no member that
+/// narrows the listing (`smithy_query(query="operation", operation="ListBulkOperations")`).
+async fn listed(router: &MultiServiceRouter) -> Vec<Value> {
+    let answered = ok(router, "ListBulkOperations", json!({})).await;
     answered["BulkOperationsSummaryList"]
         .as_array()
         .cloned()
@@ -293,21 +298,14 @@ async fn a_bulk_put_writes_what_its_source_carried_and_records_one_operation() {
         }
     }
 
-    // ONE operation per call that started one, each reported by the listing of the table it
-    // acted on — and the two tables' catalogues do not mix.
-    let for_table = listed(&router, TABLE).await;
+    // ONE operation per call that started one, all of them reported by the region's listing.
+    let summaries = listed(&router).await;
     assert_eq!(
-        for_table.len(),
-        4,
-        "one summary per call against that table, got {for_table:?}"
+        summaries.len(),
+        5,
+        "one summary per call that started an operation, got {summaries:?}"
     );
-    let for_composite = listed(&router, COMPOSITE_TABLE).await;
-    assert_eq!(
-        for_composite.len(),
-        1,
-        "one summary per call against that table, got {for_composite:?}"
-    );
-    for summary in for_table.iter().chain(&for_composite) {
+    for summary in &summaries {
         assert!(
             summary["BulkOperationArn"].is_string() && summary["StartTime"].is_number(),
             "every summary carries the operation's ARN and the instant it began, got {summary}"
@@ -411,7 +409,7 @@ async fn a_repeated_client_token_answers_one_operation_and_writes_the_source_onc
     }
 
     // ONE operation in the catalogue, however many times the call was replayed.
-    let summaries = listed(&router, TABLE).await;
+    let summaries = listed(&router).await;
     assert_eq!(
         summaries.len(),
         1,
@@ -437,7 +435,7 @@ async fn a_repeated_client_token_answers_one_operation_and_writes_the_source_onc
         read, second_items[0],
         "the operation another token started writes its own source, got {read}"
     );
-    let summaries = listed(&router, TABLE).await;
+    let summaries = listed(&router).await;
     assert_eq!(
         summaries.len(),
         2,
@@ -466,7 +464,7 @@ async fn a_bulk_operation_settles_into_its_terminal_status_and_reports_its_end()
     // under a deadline generous enough that a loaded machine is not a defect.
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
     let summary = loop {
-        let page = listed(&router, TABLE).await;
+        let page = listed(&router).await;
         let settled = page
             .first()
             .filter(|summary| summary["BulkOperationStatus"] == json!("COMPLETED"))
@@ -504,7 +502,7 @@ async fn a_source_that_cannot_be_read_settles_the_operation_as_failed() {
 
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
     let settled = loop {
-        let page = listed(&router, TABLE).await;
+        let page = listed(&router).await;
         let reported = page
             .first()
             .map(|summary| summary["BulkOperationStatus"].clone())
@@ -622,10 +620,10 @@ async fn a_bulk_put_is_refused_before_it_reads_or_writes_anything() {
     }
 
     // A source format outside the set the member admits
-    // (`smithy_query(query="shape", shape="com.amazonaws.dynamodb#BulkPutInputFormat")` gives
-    // ION and DYNAMODB_JSON) is refused by that set, ahead of everything else the request
-    // names — the table it addresses included, which is why these rows name one the account
-    // does not hold and are still answered for the member.
+    // (`smithy_query(query="shape", shape="com.amazonaws.dynamodb#BulkOperationInputFormat")`
+    // gives DYNAMODB_JSON and ION) is refused by that set, ahead of everything else the
+    // request names — the table it addresses included, which is why these rows name one the
+    // account does not hold and are still answered for the member.
     let format_rows: Vec<(&str, &str)> = vec![
         ("a format the import surface reads and a bulk put does not", "CSV"),
         ("a format no surface reads", "PARQUET"),
@@ -658,7 +656,7 @@ async fn a_bulk_put_is_refused_before_it_reads_or_writes_anything() {
         Value::Null,
         "a refused bulk put writes nothing, got {read}"
     );
-    let summaries = listed(&router, TABLE).await;
+    let summaries = listed(&router).await;
     assert!(
         summaries.is_empty(),
         "a refused bulk put records no operation, got {summaries:?}"
@@ -666,7 +664,7 @@ async fn a_bulk_put_is_refused_before_it_reads_or_writes_anything() {
 }
 
 #[tokio::test]
-async fn a_listing_pages_by_max_results_and_narrows_itself_to_one_table() {
+async fn a_listing_pages_by_max_results_over_the_regions_operations() {
     let router = seeded().await;
     for index in 0..3 {
         let prefix = format!("page{index}/");
@@ -698,12 +696,13 @@ async fn a_listing_pages_by_max_results_and_narrows_itself_to_one_table() {
     )
     .await;
 
-    // A listing that names no table reports every table's operations.
+    // The listing reports every operation of the region, whichever table each acted on: the
+    // request carries no member that narrows it.
     let all = ok(&router, "ListBulkOperations", json!({})).await;
     assert_eq!(
         all["BulkOperationsSummaryList"].as_array().map(Vec::len),
         Some(4),
-        "a listing naming no table reports every operation, got {all}"
+        "the listing reports every operation of the region, got {all}"
     );
     assert!(
         all.get("NextToken").is_none(),
@@ -716,7 +715,7 @@ async fn a_listing_pages_by_max_results_and_narrows_itself_to_one_table() {
         let mut seen: Vec<String> = Vec::new();
         let mut token: Option<String> = None;
         loop {
-            let mut body = json!({"TableName": TABLE, "MaxResults": size});
+            let mut body = json!({"MaxResults": size});
             if let Some(cursor) = token.as_deref() {
                 body["NextToken"] = json!(cursor);
             }
@@ -745,8 +744,8 @@ async fn a_listing_pages_by_max_results_and_narrows_itself_to_one_table() {
         }
         assert_eq!(
             seen.len(),
-            3,
-            "case MaxResults {size}: paging reports that table's three operations once each, \
+            4,
+            "case MaxResults {size}: paging reports the region's four operations once each, \
              got {seen:?}"
         );
         let mut unique = seen.clone();
