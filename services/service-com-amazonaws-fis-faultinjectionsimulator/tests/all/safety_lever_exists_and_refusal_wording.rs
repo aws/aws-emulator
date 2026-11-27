@@ -195,11 +195,6 @@ async fn the_account_has_its_lever_before_any_call_creates_one() {
              {reported:?}"
         );
         assert_eq!(
-            reported["accountId"].as_str().unwrap_or_default(),
-            ACCOUNT_ID,
-            "case {case:?}: expected the lever to name the account it belongs to, got {reported:?}"
-        );
-        assert_eq!(
             state_of(&reported),
             (INITIAL_STATUS.to_string(), INITIAL_REASON.to_string()),
             "case {case:?}: expected the lever FIS seeded, got {reported:?}"

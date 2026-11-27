@@ -388,7 +388,6 @@ pub struct ExperimentReportS3Report {
 #[derive(Debug, Clone, Default)]
 pub struct SafetyLever {
     pub id: Option<String>,
-    pub account_id: Option<String>,
     pub arn: Option<String>,
     pub state: Option<SafetyLeverState>,
 }

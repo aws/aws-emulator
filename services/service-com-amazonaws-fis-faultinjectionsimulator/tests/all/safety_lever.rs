@@ -172,8 +172,9 @@ async fn update_lever(
 }
 
 /// The `safetyLever` of a 200 answer, with the identity rules every report of it
-/// satisfies asserted: the lever names the account's id, its ARN names that id in the
-/// Region the request was signed for, and its status is one `SafetyLeverStatus` admits.
+/// satisfies asserted: the lever names itself by the account's one lever id, its ARN names
+/// the account in the Region the request was signed for, and its status is one
+/// `SafetyLeverStatus` admits.
 fn lever(case: &str, answer: &Answer, member: &str, region: &str) -> Value {
     assert_eq!(
         answer.status, 200,
@@ -185,11 +186,6 @@ fn lever(case: &str, answer: &Answer, member: &str, region: &str) -> Value {
         lever["id"].as_str().unwrap_or_default(),
         LEVER_ID,
         "case {case:?}: expected the lever to name the account's one lever, got {lever:?}"
-    );
-    assert_eq!(
-        lever["accountId"].as_str().unwrap_or_default(),
-        ACCOUNT_ID,
-        "case {case:?}: expected the lever to name the account it belongs to, got {lever:?}"
     );
     assert_eq!(
         lever["arn"].as_str().unwrap_or_default(),
@@ -247,9 +243,9 @@ async fn an_untouched_lever_is_disengaged_and_names_itself() {
 /// The member names `SafetyLever` declares, and nothing else.
 ///
 /// SOURCE: the model's `com.amazonaws.fis#SafetyLever` structure
-/// (`smithy_query(query="shape",shape="SafetyLever")`), whose members are `id`,
-/// `accountId`, `arn` and `state`.
-const SAFETY_LEVER_MEMBERS: [&str; 4] = ["id", "accountId", "arn", "state"];
+/// (`smithy_query(query="shape",shape="SafetyLever")`), whose members are `id`, `arn` and
+/// `state`.
+const SAFETY_LEVER_MEMBERS: [&str; 3] = ["id", "arn", "state"];
 
 /// The member names `SafetyLeverState` declares.
 ///
