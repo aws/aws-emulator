@@ -13,10 +13,22 @@
 //!   `StatefulAction` values ([`STATEFUL_ACTIONS`]), as a rule spells them;
 //! * the rule ASSIGNS A SIGNATURE ID, the `sid` keyword Suricata identifies a
 //!   signature by, since a rule that assigns none cannot be loaded at all;
-//! * and no two rules of one rule group assign the SAME signature id, which would
-//!   leave the engine unable to tell which signature a match belongs to — so
-//!   every rule sharing a repeated id is reported, the first to assign it
-//!   included.
+//! * and the signature id a rule assigns is one no EARLIER rule of the same
+//!   rules string already loaded, since a signature id identifies one signature:
+//!   the rule that assigned it first is loaded, and the later rule repeating it
+//!   is the one that cannot be.
+//!
+//! Those are two stages, and they refuse in two shapes, because a rule whose own
+//! text the service cannot read never reaches the loader at all:
+//!
+//! * a defect of ONE rule's text (its action, its missing signature id) is the
+//!   service's own reading of that rule, so it is reported with the rule named
+//!   beside the reason ([`refusal_naming`]) and the rules are not loaded;
+//! * a rules string whose rules each read cleanly is LOADED, and a load that
+//!   fails is reported with the loader's own diagnostics
+//!   ([`load_diagnostics`]): per rule it could not load, in load order, the
+//!   reason that rule failed and then the loader's parse error for it, and
+//!   finally the one summary line that terminates a failed load.
 //!
 //! A rule group carrying such a rule is refused rather than retained: a stored
 //! rule nothing can load would inspect no traffic while the rule group reports
@@ -31,10 +43,10 @@
 //! The scanner reads the rule once, left to right, and allocates nothing per
 //! rule beyond the tokens it hands back, so the work here is linear in the
 //! submitted rules string — whose length `RulesString` itself bounds
-//! (`@length` 0..2000000) — and so is the refusal it builds, which carries at
-//! most one line per rule.
+//! (`@length` 0..2000000) — and so is the refusal it builds, which carries a
+//! bounded number of lines per rule.
 
-use ::std::collections::HashMap;
+use ::std::collections::HashSet;
 
 use ::suricatax_rule_parser::scanner::{RuleScanEvent, RuleScanner};
 
@@ -51,6 +63,19 @@ const SIGNATURE_ID_OPTION: &str = "sid";
 
 /// Why a rule the engine could not load is refused: it assigns no signature id.
 const SID_NOT_ASSIGNED: &str = "sid not assigned";
+
+/// What the loader answers for a signature whose id is already loaded, before
+/// the quoted rule.
+const DUPLICATE_SIGNATURE: &str = "Duplicate signature";
+
+/// What the loader answers for a signature it could not parse, before the quoted
+/// rule: the diagnostic of the stage that reads a rule the loader has rejected,
+/// distinct from the reason it was rejected for.
+const SIGNATURE_PARSE_ERROR: &str = "error parsing signature";
+
+/// What the loader answers once, after its per-signature diagnostics, when the
+/// load it was asked for did not complete: the summary that terminates the list.
+const LOAD_FAILED: &str = "Loading signatures failed.";
 
 /// The Suricata rule option that assigns a rule's GENERATOR id — the id of what
 /// produced the signature.
@@ -82,27 +107,32 @@ pub fn breach(group: &RuleGroup) -> Option<String> {
 /// Why the rules in `rules` — one per line ([`super::suricata_rule_lines`]) —
 /// are not rules this service can load.
 ///
-/// EVERY rule that cannot be loaded is reported, in the order the rules were
-/// written, one refusal per line: the whole load is attempted and what it
-/// answers is everything it could not load, so a client fixing a rules string
-/// sees each offending rule rather than discovering them one request at a time.
-/// A rule's own defect is reported before the signature ids are compared across
-/// rules, since a rule that cannot be read assigns nothing to compare.
+/// The two stages, in the order a load reaches them. First the service reads
+/// each rule on its own: EVERY rule whose own text is defective is reported, in
+/// the order the rules were written, one refusal per line, so a client fixing a
+/// rules string sees each offending rule rather than discovering them one
+/// request at a time — and the rules are not loaded, a rule the service cannot
+/// read being nothing to load. Only a string whose rules each read cleanly is
+/// loaded, and what a failed load answers is the loader's own diagnostics
+/// ([`load_diagnostics`]).
 ///
-/// Each rule is tokenized ONCE, into the pairs both checks then read, so the work
+/// Each rule is tokenized ONCE, into the pairs both stages then read, so the work
 /// is one scan per submitted rule however many checks are applied to it.
 fn rules_string_breach(rules: &str) -> Option<String> {
     let scanned: Vec<(&str, ScannedRule)> = super::suricata_rule_lines(rules)
         .map(|rule| (rule, scan(rule)))
         .collect();
-    let mut refusals: Vec<String> = scanned
+    let defects: Vec<String> = scanned
         .iter()
         .filter_map(|(rule, scanned)| {
             rule_defect(scanned).map(|reason| refusal_naming(&loaded_rule(rule), &reason))
         })
         .collect();
-    refusals.extend(duplicate_signature_refusals(&scanned));
-    (!refusals.is_empty()).then(|| refusals.join("\n"))
+    if !defects.is_empty() {
+        return Some(defects.join("\n"));
+    }
+    let diagnostics = load_diagnostics(&scanned);
+    (!diagnostics.is_empty()).then(|| diagnostics.join("\n"))
 }
 
 /// What a rule the service could not load is refused with: a fixed stem, then
@@ -141,33 +171,42 @@ fn rule_defect(scanned: &ScannedRule) -> Option<String> {
         .then(|| SID_NOT_ASSIGNED.to_owned())
 }
 
-/// One refusal per rule of the string that assigns a signature id ANOTHER rule
-/// of the same string also assigns, in the order the rules were written.
+/// The diagnostics a load of `scanned` answers, in load order, or an empty list
+/// when every signature loaded.
 ///
-/// A signature id identifies one signature, so when two rules assign the same
-/// one the engine can tell neither of them apart — the clash is a property of
-/// the GROUP of rules sharing the id, not of whichever rule was read second, so
-/// every rule in that group is reported, including the one that assigned the id
-/// first, and a rules string that simply repeats a rule is reported once per
-/// copy. The refusal names the offending rule inside the reason rather than in a
-/// `rule:` segment of its own, which is how a clash between rules is reported as
-/// against a defect in one rule's text.
-fn duplicate_signature_refusals(scanned: &[(&str, ScannedRule)]) -> Vec<String> {
-    let mut assigned_by: HashMap<&str, usize> = HashMap::new();
-    for (_, scanned) in scanned {
-        if let Some(signature_id) = scanned.signature_id.as_deref() {
-            *assigned_by.entry(signature_id).or_default() += 1;
+/// The loader takes the rules one at a time, in the order they were written. A
+/// signature id identifies one signature, so a rule assigning an id an earlier
+/// rule of the same string already loaded is a signature the loader cannot
+/// load — the earlier rule keeps the id, and the repeating rule is the one
+/// reported, which is why a rules string that simply repeats a rule is reported
+/// once however many copies follow the first.
+///
+/// Each rule the loader could not load contributes the DISTINCT diagnostics of
+/// the stages it failed at — the reason the signature was rejected, and then the
+/// loader failing to parse the signature it had rejected — each naming the rule
+/// as the service loaded it ([`loaded_rule`]) inside the reason, which is how a
+/// diagnostic the loader itself produced is reported, as against a defect this
+/// service read in one rule's text ([`refusal_naming`]). A load that produced
+/// any diagnostic at all is a load that did not complete, so the single
+/// [`LOAD_FAILED`] summary terminates the list.
+fn load_diagnostics(scanned: &[(&str, ScannedRule)]) -> Vec<String> {
+    let mut loaded: HashSet<&str> = HashSet::new();
+    let mut diagnostics: Vec<String> = Vec::new();
+    for (rule, scanned) in scanned {
+        let Some(signature_id) = scanned.signature_id.as_deref() else {
+            continue;
+        };
+        if loaded.insert(signature_id) {
+            continue;
         }
+        let rule = loaded_rule(rule);
+        diagnostics.push(refusal(&format!("{DUPLICATE_SIGNATURE} \"{rule}\"")));
+        diagnostics.push(refusal(&format!("{SIGNATURE_PARSE_ERROR} \"{rule}\"")));
     }
-    scanned
-        .iter()
-        .filter(|(_, scanned)| {
-            scanned.signature_id.as_deref().is_some_and(|signature_id| {
-                assigned_by.get(signature_id).copied().unwrap_or_default() > 1
-            })
-        })
-        .map(|(rule, _)| refusal(&format!("Duplicate signature \"{}\"", loaded_rule(rule))))
-        .collect()
+    if !diagnostics.is_empty() {
+        diagnostics.push(refusal(LOAD_FAILED));
+    }
+    diagnostics
 }
 
 /// `rule` as the service LOADED it, which is how a refusal reports it: the rule
@@ -384,51 +423,100 @@ mod tests {
         );
     }
 
-    /// RULE: every rule assigning a signature id another rule of the same string
-    /// also assigns is reported — the one that assigned it first included, and a
-    /// repeated rule once per copy — while a set of distinct ids is accepted.
+    /// RULE: a load reports, per rule whose signature id an earlier rule of the
+    /// same string already loaded, the DISTINCT diagnostics of the stages it
+    /// failed at — the duplicate signature, then the loader's parse error for
+    /// that same rule — and terminates the list with the one summary line; the
+    /// rule that loaded the id first is not reported, and a string of distinct
+    /// ids loads.
+    ///
+    /// The rows span: two rules sharing an id; a rule written twice; three rules
+    /// sharing one id; two separate clashes; a clash beside a unique id; and a
+    /// string every rule of which loads.
     #[test]
-    fn every_rule_sharing_a_signature_id_is_reported() {
-        let rules = "pass tcp 10.1.0.0/16 any -> any 443 (sid:1001; rev:1;)\n\
-                     pass udp 10.2.0.0/16 any -> any 443 (sid:1002; rev:1;)\n\
-                     drop tcp 10.3.0.0/16 any -> any 443 (sid:1001; rev:2;)\n\
-                     drop udp 10.4.0.0/16 any -> any 443 (sid:1001; rev:3;)";
-        let reported = rules_string_breach(rules);
-        assert_eq!(
-            reported.as_deref(),
-            Some(
-                "stateful rule is invalid, reason: Duplicate signature \"pass tcp 10.1.0.0/16 \
-                 any -> any 443 (sid:1001; rev:1; gid:1234567890;)\"\n\
-                 stateful rule is invalid, reason: Duplicate signature \"drop tcp 10.3.0.0/16 \
-                 any -> any 443 (sid:1001; rev:2; gid:1234567890;)\"\n\
-                 stateful rule is invalid, reason: Duplicate signature \"drop udp 10.4.0.0/16 \
-                 any -> any 443 (sid:1001; rev:3; gid:1234567890;)\""
+    fn a_failed_load_reports_each_distinct_diagnostic_once_and_a_summary() {
+        /// The diagnostics the loader answers for the rule it could not load.
+        fn rejected(loaded: &str) -> String {
+            format!(
+                "stateful rule is invalid, reason: Duplicate signature \"{loaded}\"\n\
+                 stateful rule is invalid, reason: error parsing signature \"{loaded}\""
+            )
+        }
+        /// The line that terminates a failed load.
+        const SUMMARY: &str = "stateful rule is invalid, reason: Loading signatures failed.";
+
+        // (case, the rules string, the diagnostics it answers)
+        let rows: Vec<(&str, &str, Option<String>)> = vec![
+            (
+                "two rules sharing an id",
+                "pass tcp any any -> any 443 (sid:1001; rev:1;)\n\
+                 drop tcp any any -> any 80 (sid:1001; rev:1;)",
+                Some(format!(
+                    "{}\n{SUMMARY}",
+                    rejected("drop tcp any any -> any 80 (sid:1001; rev:1; gid:1234567890;)")
+                )),
             ),
-            "expected every rule assigning the repeated id reported, and the rule assigning \
-             1002 alone left out, got {reported:?}"
-        );
+            (
+                "the same rule written twice",
+                "pass tcp 10.1.0.0/16 any -> any 443 (msg:\"egress\"; sid:1001; rev:1;)\n\
+                 pass tcp 10.1.0.0/16 any -> any 443 (msg:\"egress\"; sid:1001; rev:1;)",
+                Some(format!(
+                    "{}\n{SUMMARY}",
+                    rejected(concat!(
+                        r#"pass tcp 10.1.0.0/16 any -> any 443 (msg:"egress"; sid:1001; "#,
+                        "rev:1; gid:1234567890;)",
+                    ))
+                )),
+            ),
+            (
+                "three rules sharing one id",
+                "pass tcp any any -> any 443 (sid:7; rev:1;)\n\
+                 drop tcp any any -> any 80 (sid:7; rev:1;)\n\
+                 reject tcp any any -> any 25 (sid:7; rev:1;)",
+                Some(format!(
+                    "{}\n{}\n{SUMMARY}",
+                    rejected("drop tcp any any -> any 80 (sid:7; rev:1; gid:1234567890;)"),
+                    rejected("reject tcp any any -> any 25 (sid:7; rev:1; gid:1234567890;)"),
+                )),
+            ),
+            (
+                "two separate clashes",
+                "pass tcp any any -> any 443 (sid:1; rev:1;)\n\
+                 pass udp any any -> any 53 (sid:2; rev:1;)\n\
+                 drop tcp any any -> any 80 (sid:2; rev:1;)\n\
+                 drop udp any any -> any 69 (sid:1; rev:1;)",
+                Some(format!(
+                    "{}\n{}\n{SUMMARY}",
+                    rejected("drop tcp any any -> any 80 (sid:2; rev:1; gid:1234567890;)"),
+                    rejected("drop udp any any -> any 69 (sid:1; rev:1; gid:1234567890;)"),
+                )),
+            ),
+            (
+                "a clash beside a unique id",
+                "pass tcp any any -> any 443 (sid:11; rev:1;)\n\
+                 pass udp any any -> any 53 (sid:12; rev:1;)\n\
+                 drop tcp any any -> any 80 (sid:11; rev:1;)",
+                Some(format!(
+                    "{}\n{SUMMARY}",
+                    rejected("drop tcp any any -> any 80 (sid:11; rev:1; gid:1234567890;)")
+                )),
+            ),
+            (
+                "every rule loads",
+                "pass tcp any any -> any any (sid:1;)\n\
+                 pass udp any any -> any any (sid:2;)\n\
+                 pass ip any any -> any any (sid:3;)",
+                None,
+            ),
+        ];
 
-        // A rules string that simply repeats a rule: both copies are reported.
-        let repeated = "pass tcp 10.1.0.0/16 any -> any 443 (msg:\"egress 443\"; sid:1001; rev:1;)\n\
-                        pass tcp 10.1.0.0/16 any -> any 443 (msg:\"egress 443\"; sid:1001; rev:1;)";
-        let reported = rules_string_breach(repeated);
-        let one_copy = concat!(
-            r#"stateful rule is invalid, reason: Duplicate signature "pass tcp 10.1.0.0/16 "#,
-            r#"any -> any 443 (msg:"egress 443"; sid:1001; rev:1; gid:1234567890;)""#,
-        );
-        assert_eq!(
-            reported.as_deref(),
-            Some(format!("{one_copy}\n{one_copy}").as_str()),
-            "expected one refusal per copy of the repeated rule, got {reported:?}"
-        );
-
-        let distinct = "pass tcp any any -> any any (sid:1;)\n\
-                        pass udp any any -> any any (sid:2;)\n\
-                        pass ip any any -> any any (sid:3;)";
-        let reported = rules_string_breach(distinct);
-        assert_eq!(
-            reported, None,
-            "expected no breach for distinct signature ids, got {reported:?}"
-        );
+        for (case, rules, diagnostics) in rows {
+            let reported = rules_string_breach(rules);
+            assert_eq!(
+                reported.as_deref(),
+                diagnostics.as_deref(),
+                "case {case:?}: expected {diagnostics:?}, got {reported:?}"
+            );
+        }
     }
 }

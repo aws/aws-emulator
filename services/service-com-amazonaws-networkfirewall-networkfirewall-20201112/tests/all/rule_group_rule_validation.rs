@@ -4,7 +4,7 @@
 //! a request submits, and the refusals they answer a rule group they cannot load
 //! with.
 //!
-//! Five rules, each asserted over a table rather than on one request:
+//! Six rules, each asserted over a table rather than on one request:
 //!
 //! * a stateless rule group's `Priority` settings are unique
 //!   (`StatelessRule$Priority`: "you must ensure that the priority settings are
@@ -19,7 +19,10 @@
 //!   operation that WRITES a rule group, with the modelled client error rather
 //!   than a validation clause;
 //! * a stateful rule submitted in Suricata flat format is one the engine can load:
-//!   a supported action, a signature id, and no two rules assigning the same one.
+//!   a supported action, a signature id, and an id no earlier rule of the same
+//!   string already loaded;
+//! * a load that did not complete answers the loader's own diagnostics, one per
+//!   stage a rule failed at, terminated by the single summary line.
 //!
 //! Every refusal here must also leave the store untouched, which each table
 //! proves by reading the rule group back and then creating it, under the SAME
@@ -541,27 +544,28 @@ async fn capacity_is_sufficient_when_it_covers_what_the_rules_consume() {
 
 /// RULE: a stateful rule submitted in Suricata flat format must be one the engine
 /// can load — its action is one the service implements, it assigns a signature id,
-/// and the id it assigns is assigned by no other rule of the same string — and a
+/// and the id it assigns is assigned by no EARLIER rule of the same string — and a
 /// rule group carrying one that cannot be loaded is refused with the rule as the
 /// service loaded it and the reason.
+///
+/// A defect the service reads in ONE rule's own text is reported with that rule
+/// named beside the reason, and the rules are not loaded. A string whose rules
+/// each read cleanly is loaded, and a failed load answers the loader's own
+/// diagnostics instead: per rule it could not load, in load order, the distinct
+/// diagnostic of each stage that rule failed at, and then the single summary line
+/// that terminates a failed load.
 ///
 /// The rows span: an action the service does not implement; a signature id
 /// swallowed by an option value left unterminated; no signature id at all; an id
 /// two rules share; the same rule written twice; three rules sharing one id; a
-/// shared id beside a unique one; and every rule loading cleanly. A shared id is
-/// a property of the rules that share it, so EVERY one of them is reported, in
-/// the order they were written. Each row is submitted BOTH through `Rules` and
-/// through `RuleGroup.RulesSource.RulesString`, the two ways the same rules reach
-/// the service.
+/// shared id beside a unique one; and every rule loading cleanly. Each row is
+/// submitted BOTH through `Rules` and through `RuleGroup.RulesSource.RulesString`,
+/// the two ways the same rules reach the service.
 #[tokio::test]
 async fn a_stateful_rule_in_suricata_flat_format_must_be_one_the_engine_can_load() {
-    /// The refusal a rule the engine could not load carries.
+    /// The refusal a rule whose own text the service could not read carries.
     fn unloadable(rule: &str, reason: &str) -> String {
         format!("stateful rule is invalid, rule: {rule}, reason: {reason}")
-    }
-    /// The refusal a rule repeating an assigned signature id carries.
-    fn duplicate(rule: &str) -> String {
-        format!("stateful rule is invalid, reason: Duplicate signature \"{rule}\"")
     }
 
     // (case, the rules string, the refusal it must carry)
@@ -591,23 +595,25 @@ async fn a_stateful_rule_in_suricata_flat_format_must_be_one_the_engine_can_load
             )),
         ),
         (
+            // The rule that loaded the id first is loaded; the one repeating it
+            // is what the load could not load.
             "a-signature-id-two-rules-share",
             "pass tcp any any -> any 443 (sid:1001; rev:1;)\n\
              drop tcp any any -> any 80 (sid:1001; rev:1;)",
             Some(format!(
-                "{}\n{}",
-                duplicate("pass tcp any any -> any 443 (sid:1001; rev:1; gid:1234567890;)"),
-                duplicate("drop tcp any any -> any 80 (sid:1001; rev:1; gid:1234567890;)"),
+                "{}\n{LOAD_FAILED}",
+                rejected("drop tcp any any -> any 80 (sid:1001; rev:1; gid:1234567890;)"),
             )),
         ),
         (
-            // The same rule written twice: one refusal per copy.
+            // The same rule written twice: the second copy is the one the load
+            // could not load.
             "a-repeated-rule",
             "pass tcp 10.1.0.0/16 any -> any 443 (msg:\"egress 443\"; sid:1001; rev:1;)\n\
              pass tcp 10.1.0.0/16 any -> any 443 (msg:\"egress 443\"; sid:1001; rev:1;)",
             Some(format!(
-                "{copy}\n{copy}",
-                copy = duplicate(concat!(
+                "{}\n{LOAD_FAILED}",
+                rejected(concat!(
                     r#"pass tcp 10.1.0.0/16 any -> any 443 (msg:"egress 443"; sid:1001; "#,
                     "rev:1; gid:1234567890;)",
                 )),
@@ -619,23 +625,21 @@ async fn a_stateful_rule_in_suricata_flat_format_must_be_one_the_engine_can_load
              drop tcp any any -> any 80 (sid:7; rev:1;)\n\
              reject tcp any any -> any 25 (sid:7; rev:1;)",
             Some(format!(
-                "{}\n{}\n{}",
-                duplicate("pass tcp any any -> any 443 (sid:7; rev:1; gid:1234567890;)"),
-                duplicate("drop tcp any any -> any 80 (sid:7; rev:1; gid:1234567890;)"),
-                duplicate("reject tcp any any -> any 25 (sid:7; rev:1; gid:1234567890;)"),
+                "{}\n{}\n{LOAD_FAILED}",
+                rejected("drop tcp any any -> any 80 (sid:7; rev:1; gid:1234567890;)"),
+                rejected("reject tcp any any -> any 25 (sid:7; rev:1; gid:1234567890;)"),
             )),
         ),
         (
-            // One repeated id beside one that is not: only the rules sharing an
-            // id are reported.
+            // One repeated id beside one that is not: only the rule repeating an
+            // already loaded id is reported.
             "one-shared-id-beside-a-unique-one",
             "pass tcp any any -> any 443 (sid:11; rev:1;)\n\
              pass udp any any -> any 53 (sid:12; rev:1;)\n\
-             drop tcp any any -> any 80 (sid:11; rev:2;)",
+             drop tcp any any -> any 80 (sid:11; rev:1;)",
             Some(format!(
-                "{}\n{}",
-                duplicate("pass tcp any any -> any 443 (sid:11; rev:1; gid:1234567890;)"),
-                duplicate("drop tcp any any -> any 80 (sid:11; rev:2; gid:1234567890;)"),
+                "{}\n{LOAD_FAILED}",
+                rejected("drop tcp any any -> any 80 (sid:11; rev:1; gid:1234567890;)"),
             )),
         ),
         (
@@ -683,5 +687,189 @@ async fn a_stateful_rule_in_suricata_flat_format_must_be_one_the_engine_can_load
                 }
             }
         }
+    }
+}
+
+/// The line that terminates a load that did not complete.
+const LOAD_FAILED: &str = "stateful rule is invalid, reason: Loading signatures failed.";
+
+/// The diagnostics a failed load answers for one rule it could not load: the
+/// duplicate signature, then the loader's parse error for that same rule, each
+/// naming the rule as the service loaded it.
+fn rejected(rule: &str) -> String {
+    format!(
+        "stateful rule is invalid, reason: Duplicate signature \"{rule}\"\n\
+         stateful rule is invalid, reason: error parsing signature \"{rule}\""
+    )
+}
+
+/// The whole refusal a load answers when it could not load `rejected_rules` —
+/// the rules as the service loaded them, in load order — or `None` when it
+/// loaded everything: each rejected rule's diagnostics ([`rejected`]), then the
+/// one summary line.
+fn load_diagnostics(rejected_rules: &[&str]) -> Option<String> {
+    (!rejected_rules.is_empty()).then(|| {
+        let per_rule: Vec<String> = rejected_rules.iter().copied().map(rejected).collect();
+        format!("{}\n{LOAD_FAILED}", per_rule.join("\n"))
+    })
+}
+
+/// Assert that `answered` — the message an operation ANSWERED a failed load
+/// with — lists each diagnostic once and ends with the single summary line.
+fn assert_distinct_diagnostics_terminated_by_one_summary(case: &str, answered: &str) {
+    let lines: Vec<&str> = answered.lines().collect();
+    let mut distinct = lines.clone();
+    distinct.sort_unstable();
+    distinct.dedup();
+    assert_eq!(
+        (
+            distinct.len(),
+            lines.last().copied(),
+            lines.iter().filter(|line| **line == LOAD_FAILED).count(),
+        ),
+        (lines.len(), Some(LOAD_FAILED), 1),
+        "case {case:?}: expected distinct diagnostics terminated by one summary, got {lines:?}"
+    );
+}
+
+/// RULE: a load of a stateful rules string that did not complete is refused with
+/// the loader's own diagnostics — in load order, per rule it could not load, the
+/// DISTINCT diagnostic of each stage that rule failed at, no diagnostic repeated
+/// — terminated by the single summary line reporting that the load failed; the
+/// rule that loaded a signature id first is loaded rather than reported, and the
+/// stored rule group is left as it was.
+///
+/// The rows span: one clash; three rules on one signature id; two separate
+/// clashing ids; a clash at the end of a longer string carrying a comment and a
+/// blank line; and a string every rule of which loads, which answers no
+/// diagnostic and so no summary. Each row is driven through BOTH operations that
+/// load a rules string, `CreateRuleGroup` and `UpdateRuleGroup`.
+#[tokio::test]
+async fn a_failed_suricata_load_answers_distinct_diagnostics_and_one_summary() {
+    /// A rules string the service loads, which each update replaces.
+    const LOADS: &str = "pass tcp any any -> any 443 (sid:900; rev:1;)";
+
+    // (case, the rules string, the rules the load could not load, as loaded)
+    let rows: Vec<(&str, &str, Vec<&str>)> = vec![
+        (
+            "one-clash",
+            "alert tcp any any -> any 8080 (msg:\"admin\"; sid:2001; rev:1;)\n\
+             alert udp any any -> any 8080 (msg:\"admin\"; sid:2001; rev:1;)",
+            vec![concat!(
+                r#"alert udp any any -> any 8080 (msg:"admin"; sid:2001; "#,
+                "rev:1; gid:1234567890;)",
+            )],
+        ),
+        (
+            "three-rules-on-one-id",
+            "pass tcp any any -> any 443 (sid:5;)\n\
+             drop tcp any any -> any 444 (sid:5;)\n\
+             reject tcp any any -> any 445 (sid:5;)",
+            vec![
+                "drop tcp any any -> any 444 (sid:5; gid:1234567890;)",
+                "reject tcp any any -> any 445 (sid:5; gid:1234567890;)",
+            ],
+        ),
+        (
+            "two-clashing-ids",
+            "pass tcp any any -> any 443 (sid:31; rev:2;)\n\
+             pass udp any any -> any 53 (sid:32; rev:2;)\n\
+             drop tcp any any -> any 80 (sid:32; rev:2;)\n\
+             drop udp any any -> any 69 (sid:31; rev:2;)",
+            vec![
+                "drop tcp any any -> any 80 (sid:32; rev:2; gid:1234567890;)",
+                "drop udp any any -> any 69 (sid:31; rev:2; gid:1234567890;)",
+            ],
+        ),
+        (
+            "a-clash-at-the-end-of-a-longer-string",
+            "# a comment, which carries no rule\n\
+             pass tcp any any -> any 443 (sid:41;)\n\
+             alert udp any any -> any 53 (msg:\"dns\"; sid:42;)\n\
+             reject tcp any any -> any 25 (sid:43;)\n\
+             \n\
+             reject tcp any any -> any 26 (sid:43;)",
+            vec!["reject tcp any any -> any 26 (sid:43; gid:1234567890;)"],
+        ),
+        (
+            "every-rule-loads",
+            "pass tcp any any -> any 443 (sid:51;)\n\
+             drop udp any any -> any 53 (sid:52;)",
+            vec![],
+        ),
+    ];
+
+    let harness = Harness::new();
+    for (case, rules, rejected_rules) in rows {
+        let diagnostics = load_diagnostics(&rejected_rules);
+
+        // The create path: the rules string is loaded before the rule group is
+        // stored, so a failed load stores nothing.
+        let create = create_request(case, "STATEFUL", 100, &json!({ "Rules": rules }));
+        match &diagnostics {
+            Some(message) => {
+                let (status, body) = harness.call("CreateRuleGroup", &create).await;
+                let answered = error_message(&body);
+                assert_eq!(
+                    (status, error_code(&body).as_str(), answered.as_str()),
+                    (400, INVALID_REQUEST, message.as_str()),
+                    "case {case:?}: expected the create refused with the load's diagnostics \
+                     {message:?}, got {status} {body:?}"
+                );
+                assert_distinct_diagnostics_terminated_by_one_summary(case, &answered);
+                assert_nothing_stored(&harness, case, case, "STATEFUL").await;
+            }
+            None => {
+                harness.ok("CreateRuleGroup", &create).await;
+            }
+        }
+
+        // The update path: the same load, over a rule group that already holds a
+        // rules string the service loaded, which a failed load leaves alone.
+        let name = format!("{case}-update");
+        let seeded = harness
+            .ok(
+                "CreateRuleGroup",
+                &create_request(&name, "STATEFUL", 100, &json!({ "Rules": LOADS })),
+            )
+            .await;
+        let update = json!({
+            "RuleGroupName": name,
+            "Type": "STATEFUL",
+            "UpdateToken": string_at(&seeded, &["UpdateToken"]),
+            "Rules": rules,
+        });
+        let (status, body) = harness.call("UpdateRuleGroup", &update).await;
+        let expected_rules = match &diagnostics {
+            Some(message) => {
+                let answered = error_message(&body);
+                assert_eq!(
+                    (status, error_code(&body).as_str(), answered.as_str()),
+                    (400, INVALID_REQUEST, message.as_str()),
+                    "case {case:?}: expected the update refused with the load's diagnostics, got \
+                     {status} {body:?}"
+                );
+                assert_distinct_diagnostics_terminated_by_one_summary(case, &answered);
+                LOADS
+            }
+            None => {
+                assert_eq!(
+                    status, 200,
+                    "case {case:?}: expected the update accepted, got {status} {body:?}"
+                );
+                rules
+            }
+        };
+        let described = harness
+            .ok(
+                "DescribeRuleGroup",
+                &json!({ "RuleGroupName": name, "Type": "STATEFUL" }),
+            )
+            .await;
+        assert_eq!(
+            described["RuleGroup"]["RulesSource"]["RulesString"],
+            json!(expected_rules),
+            "case {case:?}: expected the stored rules {expected_rules:?}, got {described:?}"
+        );
     }
 }
