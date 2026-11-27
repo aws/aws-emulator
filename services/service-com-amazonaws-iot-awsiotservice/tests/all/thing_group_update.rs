@@ -43,9 +43,6 @@ use serde_json::{json, Map, Value};
 use service_com_amazonaws_iot_awsiotservice::EmulatedService;
 use smithy_server_runtime::MultiServiceRouter;
 
-/// The account id every emulated ARN and registry refusal carries
-/// (`emulator_server::EMULATOR_ACCOUNT_ID`).
-const ACCOUNT_ID: &str = "000000000000";
 /// The region the harness signs for.
 const REGION: &str = "us-east-1";
 
@@ -727,8 +724,8 @@ async fn updating_a_group_the_registry_does_not_hold_is_refused() {
         );
         assert_eq!(
             refused.message(),
-            format!("ThingGroup {ACCOUNT_ID}:ghost-group not found."),
-            "request {index}: the refusal must be the thing-group family's sentence, \
+            "Group ghost-group does not exist".to_string(),
+            "request {index}: the refusal must be this operation's own sentence, \
              got {refused:?}"
         );
     }

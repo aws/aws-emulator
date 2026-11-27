@@ -29,6 +29,7 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use serde_json::{json, Value};
+use service_com_amazonaws_cognitoidentity_awscognitoidentityservice::EmulatedService as CognitoIdentityService;
 use service_com_amazonaws_iot_awsiotservice::EmulatedService;
 use smithy_server_runtime::MultiServiceRouter;
 
@@ -133,6 +134,10 @@ impl Reply {
 
 /// The emulator under test: ONE shared engine with the IoT service mounted on it, reached
 /// the way the production router reaches it.
+///
+/// Amazon Cognito Identity is mounted beside it — exactly as the assembled emulator mounts
+/// them — because an identity POOL is that service's resource: whether the pool a request
+/// names exists is its holder's answer, so a case about a pool creates one there.
 struct Emulator {
     router: MultiServiceRouter,
 }
@@ -142,7 +147,8 @@ impl Emulator {
         let engine: Arc<engine::InMemoryEngine> = Arc::new(engine::InMemoryEngine::new());
         let mut router = MultiServiceRouter::new();
         router.set_request_authentication(false);
-        router.register_service(EmulatedService::new(engine));
+        router.register_service(EmulatedService::new(Arc::clone(&engine)));
+        router.register_service(CognitoIdentityService::new(engine));
         Self { router }
     }
 
@@ -271,6 +277,62 @@ impl Emulator {
         self.call("POST", &format!("/attached-policies/{segment}"), None)
             .await
     }
+
+    /// Amazon Cognito Identity's `CreateIdentityPool`, through the one caller of that API
+    /// this suite tree has ([`created_identity_pool`]).
+    async fn create_identity_pool(&self, identity_pool_name: &str) -> String {
+        created_identity_pool(&self.router, REGION, identity_pool_name).await
+    }
+}
+
+/// Amazon Cognito Identity's `CreateIdentityPool`, as a client calls it: `POST /` with
+/// `X-Amz-Target` on `awsJson1_1`, signed for the `cognito-identity` scope that routes it to
+/// the holder of identity pools. Answers the `IdentityPoolId` that service minted.
+///
+/// Shared with every sibling suite that needs a pool to exist — `automod` declares each suite
+/// as a sibling module — so the one call that creates one is written once.
+pub(crate) async fn created_identity_pool(
+    router: &MultiServiceRouter,
+    region: &str,
+    identity_pool_name: &str,
+) -> String {
+    let body = json!({
+        "IdentityPoolName": identity_pool_name,
+        "AllowUnauthenticatedIdentities": true,
+    });
+    let request = http::Request::builder()
+        .method("POST")
+        .uri(format!("https://cognito-identity.{region}.amazonaws.com/"))
+        .header("content-type", "application/x-amz-json-1.1")
+        .header(
+            "x-amz-target",
+            "AWSCognitoIdentityService.CreateIdentityPool",
+        )
+        .header(
+            "authorization",
+            format!(
+                "AWS4-HMAC-SHA256 \
+                 Credential=AKIDTESTIOT/20260101/{region}/cognito-identity/aws4_request, \
+                 SignedHeaders=host;x-amz-target, Signature=0000"
+            ),
+        )
+        .body(bytes::Bytes::from(
+            serde_json::to_vec(&body).expect("a request body serializes"),
+        ))
+        .expect("a well-formed request");
+    let response = router.dispatch(request).await;
+    let status = response.status().as_u16();
+    let answered: Value = serde_json::from_slice(&response.into_body()).unwrap_or(Value::Null);
+    assert_eq!(
+        status, 200,
+        "case {identity_pool_name:?}: CreateIdentityPool must answer 200, got {status} \
+         {answered:?}"
+    );
+    answered
+        .get("IdentityPoolId")
+        .and_then(Value::as_str)
+        .unwrap_or_else(|| panic!("case {identity_pool_name:?}: no IdentityPoolId in {answered:?}"))
+        .to_string()
 }
 
 /// The ARN a policy created in this suite's region carries.
@@ -362,6 +424,8 @@ async fn effective_policies_are_the_policies_attached_to_the_identity() {
     let inactive_certificate = given_certificate(&emulator, false).await;
     let bare_certificate = given_certificate(&emulator, true).await;
     let group = given_thing_group(&emulator, "plant-floor", &json!({})).await;
+    // The pool a Cognito identity is federated into, created where identity pools live.
+    let pool_id = emulator.create_identity_pool("plant-floor-pool").await;
 
     // The principal forms `GetEffectivePolicies$principal` documents: "Valid principals
     // are CertificateArn (arn:aws:iot:region:accountId:cert/certificateId), thingGroupArn
@@ -392,7 +456,7 @@ async fn effective_policies_are_the_policies_attached_to_the_identity() {
         PrincipalCase {
             label: "a Cognito identity principal beside its pool",
             principal: format!("{REGION}:11112222-3333-4444-5555-666677778888"),
-            pool_id: Some(format!("{REGION}:aaaabbbb-cccc-dddd-eeee-ffff00002222")),
+            pool_id: Some(pool_id.clone()),
             policies: vec![("cognito-connect", "iot:Connect"), ("cognito-publish", "iot:Publish")],
         },
         PrincipalCase {
@@ -602,14 +666,14 @@ async fn effective_policies_track_the_relation_and_change_nothing() {
     );
 }
 
-/// A Cognito identity pool id resolves the way a Cognito identity does — its form, and no
-/// further, because identity pools live in another service — so the policies attached to
-/// the pool are its effective policies.
+/// A Cognito identity pool is resolved against its HOLDER — identity pools live in Amazon
+/// Cognito Identity — so the policies attached to a pool that exists are its effective
+/// policies, and a pool nothing holds is refused as missing.
 #[tokio::test]
 async fn effective_policies_of_a_cognito_identity_pool_are_its_attachments() {
     let emulator = Emulator::new();
 
-    let pool_id = format!("{REGION}:aaaabbbb-cccc-dddd-eeee-ffff00001111");
+    let pool_id = emulator.create_identity_pool("governed-pool").await;
     given_policy(&emulator, "pool-connect", "iot:Connect").await;
     given_attachment(&emulator, "pool-connect", &pool_id).await;
 
@@ -632,12 +696,11 @@ async fn effective_policies_of_a_cognito_identity_pool_are_its_attachments() {
         answer.body
     );
 
-    // A pool nothing is attached to governs nothing, which is an empty list and not a
-    // refusal: an identity pool this service holds no record of is still a well-formed
-    // identity.
-    let other_pool = "eu-west-1:99998888-7777-6666-5555-444433332222".to_string();
+    // A pool that EXISTS and has nothing attached governs nothing, which is an empty list
+    // and not a refusal: "nothing governs it" is an answer.
+    let ungoverned = emulator.create_identity_pool("ungoverned-pool").await;
     let none = emulator
-        .get_effective_policies(None, Some(&other_pool), None)
+        .get_effective_policies(None, Some(&ungoverned), None)
         .await;
     assert_eq!(
         none.status, 200,

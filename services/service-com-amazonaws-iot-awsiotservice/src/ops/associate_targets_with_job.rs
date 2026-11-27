@@ -322,10 +322,20 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         if input.comment.is_some() {
             job.comment = input.comment.clone();
         }
-        Ok(AssociateTargetsWithJobOutput {
+        let output = AssociateTargetsWithJobOutput {
             job_arn: Some(job.job_arn.clone()),
             job_id: Some(job.job_id.clone()),
             description: job.description.clone(),
-        })
+        };
+        // Every device this call enqueued an execution for has new work, which is what the
+        // message broker announces on that device's own reserved `notify-next` topic
+        // ([`crate::state::mqtt_jobs`]) — the same announcement the create of a job makes, so
+        // a device listening there learns of work added by either call. Published with every
+        // store released, and bounded by the targets one job may name.
+        drop(registry);
+        for thing_name in &fresh {
+            crate::state::notify_next(&*self.engine, thing_name);
+        }
+        Ok(output)
     }
 }

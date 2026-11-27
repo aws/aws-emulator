@@ -32,6 +32,7 @@
 use std::sync::Arc;
 
 use serde_json::{json, Value};
+use service_com_amazonaws_cognitoidentity_awscognitoidentityservice::EmulatedService as CognitoIdentityService;
 use service_com_amazonaws_iot_awsiotservice::EmulatedService;
 use smithy_server_runtime::MultiServiceRouter;
 
@@ -129,6 +130,9 @@ impl Reply {
 
 /// The emulator under test: ONE shared engine with the IoT service mounted on it, reached
 /// the way the production router reaches it.
+///
+/// Amazon Cognito Identity is mounted beside it — as the assembled emulator mounts them —
+/// because an identity POOL is that service's resource: a case naming one creates it there.
 struct Emulator {
     router: MultiServiceRouter,
 }
@@ -138,8 +142,16 @@ impl Emulator {
         let engine: Arc<engine::InMemoryEngine> = Arc::new(engine::InMemoryEngine::new());
         let mut router = MultiServiceRouter::new();
         router.set_request_authentication(false);
-        router.register_service(EmulatedService::new(engine));
+        router.register_service(EmulatedService::new(Arc::clone(&engine)));
+        router.register_service(CognitoIdentityService::new(engine));
         Self { router }
+    }
+
+    /// Amazon Cognito Identity's `CreateIdentityPool`, through the one caller of that API this
+    /// suite tree has (`crate::effective_policies::created_identity_pool`).
+    async fn create_identity_pool(&self, identity_pool_name: &str) -> String {
+        crate::effective_policies::created_identity_pool(&self.router, REGION, identity_pool_name)
+            .await
     }
 
     async fn call(&self, method: &str, path: &str, body: Option<&Value>) -> Reply {
@@ -309,7 +321,8 @@ async fn effective_policies_require_an_identity_before_resolving_anything() {
 
     let certificate = given_certificate(&emulator).await;
     given_thing(&emulator, "registered-thing").await;
-    let pool_id = format!("{REGION}:aaaabbbb-cccc-dddd-eeee-ffff00001111");
+    // The pool an identity is federated into, created where identity pools live.
+    let pool_id = emulator.create_identity_pool("identity-requirement").await;
 
     let cases = vec![
         IdentityCase {

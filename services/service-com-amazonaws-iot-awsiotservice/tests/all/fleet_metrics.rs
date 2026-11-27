@@ -882,7 +882,10 @@ async fn an_aggregation_the_index_cannot_compute_is_refused() {
                 "aggregationField": STRING_CUSTOM_FIELD,
                 "period": 60,
             }),
-            message: Some("Percentiles aggregation is not supported on String field".to_string()),
+            message: Some(format!(
+                "Invalid dataType String for field {STRING_CUSTOM_FIELD}. Only Number dataType \
+                 is allowed for Percentiles aggregation"
+            )),
         },
         Refused {
             case: "cardinality over a managed flag field",
@@ -892,7 +895,11 @@ async fn an_aggregation_the_index_cannot_compute_is_refused() {
                 "aggregationField": "connectivity.connected",
                 "period": 60,
             }),
-            message: Some("Cardinality aggregation is not supported on Boolean field".to_string()),
+            message: Some(
+                "Invalid dataType Boolean for field connectivity.connected. Only Number, String \
+                 dataType is allowed for Cardinality aggregation"
+                    .to_string(),
+            ),
         },
         Refused {
             case: "a field the index carries neither as managed nor as custom",

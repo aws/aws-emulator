@@ -85,6 +85,12 @@ service-com-amazonaws-sts-awssecuritytokenservicev20110615 = { workspace = true 
 # reads that ARN back (`service::authorization`).
 form_urlencoded = "1"
 
+# The Amazon Cognito Identity store an identity POOL a request names is resolved against
+# (`state::cognito_identity_pools`): whether a pool exists is its holder's answer, read
+# through that service's own state struct in the SAME shared engine rather than through a
+# second copy of it.
+service-com-amazonaws-cognitoidentity-awscognitoidentityservice = { workspace = true }
+
 # The Certificate Manager store a domain configuration's server certificate is resolved
 # against (`state::domain_configurations`): whether a certificate exists, and whether a
 # public authority ISSUED it or the account imported it, is the holder's answer — read

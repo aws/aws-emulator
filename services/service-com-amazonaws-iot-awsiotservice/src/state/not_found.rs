@@ -44,7 +44,9 @@
 //!   WRITES the thing record addressed by name — `UpdateThing` — states the thing name
 //!   alone ([`thing_write_not_found_message`]);
 //! * the THING GROUP family, whose operations addressing the GROUP state the registry
-//!   families' sentence ([`missing_thing_group_message`]), while the operations addressing a
+//!   families' sentence ([`missing_thing_group_message`]), while the operation that WRITES
+//!   the group record addressed by name — `UpdateThingGroup` — states the group name alone
+//!   ([`thing_group_write_not_found_message`]), the operations addressing a
 //!   resource by ARN alone — the tagging plane — state
 //!   [`tagged_thing_group_not_found_message`] and the operations that write a THING's
 //!   membership of a group state
@@ -121,6 +123,18 @@ pub fn missing_job_target_thing_message(thing_name: &str) -> String {
 /// holds — for a reader of one, a writer of one, and for a job whose target named it.
 pub fn missing_thing_group_message(thing_group_name: &str) -> String {
     registry_not_found("ThingGroup", thing_group_name)
+}
+
+/// How this service states that a `thingGroupName` names no thing group this account holds
+/// to the operation that WRITES that group record addressed by name (`UpdateThingGroup`):
+/// the fixed words `Group ` and ` does not exist`, with the account NOT named and no
+/// terminating period — the other half of [`missing_thing_group_message`], the way
+/// [`thing_write_not_found_message`] is the other half of the thing family's read sentence.
+///
+/// The group name the `{thingGroupName}` URI label carried is the sentence's ONLY variable
+/// part, so nothing of the serving account appears in it.
+pub fn thing_group_write_not_found_message(thing_group_name: &str) -> String {
+    format!("Group {thing_group_name} does not exist")
 }
 
 /// How the MEMBERSHIP plane states that a request named no thing group this account holds.

@@ -553,7 +553,10 @@ fn refused_updates() -> Vec<Refused> {
             ],
             status: 400,
             code: "InvalidRequestException",
-            message: Some("Percentiles aggregation is not supported on String field".to_string()),
+            message: Some(format!(
+                "Invalid dataType String for field {STRING_CUSTOM_FIELD}. Only Number dataType \
+                 is allowed for Percentiles aggregation"
+            )),
         },
         Refused {
             // `Cardinality` counts the DISTINCT values of a field, which a flag is not asked
@@ -565,7 +568,11 @@ fn refused_updates() -> Vec<Refused> {
             ],
             status: 400,
             code: "InvalidRequestException",
-            message: Some("Cardinality aggregation is not supported on Boolean field".to_string()),
+            message: Some(
+                "Invalid dataType Boolean for field connectivity.connected. Only Number, String \
+                 dataType is allowed for Cardinality aggregation"
+                    .to_string(),
+            ),
         },
     ]
 }

@@ -18,17 +18,18 @@
 //!   the groups beneath it (the scope
 //!   [`crate::state::ComAmazonawsIotAwsiotserviceState::policy_attachment_scope`] walks).
 //! * `cognitoIdentityPoolId` — the `<region>:<id>` form a Cognito identity pool is named
-//!   by, resolved no further than its form, because identity pools live in another
-//!   service. A pool and an identity are named
-//!   in the SAME form, so both share one key space in the relation: a policy attached to
-//!   `<region>:<id>` governs whoever is named by that string, which is what
-//!   `AttachPolicy` records.
+//!   by. Its FORM is read here, and whether the pool EXISTS is the holder's answer: Amazon
+//!   Cognito Identity creates, describes and deletes identity pools, so a pool it does not
+//!   hold is refused as missing ([`crate::state::holds_identity_pool`]). A pool and an
+//!   identity are named in the SAME form, so both share one key space in the relation: a
+//!   policy attached to `<region>:<id>` governs whoever is named by that string, which is
+//!   what `AttachPolicy` records.
 //! * `thingName` — the device the question is about. It must name a thing this account
-//!   holds; the policies it adds are those of the relations a thing takes part in — the
-//!   thing groups it belongs to and the principals attached to it — and nothing in this
-//!   service records either relation yet (`AddThingToThingGroup`,
-//!   `UpdateThingGroupsForThing` and `AttachThingPrincipal` are still scaffolds), so a
-//!   thing adds no policy of its own until one of them does.
+//!   holds; the policies it adds are those of the relation a thing takes part in — the
+//!   thing GROUPS it belongs to, with the groups above them, because a policy attached to a
+//!   group governs the devices in it
+//!   ([`crate::state::ComAmazonawsIotAwsiotserviceState::thing_membership_policy_scope`]) —
+//!   so a thing in no group adds no policy of its own.
 //!
 //! ONE of the two identity members has to be supplied — `thingName` is context about the
 //! device and not an identity, so it satisfies nothing — and the requirement is read
@@ -231,12 +232,23 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         }
 
         if let Some(pool_id) = input.cognito_identity_pool_id.as_deref() {
-            // An identity pool is named in the `<region>:<id>` form, and this service
-            // holds no record of one — identity pools live in Amazon Cognito — so the id
-            // is resolved no further than its form, exactly as a Cognito identity is
-            // ([`crate::state::parse_policy_target`]). Anything else is not a pool id.
+            // An identity pool is named in the `<region>:<id>` form, and this service holds
+            // no record of one — identity pools live in Amazon Cognito — so the FORM is read
+            // here ([`crate::state::parse_policy_target`]) and anything else is not a pool
+            // id at all.
             match crate::state::parse_policy_target(pool_id) {
                 Ok(crate::state::PolicyTarget::CognitoIdentity(identity)) => {
+                    // ... and whether the pool EXISTS is the holder's answer: Amazon Cognito
+                    // Identity is the service that creates, describes and deletes identity
+                    // pools, so a pool it does not hold is a pool there is none of, and the
+                    // question asked about it is the modelled `ResourceNotFoundException`
+                    // (HTTP 404) in the holder's own wording — never an authorization answer
+                    // about an identity nothing could be federated into.
+                    if !crate::state::holds_identity_pool(&*self.engine, pool_id) {
+                        return Err(not_found(crate::state::missing_identity_pool_message(
+                            pool_id,
+                        )));
+                    }
                     scope.push(crate::state::PolicyTarget::CognitoIdentity(identity).key());
                 }
                 _ => {
@@ -254,6 +266,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             if !store.things.contains_key(thing_name) {
                 return Err(not_found(thing_miss_message(thing_name)));
             }
+            // A thing is CONTEXT, so what it adds is the policies of the relation it takes
+            // part in: a policy attached to a thing group has an effect on the authorization
+            // of the devices in that group, and one attached to a group above it governs the
+            // groups beneath, so the thing's groups come into scope WITH their ancestors —
+            // the same scope `ListAttachedPolicies` of one of those groups reads recursively
+            // ([`crate::state::ComAmazonawsIotAwsiotserviceState::thing_membership_policy_scope`]).
+            scope.extend(store.thing_membership_policy_scope(thing_name));
         }
 
         // One entry per policy, whatever path brought it into scope: a policy attached

@@ -355,6 +355,10 @@ async fn dispatch<Eng: ::std::marker::Send + ::std::marker::Sync + 'static>(
     // The IAM store of this same engine, which decides what an action's role may do. `None`
     // is a deployment with no IAM to ask, which bars nothing.
     let iam = super::rule_action_role::iam_state(engine);
+    // The MESSAGE BROKER of this same engine, which a `republish` action puts its message back
+    // into: the sessions subscribed to the action's topic are handed it there. `None` is an
+    // engine that vends no broker store, which holds no session to deliver to.
+    let broker = ::service_common::iot_mqtt_broker::broker_state(engine);
     // How many actions THIS walk may still perform: the whole of
     // [`MAX_ACTIONS_PER_MESSAGE`] for a publish a client made, and the share handed to this
     // walk by the endpoint delivery that carried it ([`ACTIONS_BUDGET_HEADER`]) — which is what
@@ -459,6 +463,7 @@ async fn dispatch<Eng: ::std::marker::Send + ::std::marker::Sync + 'static>(
                         &state,
                         region,
                         iam.as_ref(),
+                        broker.as_ref(),
                         &rule,
                         &published,
                         &parameters,
@@ -523,6 +528,7 @@ async fn dispatch<Eng: ::std::marker::Send + ::std::marker::Sync + 'static>(
                     &state,
                     region,
                     iam.as_ref(),
+                    broker.as_ref(),
                     &rule,
                     &published,
                     &parameters,
@@ -673,6 +679,9 @@ impl<'a> Performed<'a> {
         state: &::engine::ServiceState<super::ComAmazonawsIotAwsiotserviceState>,
         region: &str,
         iam: Option<&::engine::ServiceState<IamState>>,
+        broker: Option<
+            &::engine::ServiceState<::service_common::iot_mqtt_broker::MqttBrokerState>,
+        >,
         rule: &Selecting,
         published: &Published,
         parameters: &Parameters,
@@ -694,9 +703,9 @@ impl<'a> Performed<'a> {
             Self::S3(action) => {
                 store_object(ctx, region, iam, &rule.rule_name, parameters, action, message).await
             }
-            Self::Republish(action) => {
-                republish(region, iam, rule, published, parameters, action, message, pending)
-            }
+            Self::Republish(action) => republish(
+                region, iam, broker, rule, published, parameters, action, message, pending,
+            ),
             Self::Http(action) => {
                 post_to_endpoint(ctx, state, &rule.rule_name, action, message, budget).await
             }
@@ -855,24 +864,29 @@ async fn invoke_function(
 
 /// Put the selected message back into the broker on a `republish` action's own topic, under the
 /// action's role: "publish to another MQTT topic" (`Action$republish`) makes the message a NEW
-/// broker message, which the rules whose `FROM` clauses cover that topic then match — so a
-/// two-hop chain reaches its second rule.
+/// broker message, so it is handed to every SESSION subscribed to a filter covering that topic
+/// and the rules whose `FROM` clauses cover it then match it — so a device listening at the far
+/// end is delivered it, and a two-hop chain reaches its second rule.
 ///
 /// The role is what decides whether the republish happens at all: the action names "the ARN of
 /// the IAM role that grants access", and the call it grants is [`IOT_PUBLISH_ACTION`] on the
 /// topic the action names, so a role that does not admit this service principal or does not
-/// grant that publish is a republish REFUSED — which the rule's `errorAction` reports.
+/// grant that publish is a republish REFUSED — which the rule's `errorAction` reports — and
+/// nothing is delivered for it.
 ///
-/// `qos` ("the Quality of Service (QoS) level to use when republishing messages") decides how
-/// the broker guarantees delivery to SUBSCRIBERS, which this emulator has none of, so it
-/// changes nothing about which rules then match the republished message.
+/// `qos` is "the Quality of Service (QoS) level to use when republishing messages. The default
+/// value is 0", so it is the QoS the delivery to a subscriber is made at, bounded by the
+/// highest the broker grants.
 ///
-/// Nothing is republished for a topic whose substitution template this engine does not evaluate,
-/// nor past [`MAX_REPUBLISH_HOPS`]; neither is a failure of the action.
+/// Nothing is republished for a topic whose substitution template this engine does not evaluate;
+/// past [`MAX_REPUBLISH_HOPS`] the message is delivered to the subscribers of its topic and
+/// carried no further through the rules, which is this emulator's own ceiling on a chain rather
+/// than the service's answer. Neither is a failure of the action.
 #[allow(clippy::too_many_arguments)]
 fn republish(
     region: &str,
     iam: Option<&::engine::ServiceState<IamState>>,
+    broker: Option<&::engine::ServiceState<::service_common::iot_mqtt_broker::MqttBrokerState>>,
     rule: &Selecting,
     published: &Published,
     parameters: &Parameters,
@@ -905,14 +919,31 @@ fn republish(
             error_message: role_refusal(&action.role_arn, IOT_PUBLISH_ACTION, &topic_arn),
         });
     }
+    // The PUBLICATION itself: the message goes to the sessions subscribed to the action's topic,
+    // which is what "publish to another MQTT topic" does for a device listening there. It is an
+    // ordinary publication and not a retained one — the action configures no RETAIN flag — so
+    // nothing is kept for a later subscriber. An engine with no broker store has no session to
+    // deliver to, and the message is still carried through the rules below.
+    if let Some(broker) = broker {
+        ::service_common::iot_mqtt_broker::publish_to_subscribers(
+            broker,
+            &::service_common::iot_mqtt_broker::DirectMessage {
+                topic: topic.clone(),
+                payload: message.to_vec(),
+                qos: action.qos.unwrap_or(DEFAULT_REPUBLISH_QOS),
+                delivered_at_millis: ::service_common::iot_mqtt_broker::now_millis(),
+                ..::service_common::iot_mqtt_broker::DirectMessage::default()
+            },
+        );
+    }
     if published.hops >= MAX_REPUBLISH_HOPS {
         ::tracing::warn!(
             rule = %rule.rule_name,
             hops = published.hops,
             "a published message was republished more times than this emulator carries one \
-             message through; it was not republished again"
+             message through; it was not carried through the rules again"
         );
-        return Ok(Attempt::NotAttempted);
+        return Ok(Attempt::Carried);
     }
     pending.push_back(Published {
         topic,
@@ -922,6 +953,10 @@ fn republish(
     });
     Ok(Attempt::Carried)
 }
+
+/// The QoS a `republish` action that names none republishes at: `RepublishAction$qos` is "the
+/// Quality of Service (QoS) level to use when republishing messages. The default value is 0".
+const DEFAULT_REPUBLISH_QOS: i32 = 0;
 
 /// POST one selected message to the endpoint an `http` action names, if a topic rule
 /// destination admits that URL.

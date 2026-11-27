@@ -24,7 +24,7 @@
 //! the error ITS model declares.
 
 use super::{
-    missing_thing_group_message, thing_group_version_conflict_message, AttributeUpdate,
+    thing_group_version_conflict_message, thing_group_write_not_found_message, AttributeUpdate,
     ComAmazonawsIotAwsiotserviceState, RegisteredThingGroup,
 };
 
@@ -77,8 +77,12 @@ impl ThingGroupUpdateRefusal {
     /// What the refusal reports, in the wording this service states each of these in.
     pub fn message(&self) -> String {
         match self {
+            // The WRITE half of the thing-group family's not-found sentence: this refusal
+            // is answered by the operation that writes the group record addressed by name,
+            // which states the group name alone rather than the account-qualified sentence
+            // every READER of a group states.
             Self::MissingThingGroup(thing_group_name) => {
-                missing_thing_group_message(thing_group_name)
+                thing_group_write_not_found_message(thing_group_name)
             }
             Self::VersionConflict {
                 thing_group_name, ..

@@ -3497,6 +3497,15 @@ pub use policy_attachments::{
     ResolvedPolicyTarget, MAX_ATTACHED_TARGETS, MAX_LIST_PAGE_SIZE, MAX_POLICIES_PER_TARGET,
 };
 
+// WHETHER an Amazon Cognito IDENTITY POOL exists — the holder's answer, read out of the
+// Cognito Identity service's own store in this one shared engine — lives in
+// `state/cognito_identity_pools.rs`, beside the attachment relation its ids are targets of.
+// Its names are re-exported here so a handler reaches them as `crate::state::<name>`.
+pub mod cognito_identity_pools;
+pub use cognito_identity_pools::{
+    cognito_identity_pools, holds_identity_pool, missing_identity_pool_message,
+};
+
 // WHERE a NAMED resource sits in a listing ordered by its name, in the direction that
 // listing's `ascendingOrder` asks for — the one total order per direction the shared
 // pager above walks — lives in `state/name_listing.rs`, beside that pager. Its names are
@@ -3649,7 +3658,8 @@ pub use not_found::{
     missing_job_execution_message, missing_job_message, missing_job_template_message,
     missing_job_target_thing_message, missing_thing_group_message, missing_thing_message,
     missing_thing_type_message,
-    tagged_thing_group_not_found_message, thing_write_not_found_message,
+    tagged_thing_group_not_found_message, thing_group_write_not_found_message,
+    thing_write_not_found_message,
     unauthorized_topic_rule_message,
     unrecognized_index_name_message, unresolved_resource_message,
     MISSING_REGISTRATION_CODE_MESSAGE, MISSING_THING_REGISTRATION_TASK_MESSAGE,
@@ -3855,6 +3865,15 @@ pub mod mqtt_provisioning;
 pub use mqtt_provisioning::{
     served_provisioning_request, CertificateOwnership, Exchange as ProvisioningExchange,
     Refusal as ProvisioningMqttRefusal,
+};
+
+// JOBS over the broker's reserved MQTT topics — the executions a device asks for, the job
+// DOCUMENT it is handed and the status it reports back — lives in `state/mqtt_jobs.rs`, over
+// the SHARED execution store the HTTP jobs plane serves the same exchanges from.
+pub mod mqtt_jobs;
+pub use mqtt_jobs::{
+    notify_next, served_jobs_request, Exchange as JobsMqttExchange,
+    Refusal as JobsMqttRefusal,
 };
 
 // What a STREAM is — the record one holds, the files it streams and what every reader of

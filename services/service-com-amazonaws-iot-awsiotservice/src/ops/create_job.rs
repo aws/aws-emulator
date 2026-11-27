@@ -501,6 +501,19 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 }
             });
         }
+        // Every targeted device's NEXT work has just changed, which is what the message
+        // broker announces on that device's own reserved `notify-next` topic
+        // ([`crate::state::mqtt_jobs`]): a device listening there learns of the job without
+        // asking for it. Published with every store released — the announcement reads the
+        // executions and then hands a message to the broker, and no guard is held while
+        // another store is taken — and bounded by the targets one request may name
+        // ([`crate::state::MAX_JOB_TARGETS`]), checked above.
+        drop(pending);
+        drop(registry);
+        drop(store);
+        for thing_name in &targeted_things {
+            crate::state::notify_next(&*self.engine, thing_name);
+        }
         Ok(output)
     }
 }

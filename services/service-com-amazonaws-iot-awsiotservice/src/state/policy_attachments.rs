@@ -532,6 +532,36 @@ impl super::ComAmazonawsIotAwsiotserviceState {
             _ => vec![target.key.clone()],
         }
     }
+
+    /// The keys of every target whose attached policies have an effect on the authorization
+    /// of the THING `thing_name` through the groups it belongs to: each thing group of its
+    /// membership, followed by that group's ancestors up to the hierarchy root.
+    ///
+    /// A policy attached to a thing group governs the devices IN that group, and a policy
+    /// attached to a group above it governs the groups beneath it, so a thing's group scope
+    /// is the scope of each of its groups asked for RECURSIVELY
+    /// ([`Self::policy_attachment_scope`]) — the very set `ListAttachedPolicies` of one of
+    /// those groups reads. The membership is read off the one record of that relation
+    /// ([`Self::thing_groups_for_thing`]), so what this scope covers and what a reader of
+    /// the thing's groups reports cannot disagree.
+    ///
+    /// A thing in no group has an EMPTY scope, and a thing this account does not hold is not
+    /// this reading's business: a caller resolves the thing first and asks this about a thing
+    /// that exists.
+    pub fn thing_membership_policy_scope(&self, thing_name: &str) -> Vec<String> {
+        self.thing_groups_for_thing(thing_name)
+            .into_iter()
+            .flat_map(|(group_name, group_arn)| {
+                let target = PolicyTarget::ThingGroup(group_name);
+                let resolved = ResolvedPolicyTarget {
+                    key: target.key(),
+                    target,
+                    reported: group_arn,
+                };
+                self.policy_attachment_scope(&resolved, true)
+            })
+            .collect()
+    }
 }
 
 /// Where `attachment` sits in a listing of one target's attachments ordered by when they

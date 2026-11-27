@@ -221,9 +221,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> DescribeIdentityP
         let Some(record) = store.identity_pools.get(&input.identity_pool_id) else {
             return Err(DescribeIdentityPoolErrorModeled::ResourceNotFoundException(
                 ResourceNotFoundException {
-                    message: Some(format!(
-                        "IdentityPool '{}' not found.",
-                        input.identity_pool_id
+                    message: Some(crate::state::identity_pool_not_found_message(
+                        &input.identity_pool_id,
                     )),
                 },
             )

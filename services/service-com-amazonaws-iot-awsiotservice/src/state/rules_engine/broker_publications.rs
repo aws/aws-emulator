@@ -66,13 +66,24 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> PublicationSink
             // below and nothing else, and a provisioning request reaches them too — a rule
             // whose statement covers a reserved topic is a rule about that topic either way,
             // and nothing of the exchange is reported to the publisher.
-            let _served = crate::state::served_provisioning_request(
+            let _answered_a_provisioning_request = crate::state::served_provisioning_request(
                 &*self.engine,
                 &self.region,
                 &publication.topic,
                 &publication.payload,
             )
             .await;
+            // ... and so is one a device made on a reserved JOBS topic: the executions it
+            // asks for, the job document it is handed and the status it reports are served
+            // from the shared execution store and answered on that topic's own `accepted` or
+            // `rejected` topic ([`crate::state::mqtt_jobs`]). Every other topic reaches the
+            // rules below and nothing else, and a jobs request reaches them too — a rule
+            // whose statement covers a reserved topic is a rule about that topic either way.
+            let _answered_a_jobs_request = crate::state::served_jobs_request(
+                &*self.engine,
+                &publication.topic,
+                &publication.payload,
+            );
             // The parts a context is built over name nothing: a publication on the broker's
             // wire serves no request, so there is no caller, no credential and no body — the
             // Region the actions run in is the one this sink was installed for, and the calls

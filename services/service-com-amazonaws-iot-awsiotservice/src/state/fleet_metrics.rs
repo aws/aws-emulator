@@ -341,6 +341,20 @@ fn aggregation_admits_field_type(aggregation_name: &str, field_type: &str) -> bo
     }
 }
 
+/// Which `FieldType`s the aggregation `aggregation_name` IS computed over, in the order the
+/// model lists them (`crate::ops::types::FIELD_TYPE_VALUES`).
+///
+/// The other side of [`aggregation_admits_field_type`], read off that same one statement
+/// rather than restated here, so the types a refusal tells a caller to use are exactly the
+/// ones the gate admits.
+fn aggregation_admitted_field_types(aggregation_name: &str) -> Vec<&'static str> {
+    crate::ops::types::FIELD_TYPE_VALUES
+        .iter()
+        .copied()
+        .filter(|field_type| aggregation_admits_field_type(aggregation_name, field_type))
+        .collect()
+}
+
 /// Why the field a request asked to aggregate cannot be aggregated.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AggregationFieldRejection {
@@ -375,6 +389,8 @@ pub enum AggregationFieldRejection {
     UnsupportedFieldType {
         /// The aggregation the request asked for.
         aggregation_name: String,
+        /// The field the request named, which is the one the caller has to change.
+        aggregation_field: String,
         /// The `FieldType` the index carries the field as.
         field_type: String,
     },
@@ -409,11 +425,19 @@ impl AggregationFieldRejection {
                 invalid_values.join(", "),
                 supported_values.join(", ")
             ),
+            // The caller has to name ANOTHER field, so the refusal states the dataType the
+            // index carries the named field as, the field it named, and the dataType(s) the
+            // aggregation is computed over
+            // ([`aggregation_admitted_field_types`]) — every variable part read off the
+            // request and off the account's own indexing configuration.
             Self::UnsupportedFieldType {
                 aggregation_name,
+                aggregation_field,
                 field_type,
             } => format!(
-                "{aggregation_name} aggregation is not supported on {field_type} field"
+                "Invalid dataType {field_type} for field {aggregation_field}. Only {} dataType \
+                 is allowed for {aggregation_name} aggregation",
+                aggregation_admitted_field_types(aggregation_name).join(", ")
             ),
         }
     }
@@ -479,6 +503,7 @@ impl super::ComAmazonawsIotAwsiotserviceState {
         if !aggregation_admits_field_type(&aggregation.name, &field_type) {
             return Err(AggregationFieldRejection::UnsupportedFieldType {
                 aggregation_name: aggregation.name.clone(),
+                aggregation_field: aggregation_field.to_string(),
                 field_type,
             });
         }

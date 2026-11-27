@@ -494,6 +494,17 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         store
             .ota_updates
             .insert(ota_update.ota_update_id.clone(), ota_update);
+        // Every device the deployed job enqueued an execution for has new work, which is what
+        // the message broker announces on that device's own reserved `notify-next` topic
+        // ([`crate::state::mqtt_jobs`]) — the same announcement `CreateJob` makes, since an OTA
+        // update is deployed BY a job. Published with every store released, and bounded by the
+        // targets one job may name.
+        drop(pending);
+        drop(registry);
+        drop(store);
+        for thing_name in &targeted_things {
+            crate::state::notify_next(&*self.engine, thing_name);
+        }
         Ok(output)
     }
 }

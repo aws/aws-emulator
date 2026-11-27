@@ -147,6 +147,12 @@ pub enum TaggedResource {
 /// store instead ([`TaggedResource::tag_set_mut`]), where a lookup miss is the modelled
 /// not-found.
 ///
+/// WHICH sentence depends on what about the ARN cannot be acted on: an ARN of this
+/// namespace whose resource TYPE carries no tag set names that type
+/// ([`untaggable_resource_type_message`]), because the kind of resource is what the caller
+/// has to change, while a value no resource type can be read out of at all is refused as
+/// the value it is ([`untaggable_resource_message`]).
+///
 /// The leading-`arn:` and account readings are [`super::unaddressable_arn`]'s, the one
 /// reading of a caller-supplied ARN this service already has, so the tag plane and the
 /// topic-rule destination plane refuse the same value in the same words.
@@ -161,6 +167,10 @@ pub fn parse_tagged_resource(resource_arn: &str) -> Result<TaggedResource, Strin
         .split_once('/')
         .filter(|(_, identifier)| !identifier.is_empty())
         .ok_or_else(|| untaggable_resource_message(resource_arn))?;
+    // The resource TYPE is what decides this, so a type no family of this plane holds a tag
+    // set for is refused by NAMING that type ([`untaggable_resource_type_message`]) —
+    // whichever resource of it the ARN went on to name.
+    let untaggable = || untaggable_resource_type_message(resource_type);
     match resource_type {
         THING_GROUP_TYPE => Ok(TaggedResource::ThingGroup(identifier.to_string())),
         BILLING_GROUP_TYPE => Ok(TaggedResource::BillingGroup(identifier.to_string())),
@@ -197,13 +207,26 @@ pub fn parse_tagged_resource(resource_arn: &str) -> Result<TaggedResource, Strin
         }
         TOPIC_RULE_TYPE => Ok(TaggedResource::TopicRule(identifier.to_string())),
         SCHEDULED_AUDIT_TYPE => Ok(TaggedResource::ScheduledAudit(identifier.to_string())),
-        _ => Err(untaggable_resource_message(resource_arn)),
+        _ => Err(untaggable()),
     }
 }
 
 /// This service's ARN namespace, which an ARN the tag plane acts on must be of
 /// (`smithy_query(query="service_info")`: `awsService.arnNamespace`).
 const IOT_VENDOR: &str = "iot";
+
+/// The sentence a `resourceArn` whose RESOURCE TYPE is no family this service tags is
+/// refused with.
+///
+/// The refusal is about the TYPE and not about the particular resource: an IoT thing ARN,
+/// say, is a well-formed ARN of this account naming a resource that carries no tag set at
+/// all, so what a caller has to change is the KIND of resource it addressed. The fixed text
+/// is therefore `Invalid resource type in ARN: ` and the one variable part is the resource
+/// type read out of the request's own `resourceArn` — never the whole ARN, which tells a
+/// caller nothing about which part of it this plane cannot act on.
+fn untaggable_resource_type_message(resource_type: &str) -> String {
+    format!("Invalid resource type in ARN: {resource_type}")
+}
 
 /// The sentence a `resourceArn` that names no resource this service tags is refused with.
 ///

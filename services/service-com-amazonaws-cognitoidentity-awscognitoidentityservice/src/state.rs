@@ -1045,6 +1045,18 @@ pub const CANNOT_LINK_LOGINS_MESSAGE: &str = "Cannot link these logins.";
 /// follows whether the pool holds both sides of the link or only one.
 pub const CANNOT_MERGE_IDENTITIES_MESSAGE: &str = "Cannot merge these identities.";
 
+/// How AWS reports an IDENTITY POOL this service holds no record of — the resource a request
+/// naming an `IdentityPoolId` addresses.
+///
+/// The one part taken from the request is the id it named, which the caller sent itself, so the
+/// refusal discloses nothing the caller did not already hold; the rest is fixed text. Shared, so
+/// every reader of this account's pools — the operations of this service, and the IoT
+/// authorization read that resolves a `cognitoIdentityPoolId` against this very store — words a
+/// pool it does not hold alike.
+pub fn identity_pool_not_found_message(identity_pool_id: &str) -> String {
+    format!("IdentityPool '{identity_pool_id}' not found.")
+}
+
 /// How AWS reports a DEVELOPER USER the identity pool has registered against no identity —
 /// the resource a request naming a developer user identifier addresses.
 ///
