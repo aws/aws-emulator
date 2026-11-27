@@ -39,7 +39,10 @@ use smithy_server_runtime::MultiServiceRouter;
 use crate::query_wire::{element, form_encode};
 
 /// The Region every request below is signed for.
-const REGION: &str = "us-west-2";
+///
+/// `pub(crate)` for the reason [`emulator`] is: the suites that share this harness sign for
+/// one Region, so none of them can address a different account's estate than the others.
+pub(crate) const REGION: &str = "us-west-2";
 
 /// The EC2 API version a client sends in an ec2Query body.
 const EC2_API_VERSION: &str = "2016-11-15";
@@ -49,10 +52,10 @@ const TARGET_PREFIX: &str = "OpenSearchServerless";
 
 /// The HTTP status this service answers every modelled client error with (`awsJson1_0`
 /// discriminates by the body's `__type`, not by the status).
-const CLIENT_ERROR: u16 = 400;
+pub(crate) const CLIENT_ERROR: u16 = 400;
 
 /// The status a created endpoint settles into, and the one an update requires.
-const ACTIVE: &str = "ACTIVE";
+pub(crate) const ACTIVE: &str = "ACTIVE";
 
 /// How long one poll waits before looking again. The `PENDING -> ACTIVE` move is owed by
 /// the clock, so the loop below waits for the CONDITION under a generous deadline.
@@ -86,7 +89,7 @@ pub(crate) fn emulator() -> (MultiServiceRouter, Arc<engine::InMemoryEngine>) {
 
 /// A SigV4 `Authorization` header whose credential scope names `signing_name`, which is
 /// what routes the request here; the signature is never checked.
-fn authorization(signing_name: &str) -> String {
+pub(crate) fn authorization(signing_name: &str) -> String {
     format!(
         "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20260101/{REGION}/{signing_name}\
          /aws4_request, SignedHeaders=host, Signature=0000"
@@ -94,14 +97,14 @@ fn authorization(signing_name: &str) -> String {
 }
 
 /// One answer: its HTTP status and its body as JSON (`Value::Null` when it is not JSON).
-struct Reply {
-    status: u16,
-    body: Value,
+pub(crate) struct Reply {
+    pub(crate) status: u16,
+    pub(crate) body: Value,
 }
 
 impl Reply {
     /// The bare shape name of the awsJson error code, or `""` on success.
-    fn error_code(&self) -> String {
+    pub(crate) fn error_code(&self) -> String {
         self.body
             .get("__type")
             .and_then(Value::as_str)
@@ -113,7 +116,7 @@ impl Reply {
     }
 
     /// The error envelope's message, or `""` when there is none.
-    fn message(&self) -> &str {
+    pub(crate) fn message(&self) -> &str {
         self.body
             .get("message")
             .and_then(Value::as_str)
@@ -122,7 +125,10 @@ impl Reply {
 }
 
 /// Call one OpenSearch Serverless operation over its `awsJson1_0` wire.
-async fn aoss(router: &MultiServiceRouter, operation: &str, body: Value) -> Reply {
+///
+/// `pub(crate)` for the reason [`emulator`] is: one caller of this wire is what keeps every
+/// suite sharing this harness addressing the service the same way.
+pub(crate) async fn aoss(router: &MultiServiceRouter, operation: &str, body: Value) -> Reply {
     let request = http::Request::builder()
         .method("POST")
         .uri("/")
@@ -140,16 +146,16 @@ async fn aoss(router: &MultiServiceRouter, operation: &str, body: Value) -> Repl
     Reply { status, body }
 }
 
-/// One ec2Query action that must succeed, answered with its XML body.
+/// One ec2Query action, answered with its HTTP status and its XML body — a REFUSAL included,
+/// which is what a suite reading EC2's own wording off its answer asks for.
 ///
-/// `pub(crate)` for the reason [`emulator`] is: the suite beside this one asks EC2 for the
-/// same account's networks, and one caller of this wire is what keeps the two asking it the
-/// same way.
-pub(crate) async fn ec2(
+/// `pub(crate)` for the reason [`emulator`] is: one caller of this wire is what keeps every
+/// suite sharing this harness asking EC2 the same way.
+pub(crate) async fn ec2_answer(
     router: &MultiServiceRouter,
     action: &str,
     params: &[(&str, &str)],
-) -> String {
+) -> (u16, String) {
     let mut body = format!("Action={action}&Version={EC2_API_VERSION}");
     for (name, value) in params {
         body.push('&');
@@ -167,7 +173,20 @@ pub(crate) async fn ec2(
         .expect("a well-formed request");
     let response = router.dispatch(request).await;
     let status = response.status().as_u16();
-    let text = String::from_utf8_lossy(response.body()).to_string();
+    (status, String::from_utf8_lossy(response.body()).to_string())
+}
+
+/// One ec2Query action that must succeed, answered with its XML body.
+///
+/// `pub(crate)` for the reason [`emulator`] is: the suite beside this one asks EC2 for the
+/// same account's networks, and one caller of this wire is what keeps the two asking it the
+/// same way.
+pub(crate) async fn ec2(
+    router: &MultiServiceRouter,
+    action: &str,
+    params: &[(&str, &str)],
+) -> String {
+    let (status, text) = ec2_answer(router, action, params).await;
     assert_eq!(
         status, 200,
         "setup: EC2 {action} must succeed, got {status} with {text}"
@@ -254,7 +273,10 @@ async fn listed_names(router: &MultiServiceRouter) -> Vec<String> {
 
 /// Poll `BatchGetVpcEndpoint` until `id` reports `ACTIVE`, answering its detail. The move
 /// out of `PENDING` is owed by the clock, so this waits for that CONDITION.
-async fn await_active(router: &MultiServiceRouter, case: &str, id: &str) -> Value {
+///
+/// `pub(crate)` for the reason [`emulator`] is: one poll of this condition is what keeps
+/// every suite sharing this harness waiting for it the same way.
+pub(crate) async fn await_active(router: &MultiServiceRouter, case: &str, id: &str) -> Value {
     for _ in 0..POLL_ATTEMPTS {
         let read = aoss(router, "BatchGetVpcEndpoint", json!({ "ids": [id] })).await;
         assert_eq!(
@@ -279,7 +301,10 @@ async fn await_active(router: &MultiServiceRouter, case: &str, id: &str) -> Valu
 
 /// Values that name no VPC of the account, in both of EC2's published id forms (`VpcId`'s
 /// own `^vpc-[0-9a-z]*$` admits either).
-fn unresolvable_vpc_ids() -> Vec<(&'static str, &'static str)> {
+///
+/// `pub(crate)` for the reason [`emulator`] is: one list of the values EC2 holds no VPC for,
+/// so two suites cannot disagree about what is unresolvable.
+pub(crate) fn unresolvable_vpc_ids() -> Vec<(&'static str, &'static str)> {
     vec![
         ("EC2's 17-hex id form", "vpc-0f1e2d3c4b5a69780"),
         ("EC2's older 8-hex id form", "vpc-1a2b3c4d"),
@@ -289,7 +314,9 @@ fn unresolvable_vpc_ids() -> Vec<(&'static str, &'static str)> {
 
 /// Values that name no subnet of the account, in both forms `SubnetId`'s own
 /// `^subnet-([0-9a-f]{8}|[0-9a-f]{17})$` admits.
-fn unresolvable_subnet_ids() -> Vec<(&'static str, &'static str)> {
+///
+/// `pub(crate)` for the reason [`unresolvable_vpc_ids`] is.
+pub(crate) fn unresolvable_subnet_ids() -> Vec<(&'static str, &'static str)> {
     vec![
         ("EC2's 17-hex id form", "subnet-0f1e2d3c4b5a69780"),
         ("EC2's older 8-hex id form", "subnet-1a2b3c4d"),

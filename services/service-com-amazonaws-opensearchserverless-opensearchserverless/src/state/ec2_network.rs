@@ -16,10 +16,18 @@
 //! and no address out of the request is contacted. The Region label the caller signed for
 //! selects which of this emulator's own regional state answers, not a host.
 //!
-//! What a refusal SAYS is this service's own sentence about the value the REQUEST carried
-//! ([`vpc_absent_message`], [`subnet_absent_message`]); EC2's answer decides WHETHER the
-//! request is refused, not how the refusal reads, and nothing of EC2's own error travels to
-//! the caller.
+//! What a refusal SAYS is what EC2 ANSWERED: the sentence EC2 states about the id the
+//! request carried, carried through verbatim inside the envelope the SDK layer that relayed
+//! the call states around a failed call — the service it was made to, the status that service
+//! answered with, that call's own request id and how many attempts it took
+//! ([`refusal_ec2_answered`], over this workspace's one rendering of that envelope,
+//! `service_common::relayed_refusal`). This service words no sentence of its own for a
+//! placement it does not own: a client reads AWS's own sentence about the value it sent, and
+//! which service refused it.
+//!
+//! The SUBNETS are resolved first, because they are where the request places the endpoint's
+//! network interfaces: a request whose subnets resolve to nothing is answered about them even
+//! when the VPC beside them resolves to nothing too.
 //!
 //! This service only GATES on existence — it keeps nothing of the VPC or the subnet beyond
 //! the ids the request carried, and the one thing EC2 ANSWERED about the VPC that outlives
@@ -65,19 +73,6 @@ fn ec2_client(
     Some(::aws_sdk_ec2::Client::from_conf(config))
 }
 
-/// The name of the EC2 filter that selects a subnet BY ID, the way the subnet-placing
-/// services of this tree resolve a placement (`services/common/src/network.rs`).
-///
-/// Filtering rather than naming the ids as `subnetIds` keeps an id EC2 holds no subnet for on
-/// the SUCCESS path: the read answers the subnets it resolved and the ones it did not come out
-/// of the diff, so the refusal names the very value the request carried, in ONE read for the
-/// whole list.
-const SUBNET_ID_FILTER: &str = "subnet-id";
-
-/// The name of the EC2 filter that selects a VPC by id, for the same reason
-/// [`SUBNET_ID_FILTER`] is used.
-const VPC_ID_FILTER: &str = "vpc-id";
-
 /// The prefix of every EC2 error code that says a value names no VPC of the account:
 /// `InvalidVpcID.NotFound` for an id no VPC carries, `InvalidVpcID.Malformed` for a value
 /// that is not a VPC id at all. Both say the same thing about a placement.
@@ -87,26 +82,9 @@ const VPC_REFUSAL_PREFIX: &str = "InvalidVpcID.";
 /// `InvalidSubnetID.NotFound` and `InvalidSubnetID.Malformed`.
 const SUBNET_REFUSAL_PREFIX: &str = "InvalidSubnetID.";
 
-/// How this service words a `vpcId` that names no VPC of the account.
-///
-/// The sentence is this service's own, in the form it words a resource an id addresses that
-/// is not there — `The <Kind> with Id '<id>' does not exist.`, the sentence
-/// [`super::index_collection_not_found_message`] words for a collection — with the id
-/// SINGLE-QUOTED and a trailing period. The only variable part is the value the request
-/// carried.
-///
-/// NOT re-grounded against the recording: the wire corpus elides this refusal's recorded
-/// `message` (`<shaped-not-asserted>`), so the sentence the real service words for it is not
-/// readable from here and this one is left as it stands rather than replaced by a guess.
-pub fn vpc_absent_message(vpc_id: &str) -> String {
-    format!("The Vpc with Id '{vpc_id}' does not exist.")
-}
-
-/// How this service words a `subnetIds` entry that names no subnet of the account; the same
-/// sentence [`vpc_absent_message`] words for a VPC, naming the subnet instead.
-pub fn subnet_absent_message(subnet_id: &str) -> String {
-    format!("The Subnet with Id '{subnet_id}' does not exist.")
-}
+/// The called service's name as the SDK layer that relayed the call reports it in a relayed
+/// refusal's envelope — neither EC2's endpoint prefix nor the casing of its `sdkId`.
+const EC2_RELAY_SERVICE: &str = "Ec2";
 
 /// What a request's network placement resolved to against EC2.
 #[derive(Debug, Default)]
@@ -140,8 +118,10 @@ pub async fn unresolved_network(
 /// What EC2 answers about the placement a request names: whether it can be placed there at
 /// all, and which network that is.
 ///
-/// The VPC is resolved first, since a subnet exists only inside one: a request whose VPC
-/// names nothing is answered about that VPC rather than about the subnets beside it.
+/// The SUBNETS are resolved first: they are where the request places the endpoint's network
+/// interfaces, so a request whose subnets EC2 holds none of is answered about them rather
+/// than about the VPC beside them — which, a subnet existing only inside a VPC, resolves to
+/// nothing whenever they do.
 ///
 /// The caller-sized subnet list is the one the handler has already held to its own bound, so
 /// the resolving reads below are not sized by the request.
@@ -160,99 +140,120 @@ pub async fn placement(
     let Some(ec2) = ec2_client(ctx, region) else {
         return Placement::default();
     };
-    let mut placement = Placement::default();
-    if let Some(vpc_id) = vpc_id.filter(|id| !id.is_empty()) {
-        let resolved = resolved_vpc(&ec2, vpc_id).await;
-        placement.in_default_vpc = resolved.in_default_vpc;
-        if resolved.refusal.is_some() {
-            return resolved;
-        }
+    if let Some(refusal) = unresolved_subnets(&ec2, subnet_ids).await {
+        return Placement {
+            refusal: Some(refusal),
+            in_default_vpc: None,
+        };
     }
-    placement.refusal = unresolved_subnets(&ec2, subnet_ids).await;
-    placement
+    match vpc_id.filter(|id| !id.is_empty()) {
+        Some(vpc_id) => resolved_vpc(&ec2, vpc_id).await,
+        None => Placement::default(),
+    }
 }
 
 /// What EC2 answers about the VPC `vpc_id` names: why a request cannot be placed in it, and
 /// whether it is the account's default network.
+///
+/// The id is NAMED to EC2 (`DescribeVpcsRequest$VpcIds`) rather than filtered on, because an
+/// id EC2 holds no VPC of refuses that read rather than leaving a row out — which is what
+/// makes EC2 the author of the sentence the caller is answered with, about the very value the
+/// request carried.
 async fn resolved_vpc(ec2: &::aws_sdk_ec2::Client, vpc_id: &str) -> Placement {
-    let by_id = ::aws_sdk_ec2::types::Filter::builder()
-        .name(VPC_ID_FILTER)
-        .values(vpc_id.to_string())
-        .build();
-    let error = match ec2.describe_vpcs().filters(by_id).send().await {
+    let error = match ec2.describe_vpcs().vpc_ids(vpc_id.to_string()).send().await {
         Ok(output) => {
-            // A read that resolved but reports no VPC for the id the request named says the
-            // same thing a refusal does, and about the same id.
-            let Some(vpc) = output
+            let reported = output
                 .vpcs()
                 .iter()
-                .find(|vpc| vpc.vpc_id() == Some(vpc_id))
-            else {
-                return Placement {
-                    refusal: Some(vpc_absent_message(vpc_id)),
-                    in_default_vpc: None,
-                };
-            };
+                .find(|vpc| vpc.vpc_id() == Some(vpc_id));
+            if reported.is_none() {
+                // A read EC2 ANSWERED without the row for the id it was asked about states no
+                // sentence about that id, and this service words none for it — so the gate
+                // refuses nothing here, which is worth a warning, because it is a deployment
+                // where the gate has stopped running.
+                ::tracing::warn!(
+                    ?vpc_id,
+                    "EC2 answered the VPC read without the VPC it was asked about, so the \
+                     placement is refused on nothing"
+                );
+            }
             // EC2's own report of whether this is the account's default network; a read that
             // resolved the VPC without stating it states nothing about it.
             return Placement {
                 refusal: None,
-                in_default_vpc: vpc.is_default(),
+                in_default_vpc: reported.and_then(::aws_sdk_ec2::types::Vpc::is_default),
             };
         }
         Err(error) => error,
     };
     Placement {
-        refusal: grounds_a_refusal(&error, VPC_REFUSAL_PREFIX, "the VPC")
-            .then(|| vpc_absent_message(vpc_id)),
+        refusal: refusal_ec2_answered(&error, VPC_REFUSAL_PREFIX, "the VPC"),
         in_default_vpc: None,
     }
 }
 
-/// What EC2 answers about the subnets `subnet_ids` names: ONE read filtered by id, so an id
-/// it holds no subnet for comes out of the diff between what was asked for and what was
-/// reported, and the refusal names that very id.
+/// What EC2 answers about the subnets `subnet_ids` names: ONE read NAMING every id
+/// (`DescribeSubnetsRequest$SubnetIds`), so an id EC2 holds no subnet of refuses that read
+/// and EC2's own sentence about that very id is what the request is answered with.
 ///
-/// The list is the one the handler has already held to its own maximum, so neither the read
-/// nor the diff is sized by the request.
+/// The list is the one the handler has already held to its own maximum, so the read is not
+/// sized by the request.
 async fn unresolved_subnets(ec2: &::aws_sdk_ec2::Client, subnet_ids: &[String]) -> Option<String> {
     if subnet_ids.is_empty() {
         return None;
     }
-    let by_id = ::aws_sdk_ec2::types::Filter::builder()
-        .name(SUBNET_ID_FILTER)
-        .set_values(Some(subnet_ids.to_vec()))
-        .build();
-    let error = match ec2.describe_subnets().filters(by_id).send().await {
+    let error = match ec2
+        .describe_subnets()
+        .set_subnet_ids(Some(subnet_ids.to_vec()))
+        .send()
+        .await
+    {
+        // EC2 answers for an id it holds no subnet of by refusing the read rather than
+        // leaving the row out, so an answer it GAVE is one it resolved every named id of. An
+        // answer that somehow omits one states no sentence about it, and a sentence of this
+        // service's own would be this emulator wording EC2's refusal for it — so the gate
+        // refuses nothing then, at a warning, because it is a deployment where the gate has
+        // stopped running.
         Ok(output) => {
             let reported: Vec<&str> = output
                 .subnets()
                 .iter()
                 .filter_map(::aws_sdk_ec2::types::Subnet::subnet_id)
                 .collect();
-            let absent = subnet_ids
+            if let Some(absent) = subnet_ids
                 .iter()
-                .find(|id| !reported.contains(&id.as_str()))?;
-            return Some(subnet_absent_message(absent));
+                .find(|id| !reported.contains(&id.as_str()))
+            {
+                ::tracing::warn!(
+                    subnet_id = ?absent,
+                    "EC2 answered the subnet read without a subnet it was asked about, so the \
+                     placement is refused on nothing"
+                );
+            }
+            return None;
         }
         Err(error) => error,
     };
-    // A REFUSED read names no one id — a filtered read is not refused for an id that
-    // resolves to nothing, so this is the malformed-value answer — and the request is
-    // answered about the first id of the list it carried.
-    let named = subnet_ids.first()?;
-    grounds_a_refusal(&error, SUBNET_REFUSAL_PREFIX, "the subnets")
-        .then(|| subnet_absent_message(named))
+    refusal_ec2_answered(&error, SUBNET_REFUSAL_PREFIX, "the subnets")
 }
 
-/// Whether an EC2 read that FAILED grounds a refusal: its error code says one of the ids
-/// names no such resource of the account.
+/// The refusal an EC2 read that FAILED grounds: EC2's own sentence about the id it refused,
+/// carried through verbatim, followed by the envelope the SDK layer that relayed the call
+/// states around a failed call — the service it was made to, the status EC2 answered it with,
+/// that answer's own request id and the one attempt it took
+/// (`service_common::relayed_refusal`, this workspace's one rendering of that envelope). The
+/// request id belongs to the relayed CALL, so it is the one EC2's own answer carried, and is
+/// never derived from anything in the request.
+///
+/// What EC2 answered refuses the request only when it says so in its own error code AND
+/// states a sentence to carry through, with the status read off that very answer: an envelope
+/// pairing a service's name with a status it did not give misattributes the failure.
 ///
 /// Anything else is this emulator failing to ASK rather than EC2 reporting a bad id — there
 /// is no EC2 mounted, or the answer could not be read — and nothing is what a request is
 /// refused on then. It is worth a warning, because a deployment with no EC2 to ask is one
 /// where this gate does not run.
-fn grounds_a_refusal<
+fn refusal_ec2_answered<
     E: ::aws_smithy_types::error::metadata::ProvideErrorMetadata + ::std::error::Error + 'static,
 >(
     error: &::aws_smithy_runtime_api::client::result::SdkError<
@@ -261,18 +262,31 @@ fn grounds_a_refusal<
     >,
     refusal_prefix: &str,
     named: &str,
-) -> bool {
+) -> Option<String> {
     use ::aws_smithy_types::error::metadata::ProvideErrorMetadata;
 
-    if error
-        .code()
-        .is_some_and(|code| code.starts_with(refusal_prefix))
-    {
-        return true;
-    }
-    ::tracing::warn!(
-        error = %::aws_smithy_types::error::display::DisplayErrorContext(error),
-        "{named} a request named could not be resolved against EC2"
+    let service_error = error.as_service_error();
+    let code = service_error
+        .and_then(ProvideErrorMetadata::code)
+        .unwrap_or_default();
+    let reason = service_error
+        .and_then(ProvideErrorMetadata::message)
+        .unwrap_or_default();
+    let answered = error.raw_response();
+    let refuses_these_ids = code.starts_with(refusal_prefix) && !reason.is_empty();
+    let Some(answered) = answered.filter(|_| refuses_these_ids) else {
+        ::tracing::warn!(
+            error = %::aws_smithy_types::error::display::DisplayErrorContext(error),
+            "{named} a request named could not be resolved against EC2"
+        );
+        return None;
+    };
+    let relayed = ::service_common::relayed_refusal::RelayedCall::once(
+        EC2_RELAY_SERVICE,
+        answered.status().as_u16(),
     );
-    false
+    Some(format!(
+        "{reason}{}",
+        ::service_common::relayed_refusal::relay_envelope_answered(relayed, answered.headers())
+    ))
 }
