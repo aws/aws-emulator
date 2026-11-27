@@ -1549,21 +1549,48 @@ pub const TEST_CONNECTION_NAMES_NO_CONNECTION: &str =
 pub const TEST_CONNECTION_STATES_TWO_CONNECTIONS: &str =
     "ConnectionName and TestConnectionInput cannot both be provided in the same request.";
 
-/// `TestConnection` for a connection definition this service accepted and then could not
-/// connect through.
+/// A call this service could serve only by reaching the data source a connection points at,
+/// and could not: `TestConnection` for a definition it accepted and then could not connect
+/// through, and an entity read of a source this emulator serves no connector for
+/// ([`crate::state::connector_entities`]).
 ///
 /// A unified connection names a data source OUTSIDE this emulator — a SaaS tenant, an
 /// authorization server, a database host — and this emulator opens no connection to anything
 /// outside itself, which is also why a stored connection carries no validation status at all
-/// (`ConnectionEntry::from_input`). So the test reaches no data source, and what it reports
+/// (`ConnectionEntry::from_input`). So the call reaches no data source, and what it reports
 /// is that failure rather than a success nothing verified.
 ///
-/// NOT recorded: what is pinned is the behaviour — 400 with the operation's modelled
-/// `InvalidInputException` — and the sentence names the one thing the attempt was decided
-/// by, the kind of data source the connection points at, taken from the definition under
-/// test.
-pub fn connection_test_did_not_reach_the_source(connection_type: &str) -> String {
+/// NOT recorded: what is pinned is the behaviour — 400 with the modelled failure the
+/// operation carries for it — and the sentence names the one thing the attempt was decided
+/// by, the kind of data source the connection points at, taken from the definition the call
+/// was made against. ONE sentence for the one condition, so the two surfaces cannot drift
+/// apart.
+pub fn connection_did_not_reach_the_source(connection_type: &str) -> String {
     format!("Unable to connect to the {connection_type} data source.")
+}
+
+/// An entity read (`ListEntities`) that names no connection to read the entities of. The
+/// member is optional on its own (`ListEntitiesRequest$ConnectionName`) and nothing else in
+/// the request names a data source, so a request carrying none asks for the entities of
+/// nothing.
+///
+/// NOT recorded: what is pinned is the behaviour — 400 with the operation's modelled
+/// `InvalidInputException` — and the sentence names the member the request has to carry, as
+/// this service states the same requirement over the connection test
+/// ([`TEST_CONNECTION_NAMES_NO_CONNECTION`]).
+pub const ENTITY_READ_NAMES_NO_CONNECTION: &str = "ConnectionName must be provided in the request.";
+
+/// An entity read whose `ParentEntityName` names no entity the source behind the connection
+/// holds ("Name of the parent entity for which you want to list the children").
+///
+/// NOT recorded: what is pinned is the behaviour — 400 with the operation's modelled
+/// `EntityNotFoundException`, the class of "a specified entity does not exist" — and the
+/// sentence names the entity the request addressed, read off the request, following the
+/// nearest recorded analogue this service has for a named miss of one resource
+/// ([`database_not_found`], "Database <name> not found."). A later fixer with a recording of
+/// this refusal should tighten the wording to it.
+pub fn source_entity_not_found(entity_name: &str) -> String {
+    format!("Entity {entity_name} not found.")
 }
 
 /// A read of the options of a connection TYPE (`DescribeConnectionType`) for a name that

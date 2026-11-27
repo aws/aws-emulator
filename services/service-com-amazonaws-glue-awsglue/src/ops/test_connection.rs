@@ -362,7 +362,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         Err(TestConnectionErrorModeled::InvalidInputException(
             InvalidInputException {
                 message: Some(
-                    crate::state::messages::connection_test_did_not_reach_the_source(
+                    crate::state::messages::connection_did_not_reach_the_source(
                         &connection_type,
                     ),
                 ),

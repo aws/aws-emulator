@@ -1,15 +1,17 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op ListEntities
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `ListEntities`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
+//! IMPLEMENTED: reports the entities the data source behind the named connection holds, read
+//! through that source's own listing, and refuses a `ConnectionName` the addressed Data
+//! Catalog holds no connection under with the modelled `EntityNotFoundException`.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`ListEntities::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! An entity is an object of the SOURCE, not a record of this service, so what can be
+//! reported about one is decided by the connector behind the connection
+//! ([`crate::state::connector_entities`]): a connection whose source is another service of
+//! this emulator is read through that service's own answer, and one whose source is outside
+//! this emulator has no connector here, which is the modelled `FederationSourceException`.
+//!
+//! A read: it reports what the source holds and writes nothing.
 //!
 //! ## Shape of an operation
 //!
@@ -87,6 +89,66 @@
 #[allow(unused_imports)]
 use super::types::*;
 
+/// The scope this listing's continuation tokens are bound to: the set being paged is the
+/// entities of ONE connection, in the catalog that holds it and the Region the request is
+/// served in, so a token minted while paging them resolves against nothing else
+/// ([`crate::state::listing_scope`]).
+fn page_token_scope(operation: &str, catalog_id: &str, region: &str, connection: &str) -> String {
+    crate::state::listing_scope(operation, &[catalog_id, region, connection])
+}
+
+/// The modelled refusal a source whose entities could not be read is reported with.
+///
+/// Both conditions are federation failures — the read is of another system — so both answer
+/// the operation's `FederationSourceException`, with the `FederationSourceErrorCode` that
+/// states which of the two it was and the one sentence this service words for a connection
+/// whose data source it did not reach. The detail of a source that answered something else
+/// goes to this service's own log and never to the client.
+fn federation_refusal(
+    connection_type: &str,
+    refusal: &crate::state::EntitySourceRefusal,
+) -> ListEntitiesError {
+    let error_code = match refusal {
+        crate::state::EntitySourceRefusal::NoConnectorHere => {
+            crate::state::FEDERATION_SOURCE_OPERATION_NOT_SUPPORTED
+        }
+        crate::state::EntitySourceRefusal::SourceNotReached(detail) => {
+            ::tracing::debug!(
+                operation = "ListEntities",
+                connection_type = %connection_type,
+                detail = %detail,
+                "a Glue entity read did not reach the data source behind its connection"
+            );
+            crate::state::FEDERATION_SOURCE_INVALID_RESPONSE
+        }
+    };
+    ListEntitiesErrorModeled::FederationSourceException(FederationSourceException {
+        federation_source_error_code: Some(error_code.to_string()),
+        message: Some(crate::state::messages::connection_did_not_reach_the_source(
+            connection_type,
+        )),
+    })
+    .into()
+}
+
+/// The operation's `EntityNotFoundException` carrying `message`.
+fn entity_not_found(message: String) -> ListEntitiesError {
+    ListEntitiesErrorModeled::EntityNotFoundException(EntityNotFoundException {
+        message: Some(message),
+        from_federation_source: None,
+    })
+    .into()
+}
+
+/// The operation's `InvalidInputException` carrying `message`.
+fn invalid_input(message: String) -> ListEntitiesError {
+    ListEntitiesErrorModeled::InvalidInputException(InvalidInputException {
+        message: Some(message),
+        from_federation_source: None,
+    })
+    .into()
+}
+
 // `#[operation_error]` below expands to an invocation of the LOCAL declarative
 // `smithy!` macro, which this line is what emits into the module. Without it the
 // expansion fails with `cannot find macro 'smithy' in this scope` and the
@@ -161,18 +223,137 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `ListEntities` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(ListEntitiesErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("ListEntities"))
+        let Some(state) = crate::state::service_state(&*self.engine) else {
+            return Err(invalid_input(
+                "the Glue Data Catalog store is unavailable".to_string(),
+            ));
+        };
+
+        let catalog_id = crate::state::resolve_catalog_id(input.catalog_id.as_ref());
+        let region = crate::state::request_region(ctx.parts());
+        // Whether the caller may read this catalog at all is decided BEFORE the connection
+        // is looked up: a `CatalogId` of another account is reachable only through that
+        // catalog's own resource policy (see `crate::state::catalog_refusal`).
+        let catalog_refusal =
+            crate::state::catalog_refusal(&state.lock(), &catalog_id, &region, Self::NAME);
+        match catalog_refusal {
+            None => {}
+            Some(crate::state::CatalogRefusal::Invalid(message)) => {
+                return Err(invalid_input(message))
+            }
+            Some(crate::state::CatalogRefusal::NotFound(message)) => {
+                return Err(entity_not_found(message))
+            }
+            Some(crate::state::CatalogRefusal::NotAuthorized(message)) => {
+                return Err(ListEntitiesErrorModeled::AccessDeniedException(
+                    AccessDeniedException {
+                        message: Some(message),
+                    },
+                )
+                .into())
+            }
+        }
+
+        // "A name for the connection that has required credentials to query any connection
+        // type": the connection is what names the data source whose entities are listed, and
+        // nothing else in the request names one, so a request carrying no name asks for the
+        // entities of nothing.
+        let Some(connection_name) = input.connection_name.as_deref() else {
+            return Err(invalid_input(
+                crate::state::messages::ENTITY_READ_NAMES_NO_CONNECTION.to_string(),
+            ));
+        };
+
+        let token_scope = page_token_scope(Self::NAME, &catalog_id, &region, connection_name);
+        // Read-only, and the store is released before the source is read: the stored
+        // definition says WHICH source to read, and the source itself is what holds the
+        // entities.
+        let (connection_type, cursor) = {
+            let store = state.lock();
+            // The connection is resolved out of the catalog the request named exactly as a
+            // read of it resolves one, so a name that catalog holds nothing under earns that
+            // read's miss.
+            let Some(entry) = store.connection(&catalog_id, connection_name) else {
+                return Err(entity_not_found(
+                    crate::state::messages::connection_not_found(connection_name, &catalog_id),
+                ));
+            };
+            let connection_type = entry
+                .definition
+                .connection_type
+                .clone()
+                .unwrap_or_default();
+            // The token names the position the previous page stopped at. It is opaque and
+            // bound to THIS connection's listing ([`crate::state::pagination`]), so a value
+            // this store did not mint for it — a forged cursor, one minted for another
+            // connection or by another process — names no position and is refused rather
+            // than resolved against a name that happens to sort somewhere.
+            let cursor = match input.next_token.as_deref() {
+                Some(token) => {
+                    let Some(cursor) =
+                        crate::state::decode_page_token(&store.page_token_key, &token_scope, token)
+                    else {
+                        return Err(invalid_input(
+                            crate::state::messages::INVALID_PAGINATION_TOKEN.to_string(),
+                        ));
+                    };
+                    Some(cursor)
+                }
+                None => None,
+            };
+            (connection_type, cursor)
+        };
+
+        // A connection whose source is outside this emulator has no connector here, so there
+        // are no entities to enumerate: that is the federation failure it is, never an empty
+        // page.
+        let Some(source) = crate::state::entity_source(&connection_type) else {
+            return Err(federation_refusal(
+                &connection_type,
+                &crate::state::EntitySourceRefusal::NoConnectorHere,
+            ));
+        };
+
+        // "The API version of the SaaS connector": the member names a version of the API a
+        // SaaS connector calls, which is what selects between two versions of ONE SaaS
+        // application's API. No source served here is reached that way
+        // ([`crate::state::reached_through_a_saas_api`]), so there is no such version to
+        // select between: the objects reported are the same whatever the member carries, and
+        // a connector that IS a SaaS one would read the member against its own version.
+
+        // "Name of the parent entity for which you want to list the children": the children
+        // asked for are those of ONE entity. Every entity of a source read here is a leaf
+        // (`Entity$IsParentEntity` is false for each), so an entity the source holds has no
+        // children to list, and a name it does not hold is a miss — which is decided by the
+        // source's own read of that one object, not by this service.
+        if let Some(parent) = input.parent_entity_name.as_deref() {
+            let held = crate::state::source_holds_entity(ctx, &region, source, parent)
+                .await
+                .map_err(|refusal| federation_refusal(&connection_type, &refusal))?;
+            if !held {
+                return Err(entity_not_found(
+                    crate::state::messages::source_entity_not_found(parent),
+                ));
+            }
+            return Ok(ListEntitiesOutput {
+                entities: Some(Vec::new()),
+                next_token: None,
+            });
+        }
+
+        let page = crate::state::read_entity_page(ctx, &region, source, cursor.as_deref())
+            .await
+            .map_err(|refusal| federation_refusal(&connection_type, &refusal))?;
+        // "A continuation token, present if the current segment is not the last": the source
+        // itself says whether more of its objects follow this page, and the position it named
+        // travels inside a token only this store can resolve.
+        let next_token = page.resume_from.map(|position| {
+            crate::state::encode_page_token(&state.lock().page_token_key, &token_scope, &position)
+        });
+
+        Ok(ListEntitiesOutput {
+            entities: Some(page.entities),
+            next_token,
+        })
     }
 }

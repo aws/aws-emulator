@@ -299,7 +299,7 @@ async fn a_complete_inline_definition_is_read_past_the_field_level_rules() {
             );
             assert_eq!(
                 error_message(&body),
-                messages::connection_test_did_not_reach_the_source(connection_type),
+                messages::connection_did_not_reach_the_source(connection_type),
                 "case {connection_type} {case}: expected the unreached-source report, got {body}"
             );
         }
@@ -323,7 +323,7 @@ async fn a_complete_inline_definition_is_read_past_the_field_level_rules() {
         );
         assert_eq!(
             error_message(&body),
-            messages::connection_test_did_not_reach_the_source(connection_type),
+            messages::connection_did_not_reach_the_source(connection_type),
             "case {connection_type} with no configuration: expected the unreached-source \
              report, got {body}"
         );
