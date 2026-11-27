@@ -239,12 +239,11 @@ async fn sentiment_follows_how_much_of_the_document_carries_sentiment() {
             "case {case:?}: the four confidences are a distribution, so they sum to 1, \
              got {total} from {output}"
         );
-        // No reading the lexicon could have MISSED is impossible: `Positive`,
-        // `Negative` and `Neutral` stay strictly positive where the engine found no
-        // word for them. MIXED is not such a reading — it is the confidence the
-        // document carries BOTH polarities, measured from the two signed readings —
-        // so a document carrying at most one polarity reports it as the zero it
-        // measures.
+        // No reading the lexicon could have MISSED is impossible: every member of the
+        // distribution stays strictly positive where the engine found no word for it.
+        // MIXED is open only where BOTH signed readings are — it is the confidence the
+        // document carries both polarities at once — so it keeps the room the two of
+        // them leave together rather than a flat zero.
         for (label, score) in &by_label {
             assert!(
                 *score >= 0.0 && *score < 1.0,
@@ -252,7 +251,7 @@ async fn sentiment_follows_how_much_of_the_document_carries_sentiment() {
                  got {score}"
             );
             assert!(
-                *label == "Mixed" || *score > 0.0,
+                *score > 0.0,
                 "case {case:?}: expected SentimentScore.{label}, a reading the \
                  document leaves open, above 0, got {score}"
             );
@@ -281,12 +280,18 @@ async fn sentiment_follows_how_much_of_the_document_carries_sentiment() {
             .map_or(f64::NAN, |(_, score)| *score);
         if *expected != "MIXED" {
             // Every row but the balanced one carries at most one polarity, and MIXED
-            // is measured from the two signed readings, so it is reported as the zero
-            // it measures rather than at a floor of its own.
-            assert_eq!(
-                mixed, 0.0,
-                "case {case:?}: the document carries at most one polarity, so nothing \
-                 supports MIXED, got {output}"
+            // needs a missed word of EACH, so it keeps the two signed rooms
+            // multiplied: above zero, and below either of them.
+            let signed = by_label
+                .iter()
+                .filter(|(label, _)| *label == "Positive" || *label == "Negative")
+                .map(|(_, score)| *score)
+                .fold(f64::INFINITY, f64::min);
+            assert!(
+                mixed > 0.0 && mixed < signed,
+                "case {case:?}: the document carries at most one polarity, so MIXED \
+                 keeps the room the two signed readings leave together — above 0 and \
+                 below both — got {mixed} against {signed} in {output}"
             );
         } else {
             assert!(

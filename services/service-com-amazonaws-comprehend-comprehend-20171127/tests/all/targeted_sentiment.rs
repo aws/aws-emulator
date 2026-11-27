@@ -713,12 +713,10 @@ async fn a_mention_carries_one_distribution_concentrated_on_its_label() {
                 let residual = sentiment["SentimentScore"][other]
                     .as_f64()
                     .unwrap_or(f64::NAN);
-                // MIXED is the confidence the clause carries BOTH polarities, which
-                // is measured from the two signed readings rather than read off the
-                // clause on its own, so a clause carrying at most one polarity
-                // reports it as the zero it measures. The three single-polarity
-                // readings stay strictly positive: the lexicon could have missed the
-                // word that shows one.
+                // Every member is a reading the clause leaves open — `MIXED` only
+                // where both signed readings are open, so it keeps the room they
+                // leave together — and the three it does not support stay strictly
+                // positive: the lexicon could have missed the word that shows one.
                 assert!(
                     (0.0..1.0 - MENTION_CONCENTRATION).contains(&residual),
                     "case {case:?}: expected {other} on {mention:?} inside \
@@ -726,7 +724,7 @@ async fn a_mention_carries_one_distribution_concentrated_on_its_label() {
                     1.0 - MENTION_CONCENTRATION
                 );
                 assert!(
-                    other == "Mixed" || residual > 0.0,
+                    residual > 0.0,
                     "case {case:?}: expected {other} on {mention:?}, a reading the \
                      clause leaves open, above 0, got {residual} in {sentiment}"
                 );
@@ -1325,9 +1323,11 @@ async fn a_mention_carries_the_recognisers_own_confidence_for_it() {
 }
 
 /// `MIXED` is the confidence a clause carries BOTH polarities, so it is reported as
-/// measured: zero where the clause carries at most one, and the leading reading where
-/// it carries both in balance. The three single-polarity readings stay strictly
-/// positive, since the lexicon can miss the word that shows one.
+/// measured: the leading reading where the clause carries both in balance, and — where
+/// it carries at most one — the room the two signed readings leave TOGETHER, which is
+/// strictly positive, since the lexicon can miss the word that shows either, and
+/// strictly below the room each of them keeps on its own. No member of the
+/// distribution is a flat impossibility.
 ///
 /// The rows differ along how many polarities the clause the mention sits in carries:
 /// none, one of each, and both at once.
@@ -1367,13 +1367,18 @@ async fn mention_sentiment_reports_mixed_as_measured() {
                  supported, got {mixed} in {scores}"
             );
         } else {
-            assert_eq!(
-                mixed, 0.0,
-                "case {case:?}: the clause carries at most one polarity, so nothing \
-                 supports MIXED, got {scores}"
+            // MIXED needs a missed word of EACH polarity, so the room it keeps is the
+            // two signed rooms multiplied: above zero, below either of them.
+            let positive = scores["Positive"].as_f64().unwrap_or(f64::NAN);
+            let negative = scores["Negative"].as_f64().unwrap_or(f64::NAN);
+            assert!(
+                mixed > 0.0 && mixed < positive.min(negative),
+                "case {case:?}: the clause carries at most one polarity, so MIXED keeps \
+                 the room the two signed readings leave together — above 0 and below \
+                 both — got {mixed} against {positive} and {negative} in {scores}"
             );
         }
-        for open in ["Positive", "Negative", "Neutral"] {
+        for open in ["Positive", "Negative", "Neutral", "Mixed"] {
             let reported = scores[open].as_f64().unwrap_or(f64::NAN);
             assert!(
                 reported > 0.0 && reported < 1.0,

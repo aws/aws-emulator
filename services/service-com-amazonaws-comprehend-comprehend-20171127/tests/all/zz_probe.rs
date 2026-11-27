@@ -197,9 +197,11 @@ async fn the_whole_answer_for_one_document_is_pinned_across_the_six_analysers() 
         .map(|label| label["Score"].as_f64().unwrap_or(f64::NAN))
         .collect();
     // The document carries no toxic content, so no content type is PLACED: each keeps
-    // only the room a finite reading of the segment leaves, which is the same room for
-    // every type (nothing was read against any of them) and strictly inside (0, the
-    // gate a moderation client reads the vector against).
+    // only the room its OWN detectors' observations leave, which is not one value for
+    // the whole vector — the engine's four categories are read by one detector over the
+    // segment and its words, while each conduct category is read by its own published
+    // forms over each sentence — and every one of them is strictly inside (0, the gate
+    // a moderation client reads the vector against).
     assert_eq!(
         scores.len(),
         7,
@@ -212,19 +214,25 @@ async fn the_whole_answer_for_one_document_is_pinned_across_the_six_analysers() 
             "case \"toxicity baseline\": the document carries no toxic content, so every \
              content type keeps only the residual a finite reading leaves, got {scores:?}"
         );
-        assert_eq!(
-            *score, scores[0],
-            "case \"toxicity baseline\": nothing was placed, so every content type keeps \
-             the same room, got {scores:?}"
-        );
     }
+    let distinct: std::collections::BTreeSet<String> =
+        scores.iter().map(|score| format!("{score:.12}")).collect();
+    assert!(
+        distinct.len() > 1,
+        "case \"toxicity baseline\": the vector reports one room per content type, \
+         measured from what that type's own detectors read, so it is not a single \
+         literal repeated, got {scores:?}"
+    );
     let overall = toxicity["ResultList"][0]["Toxicity"]
         .as_f64()
         .unwrap_or(f64::NAN);
-    assert_eq!(
-        overall, scores[0],
-        "case \"toxicity baseline\": with nothing placed, the overall Toxicity is that \
-         same room, got {toxicity}"
+    // With nothing placed, the overall Toxicity is what the whole vector's rooms
+    // combine to: above every one of them, and a copy of none.
+    let combined = 1.0 - scores.iter().map(|score| 1.0 - score).product::<f64>();
+    assert!(
+        (overall - combined).abs() < 1e-6 && scores.iter().all(|score| overall > *score),
+        "case \"toxicity baseline\": with nothing placed, the overall Toxicity is the \
+         vector's rooms combined ({combined}), got {overall} with {scores:?}"
     );
 
     let syntax = comprehend.ok("DetectSyntax", &request()).await;

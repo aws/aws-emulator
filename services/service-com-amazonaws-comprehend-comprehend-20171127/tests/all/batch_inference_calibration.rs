@@ -363,11 +363,10 @@ async fn the_four_sentiment_confidences_are_a_distribution_the_document_decides(
              got {total} from {entry}"
         );
         // No reading the lexicon could have MISSED is impossible: a client
-        // thresholding on `Positive`, `Negative` or `Neutral` must read a small
-        // confidence where the engine found no word for it, not a flat zero. MIXED is
-        // not such a reading — it is the confidence the document carries BOTH
-        // polarities, measured from the two signed readings — so a document carrying
-        // at most one polarity reports it as the zero it measures.
+        // thresholding on any member must read a small confidence where the engine
+        // found no word for it, not a flat zero. MIXED is open only where BOTH signed
+        // readings are — it is the confidence the document carries both polarities at
+        // once — so it keeps the room the two of them leave together.
         for (member, score) in &scores {
             assert!(
                 *score >= 0.0 && *score < 1.0,
@@ -375,7 +374,7 @@ async fn the_four_sentiment_confidences_are_a_distribution_the_document_decides(
                  [0, 1), got {score} in {entry}"
             );
             assert!(
-                *member == "Mixed" || *score > 0.0,
+                *score > 0.0,
                 "case {case:?}: expected SentimentScore.{member}, a reading the \
                  document leaves open, above 0, got {score} in {entry}"
             );
@@ -479,10 +478,11 @@ async fn the_four_sentiment_confidences_are_a_distribution_the_document_decides(
             confidence(case, opposite)
         );
     }
-    // MIXED is the confidence the document carries BOTH polarities, measured from the
-    // two signed readings rather than read off the document on its own, so a document
-    // the engine read as carrying at most one polarity reports it as the zero it
-    // measures and not at a floor of its own.
+    // MIXED is the confidence the document carries BOTH polarities, so it is open only
+    // where both signed readings are: a document the engine read as carrying at most
+    // one polarity keeps the room the two of them leave TOGETHER — the two signed rooms
+    // multiplied, which is above zero and below either — rather than a flat zero no
+    // log-scale comparison between documents survives.
     for case in [
         "one positive word",
         "several positive words",
@@ -490,12 +490,13 @@ async fn the_four_sentiment_confidences_are_a_distribution_the_document_decides(
         "several negative words",
         "plain fact",
     ] {
-        assert_eq!(
-            confidence(case, "Mixed"),
-            0.0,
-            "case {case:?}: the document carries at most one polarity, so nothing \
-             supports MIXED, got {}",
-            confidence(case, "Mixed")
+        let mixed = confidence(case, "Mixed");
+        let signed = confidence(case, "Positive").min(confidence(case, "Negative"));
+        assert!(
+            mixed > 0.0 && mixed < signed,
+            "case {case:?}: the document carries at most one polarity, so MIXED keeps \
+             the room the two signed readings leave together — above 0 and below both — \
+             got {mixed} against {signed}"
         );
     }
 }

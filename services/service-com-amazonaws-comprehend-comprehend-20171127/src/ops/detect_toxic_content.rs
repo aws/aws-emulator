@@ -10,8 +10,10 @@
 //! modelled `ToxicContentType` has a detector and every score is computed from the
 //! submitted segment rather than matched out of the request. One `ToxicLabels` entry
 //! is produced per input segment, in input order, each carrying the per-type score
-//! VECTOR the operation reports — one entry for every content type, so a client reads
-//! a category's confidence by looking its type up — and a `LanguageCode` the engine
+//! VECTOR the operation reports — one entry for every content type, each measured from
+//! what that type's OWN detectors read in the segment, down to the room their
+//! observations leave a type they placed nothing of, and an overall `Toxicity` derived
+//! from that vector — and a `LanguageCode` the engine
 //! has no lexicon for is answered with the modelled `UnsupportedLanguageException`.
 //!
 //! ## Shape of an operation
@@ -156,9 +158,10 @@ const REPORTED_CONTENT_TYPES: [&str; 7] = [
 /// in thirds — weakly placed (0, 1/3], placed (1/3, 2/3], strongly placed (2/3, 1] —
 /// and reported as the midpoint of its third. These are the weights of ONE piece of
 /// evidence, not the values the operation can answer: a reported `Score` combines
-/// every placement of its type ([`confidence_of`]), and `Toxicity` combines
-/// every placement of every type, so both rise with how much toxic content the
-/// segment actually carries rather than snapping to one of three rungs.
+/// every placement of its type ([`confidence_of`]), and `Toxicity` combines every
+/// placement of every type over what the whole vector's rooms add up to
+/// ([`analyse_segment`]), so both rise with how much toxic content the segment
+/// actually carries rather than snapping to one of three rungs.
 const MILD_SCORE: f32 = 1.0 / 6.0;
 const MODERATE_SCORE: f32 = 0.5;
 const SEVERE_SCORE: f32 = 5.0 / 6.0;
@@ -189,28 +192,96 @@ const WEAK_SIGNAL_SCORE: f32 = MILD_SCORE / 4.0;
 /// category sees it fire only on content an analyser placed.
 const WEAK_MATERIAL_CEILING: f32 = MILD_SCORE / 2.0;
 
-/// The confidence a category keeps that the analysers placed NOTHING of, for a segment
-/// one word long.
+/// The confidence a category keeps that the analysers placed NOTHING of, per
+/// observation they made against it.
 ///
 /// The analysers read a finite amount of text, so a segment they placed nothing in is
 /// not a segment proved to carry nothing: `ToxicContent$Score` is "model confidence in
 /// the detected content type" and `ToxicLabels$Toxicity` the "overall toxicity score
 /// for the string", and a model answers neither with a certainty. What is left open is
-/// a function of the SEGMENT — every further word read without placing the category is
-/// a further observation against it, so the room it keeps shrinks with the words read
-/// ([`absence_residual`]) — which is why a long benign segment is reported with less
-/// residual confidence than a three-word one, and why a client that normalises by
-/// `Toxicity` never divides by zero.
+/// a function of the SEGMENT read by THAT category's own detectors — every reading
+/// they make without placing it is a further observation against it, so the room it
+/// keeps shrinks with what was read against it ([`absence_residual`]) — which is why a
+/// long benign segment is reported with less residual confidence than a three-word
+/// one, why two categories read by different detectors do not keep one shared value,
+/// and why a client that normalises by `Toxicity` never divides by zero.
 ///
 /// Orders below [`WEAK_SIGNAL_SCORE`], so a category nothing was placed or even
-/// touched on stays below every threshold a moderation client sets.
-const ABSENCE_RESIDUAL_PER_WORD: f32 = 0.05;
+/// touched on stays below every threshold a moderation client sets — and small enough
+/// that the WHOLE vector's rooms combined ([`analyse_segment`] derives `Toxicity` from
+/// them) stay below the weakest single placement for a segment of any length,
+/// including the one-word segment that leaves every category the most room.
+const ABSENCE_RESIDUAL_PER_WORD: f32 = 0.02;
 
-/// The confidence a category the analysers placed nothing of keeps for `text`: the
-/// room [`ABSENCE_RESIDUAL_PER_WORD`] describes, divided by the material the
-/// analysers read without placing it.
-fn absence_residual(text: &str) -> f32 {
-    ABSENCE_RESIDUAL_PER_WORD / (1.0 + text.split_whitespace().count() as f32)
+/// How many sentences of `text` a rule-based recognizer reads: a rule matches inside
+/// ONE sentence ([`WITHIN_SENTENCE`]), so a sentence is the site it is read at. At
+/// least one, since a segment with no final stop is still a sentence of its own.
+fn sentences_in(text: &str) -> f32 {
+    text.split(['.', '!', '?', '\n'])
+        .filter(|sentence| !sentence.trim().is_empty())
+        .count()
+        .max(1) as f32
+}
+
+/// How many published FORMS one recognizer pattern reads: the alternatives it
+/// enumerates directly, counting a group that spells out the alternatives of ONE form
+/// (`waste of (?:space|air)`) once, since the recognizer read one form there.
+fn forms_in(pattern: &str) -> f32 {
+    let mut depth = 0usize;
+    let mut forms = 1usize;
+    let mut characters = pattern.chars();
+    while let Some(character) = characters.next() {
+        match character {
+            // An escaped character is never a group or an alternation.
+            '\\' => {
+                characters.next();
+            }
+            '(' => depth += 1,
+            ')' => depth = depth.saturating_sub(1),
+            // An alternative nested deeper than the pattern's own groups is one of the
+            // ways a single form is written, not a further form.
+            '|' if depth <= 1 => forms += 1,
+            _ => {}
+        }
+    }
+    forms as f32
+}
+
+/// How many observations against `category` the analysers made in `text`: one for
+/// every reading they took of the segment that could have placed the category and did
+/// not.
+///
+/// What was read differs per category, because the detectors do: the four categories
+/// about the LANGUAGE a segment uses are read by the profanity/abuse engine, which
+/// answers once for the whole segment and once for each of its words
+/// ([`placements`]), and its lexicon is the engine's own rather than something this
+/// emulator can enumerate, so its observations are counted in those readings. A
+/// category about the CONDUCT a segment carries is read by its OWN rules
+/// ([`conduct_rules`]) and by the published vocabulary it is written with
+/// ([`vocabulary_rules`]), each read inside one sentence, so every form read in every
+/// sentence is one observation.
+///
+/// So the room two categories keep is the same only where the same detector read the
+/// same material for both and placed neither, and it falls as the segment gives the
+/// detectors more to read.
+fn observations_against(category: &str, text: &str) -> f32 {
+    if ENGINE_CATEGORIES.iter().any(|(name, _)| *name == category) {
+        return 1.0 + text.split_whitespace().count() as f32;
+    }
+    let forms: f32 = conduct_rules()
+        .iter()
+        .chain(vocabulary_rules())
+        .filter(|rule| rule.category == category)
+        .map(|rule| forms_in(rule.pattern.as_str()))
+        .sum();
+    forms * sentences_in(text)
+}
+
+/// The confidence `category` keeps for `text` when the analysers placed nothing of it:
+/// the room [`ABSENCE_RESIDUAL_PER_WORD`] describes, divided among the observations
+/// that category's own detectors made against it ([`observations_against`]).
+fn absence_residual(category: &str, text: &str) -> f32 {
+    ABSENCE_RESIDUAL_PER_WORD / (1.0 + observations_against(category, text))
 }
 
 /// The modelled `ToxicContentType` values the profanity/abuse engine classifies,
@@ -600,30 +671,47 @@ fn confidence_of<'a>(
 /// negligible possibility it is rather than as a certainty no analysis produced.
 ///
 /// `Toxicity` is the overall confidence that the string carries toxic content of ANY
-/// type: every placement, of whatever type, is independent evidence for it, so they
-/// combine, which makes it at least as large as the strongest single type and larger
-/// when several types are placed.
+/// type, and it is DERIVED from what the vector above reports rather than measured
+/// beside it: every placement, of whatever type, is independent evidence for it, so
+/// they combine, which makes it at least as large as the strongest single type and
+/// larger when several types are placed; and where the analysers placed nothing, it is
+/// what the rooms the whole vector keeps combine to ([`combined`]) rather than the room
+/// of any ONE type. So a client that ranks the vector to report WHICH type fired and
+/// compares the overall score against a policy threshold reads two quantities, not one
+/// literal twice.
 fn analyse_segment(text: &str) -> ToxicLabels {
     let placed = placements(text);
-    let residual = absence_residual(text);
+    let rooms: Vec<f32> = REPORTED_CONTENT_TYPES
+        .iter()
+        .map(|name| absence_residual(name, text))
+        .collect();
 
     let labels: Vec<ToxicContent> = REPORTED_CONTENT_TYPES
         .iter()
-        .map(|name| ToxicContent {
+        .zip(&rooms)
+        .map(|(name, room)| ToxicContent {
             name: Some((*name).to_string()),
             score: Some(confidence_of(
                 placed.iter().filter(|placement| placement.name == *name),
-                residual,
+                *room,
             )),
         })
         .collect();
 
-    let toxicity = confidence_of(placed.iter(), residual);
+    let toxicity = confidence_of(placed.iter(), combined(rooms.iter().copied()));
 
     ToxicLabels {
         labels: Some(labels),
         toxicity: Some(toxicity),
     }
+}
+
+/// The confidence a set of INDEPENDENT confidences for one question adds up to: the
+/// complement of the product of their complements, which is at least as large as the
+/// largest of them and rises with every further one.
+fn combined(confidences: impl Iterator<Item = f32>) -> f32 {
+    let open: f32 = confidences.map(|confidence| 1.0 - confidence).product();
+    (1.0 - open).clamp(0.0, 1.0)
 }
 
 // `#[operation_error]` below expands to an invocation of the LOCAL declarative
