@@ -9,6 +9,10 @@
 //! The harness below ([`Emulator`] and the helpers under it) is `pub(crate)`, so a
 //! sibling suite in `tests/all/` drives the same router through the same wire rather
 //! than growing a second copy of it.
+//!
+//! The model declares more than one wire protocol for this service, so the last section of
+//! this file ([`Wire`] and the tests under it) drives the SAME operations over each of
+//! them: the protocol a request is served in is the one that request names.
 
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
@@ -24,6 +28,7 @@ use x509_cert::time::Time;
 use x509_cert::Certificate;
 
 use crate::ca_certificate_chain_import::Authority;
+use crate::resource_policy::error_message;
 
 /// A SigV4 `Authorization` header whose credential scope names this service and the
 /// region every ARN the request mints must carry. The router verifies no signature here
@@ -2406,4 +2411,514 @@ async fn a_ca_reports_the_serial_number_of_the_certificate_it_holds() {
              got {authority:?}"
         );
     }
+}
+
+// --- the wire protocols this service declares -------------------------------------------
+
+/// The name this service's shape carries in the model, which both of its protocols spell
+/// into a request: into `X-Amz-Target: <shape>.<Operation>` on the JSON wire, and into the
+/// path `/service/<shape>/operation/<Operation>` on the CBOR one.
+pub(crate) const SERVICE_SHAPE: &str = "ACMPrivateCA";
+
+/// One wire protocol this service's model declares, as the marker a request names it by.
+///
+/// The model declares two of them — `smithy_query(query="service_info")` reports
+/// `awsJson1_1` and `rpcv2Cbor` — and a client may drive every operation over either, so a
+/// request is served, and answered, in the protocol it names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Wire {
+    /// `awsJson1_1`: `POST /` under `X-Amz-Target`, with a JSON document as the body.
+    AwsJson,
+    /// `rpcv2Cbor`: `POST /service/{Service}/operation/{Operation}` under
+    /// `smithy-protocol: rpc-v2-cbor`, with a CBOR document as the body.
+    RpcV2Cbor,
+}
+
+/// Every protocol the model declares, so a table below runs its rows over all of them
+/// rather than over whichever one a suite happened to be written against.
+pub(crate) const DECLARED_WIRES: &[Wire] = &[Wire::AwsJson, Wire::RpcV2Cbor];
+
+impl Wire {
+    /// The request this protocol carries `operation` and `body` in: its routing (a header
+    /// on the JSON wire, the URI path on the CBOR one) and its encoding of the body.
+    fn request(self, operation: &str, body: &Value) -> http::Request<bytes::Bytes> {
+        let host = format!("acm-pca.{REGION}.amazonaws.com");
+        let common = http::Request::builder()
+            .method("POST")
+            .header("host", &host)
+            .header("authorization", AUTHORIZATION);
+        let (builder, encoded) = match self {
+            Wire::AwsJson => (
+                common
+                    .uri(format!("https://{host}/"))
+                    .header("content-type", "application/x-amz-json-1.1")
+                    .header("x-amz-target", format!("{SERVICE_SHAPE}.{operation}")),
+                serde_json::to_vec(body).expect("the request body serializes"),
+            ),
+            Wire::RpcV2Cbor => (
+                common
+                    .uri(format!(
+                        "https://{host}/service/{SERVICE_SHAPE}/operation/{operation}"
+                    ))
+                    .header("content-type", "application/cbor")
+                    .header("accept", "application/cbor")
+                    .header("smithy-protocol", "rpc-v2-cbor"),
+                cbor_document(body),
+            ),
+        };
+        builder
+            .body(bytes::Bytes::from(encoded))
+            .expect("the request builds")
+    }
+
+    /// The members of a response body this protocol carries, read back as the same JSON
+    /// document whichever protocol answered — so one assertion reads either answer.
+    fn members(self, body: &[u8]) -> Value {
+        if body.is_empty() {
+            return Value::Null;
+        }
+        match self {
+            Wire::AwsJson => serde_json::from_slice(body).unwrap_or(Value::Null),
+            Wire::RpcV2Cbor => cbor_members(body),
+        }
+    }
+
+    /// The `content-type` a response of this protocol carries.
+    fn content_type(self) -> &'static str {
+        match self {
+            Wire::AwsJson => "application/x-amz-json-1.1",
+            Wire::RpcV2Cbor => "application/cbor",
+        }
+    }
+
+    /// The `smithy-protocol` header this protocol tags a response with, where it has one:
+    /// the CBOR protocol names itself in every response, and the JSON wire sends no such
+    /// header.
+    fn smithy_protocol(self) -> Option<&'static str> {
+        match self {
+            Wire::AwsJson => None,
+            Wire::RpcV2Cbor => Some("rpc-v2-cbor"),
+        }
+    }
+
+    /// A short name for a case, so two rows of one table build resources of their own.
+    fn label(self) -> &'static str {
+        match self {
+            Wire::AwsJson => "json",
+            Wire::RpcV2Cbor => "cbor",
+        }
+    }
+}
+
+impl Emulator {
+    /// Call `operation` over `wire` and return the HTTP status with the response members.
+    pub(crate) async fn call_on(&self, wire: Wire, operation: &str, body: &Value) -> (u16, Value) {
+        let response = self.dispatch_on(wire, operation, body).await;
+        let status = response.status().as_u16();
+        (status, wire.members(response.body()))
+    }
+
+    /// The whole HTTP response `wire` answers `operation` with, so a suite can read the
+    /// headers that say which protocol the answer is in.
+    pub(crate) async fn dispatch_on(
+        &self,
+        wire: Wire,
+        operation: &str,
+        body: &Value,
+    ) -> http::Response<bytes::Bytes> {
+        self.router.dispatch(wire.request(operation, body)).await
+    }
+
+    /// Call `operation` over `wire`, requiring success.
+    pub(crate) async fn ok_on(
+        &self,
+        wire: Wire,
+        case: &str,
+        operation: &str,
+        body: &Value,
+    ) -> Value {
+        let (status, parsed) = self.call_on(wire, operation, body).await;
+        assert_eq!(
+            status, 200,
+            "case {case:?}: expected {operation} over {wire:?} to answer 200, \
+             got {status} {parsed:?}"
+        );
+        parsed
+    }
+}
+
+/// `body` as the CBOR document the `rpcv2Cbor` wire carries it as, written by the CBOR
+/// library rather than by the encoder the emulator answers with.
+fn cbor_document(body: &Value) -> Vec<u8> {
+    let mut encoded = Vec::new();
+    ciborium::ser::into_writer(&cbor_of_json(body), &mut encoded)
+        .expect("the request body encodes as CBOR");
+    encoded
+}
+
+/// One JSON value as the CBOR item of the same kind: an object is a map keyed by text, an
+/// array a list, a string text, an integral number an integer and any other number a
+/// float. Those are the modelled types the rows below send.
+fn cbor_of_json(value: &Value) -> ciborium::value::Value {
+    use ciborium::value::Value as Item;
+    match value {
+        Value::Null => Item::Null,
+        Value::Bool(flag) => Item::Bool(*flag),
+        Value::Number(number) => match number.as_i64() {
+            Some(integer) => Item::Integer(integer.into()),
+            None => Item::Float(number.as_f64().expect("a JSON number is an i64 or an f64")),
+        },
+        Value::String(text) => Item::Text(text.clone()),
+        Value::Array(items) => Item::Array(items.iter().map(cbor_of_json).collect()),
+        Value::Object(members) => Item::Map(
+            members
+                .iter()
+                .map(|(name, value)| (Item::Text(name.clone()), cbor_of_json(value)))
+                .collect(),
+        ),
+    }
+}
+
+/// The members of a CBOR response body as the JSON document of the same values, or
+/// `Value::Null` for a body that is not CBOR at all.
+///
+/// Two CBOR items have no JSON spelling of their own, and each is read as the JSON wire
+/// states that modelled type: a byte string (a `blob`) as its base64, and a tagged item (a
+/// `timestamp`, tag 1) as the value under the tag.
+fn cbor_members(body: &[u8]) -> Value {
+    match ciborium::de::from_reader::<ciborium::value::Value, _>(body) {
+        Ok(item) => json_of_cbor(&item),
+        Err(_) => Value::Null,
+    }
+}
+
+/// One CBOR item as the JSON value of the same kind, see [`cbor_members`].
+fn json_of_cbor(item: &ciborium::value::Value) -> Value {
+    use ciborium::value::Value as Item;
+    match item {
+        Item::Null => Value::Null,
+        Item::Bool(flag) => Value::Bool(*flag),
+        Item::Integer(integer) => i64::try_from(i128::from(*integer))
+            .map(Value::from)
+            .unwrap_or(Value::Null),
+        Item::Float(number) => serde_json::Number::from_f64(*number)
+            .map(Value::Number)
+            .unwrap_or(Value::Null),
+        Item::Bytes(octets) => Value::String(aws_smithy_types::base64::encode(octets)),
+        Item::Text(text) => Value::String(text.clone()),
+        Item::Array(items) => Value::Array(items.iter().map(json_of_cbor).collect()),
+        Item::Map(members) => Value::Object(
+            members
+                .iter()
+                .map(|(name, value)| (cbor_key(name), json_of_cbor(value)))
+                .collect(),
+        ),
+        Item::Tag(_, tagged) => json_of_cbor(tagged),
+        other => panic!("a response carried the CBOR item {other:?}, which names no member"),
+    }
+}
+
+/// A CBOR map key as the member name it is: a member name is text on both protocols.
+fn cbor_key(item: &ciborium::value::Value) -> String {
+    match item {
+        ciborium::value::Value::Text(text) => text.clone(),
+        other => panic!("a response keyed a member by {other:?}, which is not a member name"),
+    }
+}
+
+/// The wire error code an error body carries, which both of this service's protocols
+/// convey as the body's `__type` member.
+pub(crate) fn error_code(body: &Value, case: &str) -> String {
+    body.get("__type")
+        .and_then(Value::as_str)
+        .unwrap_or_else(|| panic!("case {case:?}: no error type in {body:?}"))
+        .to_string()
+}
+
+/// Every operation is served over each protocol the model declares, and the answer is in
+/// the protocol the request named.
+///
+/// The rows differ along what the rule generalises over: the protocol the request names,
+/// and the shape of the call — a create (a nested structure and an enumerated member in,
+/// one string out), a read of what that create persisted (a structure out), a write of a
+/// list member, the read of that list back, and a listing asked for with no member at all.
+#[tokio::test]
+async fn each_declared_protocol_serves_every_operation_and_answers_in_itself() {
+    let emulator = Emulator::new();
+
+    for wire in DECLARED_WIRES.iter().copied() {
+        let case = format!("a request naming {wire:?}");
+        let common_name = format!("two-wires-{}", wire.label());
+
+        // A create: the minted ARN comes back in the protocol the request named.
+        let created = emulator
+            .ok_on(
+                wire,
+                &case,
+                "CreateCertificateAuthority",
+                &root_ca_request(&common_name),
+            )
+            .await;
+        let arn = string(&created, "CertificateAuthorityArn", &case);
+        let prefix = format!("arn:aws:acm-pca:{REGION}:{ACCOUNT}:certificate-authority/");
+        assert!(
+            arn.starts_with(&prefix),
+            "case {case:?}: expected an ARN under {prefix:?}, got {arn:?}"
+        );
+
+        // A read of what that create persisted.
+        let described = emulator
+            .ok_on(
+                wire,
+                &case,
+                "DescribeCertificateAuthority",
+                &json!({"CertificateAuthorityArn": arn}),
+            )
+            .await;
+        let authority = &described["CertificateAuthority"];
+        assert_eq!(
+            authority.get("Arn").and_then(Value::as_str),
+            Some(arn.as_str()),
+            "case {case:?}: expected the CA the create minted, got {described:?}"
+        );
+        let subject = authority
+            .pointer("/CertificateAuthorityConfiguration/Subject/CommonName")
+            .and_then(Value::as_str);
+        assert_eq!(
+            subject,
+            Some(common_name.as_str()),
+            "case {case:?}: expected the subject the create carried, got {described:?}"
+        );
+
+        // A write of a list member, and the read of that list back.
+        emulator
+            .ok_on(
+                wire,
+                &case,
+                "TagCertificateAuthority",
+                &json!({
+                    "CertificateAuthorityArn": arn,
+                    "Tags": [{"Key": "wire", "Value": wire.label()}],
+                }),
+            )
+            .await;
+        let listed_tags = emulator
+            .ok_on(wire, &case, "ListTags", &json!({"CertificateAuthorityArn": arn}))
+            .await;
+        assert_eq!(
+            listed_tags.pointer("/Tags/0/Value").and_then(Value::as_str),
+            Some(wire.label()),
+            "case {case:?}: expected the tag the write persisted, got {listed_tags:?}"
+        );
+
+        // A listing, asked for with no member at all — an empty document on either wire.
+        let listed = emulator
+            .ok_on(wire, &case, "ListCertificateAuthorities", &json!({}))
+            .await;
+        let arns: Vec<&str> = listed
+            .get("CertificateAuthorities")
+            .and_then(Value::as_array)
+            .unwrap_or_else(|| panic!("case {case:?}: no listing in {listed:?}"))
+            .iter()
+            .filter_map(|authority| authority.get("Arn").and_then(Value::as_str))
+            .collect();
+        assert!(
+            arns.contains(&arn.as_str()),
+            "case {case:?}: expected the listing to hold {arn:?}, got {arns:?}"
+        );
+
+        // And the answer says which protocol it is in.
+        let response = emulator
+            .dispatch_on(
+                wire,
+                "DescribeCertificateAuthority",
+                &json!({"CertificateAuthorityArn": arn}),
+            )
+            .await;
+        let header = |name: &str| {
+            response
+                .headers()
+                .get(name)
+                .map(|value| value.to_str().expect("a header of ASCII").to_string())
+        };
+        assert_eq!(
+            header("content-type").as_deref(),
+            Some(wire.content_type()),
+            "case {case:?}: expected the content type of the protocol the request named"
+        );
+        assert_eq!(
+            header("smithy-protocol").as_deref(),
+            wire.smithy_protocol(),
+            "case {case:?}: expected the protocol header of the protocol the request named"
+        );
+    }
+}
+
+/// One private CA is one resource, whichever protocol it was created over: the state a call
+/// on one wire persisted is what a call on the other reports.
+///
+/// The rows differ along the protocol the resource was created over, and each is read back
+/// over BOTH — so the answer asserted is the whole document, member for member, rather than
+/// the one member a single row happens to look at.
+#[tokio::test]
+async fn a_private_ca_created_over_one_protocol_is_read_back_over_the_other() {
+    let emulator = Emulator::new();
+
+    for created_over in DECLARED_WIRES.iter().copied() {
+        let case = format!("a CA created over {created_over:?}");
+        let common_name = format!("either-wire-{}", created_over.label());
+        let created = emulator
+            .ok_on(
+                created_over,
+                &case,
+                "CreateCertificateAuthority",
+                &root_ca_request(&common_name),
+            )
+            .await;
+        let arn = string(&created, "CertificateAuthorityArn", &case);
+
+        let mut answers: Vec<(Wire, Value)> = Vec::with_capacity(DECLARED_WIRES.len());
+        for read_over in DECLARED_WIRES.iter().copied() {
+            answers.push((
+                read_over,
+                emulator
+                    .ok_on(
+                        read_over,
+                        &case,
+                        "DescribeCertificateAuthority",
+                        &json!({"CertificateAuthorityArn": arn}),
+                    )
+                    .await,
+            ));
+        }
+        let (first_wire, first) = &answers[0];
+        for (read_over, answer) in &answers[1..] {
+            assert_eq!(
+                answer, first,
+                "case {case:?}: expected the read over {read_over:?} to report what the read \
+                 over {first_wire:?} reports, got {answer:?} against {first:?}"
+            );
+        }
+        assert_eq!(
+            first
+                .pointer("/CertificateAuthority/Arn")
+                .and_then(Value::as_str),
+            Some(arn.as_str()),
+            "case {case:?}: expected the CA the create minted, got {first:?}"
+        );
+    }
+}
+
+/// A refusal is rendered in the protocol of the request, and says the same thing either
+/// way: the status and the error code are the service's, so only the envelope differs.
+///
+/// The rows differ along the refusal class — an ARN naming no private CA resource, a
+/// well-formed ARN naming no authority this service holds, and a request the
+/// request-validation stage refuses before any handler runs — and each runs over every
+/// protocol the model declares.
+#[tokio::test]
+async fn a_refusal_is_rendered_in_the_protocol_of_the_request() {
+    let emulator = Emulator::new();
+
+    let rows: Vec<(&str, &str, Value, &str)> = vec![
+        (
+            "an ARN that names no private CA resource",
+            "DescribeCertificateAuthority",
+            json!({
+                "CertificateAuthorityArn":
+                    format!("arn:aws:acm-pca:{REGION}:{ACCOUNT}:certificate/0123456789abcdef"),
+            }),
+            "InvalidArnException",
+        ),
+        (
+            "a well-formed ARN naming no authority",
+            "GetPolicy",
+            json!({
+                "ResourceArn":
+                    format!(
+                        "arn:aws:acm-pca:{REGION}:{ACCOUNT}:certificate-authority/\
+                         7b9f4c1e-0d2a-4f6b-9c3e-5a8d1f2b4c60"
+                    ),
+            }),
+            "ResourceNotFoundException",
+        ),
+        (
+            "a request carrying no value for a required member",
+            "DescribeCertificateAuthority",
+            json!({}),
+            "ValidationException",
+        ),
+    ];
+
+    for (case, operation, body, expected) in &rows {
+        let mut answers: Vec<(Wire, u16, Value)> = Vec::with_capacity(DECLARED_WIRES.len());
+        for wire in DECLARED_WIRES.iter().copied() {
+            let (status, parsed) = emulator.call_on(wire, operation, body).await;
+            assert_eq!(
+                status, 400,
+                "case {case:?}: expected {operation} over {wire:?} to refuse with 400, \
+                 got {status} {parsed:?}"
+            );
+            let code = error_code(&parsed, case);
+            assert!(
+                code.contains(expected),
+                "case {case:?}: expected {operation} over {wire:?} to answer {expected}, \
+                 got {code:?}"
+            );
+            answers.push((wire, status, parsed));
+        }
+        let (first_wire, first_status, first) = &answers[0];
+        for (wire, status, parsed) in &answers[1..] {
+            assert_eq!(
+                (status, error_message(parsed, case)),
+                (first_status, error_message(first, case)),
+                "case {case:?}: expected the refusal over {wire:?} to say what the refusal \
+                 over {first_wire:?} says, got {parsed:?} against {first:?}"
+            );
+        }
+    }
+}
+
+/// A request that names NONE of the protocols the model declares is not served at all: a
+/// service declaring more than one cannot guess which envelope such a caller speaks, so the
+/// call is refused before any handler runs and performs nothing.
+#[tokio::test]
+async fn a_request_naming_none_of_the_declared_protocols_performs_nothing() {
+    let emulator = Emulator::new();
+    let case = "a request naming no protocol";
+
+    // The CBOR wire's routing, with no protocol marker and a content type neither protocol
+    // claims: the request names an operation, so what refuses it is the absent protocol.
+    let host = format!("acm-pca.{REGION}.amazonaws.com");
+    let request = http::Request::builder()
+        .method("POST")
+        .uri(format!("https://{host}/"))
+        .header("host", &host)
+        .header("content-type", "application/octet-stream")
+        .header("authorization", AUTHORIZATION)
+        .body(bytes::Bytes::from(
+            serde_json::to_vec(&root_ca_request("no-protocol")).expect("the body serializes"),
+        ))
+        .expect("the request builds");
+    let response = emulator.router().dispatch(request).await;
+    let status = response.status().as_u16();
+    assert_ne!(
+        status, 200,
+        "case {case:?}: a request naming none of the declared protocols must not be served"
+    );
+
+    // And nothing was created: the refusal came before any handler.
+    let listed = emulator
+        .ok_on(
+            Wire::AwsJson,
+            case,
+            "ListCertificateAuthorities",
+            &json!({}),
+        )
+        .await;
+    assert_eq!(
+        listed.get("CertificateAuthorities").and_then(Value::as_array),
+        Some(&Vec::new()),
+        "case {case:?}: expected no CA to have been created, got {listed:?}"
+    );
 }

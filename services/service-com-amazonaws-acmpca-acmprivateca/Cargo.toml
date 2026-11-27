@@ -64,6 +64,9 @@ service-com-amazonaws-iam-awsidentitymanagementv20100508 = { workspace = true }
 # Generates the real certificates and certification requests the tests feed the
 # service, independently of the DER this crate writes itself.
 rcgen = "0.13"
+# Writes and reads the CBOR documents the tests drive this service's rpcv2Cbor wire with,
+# independently of the encoder the emulator answers them with.
+ciborium = "0.2"
 # The CRL-bucket suite mounts the S3 service beside this one on a single engine, because
 # CreateCertificateAuthority resolves a CRL configuration's bucket by calling S3 in
 # process.

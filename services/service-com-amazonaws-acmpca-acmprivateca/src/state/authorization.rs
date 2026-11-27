@@ -8,9 +8,10 @@
 //! rather than told anything about the private CA it named, and the call performs nothing.
 //! This service's model declares no error shape for that decision — no operation lists an
 //! access error (`smithy_query(query="digest")`) — because the refusal is the AWS COMMON
-//! `AccessDeniedException`, answered by the layer ahead of a service's own code. This service
-//! speaks awsJson1_1, which discriminates a failure by the error type in the body rather than
-//! by the transport status, so the refusal travels with this service's client-error status
+//! `AccessDeniedException`, answered by the layer ahead of a service's own code. Every wire
+//! protocol this service's model declares (`smithy_query(query="service_info")`) discriminates
+//! a failure by the error type in the body rather than by the transport status, so whichever
+//! one a request names, the refusal travels with this service's client-error status
 //! ([`crate::scaffolded::ACCESS_DENIED_STATUS`]) under the error code
 //! [`crate::scaffolded::ACCESS_DENIED_CODE`], through
 //! [`crate::scaffolded::Scaffolded::AccessDenied`].
