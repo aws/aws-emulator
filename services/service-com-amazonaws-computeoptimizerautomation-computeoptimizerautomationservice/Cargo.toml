@@ -13,6 +13,12 @@ engine = { workspace = true }
 # (see `state::caller_identity_arn`) rather than invented here: one credential
 # must have one principal across this service and `sts:GetCallerIdentity`.
 service-com-amazonaws-sts-awssecuritytokenservicev20110615 = { workspace = true }
+# The organization root, the OUs under it and the node each member account sits under
+# are records the Organizations control plane owns, and an organization enrollment
+# configuration is resolved through that hierarchy (see
+# `state::OrganizationHierarchy`), so this service reads it from that service's store
+# rather than keeping a second copy of the organization.
+service-com-amazonaws-organizations-awsorganizationsv20161128 = { workspace = true }
 smithy-macros = { workspace = true }
 aws-smithy-schema = { workspace = true }
 aws-smithy-schema-server = { workspace = true }
@@ -40,6 +46,9 @@ hex = { workspace = true }
 emulator-core-build-support = { workspace = true }
 
 [dev-dependencies]
+# Declares one module per `tests/all/<name>.rs`, so the crate's single integration-test
+# target picks up a new suite without a hand-written `mod` line.
+automod = { workspace = true }
 # Encodes the rpcv2Cbor request a CBOR client of this service sends, and decodes
 # the error envelope it is answered in, so a test can assert the refusal this
 # service serves over each protocol the model declares.

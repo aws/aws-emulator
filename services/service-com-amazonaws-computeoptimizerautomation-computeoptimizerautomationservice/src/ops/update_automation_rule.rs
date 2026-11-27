@@ -251,6 +251,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         });
         let client_token = input.client_token.as_deref();
 
+        // The organization the caller's standing in each account the updated
+        // rule would be scoped to is resolved through, read from the
+        // Organizations store — which owns the root, the OUs and the node each
+        // member account sits under — before this service's store is locked, so
+        // no call holds two stores at once.
+        let hierarchy = crate::state::OrganizationHierarchy::read(&*self.engine);
+
         let mut guard = state.lock();
 
         // The service-wide enrollment gate, AHEAD of the token ledger and of
@@ -298,7 +305,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 .organization_configuration
                 .clone()
                 .or_else(|| stored.and_then(|rule| rule.organization_configuration.clone()));
-            if !guard.may_scope_rule_to(&scoped_rule_type, scoped_configuration.as_ref()) {
+            if !guard.may_scope_rule_to(
+                &hierarchy,
+                &scoped_rule_type,
+                scoped_configuration.as_ref(),
+            ) {
                 return Err(access_denied());
             }
         }

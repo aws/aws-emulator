@@ -4,8 +4,11 @@
 //!
 //! IMPLEMENTED. Reports the enrollment configuration `UpdateEnrollmentConfiguration`
 //! persisted for the calling account, or the unenrolled default (`Inactive`) when it
-//! has never configured one, together with the organization rule mode the account's
-//! association leaves it in. `@readonly`: it stores nothing.
+//! has never configured one, together with the EFFECTIVE organization rule mode of the
+//! account — the one an organization enrollment configuration on it, or inherited from
+//! its OU or the organization root, supplies, else the one its own association set —
+//! and, for a member account of an organization, whether such a configuration enables
+//! Automation for it. `@readonly`: it stores nothing.
 //!
 //! ## Shape of an operation
 //!
@@ -51,6 +54,13 @@
 //!
 //! * `lastUpdatedTimestamp` (Timestamp) — The timestamp of the last update to the enrollment
 //!   configuration.
+//! * `organizationEnrollmentConfigurationStatus` (OrganizationEnrollmentConfigurationStatus,
+//!   one of: Active | Inactive) — Specifies whether an organization enrollment configuration
+//!   on your account, or inherited from a parent OU or the organization root, enables
+//!   Automation for your member account. Associations made using AssociateAccounts don't
+//!   affect this status. This field is returned for organization member accounts, including
+//!   delegated administrators. It's omitted for management accounts and accounts that aren't
+//!   in an organization.
 //! * `organizationRuleMode` (OrganizationRuleMode, one of: AnyAllowed | NoneAllowed) —
 //!   Specifies whether the management account can create Automation rules that implement
 //!   optimization actions for this account.
@@ -161,20 +171,37 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .into());
         };
 
-        let stored = state.lock().enrollment(&crate::state::caller_account_id());
         // `organizationRuleMode` "Specifies whether the management account can
         // create Automation rules that implement optimization actions for this
         // account" — a permission that is in one of the enum's two states for
         // every account, whether or not anything has written it, so the read
-        // reports the mode the store holds and the unassociated one while it
-        // holds none. Same derivation as the listing's, so both readers report
-        // one account's mode identically.
-        let organization_rule_mode = stored.reported_organization_rule_mode();
+        // reports the EFFECTIVE mode: the one an organization enrollment
+        // configuration on this account, or inherited from its OU or the
+        // organization root, supplies, else the one the account's own
+        // association set, else the unassociated one. Same derivation as the
+        // listing's (`crate::state::…::effective_rule_mode_for_account`), so
+        // both readers report one account's mode identically.
+        let account_id = crate::state::caller_account_id();
+        // The organization both answers below are resolved through, read from
+        // the Organizations store — which owns the root, the OUs and the node
+        // each member account sits under — before this service's store is
+        // locked, so no call holds two stores at once.
+        let hierarchy = crate::state::OrganizationHierarchy::read(&*self.engine);
+        let guard = state.lock();
+        let stored = guard.enrollment(&account_id);
+        let effective = guard.effective_rule_mode_for_account(&hierarchy, &account_id);
+        // Present only for a member account of an organization, and omitted for
+        // a management account or an account that is in none, which is the
+        // member's own documented rule
+        // (`crate::state::…::organization_enrollment_configuration_status`).
+        let organization_enrollment_configuration_status =
+            guard.organization_enrollment_configuration_status(&hierarchy, &account_id);
         Ok(GetEnrollmentConfigurationOutput {
             status: stored.status,
             status_reason: stored.status_reason,
-            organization_rule_mode: Some(organization_rule_mode),
+            organization_rule_mode: Some(effective.mode),
             last_updated_timestamp: stored.last_updated_timestamp,
+            organization_enrollment_configuration_status,
         })
     }
 }

@@ -17,6 +17,7 @@
 pub mod associate_accounts_types;
 pub mod create_automation_rule_types;
 pub mod delete_automation_rule_types;
+pub mod delete_organization_enrollment_configuration_types;
 pub mod disassociate_accounts_types;
 pub mod get_automation_event_types;
 pub mod get_automation_rule_types;
@@ -28,9 +29,12 @@ pub mod list_automation_events_types;
 pub mod list_automation_rule_preview_summaries_types;
 pub mod list_automation_rule_preview_types;
 pub mod list_automation_rules_types;
+pub mod list_organization_enrollment_configurations_types;
+pub mod list_organizational_units_types;
 pub mod list_recommended_action_summaries_types;
 pub mod list_recommended_actions_types;
 pub mod list_tags_for_resource_types;
+pub mod put_organization_enrollment_configuration_types;
 pub mod rollback_automation_event_types;
 pub mod shared_types;
 pub mod start_automation_event_types;
@@ -45,6 +49,8 @@ pub use associate_accounts_types::*;
 pub use create_automation_rule_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use delete_automation_rule_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use delete_organization_enrollment_configuration_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use disassociate_accounts_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
@@ -68,11 +74,17 @@ pub use list_automation_rule_preview_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use list_automation_rules_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use list_organization_enrollment_configurations_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use list_organizational_units_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use list_recommended_action_summaries_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use list_recommended_actions_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use list_tags_for_resource_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use put_organization_enrollment_configuration_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use rollback_automation_event_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]

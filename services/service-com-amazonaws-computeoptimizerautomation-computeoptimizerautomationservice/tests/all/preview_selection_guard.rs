@@ -369,7 +369,7 @@ async fn a_preview_page_token_is_bound_to_its_operation_and_selection() {
                     offset: 1,
                     filter_fingerprint: state::preview_selection_fingerprint(
                         operation,
-                        state::preview_account_scope("AccountRule", None).as_deref(),
+                        &state::preview_account_scope("AccountRule", None),
                         &both_types,
                         &Criteria::default(),
                     ),

@@ -11,7 +11,7 @@
 //! event or a recommended action matches a list filter. Handlers live in `src/ops/`, one file per operation, and build
 //! their own output shapes from what they read back out of here.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use sha2::{Digest, Sha256};
@@ -29,9 +29,19 @@ use crate::ops::types::{
     OptInRequiredException, OrganizationConfiguration, OrganizationScope, PreviewResult,
     RecommendedAction, RecommendedActionFilter, ResourceDetails, ResourceTagsCriteriaCondition,
     Schedule, StringCriteriaCondition, Tag, COMPARISON_OPERATOR_VALUES, ENROLLMENT_STATUS_VALUES,
+    ORGANIZATION_ENROLLMENT_CONFIGURATION_TYPE_VALUES, ORGANIZATION_RULE_MODE_VALUES,
+    ORGANIZATION_TARGET_TYPE_VALUES,
     RECOMMENDED_ACTION_TYPE_VALUES, RULE_APPLY_ORDER_VALUES,
     RULE_STATUS_VALUES, RULE_TYPE_VALUES, SAVINGS_ESTIMATION_MODE_VALUES,
 };
+
+// The organization enrollment configurations this service stores, the
+// organization hierarchy they are resolved through and the effective
+// organization rule mode that resolution produces: one concern, so one file.
+// Re-exported, so a handler reaches it under `crate::state::…` exactly like
+// everything else here.
+mod organization_enrollment;
+pub use organization_enrollment::*;
 
 /// The ARN namespace this service stamps on a rule ARN, from the model's
 /// `aws.api#service` trait (`arnNamespace: compute-optimizer`). The `RuleArn`
@@ -947,15 +957,23 @@ pub fn constraint_report(member: &str, requirement: &str) -> String {
 /// `ruleType` (`RuleType`), an element of `recommendedActionTypes`
 /// (`RecommendedActionType`), `status` (`RuleStatus` on the rule operations,
 /// `EnrollmentStatus` on `UpdateEnrollmentConfiguration`),
-/// `organizationConfiguration.ruleApplyOrder` (`RuleApplyOrder`) and a criteria
-/// condition's `comparison` (`ComparisonOperator`) — the enum-typed input
-/// members of this service
-/// (`smithy_query(query="operation",operation="CreateAutomationRule,UpdateAutomationRule,UpdateEnrollmentConfiguration,ListAutomationRulePreview,ListAutomationRulePreviewSummaries")`).
+/// `organizationConfiguration.ruleApplyOrder` (`RuleApplyOrder`), a criteria
+/// condition's `comparison` (`ComparisonOperator`), `organizationRuleMode`
+/// (`OrganizationRuleMode`) on the organization-configuration put, an element of
+/// its delete's `configurationTypes`
+/// (`OrganizationEnrollmentConfigurationType`) and the configuration listing's
+/// `targetType` (`OrganizationTargetType`) — the enum-typed input members of
+/// this service
+/// (`smithy_query(query="operation",operation="CreateAutomationRule,UpdateAutomationRule,UpdateEnrollmentConfiguration,ListAutomationRulePreview,ListAutomationRulePreviewSummaries,PutOrganizationEnrollmentConfiguration,DeleteOrganizationEnrollmentConfiguration,ListOrganizationEnrollmentConfigurations")`).
 /// The model's remaining enum shapes — `EventStatus`, `EventType`, `StepStatus`,
-/// `StepType`, `ResourceType`, `OrganizationRuleMode`, `SavingsEstimationMode` —
+/// `StepType`, `ResourceType`, `SavingsEstimationMode`,
+/// `AutoEnrollMemberAccounts`, `OrganizationRuleModeSourceType`,
+/// `OrganizationEnrollmentConfigurationStatus` —
 /// appear in RESPONSES only, so no request can be refused against one, and
 /// naming a type here cannot be ambiguous (`EventType` happens to share
-/// `RecommendedActionType`'s value set, and is not a request parameter).
+/// `RecommendedActionType`'s value set, and
+/// `OrganizationEnrollmentConfigurationStatus` `RuleStatus`'s; neither is a
+/// request parameter).
 ///
 /// Each value set is the GENERATED, model-derived constant for that shape, so no
 /// value list is spelled here: the set a request is refused against and the set
@@ -969,6 +987,12 @@ pub fn constraint_report(member: &str, requirement: &str) -> String {
 const REQUEST_ENUM_TYPES: &[(&str, &[&str])] = &[
     ("ComparisonOperator", COMPARISON_OPERATOR_VALUES),
     ("EnrollmentStatus", ENROLLMENT_STATUS_VALUES),
+    (
+        "OrganizationEnrollmentConfigurationType",
+        ORGANIZATION_ENROLLMENT_CONFIGURATION_TYPE_VALUES,
+    ),
+    ("OrganizationRuleMode", ORGANIZATION_RULE_MODE_VALUES),
+    ("OrganizationTargetType", ORGANIZATION_TARGET_TYPE_VALUES),
     ("RecommendedActionType", RECOMMENDED_ACTION_TYPE_VALUES),
     ("RuleApplyOrder", RULE_APPLY_ORDER_VALUES),
     ("RuleStatus", RULE_STATUS_VALUES),
@@ -1115,7 +1139,8 @@ impl EnrollmentConfig {
 
     /// This stored configuration as the `AccountInfo` a listing reports for
     /// `account_id`: its enrollment status ("The enrollment status of the
-    /// account"), the reason that explains it, its organization rule mode and
+    /// account"), the reason that explains it, the organization rule mode
+    /// `effective` resolved for it together with where that mode came from, and
     /// the instant it was last updated.
     ///
     /// `organizationRuleMode` and `lastUpdatedTimestamp` are REQUIRED on
@@ -1123,9 +1148,11 @@ impl EnrollmentConfig {
     /// has set it, so the projection has to name a value for a configuration
     /// that holds none:
     ///
-    /// * no rule mode means the account carries no association, which is
-    ///   [`ORGANIZATION_RULE_MODE_NONE_ALLOWED`]
-    ///   ([`Self::reported_organization_rule_mode`]);
+    /// * the rule mode is the EFFECTIVE one
+    ///   ([`ComAmazonawsComputeoptimizerautomationComputeoptimizerautomationserviceState::effective_rule_mode_for_account`]),
+    ///   which names a value for every account: the organization enrollment
+    ///   configuration that applies to it, else the mode set on the account
+    ///   itself, else [`ORGANIZATION_RULE_MODE_NONE_ALLOWED`];
     /// * `at` stands in for a missing update instant. Every call that writes a
     ///   configuration stamps one, so a stored entry without one is not
     ///   reachable over the wire; this keeps the required member present rather
@@ -1134,11 +1161,13 @@ impl EnrollmentConfig {
         &self,
         account_id: &str,
         at: ::aws_smithy_types::DateTime,
+        effective: EffectiveRuleMode,
     ) -> AccountInfo {
         AccountInfo {
             account_id: account_id.to_string(),
             status: self.status.clone(),
-            organization_rule_mode: self.reported_organization_rule_mode(),
+            organization_rule_mode: effective.mode,
+            organization_rule_mode_source: Some(effective.source),
             status_reason: self.status_reason.clone(),
             last_updated_timestamp: self.last_updated_timestamp.unwrap_or(at),
         }
@@ -1715,17 +1744,18 @@ pub fn preview_result_for(action: &RecommendedAction) -> PreviewResult {
 /// that account.
 pub fn previewed_actions<'store>(
     state: &'store ComAmazonawsComputeoptimizerautomationComputeoptimizerautomationserviceState,
-    scope: Option<&'store [String]>,
+    hierarchy: &'store OrganizationHierarchy,
+    scope: &'store AccountScope,
     recommended_action_types: &'store [String],
     criteria: &'store Criteria,
 ) -> impl Iterator<Item = &'store RecommendedAction> + 'store {
     state
-        .retrievable_actions()
+        .retrievable_actions(hierarchy)
         .filter(move |action| {
             action
                 .account_id
                 .as_deref()
-                .is_some_and(|account_id| account_in_scope(account_id, scope))
+                .is_some_and(|account_id| scope.covers(hierarchy, account_id))
         })
         .filter(move |action| {
             action
@@ -1801,14 +1831,14 @@ pub fn preview_selection_violation(
 /// ([`canonical_filters`]).
 pub fn preview_selection_fingerprint(
     operation: &str,
-    scope: Option<&[String]>,
+    scope: &AccountScope,
     recommended_action_types: &[String],
     criteria: &Criteria,
 ) -> String {
     page_fingerprint(
         operation,
         &(
-            scope.map(canonical_membership),
+            scope.canonical(),
             canonical_membership(recommended_action_types),
             canonical_criteria(criteria),
         ),
@@ -2552,31 +2582,54 @@ pub fn event_for_action(
 
 /// Which accounts a preview covers.
 ///
-/// `None` means every account the store holds actions for: an `OrganizationRule`
-/// preview that names no `organizationScope` spans the organization. An
-/// `AccountRule` covers only the calling account, because a rule of that type is
-/// scoped to the account it lives in.
+/// An `OrganizationRule` preview is scoped by its `organizationScope` — the
+/// accounts and OUs it includes, less the accounts and OUs it excludes
+/// ([`AccountScope`]) — and one that names no scope at all spans the
+/// organization. An `AccountRule` covers only the calling account, because a
+/// rule of that type is scoped to the account it lives in.
 ///
-/// An EMPTY account list cannot reach here: the model constrains
-/// `OrganizationConfigurationAccountIds` at `length(min: 1, max: 50)`, so the
-/// protocol boundary refuses `accountIds: []` before the handler runs. A scope
-/// present with no `accountIds` member is the same as no scope at all.
+/// An EMPTY list cannot reach here: the model constrains every list member of
+/// `OrganizationScope` at `length(min: 1, …)`, so the protocol boundary refuses
+/// `accountIds: []` before the handler runs. A scope present with no member at
+/// all is the same as no scope at all.
 pub fn preview_account_scope(
     rule_type: &str,
     organization_scope: Option<&OrganizationScope>,
-) -> Option<Vec<String>> {
-    if rule_type == "OrganizationRule" {
-        return organization_scope
-            .and_then(|scope| scope.account_ids.clone())
-            .filter(|accounts| !accounts.is_empty());
+) -> AccountScope {
+    if rule_type != "OrganizationRule" {
+        return AccountScope::of_accounts(vec![caller_account_id()]);
     }
-    Some(vec![caller_account_id()])
+    let Some(scope) = organization_scope else {
+        return AccountScope::default();
+    };
+    AccountScope {
+        account_ids: scope.account_ids.clone(),
+        organizational_unit_ids: scope.organizational_unit_ids.clone(),
+        excluded_account_ids: scope.excluded_account_ids.clone().unwrap_or_default(),
+        excluded_organizational_unit_ids: scope
+            .excluded_organizational_unit_ids
+            .clone()
+            .unwrap_or_default(),
+    }
 }
 
-/// Is `account_id` one of the accounts `scope` covers? An absent scope covers
-/// every account.
-pub fn account_in_scope(account_id: &str, scope: Option<&[String]>) -> bool {
-    scope.is_none_or(|accounts| accounts.iter().any(|candidate| candidate == account_id))
+/// The accounts an organization rule's `organizationConfiguration` scopes it to:
+/// the same four members under the same documented rules as a preview's
+/// `organizationScope` ([`preview_account_scope`]), so a rule and the preview of
+/// that rule cover the same accounts.
+pub fn rule_account_scope(configuration: Option<&OrganizationConfiguration>) -> AccountScope {
+    let Some(configuration) = configuration else {
+        return AccountScope::default();
+    };
+    AccountScope {
+        account_ids: configuration.account_ids.clone(),
+        organizational_unit_ids: configuration.organizational_unit_ids.clone(),
+        excluded_account_ids: configuration.excluded_account_ids.clone().unwrap_or_default(),
+        excluded_organizational_unit_ids: configuration
+            .excluded_organizational_unit_ids
+            .clone()
+            .unwrap_or_default(),
+    }
 }
 
 /// Does `action` satisfy every condition of `criteria`?
@@ -3498,6 +3551,19 @@ pub struct IdempotencyRecord {
 pub struct ComAmazonawsComputeoptimizerautomationComputeoptimizerautomationserviceState {
     /// Enrollment configuration per account id.
     pub enrollments: HashMap<String, EnrollmentConfig>,
+    /// The ORGANIZATION enrollment configurations, keyed by the target id they
+    /// are stored on — an account id, an OU id or the organization root id.
+    ///
+    /// Written by `PutOrganizationEnrollmentConfiguration` and
+    /// `DeleteOrganizationEnrollmentConfiguration`; read by every operation that
+    /// reports an organization rule mode, through
+    /// [`Self::effective_rule_mode_for_account`] and
+    /// [`Self::effective_rule_mode_for_node`], so no two readers resolve two
+    /// copies of one configuration. A `BTreeMap`, because the listing over it
+    /// pages one stable sequence. Bounded by
+    /// [`MAX_ORGANIZATION_ENROLLMENT_CONFIGURATIONS`].
+    pub organization_enrollment_configurations:
+        BTreeMap<String, StoredOrganizationEnrollmentConfiguration>,
     /// Every automation rule, in creation order.
     pub rules: RuleStore,
     /// The recommended actions this service can automate, by
@@ -3550,12 +3616,24 @@ impl ComAmazonawsComputeoptimizerautomationComputeoptimizerautomationserviceStat
     ///
     /// A READ: it stores nothing. `at` is only what
     /// [`EnrollmentConfig::to_account_info`] falls back to for an entry that
-    /// carries no update instant.
-    pub fn accounts_in_order(&self, at: ::aws_smithy_types::DateTime) -> Vec<AccountInfo> {
+    /// carries no update instant, and `hierarchy` is the organization the
+    /// effective rule mode of each account is resolved through
+    /// ([`Self::effective_rule_mode_for_account`]).
+    pub fn accounts_in_order(
+        &self,
+        at: ::aws_smithy_types::DateTime,
+        hierarchy: &OrganizationHierarchy,
+    ) -> Vec<AccountInfo> {
         let mut accounts: Vec<AccountInfo> = self
             .enrollments
             .iter()
-            .map(|(account_id, enrollment)| enrollment.to_account_info(account_id, at))
+            .map(|(account_id, enrollment)| {
+                enrollment.to_account_info(
+                    account_id,
+                    at,
+                    self.effective_rule_mode_for_account(hierarchy, account_id),
+                )
+            })
             .collect();
         accounts.sort_by(|left, right| left.account_id.cmp(&right.account_id));
         accounts
@@ -3595,8 +3673,8 @@ impl ComAmazonawsComputeoptimizerautomationComputeoptimizerautomationserviceStat
         })
     }
 
-    /// Is `account_id` ASSOCIATED with the organization's management account,
-    /// i.e. does its stored enrollment report
+    /// Is `account_id` DIRECTLY associated with the organization's management
+    /// account, i.e. does its own stored enrollment report
     /// [`ORGANIZATION_RULE_MODE_ANY_ALLOWED`]?
     ///
     /// Association is what that rule mode records: `AssociateAccounts` sets it
@@ -3605,6 +3683,13 @@ impl ComAmazonawsComputeoptimizerautomationComputeoptimizerautomationserviceStat
     /// account that has never been associated reports the other mode
     /// ([`EnrollmentConfig::reported_organization_rule_mode`]), so it is not
     /// associated.
+    ///
+    /// This is the DIRECT setting, which is what the two association operations
+    /// report back as the accounts they associated or disassociated: the call
+    /// either wrote that setting or it did not. Whether the management account
+    /// may actually reach into the account is the EFFECTIVE mode
+    /// ([`Self::may_initiate_in`]), which an organization enrollment
+    /// configuration takes precedence in.
     pub fn is_associated(&self, account_id: &str) -> bool {
         self.enrollment(account_id).reported_organization_rule_mode()
             == ORGANIZATION_RULE_MODE_ANY_ALLOWED
@@ -3617,8 +3702,13 @@ impl ComAmazonawsComputeoptimizerautomationComputeoptimizerautomationserviceStat
     /// event — each document that a management account or a delegated
     /// administrator "can only initiate" that work "for associated member
     /// accounts", and point at `AssociateAccounts` as the remedy. So work in
-    /// ANOTHER account is initiated only while that account's association is in
-    /// place ([`Self::is_associated`]).
+    /// ANOTHER account is initiated only while that account's EFFECTIVE
+    /// organization rule mode permits organization rules to apply to it
+    /// ([`Self::effective_rule_mode_for_account`]) — the mode an organization
+    /// enrollment configuration on the account, or inherited from its OU or the
+    /// organization root, supplies, and otherwise the mode the association
+    /// itself set, since such a configuration "take[s] precedence over settings
+    /// made by `AssociateAccounts` and `DisassociateAccounts`".
     ///
     /// Judged per call, never taken from the stored resource: a disassociation
     /// removes the association and leaves the member's events and analysed
@@ -3630,8 +3720,12 @@ impl ComAmazonawsComputeoptimizerautomationComputeoptimizerautomationserviceStat
     /// the restriction is about is reaching into another account, so an
     /// automation of the caller's own resources needs no association. The
     /// caller's enrollment is a separate gate ([`Self::opt_in_required`]).
-    pub fn may_initiate_in(&self, account_id: &str) -> bool {
-        account_id == caller_account_id() || self.is_associated(account_id)
+    pub fn may_initiate_in(&self, hierarchy: &OrganizationHierarchy, account_id: &str) -> bool {
+        account_id == caller_account_id()
+            || self
+                .effective_rule_mode_for_account(hierarchy, account_id)
+                .mode
+                == ORGANIZATION_RULE_MODE_ANY_ALLOWED
     }
 
     /// May a rule of `rule_type` be scoped to every account `configuration`
@@ -3660,6 +3754,15 @@ impl ComAmazonawsComputeoptimizerautomationComputeoptimizerautomationserviceStat
     /// as that account's association lasts. An absent configuration is only
     /// valid for a rule that is not an organization rule at all.
     ///
+    /// An INCLUDED OU or organization root carries its own documented
+    /// requirement, which the same standing cannot express because an OU has no
+    /// association: "Each included OU or organization root must have an
+    /// effective organization rule mode of `AnyAllowed`"
+    /// (`smithy_query(query="shape",shape="OrganizationConfiguration")`), so
+    /// every id the configuration includes is judged by the mode that OU or root
+    /// is in right now ([`Self::effective_rule_mode_for_node`]). An EXCLUDED id
+    /// is judged by nothing: the rule does not apply there.
+    ///
     /// Judged for the RESULTING rule type too, because the configuration is the
     /// organization-wide half of a rule and the `OrganizationRule` type is what
     /// puts it into effect: a rule of any other type applies its actions in the
@@ -3672,17 +3775,27 @@ impl ComAmazonawsComputeoptimizerautomationComputeoptimizerautomationserviceStat
     /// what happens to it.
     pub fn may_scope_rule_to(
         &self,
+        hierarchy: &OrganizationHierarchy,
         rule_type: &str,
         configuration: Option<&OrganizationConfiguration>,
     ) -> bool {
         if rule_type != "OrganizationRule" {
             return true;
         }
-        configuration
-            .and_then(|configuration| configuration.account_ids.as_deref())
-            .into_iter()
+        let scope = rule_account_scope(configuration);
+        scope
+            .account_ids
+            .iter()
             .flatten()
-            .all(|account_id| self.may_initiate_in(account_id))
+            .all(|account_id| self.may_initiate_in(hierarchy, account_id))
+            && scope
+                .organizational_unit_ids
+                .iter()
+                .flatten()
+                .all(|node_id| {
+                    self.effective_rule_mode_for_node(hierarchy, node_id).mode
+                        == ORGANIZATION_RULE_MODE_ANY_ALLOWED
+                })
     }
 
     /// The stored recommended actions the caller may RETRIEVE right now, in the
@@ -3715,12 +3828,15 @@ impl ComAmazonawsComputeoptimizerautomationComputeoptimizerautomationserviceStat
     /// account, and such an action is in nobody else's. It is still outside
     /// every preview, because a preview selects by account scope and no scope
     /// covers an account-less action ([`previewed_actions`]).
-    pub fn retrievable_actions(&self) -> impl Iterator<Item = &RecommendedAction> + '_ {
+    pub fn retrievable_actions<'store>(
+        &'store self,
+        hierarchy: &'store OrganizationHierarchy,
+    ) -> impl Iterator<Item = &'store RecommendedAction> + 'store {
         self.recommended_actions.iter_in_order().filter(|action| {
             action
                 .account_id
                 .as_deref()
-                .is_none_or(|account_id| self.may_initiate_in(account_id))
+                .is_none_or(|account_id| self.may_initiate_in(hierarchy, account_id))
         })
     }
 

@@ -196,6 +196,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         });
         let client_token = input.client_token.as_deref();
 
+        // The organization the caller's standing in another account is resolved
+        // through, read from the Organizations store — which owns the root, the
+        // OUs and the node each member account sits under — before this
+        // service's store is locked, so no call holds two stores at once.
+        let hierarchy = crate::state::OrganizationHierarchy::read(&*self.engine);
+
         let mut guard = state.lock();
 
         // The service-wide enrollment gate, AHEAD of the token ledger and of
@@ -275,7 +281,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // inferred from the action being stored, because a disassociation
         // leaves the member's analysed actions exactly where they were — see
         // `crate::state::…::may_initiate_in`.
-        if !guard.may_initiate_in(&account_id) {
+        if !guard.may_initiate_in(&hierarchy, &account_id) {
             return Err(access_denied());
         }
         let event_id = guard.mint_event_id();

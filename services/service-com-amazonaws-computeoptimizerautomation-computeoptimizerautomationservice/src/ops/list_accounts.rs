@@ -199,6 +199,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // `crate::state::page_size`.
         let page_size = crate::state::page_size(input.max_results);
 
+        // The organization the effective organization rule mode of each account
+        // is resolved through, read from the Organizations store BEFORE this
+        // service's store is locked, so no call holds two stores at once:
+        // `crate::state::OrganizationHierarchy`.
+        let hierarchy = crate::state::OrganizationHierarchy::read(&*self.engine);
+
         let guard = state.lock();
         // The clock is read AFTER the store lock is taken, so the instant this
         // listing reports at is the instant it observes the store at.
@@ -217,7 +223,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         if let Some(refusal) = guard.opt_in_required() {
             return Err(ListAccountsErrorModeled::OptInRequiredException(refusal).into());
         }
-        let accounts = guard.accounts_in_order(at);
+        let accounts = guard.accounts_in_order(at, &hierarchy);
         // The page walk is the one every paginated listing of this service
         // performs, entered the way a cursor enters it: `crate::state::resume_page`
         // answers nothing for a cursor naming a position this sequence does not

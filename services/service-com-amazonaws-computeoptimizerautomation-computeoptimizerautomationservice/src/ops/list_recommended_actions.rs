@@ -190,16 +190,32 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             return Err(invalid_parameter(report));
         }
 
+        // The OUs and organization roots the request restricts the listing to,
+        // read by MEMBERSHIP — a row survives when its account sits in one of
+        // them or in a child OU of one — so two spellings of one restriction
+        // continue ONE page walk (`crate::state::canonical_membership`). A
+        // request naming none restricts nothing.
+        let organizational_unit_ids = input
+            .organizational_unit_ids
+            .as_deref()
+            .map(crate::state::canonical_membership);
+
         // The page token carries this operation's name and the SELECTION those
         // filters perform — every filter's values as the set it tests membership
         // of, the filters in one order, a filter spelled twice once
-        // (`crate::state::canonical_filters`) — so resuming a walk with
+        // (`crate::state::canonical_filters`), together with the OU restriction
+        // — so resuming a walk with
         // different filters, or with a token another operation issued, is
         // refused rather than answered with a page of a different result set,
         // while another spelling of one selection continues one walk:
         // `crate::state::page_fingerprint`.
-        let filter_fingerprint =
-            crate::state::page_fingerprint(Self::NAME, &crate::state::canonical_filters(&filters));
+        let filter_fingerprint = crate::state::page_fingerprint(
+            Self::NAME,
+            &(
+                crate::state::canonical_filters(&filters),
+                organizational_unit_ids.clone(),
+            ),
+        );
         // Where this call resumes, by the one rule every paginated operation of
         // this service enters its walk under — no token starts at the
         // beginning, a token that is no cursor of this service is refused, and
@@ -229,6 +245,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // non-advancing zero page: `crate::state::page_size`.
         let page_size = crate::state::page_size(input.max_results);
 
+        // The organization the caller's standing in each account is resolved
+        // through, read from the Organizations store — which owns the root, the
+        // OUs and the node each member account sits under — before this
+        // service's store is locked, so no call holds two stores at once.
+        let hierarchy = crate::state::OrganizationHierarchy::read(&*self.engine);
+
         let guard = state.lock();
         // The service-wide enrollment gate, AHEAD of filter evaluation: an
         // account that is not opted in is refused the whole call rather than
@@ -248,7 +270,18 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // decode at all.
         let served: Option<(Vec<RecommendedAction>, Option<String>)> = crate::state::resume_page(
             guard
-                .retrievable_actions()
+                .retrievable_actions(&hierarchy)
+                .filter(|action| {
+                    // "The response includes recommended actions for accounts in
+                    // the specified OUs and their child OUs": the restriction is
+                    // resolved through the organization, the one place this
+                    // service resolves an OU to the accounts beneath it.
+                    crate::state::row_is_in_organizational_units(
+                        &hierarchy,
+                        action.account_id.as_deref(),
+                        organizational_unit_ids.as_deref(),
+                    )
+                })
                 .filter(|action| crate::state::recommended_action_matches_filters(action, &filters))
                 .cloned(),
             offset,

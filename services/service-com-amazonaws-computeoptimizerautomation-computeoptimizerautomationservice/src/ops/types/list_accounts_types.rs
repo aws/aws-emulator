@@ -31,6 +31,7 @@ pub struct AccountInfo {
     pub account_id: String,
     pub status: String,
     pub organization_rule_mode: String,
+    pub organization_rule_mode_source: Option<OrganizationRuleModeSource>,
     pub status_reason: Option<String>,
     pub last_updated_timestamp: ::aws_smithy_types::DateTime,
 }

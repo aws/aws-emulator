@@ -169,6 +169,10 @@ fn fingerprint_rows(event_id: &str) -> Vec<Row> {
     // The window bounds of an unbounded event query, as the handlers digest
     // them: `crate::state::instant_key` of each bound the caller sent.
     let no_window = (None::<(i64, u32)>, None::<(i64, u32)>);
+    // The `organizationalUnitIds` restriction a request that names none
+    // carries: the four listings that take the member digest it beside their
+    // filters.
+    let no_units = None::<Vec<String>>;
     // A preview of one action type for an `AccountRule`, whose selection both
     // preview listings page: the accounts the rule type covers and the requested
     // action types as the SETS the selection tests membership of, and the
@@ -180,14 +184,14 @@ fn fingerprint_rows(event_id: &str) -> Vec<Row> {
     let preview_types = vec![UPGRADE.to_string()];
     let preview_criteria = Criteria::default();
     let preview_selection = (
-        preview_scope.as_deref().map(state::canonical_membership),
+        preview_scope.canonical(),
         state::canonical_membership(&preview_types),
         preview_criteria.clone(),
     );
     let preview_bound = |operation: &str| {
         state::preview_selection_fingerprint(
             operation,
-            preview_scope.as_deref(),
+            &preview_scope,
             &preview_types,
             &preview_criteria,
         )
@@ -215,19 +219,29 @@ fn fingerprint_rows(event_id: &str) -> Vec<Row> {
             "events-unfiltered",
             "ListAutomationEvents",
             json!({}),
-            &(&Vec::<AutomationEventFilter>::new(), no_window.0, no_window.1),
+            &(
+                &Vec::<AutomationEventFilter>::new(),
+                no_units.clone(),
+                no_window.0,
+                no_window.1,
+            ),
         ),
         Row::new(
             "events-under-a-filter",
             "ListAutomationEvents",
             json!({"filters": [{"name": "EventType", "values": [SNAPSHOT_AND_DELETE]}]}),
-            &(&event_filters, no_window.0, no_window.1),
+            &(&event_filters, no_units.clone(), no_window.0, no_window.1),
         ),
         Row::new(
             "event-summaries-unfiltered",
             "ListAutomationEventSummaries",
             json!({}),
-            &(&Vec::<AutomationEventFilter>::new(), no_window.0, no_window.1),
+            &(
+                &Vec::<AutomationEventFilter>::new(),
+                no_units.clone(),
+                no_window.0,
+                no_window.1,
+            ),
         ),
         Row::new(
             "steps-of-one-event",
@@ -239,13 +253,13 @@ fn fingerprint_rows(event_id: &str) -> Vec<Row> {
             "recommended-actions-unfiltered",
             "ListRecommendedActions",
             json!({}),
-            &Vec::<RecommendedActionFilter>::new(),
+            &(Vec::<RecommendedActionFilter>::new(), no_units.clone()),
         ),
         Row::new(
             "recommended-action-summaries-unfiltered",
             "ListRecommendedActionSummaries",
             json!({}),
-            &Vec::<RecommendedActionFilter>::new(),
+            &(Vec::<RecommendedActionFilter>::new(), no_units),
         ),
         Row::with_operation_bound(
             "preview-of-one-action-type",

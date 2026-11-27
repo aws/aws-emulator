@@ -743,7 +743,7 @@ async fn a_token_resumes_only_the_selection_it_was_taken_with() {
             offset,
             filter_fingerprint: preview_selection_fingerprint(
                 operation,
-                account_scope.as_deref(),
+                &account_scope,
                 &both_types,
                 &Criteria::default(),
             ),

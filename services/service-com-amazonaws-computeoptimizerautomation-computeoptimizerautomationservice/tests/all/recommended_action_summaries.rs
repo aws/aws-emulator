@@ -929,13 +929,22 @@ async fn a_token_resumes_only_the_filters_it_was_taken_with() {
     // was removed resumes at — while the same cursor under the OTHER filter list
     // is a token that walk never issued.
     let account_filters = json!([{"name": "AccountId", "values": [CALLER_ACCOUNT_ID]}]);
-    let unfiltered = page_fingerprint(OPERATION, &Vec::<RecommendedActionFilter>::new());
+    // Each walk digests its filter list beside the `organizationalUnitIds`
+    // restriction, which neither request names.
+    let no_units = None::<Vec<String>>;
+    let unfiltered = page_fingerprint(
+        OPERATION,
+        &(Vec::<RecommendedActionFilter>::new(), no_units.clone()),
+    );
     let filtered = page_fingerprint(
         OPERATION,
-        &[RecommendedActionFilter {
-            name: "AccountId".to_string(),
-            values: vec![CALLER_ACCOUNT_ID.to_string()],
-        }],
+        &(
+            vec![RecommendedActionFilter {
+                name: "AccountId".to_string(),
+                values: vec![CALLER_ACCOUNT_ID.to_string()],
+            }],
+            no_units,
+        ),
     );
     let cursor = |offset: usize, fingerprint: &str| {
         encode_page_token(&PageCursor {

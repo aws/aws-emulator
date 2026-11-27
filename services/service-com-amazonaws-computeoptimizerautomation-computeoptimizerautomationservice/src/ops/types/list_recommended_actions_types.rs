@@ -15,6 +15,7 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-computeoptimizerautomat
 #[derive(Debug, Clone, Default)]
 pub struct ListRecommendedActionsInput {
     pub filters: Option<Vec<RecommendedActionFilter>>,
+    pub organizational_unit_ids: Option<Vec<String>>,
     pub max_results: Option<i32>,
     pub next_token: Option<String>,
 }

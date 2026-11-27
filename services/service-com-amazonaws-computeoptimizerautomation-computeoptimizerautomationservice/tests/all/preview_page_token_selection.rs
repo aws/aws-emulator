@@ -379,7 +379,7 @@ fn selection_cursor(
         offset,
         filter_fingerprint: preview_selection_fingerprint(
             operation,
-            scope.as_deref(),
+            &scope,
             action_types,
             criteria,
         ),

@@ -76,6 +76,9 @@ pub struct ThrottlingException {
 pub struct OrganizationConfiguration {
     pub rule_apply_order: Option<String>,
     pub account_ids: Option<Vec<String>>,
+    pub organizational_unit_ids: Option<Vec<String>>,
+    pub excluded_organizational_unit_ids: Option<Vec<String>>,
+    pub excluded_account_ids: Option<Vec<String>>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.computeoptimizerautomation#Criteria")]
@@ -147,6 +150,20 @@ pub struct ServiceQuotaExceededException {
     pub message: Option<String>,
 }
 
+#[smithy_macros::smithy(union_for = "com.amazonaws.computeoptimizerautomation#OrganizationTarget")]
+#[allow(clippy::large_enum_variant)]
+#[derive(Debug, Clone)]
+pub enum OrganizationTarget {
+    accountId(String),
+    organizationalUnitId(String),
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.computeoptimizerautomation#ConflictException")]
+#[derive(Debug, Clone, Default)]
+pub struct ConflictException {
+    pub message: Option<String>,
+}
+
 #[smithy_macros::smithy(shape = "com.amazonaws.computeoptimizerautomation#EstimatedMonthlySavings")]
 #[derive(Debug, Clone, Default)]
 pub struct EstimatedMonthlySavings {
@@ -154,6 +171,13 @@ pub struct EstimatedMonthlySavings {
     pub before_discount_savings: f64,
     pub after_discount_savings: f64,
     pub savings_estimation_mode: String,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.computeoptimizerautomation#OrganizationRuleModeSource")]
+#[derive(Debug, Clone, Default)]
+pub struct OrganizationRuleModeSource {
+    pub source_type: String,
+    pub source_target_id: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.computeoptimizerautomation#AutomationEventFilter")]
@@ -167,6 +191,9 @@ pub struct AutomationEventFilter {
 #[derive(Debug, Clone, Default)]
 pub struct OrganizationScope {
     pub account_ids: Option<Vec<String>>,
+    pub organizational_unit_ids: Option<Vec<String>>,
+    pub excluded_organizational_unit_ids: Option<Vec<String>>,
+    pub excluded_account_ids: Option<Vec<String>>,
 }
 
 #[smithy_macros::smithy(union_for = "com.amazonaws.computeoptimizerautomation#ResourceDetails")]
@@ -198,6 +225,10 @@ pub struct RecommendedActionFilter {
     pub values: Vec<String>,
 }
 
+/// The values `AutoEnrollMemberAccounts` accepts on the wire.
+pub const AUTO_ENROLL_MEMBER_ACCOUNTS_VALUES: &[&str] = &["All", "None"];
+
+
 /// The values `AutomationEventFilterName` accepts on the wire.
 pub const AUTOMATION_EVENT_FILTER_NAME_VALUES: &[&str] = &["AccountId", "EventStatus", "EventType", "ResourceType"];
 
@@ -222,8 +253,24 @@ pub const EVENT_STATUS_VALUES: &[&str] = &["Cancelled", "Complete", "Failed", "I
 pub const EVENT_TYPE_VALUES: &[&str] = &["SnapshotAndDeleteUnattachedEbsVolume", "UpgradeEbsVolumeType"];
 
 
+/// The values `OrganizationEnrollmentConfigurationStatus` accepts on the wire.
+pub const ORGANIZATION_ENROLLMENT_CONFIGURATION_STATUS_VALUES: &[&str] = &["Active", "Inactive"];
+
+
+/// The values `OrganizationEnrollmentConfigurationType` accepts on the wire.
+pub const ORGANIZATION_ENROLLMENT_CONFIGURATION_TYPE_VALUES: &[&str] = &["OrganizationRuleMode"];
+
+
 /// The values `OrganizationRuleMode` accepts on the wire.
 pub const ORGANIZATION_RULE_MODE_VALUES: &[&str] = &["AnyAllowed", "NoneAllowed"];
+
+
+/// The values `OrganizationRuleModeSourceType` accepts on the wire.
+pub const ORGANIZATION_RULE_MODE_SOURCE_TYPE_VALUES: &[&str] = &["Applied", "Default", "Direct", "Inherited"];
+
+
+/// The values `OrganizationTargetType` accepts on the wire.
+pub const ORGANIZATION_TARGET_TYPE_VALUES: &[&str] = &["Account", "OrganizationalUnit"];
 
 
 /// The values `RecommendedActionFilterName` accepts on the wire.

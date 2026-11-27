@@ -15,6 +15,7 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-computeoptimizerautomat
 #[derive(Debug, Clone, Default)]
 pub struct ListAutomationEventSummariesInput {
     pub filters: Option<Vec<AutomationEventFilter>>,
+    pub organizational_unit_ids: Option<Vec<String>>,
     pub start_date_inclusive: Option<String>,
     pub end_date_exclusive: Option<String>,
     pub max_results: Option<i32>,

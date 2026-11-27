@@ -23,5 +23,6 @@ pub struct GetEnrollmentConfigurationOutput {
     pub status_reason: Option<String>,
     pub organization_rule_mode: Option<String>,
     pub last_updated_timestamp: Option<::aws_smithy_types::DateTime>,
+    pub organization_enrollment_configuration_status: Option<String>,
 }
 

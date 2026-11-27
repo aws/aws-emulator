@@ -225,7 +225,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // selection continue one walk: `crate::state::preview_selection_fingerprint`.
         let selection_fingerprint = crate::state::preview_selection_fingerprint(
             Self::NAME,
-            scope.as_deref(),
+            &scope,
             &input.recommended_action_types,
             &criteria,
         );
@@ -253,6 +253,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // non-advancing zero page: `crate::state::page_size`.
         let page_size = crate::state::page_size(input.max_results);
 
+        // The organization the caller's standing in each account is resolved
+        // through, read from the Organizations store — which owns the root, the
+        // OUs and the node each member account sits under — before this
+        // service's store is locked, so no call holds two stores at once.
+        let hierarchy = crate::state::OrganizationHierarchy::read(&*self.engine);
+
         let guard = state.lock();
         // The service-wide enrollment gate, AHEAD of the inventory walk: an
         // account that is not opted in is refused the whole call rather than
@@ -275,7 +281,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let served: Option<(Vec<PreviewResult>, Option<String>)> = crate::state::resume_page(
             crate::state::previewed_actions(
                 &guard,
-                scope.as_deref(),
+                &hierarchy,
+                &scope,
                 &input.recommended_action_types,
                 &criteria,
             )

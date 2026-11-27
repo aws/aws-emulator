@@ -80,17 +80,24 @@ const AGGREGATE_SUMMARIES: [&str; 2] = [
 ];
 
 /// The fingerprint one of `AGGREGATE_SUMMARIES` binds into the cursors of the
-/// walk [`walk_request`] describes for it: its filter list (which that request
-/// leaves out) for the recommended-action summaries, and the derived preview
+/// walk [`walk_request`] describes for it: its filter list and the OU
+/// restriction (which that request leaves out) for the recommended-action
+/// summaries, and the derived preview
 /// selection — the accounts an `AccountRule` covers, both action types, no
 /// criteria — for the preview summaries.
 fn aggregate_fingerprint(operation: &str) -> String {
     if operation == AGGREGATE_SUMMARIES[0] {
-        return state::page_fingerprint(operation, &Vec::<RecommendedActionFilter>::new());
+        return state::page_fingerprint(
+            operation,
+            &(
+                Vec::<RecommendedActionFilter>::new(),
+                None::<Vec<String>>,
+            ),
+        );
     }
     state::preview_selection_fingerprint(
         operation,
-        state::preview_account_scope("AccountRule", None).as_deref(),
+        &state::preview_account_scope("AccountRule", None),
         &[UPGRADE.to_string(), SNAPSHOT_AND_DELETE.to_string()],
         &Criteria::default(),
     )

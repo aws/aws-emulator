@@ -196,6 +196,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         });
         let client_token = input.client_token.as_deref();
 
+        // The organization the caller's standing in another account is resolved
+        // through, read from the Organizations store — which owns the root, the
+        // OUs and the node each member account sits under — before this
+        // service's store is locked, so no call holds two stores at once.
+        let hierarchy = crate::state::OrganizationHierarchy::read(&*self.engine);
+
         let mut guard = state.lock();
         // The clock is read AFTER the store lock is taken, so this one instant is
         // the instant this handler observes and writes the store at: eligibility
@@ -285,7 +291,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // ran — see `crate::state::…::may_initiate_in`. So an account the
         // caller may no longer reach into is answered the same way whatever
         // status its event is in.
-        if !guard.may_initiate_in(&account_id) {
+        if !guard.may_initiate_in(&hierarchy, &account_id) {
             return Err(access_denied());
         }
 

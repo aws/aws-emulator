@@ -193,8 +193,19 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             ));
         }
 
+        // The OUs and organization roots the request restricts the listing to,
+        // read by MEMBERSHIP — an event survives when its account sits in one of
+        // them or in a child OU of one — so two spellings of one restriction
+        // continue ONE page walk (`crate::state::canonical_membership`). A
+        // request naming none restricts nothing.
+        let organizational_unit_ids = input
+            .organizational_unit_ids
+            .as_deref()
+            .map(crate::state::canonical_membership);
+
         // The page token carries this operation's name and a fingerprint of the
-        // whole query — the filters AND the time window — because both define
+        // whole query — the filters, the OU restriction AND the time window —
+        // because all of them define
         // the sequence a page is a window onto, so resuming with a different
         // query, or with a token another operation issued, is refused instead of
         // answered with a page of a different result set. The filters are
@@ -205,6 +216,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             Self::NAME,
             &(
                 crate::state::canonical_filters(&filters),
+                organizational_unit_ids.clone(),
                 input.start_time_inclusive.map(crate::state::instant_key),
                 input.end_time_exclusive.map(crate::state::instant_key),
             ),
@@ -230,6 +242,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // paginated listing here, including the floor against a non-advancing
         // zero page: `crate::state::page_size`.
         let page_size = crate::state::page_size(input.max_results);
+
+        // The organization an OU restriction is resolved through, read from the
+        // Organizations store — which owns the root, the OUs and the node each
+        // member account sits under — before this service's store is locked, so
+        // no call holds two stores at once.
+        let hierarchy = crate::state::OrganizationHierarchy::read(&*self.engine);
 
         let mut guard = state.lock();
         // The clock is read AFTER the store lock is taken, so the one instant
@@ -272,6 +290,17 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     )
                 })
                 .filter(|event| crate::state::event_matches_filters(event, &filters))
+                .filter(|event| {
+                    // "The response includes events for accounts in the
+                    // specified OUs and their child OUs": the restriction is
+                    // resolved through the organization, the one place this
+                    // service resolves an OU to the accounts beneath it.
+                    crate::state::row_is_in_organizational_units(
+                        &hierarchy,
+                        Some(event.account_id.as_str()),
+                        organizational_unit_ids.as_deref(),
+                    )
+                })
                 .map(crate::state::StoredEvent::to_automation_event),
             offset,
             page_size,
