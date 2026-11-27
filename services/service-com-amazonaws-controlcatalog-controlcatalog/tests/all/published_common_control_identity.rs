@@ -18,8 +18,8 @@
 //!
 //! Each test is a TABLE rather than one entry picked by hand. The rows span the
 //! objectives whose published sets the catalog records, and differ in the SIZE of that
-//! set (two, four, five and seven common controls) and in the domain that owns it; the
-//! per-entry rows additionally cover an entry published under an objective whose whole
+//! set (two, three, four, five and seven common controls) and in the domain that owns it;
+//! the per-entry rows additionally cover an entry published under an objective whose whole
 //! set is not recorded, and every page size the set is walked with.
 
 use std::collections::BTreeSet;
@@ -61,16 +61,17 @@ const ASSET_MANAGEMENT_ID: &str = "d4msesd9vvmzmmuvlv06m92uq";
 /// set sizes from two to seven and two different owning domains.
 ///
 /// The ARN SET of each row is the rule under test, and every identifier below is the
-/// catalog's own. A row's `Name` values are the names the catalog publishes where this crate
-/// has the publication's wording for them — "Asset acquisition", "Asset deployment", "Asset
-/// retirement and disposition", "Asset performance management", "Asset
-/// maintenance scheduling", "Change request and approval", "Change deployment and
-/// automation", "Rollback and recovery procedures", "Asset valuation", "Asset sensitivity",
-/// "Asset criticality", "Asset classification and categorization", "Asset labeling",
-/// "Inventory of authorized assets and automated discovery", "Asset inventory
-/// reconciliation and audit" and "Unauthorized asset management" — and otherwise the entry's
-/// subject written in the library's voice (as `src/state/published_ontology.rs`'s header
-/// records); for the latter the name assertion
+/// catalog's own. A row's `Name` values are the names the catalog publishes where this
+/// crate has the publication's wording for them — "Asset acquisition", "Asset deployment",
+/// "Secure asset management", "Asset retirement and disposition", "Asset performance
+/// management", "Asset maintenance scheduling", "Change request and approval", "Change
+/// deployment and automation", "Rollback and recovery procedures", "Asset valuation",
+/// "Asset sensitivity", "Asset criticality", "Asset classification and categorization",
+/// "Asset labeling", "Inventory of authorized assets and automated discovery", "Asset
+/// inventory reconciliation and audit", "Unauthorized asset management", "Asset loss
+/// prevention, recovery, and response" and "Asset damage prevention and response" — and
+/// otherwise the entry's subject written in the library's voice (as
+/// `src/state/published_ontology.rs`'s header records); for the latter the name assertion
 /// pins the catalog against its own table rather than against the publication, which is why
 /// the set, paging and filtered-versus-unfiltered assertions are what carry this suite.
 const PUBLISHED_OBJECTIVES: &[PublishedObjective] = &[
@@ -84,10 +85,32 @@ const PUBLISHED_OBJECTIVES: &[PublishedObjective] = &[
         common_controls: &[
             ("aaaq1vhzpslfrk1o4hvgk3ti4", "Asset acquisition"),
             ("eboqkjlzo44e0ia5wba1770tw", "Asset deployment"),
-            ("76akwzuoa1j6cxqfsorr12e9k", "Asset use"),
+            ("76akwzuoa1j6cxqfsorr12e9k", "Secure asset management"),
             (
                 "bme9uq29isv0jdrdy4yj2c702",
                 "Asset retirement and disposition",
+            ),
+        ],
+    },
+    PublishedObjective {
+        identifier: "ags5wgkyvwriix77zegtwhyo9",
+        name: "Asset loss prevention, response, and recovery",
+        domain_identifier: ASSET_MANAGEMENT_ID,
+        domain_name: ASSET_MANAGEMENT,
+        // The three common controls published under this objective: losing an asset,
+        // damaging one, and the security incident either becomes.
+        common_controls: &[
+            (
+                "4kdrp1fqw2zy6shq95defui2y",
+                "Asset loss prevention, recovery, and response",
+            ),
+            (
+                "6rxe3eaojbhyha52wtvahsjxn",
+                "Asset damage prevention and response",
+            ),
+            (
+                "6i6o73iaofk1dk6h4rgm6sccd",
+                "Asset-related security incident procedures",
             ),
         ],
     },

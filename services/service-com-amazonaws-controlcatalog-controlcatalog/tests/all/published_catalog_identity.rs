@@ -327,6 +327,17 @@ pub(crate) const PUBLISHED_ENTRIES: &[PublishedEntry] = &[
     },
     PublishedEntry {
         kind: COMMON_CONTROL,
+        identifier: "76akwzuoa1j6cxqfsorr12e9k",
+        name: "Secure asset management",
+        domain: Some(ASSET_MANAGEMENT),
+        description: Some(
+            "Implement asset management processes to securely track, control, and \
+             document all organizational assets. Maintain configuration control of \
+             systems undergoing service, repair, or pending return to service.",
+        ),
+    },
+    PublishedEntry {
+        kind: COMMON_CONTROL,
         identifier: "bme9uq29isv0jdrdy4yj2c702",
         name: "Asset retirement and disposition",
         domain: Some(ASSET_MANAGEMENT),
@@ -334,6 +345,24 @@ pub(crate) const PUBLISHED_ENTRIES: &[PublishedEntry] = &[
             "Retire and dispose of assets, including media, that are no longer needed. \
              Securely erase or destroy any sensitive data before asset disposal.",
         ),
+    },
+    // Two of the common controls published under the asset loss objective: the catalog
+    // names each of them by the identifier recorded here, and this crate has the published
+    // NAME of these two but not their published paragraph, so no description is recorded
+    // for them (the test below still requires one to be served).
+    PublishedEntry {
+        kind: COMMON_CONTROL,
+        identifier: "4kdrp1fqw2zy6shq95defui2y",
+        name: "Asset loss prevention, recovery, and response",
+        domain: Some(ASSET_MANAGEMENT),
+        description: None,
+    },
+    PublishedEntry {
+        kind: COMMON_CONTROL,
+        identifier: "6rxe3eaojbhyha52wtvahsjxn",
+        name: "Asset damage prevention and response",
+        domain: Some(ASSET_MANAGEMENT),
+        description: None,
     },
 ];
 

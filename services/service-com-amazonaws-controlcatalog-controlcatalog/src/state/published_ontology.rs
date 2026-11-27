@@ -207,10 +207,7 @@ pub(super) const PUBLISHED_ONTOLOGY: &[DomainSeed] = &[
                     // each — acquisition, deployment, use and retirement, as the objective's
                     // published paragraph above enumerates them — and every entry's
                     // published identifier is recorded in PUBLISHED_CATALOG_IDENTIFIERS
-                    // below. Only the `asset-use` entry's published wording is not recorded
-                    // here, so — like the entries beside it whose wording this crate does not
-                    // have — its name and description are the library's subject written in
-                    // this table's own voice.
+                    // below.
                     (
                         "asset-acquisition",
                         "Asset acquisition",
@@ -221,10 +218,13 @@ pub(super) const PUBLISHED_ONTOLOGY: &[DomainSeed] = &[
                         "Asset deployment",
                         "Configure assets securely prior to deployment in the environment. Confirm the proper integration of new assets with existing systems.",
                     ),
+                    // The stage at which an asset is in service: the library publishes it
+                    // as the management of an asset while it is used, and this entry
+                    // carries the published wording.
                     (
-                        "asset-use",
-                        "Asset use",
-                        "Govern the use an asset is put to while it is in service, and the conditions it may be used under.",
+                        "secure-asset-management",
+                        "Secure asset management",
+                        "Implement asset management processes to securely track, control, and document all organizational assets. Maintain configuration control of systems undergoing service, repair, or pending return to service.",
                     ),
                     (
                         "asset-retirement-and-disposition",
@@ -235,30 +235,30 @@ pub(super) const PUBLISHED_ONTOLOGY: &[DomainSeed] = &[
             ),
             // The catalog publishes the loss of an asset — preventing it, responding to it
             // and recovering from it — as an OBJECTIVE of its own (its published ARN is
-            // recorded in PUBLISHED_CATALOG_IDENTIFIERS below). Its published common-control
-            // set is not recorded here, so the three entries below are its subject written in
-            // this table's own voice, carrying the minted fallback identifier every
-            // unrecorded entry does, so that the walk down from the objective resolves at all
-            // (see the module header).
+            // recorded in PUBLISHED_CATALOG_IDENTIFIERS below). The three entries below are
+            // the common controls it publishes, each under the identifier the library names
+            // it by and, for the two whose published wording this crate has, under its
+            // published name; the rest of their wording is the entry's subject written in
+            // this table's own voice, as the module header allows.
             (
                 "asset-loss-prevention-response-and-recovery",
                 "Asset loss prevention, response, and recovery",
                 "This control objective focuses on preventing asset loss, and responding to and recovering lost, stolen, or damaged assets to contribute to the organization's profitability by reducing losses.",
                 &[
                     (
-                        "asset-loss-prevention",
-                        "Asset loss prevention",
-                        "Protect assets against loss, theft and damage while they are in the organization's custody.",
+                        "asset-loss-prevention-recovery-and-response",
+                        "Asset loss prevention, recovery, and response",
+                        "Protect assets against loss and theft while they are in the organization's custody, report a loss as soon as it is noticed, and recover the asset where it can be recovered.",
                     ),
                     (
-                        "asset-loss-reporting-and-response",
-                        "Asset loss reporting and response",
-                        "Report a lost, stolen or damaged asset as soon as the loss is noticed, and act on the exposure it created.",
+                        "asset-damage-prevention-and-response",
+                        "Asset damage prevention and response",
+                        "Protect assets against damage while they are in the organization's custody, and act on the exposure a damaged asset created.",
                     ),
                     (
-                        "asset-recovery",
-                        "Asset recovery",
-                        "Recover a lost, stolen or damaged asset where it can be recovered, and record what the recovery restored.",
+                        "asset-related-security-incident-procedures",
+                        "Asset-related security incident procedures",
+                        "Follow the procedures for a security incident that involves an organizational asset, including reporting it and recording what the response restored.",
                     ),
                 ],
             ),
@@ -1412,11 +1412,32 @@ const PUBLISHED_CATALOG_IDENTIFIERS: &[(&str, &str, &str)] = &[
         "aaaq1vhzpslfrk1o4hvgk3ti4",
     ),
     (COMMON_CONTROL, "asset-deployment", "eboqkjlzo44e0ia5wba1770tw"),
-    (COMMON_CONTROL, "asset-use", "76akwzuoa1j6cxqfsorr12e9k"),
+    (
+        COMMON_CONTROL,
+        "secure-asset-management",
+        "76akwzuoa1j6cxqfsorr12e9k",
+    ),
     (
         COMMON_CONTROL,
         "asset-retirement-and-disposition",
         "bme9uq29isv0jdrdy4yj2c702",
+    ),
+    // The common controls published under the
+    // `asset-loss-prevention-response-and-recovery` objective.
+    (
+        COMMON_CONTROL,
+        "asset-loss-prevention-recovery-and-response",
+        "4kdrp1fqw2zy6shq95defui2y",
+    ),
+    (
+        COMMON_CONTROL,
+        "asset-damage-prevention-and-response",
+        "6rxe3eaojbhyha52wtvahsjxn",
+    ),
+    (
+        COMMON_CONTROL,
+        "asset-related-security-incident-procedures",
+        "6i6o73iaofk1dk6h4rgm6sccd",
     ),
     // The common controls published under the `asset-maintenance` objective.
     (

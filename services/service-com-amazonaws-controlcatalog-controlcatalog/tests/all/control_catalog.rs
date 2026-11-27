@@ -1233,11 +1233,12 @@ struct PublishedAvailability {
 
 /// Controls whose published deployable-Region set the catalog records, spanning what the
 /// rule generalises over: both implementing surfaces (an AWS Config managed rule and a
-/// Security Hub control), and availability sets of different sizes — neither of them the
-/// Region inventory the emulator serves other controls with.
+/// Security Hub control), and availability sets of different sizes and membership —
+/// a set narrower than the partition's, a different narrower set, and the partition-wide
+/// one — so no one Region inventory can satisfy the rows.
 const PUBLISHED_AVAILABILITY: &[PublishedAvailability] = &[
-    // A control over a feature offered only in the Regions of the partition that are
-    // enabled by default.
+    // A control over a feature offered in fewer Regions than the partition, among them
+    // Regions that are enabled on request.
     PublishedAvailability {
         designator: "CONFIG.COGNITO-IDP.DT.1",
         identifier: "1038h7d21e6g8i10g6v3xsssi",
@@ -1251,9 +1252,12 @@ const PUBLISHED_AVAILABILITY: &[PublishedAvailability] = &[
             "ca-central-1",
             "eu-central-1",
             "eu-north-1",
+            "eu-south-1",
             "eu-west-1",
             "eu-west-2",
             "eu-west-3",
+            "il-central-1",
+            "me-south-1",
             "sa-east-1",
             "us-east-1",
             "us-east-2",
@@ -1261,25 +1265,24 @@ const PUBLISHED_AVAILABILITY: &[PublishedAvailability] = &[
             "us-west-2",
         ],
     },
-    // A control over a service offered in a different set again, including Regions that
-    // are enabled on request.
+    // A control over a service offered in a different set again: it covers Regions the
+    // row above does not and leaves out Regions that row carries.
     PublishedAvailability {
         designator: "SH.REDSHIFT-SERVERLESS.DT.3",
         identifier: "1ks6hwrtiiia8t2djn1iys62x",
         deployable_regions: &[
-            "af-south-1",
             "ap-east-1",
             "ap-northeast-1",
             "ap-northeast-2",
-            "ap-northeast-3",
             "ap-south-1",
             "ap-southeast-1",
             "ap-southeast-2",
+            "ap-southeast-3",
             "ca-central-1",
             "eu-central-1",
             "eu-central-2",
             "eu-north-1",
-            "eu-south-1",
+            "eu-south-2",
             "eu-west-1",
             "eu-west-2",
             "eu-west-3",
@@ -1288,6 +1291,50 @@ const PUBLISHED_AVAILABILITY: &[PublishedAvailability] = &[
             "sa-east-1",
             "us-east-1",
             "us-east-2",
+            "us-west-1",
+            "us-west-2",
+        ],
+    },
+    // A control over an EC2 instance setting the implementing AWS Config managed rule can
+    // evaluate wherever the partition offers the service: the partition-wide availability,
+    // which is wider than either row above and is the third distinct set in this table.
+    PublishedAvailability {
+        designator: "CONFIG.EC2.DT.1",
+        identifier: "27lgd3oknluio5kzcl324kr0d",
+        deployable_regions: &[
+            "af-south-1",
+            "ap-east-1",
+            "ap-east-2",
+            "ap-northeast-1",
+            "ap-northeast-2",
+            "ap-northeast-3",
+            "ap-south-1",
+            "ap-south-2",
+            "ap-southeast-1",
+            "ap-southeast-2",
+            "ap-southeast-3",
+            "ap-southeast-4",
+            "ap-southeast-5",
+            "ap-southeast-6",
+            "ap-southeast-7",
+            "ca-central-1",
+            "ca-west-1",
+            "eu-central-1",
+            "eu-central-2",
+            "eu-north-1",
+            "eu-south-1",
+            "eu-south-2",
+            "eu-west-1",
+            "eu-west-2",
+            "eu-west-3",
+            "il-central-1",
+            "me-central-1",
+            "me-south-1",
+            "mx-central-1",
+            "sa-east-1",
+            "us-east-1",
+            "us-east-2",
+            "us-west-1",
             "us-west-2",
         ],
     },

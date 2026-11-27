@@ -26,6 +26,12 @@
 //!    a control the catalog records one for is served with THAT instant. The whole of a
 //!    control's published text and dating is `all/published_control_release_record.rs`;
 //!    here it is asserted for the identity this suite records.
+//! 5. That identity is what `GetControl` RESOLVES: the ARN carrying a published opaque
+//!    identifier reads back with the control's whole record — `GetControl` "[r]eturns
+//!    details about a specific control" and `ResourceNotFoundException` means "[t]he
+//!    requested resource does not exist" — and the control's `Scope` decides whether
+//!    `DeployableRegions` applies to it, because "controls that have the value GLOBAL in
+//!    the Scope field do not show the DeployableRegions field".
 //!
 //! Each test is a TABLE spanning the class rather than one control picked by hand: the
 //! rows differ in designator family (`CONFIG.…`, `AWS-GR_…`, `CT.…`, `SH.…`),
@@ -36,7 +42,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::Value;
 
-use crate::control_catalog::{catalog_arn, drain, strings, Emulator};
+use crate::control_catalog::{catalog_arn, drain, error_code, strings, Emulator};
 
 /// One published control, as the catalog publishes it.
 ///
@@ -212,6 +218,15 @@ const PUBLISHED_CONTROLS: &[PublishedControl] = &[
         // An account's membership of an organization has no resource type of its own.
         governed_resources: &[],
         implementation: (CONFIG_RULE, "ACCOUNT_PART_OF_ORGANIZATIONS"),
+    },
+    PublishedControl {
+        alias: "CONFIG.EC2.DT.1",
+        identifier: "27lgd3oknluio5kzcl324kr0d",
+        name: "Checks whether detailed monitoring is enabled for EC2 instances",
+        severity: "MEDIUM",
+        parameter_requirement_summary: "NONE",
+        governed_resources: &["AWS::EC2::Instance"],
+        implementation: (CONFIG_RULE, "EC2_INSTANCE_DETAILED_MONITORING_ENABLED"),
     },
     PublishedControl {
         alias: "CONFIG.LOGS.DT.1",
@@ -569,6 +584,137 @@ async fn every_published_control_is_served_with_the_catalogs_own_identity() {
              under, got {:?}",
             aliases(&read_back)
         );
+    }
+}
+
+/// `(designator, published identifier, ControlScope)` for controls whose published scope
+/// this crate records, spanning both values the modeled `ControlScope` enum admits over
+/// both implementing surfaces.
+///
+/// Source: the Control Catalog's own published record for each control — the scope it
+/// reports, which decides whether `DeployableRegions` applies to it at all.
+const PUBLISHED_SCOPES: &[(&str, &str, &str)] = &[
+    ("CONFIG.EC2.DT.1", "27lgd3oknluio5kzcl324kr0d", "REGIONAL"),
+    (
+        "SH.REDSHIFT-SERVERLESS.DT.3",
+        "1ks6hwrtiiia8t2djn1iys62x",
+        "REGIONAL",
+    ),
+    ("CONFIG.ACCOUNT.DT.2", "227ph3vim64tdwv5mfagjd22r", "GLOBAL"),
+    ("CONFIG.IAM.DT.7", "byrg7iwyl4azhecyhqtq8ocw1", "GLOBAL"),
+];
+
+/// Every designator and published identifier the two tables above record, as the ARN a
+/// client harvests and reads the control back by.
+fn published_identifiers() -> Vec<(&'static str, &'static str)> {
+    PUBLISHED_CONTROLS
+        .iter()
+        .map(|row| (row.alias, row.identifier))
+        .chain(
+            PUBLISHED_SCOPES
+                .iter()
+                .map(|(alias, identifier, _)| (*alias, *identifier)),
+        )
+        .collect()
+}
+
+/// Every ARN carrying a published opaque identifier RESOLVES through `GetControl`, with
+/// the record the listing summarises — it is never answered with
+/// `ResourceNotFoundException`, and the listing hands out that same ARN.
+#[tokio::test]
+async fn every_published_control_identifier_resolves_through_get_control() {
+    let emulator = Emulator::new();
+    let listed: BTreeSet<String> = drain(&emulator, "/list-controls", "Controls", None, "{}")
+        .await
+        .iter()
+        .filter_map(|control| control["Arn"].as_str().map(str::to_string))
+        .collect();
+
+    let identifiers = published_identifiers();
+    assert!(
+        identifiers.len() > 1,
+        "case table: the rule is about a SET of published identifiers, got {identifiers:?}"
+    );
+
+    for (alias, identifier) in identifiers {
+        let arn = catalog_arn(identifier);
+        let case = format!("{alias} {arn}");
+        let (status, body) = emulator
+            .post("/get-control", &format!(r#"{{"ControlArn":"{arn}"}}"#))
+            .await;
+        assert_eq!(
+            status, 200,
+            "case {case}: a published control ARN resolves, got {status} {:?}",
+            error_code(&body)
+        );
+        // The @required members of `GetControlResponse`: a resolved control carries every
+        // one of them.
+        for member in ["Arn", "Name", "Description", "Behavior"] {
+            assert!(
+                body[member].as_str().is_some_and(|text| !text.is_empty()),
+                "case {case}: expected the required member {member}, got {:?}",
+                body[member]
+            );
+        }
+        assert_eq!(
+            body["Arn"].as_str(),
+            Some(arn.as_str()),
+            "case {case}: expected the catalog ARN asked for, got {:?}",
+            body["Arn"]
+        );
+        assert!(
+            body["RegionConfiguration"]["Scope"].as_str().is_some(),
+            "case {case}: expected the required RegionConfiguration, got {:?}",
+            body["RegionConfiguration"]
+        );
+        assert!(
+            listed.contains(&arn),
+            "case {case}: the listing must hand out the ARN GetControl resolves, got {:?}",
+            body["Arn"]
+        );
+    }
+}
+
+/// A control's published `Scope` decides whether it reports `DeployableRegions`: a
+/// REGIONAL control reports the Regions it deploys to, a GLOBAL one does not show the
+/// member at all.
+#[tokio::test]
+async fn the_published_scope_decides_whether_deployable_regions_applies() {
+    let emulator = Emulator::new();
+
+    let scopes: BTreeSet<&str> = PUBLISHED_SCOPES.iter().map(|(_, _, scope)| *scope).collect();
+    assert_eq!(
+        scopes,
+        BTreeSet::from(["GLOBAL", "REGIONAL"]),
+        "case table: the rows must span both modeled scopes, got {scopes:?}"
+    );
+
+    for (alias, identifier, scope) in PUBLISHED_SCOPES {
+        let arn = catalog_arn(identifier);
+        let case = format!("{alias} {arn}");
+        let control = emulator
+            .ok("/get-control", &format!(r#"{{"ControlArn":"{arn}"}}"#))
+            .await;
+        let configuration = &control["RegionConfiguration"];
+        assert_eq!(
+            configuration["Scope"].as_str(),
+            Some(*scope),
+            "case {case}: expected the published scope {scope}, got {configuration:?}"
+        );
+        let served = strings(configuration, "DeployableRegions");
+        if *scope == "REGIONAL" {
+            assert!(
+                !served.is_empty(),
+                "case {case}: a REGIONAL control reports where it deploys, got \
+                 {configuration:?}"
+            );
+        } else {
+            assert!(
+                configuration.get("DeployableRegions").is_none(),
+                "case {case}: a GLOBAL control does not show DeployableRegions, got \
+                 {configuration:?}"
+            );
+        }
     }
 }
 

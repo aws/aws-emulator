@@ -190,6 +190,7 @@ const GENERALLY_AVAILABLE_REGIONS: &[&str] = &[
     "ap-southeast-3",
     "ap-southeast-4",
     "ap-southeast-5",
+    "ap-southeast-6",
     "ap-southeast-7",
     "ca-central-1",
     "ca-west-1",
@@ -214,14 +215,15 @@ const GENERALLY_AVAILABLE_REGIONS: &[&str] = &[
 
 /// The Regions a control over Amazon Cognito user pool advanced security deploys to.
 ///
-/// Source: the Region availability the implementing surface publishes — advanced security
-/// on an Amazon Cognito user pool is offered in the Regions of the partition that are
-/// enabled by default, and nowhere else, so that is where the implementing AWS Config
-/// managed rule can evaluate a user pool. `DeployableRegions` reports "the Regions in
-/// which the control is available for deployment" (`smithy_query(query="doc",
-/// shape="RegionConfiguration", member="DeployableRegions")`), so a control whose
-/// implementing surface is offered in fewer Regions than the partition publishes its own,
-/// narrower list rather than the partition-wide one ([`GENERALLY_AVAILABLE_REGIONS`]).
+/// Source: the availability the catalog publishes for this control — the Regions a user
+/// pool can have advanced security in, which is where the implementing AWS Config managed
+/// rule can evaluate one. `DeployableRegions` reports "the Regions in which the control is
+/// available for deployment" (`smithy_query(query="doc", shape="RegionConfiguration",
+/// member="DeployableRegions")`), so a control whose implementing surface is offered in
+/// fewer Regions than the partition publishes its own, narrower list rather than the
+/// partition-wide one ([`GENERALLY_AVAILABLE_REGIONS`]). It is narrower than the partition
+/// but not the Regions enabled by default either: the catalog publishes the control as
+/// deployable in the opt-in Regions `eu-south-1`, `il-central-1` and `me-south-1` as well.
 /// Ordered by Region code, the order the catalog reports them in.
 const COGNITO_ADVANCED_SECURITY_REGIONS: &[&str] = &[
     "ap-northeast-1",
@@ -233,9 +235,12 @@ const COGNITO_ADVANCED_SECURITY_REGIONS: &[&str] = &[
     "ca-central-1",
     "eu-central-1",
     "eu-north-1",
+    "eu-south-1",
     "eu-west-1",
     "eu-west-2",
     "eu-west-3",
+    "il-central-1",
+    "me-south-1",
     "sa-east-1",
     "us-east-1",
     "us-east-2",
@@ -245,23 +250,27 @@ const COGNITO_ADVANCED_SECURITY_REGIONS: &[&str] = &[
 
 /// The Regions a control over an Amazon Redshift Serverless workgroup deploys to.
 ///
-/// Source: the Region availability Amazon Web Services publishes for Amazon Redshift
-/// Serverless, which is where a workgroup can exist for the control to govern. Ordered by
-/// Region code, the order the catalog reports them in.
+/// Source: the availability the catalog publishes for this control — the Regions a
+/// Redshift Serverless workgroup can exist in for the control to govern one, which is
+/// narrower than the partition ([`GENERALLY_AVAILABLE_REGIONS`]) and is not the set the
+/// control over Amazon Cognito user pool advanced security carries either: it covers the
+/// opt-in Regions the service is offered in (`ap-east-1`, `ap-southeast-3`, `eu-central-2`,
+/// `eu-south-2`, `il-central-1`, `me-central-1`) and leaves out Regions the service is not
+/// offered in, `af-south-1` and `ap-northeast-3` among them. Ordered by Region code, the
+/// order the catalog reports them in.
 const REDSHIFT_SERVERLESS_REGIONS: &[&str] = &[
-    "af-south-1",
     "ap-east-1",
     "ap-northeast-1",
     "ap-northeast-2",
-    "ap-northeast-3",
     "ap-south-1",
     "ap-southeast-1",
     "ap-southeast-2",
+    "ap-southeast-3",
     "ca-central-1",
     "eu-central-1",
     "eu-central-2",
     "eu-north-1",
-    "eu-south-1",
+    "eu-south-2",
     "eu-west-1",
     "eu-west-2",
     "eu-west-3",
@@ -270,6 +279,7 @@ const REDSHIFT_SERVERLESS_REGIONS: &[&str] = &[
     "sa-east-1",
     "us-east-1",
     "us-east-2",
+    "us-west-1",
     "us-west-2",
 ];
 
@@ -880,6 +890,27 @@ pub(super) const PUBLISHED_CONTROLS: &[ControlSeed] = &[
             // "Audit record generation".
             (NIST_SP_800_53_R5, "AU-12"),
         ],
+    },
+    ControlSeed {
+        slug: "ec2-instance-detailed-monitoring-enabled",
+        name: "Checks whether detailed monitoring is enabled for EC2 instances",
+        // The implementing AWS Config managed rule's own published description, which is
+        // what the catalog publishes for a control it publishes under a `CONFIG.…`
+        // designator.
+        description: "Checks whether detailed monitoring is enabled for EC2 instances.",
+        behavior: DETECTIVE,
+        severity: MEDIUM,
+        implementation_type: CONFIG_RULE,
+        implementation_identifier: Some("EC2_INSTANCE_DETAILED_MONITORING_ENABLED"),
+        control_tower_identifier: None,
+        designators: &["CONFIG.EC2.DT.1"],
+        scope: REGIONAL,
+        deployable_regions: GENERALLY_AVAILABLE_REGIONS,
+        parameters: NO_PARAMETERS,
+        governed_resources: &["AWS::EC2::Instance"],
+        governed_providers: AWS,
+        implements: "asset-performance-management",
+        frameworks: NO_FRAMEWORK_ITEMS,
     },
     ControlSeed {
         slug: "incoming-ssh-disabled",
@@ -2727,6 +2758,16 @@ pub(super) const PUBLISHED_CATALOG_RECORDS: &[PublishedCatalogRecord] = &[
         identifier: "70u9gks728rcr33237rckvzbo",
         release_time: Some(1_637_193_600),
     },
+    // The AWS Config-implemented controls the catalog publishes under a `CONFIG.…`
+    // designator whose published identifier this catalog records while the instant the
+    // catalog released them is not recorded here: the identifier and the instant are
+    // separate published facts, so a record holds the one this crate holds and the other is
+    // derived from the row's slug (see `super::minted_release_time`).
+    PublishedCatalogRecord {
+        slug: "ec2-instance-detailed-monitoring-enabled",
+        identifier: "27lgd3oknluio5kzcl324kr0d",
+        release_time: None,
+    },
     // The Control Tower controls an AWS Config managed rule implements whose published
     // identifier this catalog records while the instant the catalog released them is not
     // recorded here: the identifier and the instant are separate published facts, so a
@@ -3063,6 +3104,31 @@ pub(super) const OBJECTIVE_FRAMEWORKS: &[(&str, &[FrameworkItem])] = &[
             (CRI_PROFILE_V2_2, "ID.AM-01.01"),
             // "Logical access security software, infrastructure and architectures".
             (SSAE_18_SOC_2, "CC6.1"),
+        ],
+    ),
+    (
+        "asset-performance-management",
+        &[
+            // "System monitoring".
+            (NIST_SP_800_53_R5, "SI-4"),
+            // "Monitoring for unauthorized personnel, connections, devices, and software
+            // is performed".
+            (NIST_CSF_V1_1, "DE.CM-7"),
+            // "Monitor organizational systems, including inbound and outbound
+            // communications traffic".
+            (NIST_SP_800_171_R2, "3.14.6"),
+            // "Failures of critical security control systems are detected, alerted and
+            // addressed promptly".
+            (PCI_DSS_V4_0, "10.7.2"),
+            // "Monitoring activities".
+            (ISO_IEC_27001_2022_ANNEX_A, "8.16"),
+            // "Computing hardware and software are monitored to find potentially adverse
+            // events".
+            (CRI_PROFILE_V2_2, "DE.CM-09.01"),
+            // "Analyze logs, findings and metrics centrally".
+            (AWS_WAF_V10, "SEC04-BP02"),
+            // "Monitoring of system components for anomalies".
+            (SSAE_18_SOC_2, "CC7.2"),
         ],
     ),
     (
