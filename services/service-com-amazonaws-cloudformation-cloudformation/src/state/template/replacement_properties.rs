@@ -575,6 +575,13 @@ pub fn replacement_properties(resource_type: &str) -> &'static [&'static str] {
         // `UpdateEnvironment`, so a declaration restating either asks for a different
         // environment.
         MWAA_ENVIRONMENT => &["EndpointManagement", "KmsKey"],
+        // A Kinesis Video stream's encryption key is fixed when that service makes the stream:
+        // `KmsKeyId` is a member of `CreateStream` and of no call that reconfigures a stream, so
+        // a declaration restating it asks for a different stream. A signaling channel's own TYPE
+        // is in the same position: `ChannelType` is a member of `CreateSignalingChannel` and
+        // `UpdateSignalingChannel` takes only the channel's `SingleMasterConfiguration`.
+        KINESISVIDEO_STREAM => &["KmsKeyId"],
+        KINESISVIDEO_SIGNALING_CHANNEL => &["Type"],
         // Each of the records a REST API is built out of is addressed BY the api that holds
         // it: `restApiId` is an `@httpLabel` of every call API Gateway publishes for a
         // resource, a method, a deployment and a stage — the create included — and that

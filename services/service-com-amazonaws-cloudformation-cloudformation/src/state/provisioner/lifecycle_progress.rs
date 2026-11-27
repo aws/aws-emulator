@@ -249,6 +249,19 @@ impl Provisioner {
             Self::MwaaEnvironment => {
                 mwaa_environment_readiness(ctx, region, physical_resource_id).await
             }
+            // `CreateStream` "is an asynchronous operation" and `CreateSignalingChannel` leaves
+            // the channel coming up the same way: a created stream takes no media and a created
+            // channel carries no signaling until Amazon Kinesis Video Streams reports it
+            // `ACTIVE`, so the resource is held open until it does.
+            Self::KinesisVideoResource(kind) => {
+                Box::pin(kinesis_video_readiness(
+                    ctx,
+                    region,
+                    kind,
+                    physical_resource_id,
+                ))
+                .await
+            }
             // `CreateFHIRDatastore` answers the data store `CREATING` — "the data store
             // status" a store is in while HealthLake brings it up, in which its FHIR endpoint
             // serves no interaction — so the resource is held open until that service reports
@@ -672,6 +685,13 @@ impl Provisioner {
             // and the deletion is finished once Amazon MWAA no longer holds it.
             Self::MwaaEnvironment => {
                 mwaa_environment_removal(ctx, region, physical_resource_id).await
+            }
+            // `DeleteStream` "marks the stream for deletion" and leaves it `DELETING`, so the
+            // stream is still there when the delete answers and the deletion is finished once
+            // Amazon Kinesis Video Streams no longer holds it; a signaling channel is gone as
+            // its own delete answers, which the same arm reports.
+            Self::KinesisVideoResource(kind) => {
+                Box::pin(kinesis_video_removal(ctx, region, kind, physical_resource_id)).await
             }
             // `DeleteFHIRDatastore` leaves the data store `DELETING` and HealthLake goes on
             // reporting it in that status while it takes the store away, so it is still there

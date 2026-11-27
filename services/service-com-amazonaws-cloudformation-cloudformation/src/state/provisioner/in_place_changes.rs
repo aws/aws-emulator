@@ -798,6 +798,21 @@ impl Provisioner {
             Self::RbinRule => update_rbin_rule(ctx, region, resource, declared)
                 .await
                 .map(Some),
+            // What the calls Amazon Kinesis Video Streams publishes for a resource that EXISTS
+            // can change reaches it: a stream's retention window through `UpdateDataRetention`
+            // and a channel's message retention window through `UpdateSignalingChannel`, each
+            // addressed with the `CurrentVersion` that service keeps for the resource
+            // ([`kinesis_video::update_kinesis_video_resource`]). Its tags travel separately
+            // ([`Self::retag`]).
+            // BOXED, as the other heavy arms of this match are: the call's future is the owning
+            // service's whole handler, and holding one inline in this match's state machine is
+            // what takes a deployment past the thread's stack.
+            Self::KinesisVideoResource(kind) => {
+                Box::pin(update_kinesis_video_resource(
+                    ctx, region, kind, resource, declared,
+                ))
+                .await
+            }
             // `UpdateLifecyclePolicy` reconfigures the lifecycle policy the stack created, by the
             // id Amazon Data Lifecycle Manager minted for it, taking its description, its
             // activation state, the role it runs under and its whole configuration — so a changed
@@ -1072,6 +1087,17 @@ impl Provisioner {
             // up carrying is reconciled.
             Self::RbinRule => {
                 retag_rbin_rule(ctx, region, resource, declared, propagated).await
+            }
+            // A stream's tags are Amazon Kinesis Video Streams' own `TagStream`/`UntagStream`
+            // and a channel's that service's generic `TagResource`/`UntagResource`: each
+            // create's tag set applies to the resource that call creates, and no call that
+            // reconfigures one carries a tag at all, so this is where the set either resource is
+            // to end up carrying is reconciled.
+            Self::KinesisVideoResource(kind) => {
+                Box::pin(retag_kinesis_video_resource(
+                    ctx, region, kind, resource, declared, propagated,
+                ))
+                .await
             }
             // A lifecycle policy's tags are Amazon Data Lifecycle Manager's own `TagResource` and
             // `UntagResource`: `CreateLifecyclePolicy`'s `Tags` map applies to the policy that

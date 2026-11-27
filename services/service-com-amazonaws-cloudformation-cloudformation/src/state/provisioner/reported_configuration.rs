@@ -985,6 +985,17 @@ impl Provisioner {
             }
             // Recycle Bin's own read of the rule, by the identifier it minted for it.
             Self::RbinRule => describe_rbin_rule(ctx, region, physical_resource_id).await,
+            // Amazon Kinesis Video Streams' own read of the stream or the channel, by the name
+            // it was created under.
+            Self::KinesisVideoResource(kind) => {
+                Box::pin(describe_kinesis_video_resource(
+                    ctx,
+                    region,
+                    kind,
+                    physical_resource_id,
+                ))
+                .await
+            }
             // Amazon Data Lifecycle Manager's own read of the policy, by the id it minted for it.
             Self::DlmLifecyclePolicy => {
                 describe_dlm_lifecycle_policy(ctx, region, physical_resource_id).await

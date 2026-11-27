@@ -427,6 +427,23 @@ pub fn router_with_engine() -> (MultiServiceRouter, Arc<engine::InMemoryEngine>)
     router.register_service(
         service_com_amazonaws_dlm_dlm_20180112::EmulatedService::new(Arc::clone(&engine)),
     );
+    // Amazon Kinesis Video Streams, for the `AWS::KinesisVideo::Stream` and the
+    // `AWS::KinesisVideo::SignalingChannel` a stack really creates there, so a suite that
+    // deploys one reads the stream and the channel back through that service's own wire, by the
+    // names the stack publishes. Its SIGNALING service comes with it, exactly as
+    // `core/router/src/lib.rs` mounts the two: the registry a created channel's own data plane
+    // resolves lives in that crate's store, and `CreateSignalingChannel` puts the channel it
+    // made there.
+    router.register_service(
+        service_com_amazonaws_kinesisvideo_kinesisvideo_20170930::EmulatedService::new(
+            Arc::clone(&engine),
+        ),
+    );
+    router.register_service(
+        service_com_amazonaws_kinesisvideosignaling_awsacuitysignalingservice::EmulatedService::new(
+            Arc::clone(&engine),
+        ),
+    );
     (router, engine)
 }
 

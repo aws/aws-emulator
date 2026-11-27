@@ -12499,6 +12499,8 @@ dependencies = [
  "service-com-amazonaws-iot-awsiotservice",
  "service-com-amazonaws-iotdeviceadvisor-iotsenateservice",
  "service-com-amazonaws-kinesis-kinesis-20131202",
+ "service-com-amazonaws-kinesisvideo-kinesisvideo-20170930",
+ "service-com-amazonaws-kinesisvideosignaling-awsacuitysignalingservice",
  "service-com-amazonaws-lambda-awsgirapiservice",
  "service-com-amazonaws-memorydb-amazonmemorydb",
  "service-com-amazonaws-neptunegraph-amazonneptunegraph",

@@ -124,6 +124,7 @@ use super::template::{
     GLUE_TABLE_OPTIMIZER,
     HEALTHLAKE_DATA_TRANSFORMATION_PROFILE, HEALTHLAKE_FHIR_DATASTORE,
     IOT_CORE_DEVICE_ADVISOR_SUITE_DEFINITION, MEDIACONVERT_CERTIFICATE_ASSOCIATION,
+    KINESISVIDEO_SIGNALING_CHANNEL, KINESISVIDEO_STREAM,
     MWAA_ENVIRONMENT, NEPTUNE_GRAPH_GRAPH,
     NEPTUNE_GRAPH_GRAPH_SNAPSHOT,
     NETWORK_SECURITY_MANAGER_POLICY, NETWORK_SECURITY_MANAGER_RULE,
@@ -802,6 +803,11 @@ pub const AWS_RESOURCE_TYPES: &[&str] = &[
     "AWS::Kinesis::Stream",
     "AWS::Kinesis::StreamConsumer",
     "AWS::KinesisAnalyticsV2::Application",
+    // Amazon Kinesis Video Streams. The video stream and the WebRTC signaling channel are both
+    // created in the owning service (`super::provisioner`), which is what that namespace
+    // publishes resource types for.
+    KINESISVIDEO_STREAM,
+    KINESISVIDEO_SIGNALING_CHANNEL,
     // Amazon Data Firehose
     "AWS::KinesisFirehose::DeliveryStream",
     // AWS Lake Formation

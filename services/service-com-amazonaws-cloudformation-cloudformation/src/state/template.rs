@@ -3254,6 +3254,10 @@ pub const IMPLEMENTED_RESOURCE_TYPES: &[&str] = &[
     MEMORYDB_PARAMETER_GROUP,
     MEMORYDB_SUBNET_GROUP,
     MWAA_ENVIRONMENT,
+    // The two Amazon Kinesis Video Streams resources, each publishing the ARN that service
+    // minted for the stream or the signaling channel the stack created.
+    KINESISVIDEO_STREAM,
+    KINESISVIDEO_SIGNALING_CHANNEL,
     "AWS::RDS::DBCluster",
     "AWS::RDS::DBInstance",
     "AWS::RUM::AppMonitor",

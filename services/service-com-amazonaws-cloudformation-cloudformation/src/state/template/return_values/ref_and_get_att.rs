@@ -3409,6 +3409,38 @@ pub(crate) fn return_values(
             }
             (name.to_string(), attributes)
         }
+        // Amazon Kinesis Video Streams' own control plane: the video stream an
+        // `AWS::KinesisVideo::Stream` declares and the signaling channel an
+        // `AWS::KinesisVideo::SignalingChannel` declares. "Ref returns the stream name" /
+        // "Ref returns the channel name", which is the handle every call of that service on the
+        // resource takes, so the physical id is that name; `Fn::GetAtt` reads the one value
+        // [`KINESISVIDEO_ATTRIBUTES`] names. That ARN is the owning service's own — its last
+        // segment is the instant that service recorded the resource at — so the value here is a
+        // STAND-IN of the form its own model fixes, which `super::provisioning` re-points at
+        // what the create really answered
+        // ([`super::provisioner::Provisioner::KinesisVideoResource`]).
+        KINESISVIDEO_STREAM | KINESISVIDEO_SIGNALING_CHANNEL => {
+            let path = match resource_type {
+                KINESISVIDEO_SIGNALING_CHANNEL => KINESISVIDEO_CHANNEL_PATH,
+                // The STREAM, which is the second of the two types this arm serves.
+                _ => KINESISVIDEO_STREAM_PATH,
+            };
+            let recorded_at = derived_over(
+                KINESISVIDEO_ARN_INSTANT_SALT,
+                name,
+                KINESISVIDEO_ARN_INSTANT_DIGITS,
+                KINESISVIDEO_ARN_INSTANT_ALPHABET,
+            );
+            attributes.insert(
+                KINESISVIDEO_ARN_ATTRIBUTE.to_string(),
+                ::emulator_server::emulator_arn(
+                    KINESISVIDEO_ARN_NAMESPACE,
+                    region,
+                    &format!("{path}/{name}/{recorded_at}"),
+                ),
+            );
+            (name.to_string(), attributes)
+        }
         // Amazon Connect Customer Profiles' own control plane: the domain an
         // `AWS::CustomerProfiles::Domain` declares. "Ref returns the DomainName", which is the
         // handle every operation on a domain takes, so the physical id is that name; Fn::GetAtt

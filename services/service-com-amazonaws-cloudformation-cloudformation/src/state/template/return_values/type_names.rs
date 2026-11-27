@@ -25,6 +25,46 @@ pub const FIREHOSE_DELIVERY_STREAM: &str = "AWS::KinesisFirehose::DeliveryStream
 /// and the identity is not service-assigned.
 pub const KINESIS_STREAM: &str = "AWS::Kinesis::Stream";
 
+/// The `AWS::<cloudFormationName>::<Resource>` types of the two Amazon Kinesis Video Streams
+/// resources a template may declare — a third service from the two above, whose middle segment
+/// is that model's own `awsService.cloudFormationName` (`KinesisVideo`): the video stream
+/// `CreateStream` makes, and the WebRTC signaling channel `CreateSignalingChannel` makes.
+///
+/// "Ref returns the stream name" and "Ref returns the channel name": each is the name the owning
+/// service creates the resource under and the handle every later call of that service takes for
+/// it, so a GENERATED one is held to that service's own rules for it ([`naming_rules`]) and
+/// neither identity is service-assigned.
+pub const KINESISVIDEO_STREAM: &str = "AWS::KinesisVideo::Stream";
+pub const KINESISVIDEO_SIGNALING_CHANNEL: &str = "AWS::KinesisVideo::SignalingChannel";
+
+/// Every `Fn::GetAtt` attribute either `AWS::KinesisVideo::*` type publishes: the ARN that
+/// service minted for the resource, which is the one return value each type's own "Return
+/// values" section names.
+pub(super) const KINESISVIDEO_ATTRIBUTES: &[&str] = &[KINESISVIDEO_ARN_ATTRIBUTE];
+
+/// The attribute of [`KINESISVIDEO_ATTRIBUTES`] that carries that ARN.
+pub(super) const KINESISVIDEO_ARN_ATTRIBUTE: &str = "Arn";
+
+/// Amazon Kinesis Video Streams' ARN namespace (that model's `awsService.arnNamespace`), and
+/// the resource path a stream's and a channel's ARN carries before the resource's own name
+/// (`ResourceARN`'s pattern, `^arn:[a-z\d-]+:kinesisvideo:[a-z0-9-]+:[0-9]+:[a-z]+/…`).
+pub(super) const KINESISVIDEO_ARN_NAMESPACE: &str = "kinesisvideo";
+pub(super) const KINESISVIDEO_STREAM_PATH: &str = "stream";
+pub(super) const KINESISVIDEO_CHANNEL_PATH: &str = "channel";
+
+/// How many DIGITS the last segment of such an ARN carries, and the salt the stand-in for it is
+/// drawn under: that segment is the instant the owning service recorded the resource at, in
+/// milliseconds (`[0-9]+` in the pattern above), so it is a value only that service produces and
+/// what the stand-in computed before the resource exists is of its FORM — thirteen digits, the
+/// width a millisecond instant of this era is written in.
+pub(super) const KINESISVIDEO_ARN_INSTANT_DIGITS: usize = 13;
+pub(super) const KINESISVIDEO_ARN_INSTANT_SALT: &str = "kinesisvideo/recorded-at";
+
+/// The alphabet that stand-in is drawn from: the DECIMAL digits, which is what that segment of
+/// the ARN admits (`[0-9]+`) rather than the hexadecimal most derived identifiers are written
+/// over ([`derived_over`](super::super::naming_rules::derived_over) folds the digest into it).
+pub(super) const KINESISVIDEO_ARN_INSTANT_ALPHABET: &[u8] = b"0123456789";
+
 /// The `AWS::<cloudFormationName>::<Resource>` types of the Amazon Bedrock resources an
 /// agent estate declares. The middle segment is that model's own
 /// `awsService.cloudFormationName` (`Bedrock`).

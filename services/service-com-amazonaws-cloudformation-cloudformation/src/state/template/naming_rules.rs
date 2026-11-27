@@ -570,6 +570,14 @@ pub(super) fn naming_rules(resource_type: &str) -> Option<NameRules> {
         // the hyphen are all admitted, and it starts with a letter because a stack name does
         // — but may be longer than.
         MWAA_ENVIRONMENT => rules(80, Characters::AsGenerated),
+        // Amazon Kinesis Video Streams `CreateStream.StreamName` (`StreamName`) and
+        // `CreateSignalingChannel.ChannelName` (`ChannelName`): each `@length(min: 1, max: 256)`
+        // with pattern `^[a-zA-Z0-9_.-]+$` (that service's own Smithy model), which admits every
+        // character a generated name carries — letters, digits and the hyphen — and bounds it at
+        // 256.
+        KINESISVIDEO_STREAM | KINESISVIDEO_SIGNALING_CHANNEL => {
+            rules(256, Characters::AsGenerated)
+        }
         // CloudWatch Application Signals `CreateServiceLevelObjective.Name`:
         // `ServiceLevelObjectiveName`, pattern
         // `^[0-9A-Za-z][-._0-9A-Za-z ]{0,126}[0-9A-Za-z]$` (that service's own Smithy model),

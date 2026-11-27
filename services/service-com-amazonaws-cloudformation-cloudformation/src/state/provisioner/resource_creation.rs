@@ -1216,6 +1216,19 @@ impl Provisioner {
             // own, so a retention rule a stack creates carries the tags CloudFormation gives
             // it beside the ones the declaration asks for.
             Self::RbinRule => create_rbin_rule(ctx, region, resource, propagated).await,
+            // Both `AWS::KinesisVideo::*` types publish `Tags`, and each create takes a tag set
+            // of its own — a stream's as the `ResourceTags` map, a channel's as the
+            // `TagOnCreateList` — so a stream and a channel a stack creates each carry the tags
+            // CloudFormation gives them beside the ones their declaration asks for.
+            // BOXED, for the reason the other heavy arms of this match are: the call's future is
+            // the owning service's whole handler, and holding one of those inline in this
+            // match's state machine is what takes a deployment past the thread's stack.
+            Self::KinesisVideoResource(kind) => {
+                Box::pin(create_kinesis_video_resource(
+                    ctx, region, kind, resource, propagated,
+                ))
+                .await
+            }
             // `AWS::DLM::LifecyclePolicy` publishes `Tags`, and `CreateLifecyclePolicy` takes a
             // `TagMap` of its own, so a lifecycle policy a stack creates carries the tags
             // CloudFormation gives it beside the ones the declaration asks for.

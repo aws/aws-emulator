@@ -535,6 +535,7 @@ use super::template::{
     IAM_ACCESS_KEY,
     IOT_CORE_DEVICE_ADVISOR_SUITE_DEFINITION,
     KINESIS_STREAM,
+    KINESISVIDEO_SIGNALING_CHANNEL, KINESISVIDEO_STREAM,
     KMS_ALIAS, KMS_KEY,
     MASTER_USER_SECRET_ARN_ATTRIBUTE,
     MEDIACONVERT_CERTIFICATE_ASSOCIATION,
@@ -1675,6 +1676,18 @@ pub(super) enum Provisioner {
     /// identifier inside it is the handle every call on a rule takes
     /// ([`rbin_rules`]).
     RbinRule,
+    /// `AWS::KinesisVideo::Stream` and `AWS::KinesisVideo::SignalingChannel`: the video stream
+    /// and the WebRTC signaling channel Amazon Kinesis Video Streams' own `CreateStream` and
+    /// `CreateSignalingChannel` make under the name the template states, and the matching
+    /// `Delete…` removes. That name IS the handle every call of that service on either resource
+    /// takes, so it is the physical id the naming rules already compute for the type, and the
+    /// ARN each type publishes is the one that service minted — its resource path carries the
+    /// instant the record was made — so it is read off that service's own answer. Both creates
+    /// leave the resource `CREATING`, in which it serves no client, so each resource's creation
+    /// is held open on that service's own report of it; a stream's delete only MARKS it for
+    /// deletion, so the removal is held open the same way. Which resource it is travels with the
+    /// variant ([`kinesis_video::Resource`]).
+    KinesisVideoResource(kinesis_video::Resource),
     /// `AWS::DLM::LifecyclePolicy`: the Amazon Data Lifecycle Manager lifecycle policy
     /// `CreateLifecyclePolicy` makes out of the configuration the declaration states,
     /// `UpdateLifecyclePolicy` reconfigures and `DeleteLifecyclePolicy` removes. That service
@@ -2158,6 +2171,14 @@ pub(super) fn provisioner_for(resource_type: &str) -> Option<Provisioner> {
         REDSHIFT_SERVERLESS_SNAPSHOT => Some(Provisioner::RedshiftServerlessSnapshot),
         APPFLOW_CONNECTOR_PROFILE => Some(Provisioner::AppFlowConnectorProfile),
         RBIN_RULE => Some(Provisioner::RbinRule),
+        // Each Kinesis Video Streams resource names which of the two it is, so the one set of
+        // arms serves both types; the catalogue still lists every provisioned type here.
+        KINESISVIDEO_STREAM => Some(Provisioner::KinesisVideoResource(
+            kinesis_video::Resource::Stream,
+        )),
+        KINESISVIDEO_SIGNALING_CHANNEL => Some(Provisioner::KinesisVideoResource(
+            kinesis_video::Resource::SignalingChannel,
+        )),
         DLM_LIFECYCLE_POLICY => Some(Provisioner::DlmLifecyclePolicy),
         // Each AWS Network Security Manager entity names which of the four it is, so the one
         // set of arms serves every type; the catalogue still lists every provisioned type here.
@@ -3197,6 +3218,18 @@ impl Provisioner {
             // The delete addresses the rule by the identifier inside the ARN Recycle Bin
             // minted for it, which is this resource's physical id.
             Self::RbinRule => delete_rbin_rule(ctx, region, physical_resource_id).await,
+            // Either Kinesis Video Streams delete addresses the resource by the ARN that
+            // service minted for it, which the arm reads off that service's own report of the
+            // stream or the channel the stack created under this resource's physical id.
+            Self::KinesisVideoResource(kind) => {
+                Box::pin(delete_kinesis_video_resource(
+                    ctx,
+                    region,
+                    kind,
+                    physical_resource_id,
+                ))
+                .await
+            }
             // The delete addresses the policy by the id Amazon Data Lifecycle Manager minted for
             // it, which is this resource's physical id.
             Self::DlmLifecyclePolicy => {
@@ -3409,6 +3442,13 @@ mod customer_profiles_domains;
 /// Visible to the rest of this service's state because the LOCK STATE a declaration asks for
 /// is read by the return-value catalogue too, beside the arms that provision the rule.
 pub(in crate::state) mod rbin_rules;
+/// The Amazon Kinesis Video Streams arms: the video stream an `AWS::KinesisVideo::Stream`
+/// declares and the WebRTC signaling channel an `AWS::KinesisVideo::SignalingChannel` declares,
+/// each created in the service that owns it so a client's own `DescribeStream` /
+/// `DescribeSignalingChannel` and listings resolve the name the stack publishes. Visible to the
+/// rest of this service's state because the type names and the dispatch they key live beside
+/// the arms that provision the resources.
+pub(in crate::state) mod kinesis_video;
 /// The Amazon Data Lifecycle Manager LIFECYCLE POLICY arms: the policy an
 /// `AWS::DLM::LifecyclePolicy` declares, created in the service that owns it so a client's own
 /// `GetLifecyclePolicy` and `GetLifecyclePolicies` resolve the identity the stack publishes.
@@ -3758,6 +3798,13 @@ pub(in crate::state) mod directory_service_directories;
 use directory_service_directories::*;
 use customer_profiles_domains::*;
 use rbin_rules::*;
+// Selectively, so the module's own `Resource` discriminant stays spelled
+// `kinesis_video::Resource` at every use site rather than entering this namespace.
+use kinesis_video::{
+    create_kinesis_video_resource, delete_kinesis_video_resource, describe_kinesis_video_resource,
+    kinesis_video_readiness, kinesis_video_removal, retag_kinesis_video_resource,
+    update_kinesis_video_resource,
+};
 use dlm_lifecycle_policies::*;
 use network_security_manager::*;
 use neptune_graphs::*;

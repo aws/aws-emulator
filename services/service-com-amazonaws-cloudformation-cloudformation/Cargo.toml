@@ -358,6 +358,16 @@ service-com-amazonaws-directconnect-overtureservice = { workspace = true }
 # owning service mounted beside CloudFormation, or the create is refused and the stack fails —
 # and the lifecycle policy the stack published is read back through that service's own wire.
 service-com-amazonaws-dlm-dlm-20180112 = { workspace = true }
+# Amazon Kinesis Video Streams, for the `AWS::KinesisVideo::Stream` and the
+# `AWS::KinesisVideo::SignalingChannel` a stack really creates there
+# (`state::provisioner::kinesis_video`): a suite that deploys one must have its owning service
+# mounted beside CloudFormation, or the create is refused and the stack fails — and the stream
+# and the channel the stack published are read back through that service's own wire.
+service-com-amazonaws-kinesisvideo-kinesisvideo-20170930 = { workspace = true }
+# The Kinesis Video signaling service, which OWNS the data plane a created signaling channel is
+# served on: that service's registry is where `CreateSignalingChannel` puts the channel it made,
+# so it is mounted beside the control plane exactly as `core/router/src/lib.rs` mounts them.
+service-com-amazonaws-kinesisvideosignaling-awsacuitysignalingservice = { workspace = true }
 # IAM Access Analyzer, for the `AWS::AccessAnalyzer::Analyzer` and the
 # `AWS::AccessAnalyzer::ArchiveRule` of one a stack really creates there
 # (`state::provisioner::access_analyzer`): a suite that deploys one must have its owning service

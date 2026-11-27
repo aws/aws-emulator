@@ -562,6 +562,10 @@ pub fn published_attribute_names(resource_type: &str) -> &'static [&'static str]
         AMPLIFY_APP => AMPLIFY_APP_ATTRIBUTES,
         AMPLIFY_BRANCH => AMPLIFY_BRANCH_ATTRIBUTES,
         MWAA_ENVIRONMENT => MWAA_ENVIRONMENT_ATTRIBUTES,
+        // A Kinesis Video Streams stream and signaling channel each publish the ARN that
+        // service minted for the resource, which is the one return value these naming rules
+        // compute a stand-in for before the resource exists.
+        KINESISVIDEO_STREAM | KINESISVIDEO_SIGNALING_CHANNEL => KINESISVIDEO_ATTRIBUTES,
         CUSTOMER_PROFILES_DOMAIN => CUSTOMER_PROFILES_DOMAIN_ATTRIBUTES,
         "AWS::BedrockAgentCore::Memory" => &["MemoryArn", "MemoryId"],
         "AWS::BedrockAgentCore::Runtime" => {
