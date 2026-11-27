@@ -209,6 +209,28 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .into());
         }
 
+        // A skill package uploaded with the record is admitted on the terms the model
+        // documents for it — the size of the archive, and the checksum of its bytes where
+        // the request supplied one — and for the same reason as the descriptors above, that
+        // is a fact about the request rather than about the stored state.
+        if let Some(message) = input
+            .artifact
+            .as_ref()
+            .and_then(crate::state::artifact_refusal)
+        {
+            return Err(CreateRegistryRecordErrorModeled::ValidationException(
+                ValidationException {
+                    message,
+                    reason: crate::state::FIELD_VALIDATION_FAILED.to_string(),
+                    field_list: Some(vec![ValidationExceptionField {
+                        name: "artifact".to_string(),
+                        message: "is not a skill package this service can store".to_string(),
+                    }]),
+                },
+            )
+            .into());
+        }
+
         let registry_id = crate::state::identifier_to_id(&input.registry_id).to_string();
         let token = input.client_token.clone().filter(|t| !t.is_empty());
         // The parameters the token names: the request with its token cleared, so a replay
@@ -286,6 +308,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                             return Ok(CreateRegistryRecordOutput {
                                 record_arn: answer.arn,
                                 status,
+                                // As below: no record of this service waits for a
+                                // synchronization authorization.
+                                authorization_data: None,
                             });
                         }
                     }
@@ -448,6 +473,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             updated_at: created_at,
             tags: input.tags.unwrap_or_default().into_iter().collect(),
             pending: Some(pending),
+            // The package the request uploaded, kept as the checksum of its bytes: that
+            // checksum is the whole of what a read of this record reports about it, and the
+            // archive's bytes are dropped with the request.
+            artifact_sha256: input
+                .artifact
+                .as_ref()
+                .map(crate::state::stored_artifact_checksum),
             // Nothing is published until the registry's approval workflow approves the
             // record, so a record this call creates has no approved revision yet.
             approved_revision: None,
@@ -477,6 +509,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             );
         }
 
-        Ok(CreateRegistryRecordOutput { record_arn, status })
+        Ok(CreateRegistryRecordOutput {
+            record_arn,
+            status,
+            // The authorization "a GitHub user must complete before the record's
+            // synchronization starts", present only while the record is waiting for it.
+            // This service synchronizes no record's content from an outside source, so no
+            // record of it ever waits for that authorization.
+            authorization_data: None,
+        })
     }
 }

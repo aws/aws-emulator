@@ -188,6 +188,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // The record is gone, so the token that created it names nothing: a replay of
         // that create mints a new record rather than answering with a deleted one.
         state.forget_idempotency_under(&removed.record_arn);
+        // A publisher association names the record it binds, so the record's removal
+        // releases the association and the public identifier it held: an association for a
+        // record that is no longer there would be a claim that the record exists.
+        state.associations.remove(&removed.record_arn);
 
         Ok(DeleteRegistryRecordOutput {})
     }

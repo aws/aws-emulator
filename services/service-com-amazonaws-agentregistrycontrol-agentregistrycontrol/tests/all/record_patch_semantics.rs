@@ -424,6 +424,84 @@ async fn a_patch_is_applied_to_the_stored_record_and_served_by_every_read_path()
             json!({ "customMetadata": null }),
         ),
         (
+            "patch the signature agent card descriptor, leaving the first alone",
+            json!({
+                "descriptors": {
+                    "optionalValue": {
+                        "signatureAgentCard": {
+                            "optionalValue": {
+                                "data": { "optionalValue": "{\"name\":\"crawler\"}" },
+                                "dataSchemaVersion": { "optionalValue": "0.3.0" },
+                                "additionalData": {
+                                    "optionalValue": {
+                                        "category": { "optionalValue": "ai_search" }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }),
+            json!({
+                "descriptors": {
+                    "custom": { "data": "{\"created\":true}" },
+                    "signatureAgentCard": {
+                        "data": "{\"name\":\"crawler\"}",
+                        "dataSchemaVersion": "0.3.0",
+                        "additionalData": { "category": "ai_search" }
+                    }
+                }
+            }),
+        ),
+        (
+            "patch every leaf of the agent-skills additional data",
+            json!({
+                "descriptors": {
+                    "optionalValue": {
+                        "agentSkillsDefinition": {
+                            "optionalValue": {
+                                "data": { "optionalValue": "{\"skills\":[]}" },
+                                "additionalData": {
+                                    "optionalValue": {
+                                        "skillPackage": {
+                                            "optionalValue": {
+                                                "source": {
+                                                    "fromUrl": { "url": "https://example.test/skill.zip" }
+                                                }
+                                            }
+                                        },
+                                        "repositoryProvider": { "optionalValue": "GITHUB" },
+                                        "sourceConfiguration": {
+                                            "optionalValue": {
+                                                "s3": { "bucketOwnerAccountId": "000000000000" }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }),
+            json!({
+                "descriptors": {
+                    "custom": { "data": "{\"created\":true}" },
+                    "agentSkillsDefinition": {
+                        "data": "{\"skills\":[]}",
+                        "additionalData": {
+                            "skillPackage": {
+                                "source": { "fromUrl": { "url": "https://example.test/skill.zip" } }
+                            },
+                            "repositoryProvider": "GITHUB",
+                            "sourceConfiguration": {
+                                "s3": { "bucketOwnerAccountId": "000000000000" }
+                            }
+                        }
+                    }
+                }
+            }),
+        ),
+        (
             "patch two members in one request",
             json!({
                 "displayName": { "optionalValue": "both at once" },

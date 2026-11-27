@@ -14,12 +14,19 @@
 //! here named after an operation would make that operation's own module name
 //! ambiguous inside `ops` (`E0659`).
 
+pub mod associate_publisher_types;
+pub mod create_publisher_types;
 pub mod create_registry_record_types;
 pub mod create_registry_types;
+pub mod delete_publisher_types;
 pub mod delete_registry_record_types;
 pub mod delete_registry_types;
+pub mod disassociate_publisher_types;
+pub mod get_publisher_types;
 pub mod get_registry_record_types;
 pub mod get_registry_types;
+pub mod list_publisher_associations_types;
+pub mod list_publishers_types;
 pub mod list_registries_types;
 pub mod list_registry_records_types;
 pub mod list_tags_for_resource_types;
@@ -27,22 +34,38 @@ pub mod shared_types;
 pub mod submit_registry_record_for_approval_types;
 pub mod tag_resource_types;
 pub mod untag_resource_types;
+pub mod update_publisher_association_approval_status_types;
 pub mod update_registry_record_status_types;
 pub mod update_registry_record_types;
 pub mod update_registry_types;
+pub mod validate_publisher_types;
 
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use associate_publisher_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use create_publisher_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use create_registry_record_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use create_registry_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use delete_publisher_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use delete_registry_record_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use delete_registry_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use disassociate_publisher_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use get_publisher_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use get_registry_record_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use get_registry_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use list_publisher_associations_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use list_publishers_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use list_registries_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
@@ -58,9 +81,13 @@ pub use tag_resource_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use untag_resource_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use update_publisher_association_approval_status_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use update_registry_record_status_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use update_registry_record_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use update_registry_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use validate_publisher_types::*;
 

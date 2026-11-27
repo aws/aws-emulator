@@ -98,6 +98,9 @@ impl Seeded {
             updated_at: created_at,
             tags: BTreeMap::new(),
             pending: None,
+            // A seeded record carries no uploaded skill package: the discovery surface
+            // reports no member of one, so no row of these tests varies over it.
+            artifact_sha256: None,
             // A seeded record publishes no revision of its own: a row states the status it
             // is in, and a discovery read projects the record as it stands.
             approved_revision: None,

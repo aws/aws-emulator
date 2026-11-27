@@ -23,8 +23,11 @@ bytes = { workspace = true }
 http = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
-# Encodes/decodes the opaque `nextToken` ListRegistryRecords hands out.
+# Encodes/decodes the opaque `nextToken` a paginated list hands out, and renders a stored
+# skill package's SHA-256 checksum as hexadecimal.
 hex = { workspace = true }
+# The SHA-256 checksum of a stored skill package, which every read of the package reports.
+sha2 = { workspace = true }
 # Applies a registry's custom-metadata JSON Schema to a record's metadata.
 boon = "0.6"
 # The claim rule for a service under a signing name it shares with a peer; the ONE ARN
@@ -35,7 +38,6 @@ service-common = { path = "../common" }
 emulator-core-build-support = { workspace = true }
 
 [dev-dependencies]
-sha2 = { workspace = true }
 # `rand`: the generator the property-based curation-workflow suite draws its walks over the
 # record lifecycle from, seeded so a run is reproducible. Test-only: nothing in `src/` draws
 # random values.

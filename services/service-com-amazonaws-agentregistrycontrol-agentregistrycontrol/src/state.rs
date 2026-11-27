@@ -6,7 +6,8 @@
 //! this service needs: identifier minting, identifier/ARN resolution, the request's
 //! region, and the clock-owed status transitions the model documents (a registry is
 //! created `CREATING` and becomes `READY`; a record is created `CREATING` and becomes
-//! `DRAFT`; a deleted registry sits in `DELETING` and is then removed).
+//! `DRAFT`; a deleted registry sits in `DELETING` and is then removed; a publisher is
+//! created `ACTION_REQUIRED` and becomes `ACTIVE` once its domain verifies).
 
 use std::collections::{BTreeMap, HashMap};
 use std::time::{Duration, Instant};
@@ -16,14 +17,29 @@ use ::aws_smithy_types::DateTime;
 use crate::ops::types::{
     ApprovalConfiguration, AutoDetection, AutoDetectionConfiguration,
     CustomMetadataSchemaConfiguration, Descriptors, DiscoveryConfiguration,
-    EncryptionConfiguration, Provenance,
+    EncryptionConfiguration, Provenance, PublisherAssociation,
 };
 
+mod artifact;
 mod custom_metadata;
 mod descriptor_payload;
 mod mcp_server_schema;
 mod patch;
+mod publishers;
 mod schema_evolution;
+
+/// The skill package a registry record carries: the bound and the checksum a write of one
+/// has to satisfy, what the store keeps for it (its checksum alone), and what a read reports
+/// for it. See [`artifact`].
+pub use artifact::{
+    artifact_checksum, artifact_download, artifact_refusal, stored_artifact_checksum,
+    MAX_ARTIFACT_BYTES,
+};
+
+/// The publisher surface of this service: a publisher of a domain, the association that
+/// binds a registry record to one, the identifiers both are addressed by, and how a request
+/// about either is refused. See [`publishers`].
+pub use publishers::*;
 
 /// Applying the PATCH wrappers an update operation of this service takes: a leaf wrapper
 /// over an optional field, and a wrapper over a structure whose members are each
@@ -599,6 +615,10 @@ pub struct RegistryRecord {
     pub updated_at: DateTime,
     pub tags: BTreeMap<String, String>,
     pub pending: Option<DueTransition<RecordTransition>>,
+    /// The SHA-256 checksum of the skill package uploaded with this record, or `None` for a
+    /// record that carries no package. The archive's own bytes are NOT kept: see
+    /// [`artifact`].
+    pub artifact_sha256: Option<String>,
     /// The revision the approval workflow last published, or `None` for a record no
     /// approval has published: see [`ApprovedRevision`].
     pub approved_revision: Option<ApprovedRevision>,
@@ -721,6 +741,15 @@ pub struct ComAmazonawsAgentregistrycontrolAgentregistrycontrolState {
     pub registries: HashMap<String, Registry>,
     /// Registry name -> registry id, so a duplicate name is a `ConflictException`.
     pub registry_name_index: HashMap<String, String>,
+    /// Every publisher, keyed by its domain folded to lower case ([`publisher_key`]) — the
+    /// account holds one publisher per domain, and a DNS name is case-insensitive. Ordered,
+    /// so `ListPublishers` has a stable order and its `nextToken` names a well-defined
+    /// resume point.
+    pub publishers: BTreeMap<String, Publisher>,
+    /// Every publisher association, keyed by the ARN of the registry record it binds — "a
+    /// registry record can have only one publisher association". Ordered for the same reason
+    /// as [`Self::publishers`].
+    pub associations: BTreeMap<String, PublisherAssociation>,
     /// `<operation>#<clientToken>` -> what that call answered, and the parameters it
     /// answered them for. The operation is part of the key, so one token reused across
     /// two different creates cannot make one replay the other's answer.
@@ -789,12 +818,39 @@ impl ComAmazonawsAgentregistrycontrolAgentregistrycontrolState {
             }
             true
         });
+        // The publisher surface's own clock-owed steps: a domain verification that has run
+        // its course, and a delete that has.
+        let mut removed_publishers: Vec<String> = Vec::new();
+        self.publishers.retain(|_, publisher| {
+            if let Some(pending) = publisher.pending.clone() {
+                if pending.due_at <= now {
+                    match pending.to {
+                        PublisherTransition::Verified => {
+                            publisher.status = PUBLISHER_ACTIVE.to_string();
+                            publisher.status_reason = None;
+                            publisher.updated_at = pending.at;
+                            publisher.pending = None;
+                        }
+                        PublisherTransition::Removed => {
+                            removed_publishers.push(publisher.publisher_arn.clone());
+                            return false;
+                        }
+                    }
+                } else {
+                    arm(pending.due_at);
+                }
+            }
+            true
+        });
         self.next_due = earliest;
         for (name, registry_arn) in removed {
             self.registry_name_index.remove(&name);
             // The registry and its records are gone, so the tokens that named them are
             // of no use to anybody: a replay of that create mints a new resource.
             self.forget_idempotency_under(&registry_arn);
+        }
+        for publisher_arn in removed_publishers {
+            self.forget_idempotency_under(&publisher_arn);
         }
     }
 
@@ -1108,6 +1164,16 @@ fn mint_id() -> String {
     format!("{:012x}", drawn & 0x0000_ffff_ffff_ffff)
 }
 
+/// The value of a DNS-01 challenge: 48 characters of `[0-9a-f]`, which satisfies
+/// `ChallengeRecordValue`'s `@length(1, 1024)`.
+///
+/// A new value is issued every time domain verification starts and the earlier one stops
+/// verifying the domain, so what matters is that two draws differ. The bits come from the
+/// same source as [`mint_id`], drawn four times over.
+pub fn mint_challenge_value() -> String {
+    (0..4).map(|_| mint_id()).collect::<String>()
+}
+
 /// The id named by a `RegistryIdentifier` / `RecordIdentifier` label, which the model
 /// lets a caller give either bare or as the resource's full ARN. The id is the ARN's
 /// last `/`-separated segment, and a bare id has no `/` at all.
@@ -1159,20 +1225,33 @@ pub fn record_arn(registry_arn: &str, record_id: &str) -> String {
     format!("{registry_arn}/record/{record_id}")
 }
 
-/// The opaque `nextToken` `ListRegistryRecords` hands out: it carries the registry it was
-/// issued for and the last record id of the page, hex-encoded (the `hex` crate this crate
-/// already depends on) so a caller reads it as nothing but a cursor — and hex satisfies
-/// `NextToken`'s `^\S*$`, holding no whitespace.
-pub fn encode_page_token(registry_id: &str, record_id: &str) -> String {
-    ::hex::encode(format!("{registry_id}/{record_id}"))
+/// The opaque `nextToken` a paginated list of this service hands out: it carries the SCOPE
+/// it was issued for — the registry whose records are being listed, or the name of the
+/// collection ([`PUBLISHERS_PAGE_SCOPE`], [`ASSOCIATIONS_PAGE_SCOPE`]) — and the last key of
+/// the page, hex-encoded (the `hex` crate this crate already depends on) so a caller reads
+/// it as nothing but a cursor — and hex satisfies `NextToken`'s `^\S*$`, holding no
+/// whitespace.
+///
+/// The scope is the part before the first `/`, so a cursor that itself carries `/` (a
+/// record's ARN) survives the round trip.
+pub fn encode_page_token(scope: &str, cursor: &str) -> String {
+    ::hex::encode(format!("{scope}/{cursor}"))
 }
 
-/// The record id a page token resumes after, or `None` when the token is not one this
-/// service issued for `registry_id` — which is a refusal, not an implicit first page.
-pub fn decode_page_token(registry_id: &str, token: &str) -> Option<String> {
+/// The scope [`encode_page_token`] names a page of `ListPublishers` with. It is no registry
+/// id (`RegistryId` is 12..16 alphanumerics), so one list's token cannot resume another's.
+pub const PUBLISHERS_PAGE_SCOPE: &str = "publishers";
+
+/// The scope [`encode_page_token`] names a page of `ListPublisherAssociations` with, for the
+/// same reason as [`PUBLISHERS_PAGE_SCOPE`].
+pub const ASSOCIATIONS_PAGE_SCOPE: &str = "associations";
+
+/// The cursor a page token resumes after, or `None` when the token is not one this
+/// service issued for `scope` — which is a refusal, not an implicit first page.
+pub fn decode_page_token(scope: &str, token: &str) -> Option<String> {
     let decoded = String::from_utf8(::hex::decode(token).ok()?).ok()?;
-    let (issued_for, record_id) = decoded.split_once('/')?;
-    (issued_for == registry_id && !record_id.is_empty()).then(|| record_id.to_string())
+    let (issued_for, cursor) = decoded.split_once('/')?;
+    (issued_for == scope && !cursor.is_empty()).then(|| cursor.to_string())
 }
 
 /// This service's store in the shared engine: call it with a handler's `&*self.engine`.

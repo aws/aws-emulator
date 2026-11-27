@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: CC0-1.0
 
-//! End-to-end tests for the registry + registry-record slice of
+//! End-to-end tests for the registry, registry-record and publisher slices of
 //! `agent-registry-control`, driven over HTTP through the real router so every
 //! assertion goes through routing, deserialization, the handler and serialization.
 //!
@@ -8,14 +8,17 @@
 //! create operations persisted — a create stores the whole request and mints the
 //! identifiers the model's patterns describe, a read reports exactly what is stored, a
 //! delete removes it, and the asynchronous statuses the model documents (`CREATING` ->
-//! `READY`, `CREATING` -> `DRAFT`, `DELETING` -> gone) are owed by the clock rather than
-//! by the caller's next call. Every test therefore asserts over a TABLE of inputs, so it
-//! holds for a class of requests and not for one recorded shape.
+//! `READY`, `CREATING` -> `DRAFT`, `DELETING` -> gone, a publisher's `ACTION_REQUIRED` ->
+//! `ACTIVE`) are owed by the clock rather than by the caller's next call. Every test
+//! therefore asserts over a TABLE of inputs, so it holds for a class of requests and not
+//! for one recorded shape.
 
 use std::sync::Arc;
 use std::time::Duration;
 
 use serde_json::{json, Value};
+/// The digest trait the skill-package checksum below is computed through.
+use sha2::Digest;
 use smithy_server_runtime::MultiServiceRouter;
 
 /// The region in the test's SigV4 credential scope; every minted ARN must carry it.
@@ -2696,6 +2699,974 @@ async fn get_registry_reports_the_effective_discovery_and_approval_configuration
             "case {case:?}: GetRegistry reports the effective approvalConfiguration, got {:?}",
             got.field("approvalConfiguration")
         );
+    }
+}
+
+// ---------------------------------------------------------------------------------------
+// The publisher slice: a publisher of a domain, and the association that binds a registry
+// record to one. Same rule as above — every answer is computed from what the writes
+// persisted — over the resources the publisher surface owns.
+// ---------------------------------------------------------------------------------------
+
+/// The DNS label a domain's challenge record sits at, as `DomainChallenge$recordName`
+/// documents it (`smithy_query(query="shape", shape="DomainChallenge")`).
+const CHALLENGE_LABEL: &str = "_acme-challenge";
+
+/// The ARN of a publisher: `PublisherIdentifierArn` is the ARN of a GLOBAL resource, so the
+/// region field is empty and the resource segment carries the domain.
+fn publisher_arn(domain: &str) -> String {
+    engine::emulator_arn("agent-registry", "", domain)
+}
+
+async fn create_publisher(router: &MultiServiceRouter, body: Value) -> Reply {
+    call(router, "POST", "/publishers", Some(body)).await
+}
+
+async fn get_publisher(router: &MultiServiceRouter, arn: &str) -> Reply {
+    call(
+        router,
+        "GET",
+        &format!("/publishers/{}", encode_label(arn)),
+        None,
+    )
+    .await
+}
+
+async fn delete_publisher(router: &MultiServiceRouter, arn: &str) -> Reply {
+    call(
+        router,
+        "DELETE",
+        &format!("/publishers/{}", encode_label(arn)),
+        None,
+    )
+    .await
+}
+
+async fn list_publishers(router: &MultiServiceRouter) -> Vec<Value> {
+    let listed = call(router, "GET", "/publishers", None).await;
+    assert_eq!(
+        listed.status, 200,
+        "ListPublishers must answer 200, got {} {:?}",
+        listed.status, listed.body
+    );
+    listed.body["items"].as_array().cloned().unwrap_or_default()
+}
+
+async fn associate_publisher(router: &MultiServiceRouter, body: Value) -> Reply {
+    call(router, "POST", "/associations", Some(body)).await
+}
+
+/// The associations `ListPublisherAssociations` reports. The `recordArn` label of the
+/// association routes is GREEDY, so the ARN goes into the path as it stands.
+async fn list_associations(router: &MultiServiceRouter) -> Vec<Value> {
+    let listed = call(router, "GET", "/associations", None).await;
+    assert_eq!(
+        listed.status, 200,
+        "ListPublisherAssociations must answer 200, got {} {:?}",
+        listed.status, listed.body
+    );
+    listed.body["items"].as_array().cloned().unwrap_or_default()
+}
+
+/// Poll `GetPublisher` until the publisher reports `status`, and answer the reply that did.
+/// Panics, naming the case and the last status seen, if the deadline passes first.
+async fn publisher_at_status(
+    router: &MultiServiceRouter,
+    arn: &str,
+    status: &str,
+    case: &str,
+) -> Reply {
+    let deadline = tokio::time::Instant::now() + STATUS_DEADLINE;
+    loop {
+        let got = get_publisher(router, arn).await;
+        if got.str_field("status") == status {
+            return got;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "case {case:?}: the publisher never reported {status}, last answer {} {:?}",
+            got.status,
+            got.body
+        );
+        tokio::time::sleep(POLL_INTERVAL).await;
+    }
+}
+
+/// Create a publisher for `domain` and wait for the domain verification the clock owes, so
+/// it is `ACTIVE` and accepts associations. Returns its ARN.
+async fn active_publisher(router: &MultiServiceRouter, domain: &str) -> String {
+    let created = create_publisher(router, json!({ "value": { "domain": domain } })).await;
+    assert_eq!(
+        created.status, 201,
+        "case {domain}: CreatePublisher must answer 201, got {} {:?}",
+        created.status, created.body
+    );
+    let arn = created.str_field("publisherArn").to_string();
+    publisher_at_status(router, &arn, "ACTIVE", domain).await;
+    arn
+}
+
+/// Create a record in a registry that approves every submission and take it through that
+/// approval, so it is the `APPROVED` record an association needs. Returns its ARN.
+async fn approved_record(
+    router: &MultiServiceRouter,
+    registry_id: &str,
+    name: &str,
+    record_type: &str,
+) -> String {
+    let created = create_record(
+        router,
+        registry_id,
+        json!({
+            "name": name,
+            "recordType": record_type,
+            "descriptors": descriptors_for(record_type),
+        }),
+    )
+    .await;
+    assert_eq!(
+        created.status, 202,
+        "case {name}: CreateRegistryRecord must answer 202, got {} {:?}",
+        created.status, created.body
+    );
+    let record_arn = created.str_field("recordArn").to_string();
+    let record_id = id_of(&record_arn).to_string();
+    record_at_status(router, registry_id, &record_id, "DRAFT", name).await;
+    let submitted = submit_record(router, registry_id, &record_id).await;
+    assert_eq!(
+        submitted.status, 202,
+        "case {name}: SubmitRegistryRecordForApproval must answer 202, got {} {:?}",
+        submitted.status, submitted.body
+    );
+    record_at_status(router, registry_id, &record_id, "APPROVED", name).await;
+    record_arn
+}
+
+/// A registry whose approval configuration approves every submitted record, so a record can
+/// be brought to `APPROVED` without a curator. `APPROVE_ALL` is the one `AutoApprovalRule`
+/// the model declares (`smithy_query(query="shape", shape="ApprovalConfiguration")`).
+async fn registry_approving_every_record(router: &MultiServiceRouter, name: &str) -> String {
+    ready_registry_with(
+        router,
+        json!({
+            "name": name,
+            "approvalConfiguration": { "autoApprovalRules": ["APPROVE_ALL"] }
+        }),
+    )
+    .await
+}
+
+#[tokio::test]
+async fn create_publisher_persists_the_domain_and_its_challenge_and_the_reads_report_them() {
+    // Rows differ along the domain's shape and along whether the create carried tags, so
+    // what the reads report is that row's own stored publisher.
+    let cases: Vec<(&str, &str, Option<Value>)> = vec![
+        ("a two-label domain", "acme.example", None),
+        (
+            "a domain with tags",
+            "tools.acme.example",
+            Some(json!({ "team": "catalog", "tier": "gold" })),
+        ),
+        ("a four-label domain", "eu.west.acme.example", None),
+        ("a hyphenated label", "a-very-long-label.example", None),
+    ];
+
+    for (case, domain, tags) in cases {
+        let router = router();
+        let mut body = json!({ "value": { "domain": domain } });
+        if let Some(tags) = tags.clone() {
+            body["tags"] = tags;
+        }
+        let created = create_publisher(&router, body).await;
+        assert_eq!(
+            created.status, 201,
+            "case {case:?}: CreatePublisher must answer 201, got {} {:?}",
+            created.status, created.body
+        );
+        // "The publisher starts in ACTION_REQUIRED, and the response includes a
+        // domainChallenge" whose record the caller publishes to prove ownership.
+        assert_eq!(
+            (
+                created.str_field("status"),
+                created.str_field("identifierType"),
+                created.field("value")["domain"].as_str().unwrap_or_default(),
+            ),
+            ("ACTION_REQUIRED", "DOMAIN", domain),
+            "case {case:?}: a created publisher waits for its domain and reports the identifier \
+             the create named, got {:?}",
+            created.body
+        );
+        assert_eq!(
+            created.field("domainChallenge")["recordName"]
+                .as_str()
+                .unwrap_or_default(),
+            format!("{CHALLENGE_LABEL}.{domain}"),
+            "case {case:?}: the challenge names the TXT record on the publisher's own domain, \
+             got {:?}",
+            created.body
+        );
+        assert!(
+            !created.field("domainChallenge")["recordValue"]
+                .as_str()
+                .unwrap_or_default()
+                .is_empty(),
+            "case {case:?}: the challenge carries the value to publish, got {:?}",
+            created.body
+        );
+        let arn = created.str_field("publisherArn").to_string();
+        assert_eq!(
+            arn,
+            publisher_arn(domain),
+            "case {case:?}: a publisher's ARN is region-less and carries the domain, got {arn:?}"
+        );
+
+        let got = get_publisher(&router, &arn).await;
+        assert_eq!(
+            (
+                got.status,
+                got.field("value").clone(),
+                got.field("createdAt").clone(),
+                got.field("tags").clone(),
+                got.field("domainChallenge").clone(),
+            ),
+            (
+                200,
+                created.field("value").clone(),
+                created.field("createdAt").clone(),
+                created.field("tags").clone(),
+                created.field("domainChallenge").clone(),
+            ),
+            "case {case:?}: GetPublisher reports the publisher the create stored, got {} {:?}",
+            got.status,
+            got.body
+        );
+        assert_eq!(
+            got.field("tags").clone(),
+            tags.clone().unwrap_or(Value::Null),
+            "case {case:?}: a publisher reports the tags its create attached and none otherwise, \
+             got {:?}",
+            got.body
+        );
+
+        // The verification is the service's own work, owed by the clock: the publisher
+        // becomes ACTIVE without the caller doing anything further.
+        publisher_at_status(&router, &arn, "ACTIVE", case).await;
+        let items = list_publishers(&router).await;
+        assert_eq!(
+            items.len(),
+            1,
+            "case {case:?}: the account's one publisher is listed once, got {items:?}"
+        );
+        assert_eq!(
+            (
+                items[0]["publisherArn"].as_str().unwrap_or_default(),
+                items[0]["status"].as_str().unwrap_or_default(),
+                items[0]["associationCount"].as_i64().unwrap_or(-1),
+                items[0]["pendingAssociationApprovalCount"]
+                    .as_i64()
+                    .unwrap_or(-1),
+            ),
+            (arn.as_str(), "ACTIVE", 0, 0),
+            "case {case:?}: the summary reports the publisher as it stands and counts the \
+             associations it holds, got {items:?}"
+        );
+
+        // A second publisher for the same domain is refused however the domain is cased: a
+        // DNS name is case-insensitive, so both name the one domain this account publishes.
+        for cased in [domain.to_uppercase(), domain.to_string()] {
+            let duplicate =
+                create_publisher(&router, json!({ "value": { "domain": cased } })).await;
+            assert_eq!(
+                (duplicate.status, duplicate.error_code.as_deref()),
+                (409, Some("ConflictException")),
+                "case {case:?}: a second publisher for {cased:?} is a conflict, got {} {:?}",
+                duplicate.status,
+                duplicate.body
+            );
+        }
+
+        // The delete leaves the publisher in DELETING and the clock owes its removal.
+        let deleted = delete_publisher(&router, &arn).await;
+        assert_eq!(
+            deleted.status, 204,
+            "case {case:?}: DeletePublisher must answer 204, got {} {:?}",
+            deleted.status, deleted.body
+        );
+        let deadline = tokio::time::Instant::now() + STATUS_DEADLINE;
+        loop {
+            let polled = get_publisher(&router, &arn).await;
+            if polled.status == 404 {
+                assert_eq!(
+                    polled.error_code.as_deref(),
+                    Some("ResourceNotFoundException"),
+                    "case {case:?}: a removed publisher is reported as not found, got {:?}",
+                    polled.body
+                );
+                break;
+            }
+            assert_eq!(
+                polled.str_field("status"),
+                "DELETING",
+                "case {case:?}: a publisher being deleted reports DELETING until it is gone, \
+                 got {} {:?}",
+                polled.status,
+                polled.body
+            );
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "case {case:?}: a deleted publisher is removed, last answer {} {:?}",
+                polled.status,
+                polled.body
+            );
+            tokio::time::sleep(POLL_INTERVAL).await;
+        }
+        assert!(
+            list_publishers(&router).await.is_empty(),
+            "case {case:?}: a removed publisher is listed no more"
+        );
+    }
+}
+
+/// One row of the public-identifier table: the association to make, and the identifier the
+/// model's layout gives it.
+struct IdentifierCase {
+    case: &'static str,
+    name: &'static str,
+    record_type: &'static str,
+    subdomain: Option<&'static str>,
+    categories: &'static [&'static str],
+    expected: String,
+}
+
+#[tokio::test]
+async fn associate_publisher_mints_the_public_identifier_in_the_layout_the_model_states() {
+    let router = router();
+    let registry_id = registry_approving_every_record(&router, "publisher-identifiers").await;
+    let domain = "acme.example";
+    let publisher = active_publisher(&router, domain).await;
+
+    // The layout and the kind each `RecordType` contributes are the ones `PublicIdentifier`
+    // states (`smithy_query(query="doc", shape="PublicIdentifier")`):
+    // `urn:air:[<subdomain>.]<domain>:<namespace>:<identity>[;<kind>]`, with `MCP` -> `mcp`,
+    // `AGENT` and `CUSTOM` -> `agent`, `SKILL` -> `skill`, `WEB_BOT` -> `webbot`, and no kind
+    // for `GATEWAY`. The rows differ along the subdomain, the number of categories and the
+    // record type, which is everything the layout varies over.
+    let cases: Vec<IdentifierCase> = vec![
+        IdentifierCase {
+            case: "no subdomain and no categories",
+            name: "weather",
+            record_type: "MCP",
+            subdomain: None,
+            categories: &[],
+            expected: format!("urn:air:{domain}:weather;mcp"),
+        },
+        IdentifierCase {
+            case: "a subdomain and two categories",
+            name: "finance-agent",
+            record_type: "AGENT",
+            subdomain: Some("agents"),
+            categories: &["financial", "money"],
+            expected: format!("urn:air:agents.{domain}:financial:money:finance-agent;agent"),
+        },
+        IdentifierCase {
+            case: "a record type that carries no kind",
+            name: "edge-gateway",
+            record_type: "GATEWAY",
+            subdomain: None,
+            categories: &["tools"],
+            expected: format!("urn:air:{domain}:tools:edge-gateway"),
+        },
+        IdentifierCase {
+            case: "a custom record carries the agent kind",
+            name: "bespoke.thing",
+            record_type: "CUSTOM",
+            subdomain: None,
+            categories: &[],
+            expected: format!("urn:air:{domain}:bespoke.thing;agent"),
+        },
+        IdentifierCase {
+            case: "a skill under a subdomain",
+            name: "pdf-skill",
+            record_type: "SKILL",
+            subdomain: Some("skills"),
+            categories: &[],
+            expected: format!("urn:air:skills.{domain}:pdf-skill;skill"),
+        },
+        IdentifierCase {
+            case: "a web bot under a deep namespace",
+            name: "crawler",
+            record_type: "WEB_BOT",
+            subdomain: None,
+            categories: &["search", "crawlers", "public"],
+            expected: format!("urn:air:{domain}:search:crawlers:public:crawler;webbot"),
+        },
+    ];
+
+    let mut minted: Vec<(String, String)> = Vec::new();
+    for IdentifierCase {
+        case,
+        name,
+        record_type,
+        subdomain,
+        categories,
+        expected,
+    } in cases
+    {
+        let record_arn = approved_record(&router, &registry_id, name, record_type).await;
+        let mut body = json!({ "recordArn": record_arn, "publisherArn": publisher });
+        if let Some(subdomain) = subdomain {
+            body["subdomain"] = json!(subdomain);
+        }
+        if !categories.is_empty() {
+            body["categories"] = json!(categories);
+        }
+        let associated = associate_publisher(&router, body).await;
+        assert_eq!(
+            associated.status, 201,
+            "case {case:?}: AssociatePublisher must answer 201, got {} {:?}",
+            associated.status, associated.body
+        );
+        assert_eq!(
+            associated.str_field("publicIdentifier"),
+            expected,
+            "case {case:?}: the public identifier follows the layout the model states, got {:?}",
+            associated.body
+        );
+        assert_eq!(
+            (
+                associated.str_field("recordArn"),
+                associated.str_field("publisher"),
+                associated.str_field("status"),
+            ),
+            (record_arn.as_str(), publisher.as_str(), "PENDING_APPROVAL"),
+            "case {case:?}: a new association names both resources and waits for a curator, \
+             got {:?}",
+            associated.body
+        );
+        minted.push((record_arn, expected));
+    }
+
+    let mut listed: Vec<(String, String)> = list_associations(&router)
+        .await
+        .iter()
+        .map(|association| {
+            (
+                association["recordArn"].as_str().unwrap_or_default().into(),
+                association["publicIdentifier"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .into(),
+            )
+        })
+        .collect();
+    listed.sort();
+    let mut wanted = minted.clone();
+    wanted.sort();
+    assert_eq!(
+        listed, wanted,
+        "ListPublisherAssociations reports every association that was minted"
+    );
+
+    let items = list_publishers(&router).await;
+    assert_eq!(
+        (
+            items[0]["associationCount"].as_i64().unwrap_or(-1),
+            items[0]["pendingAssociationApprovalCount"]
+                .as_i64()
+                .unwrap_or(-1),
+        ),
+        (minted.len() as i64, minted.len() as i64),
+        "the summary counts the associations the publisher holds and the ones still waiting \
+         for a decision, got {items:?}"
+    );
+}
+
+#[tokio::test]
+async fn an_association_is_refused_unless_the_record_and_its_identifier_are_free() {
+    let router = router();
+    let registry_id = registry_approving_every_record(&router, "publisher-refusals").await;
+    let publisher = active_publisher(&router, "acme.example").await;
+
+    let draft = create_record(
+        &router,
+        &registry_id,
+        json!({
+            "name": "not-approved",
+            "recordType": "CUSTOM",
+            "descriptors": descriptors_for("CUSTOM"),
+        }),
+    )
+    .await;
+    let draft_arn = draft.str_field("recordArn").to_string();
+    record_at_status(
+        &router,
+        &registry_id,
+        id_of(&draft_arn),
+        "DRAFT",
+        "not-approved",
+    )
+    .await;
+
+    let taken = approved_record(&router, &registry_id, "already-associated", "MCP").await;
+    let free = approved_record(&router, &registry_id, "free-record", "AGENT").await;
+    let first = associate_publisher(
+        &router,
+        json!({ "recordArn": taken, "publisherArn": publisher }),
+    )
+    .await;
+    assert_eq!(
+        first.status, 201,
+        "the record is associated once before the refusals, got {} {:?}",
+        first.status, first.body
+    );
+
+    // A second registry holding a record of the SAME name: the identifier minted for it
+    // under the same publisher is the one the first record already holds.
+    let other_registry = registry_approving_every_record(&router, "publisher-refusals-two").await;
+    let namesake = approved_record(&router, &other_registry, "already-associated", "MCP").await;
+    // An ARN of `RegistryRecordArn`'s shape that names no record of this account.
+    let unknown_record = format!(
+        "{}/record/bbbbbbbbbbbb",
+        engine::emulator_arn("agent-registry", REGION, "registry/aaaaaaaaaaaa")
+    );
+
+    let cases: Vec<(&str, Value, u16, &str)> = vec![
+        (
+            "a record that is not approved",
+            json!({ "recordArn": draft_arn, "publisherArn": publisher }),
+            409,
+            "ConflictException",
+        ),
+        (
+            "a record that already has an association",
+            json!({ "recordArn": taken, "publisherArn": publisher }),
+            409,
+            "ConflictException",
+        ),
+        (
+            "a public identifier another record holds",
+            json!({ "recordArn": namesake, "publisherArn": publisher }),
+            409,
+            "ConflictException",
+        ),
+        (
+            "a record ARN that names nothing",
+            json!({ "recordArn": unknown_record, "publisherArn": publisher }),
+            400,
+            "ValidationException",
+        ),
+        (
+            "a publisher ARN that names nothing",
+            json!({ "recordArn": free, "publisherArn": publisher_arn("nowhere.example") }),
+            400,
+            "ValidationException",
+        ),
+    ];
+
+    for (case, body, status, code) in cases {
+        let refused = associate_publisher(&router, body).await;
+        assert_eq!(
+            (refused.status, refused.error_code.as_deref()),
+            (status, Some(code)),
+            "case {case:?}: the association is refused with {code} at {status}, got {} {:?}",
+            refused.status,
+            refused.body
+        );
+        assert_eq!(
+            list_associations(&router).await.len(),
+            1,
+            "case {case:?}: a refused association writes nothing"
+        );
+    }
+
+    // A publisher holding an association cannot be deleted; once the record is
+    // disassociated — which releases its public identifier — it can, and the identifier can
+    // be minted again.
+    let refused = delete_publisher(&router, &publisher).await;
+    assert_eq!(
+        (refused.status, refused.error_code.as_deref()),
+        (409, Some("ConflictException")),
+        "a publisher holding an association cannot be deleted, got {} {:?}",
+        refused.status,
+        refused.body
+    );
+    let identifier = first.str_field("publicIdentifier").to_string();
+    for case in ["the association it holds", "no association at all"] {
+        let released = call(&router, "DELETE", &format!("/associations/{taken}"), None).await;
+        assert_eq!(
+            released.status, 204,
+            "case {case:?}: DisassociatePublisher must answer 204, got {} {:?}",
+            released.status, released.body
+        );
+        assert!(
+            list_associations(&router).await.is_empty(),
+            "case {case:?}: the record's association is gone"
+        );
+    }
+    let again = associate_publisher(
+        &router,
+        json!({ "recordArn": namesake, "publisherArn": publisher }),
+    )
+    .await;
+    assert_eq!(
+        (again.status, again.str_field("publicIdentifier")),
+        (201, identifier.as_str()),
+        "a released public identifier can be minted again, for the other record that bears \
+         the name, got {} {:?}",
+        again.status,
+        again.body
+    );
+}
+
+#[tokio::test]
+async fn a_curators_decision_is_what_the_association_reports() {
+    let router = router();
+    let registry_id = registry_approving_every_record(&router, "publisher-decisions").await;
+    let publisher = active_publisher(&router, "acme.example").await;
+    let record_arn = approved_record(&router, &registry_id, "under-review", "MCP").await;
+    let associated = associate_publisher(
+        &router,
+        json!({ "recordArn": record_arn, "publisherArn": publisher }),
+    )
+    .await;
+    assert_eq!(
+        (associated.status, associated.str_field("status")),
+        (201, "PENDING_APPROVAL"),
+        "a new association waits for a decision, got {} {:?}",
+        associated.status,
+        associated.body
+    );
+
+    // The rows walk the decisions: a verdict with a reason, the same verdict with another
+    // reason (which updates the reason), the same verdict with an empty reason (which leaves
+    // none to report), and the other verdict. `AssociationApprovalStatus` declares the two
+    // values (`smithy_query(query="shape", shape="AssociationApprovalStatus")`).
+    let cases: Vec<(&str, &str, &str, Option<&str>)> = vec![
+        (
+            "approved with a reason",
+            "APPROVED",
+            "meets the catalogue bar",
+            Some("meets the catalogue bar"),
+        ),
+        (
+            "the same decision with another reason",
+            "APPROVED",
+            "re-reviewed after an edit",
+            Some("re-reviewed after an edit"),
+        ),
+        ("an empty reason reports none", "APPROVED", "", None),
+        (
+            "turned down",
+            "REJECTED",
+            "fails the catalogue bar",
+            Some("fails the catalogue bar"),
+        ),
+    ];
+
+    for (case, approval_status, reason, reported) in cases {
+        let decided = call(
+            &router,
+            "PATCH",
+            &format!("/associations/{record_arn}"),
+            Some(json!({ "approvalStatus": approval_status, "approvalStatusReason": reason })),
+        )
+        .await;
+        assert_eq!(
+            decided.status, 200,
+            "case {case:?}: UpdatePublisherAssociationApprovalStatus must answer 200, got {} {:?}",
+            decided.status, decided.body
+        );
+        let held = list_associations(&router).await;
+        assert_eq!(
+            held.len(),
+            1,
+            "case {case:?}: the decision changed the association rather than adding one, got \
+             {held:?}"
+        );
+        assert_eq!(
+            (
+                held[0]["status"].as_str().unwrap_or_default(),
+                held[0]["statusReason"].as_str(),
+            ),
+            (approval_status, reported),
+            "case {case:?}: the association reports the decision and the reason it was given, \
+             got {held:?}"
+        );
+    }
+
+    // A decided association is still held but no longer waiting for a decision.
+    let items = list_publishers(&router).await;
+    assert_eq!(
+        (
+            items[0]["associationCount"].as_i64().unwrap_or(-1),
+            items[0]["pendingAssociationApprovalCount"]
+                .as_i64()
+                .unwrap_or(-1),
+        ),
+        (1, 0),
+        "the summary separates the associations held from the ones pending, got {items:?}"
+    );
+
+    // "If the caller has no publisher association for the registry record, the request fails
+    // with AccessDeniedException", and a verification restart is refused for a publisher
+    // whose verification is settled — neither writes anything.
+    let unknown_record = format!(
+        "{}/record/bbbbbbbbbbbb",
+        engine::emulator_arn("agent-registry", REGION, "registry/aaaaaaaaaaaa")
+    );
+    let undecidable = call(
+        &router,
+        "PATCH",
+        &format!("/associations/{unknown_record}"),
+        Some(json!({ "approvalStatus": "APPROVED", "approvalStatusReason": "" })),
+    )
+    .await;
+    assert_eq!(
+        (undecidable.status, undecidable.error_code.as_deref()),
+        (403, Some("AccessDeniedException")),
+        "a decision on an association this account does not hold is refused, got {} {:?}",
+        undecidable.status,
+        undecidable.body
+    );
+
+    let before = get_publisher(&router, &publisher).await;
+    for (case, arn, status, code) in [
+        (
+            "a publisher whose domain is verified",
+            publisher.clone(),
+            409,
+            "ConflictException",
+        ),
+        (
+            "an ARN that names no publisher",
+            publisher_arn("nowhere.example"),
+            400,
+            "ValidationException",
+        ),
+    ] {
+        let refused = call(
+            &router,
+            "POST",
+            &format!("/publishers/{}/verification", encode_label(&arn)),
+            None,
+        )
+        .await;
+        assert_eq!(
+            (refused.status, refused.error_code.as_deref()),
+            (status, Some(code)),
+            "case {case:?}: ValidatePublisher is refused with {code} at {status}, got {} {:?}",
+            refused.status,
+            refused.body
+        );
+    }
+    let after = get_publisher(&router, &publisher).await;
+    assert_eq!(
+        (
+            after.str_field("status"),
+            after.field("domainChallenge").clone(),
+            after.field("updatedAt").clone(),
+        ),
+        (
+            before.str_field("status"),
+            before.field("domainChallenge").clone(),
+            before.field("updatedAt").clone(),
+        ),
+        "a refused verification restart writes nothing, got {:?}",
+        after.body
+    );
+}
+
+// ---------------------------------------------------------------------------------------
+// The skill package a registry record carries: stored by the write, reported by the read as
+// the checksum of what was stored, and patched by the edit.
+// ---------------------------------------------------------------------------------------
+
+/// The SHA-256 checksum of `content`, "as 64 lowercase hexadecimal characters" — the form
+/// `Sha256Hash` declares (`smithy_query(query="shape", shape="Sha256Hash")`).
+fn artifact_checksum(content: &[u8]) -> String {
+    hex::encode(sha2::Sha256::digest(content))
+}
+
+/// A package's bytes as a JSON request carries them: base64, which the AWS SDKs encode for
+/// the caller.
+fn artifact_content(content: &[u8]) -> Value {
+    json!(aws_smithy_types::base64::encode(content))
+}
+
+/// One row of the skill-package table: the bytes to upload, the checksum the request states
+/// for them (if any), and the status the write is refused with (if it is).
+struct PackageCase {
+    case: &'static str,
+    content: Vec<u8>,
+    stated: Option<String>,
+    refused: Option<u16>,
+}
+
+#[tokio::test]
+async fn a_stored_skill_package_is_reported_as_the_checksum_of_its_bytes() {
+    let router = router();
+    let registry_id = ready_registry(&router, "record-skill-packages").await;
+
+    // Rows differ along the package's bytes and along whether the request stated the
+    // checksum itself: the checksum a read reports is computed over the content either way,
+    // and a checksum that is not the content's is refused.
+    let cases: Vec<PackageCase> = vec![
+        PackageCase {
+            case: "a short archive, checksum stated",
+            content: b"PK\x03\x04 a tiny skill".to_vec(),
+            stated: Some(artifact_checksum(b"PK\x03\x04 a tiny skill")),
+            refused: None,
+        },
+        PackageCase {
+            case: "a short archive, no checksum stated",
+            content: b"PK\x03\x04 another skill".to_vec(),
+            stated: None,
+            refused: None,
+        },
+        PackageCase {
+            case: "bytes that are not text",
+            content: (0_u8..=255).collect(),
+            stated: None,
+            refused: None,
+        },
+        PackageCase {
+            case: "a single byte",
+            content: vec![7],
+            stated: None,
+            refused: None,
+        },
+        PackageCase {
+            case: "a checksum of other content",
+            content: b"PK\x03\x04 a third skill".to_vec(),
+            stated: Some(artifact_checksum(b"something else")),
+            refused: Some(400),
+        },
+    ];
+
+    for (
+        index,
+        PackageCase {
+            case,
+            content,
+            stated,
+            refused,
+        },
+    ) in cases.into_iter().enumerate()
+    {
+        let name = format!("packaged-skill-{index}");
+        let mut artifact = json!({ "content": artifact_content(&content) });
+        if let Some(stated) = stated {
+            artifact["sha256"] = json!(stated);
+        }
+        let created = create_record(
+            &router,
+            &registry_id,
+            json!({
+                "name": name,
+                "recordType": "SKILL",
+                "descriptors": descriptors_for("SKILL"),
+                "artifact": artifact,
+            }),
+        )
+        .await;
+        if let Some(status) = refused {
+            assert_eq!(
+                (created.status, created.error_code.as_deref()),
+                (status, Some("ValidationException")),
+                "case {case:?}: a package the request does not describe is refused, got {} {:?}",
+                created.status,
+                created.body
+            );
+            continue;
+        }
+        assert_eq!(
+            created.status, 202,
+            "case {case:?}: CreateRegistryRecord must answer 202, got {} {:?}",
+            created.status, created.body
+        );
+        let record_id = id_of(created.str_field("recordArn")).to_string();
+        let got = record_at_status(&router, &registry_id, &record_id, "DRAFT", case).await;
+        assert_eq!(
+            got.field("artifact")["sha256"].as_str().unwrap_or_default(),
+            artifact_checksum(&content),
+            "case {case:?}: the read reports the checksum of the package that was stored, got \
+             {:?}",
+            got.body
+        );
+        // "Responses never include the package bytes", and this emulator serves no location
+        // the package could be downloaded from, so it claims no download URL either.
+        assert_eq!(
+            (
+                got.field("artifact")["content"].clone(),
+                got.field("artifact")["downloadUrl"].clone(),
+            ),
+            (Value::Null, Value::Null),
+            "case {case:?}: the read carries neither the bytes nor a download location, got {:?}",
+            got.body
+        );
+    }
+
+    // A record uploaded with no package has none to report, and the patch wrapper the model
+    // declares for it decides what an edit does: omitted leaves it, a wrapper carrying a
+    // package replaces it, an empty wrapper removes it
+    // (`smithy_query(query="shape", shape="UpdatedRegistryRecordArtifact")`).
+    let created = create_record(
+        &router,
+        &registry_id,
+        json!({
+            "name": "edited-skill",
+            "recordType": "SKILL",
+            "descriptors": descriptors_for("SKILL"),
+            "artifact": { "content": artifact_content(b"PK\x03\x04 the first package") },
+        }),
+    )
+    .await;
+    assert_eq!(
+        created.status, 202,
+        "the record is created with a package, got {} {:?}",
+        created.status, created.body
+    );
+    let record_id = id_of(created.str_field("recordArn")).to_string();
+    let replacement = b"PK\x03\x04 the replacement package".to_vec();
+    let edits: Vec<(&str, Value, Option<String>)> = vec![
+        (
+            "an edit that names no package",
+            json!({ "displayName": { "optionalValue": "Edited skill" } }),
+            Some(artifact_checksum(b"PK\x03\x04 the first package")),
+        ),
+        (
+            "an edit that uploads another package",
+            json!({ "artifact": { "optionalValue": { "content": artifact_content(&replacement) } } }),
+            Some(artifact_checksum(&replacement)),
+        ),
+        ("an edit that removes the package", json!({ "artifact": {} }), None),
+    ];
+
+    for (case, body, expected) in edits {
+        // An edit applies to a record whose own asynchronous change has finished, so each
+        // row waits for the record to settle before it edits again.
+        record_at_status(&router, &registry_id, &record_id, "DRAFT", case).await;
+        let edited = patch_record(&router, &registry_id, &record_id, body).await;
+        assert_eq!(
+            edited.status, 202,
+            "case {case:?}: UpdateRegistryRecord must answer 202, got {} {:?}",
+            edited.status, edited.body
+        );
+        let got = get_record(&router, &registry_id, &record_id).await;
+        match expected {
+            Some(expected) => assert_eq!(
+                got.field("artifact")["sha256"].as_str().unwrap_or_default(),
+                expected,
+                "case {case:?}: the record reports the package the edit left on it, got {:?}",
+                got.body
+            ),
+            None => assert_eq!(
+                got.field("artifact").clone(),
+                Value::Null,
+                "case {case:?}: the record reports no package once the edit removed it, got {:?}",
+                got.body
+            ),
+        }
     }
 }
 

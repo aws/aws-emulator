@@ -21,9 +21,11 @@ pub struct UpdateRegistryRecordInput {
     pub description: Option<UpdatedDescription>,
     pub record_type: Option<String>,
     pub descriptors: Option<UpdatedDescriptors>,
+    pub artifact: Option<UpdatedRegistryRecordArtifact>,
     pub record_version: Option<String>,
     pub custom_metadata: Option<UpdatedCustomMetadataMap>,
     pub trigger_synchronization: Option<bool>,
+    pub force_authentication: Option<bool>,
     pub provenance: Option<Vec<Provenance>>,
 }
 
@@ -48,6 +50,7 @@ pub struct UpdatedDescriptorsFields {
     pub custom: Option<UpdatedCustomDescriptor>,
     pub http: Option<UpdatedHttpDescriptor>,
     pub agui: Option<UpdatedAgUiDescriptor>,
+    pub signature_agent_card: Option<UpdatedSignatureAgentCardDescriptor>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.agentregistrycontrol#UpdatedMcpServerDescriptor")]
@@ -146,6 +149,9 @@ pub struct UpdatedAgentSkillsAdditionalData {
 #[derive(Debug, Clone, Default)]
 pub struct UpdatedAgentSkillsAdditionalDataFields {
     pub skill_md: Option<UpdatedAgentSkillsMdDescriptor>,
+    pub skill_package: Option<UpdatedAgentSkillsPackageDescriptor>,
+    pub repository_provider: Option<UpdatedAgentSkillsRepositoryProvider>,
+    pub source_configuration: Option<UpdatedAgentSkillsSourceConfiguration>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.agentregistrycontrol#UpdatedAgentSkillsMdDescriptor")]
@@ -160,6 +166,24 @@ pub struct UpdatedAgentSkillsMdDescriptorFields {
     pub data: Option<UpdatedDescriptorData>,
     pub data_schema_version: Option<UpdatedDataSchemaVersion>,
     pub source: Option<UpdatedDescriptorSource>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.agentregistrycontrol#UpdatedAgentSkillsPackageDescriptor")]
+#[derive(Debug, Clone, Default)]
+pub struct UpdatedAgentSkillsPackageDescriptor {
+    pub optional_value: Option<AgentSkillsPackageDescriptor>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.agentregistrycontrol#UpdatedAgentSkillsRepositoryProvider")]
+#[derive(Debug, Clone, Default)]
+pub struct UpdatedAgentSkillsRepositoryProvider {
+    pub optional_value: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.agentregistrycontrol#UpdatedAgentSkillsSourceConfiguration")]
+#[derive(Debug, Clone, Default)]
+pub struct UpdatedAgentSkillsSourceConfiguration {
+    pub optional_value: Option<AgentSkillsSourceConfiguration>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.agentregistrycontrol#UpdatedCustomDescriptor")]
@@ -198,6 +222,45 @@ pub struct UpdatedAgUiDescriptorFields {
     pub source: Option<UpdatedDescriptorSource>,
 }
 
+#[smithy_macros::smithy(shape = "com.amazonaws.agentregistrycontrol#UpdatedSignatureAgentCardDescriptor")]
+#[derive(Debug, Clone, Default)]
+pub struct UpdatedSignatureAgentCardDescriptor {
+    pub optional_value: Option<UpdatedSignatureAgentCardDescriptorFields>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.agentregistrycontrol#UpdatedSignatureAgentCardDescriptorFields")]
+#[derive(Debug, Clone, Default)]
+pub struct UpdatedSignatureAgentCardDescriptorFields {
+    pub data: Option<UpdatedDescriptorData>,
+    pub data_schema_version: Option<UpdatedDataSchemaVersion>,
+    pub source: Option<UpdatedDescriptorSource>,
+    pub additional_data: Option<UpdatedSignatureAgentCardAdditionalData>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.agentregistrycontrol#UpdatedSignatureAgentCardAdditionalData")]
+#[derive(Debug, Clone, Default)]
+pub struct UpdatedSignatureAgentCardAdditionalData {
+    pub optional_value: Option<UpdatedSignatureAgentCardAdditionalDataFields>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.agentregistrycontrol#UpdatedSignatureAgentCardAdditionalDataFields")]
+#[derive(Debug, Clone, Default)]
+pub struct UpdatedSignatureAgentCardAdditionalDataFields {
+    pub category: Option<UpdatedBotCategory>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.agentregistrycontrol#UpdatedBotCategory")]
+#[derive(Debug, Clone, Default)]
+pub struct UpdatedBotCategory {
+    pub optional_value: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.agentregistrycontrol#UpdatedRegistryRecordArtifact")]
+#[derive(Debug, Clone, Default)]
+pub struct UpdatedRegistryRecordArtifact {
+    pub optional_value: Option<RegistryRecordArtifactUpload>,
+}
+
 #[smithy_macros::smithy(shape = "com.amazonaws.agentregistrycontrol#UpdatedCustomMetadataMap")]
 #[derive(Debug, Clone, Default)]
 pub struct UpdatedCustomMetadataMap {
@@ -225,5 +288,6 @@ pub struct UpdateRegistryRecordOutput {
     pub created_by: Option<String>,
     pub custom_metadata: Option<::aws_smithy_types::Document>,
     pub custom_metadata_schema_compliance_status: Option<String>,
+    pub authorization_data: Option<AuthorizationData>,
 }
 

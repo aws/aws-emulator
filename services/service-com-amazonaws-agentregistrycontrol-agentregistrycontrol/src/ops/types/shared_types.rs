@@ -56,6 +56,26 @@ pub struct ServiceQuotaExceededException {
     pub message: Option<String>,
 }
 
+#[smithy_macros::smithy(shape = "com.amazonaws.agentregistrycontrol#ConflictException")]
+#[derive(Debug, Clone, Default)]
+pub struct ConflictException {
+    pub message: Option<String>,
+}
+
+#[smithy_macros::smithy(union_for = "com.amazonaws.agentregistrycontrol#Identifier")]
+#[allow(clippy::large_enum_variant)]
+#[derive(Debug, Clone)]
+pub enum Identifier {
+    Domain(String),
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.agentregistrycontrol#DomainChallenge")]
+#[derive(Debug, Clone, Default)]
+pub struct DomainChallenge {
+    pub record_name: String,
+    pub record_value: String,
+}
+
 #[smithy_macros::smithy(shape = "com.amazonaws.agentregistrycontrol#Descriptors")]
 #[derive(Debug, Clone, Default)]
 pub struct Descriptors {
@@ -65,6 +85,7 @@ pub struct Descriptors {
     pub custom: Option<CustomDescriptor>,
     pub http: Option<HttpDescriptor>,
     pub agui: Option<AgUiDescriptor>,
+    pub signature_agent_card: Option<SignatureAgentCardDescriptor>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.agentregistrycontrol#McpServerDescriptor")]
@@ -124,6 +145,7 @@ pub struct RegistryRecordOAuthCredentialProvider {
     pub grant_type: Option<String>,
     pub scopes: Option<Vec<String>>,
     pub custom_parameters: Option<std::collections::HashMap<String, String>>,
+    pub return_url: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.agentregistrycontrol#RegistryRecordIamCredentialProvider")]
@@ -154,6 +176,9 @@ pub struct AgentSkillsDefinitionDescriptor {
 #[derive(Debug, Clone, Default)]
 pub struct AgentSkillsAdditionalData {
     pub skill_md: Option<AgentSkillsMdDescriptor>,
+    pub skill_package: Option<AgentSkillsPackageDescriptor>,
+    pub repository_provider: Option<String>,
+    pub source_configuration: Option<AgentSkillsSourceConfiguration>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.agentregistrycontrol#AgentSkillsMdDescriptor")]
@@ -162,6 +187,25 @@ pub struct AgentSkillsMdDescriptor {
     pub data: Option<String>,
     pub data_schema_version: Option<String>,
     pub source: Option<DescriptorSource>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.agentregistrycontrol#AgentSkillsPackageDescriptor")]
+#[derive(Debug, Clone, Default)]
+pub struct AgentSkillsPackageDescriptor {
+    pub source: Option<DescriptorSource>,
+}
+
+#[smithy_macros::smithy(union_for = "com.amazonaws.agentregistrycontrol#AgentSkillsSourceConfiguration")]
+#[allow(clippy::large_enum_variant)]
+#[derive(Debug, Clone)]
+pub enum AgentSkillsSourceConfiguration {
+    S3(S3SourceConfiguration),
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.agentregistrycontrol#S3SourceConfiguration")]
+#[derive(Debug, Clone, Default)]
+pub struct S3SourceConfiguration {
+    pub bucket_owner_account_id: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.agentregistrycontrol#CustomDescriptor")]
@@ -180,6 +224,28 @@ pub struct HttpDescriptor {
 #[derive(Debug, Clone, Default)]
 pub struct AgUiDescriptor {
     pub source: Option<DescriptorSource>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.agentregistrycontrol#SignatureAgentCardDescriptor")]
+#[derive(Debug, Clone, Default)]
+pub struct SignatureAgentCardDescriptor {
+    pub data: Option<String>,
+    pub data_schema_version: Option<String>,
+    pub source: Option<DescriptorSource>,
+    pub additional_data: Option<SignatureAgentCardAdditionalData>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.agentregistrycontrol#SignatureAgentCardAdditionalData")]
+#[derive(Debug, Clone, Default)]
+pub struct SignatureAgentCardAdditionalData {
+    pub category: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.agentregistrycontrol#RegistryRecordArtifactUpload")]
+#[derive(Debug, Clone, Default)]
+pub struct RegistryRecordArtifactUpload {
+    pub content: Vec<u8>,
+    pub sha256: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.agentregistrycontrol#Provenance")]
@@ -303,10 +369,20 @@ pub struct AgentCoreGatewaySourceDetails {
     pub workload_identity_details: Option<WorkloadIdentityDetails>,
 }
 
-#[smithy_macros::smithy(shape = "com.amazonaws.agentregistrycontrol#ConflictException")]
+#[smithy_macros::smithy(union_for = "com.amazonaws.agentregistrycontrol#AuthorizationData")]
+#[allow(clippy::large_enum_variant)]
+#[derive(Debug, Clone)]
+pub enum AuthorizationData {
+    Oauth2(OAuth2AuthorizationData),
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.agentregistrycontrol#OAuth2AuthorizationData")]
 #[derive(Debug, Clone, Default)]
-pub struct ConflictException {
-    pub message: Option<String>,
+pub struct OAuth2AuthorizationData {
+    pub authorization_url: String,
+    pub user_id: Option<String>,
+    pub authorization_attempt_id: Option<String>,
+    pub expires_at: Option<::aws_smithy_types::DateTime>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.agentregistrycontrol#UpdatedDescription")]
@@ -371,6 +447,18 @@ pub const AGENT_CORE_GATEWAY_PROTOCOL_TYPE_VALUES: &[&str] = &["MCP"];
 pub const AGENT_CORE_RUNTIME_SERVER_PROTOCOL_VALUES: &[&str] = &["A2A", "AGUI", "HTTP", "MCP"];
 
 
+/// The values `AgentSkillsRepositoryProvider` accepts on the wire.
+pub const AGENT_SKILLS_REPOSITORY_PROVIDER_VALUES: &[&str] = &["GITHUB"];
+
+
+/// The values `AssociationApprovalStatus` accepts on the wire.
+pub const ASSOCIATION_APPROVAL_STATUS_VALUES: &[&str] = &["APPROVED", "REJECTED"];
+
+
+/// The values `AssociationStatus` accepts on the wire.
+pub const ASSOCIATION_STATUS_VALUES: &[&str] = &["APPROVED", "PENDING_APPROVAL", "REJECTED", "SUSPENDED"];
+
+
 /// The values `AutoApprovalRule` accepts on the wire.
 pub const AUTO_APPROVAL_RULE_VALUES: &[&str] = &["APPROVE_ALL"];
 
@@ -381,6 +469,10 @@ pub const AUTO_DETECTION_SCOPE_VALUES: &[&str] = &["ORGANIZATION"];
 
 /// The values `AutoDetectionStatus` accepts on the wire.
 pub const AUTO_DETECTION_STATUS_VALUES: &[&str] = &["ACTIVE", "INACTIVE"];
+
+
+/// The values `BotCategory` accepts on the wire.
+pub const BOT_CATEGORY_VALUES: &[&str] = &["advertising", "ai_assistant", "ai_content_optimization", "ai_search", "ai_training", "archiver", "content_fetcher", "email_client", "http_library", "link_checker", "miscellaneous", "monitoring", "page_preview", "scraping_framework", "search_engine", "security", "seo", "social_media"];
 
 
 /// The values `ClaimMatchOperatorType` accepts on the wire.
@@ -395,6 +487,10 @@ pub const CUSTOM_METADATA_SCHEMA_COMPLIANCE_STATUS_VALUES: &[&str] = &["COMPLIAN
 pub const ENDPOINT_IP_ADDRESS_TYPE_VALUES: &[&str] = &["IPV4", "IPV6"];
 
 
+/// The values `IdentifierType` accepts on the wire.
+pub const IDENTIFIER_TYPE_VALUES: &[&str] = &["DOMAIN"];
+
+
 /// The values `InboundTokenClaimValueType` accepts on the wire.
 pub const INBOUND_TOKEN_CLAIM_VALUE_TYPE_VALUES: &[&str] = &["STRING", "STRING_ARRAY"];
 
@@ -404,7 +500,7 @@ pub const PROVENANCE_RELATION_VALUES: &[&str] = &["DETECTED_FROM"];
 
 
 /// The values `RecordType` accepts on the wire.
-pub const RECORD_TYPE_VALUES: &[&str] = &["AGENT", "CUSTOM", "GATEWAY", "MCP", "SKILL"];
+pub const RECORD_TYPE_VALUES: &[&str] = &["AGENT", "CUSTOM", "GATEWAY", "MCP", "SKILL", "WEB_BOT"];
 
 
 /// The values `RegistryAuthorizerType` accepts on the wire.
@@ -424,11 +520,11 @@ pub const REGISTRY_RECORD_FILTER_NAME_VALUES: &[&str] = &["name", "recordType", 
 
 
 /// The values `RegistryRecordOAuthGrantType` accepts on the wire.
-pub const REGISTRY_RECORD_O_AUTH_GRANT_TYPE_VALUES: &[&str] = &["CLIENT_CREDENTIALS"];
+pub const REGISTRY_RECORD_O_AUTH_GRANT_TYPE_VALUES: &[&str] = &["AUTHORIZATION_CODE", "CLIENT_CREDENTIALS"];
 
 
 /// The values `RegistryRecordStatus` accepts on the wire.
-pub const REGISTRY_RECORD_STATUS_VALUES: &[&str] = &["APPROVED", "CREATE_FAILED", "CREATING", "DEPRECATED", "DRAFT", "PENDING_APPROVAL", "REJECTED", "UPDATE_FAILED", "UPDATING"];
+pub const REGISTRY_RECORD_STATUS_VALUES: &[&str] = &["APPROVED", "CREATE_FAILED", "CREATE_PENDING_AUTH", "CREATING", "DEPRECATED", "DRAFT", "PENDING_APPROVAL", "REJECTED", "UPDATE_FAILED", "UPDATE_PENDING_AUTH", "UPDATING"];
 
 
 /// The values `RegistryStatus` accepts on the wire.
@@ -440,6 +536,10 @@ pub const SOURCE_TYPE_VALUES: &[&str] = &["AWS::BedrockAgentCore::Gateway", "AWS
 
 
 /// The values `ValidationExceptionReason` accepts on the wire.
-pub const VALIDATION_EXCEPTION_REASON_VALUES: &[&str] = &["CannotParse", "EventInOtherSession", "FieldValidationFailed", "IdempotentParameterMismatchException", "ResourceConflict"];
+pub const VALIDATION_EXCEPTION_REASON_VALUES: &[&str] = &["CannotParse", "EventInOtherSession", "FieldValidationFailed", "IdempotentParameterMismatchException", "ResourceConflict", "UnsupportedInRegion"];
+
+
+/// The values `VerificationStatus` accepts on the wire.
+pub const VERIFICATION_STATUS_VALUES: &[&str] = &["ACTION_REQUIRED", "ACTIVE", "DELETING", "FAILED", "SUSPENDED"];
 
 

@@ -39,5 +39,39 @@ pub struct GetRegistryRecordOutput {
     pub created_by: Option<String>,
     pub custom_metadata: Option<::aws_smithy_types::Document>,
     pub custom_metadata_schema_compliance_status: Option<String>,
+    pub artifact: Option<RegistryRecordArtifactDownload>,
+    pub synchronized_source: Option<RegistryRecordSynchronizedSource>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.agentregistrycontrol#RegistryRecordArtifactDownload")]
+#[derive(Debug, Clone, Default)]
+pub struct RegistryRecordArtifactDownload {
+    pub sha256: Option<String>,
+    pub download_url: Option<String>,
+}
+
+#[smithy_macros::smithy(union_for = "com.amazonaws.agentregistrycontrol#RegistryRecordSynchronizedSource")]
+#[allow(clippy::large_enum_variant)]
+#[derive(Debug, Clone)]
+pub enum RegistryRecordSynchronizedSource {
+    S3(S3SynchronizedSource),
+    gitHub(GitHubSynchronizedSource),
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.agentregistrycontrol#S3SynchronizedSource")]
+#[derive(Debug, Clone)]
+pub struct S3SynchronizedSource {
+    pub url: String,
+    pub synchronized_at: ::aws_smithy_types::DateTime,
+    pub version_id: Option<String>,
+    pub e_tag: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.agentregistrycontrol#GitHubSynchronizedSource")]
+#[derive(Debug, Clone)]
+pub struct GitHubSynchronizedSource {
+    pub url: String,
+    pub synchronized_at: ::aws_smithy_types::DateTime,
+    pub commit_id: String,
 }
 

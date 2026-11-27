@@ -20,6 +20,7 @@ pub struct CreateRegistryRecordInput {
     pub description: Option<String>,
     pub record_type: String,
     pub descriptors: Descriptors,
+    pub artifact: Option<RegistryRecordArtifactUpload>,
     pub record_version: Option<String>,
     pub client_token: Option<String>,
     pub provenance: Option<Vec<Provenance>>,
@@ -32,5 +33,6 @@ pub struct CreateRegistryRecordInput {
 pub struct CreateRegistryRecordOutput {
     pub record_arn: String,
     pub status: String,
+    pub authorization_data: Option<AuthorizationData>,
 }
 

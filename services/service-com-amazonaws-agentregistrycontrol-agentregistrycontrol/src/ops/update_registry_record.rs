@@ -463,6 +463,30 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .into());
         }
 
+        // A skill package this edit would upload is admitted on the same terms a create's
+        // is — the size of the archive, and the checksum of its bytes where the request
+        // supplied one — so one operation cannot store a package the other refuses. Like the
+        // descriptor check above, it is a fact about the request, so it is settled before
+        // anything is written.
+        if let Some(message) = input
+            .artifact
+            .as_ref()
+            .and_then(|wrapper| wrapper.optional_value.as_ref())
+            .and_then(crate::state::artifact_refusal)
+        {
+            return Err(UpdateRegistryRecordErrorModeled::ValidationException(
+                ValidationException {
+                    message,
+                    reason: crate::state::FIELD_VALIDATION_FAILED.to_string(),
+                    field_list: Some(vec![ValidationExceptionField {
+                        name: "artifact".to_string(),
+                        message: "is not a skill package this service can store".to_string(),
+                    }]),
+                },
+            )
+            .into());
+        }
+
         // The metadata and the record type this edit leaves on the record were computed and
         // checked above, before the store was taken again.
 
@@ -526,6 +550,19 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // checked against the registry's schema before it was made.
         record.custom_metadata = patched_metadata;
         record.descriptors = patched_descriptors;
+        // The package wrapper is a leaf patch: "omit to leave the package unchanged; supply
+        // an empty object to remove an uploaded package; supply optionalValue to upload a
+        // new package", which "replaces the record's current package". What is kept for one
+        // is the checksum of its bytes; the archive itself is dropped with the request.
+        patch_optional(
+            &mut record.artifact_sha256,
+            input.artifact.map(|wrapper| {
+                wrapper
+                    .optional_value
+                    .as_ref()
+                    .map(crate::state::stored_artifact_checksum)
+            }),
+        );
         // `triggerSynchronization` asks the service to re-read the record's descriptor
         // content from the source the descriptors name. Nothing in this emulator reaches
         // that source, so the flag changes no descriptor content and nothing here reports
@@ -572,6 +609,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             custom_metadata_schema_compliance_status: crate::state::custom_metadata_status_of(
                 &verdict,
             ),
+            // The authorization "a GitHub user must complete before the record's
+            // synchronization starts". `triggerSynchronization` reaches no outside source
+            // here, so this edit starts no synchronization and there is no authorization to
+            // complete for one.
+            authorization_data: None,
         })
     }
 }
@@ -579,6 +621,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 /// The per-descriptor patch `UpdatedDescriptorsFields` carries: "each field is
 /// independently patchable", so one descriptor of the typed set can be patched, cleared
 /// or left alone without touching the others.
+///
+/// EVERY descriptor the model declares has a branch here, and every field of each: a
+/// descriptor this walk skipped would be a patch the request named, the service answered
+/// 202 for, and nothing stored.
 fn patch_descriptors(current: &mut Descriptors, patch: UpdatedDescriptorsFields) {
     patch_structure(
         &mut current.mcp_server,
@@ -687,6 +733,25 @@ fn patch_descriptors(current: &mut Descriptors, patch: UpdatedDescriptorsFields)
                             );
                         },
                     );
+                    // The package, the repository provider and the source configuration are
+                    // LEAF wrappers over the whole value rather than over a set of fields,
+                    // so each is set or unset outright.
+                    patch_optional(
+                        &mut additional.skill_package,
+                        fields.skill_package.map(|wrapper| wrapper.optional_value),
+                    );
+                    patch_optional(
+                        &mut additional.repository_provider,
+                        fields
+                            .repository_provider
+                            .map(|wrapper| wrapper.optional_value),
+                    );
+                    patch_optional(
+                        &mut additional.source_configuration,
+                        fields
+                            .source_configuration
+                            .map(|wrapper| wrapper.optional_value),
+                    );
                 },
             );
         },
@@ -718,6 +783,40 @@ fn patch_descriptors(current: &mut Descriptors, patch: UpdatedDescriptorsFields)
             patch_optional(
                 &mut descriptor.source,
                 fields.source.map(|wrapper| wrapper.optional_value),
+            );
+        },
+    );
+    patch_structure(
+        &mut current.signature_agent_card,
+        patch
+            .signature_agent_card
+            .map(|wrapper| wrapper.optional_value),
+        |descriptor: &mut SignatureAgentCardDescriptor,
+         fields: UpdatedSignatureAgentCardDescriptorFields| {
+            patch_optional(
+                &mut descriptor.data,
+                fields.data.map(|wrapper| wrapper.optional_value),
+            );
+            patch_optional(
+                &mut descriptor.data_schema_version,
+                fields
+                    .data_schema_version
+                    .map(|wrapper| wrapper.optional_value),
+            );
+            patch_optional(
+                &mut descriptor.source,
+                fields.source.map(|wrapper| wrapper.optional_value),
+            );
+            patch_structure(
+                &mut descriptor.additional_data,
+                fields.additional_data.map(|wrapper| wrapper.optional_value),
+                |additional: &mut SignatureAgentCardAdditionalData,
+                 fields: UpdatedSignatureAgentCardAdditionalDataFields| {
+                    patch_optional(
+                        &mut additional.category,
+                        fields.category.map(|wrapper| wrapper.optional_value),
+                    );
+                },
             );
         },
     );

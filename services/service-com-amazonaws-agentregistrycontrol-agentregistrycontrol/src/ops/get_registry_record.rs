@@ -256,6 +256,18 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     custom_metadata: record.custom_metadata.clone(),
                     // Filled in below, from the registry's schema as it stands now.
                     custom_metadata_schema_compliance_status: None,
+                    // The skill package the record holds, reported as the checksum of the
+                    // package rather than as its bytes: "responses never include the package
+                    // bytes".
+                    artifact: record
+                        .artifact_sha256
+                        .as_deref()
+                        .map(crate::state::artifact_download),
+                    // The source a record's content "was last synchronized from". This
+                    // service synchronizes no record's content from an outside source — a
+                    // record carries the content its own write supplied — so no record has
+                    // one to report.
+                    synchronized_source: None,
                 },
             )
         };

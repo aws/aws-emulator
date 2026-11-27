@@ -406,6 +406,20 @@ fn invalid_rows() -> Vec<InvalidRow> {
                       expecting a valid value (JSON String, Number, Array, Object or token \
                       'null', 'true' or 'false')",
         },
+        InvalidRow {
+            case: "a signature agent card payload that is not JSON",
+            payload: Payload {
+                record_type: "WEB_BOT",
+                descriptors: json!({
+                    "signatureAgentCard": {
+                        "data": "not json",
+                        "additionalData": { "category": "ai_search" }
+                    }
+                }),
+            },
+            message: "data is not valid JSON: Unrecognized token 'not': was expecting (JSON \
+                      String, Number, Array, Object or token 'null', 'true' or 'false')",
+        },
     ]
 }
 

@@ -90,6 +90,10 @@ fn reading(payload: &str, error: &::serde_json::Error) -> String {
 /// members, each descriptor's own payload before the ones nested under its `additionalData`.
 /// `HttpDescriptor` and `AgUiDescriptor` carry none: they are source-only, so their content
 /// is synchronized from the source rather than supplied.
+///
+/// EVERY descriptor of the set whose model declares a `DescriptorData` member is walked
+/// here: a descriptor this list skipped would be one whose payload is admitted unchecked
+/// while every other descriptor's is refused.
 fn payloads(descriptors: &Descriptors) -> Vec<&str> {
     let mut found: Vec<&str> = Vec::new();
     if let Some(descriptor) = &descriptors.mcp_server {
@@ -116,6 +120,9 @@ fn payloads(descriptors: &Descriptors) -> Vec<&str> {
         }
     }
     if let Some(descriptor) = &descriptors.custom {
+        found.extend(descriptor.data.as_deref());
+    }
+    if let Some(descriptor) = &descriptors.signature_agent_card {
         found.extend(descriptor.data.as_deref());
     }
     found
