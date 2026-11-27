@@ -55,6 +55,9 @@ const ESM_KEY: &str = "data-plane-esm.zip";
 /// The key an application that registers no server is staged under.
 const NO_SERVER_KEY: &str = "data-plane-no-server.zip";
 
+/// The key the application that answers FROM the request it was handed is staged under.
+const REQUEST_ECHO_KEY: &str = "data-plane-request-echo.zip";
+
 /// A deployment package whose code is a Node.js HTTP server, written as a CommonJS module —
 /// the form a web function's package ships its server in. It answers from the request it
 /// was handed and from its own environment, so what a client reads back could not have been
@@ -110,12 +113,51 @@ fn application_without_a_server() -> Vec<u8> {
     archive(&[("index.js", b"const held = 1 + 1;")])
 }
 
+/// A deployment package whose server computes EVERY part of its answer from the request it
+/// was handed — the method, the request target, a request header and the request body — and
+/// chooses its own status and content type per route.
+///
+/// Nothing it answers exists anywhere in this emulator: a client that reads one of these
+/// bodies back read what the revision's code produced.
+fn request_shaped_application() -> Vec<u8> {
+    archive(&[(
+        "index.js",
+        br#"
+const http = require('http');
+http.createServer((req, res) => {
+  let body = '';
+  req.on('data', (chunk) => { body += chunk; });
+  req.on('end', () => {
+    if (req.url.indexOf('/echo') === 0) {
+      res.writeHead(200, { 'content-type': 'application/json', 'x-served-by': 'request-echo' });
+      res.end(JSON.stringify({
+        method: req.method,
+        url: req.url,
+        note: req.headers['x-note'] || '',
+        body: body,
+      }));
+      return;
+    }
+    if (req.url === '/gone') {
+      res.writeHead(410, { 'content-type': 'text/plain', 'x-served-by': 'request-echo' });
+      res.end('the application decided this is gone');
+      return;
+    }
+    res.writeHead(200, { 'content-type': 'text/plain', 'x-served-by': 'request-echo' });
+    res.end('the application answered ' + req.method + ' ' + req.url);
+  });
+}).listen(Number(process.env.PORT) || 8080);
+"#,
+    )])
+}
+
 /// Stage every package these suites run, through Amazon S3's own operations.
 async fn stage_packages(emulator: &Emulator) {
     create_bucket(emulator).await;
     stage_object(emulator, CJS_KEY, commonjs_application()).await;
     stage_object(emulator, ESM_KEY, es_module_application()).await;
     stage_object(emulator, NO_SERVER_KEY, application_without_a_server()).await;
+    stage_object(emulator, REQUEST_ECHO_KEY, request_shaped_application()).await;
 }
 
 /// The `403 Forbidden` page an `IamAuth` endpoint refuses a request presenting no SigV4
@@ -850,6 +892,18 @@ async fn dial(authority: &str, headers: &str) -> String {
 /// [`dial`] for a request of any method and request target, which is what a client that
 /// followed `domainName` issues: the handler's answer is computed from both.
 async fn dial_request(authority: &str, method: &str, target: &str, headers: &str) -> String {
+    dial_body(authority, method, target, headers, "").await
+}
+
+/// [`dial_request`] for a request carrying a BODY, which is another part of the request a
+/// handler computes its answer from: its length is stated the way the transport requires.
+async fn dial_body(
+    authority: &str,
+    method: &str,
+    target: &str,
+    headers: &str,
+    body: &str,
+) -> String {
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
     let host = service_common::data_plane_addressing::host_only(authority);
@@ -863,8 +917,20 @@ async fn dial_request(authority: &str, method: &str, target: &str, headers: &str
     let mut socket = tokio::net::TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, port))
         .await
         .unwrap_or_else(|error| panic!("the published address {authority} must accept a connection: {error}"));
+    // The length of what is written, stated once: a caller that states it in `headers`
+    // itself keeps that value, so no request ever carries the header twice.
+    let stated_length = headers
+        .split("\r\n")
+        .filter_map(|line| line.split_once(':'))
+        .any(|(name, _)| name.trim().eq_ignore_ascii_case("content-length"));
+    let length = if stated_length {
+        String::new()
+    } else {
+        format!("content-length: {}\r\n", body.len())
+    };
     let request = format!(
-        "{method} {target} HTTP/1.1\r\nhost: {authority}\r\n{headers}connection: close\r\n\r\n"
+        "{method} {target} HTTP/1.1\r\nhost: {authority}\r\n{headers}{length}\
+         connection: close\r\n\r\n{body}"
     );
     socket
         .write_all(request.as_bytes())
@@ -1363,6 +1429,205 @@ async fn an_authorized_request_is_served_at_the_same_address_that_refuses_an_uns
             !request_id.is_empty() && !named.contains(&request_id),
             "case {case:?}: each answer names its own response, got {request_id:?} among \
              {named:?}"
+        );
+    }
+}
+
+/// One row of the unsigned-request table below: the case, the request a client issues with
+/// no credential of any kind (its method, its request target, the headers it carries and
+/// its body), and the answer THE REVISION'S OWN CODE computes for that request — the
+/// status, the content type and the body.
+struct UnsignedServedRow {
+    case: &'static str,
+    method: &'static str,
+    target: &'static str,
+    headers: &'static str,
+    body: &'static str,
+    status: u16,
+    content_type: &'static str,
+    answered: &'static str,
+}
+
+/// The rows: the rule generalises over the whole request, so they differ along everything
+/// the handler's answer is computed from — the method, the depth and query of the request
+/// target, a request header, the request body — and along what the handler decides from it:
+/// a `2xx` of its own, a non-`2xx` of its own, a text body and a JSON one. They also differ
+/// along the FORM an unsigned request arrives in, because none of them presents a SigV4
+/// credential: no headers at all, and an `Authorization` header that is not one.
+fn unsigned_served_rows() -> Vec<UnsignedServedRow> {
+    vec![
+        UnsignedServedRow {
+            case: "a GET with no headers of its own",
+            method: "GET",
+            target: "/",
+            headers: "",
+            body: "",
+            status: 200,
+            content_type: "text/plain",
+            answered: "the application answered GET /",
+        },
+        UnsignedServedRow {
+            case: "a GET of a deeper path, which the code answers from",
+            method: "GET",
+            target: "/orders/7/items",
+            headers: "",
+            body: "",
+            status: 200,
+            content_type: "text/plain",
+            answered: "the application answered GET /orders/7/items",
+        },
+        UnsignedServedRow {
+            case: "a GET carrying a query and a header the code reads, answered as JSON",
+            method: "GET",
+            target: "/echo?item=7",
+            headers: "x-note: kept\r\n",
+            body: "",
+            status: 200,
+            content_type: "application/json",
+            answered: r#"{"method":"GET","url":"/echo?item=7","note":"kept","body":""}"#,
+        },
+        UnsignedServedRow {
+            case: "a POST whose body the code reads back",
+            method: "POST",
+            target: "/echo",
+            headers: "content-type: text/plain\r\n",
+            body: "ship it",
+            status: 200,
+            content_type: "application/json",
+            answered: r#"{"method":"POST","url":"/echo","note":"","body":"ship it"}"#,
+        },
+        UnsignedServedRow {
+            case: "a DELETE, which the code answers from the method it was handed",
+            method: "DELETE",
+            target: "/echo",
+            headers: "",
+            body: "",
+            status: 200,
+            content_type: "application/json",
+            answered: r#"{"method":"DELETE","url":"/echo","note":"","body":""}"#,
+        },
+        UnsignedServedRow {
+            case: "a GET of a route the code answers with a non-2xx status of its own",
+            method: "GET",
+            target: "/gone",
+            headers: "",
+            body: "",
+            status: 410,
+            content_type: "text/plain",
+            answered: "the application decided this is gone",
+        },
+        UnsignedServedRow {
+            case: "a GET whose Authorization header is not a SigV4 credential",
+            method: "GET",
+            target: "/private",
+            headers: "authorization: Bearer not-a-sigv4-credential\r\n",
+            body: "",
+            status: 200,
+            content_type: "text/plain",
+            answered: "the application answered GET /private",
+        },
+    ]
+}
+
+/// RULE: an `ApplicationManaged` endpoint ("your application handles authorization")
+/// refuses nothing of its own, so a request presenting NO credential is an authorized
+/// request there — and what the published address answers an authorized request with is the
+/// response the revision's own code produced: its status, its headers and its body, computed
+/// from the request that code was handed. Nothing fixed of this emulator's is served in
+/// their place, for any method, any path or any body.
+///
+/// That is what makes `authType` observable: the SAME unsigned request, at an endpoint whose
+/// only difference is `authType: IamAuth` ("requests ... must be signed with Signature
+/// Version 4"), earns the `403 Forbidden` page instead, so the two values of the enum answer
+/// one request two different ways.
+///
+/// Driven over a real socket, along the path a client walks: read `domainName` off the
+/// `Active` endpoint, then issue the unsigned request there.
+#[tokio::test]
+async fn an_unsigned_request_to_an_application_managed_endpoint_is_served_the_handlers_response() {
+    let emulator = Emulator::with_object_store();
+    stage_packages(&emulator).await;
+
+    // Both endpoints are created first, so their clock-owed `Pending -> Active` spans are
+    // waited out together.
+    let served = create_serving(
+        &emulator,
+        "unsigned-served",
+        "ApplicationManaged",
+        REQUEST_ECHO_KEY,
+        json!({}),
+    )
+    .await;
+    let refusing = create_serving(
+        &emulator,
+        "unsigned-refused",
+        "IamAuth",
+        REQUEST_ECHO_KEY,
+        json!({}),
+    )
+    .await;
+
+    // The address a client uses is the one the READ reports, taken once that same read says
+    // the endpoint is serving traffic.
+    let active = poll_until_active(&emulator, "unsigned-served", "ep").await;
+    let domain_name = active
+        .get("domainName")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    assert_eq!(
+        domain_name, served,
+        "the Active read must report the published address, got {active:?}"
+    );
+    poll_until_active(&emulator, "unsigned-refused", "ep").await;
+
+    let mut named: Vec<String> = Vec::new();
+    for row in unsigned_served_rows() {
+        let case = row.case;
+        let answered = dial_body(&domain_name, row.method, row.target, row.headers, row.body).await;
+        assert_eq!(
+            status_on_the_wire(&answered),
+            row.status,
+            "case {case:?}: expected the status the revision's code set, got {answered:?}"
+        );
+        assert_eq!(
+            header_on_the_wire(&answered, "content-type"),
+            row.content_type,
+            "case {case:?}: expected the content type the code set, got {:?}",
+            header_on_the_wire(&answered, "content-type")
+        );
+        assert_eq!(
+            header_on_the_wire(&answered, "x-served-by"),
+            "request-echo",
+            "case {case:?}: expected the header the code set, got {answered:?}"
+        );
+        assert_eq!(
+            body_on_the_wire(&answered),
+            row.answered,
+            "case {case:?}: expected the body the code produced, got {:?}",
+            body_on_the_wire(&answered)
+        );
+        let request_id = header_on_the_wire(&answered, REQUEST_ID_HEADER);
+        assert!(
+            !request_id.is_empty() && !named.contains(&request_id),
+            "case {case:?}: every answer names the response it is in its {REQUEST_ID_HEADER} \
+             header, got {request_id:?} among {named:?}"
+        );
+        named.push(request_id);
+
+        // The other arm of `authType`, answering the identical unsigned request.
+        let refused = dial_body(&refusing, row.method, row.target, row.headers, row.body).await;
+        assert_eq!(
+            status_on_the_wire(&refused),
+            403,
+            "case {case:?}: an IamAuth endpoint refuses the same unsigned request, got {refused:?}"
+        );
+        let refusal_id = header_on_the_wire(&refused, REQUEST_ID_HEADER);
+        assert_eq!(
+            body_on_the_wire(&refused),
+            forbidden_page(&refusal_id),
+            "case {case:?}: expected the Forbidden page naming {refusal_id:?}, got {:?}",
+            body_on_the_wire(&refused)
         );
     }
 }
