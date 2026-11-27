@@ -10,7 +10,9 @@
 //! expires. At that expiration the credential is ended — in this store and in the
 //! emulator's credential store — by [`crate::state::end_expired_credentials`], which
 //! every operation of this service runs, so the instant this response advertises is the
-//! instant the emulator stops accepting what it minted.
+//! instant the emulator stops accepting what it minted. How long that is comes from the
+//! permission set the role is the name of ([`crate::state::role_session_duration`]), which
+//! is where the administrator configures the length of the role sessions it creates.
 //!
 //! ## Shape of an operation
 //!
@@ -167,6 +169,16 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // The sign-in this token names, as the records OUTSIDE this service hold it (see
         // `ListAccounts`): resolved before this store is locked.
         let federated = crate::state::federated_sign_in(&*self.engine, &input.access_token, now);
+        // How long a role session of the asked-for role runs: the duration configured on the
+        // permission set that grants it, read — like the sign-in itself — from the records
+        // OUTSIDE this service, before this store is locked.
+        let session_duration = crate::state::role_session_duration(
+            &*self.engine,
+            &input.access_token,
+            &input.account_id,
+            &input.role_name,
+            now,
+        );
         let mut state = state.lock();
         // Every credential whose advertised expiration has passed is spent, so it ends
         // here before anything else is read or minted.
@@ -237,7 +249,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     session_token: session_token.to_string(),
                     expiration_millis: crate::state::epoch_millis(crate::state::expiry_after(
                         now,
-                        crate::state::ROLE_SESSION_DURATION,
+                        session_duration,
                     )),
                 };
                 state.issued_credentials.insert(key, record.clone());

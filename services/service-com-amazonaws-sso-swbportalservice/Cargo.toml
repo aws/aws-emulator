@@ -50,6 +50,9 @@ emulator-core-build-support = { workspace = true }
 
 [dev-dependencies]
 sha2 = { workspace = true }
+# Declares one module per `tests/all/<name>.rs`, so a new suite needs no hand-written
+# `mod` line.
+automod = { workspace = true }
 
 [lints]
 workspace = true

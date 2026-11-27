@@ -44,7 +44,7 @@
 //! sign-in ended when its holder spends a grant the mint still has.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use super::{Account, ComAmazonawsSsoSwbportalserviceState, Session};
 
@@ -276,12 +276,54 @@ fn assigned_accounts<Eng: Send + Sync + 'static>(
     identity: Option<&SignInIdentity>,
     now: SystemTime,
 ) -> Option<BTreeMap<String, Account>> {
+    let mut roles: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for granted in granted_roles(engine, identity, now)? {
+        roles
+            .entry(granted.account_id)
+            .or_default()
+            .insert(granted.role_name);
+    }
+    Some(named_accounts(engine, roles))
+}
+
+/// One role an in-force account assignment grants a sign-in: the account it is granted in,
+/// the role itself, and how long a role session of it runs.
+///
+/// Both come off the SAME permission-set record, because both are that record's: the role a
+/// portal offers is the permission set's name, and the length of the role session it
+/// creates is the `SessionDuration` the administrator configured on it.
+#[derive(Debug, Clone)]
+pub struct GrantedRole {
+    /// The account the assignment grants the role in.
+    pub account_id: String,
+    /// The role, which is the granting permission set's name.
+    pub role_name: String,
+    /// The granting permission set's `SessionDuration`, as the administrator configured it,
+    /// and `None` for a permission set configured with none (the member is optional).
+    pub session_duration: Option<String>,
+}
+
+/// Every role IAM Identity Center's assignments put in force for `identity` at `now`, in
+/// the order the directory holds the assignments.
+///
+/// The ONE walk of those assignments: both what the portal REPORTS
+/// ([`assigned_accounts`]) and how long a credential minted for one of them lasts
+/// ([`role_session_duration`]) are read off it, so a role and its session length can never
+/// come from different records.
+///
+/// `None` only when IAM Identity Center's own store is not reachable; see
+/// [`assigned_accounts`] for which assignments are in force and for the principal filter.
+fn granted_roles<Eng: Send + Sync + 'static>(
+    engine: &Eng,
+    identity: Option<&SignInIdentity>,
+    now: SystemTime,
+) -> Option<Vec<GrantedRole>> {
     // The identity store is read FIRST and its lock released, so IAM Identity Center's own
     // lock below is the only one held while the assignments are walked.
     let principals = identity.map(|identity| assigned_principals(engine, identity));
     let identity_center = identity_center::state::service_state(engine)?;
     let identity_center = identity_center.lock();
-    let mut roles: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    let mut granted_roles = Vec::new();
     for assignment in &identity_center.account_assignments {
         if !identity_center
             .instances
@@ -310,13 +352,70 @@ fn assigned_accounts<Eng: Send + Sync + 'static>(
         else {
             continue;
         };
-        roles
-            .entry(assignment.account_id.clone())
-            .or_default()
-            .insert(permission_set.name.clone());
+        granted_roles.push(GrantedRole {
+            account_id: assignment.account_id.clone(),
+            role_name: permission_set.name.clone(),
+            session_duration: permission_set.session_duration.clone(),
+        });
     }
     drop(identity_center);
-    Some(named_accounts(engine, roles))
+    Some(granted_roles)
+}
+
+/// How long the role session `GetRoleCredentials` creates for `role_name` in `account_id`
+/// runs, for the sign-in `access_token` names.
+///
+/// A role session created through an IAM Identity Center permission set runs for "the
+/// duration configured in the permission set" (this service's own `Logout` documentation
+/// says so in as many words), so the length is read off the permission set that GRANTS the
+/// role — the one whose name the portal reports as that role ([`granted_roles`]) — and
+/// never from anything the request carries, which models no duration at all.
+///
+/// [`super::ROLE_SESSION_DURATION`] is the answer exactly where no configured duration
+/// reaches this call: a permission set the administrator configured none on, and a role no
+/// permission set of this emulator grants at all (a sign-in seeded straight into this
+/// store, or an emulator mounted without IAM Identity Center) — the permission-set default
+/// is what such a session runs for.
+///
+/// A configured value naming no fixed span is treated as none: the span is read with the one
+/// ISO 8601 duration reading this project shares, which is also the reading IAM Identity
+/// Center validates a `SessionDuration` through before storing it.
+///
+/// Called BEFORE this service's store is locked, like every other read of a store that is
+/// not this one's, so only one store's lock is ever held at a time.
+pub fn role_session_duration<Eng: Send + Sync + 'static>(
+    engine: &Eng,
+    access_token: &str,
+    account_id: &str,
+    role_name: &str,
+    now: SystemTime,
+) -> Duration {
+    configured_role_session_duration(engine, access_token, account_id, role_name, now)
+        .unwrap_or(super::ROLE_SESSION_DURATION)
+}
+
+/// The configured span [`role_session_duration`] reports, or `None` for each way a role
+/// session has no configured length of its own.
+///
+/// The permission set is the one an in-force assignment of the SIGN-IN's own grants, so the
+/// principal filter and the grant's completion are asked here exactly as they are asked of
+/// the role the portal reports. Two directories holding a permission set of the same name
+/// assigned in the same account report ONE role, so the first grant of it the directory
+/// holds is the one that names the session's length.
+fn configured_role_session_duration<Eng: Send + Sync + 'static>(
+    engine: &Eng,
+    access_token: &str,
+    account_id: &str,
+    role_name: &str,
+    now: SystemTime,
+) -> Option<Duration> {
+    let identity = minted_sign_in(engine, access_token, now)?.identity;
+    granted_roles(engine, identity.as_ref(), now)?
+        .into_iter()
+        .find(|granted| granted.account_id == account_id && granted.role_name == role_name)?
+        .session_duration
+        .as_deref()
+        .and_then(::service_common::iso8601_span::iso8601_span)
 }
 
 /// The `PrincipalType` an assignment made to one identity-store USER carries — one of the

@@ -278,13 +278,16 @@ impl RoleCredentialRecord {
 /// credential, exactly as a second sign-in would.
 pub type IssuedCredentialKey = (String, String, String);
 
-/// How long a minted role credential lasts.
+/// How long a minted role credential lasts when nothing CONFIGURES its length: one hour.
 ///
 /// IAM Identity Center returns the credentials of an IAM role session whose length is
 /// "the duration configured in the permission set" (the `Logout` model documentation
-/// says so in as many words), and the IAM Identity Center User Guide's "Set session
-/// duration" page gives that permission-set default as 1 hour. Nothing in this API
-/// lets a caller ask for another duration, so the default is the duration used.
+/// says so in as many words), so the configured duration is what a minted credential
+/// runs for ([`role_session_duration`]) — nothing in this API lets a CALLER ask for
+/// another one. This is the length left for a role session no permission set states one
+/// for: the IAM Identity Center User Guide's "Set session duration" page gives that
+/// permission-set default as 1 hour, and `SessionDuration` is an optional member a
+/// permission set may carry none of.
 pub const ROLE_SESSION_DURATION: Duration = Duration::from_secs(60 * 60);
 
 /// The largest page any listing returns, which is also the largest `maxResults` the
