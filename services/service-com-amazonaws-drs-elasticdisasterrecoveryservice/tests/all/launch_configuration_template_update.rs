@@ -51,7 +51,7 @@ const INVALID_REQUEST_BODY: &str = "Invalid request body";
 /// `UpdateLaunchConfigurationTemplateRequest` names them
 /// (`smithy_query(query="operation",operation="UpdateLaunchConfigurationTemplate")`): every
 /// input member beside the id the request addresses the template by.
-const SETTINGS: [&str; 9] = [
+pub(crate) const SETTINGS: [&str; 9] = [
     "launchDisposition",
     "targetInstanceTypeRightSizingMethod",
     "recoveryMode",
@@ -65,7 +65,7 @@ const SETTINGS: [&str; 9] = [
 
 /// Create a template from `body`, asserting the modelled 201, and answer the created
 /// template as the service reported it.
-async fn create_template(router: &MultiServiceRouter, body: &Value) -> Value {
+pub(crate) async fn create_template(router: &MultiServiceRouter, body: &Value) -> Value {
     let answer = call(router, "CreateLaunchConfigurationTemplate", body).await;
     assert_eq!(
         answer.status, 201,
@@ -75,7 +75,7 @@ async fn create_template(router: &MultiServiceRouter, body: &Value) -> Value {
 }
 
 /// The `launchConfigurationTemplate` member of a create's or an update's answer.
-fn reported(answer: &Answer) -> Value {
+pub(crate) fn reported(answer: &Answer) -> Value {
     answer
         .member("launchConfigurationTemplate")
         .cloned()
@@ -83,7 +83,7 @@ fn reported(answer: &Answer) -> Value {
 }
 
 /// A string member of a JSON object.
-fn text(value: &Value, name: &str) -> String {
+pub(crate) fn text(value: &Value, name: &str) -> String {
     value
         .get(name)
         .and_then(Value::as_str)
@@ -92,7 +92,7 @@ fn text(value: &Value, name: &str) -> String {
 }
 
 /// `UpdateLaunchConfigurationTemplate` for `id` with `patch`'s settings.
-async fn update(router: &MultiServiceRouter, id: &str, patch: &Value) -> Answer {
+pub(crate) async fn update(router: &MultiServiceRouter, id: &str, patch: &Value) -> Answer {
     let mut body = Map::new();
     body.insert(
         "launchConfigurationTemplateID".to_string(),
@@ -110,7 +110,7 @@ async fn update(router: &MultiServiceRouter, id: &str, patch: &Value) -> Answer 
 }
 
 /// The template `id` is reported as, through the read that reports templates.
-async fn read_back(router: &MultiServiceRouter, id: &str) -> Value {
+pub(crate) async fn read_back(router: &MultiServiceRouter, id: &str) -> Value {
     let answer = call(
         router,
         "DescribeLaunchConfigurationTemplates",
