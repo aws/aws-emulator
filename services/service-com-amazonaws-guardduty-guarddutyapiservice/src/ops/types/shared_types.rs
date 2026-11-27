@@ -130,7 +130,6 @@ pub struct ScanEc2InstanceWithFindingsResult {
 pub struct EbsVolumesResult {
     pub status: Option<String>,
     pub reason: Option<String>,
-    pub updated_at: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.guardduty#FindingCriteria")]
@@ -262,54 +261,30 @@ pub struct DataSourceConfigurationsResult {
     pub s3_logs: S3LogsConfigurationResult,
     pub kubernetes: Option<KubernetesConfigurationResult>,
     pub malware_protection: Option<MalwareProtectionConfigurationResult>,
-    pub database: Option<DatabaseConfigurationResult>,
-}
-
-#[smithy_macros::smithy(shape = "com.amazonaws.guardduty#DatabaseConfigurationResult")]
-#[derive(Debug, Clone, Default)]
-pub struct DatabaseConfigurationResult {
-    pub rds: Option<RdsConfigurationResult>,
-}
-
-#[smithy_macros::smithy(shape = "com.amazonaws.guardduty#RdsConfigurationResult")]
-#[derive(Debug, Clone, Default)]
-pub struct RdsConfigurationResult {
-    pub database_events: Option<DatabaseEventsConfigurationResult>,
-}
-
-#[smithy_macros::smithy(shape = "com.amazonaws.guardduty#DatabaseEventsConfigurationResult")]
-#[derive(Debug, Clone, Default)]
-pub struct DatabaseEventsConfigurationResult {
-    pub status: Option<String>,
-    pub updated_at: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.guardduty#CloudTrailConfigurationResult")]
 #[derive(Debug, Clone, Default)]
 pub struct CloudTrailConfigurationResult {
     pub status: String,
-    pub updated_at: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.guardduty#DNSLogsConfigurationResult")]
 #[derive(Debug, Clone, Default)]
 pub struct DNSLogsConfigurationResult {
     pub status: String,
-    pub updated_at: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.guardduty#FlowLogsConfigurationResult")]
 #[derive(Debug, Clone, Default)]
 pub struct FlowLogsConfigurationResult {
     pub status: String,
-    pub updated_at: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.guardduty#S3LogsConfigurationResult")]
 #[derive(Debug, Clone, Default)]
 pub struct S3LogsConfigurationResult {
     pub status: String,
-    pub updated_at: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.guardduty#KubernetesConfigurationResult")]
@@ -322,7 +297,6 @@ pub struct KubernetesConfigurationResult {
 #[derive(Debug, Clone, Default)]
 pub struct KubernetesAuditLogsConfigurationResult {
     pub status: String,
-    pub updated_at: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.guardduty#ScanConfigurationContinuousScanDetails")]
@@ -352,6 +326,72 @@ pub struct AdditionalInfo {
 #[derive(Debug, Clone, Default)]
 pub struct IncrementalScanDetails {
     pub baseline_resource_arn: String,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.guardduty#ThreatReference")]
+#[derive(Debug, Clone, Default)]
+pub struct ThreatReference {
+    pub name: Option<String>,
+    pub uid: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.guardduty#FindingReference")]
+#[derive(Debug, Clone, Default)]
+pub struct FindingReference {
+    pub finding_type: Option<String>,
+    pub uid: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.guardduty#SeverityBreakdown")]
+#[derive(Debug, Clone, Default)]
+pub struct SeverityBreakdown {
+    pub critical: Option<i32>,
+    pub high: Option<i32>,
+    pub medium: Option<i32>,
+    pub low: Option<i32>,
+    pub info: Option<i32>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.guardduty#FindingTypeCount")]
+#[derive(Debug, Clone, Default)]
+pub struct FindingTypeCount {
+    pub finding_type: Option<String>,
+    pub count: Option<i32>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.guardduty#TimeWindowGroup")]
+#[derive(Debug, Clone, Default)]
+pub struct TimeWindowGroup {
+    pub start_time: Option<::aws_smithy_types::DateTime>,
+    pub end_time: Option<::aws_smithy_types::DateTime>,
+    pub finding_count: Option<i32>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.guardduty#TacticCoverage")]
+#[derive(Debug, Clone, Default)]
+pub struct TacticCoverage {
+    pub phase: Option<String>,
+    pub finding_count: Option<i32>,
+    pub finding_types: Option<Vec<String>>,
+    pub techniques: Option<Vec<TechniqueCoverage>>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.guardduty#TechniqueCoverage")]
+#[derive(Debug, Clone, Default)]
+pub struct TechniqueCoverage {
+    pub technique: Option<ThreatReference>,
+    pub finding_count: Option<i32>,
+    pub finding_types: Option<Vec<String>>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.guardduty#Recommendation")]
+#[derive(Debug, Clone, Default)]
+pub struct Recommendation {
+    pub title: Option<String>,
+    pub rationale: Option<String>,
+    pub category: Option<String>,
+    pub priority: Option<String>,
+    pub cli_commands: Option<Vec<String>>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.guardduty#ScanResourceCriteria")]
@@ -387,6 +427,10 @@ pub struct Member {
     pub administrator_id: Option<String>,
 }
 
+/// The values `ActionPriority` accepts on the wire.
+pub const ACTION_PRIORITY_VALUES: &[&str] = &["IMMEDIATE", "SHORT_TERM", "STRATEGIC"];
+
+
 /// The values `ActivityType` accepts on the wire.
 pub const ACTIVITY_TYPE_VALUES: &[&str] = &["API_CALL"];
 
@@ -395,8 +439,16 @@ pub const ACTIVITY_TYPE_VALUES: &[&str] = &["API_CALL"];
 pub const ADMIN_STATUS_VALUES: &[&str] = &["DISABLE_IN_PROGRESS", "ENABLED"];
 
 
+/// The values `AnalysisType` accepts on the wire.
+pub const ANALYSIS_TYPE_VALUES: &[&str] = &["BASELINE", "KUBERNETES_POLICY_VIOLATION", "PROCESS_LINEAGE", "RDS_THREAT_ASSESSMENT", "REPUTATION", "S3_ACTOR_CONTEXT", "S3_EXPOSURE", "S3_PEN_TEST", "THREAT_ASSESSMENT", "TREND"];
+
+
 /// The values `AssociationMode` accepts on the wire.
 pub const ASSOCIATION_MODE_VALUES: &[&str] = &["DRY_RUN", "LIVE"];
+
+
+/// The values `AttackPhaseName` accepts on the wire.
+pub const ATTACK_PHASE_NAME_VALUES: &[&str] = &["Collection", "Command and Control", "Credential Access", "Defense Evasion", "Discovery", "Execution", "Exfiltration", "Impact", "Initial Access", "Lateral Movement", "Persistence", "Privilege Escalation", "Reconnaissance", "Resource Development"];
 
 
 /// The values `AutoEnableMembers` accepts on the wire.
@@ -427,6 +479,10 @@ pub const CONTENT_POLICY_FILTER_ACTION_VALUES: &[&str] = &["BLOCKED", "NONE"];
 pub const CONTENT_POLICY_FILTER_TYPE_VALUES: &[&str] = &["HATE", "INSULTS", "JAILBREAK", "MISCONDUCT", "PROMPT_ATTACK", "SEXUAL", "VIOLENCE"];
 
 
+/// The values `CorrelationReason` accepts on the wire.
+pub const CORRELATION_REASON_VALUES: &[&str] = &["HIGH_SEVERITY", "SAME_BEHAVIOR", "SAME_RESOURCE"];
+
+
 /// The values `CoverageFilterCriterionKey` accepts on the wire.
 pub const COVERAGE_FILTER_CRITERION_KEY_VALUES: &[&str] = &["ACCOUNT_ID", "ADDON_VERSION", "AGENT_VERSION", "CLUSTER_ARN", "CLUSTER_NAME", "COVERAGE_STATUS", "ECS_CLUSTER_NAME", "EKS_CLUSTER_NAME", "INSTANCE_ID", "MANAGEMENT_TYPE", "RESOURCE_TYPE"];
 
@@ -453,6 +509,10 @@ pub const DATA_SOURCE_VALUES: &[&str] = &["CLOUD_TRAIL", "DNS_LOGS", "EC2_MALWAR
 
 /// The values `DataSourceStatus` accepts on the wire.
 pub const DATA_SOURCE_STATUS_VALUES: &[&str] = &["DISABLED", "ENABLED"];
+
+
+/// The values `DefenseTactic` accepts on the wire.
+pub const DEFENSE_TACTIC_VALUES: &[&str] = &["Detect", "Evict", "Harden", "Isolate", "Restore"];
 
 
 /// The values `DestinationType` accepts on the wire.
@@ -491,6 +551,14 @@ pub const DETECTOR_FEATURE_RESULT_VALUES: &[&str] = &["AI_ANALYST", "AI_PROTECTI
 pub const DETECTOR_STATUS_VALUES: &[&str] = &["DISABLED", "ENABLED"];
 
 
+/// The values `Disposition` accepts on the wire.
+pub const DISPOSITION_VALUES: &[&str] = &["Access Revoked", "Blocked", "Deleted", "Isolated", "Logged"];
+
+
+/// The values `DistributionDimension` accepts on the wire.
+pub const DISTRIBUTION_DIMENSION_VALUES: &[&str] = &["ARCHIVE", "ATTACK_VECTOR", "RESOURCE", "SEVERITY", "TYPE"];
+
+
 /// The values `EbsSnapshotPreservation` accepts on the wire.
 pub const EBS_SNAPSHOT_PRESERVATION_VALUES: &[&str] = &["NO_RETENTION", "RETENTION_WITH_FINDING"];
 
@@ -513,6 +581,18 @@ pub const FEATURE_STATUS_VALUES: &[&str] = &["DISABLED", "ENABLED"];
 
 /// The values `Feedback` accepts on the wire.
 pub const FEEDBACK_VALUES: &[&str] = &["NOT_USEFUL", "USEFUL"];
+
+
+/// The values `FetchCriterionCondition` accepts on the wire.
+pub const FETCH_CRITERION_CONDITION_VALUES: &[&str] = &["EQUALS", "GREATER_THAN", "GREATER_THAN_OR_EQUAL", "LESS_THAN", "LESS_THAN_OR_EQUAL", "NOT_EQUALS"];
+
+
+/// The values `FetchType` accepts on the wire.
+pub const FETCH_TYPE_VALUES: &[&str] = &["CLOUD_TRAIL_RAW_EVENTS", "DETECTOR", "FINDINGS", "FINDING_TYPE_DOCUMENTATION", "MEMBER_ACCOUNTS", "REPUTATION", "RUNTIME_SIGNALS"];
+
+
+/// The values `FetchVerdict` accepts on the wire.
+pub const FETCH_VERDICT_VALUES: &[&str] = &["BENIGN", "NEUTRAL", "THREAT"];
 
 
 /// The values `FilterAction` accepts on the wire.
@@ -555,12 +635,32 @@ pub const GUARDRAIL_SOURCE_VALUES: &[&str] = &["INPUT", "OUTPUT"];
 pub const INDICATOR_TYPE_VALUES: &[&str] = &["ATTACK_TACTIC", "ATTACK_TECHNIQUE", "CRYPTOMINING_DOMAIN", "CRYPTOMINING_IP", "CRYPTOMINING_PROCESS", "HIGH_RISK_API", "MALICIOUS_DOMAIN", "MALICIOUS_FILE", "MALICIOUS_IP", "MALICIOUS_PACKAGE", "MALICIOUS_PROCESS", "MISCONFIGURATION", "REACHABILITY", "SENSITIVE_DATA", "SUSPICIOUS_NETWORK", "SUSPICIOUS_PROCESS", "SUSPICIOUS_USER_AGENT", "TOR_IP", "UNUSUAL_API_FOR_ACCOUNT", "UNUSUAL_ASN_FOR_ACCOUNT", "UNUSUAL_ASN_FOR_USER", "VULNERABILITY"];
 
 
+/// The values `InvestigationDetectorFeature` accepts on the wire.
+pub const INVESTIGATION_DETECTOR_FEATURE_VALUES: &[&str] = &["CLOUD_TRAIL", "DNS_LOGS", "EBS_MALWARE_PROTECTION", "EC2_AGENT_MANAGEMENT", "ECS_FARGATE_AGENT_MANAGEMENT", "EKS_ADDON_MANAGEMENT", "EKS_AUDIT_LOGS", "EKS_RUNTIME_MONITORING", "FLOW_LOGS", "LAMBDA_NETWORK_LOGS", "RDS_LOGIN_EVENTS", "RUNTIME_MONITORING", "S3_DATA_EVENTS"];
+
+
+/// The values `InvestigationFilterCriterionKey` accepts on the wire.
+pub const INVESTIGATION_FILTER_CRITERION_KEY_VALUES: &[&str] = &["CONFIDENCE", "FINDING_ID", "INVESTIGATION_TYPE", "RISK_LEVEL", "STATUS"];
+
+
+/// The values `InvestigationIndicatorType` accepts on the wire.
+pub const INVESTIGATION_INDICATOR_TYPE_VALUES: &[&str] = &["DOMAIN", "FILE", "IP"];
+
+
+/// The values `InvestigationResourceType` accepts on the wire.
+pub const INVESTIGATION_RESOURCE_TYPE_VALUES: &[&str] = &["EBS_VOLUME", "EC2_INSTANCE", "EC2_SECURITY_GROUP", "ECS_CLUSTER", "EKS_CLUSTER", "IAM_ACCESS_KEY", "IAM_ROLE", "IAM_USER", "KUBERNETES_WORKLOAD", "LAMBDA_FUNCTION", "RDS_DB_USER", "RDS_INSTANCE", "S3_BUCKET"];
+
+
 /// The values `InvestigationSortField` accepts on the wire.
 pub const INVESTIGATION_SORT_FIELD_VALUES: &[&str] = &["CONFIDENCE", "END_TIME", "RISK_LEVEL", "START_TIME", "STATUS"];
 
 
 /// The values `InvestigationStatus` accepts on the wire.
 pub const INVESTIGATION_STATUS_VALUES: &[&str] = &["COMPLETED", "FAILED", "RUNNING"];
+
+
+/// The values `InvestigationType` accepts on the wire.
+pub const INVESTIGATION_TYPE_VALUES: &[&str] = &["ACCOUNT", "FINDING", "ORGANIZATION"];
 
 
 /// The values `IpSetFormat` accepts on the wire.
@@ -615,6 +715,10 @@ pub const MFA_STATUS_VALUES: &[&str] = &["DISABLED", "ENABLED"];
 pub const NETWORK_DIRECTION_VALUES: &[&str] = &["INBOUND", "OUTBOUND"];
 
 
+/// The values `ObservationType` accepts on the wire.
+pub const OBSERVATION_TYPE_VALUES: &[&str] = &["ACCOUNT_OVERVIEW", "DETECTION_COVERAGE", "DISTRIBUTION", "FINDING_DETAIL", "KUBERNETES_ACTIVITY", "MALWARE_SCAN", "NETWORK_ACTIVITY", "RDS_LOGIN_ACTIVITY", "RECOMMENDATION", "RELATED_FINDINGS", "REPRESENTATIVE_RESOURCE", "RESOURCE", "RUNTIME_SIGNALS", "S3_ACTIVITY"];
+
+
 /// The values `OrderBy` accepts on the wire.
 pub const ORDER_BY_VALUES: &[&str] = &["ASC", "DESC"];
 
@@ -653,6 +757,14 @@ pub const PUBLIC_BUCKET_RESTRICT_BEHAVIOR_VALUES: &[&str] = &["NOT_RESTRICTED", 
 
 /// The values `PublishingStatus` accepts on the wire.
 pub const PUBLISHING_STATUS_VALUES: &[&str] = &["PENDING_VERIFICATION", "PUBLISHING", "STOPPED", "UNABLE_TO_PUBLISH_FIX_DESTINATION_PROPERTY"];
+
+
+/// The values `RecommendationCategory` accepts on the wire.
+pub const RECOMMENDATION_CATEGORY_VALUES: &[&str] = &["ENABLE_PROTECTION", "FURTHER_INVESTIGATION", "HARDENING", "MONITORING", "SUPPRESSION_RULE"];
+
+
+/// The values `RecordType` accepts on the wire.
+pub const RECORD_TYPE_VALUES: &[&str] = &["ANALYSIS", "FETCH", "METADATA", "OBSERVATION", "UPDATE"];
 
 
 /// The values `ResourceType` accepts on the wire.
@@ -703,6 +815,14 @@ pub const SCAN_TYPE_VALUES: &[&str] = &["GUARDDUTY_INITIATED", "ON_DEMAND"];
 pub const SIGNAL_TYPE_VALUES: &[&str] = &["CLOUD_TRAIL", "DNS_LOGS", "EKS_AUDIT_LOGS", "FINDING", "FLOW_LOGS", "RUNTIME_MONITORING", "S3_DATA_EVENTS"];
 
 
+/// The values `SummaryFormat` accepts on the wire.
+pub const SUMMARY_FORMAT_VALUES: &[&str] = &["STRING", "STRUCTURED"];
+
+
+/// The values `ThreatConfidence` accepts on the wire.
+pub const THREAT_CONFIDENCE_VALUES: &[&str] = &["HIGH", "LOW", "MEDIUM", "VERY_HIGH"];
+
+
 /// The values `ThreatEntitySetFormat` accepts on the wire.
 pub const THREAT_ENTITY_SET_FORMAT_VALUES: &[&str] = &["ALIEN_VAULT", "FIRE_EYE", "OTX_CSV", "PROOF_POINT", "STIX", "TXT"];
 
@@ -717,6 +837,10 @@ pub const THREAT_INTEL_SET_FORMAT_VALUES: &[&str] = &["ALIEN_VAULT", "FIRE_EYE",
 
 /// The values `ThreatIntelSetStatus` accepts on the wire.
 pub const THREAT_INTEL_SET_STATUS_VALUES: &[&str] = &["ACTIVATING", "ACTIVE", "DEACTIVATING", "DELETED", "DELETE_PENDING", "ERROR", "INACTIVE"];
+
+
+/// The values `TimeGranularity` accepts on the wire.
+pub const TIME_GRANULARITY_VALUES: &[&str] = &["DAY", "MONTH", "WEEK"];
 
 
 /// The values `TriggerType` accepts on the wire.

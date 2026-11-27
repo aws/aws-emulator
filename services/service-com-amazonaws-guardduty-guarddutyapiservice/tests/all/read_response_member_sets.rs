@@ -465,12 +465,13 @@ async fn every_reported_detector_feature_carries_the_whole_member_set() {
             );
         }
 
-        // The data-source view of the RDS login-events switch reports the enablement the
-        // create asked for — the same stored switch the `features` entry reports.
-        assert_eq!(
-            body["dataSources"]["database"]["rds"]["databaseEvents"]["status"],
-            json!(rds_status),
-            "case {case:?}: expected the RDS data source {rds_status}, got {body:?}"
+        // The RDS login-events switch is reported under `Features`: the deprecated
+        // data-source view declares no node for it
+        // (`smithy_query(shape="DataSourceConfigurationsResult")`), so the view carries
+        // nothing for RDS at all rather than a node the model does not model.
+        assert!(
+            body["dataSources"]["database"].is_null(),
+            "case {case:?}: the data-source view models no RDS node, got {body:?}"
         );
         let rds_feature = features
             .iter()
@@ -479,7 +480,8 @@ async fn every_reported_detector_feature_carries_the_whole_member_set() {
         assert_eq!(
             rds_feature["status"],
             json!(rds_status),
-            "case {case:?}: the two views of one switch must agree, got {rds_feature:?}"
+            "case {case:?}: expected the RDS switch {rds_status} the create asked for, got \
+             {rds_feature:?}"
         );
     }
 }

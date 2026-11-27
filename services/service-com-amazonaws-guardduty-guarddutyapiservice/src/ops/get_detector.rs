@@ -188,7 +188,6 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             status: detector.status.clone(),
             data_sources: Some(crate::state::data_source_configurations_view(
                 &detector.features,
-                detector.updated_at_millis,
                 Some(&detector.malware_protection_service_role),
             )),
             // Projected through the ONE tag-map rule every read of this service

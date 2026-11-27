@@ -64,6 +64,9 @@
 //!   Region, see the Settings page in the GuardDuty console, or run the ListDetectors API.
 //! * `InvestigationId` (InvestigationId, len 1..64, pattern ^[a-fA-F0-9\-]+$) **required** —
 //!   The unique identifier of the investigation to retrieve.
+//! * `SummaryFormat` (SummaryFormat, one of: STRING | STRUCTURED) — bound to the
+//!   `summaryFormat` query string. The format the investigation's summary is served in:
+//!   `STRUCTURED` serves `SummaryData` in place of the text `Summary`.
 //!
 //! ## Output
 //!
@@ -190,6 +193,25 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .into());
         };
         let analysis = investigation.analysis.as_ref();
+        // "When you set `SummaryFormat` to `STRUCTURED`, the summary is returned in
+        // `SummaryData` instead" of `Summary`, and "when this field is returned,
+        // `Summary` isn't returned"
+        // (`smithy_query(query="doc",shape="Investigation",member="SummaryData")`):
+        // the two are one conclusion under two formats, and the request picks which
+        // one is served. Anything other than `STRUCTURED` — including no
+        // `SummaryFormat` at all — is answered with the text report, `STRING` being
+        // the other member of the enum (`smithy_query(shape="SummaryFormat")`).
+        let structured =
+            input.summary_format.as_deref() == Some(crate::state::SUMMARY_FORMAT_STRUCTURED);
+        let summary_data = match structured {
+            // Both are read off the SAME stored pass, so the structured summary is in
+            // exactly when the text one would be: an investigation whose pass has
+            // reached no conclusion has neither.
+            true => analysis.zip(investigation.scope.as_ref()).map(
+                |(analysis, scope)| crate::state::investigation_summary_data(analysis, scope),
+            ),
+            false => None,
+        };
 
         Ok(GetInvestigationOutput {
             investigation: Investigation {
@@ -220,7 +242,18 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 risk_level: analysis.map(|analysis| analysis.risk_level.clone()),
                 risk: analysis.map(|analysis| analysis.risk.clone()),
                 confidence: analysis.map(|analysis| analysis.confidence.clone()),
-                summary: analysis.map(|analysis| analysis.summary.clone()),
+                summary: match summary_data.is_some() {
+                    true => None,
+                    false => analysis.map(|analysis| analysis.summary.clone()),
+                },
+                summary_data,
+                // "Information about what the investigation analyzed … Returned only
+                // when the investigation status is COMPLETED"
+                // (`smithy_query(query="doc",shape="Investigation",member="Scope")`):
+                // the scope the pass RESOLVED when it ended, stored on the record, so
+                // the subject a reader reports is the one the pass covered rather
+                // than anything about the request the read arrives on.
+                scope: investigation.scope_details(),
                 start_time: Some(::aws_smithy_types::DateTime::from_millis(
                     investigation.started_at_millis,
                 )),

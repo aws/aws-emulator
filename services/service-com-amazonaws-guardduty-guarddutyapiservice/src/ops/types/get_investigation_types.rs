@@ -16,6 +16,7 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-guardduty-guarddutyapis
 pub struct GetInvestigationInput {
     pub detector_id: String,
     pub investigation_id: String,
+    pub summary_format: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.guardduty#GetInvestigationResponse")]
@@ -37,6 +38,8 @@ pub struct Investigation {
     pub risk: Option<String>,
     pub confidence: Option<String>,
     pub summary: Option<String>,
+    pub summary_data: Option<InvestigationSummaryData>,
+    pub scope: Option<InvestigationScope>,
     pub start_time: Option<::aws_smithy_types::DateTime>,
     pub end_time: Option<::aws_smithy_types::DateTime>,
     pub error: Option<String>,
@@ -62,5 +65,146 @@ pub struct CloudDetails {
     pub provider: String,
     pub region: String,
     pub account: String,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.guardduty#InvestigationSummaryData")]
+#[derive(Debug, Clone, Default)]
+pub struct InvestigationSummaryData {
+    pub finding_type: Option<String>,
+    pub threat_assessment: Option<ThreatAssessment>,
+    pub countermeasures: Option<Vec<Countermeasure>>,
+    pub account_analysis: Option<AccountAnalysis>,
+    pub organization_analysis: Option<OrganizationAnalysis>,
+    pub key_observations: Option<KeyObservations>,
+    pub recommendations: Option<Vec<Recommendation>>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.guardduty#ThreatAssessment")]
+#[derive(Debug, Clone, Default)]
+pub struct ThreatAssessment {
+    pub attack_progression: Option<Vec<AttackPhase>>,
+    pub threat_actor_profile: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.guardduty#AttackPhase")]
+#[derive(Debug, Clone, Default)]
+pub struct AttackPhase {
+    pub phase: Option<String>,
+    pub description: Option<String>,
+    pub attacks: Option<Vec<Attack>>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.guardduty#Attack")]
+#[derive(Debug, Clone, Default)]
+pub struct Attack {
+    pub tactic: Option<ThreatReference>,
+    pub technique: Option<ThreatReference>,
+    pub findings: Option<Vec<FindingReference>>,
+    pub version: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.guardduty#Countermeasure")]
+#[derive(Debug, Clone, Default)]
+pub struct Countermeasure {
+    pub defense_tactic: Option<String>,
+    pub actions: Option<Vec<CountermeasureAction>>,
+    pub description: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.guardduty#CountermeasureAction")]
+#[derive(Debug, Clone, Default)]
+pub struct CountermeasureAction {
+    pub title: Option<String>,
+    pub description: Option<String>,
+    pub priority: Option<String>,
+    pub defense_technique: Option<String>,
+    pub mitigates: Option<Vec<String>>,
+    pub cli_commands: Option<Vec<String>>,
+    pub disposition_id: Option<i32>,
+    pub disposition: Option<String>,
+    pub affected_resources: Option<Vec<AffectedResource>>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.guardduty#AffectedResource")]
+#[derive(Debug, Clone, Default)]
+pub struct AffectedResource {
+    pub identifier: Option<String>,
+    pub r#type: Option<String>,
+    pub arn: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.guardduty#AccountAnalysis")]
+#[derive(Debug, Clone, Default)]
+pub struct AccountAnalysis {
+    pub findings_summary: Option<FindingsSummary>,
+    pub tactic_coverage: Option<Vec<TacticCoverage>>,
+    pub affected_resources: Option<Vec<AccountAffectedResource>>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.guardduty#FindingsSummary")]
+#[derive(Debug, Clone, Default)]
+pub struct FindingsSummary {
+    pub total_findings: Option<i32>,
+    pub severity_breakdown: Option<SeverityBreakdown>,
+    pub top_finding_types: Option<Vec<FindingTypeCount>>,
+    pub by_time_window: Option<Vec<TimeWindowGroup>>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.guardduty#AccountAffectedResource")]
+#[derive(Debug, Clone, Default)]
+pub struct AccountAffectedResource {
+    pub identifier: Option<String>,
+    pub r#type: Option<String>,
+    pub finding_count: Option<i32>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.guardduty#OrganizationAnalysis")]
+#[derive(Debug, Clone, Default)]
+pub struct OrganizationAnalysis {
+    pub findings_summary: Option<OrganizationFindingsSummary>,
+    pub account_breakdown: Option<Vec<AccountSummary>>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.guardduty#OrganizationFindingsSummary")]
+#[derive(Debug, Clone, Default)]
+pub struct OrganizationFindingsSummary {
+    pub total_findings: Option<i32>,
+    pub severity_breakdown: Option<SeverityBreakdown>,
+    pub top_finding_types: Option<Vec<FindingTypeCount>>,
+    pub by_time_window: Option<Vec<TimeWindowGroup>>,
+    pub total_account_count: Option<i32>,
+    pub affected_account_count: Option<i32>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.guardduty#AccountSummary")]
+#[derive(Debug, Clone, Default)]
+pub struct AccountSummary {
+    pub account_id: Option<String>,
+    pub finding_count: Option<i32>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.guardduty#KeyObservations")]
+#[derive(Debug, Clone, Default)]
+pub struct KeyObservations {
+    pub title: Option<String>,
+    pub narrative: Option<String>,
+    pub observations: Option<Vec<String>>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.guardduty#InvestigationScope")]
+#[derive(Debug, Clone, Default)]
+pub struct InvestigationScope {
+    pub investigation_type: Option<String>,
+    pub finding_id: Option<String>,
+    pub account_id: Option<String>,
+    pub admin_account_id: Option<String>,
+    pub query_time_window: Option<QueryTimeWindow>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.guardduty#QueryTimeWindow")]
+#[derive(Debug, Clone, Default)]
+pub struct QueryTimeWindow {
+    pub start_time: Option<::aws_smithy_types::DateTime>,
+    pub end_time: Option<::aws_smithy_types::DateTime>,
 }
 

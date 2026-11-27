@@ -14,6 +14,10 @@
 //!   detector the store does not resolve is a refusal rather than an empty page;
 //! * `SortCriteria` orders the answer by an `InvestigationSortField` member, newest
 //!   first when the request names no criterion;
+//! * `FilterCriteria` narrows it: every entry must hold, each naming an
+//!   `InvestigationFilterCriterionKey` and the values that key `Equals` or
+//!   `NotEquals` ([`crate::state::investigation_matches`]), and a key the model does
+//!   not carry is refused rather than ignored;
 //! * `MaxResults`/`NextToken` page that ORDERED list, one page carrying at most
 //!   [`INVESTIGATION_SUMMARIES_MAX`] summaries.
 //!
@@ -77,6 +81,10 @@
 //! * `DetectorId` (DetectorId, len 1..300) **required** — The unique ID of the GuardDuty
 //!   detector whose investigations you want to list. To find the detectorId in the current
 //!   Region, see the Settings page in the GuardDuty console, or run the ListDetectors API.
+//! * `FilterCriteria` (InvestigationFilterCriteria) — Represents the criteria used for
+//!   filtering investigations. Each entry names an `InvestigationFilterCriterionKey`
+//!   (`STATUS | RISK_LEVEL | CONFIDENCE | INVESTIGATION_TYPE | FINDING_ID`) and the values
+//!   that key `Equals` or `NotEquals`.
 //! * `MaxResults` (MaxResults, range 1..50) — You can use this parameter to indicate the
 //!   maximum number of items you want in the response. The default value is 50.
 //! * `NextToken` (NextToken, len 1..2048, pattern ^[a-zA-Z0-9+/=_\-]+$) — You can use this
@@ -200,17 +208,43 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // this instant whether or not anybody listed.
         detector.settle_investigations(now);
 
-        let mut ordered = detector.investigation_records();
+        // A criterion key the model does not carry is REFUSED rather than ignored:
+        // ignoring it would report investigations the caller asked to exclude.
+        crate::state::validate_investigation_criteria(input.filter_criteria.as_ref())
+            .map_err(bad_request)?;
+
+        // Only the investigations every criterion admits
+        // ([`crate::state::investigation_matches`]), each judged on the values the
+        // reads report for it.
+        let mut ordered: Vec<&crate::state::InvestigationRecord> = detector
+            .investigation_records()
+            .into_iter()
+            .filter(|investigation| {
+                crate::state::investigation_matches(investigation, input.filter_criteria.as_ref())
+            })
+            .collect();
         crate::state::sort_investigations(&mut ordered, input.sort_criteria.as_ref())
             .map_err(|attribute| unsupported_attribute(&attribute))?;
 
         // The list a page token is a position in: this report over this detector, in
-        // the order the sort criteria asked for — everything the records above are
-        // selected and ordered by.
+        // the order the sort criteria asked for and narrowed by the filter criteria —
+        // everything the records above are selected and ordered by. The criteria are
+        // added as their ENTRIES, in key order: the criterion is a map, which iterates
+        // in an order private to the deserialized request, so rendering the structure
+        // itself would make a caller's own token stop resolving.
         let listing = crate::state::Listing::of(Self::NAME)
             .by(&region)
             .by(&input.detector_id)
-            .by(&input.sort_criteria);
+            .by(&input.sort_criteria)
+            .by_entries(
+                input
+                    .filter_criteria
+                    .as_ref()
+                    .and_then(|criteria| criteria.criterion.as_ref())
+                    .into_iter()
+                    .flatten()
+                    .map(|(key, condition)| (key, format!("{condition:?}"))),
+            );
         let (window, next_token) = crate::state::paginate_window(
             &listing,
             ordered.len(),
@@ -261,6 +295,19 @@ fn investigation_summary(
         risk_level: analysis.map(|analysis| analysis.risk_level.clone()),
         confidence: analysis.map(|analysis| analysis.confidence.clone()),
         title: analysis.map(|analysis| analysis.title.clone()),
+        // "GuardDuty sets this field when the investigation completes"
+        // (`smithy_query(shape="InvestigationSummary",member="InvestigationType")`):
+        // the three members below are read off the SCOPE the pass resolved when it
+        // ended ([`crate::state::InvestigationScopeRecord`]), so they are absent
+        // while it has resolved none, and `GetInvestigation` reports the very same
+        // scope under its own `Scope` member.
+        investigation_type: investigation.investigation_type(),
+        // "For a FINDING investigation, the ID of the finding that the investigation
+        // analyzed", and nothing for a scope that analysed no single finding.
+        finding_id: investigation.scope_finding_id(),
+        // "For an ORGANIZATION investigation, the ID of the administrator account of
+        // the organization that the investigation analyzed."
+        admin_account_id: investigation.scope_admin_account_id(),
         // "The Amazon Web Services account ID associated with the investigation"
         // (`smithy_query(shape="InvestigationSummary")`) — the account that initiated
         // it, which is what `Investigation.TriggeredBy` reports.

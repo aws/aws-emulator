@@ -129,6 +129,7 @@ fn gated_table<Eng: Send + Sync + 'static>(
         list_custom_detection_rule_associations::ListCustomDetectionRuleAssociations,
         list_custom_detection_rule_org_configurations::ListCustomDetectionRuleOrgConfigurations,
         list_custom_detection_rules::ListCustomDetectionRules,
+        list_investigation_records::ListInvestigationRecords,
         list_investigations::ListInvestigations,
         list_malware_protection_plans::ListMalwareProtectionPlans,
         list_tags_for_resource::ListTagsForResource,

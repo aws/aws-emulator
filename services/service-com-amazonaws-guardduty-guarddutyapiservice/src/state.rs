@@ -38,6 +38,10 @@ mod features;
 mod findings;
 /// The analysis pass an AI-analyst investigation runs over the account's findings.
 mod investigation_analysis;
+/// The steps of the reasoning one investigation's pass followed.
+mod investigation_records;
+/// The structured summary one investigation's pass serves.
+mod investigation_summary_data;
 /// AI-analyst investigations.
 mod investigations;
 /// The trusted-IP lists a detector holds.
@@ -70,6 +74,8 @@ pub use entity_sets::*;
 pub use features::*;
 pub use findings::*;
 pub use investigation_analysis::*;
+pub use investigation_records::*;
+pub use investigation_summary_data::*;
 pub use investigations::*;
 pub use ip_sets::*;
 pub use malware_protection_plan_role::*;

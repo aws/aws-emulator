@@ -76,6 +76,18 @@ pub const INVESTIGATION_REGION_MESSAGE: &str =
 /// id itself — GuardDuty does not echo the caller's id back.
 pub const INVESTIGATION_NOT_FOUND_MESSAGE: &str = "Resource not found.";
 
+/// The message `ListInvestigationRecords` refuses a `NextToken` handed to an
+/// investigation whose pass has not ended with: "if you specify this parameter for an
+/// investigation whose status isn't COMPLETED, the operation returns a
+/// BadRequestException"
+/// (`smithy_query(query="doc",shape="ListInvestigationRecordsRequest",member="NextToken")`).
+///
+/// Entirely FIXED text in the Investigation family's own wording: it states what the
+/// request asked for that cannot be served, and quotes neither the token nor the
+/// investigation back.
+pub const INVESTIGATION_RECORDS_TOKEN_MESSAGE: &str =
+    "The request is rejected because nextToken cannot be used for an investigation whose status is not COMPLETED.";
+
 /// The message `CreateInvestigation` refuses a detector that does not have the
 /// AI_ANALYST feature enabled with — "to use this operation, the AI_ANALYST feature
 /// must be enabled on your detector"
@@ -130,6 +142,145 @@ pub struct InvestigationCloud {
     pub account: String,
 }
 
+/// `InvestigationType`: "An investigation of a specific GuardDuty finding"
+/// (`smithy_query(query="doc",shape="InvestigationScope",member="InvestigationType")`).
+/// The enum is `FINDING | ACCOUNT | ORGANIZATION`.
+pub const INVESTIGATION_TYPE_FINDING: &str = "FINDING";
+
+/// `InvestigationType`: "An investigation of the threat posture of an Amazon Web
+/// Services account". See [`INVESTIGATION_TYPE_FINDING`] for the enum.
+pub const INVESTIGATION_TYPE_ACCOUNT: &str = "ACCOUNT";
+
+/// `InvestigationType`: "An investigation of your organization's threat posture".
+pub const INVESTIGATION_TYPE_ORGANIZATION: &str = "ORGANIZATION";
+
+const _: () = assert!(enum_carries(
+    crate::ops::types::shared_types::INVESTIGATION_TYPE_VALUES,
+    INVESTIGATION_TYPE_FINDING
+));
+const _: () = assert!(enum_carries(
+    crate::ops::types::shared_types::INVESTIGATION_TYPE_VALUES,
+    INVESTIGATION_TYPE_ACCOUNT
+));
+const _: () = assert!(enum_carries(
+    crate::ops::types::shared_types::INVESTIGATION_TYPE_VALUES,
+    INVESTIGATION_TYPE_ORGANIZATION
+));
+
+/// How far back an account-wide or organization-wide pass queries data: the span
+/// `QueryTimeWindow` reports for it, ending at the instant the pass ran.
+///
+/// GuardDuty documents no span for the window, so this emulator CHOOSES one. It is
+/// the bound the pass actually applies to the findings it reads
+/// ([`InvestigationRecord::settle`]), which is what makes the reported window a
+/// fact about the pass rather than a decoration.
+pub const INVESTIGATION_QUERY_WINDOW_MILLIS: i64 = 30 * DAY_MILLIS;
+
+/// `SummaryFormat`: the structured summary, the format a request asks for to be
+/// served `SummaryData` instead of the text `Summary`. The enum is `STRING |
+/// STRUCTURED` (`smithy_query(shape="SummaryFormat")`).
+pub const SUMMARY_FORMAT_STRUCTURED: &str = "STRUCTURED";
+
+const _: () = assert!(enum_carries(
+    crate::ops::types::shared_types::SUMMARY_FORMAT_VALUES,
+    SUMMARY_FORMAT_STRUCTURED
+));
+
+/// What ONE investigation analysed, held on that investigation's own record: the
+/// `InvestigationScope` members — the kind of subject, the subject itself, and the
+/// window an account-wide or organization-wide pass queried
+/// (`smithy_query(shape="InvestigationScope")`).
+///
+/// "Only the identifier that matches `InvestigationType` is set"
+/// (`smithy_query(query="doc",shape="InvestigationScope")`), so exactly one of the
+/// three identifiers below carries a value, and the window is set for the two types
+/// whose pass queries a span of data rather than one named finding.
+///
+/// Resolved exactly once, when the pass ENDS ([`InvestigationRecord::settle`]), from
+/// the prompt the investigation was initiated with and the membership the detector
+/// held at that instant — so what a reader reports is what THIS pass covered, never
+/// a function of the request the read arrives on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InvestigationScopeRecord {
+    /// `InvestigationScope$InvestigationType` — see [`INVESTIGATION_TYPE_FINDING`].
+    pub investigation_type: String,
+    /// `InvestigationScope$FindingId`, set only for [`INVESTIGATION_TYPE_FINDING`].
+    pub finding_id: Option<String>,
+    /// `InvestigationScope$AccountId`, set only for [`INVESTIGATION_TYPE_ACCOUNT`].
+    pub account_id: Option<String>,
+    /// `InvestigationScope$AdminAccountId`, set only for
+    /// [`INVESTIGATION_TYPE_ORGANIZATION`].
+    pub admin_account_id: Option<String>,
+    /// `QueryTimeWindow`, in epoch milliseconds: the span the pass queried, set for
+    /// the two account-wide types. See [`INVESTIGATION_QUERY_WINDOW_MILLIS`].
+    pub query_window_millis: Option<(i64, i64)>,
+    /// The MEMBER accounts the detector administered when the pass ran, beside the
+    /// administrator's own account. Not a member of `InvestigationScope`: it is the
+    /// organization as the pass read it, which is what an organization-wide
+    /// structured summary counts its accounts from
+    /// ([`investigation_summary_data`]).
+    pub organization_accounts: usize,
+}
+
+impl InvestigationScopeRecord {
+    /// The scope of a pass that analysed the ONE finding `finding_id` names.
+    fn of_finding(finding_id: String, organization_accounts: usize) -> Self {
+        Self {
+            investigation_type: INVESTIGATION_TYPE_FINDING.to_string(),
+            finding_id: Some(finding_id),
+            account_id: None,
+            admin_account_id: None,
+            query_window_millis: None,
+            organization_accounts,
+        }
+    }
+
+    /// The scope of a pass that swept ONE account's findings over `window`.
+    fn of_account(account_id: String, window: (i64, i64)) -> Self {
+        Self {
+            investigation_type: INVESTIGATION_TYPE_ACCOUNT.to_string(),
+            finding_id: None,
+            account_id: Some(account_id),
+            admin_account_id: None,
+            query_window_millis: Some(window),
+            organization_accounts: 0,
+        }
+    }
+
+    /// The scope of a pass that swept the organization `admin_account_id`
+    /// administers over `window`.
+    fn of_organization(
+        admin_account_id: String,
+        window: (i64, i64),
+        organization_accounts: usize,
+    ) -> Self {
+        Self {
+            investigation_type: INVESTIGATION_TYPE_ORGANIZATION.to_string(),
+            finding_id: None,
+            account_id: None,
+            admin_account_id: Some(admin_account_id),
+            query_window_millis: Some(window),
+            organization_accounts,
+        }
+    }
+
+    /// The modelled `InvestigationScope` a reader reports for this scope.
+    pub fn details(&self) -> crate::ops::types::InvestigationScope {
+        crate::ops::types::InvestigationScope {
+            investigation_type: Some(self.investigation_type.clone()),
+            finding_id: self.finding_id.clone(),
+            account_id: self.account_id.clone(),
+            admin_account_id: self.admin_account_id.clone(),
+            query_time_window: self.query_window_millis.map(|(start, end)| {
+                crate::ops::types::QueryTimeWindow {
+                    start_time: Some(::aws_smithy_types::DateTime::from_millis(start)),
+                    end_time: Some(::aws_smithy_types::DateTime::from_millis(end)),
+                }
+            }),
+        }
+    }
+}
+
 /// One stored investigation. Timestamps are epoch milliseconds, the single source
 /// for the instants the wire carries.
 #[derive(Debug, Clone)]
@@ -159,6 +310,9 @@ pub struct InvestigationRecord {
     /// `Cloud`: the environment this investigation's pass covered, once the pass has
     /// ended and resolved it. See [`InvestigationCloud`].
     pub cloud: Option<InvestigationCloud>,
+    /// `Scope`: what the pass analysed, once it has ended and resolved it. See
+    /// [`InvestigationScopeRecord`].
+    pub scope: Option<InvestigationScopeRecord>,
 }
 
 impl InvestigationRecord {
@@ -187,6 +341,10 @@ impl InvestigationRecord {
             // reports no `Cloud` member for an investigation still
             // [`INVESTIGATION_RUNNING`].
             cloud: None,
+            // Nor has it resolved what it covers: `Scope` is "returned only when the
+            // investigation status is COMPLETED"
+            // (`smithy_query(query="doc",shape="Investigation",member="Scope")`).
+            scope: None,
         }
     }
 
@@ -211,6 +369,37 @@ impl InvestigationRecord {
             .map(|_| InvestigationAnalysis::metadata())
     }
 
+    /// The `Scope` member a reader reports for this investigation: what the pass
+    /// resolved it covered, and NOTHING while it has resolved none.
+    pub fn scope_details(&self) -> Option<crate::ops::types::InvestigationScope> {
+        self.scope.as_ref().map(InvestigationScopeRecord::details)
+    }
+
+    /// The `InvestigationType` of this investigation — "GuardDuty sets this field
+    /// when the investigation completes"
+    /// (`smithy_query(shape="InvestigationSummary",member="InvestigationType")`) —
+    /// and `None` for one whose pass has not ended.
+    pub fn investigation_type(&self) -> Option<String> {
+        self.scope
+            .as_ref()
+            .map(|scope| scope.investigation_type.clone())
+    }
+
+    /// The finding this investigation analysed, for the one type that analyses a
+    /// single finding; `None` for every other scope, and for a pass that has not
+    /// ended.
+    pub fn scope_finding_id(&self) -> Option<String> {
+        self.scope.as_ref().and_then(|scope| scope.finding_id.clone())
+    }
+
+    /// The administrator account of the organization this investigation analysed,
+    /// for the one type that analyses an organization; `None` otherwise.
+    pub fn scope_admin_account_id(&self) -> Option<String> {
+        self.scope
+            .as_ref()
+            .and_then(|scope| scope.admin_account_id.clone())
+    }
+
     /// Apply the status change the CLOCK already made due, if any, and with it the
     /// conclusions of the analysis pass that change ends.
     ///
@@ -221,23 +410,60 @@ impl InvestigationRecord {
     /// `evidence` is the findings the detector holds ([`FindingEvidence`]); the pass
     /// reads the ones that existed when it ENDED, so the assessment it stores is the
     /// one the service owed at that instant and does not depend on when a caller
-    /// first asked for it.
-    pub fn settle(&mut self, now: i64, evidence: &[FindingEvidence]) {
+    /// first asked for it. `member_accounts` is the organization the detector
+    /// administers at that instant, which is what decides whether an account-wide
+    /// prompt covers one account or the whole organization.
+    pub fn settle(&mut self, now: i64, evidence: &[FindingEvidence], member_accounts: usize) {
         if self.status != INVESTIGATION_RUNNING || now < self.terminal_due_millis {
             return;
         }
-        let covered: Vec<FindingEvidence> = evidence
+        // Everything the account had produced by the instant the pass ran. A finding
+        // produced after it is no part of what the pass could read.
+        let existing: Vec<FindingEvidence> = evidence
             .iter()
             .filter(|finding| finding.created_at_millis <= self.terminal_due_millis)
             .cloned()
             .collect();
-        let covered = evidence_for_prompt(&self.trigger_prompt, &covered);
+        // What the prompt asked about decides BOTH the scope the pass covered and the
+        // evidence it read, so the two cannot disagree: a prompt that names findings
+        // the account holds is an investigation OF those findings, and one that names
+        // none sweeps the subject's own findings over the window it queried.
+        let named = named_evidence(&self.trigger_prompt, &existing);
+        let (scope, covered) = match worst_of(&named) {
+            Some(worst) => (
+                InvestigationScopeRecord::of_finding(worst.id.clone(), member_accounts),
+                named,
+            ),
+            None => {
+                let window = (
+                    self.terminal_due_millis
+                        .saturating_sub(INVESTIGATION_QUERY_WINDOW_MILLIS),
+                    self.terminal_due_millis,
+                );
+                let swept: Vec<FindingEvidence> = existing
+                    .into_iter()
+                    .filter(|finding| finding.created_at_millis >= window.0)
+                    .collect();
+                let scope = match member_accounts {
+                    // A detector that administers no member account has no
+                    // organization to assess, so the subject is its own account.
+                    0 => InvestigationScopeRecord::of_account(self.triggered_by.clone(), window),
+                    accounts => InvestigationScopeRecord::of_organization(
+                        self.triggered_by.clone(),
+                        window,
+                        accounts,
+                    ),
+                };
+                (scope, swept)
+            }
+        };
         self.analysis = Some(InvestigationAnalysis::of_evidence(
             &covered,
             &self.trigger_prompt,
             &self.triggered_by,
             &self.region,
         ));
+        self.scope = Some(scope);
         self.status = INVESTIGATION_COMPLETED.to_string();
         self.ended_at_millis = Some(self.terminal_due_millis);
         // The pass covered ONE environment — the account the investigation was
@@ -303,6 +529,137 @@ pub fn investigation_attribute(investigation: &InvestigationRecord, field: &str)
         _ => return None,
     };
     Some(value)
+}
+
+/// The criterion keys a `ListInvestigations` filter may name: the
+/// `InvestigationFilterCriterionKey` members, which the model lists as `STATUS |
+/// RISK_LEVEL | CONFIDENCE | INVESTIGATION_TYPE | FINDING_ID`
+/// (`smithy_query(shape="InvestigationFilterCriterionKey")`) and the generated enum
+/// carries as
+/// [`crate::ops::types::shared_types::INVESTIGATION_FILTER_CRITERION_KEY_VALUES`].
+/// Read from the generated list so the two can never drift.
+pub fn investigation_filter_criterion_keys() -> &'static [&'static str] {
+    crate::ops::types::shared_types::INVESTIGATION_FILTER_CRITERION_KEY_VALUES
+}
+
+/// `InvestigationFilterCriterionKey`: the investigation's own `Status`.
+pub const INVESTIGATION_KEY_STATUS: &str = "STATUS";
+
+/// `InvestigationFilterCriterionKey`: the assessed `RiskLevel`, which an
+/// investigation has only once its pass has reached a conclusion. See
+/// [`INVESTIGATION_KEY_STATUS`] for the enum.
+pub const INVESTIGATION_KEY_RISK_LEVEL: &str = "RISK_LEVEL";
+
+/// `InvestigationFilterCriterionKey`: the assessment's `Confidence`.
+pub const INVESTIGATION_KEY_CONFIDENCE: &str = "CONFIDENCE";
+
+/// `InvestigationFilterCriterionKey`: the `InvestigationType` of the scope the pass
+/// resolved.
+pub const INVESTIGATION_KEY_INVESTIGATION_TYPE: &str = "INVESTIGATION_TYPE";
+
+/// `InvestigationFilterCriterionKey`: the finding a `FINDING` investigation analysed.
+pub const INVESTIGATION_KEY_FINDING_ID: &str = "FINDING_ID";
+
+const _: () = assert!(enum_carries(
+    crate::ops::types::shared_types::INVESTIGATION_FILTER_CRITERION_KEY_VALUES,
+    INVESTIGATION_KEY_STATUS
+));
+const _: () = assert!(enum_carries(
+    crate::ops::types::shared_types::INVESTIGATION_FILTER_CRITERION_KEY_VALUES,
+    INVESTIGATION_KEY_RISK_LEVEL
+));
+const _: () = assert!(enum_carries(
+    crate::ops::types::shared_types::INVESTIGATION_FILTER_CRITERION_KEY_VALUES,
+    INVESTIGATION_KEY_CONFIDENCE
+));
+const _: () = assert!(enum_carries(
+    crate::ops::types::shared_types::INVESTIGATION_FILTER_CRITERION_KEY_VALUES,
+    INVESTIGATION_KEY_INVESTIGATION_TYPE
+));
+const _: () = assert!(enum_carries(
+    crate::ops::types::shared_types::INVESTIGATION_FILTER_CRITERION_KEY_VALUES,
+    INVESTIGATION_KEY_FINDING_ID
+));
+
+/// The value one investigation holds for a filter criterion key, or `None` where it
+/// holds none — which is every key but [`INVESTIGATION_KEY_STATUS`] for an
+/// investigation whose pass has not ended, and [`INVESTIGATION_KEY_FINDING_ID`] for
+/// every scope that analysed no single finding.
+///
+/// Each value is the one the READS report for that member, so a filtered listing and
+/// an unfiltered one cannot disagree about an investigation's own attributes.
+pub fn investigation_criterion_value(
+    investigation: &InvestigationRecord,
+    key: &str,
+) -> Option<String> {
+    let analysis = investigation.analysis.as_ref();
+    match key {
+        INVESTIGATION_KEY_STATUS => Some(investigation.status.clone()),
+        INVESTIGATION_KEY_RISK_LEVEL => analysis.map(|analysis| analysis.risk_level.clone()),
+        INVESTIGATION_KEY_CONFIDENCE => analysis.map(|analysis| analysis.confidence.clone()),
+        INVESTIGATION_KEY_INVESTIGATION_TYPE => investigation.investigation_type(),
+        INVESTIGATION_KEY_FINDING_ID => investigation.scope_finding_id(),
+        _ => None,
+    }
+}
+
+/// Refuse a `FilterCriteria` naming a criterion key the model does not carry, with
+/// the message the refusal carries.
+///
+/// Ignoring such a key would report investigations the caller asked to exclude, which
+/// is why the coverage listing refuses an unknown criterion key too
+/// ([`crate::state::coverage::requested_criteria`]); the sentence follows the one
+/// every criteria-refusing report of this service answers with.
+pub fn validate_investigation_criteria(
+    criteria: Option<&crate::ops::types::InvestigationFilterCriteria>,
+) -> Result<(), String> {
+    for key in criteria
+        .and_then(|criteria| criteria.criterion.as_ref())
+        .into_iter()
+        .flatten()
+        .map(|(key, _)| key)
+    {
+        if !investigation_filter_criterion_keys().contains(&key.as_str()) {
+            return Err(format!(
+                "filterCriteria: '{key}' is not an investigation criterion key. Supported keys are {}.",
+                investigation_filter_criterion_keys().join(", ")
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Does `investigation` satisfy EVERY entry of `criteria`? An absent or empty
+/// criteria structure matches every investigation.
+///
+/// One entry's `Equals` admits an investigation whose value for the key is one of the
+/// values it lists, so an investigation that holds no such value cannot satisfy it;
+/// `NotEquals` excludes an investigation whose value is one of its values, so one
+/// holding no such value is not excluded; and a condition that lists no value at all
+/// restricts nothing. That is the rule the coverage listing's own criteria follow
+/// ([`crate::state::coverage::Criterion`]), so two filtered reports of this service
+/// cannot read one condition differently.
+pub fn investigation_matches(
+    investigation: &InvestigationRecord,
+    criteria: Option<&crate::ops::types::InvestigationFilterCriteria>,
+) -> bool {
+    criteria
+        .and_then(|criteria| criteria.criterion.as_ref())
+        .into_iter()
+        .flatten()
+        .all(|(key, condition)| {
+            let value = investigation_criterion_value(investigation, key);
+            let equals = condition.equals.as_deref().unwrap_or_default();
+            let not_equals = condition.not_equals.as_deref().unwrap_or_default();
+            let admitted = equals.is_empty()
+                || value
+                    .as_deref()
+                    .is_some_and(|value| equals.iter().any(|wanted| wanted == value));
+            let not_excluded = value
+                .as_deref()
+                .is_none_or(|value| !not_equals.iter().any(|unwanted| unwanted == value));
+            admitted && not_excluded
+        })
 }
 
 /// Order `investigations` for `ListInvestigations`.

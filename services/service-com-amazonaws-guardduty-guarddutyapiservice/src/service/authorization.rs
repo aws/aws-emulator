@@ -181,6 +181,7 @@ pub const GATED_OPERATIONS: &[&str] = &[
     "ListCustomDetectionRuleAssociations",
     "ListCustomDetectionRuleOrgConfigurations",
     "ListCustomDetectionRules",
+    "ListInvestigationRecords",
     "ListInvestigations",
     "ListMalwareProtectionPlans",
     "ListTagsForResource",

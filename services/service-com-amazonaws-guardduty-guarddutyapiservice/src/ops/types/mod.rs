@@ -69,7 +69,6 @@ pub mod get_malware_scan_types;
 pub mod get_master_account_types;
 pub mod get_member_detectors_types;
 pub mod get_members_types;
-pub mod get_organization_statistics_types;
 pub mod get_remaining_free_trial_days_types;
 pub mod get_threat_entity_set_types;
 pub mod get_threat_intel_set_types;
@@ -83,6 +82,7 @@ pub mod list_custom_detection_rules_types;
 pub mod list_detectors_types;
 pub mod list_filters_types;
 pub mod list_findings_types;
+pub mod list_investigation_records_types;
 pub mod list_investigations_types;
 pub mod list_invitations_types;
 pub mod list_ip_sets_types;
@@ -229,8 +229,6 @@ pub use get_member_detectors_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use get_members_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
-pub use get_organization_statistics_types::*;
-#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use get_remaining_free_trial_days_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use get_threat_entity_set_types::*;
@@ -256,6 +254,8 @@ pub use list_detectors_types::*;
 pub use list_filters_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use list_findings_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use list_investigation_records_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use list_investigations_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]

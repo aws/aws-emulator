@@ -54,7 +54,11 @@
 //! `ctx` ([`smithy_server_runtime::OperationContext`]) carries request metadata only —
 //! headers, URI, method, and anything middleware placed in `ctx.parts().extensions`.
 //!
-//! Shared types live in `super::types`; the error channel in `crate::scaffolded`.
+//! Shared types live in `super::types`; the error channel in `crate::scaffolded`. The
+//! shapes only THIS operation reaches are declared below rather than under `types/`,
+//! because that module's `mod.rs` is rendered from the model and declares a submodule
+//! only for an operation the generator emitted a stub for — never for a hand-authored
+//! one, so a model update leaves such a submodule undeclared and unreachable.
 //!
 //! ---
 //!
@@ -132,6 +136,65 @@ impl From<GetOrganizationStatisticsErrorModeled> for GetOrganizationStatisticsEr
     }
 }
 
+/// The operation's input: `smithy.api#Unit`, i.e. no members at all.
+///
+/// A member-less struct is what the framework expects for a Unit input, and
+/// `structure = "…"` (not `shape = "…"`) is how it is declared: the empty-struct path
+/// emits the `SCHEMA`, the `GET_ORGANIZATION_STATISTICS_INPUT_SCHEMA` static and both
+/// the serialize and deserialize impls `Operation::Input` requires, without looking the
+/// shape up — `smithy.api#Unit` is a prelude shape that no service model declares.
+///
+/// This shape and the output tree below live in THIS file, not in a `types/` submodule,
+/// because `types/mod.rs` is rendered from the model by the scaffold generator and
+/// declares a submodule only for an operation it emitted a stub for. It emits none for
+/// this operation (Unit input, `src/ops/SKIPPED_STUBS.md`), so a hand-written
+/// `types/get_organization_statistics_types.rs` was left undeclared — and therefore
+/// unreachable — by the next model update. A hand-authored operation keeps the shapes
+/// only it reaches beside its handler, where no generator rewrites them.
+#[smithy_macros::smithy(structure = "smithy.api#Unit")]
+#[derive(Debug, Clone, Default)]
+pub struct GetOrganizationStatisticsInput {}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.guardduty#GetOrganizationStatisticsResponse")]
+#[derive(Debug, Clone, Default)]
+pub struct GetOrganizationStatisticsOutput {
+    pub organization_details: Option<OrganizationDetails>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.guardduty#OrganizationDetails")]
+#[derive(Debug, Clone, Default)]
+pub struct OrganizationDetails {
+    pub updated_at: Option<::aws_smithy_types::DateTime>,
+    pub organization_statistics: Option<OrganizationStatistics>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.guardduty#OrganizationStatistics")]
+#[derive(Debug, Clone, Default)]
+pub struct OrganizationStatistics {
+    pub total_accounts_count: Option<i32>,
+    pub member_accounts_count: Option<i32>,
+    pub active_accounts_count: Option<i32>,
+    pub enabled_accounts_count: Option<i32>,
+    pub count_by_feature: Option<Vec<OrganizationFeatureStatistics>>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.guardduty#OrganizationFeatureStatistics")]
+#[derive(Debug, Clone, Default)]
+pub struct OrganizationFeatureStatistics {
+    pub name: Option<String>,
+    pub enabled_accounts_count: Option<i32>,
+    pub additional_configuration: Option<Vec<OrganizationFeatureStatisticsAdditionalConfiguration>>,
+}
+
+#[smithy_macros::smithy(
+    shape = "com.amazonaws.guardduty#OrganizationFeatureStatisticsAdditionalConfiguration"
+)]
+#[derive(Debug, Clone, Default)]
+pub struct OrganizationFeatureStatisticsAdditionalConfiguration {
+    pub name: Option<String>,
+    pub enabled_accounts_count: Option<i32>,
+}
+
 /// The `GetOrganizationStatistics` operation.
 ///
 /// Owns the shared engine (the constructor seam) and implements
@@ -159,9 +222,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
     const NAME: &'static str = "GetOrganizationStatistics";
     const INPUT_SCHEMA: &'static ::aws_smithy_schema::Schema =
-        super::types::GET_ORGANIZATION_STATISTICS_INPUT_SCHEMA;
+        GET_ORGANIZATION_STATISTICS_INPUT_SCHEMA;
     const OUTPUT_SCHEMA: &'static ::aws_smithy_schema::Schema =
-        super::types::GET_ORGANIZATION_STATISTICS_OUTPUT_SCHEMA;
+        GET_ORGANIZATION_STATISTICS_OUTPUT_SCHEMA;
     const SUCCESS_STATUS: u16 = 200u16;
 
     async fn handle(

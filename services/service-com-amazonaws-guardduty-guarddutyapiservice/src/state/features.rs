@@ -1083,7 +1083,10 @@ pub fn member_reported_features() -> Vec<&'static str> {
 /// `DataSources` is "deprecated, use Features instead"
 /// (`smithy_query(operation="GetDetector")`), so every node here is read back off
 /// the feature that governs it: the same stored switch, projected under its other
-/// name. Each node carries that switch's status AND the instant it last changed.
+/// name. A node reports exactly the members the model declares for it
+/// (`smithy_query(shape="DataSourceConfigurationsResult")`) — each data source's
+/// `Status`, and nothing else; the instant a switch last changed is reported by the
+/// `Features` view, which is the view that models it.
 ///
 /// One projection for both readers — `GetDetector` for a detector and
 /// `GetMemberDetectors` for a member account — so two reads of one switch cannot
@@ -1093,65 +1096,39 @@ pub fn member_reported_features() -> Vec<&'static str> {
 /// omitted rather than invented.
 pub fn data_source_configurations_view(
     features: &[FeatureRecord],
-    fallback_millis: i64,
     malware_protection_service_role: Option<&str>,
 ) -> crate::ops::types::shared_types::DataSourceConfigurationsResult {
     use crate::ops::types::shared_types::*;
 
-    let reported = |feature: &str| {
-        let (status, millis) = feature_data_source(features, feature, fallback_millis);
-        (status, iso8601(millis))
-    };
-    let (cloud_trail, cloud_trail_at) = reported(FEATURE_CLOUD_TRAIL);
-    let (dns_logs, dns_logs_at) = reported(FEATURE_DNS_LOGS);
-    let (flow_logs, flow_logs_at) = reported(FEATURE_FLOW_LOGS);
-    let (s3_logs, s3_logs_at) = reported(FEATURE_S3_DATA_EVENTS);
-    let (audit_logs, audit_logs_at) = reported(FEATURE_EKS_AUDIT_LOGS);
-    let (ebs_volumes, ebs_volumes_at) = reported(FEATURE_EBS_MALWARE_PROTECTION);
-    let (database_events, database_events_at) = reported(FEATURE_RDS_LOGIN_EVENTS);
+    let reported = |feature: &str| feature_status_in(features, feature).to_string();
     DataSourceConfigurationsResult {
         cloud_trail: CloudTrailConfigurationResult {
-            status: cloud_trail,
-            updated_at: Some(cloud_trail_at),
+            status: reported(FEATURE_CLOUD_TRAIL),
         },
         dns_logs: DNSLogsConfigurationResult {
-            status: dns_logs,
-            updated_at: Some(dns_logs_at),
+            status: reported(FEATURE_DNS_LOGS),
         },
         flow_logs: FlowLogsConfigurationResult {
-            status: flow_logs,
-            updated_at: Some(flow_logs_at),
+            status: reported(FEATURE_FLOW_LOGS),
         },
         s3_logs: S3LogsConfigurationResult {
-            status: s3_logs,
-            updated_at: Some(s3_logs_at),
+            status: reported(FEATURE_S3_DATA_EVENTS),
         },
         kubernetes: Some(KubernetesConfigurationResult {
             audit_logs: KubernetesAuditLogsConfigurationResult {
-                status: audit_logs,
-                updated_at: Some(audit_logs_at),
+                status: reported(FEATURE_EKS_AUDIT_LOGS),
             },
         }),
         malware_protection: Some(MalwareProtectionConfigurationResult {
             scan_ec2_instance_with_findings: Some(ScanEc2InstanceWithFindingsResult {
                 ebs_volumes: Some(EbsVolumesResult {
-                    status: Some(ebs_volumes),
+                    status: Some(reported(FEATURE_EBS_MALWARE_PROTECTION)),
                     // Nothing stopped the source from being enabled, so there is no
                     // reason to report.
                     reason: None,
-                    updated_at: Some(ebs_volumes_at),
                 }),
             }),
             service_role: malware_protection_service_role.map(str::to_string),
-        }),
-        // RDS login activity, the `Database` view of the RDS_LOGIN_EVENTS feature.
-        database: Some(DatabaseConfigurationResult {
-            rds: Some(RdsConfigurationResult {
-                database_events: Some(DatabaseEventsConfigurationResult {
-                    status: Some(database_events),
-                    updated_at: Some(database_events_at),
-                }),
-            }),
         }),
     }
 }
@@ -1172,7 +1149,6 @@ pub fn member_data_source_configuration_view(
         account_id: member.account_id.clone(),
         data_sources: data_source_configurations_view(
             &member.features,
-            member.updated_at_millis,
             // The Malware Protection service-linked role of a member account lives
             // in THAT account, which this emulator does not hold, and the member is
             // optional: omitted rather than invented.

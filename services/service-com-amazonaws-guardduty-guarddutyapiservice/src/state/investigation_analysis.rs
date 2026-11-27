@@ -227,8 +227,12 @@ impl FindingEvidence {
 
 /// The conclusions one ended analysis pass reached: the four assessment members of
 /// `Investigation` plus the `InvestigationSummary$Title` a listing reports, all
-/// derived from the evidence the pass read and stored on the investigation.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// derived from the evidence the pass read and stored on the investigation — together
+/// with that evidence itself, so every later projection of the pass (the structured
+/// summary `SummaryFormat=STRUCTURED` asks for, and the records of the reasoning
+/// `ListInvestigationRecords` reports) answers about the findings THIS pass read
+/// rather than about whatever the store holds when somebody asks.
+#[derive(Debug, Clone, PartialEq)]
 pub struct InvestigationAnalysis {
     /// `Investigation$RiskLevel`.
     pub risk_level: String,
@@ -240,6 +244,8 @@ pub struct InvestigationAnalysis {
     pub summary: String,
     /// `InvestigationSummary$Title`, within the modelled `len 0..1024`.
     pub title: String,
+    /// The findings the pass read, in the order it read them ([`by_severity`]).
+    pub evidence: Vec<FindingEvidence>,
 }
 
 /// The modelled maximum of `RiskDetails`, which `Investigation$Risk` targets
@@ -264,13 +270,7 @@ impl InvestigationAnalysis {
         account: &str,
         region: &str,
     ) -> Self {
-        let mut ordered: Vec<&FindingEvidence> = evidence.iter().collect();
-        ordered.sort_by(|a, b| {
-            b.severity
-                .partial_cmp(&a.severity)
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then_with(|| a.id.cmp(&b.id))
-        });
+        let ordered = by_severity(evidence);
 
         let highest = ordered.first().map(|finding| finding.severity);
         let risk_level = highest.map_or(RISK_LEVEL_INFO, risk_level_of_severity);
@@ -294,6 +294,7 @@ impl InvestigationAnalysis {
             confidence: confidence.to_string(),
             summary: summary_text(&ordered, prompt, risk_level, account, region),
             title: clamped(title_text(&ordered, risk_level), TITLE_MAX),
+            evidence: ordered.iter().map(|finding| (*finding).clone()).collect(),
         }
     }
 
@@ -311,26 +312,44 @@ impl InvestigationAnalysis {
     }
 }
 
-/// The findings `prompt` SELECTS out of `evidence`: the ones whose id the prompt
-/// names, or all of them when it names none.
+/// The findings `prompt` NAMES out of `evidence`: the ones whose id appears in it,
+/// in the order the pass takes them (worst first).
 ///
 /// `TriggerPrompt` is "the natural-language prompt that initiated this investigation"
 /// (`smithy_query(shape="Investigation")`), and the documented prompts range from a
 /// whole-organization request to one naming a single finding
 /// (`smithy_query(query="doc",shape="CreateInvestigation")`), so a prompt that names
-/// findings the account holds narrows the pass to them. Nothing else about the prompt
-/// enters the assessment: a prompt that names no stored finding is a request to
-/// assess the account's activity as a whole.
-pub fn evidence_for_prompt(prompt: &str, evidence: &[FindingEvidence]) -> Vec<FindingEvidence> {
-    let named: Vec<FindingEvidence> = evidence
-        .iter()
+/// findings the account holds is a request to investigate THOSE findings. Nothing else
+/// about the prompt enters the assessment: a prompt that names no stored finding is a
+/// request to assess the subject's activity as a whole, which is what the caller
+/// ([`super::InvestigationRecord::settle`]) falls back to.
+pub fn named_evidence(prompt: &str, evidence: &[FindingEvidence]) -> Vec<FindingEvidence> {
+    by_severity(evidence)
+        .into_iter()
         .filter(|finding| prompt_names(prompt, &finding.id))
         .cloned()
-        .collect();
-    match named.is_empty() {
-        true => evidence.to_vec(),
-        false => named,
-    }
+        .collect()
+}
+
+/// The worst finding among `evidence` — the one the pass assesses from — or `None`
+/// for no evidence at all. The order is [`by_severity`]'s, so the worst finding is
+/// the same one the assessment and every projection of it name.
+pub fn worst_of(evidence: &[FindingEvidence]) -> Option<&FindingEvidence> {
+    by_severity(evidence).into_iter().next()
+}
+
+/// `evidence` in the order a pass reads it: highest severity first, with the finding
+/// id breaking ties, so every conclusion drawn from it is a function of the findings
+/// alone and not of the order a map happened to yield them in.
+pub fn by_severity(evidence: &[FindingEvidence]) -> Vec<&FindingEvidence> {
+    let mut ordered: Vec<&FindingEvidence> = evidence.iter().collect();
+    ordered.sort_by(|a, b| {
+        b.severity
+            .partial_cmp(&a.severity)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.id.cmp(&b.id))
+    });
+    ordered
 }
 
 /// Does `prompt` name `id`? The id is a whole WORD of the prompt — a run of
@@ -398,8 +417,8 @@ fn summary_text(
         resources = affected_resources(evidence),
         assessment = threat_assessment(evidence, risk_level),
     );
-    for (step, text) in remediation(evidence.is_empty(), risk_level).iter().enumerate() {
-        report.push_str(&format!("{}. {text}\n", step + 1));
+    for (step, remediation) in remediation(evidence.is_empty(), risk_level).iter().enumerate() {
+        report.push_str(&format!("{}. {}\n", step + 1, remediation.action));
     }
     report
 }
@@ -407,22 +426,56 @@ fn summary_text(
 /// The summary's affected-resources section: one line per `Resource$ResourceType` the
 /// analysed findings report, with how many of them affect it, worst finding first.
 fn affected_resources(evidence: &[&FindingEvidence]) -> String {
-    let counts = counts_of(evidence.iter().map(|finding| finding.resource_type.as_str()));
-    let resource_types = distinct(evidence.iter().map(|finding| finding.resource_type.as_str()));
-    if resource_types.is_empty() {
+    let lines = affected_resource_lines(evidence);
+    if lines.is_empty() {
         return "None: the pass analysed no findings, so no resource was implicated.".to_string();
     }
-    resource_types
+    lines
         .into_iter()
-        .map(|resource_type| {
-            let findings = counts.get(resource_type.as_str()).copied().unwrap_or(0);
+        .map(|line| format!("- {line}"))
+        .collect::<Vec<String>>()
+        .join("\n")
+}
+
+/// One line per `Resource$ResourceType` the analysed findings report, with how many of
+/// them affect it, worst finding first — the affected resources as a LIST, which the
+/// text report renders as its own section and the structured summary carries as the
+/// pass's key observations.
+pub fn affected_resource_lines(evidence: &[&FindingEvidence]) -> Vec<String> {
+    resource_type_counts(evidence)
+        .into_iter()
+        .map(|(resource_type, findings)| {
             format!(
-                "- {resource_type}: {}",
+                "{resource_type}: {}",
                 counted(findings, "finding", "findings")
             )
         })
-        .collect::<Vec<String>>()
-        .join("\n")
+        .collect()
+}
+
+/// Each `Resource$ResourceType` the analysed findings report and how many of them
+/// affect it, worst finding first — the one count both the text report and the
+/// structured summary's affected-resource list read.
+pub fn resource_type_counts(evidence: &[&FindingEvidence]) -> Vec<(String, usize)> {
+    let counts = counts_of(evidence.iter().map(|finding| finding.resource_type.as_str()));
+    distinct(evidence.iter().map(|finding| finding.resource_type.as_str()))
+        .into_iter()
+        .map(|resource_type| {
+            let findings = counts.get(resource_type.as_str()).copied().unwrap_or(0);
+            (resource_type, findings)
+        })
+        .collect()
+}
+
+/// Each `Finding$Type` the analysed findings report and how many of them carry it,
+/// most findings first with the type breaking ties — what `TopFindingTypes` reports.
+pub fn finding_type_counts(evidence: &[&FindingEvidence]) -> Vec<(String, usize)> {
+    let mut counts: Vec<(String, usize)> = counts_of(evidence.iter().map(|f| f.r#type.as_str()))
+        .into_iter()
+        .map(|(r#type, count)| (r#type.to_string(), count))
+        .collect();
+    counts.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    counts
 }
 
 /// The summary's threat-assessment section: the severity the assessed level comes from
@@ -480,7 +533,7 @@ fn threat_assessment(evidence: &[&FindingEvidence], risk_level: &str) -> String 
 }
 
 /// How many times each value of `values` occurs, counted in one pass.
-fn counts_of<'a>(values: impl Iterator<Item = &'a str>) -> BTreeMap<&'a str, usize> {
+pub fn counts_of<'a>(values: impl Iterator<Item = &'a str>) -> BTreeMap<&'a str, usize> {
     let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
     for value in values {
         *counts.entry(value).or_default() += 1;
@@ -488,26 +541,187 @@ fn counts_of<'a>(values: impl Iterator<Item = &'a str>) -> BTreeMap<&'a str, usi
     counts
 }
 
+/// One step the pass recommends: what to do, why, and how the modelled members
+/// classify it.
+///
+/// One catalogue for every view of the pass's recommendations — the numbered steps the
+/// text report prints, the `Countermeasure` list a FINDING investigation's structured
+/// summary carries, and the `Recommendation` list an account-wide one carries — so no
+/// two of them can recommend different things for one assessment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RemediationStep {
+    /// What to do, as the report's numbered step and the action's own title.
+    pub action: &'static str,
+    /// Why the assessment calls for it.
+    pub rationale: &'static str,
+    /// `DefenseTactic`, the kind of defence the step is
+    /// (`smithy_query(shape="DefenseTactic")`).
+    pub defense_tactic: &'static str,
+    /// `ActionPriority`, how soon it is called for
+    /// (`smithy_query(shape="ActionPriority")`).
+    pub priority: &'static str,
+    /// `RecommendationCategory`, the kind of recommendation it is
+    /// (`smithy_query(shape="RecommendationCategory")`).
+    pub category: &'static str,
+}
+
+/// `DefenseTactic`: cut the affected resource off from the activity.
+pub const DEFENSE_TACTIC_ISOLATE: &str = "Isolate";
+
+/// `DefenseTactic`: take the actor's access away. See [`DEFENSE_TACTIC_ISOLATE`].
+pub const DEFENSE_TACTIC_EVICT: &str = "Evict";
+
+/// `DefenseTactic`: look for the activity rather than act on it.
+pub const DEFENSE_TACTIC_DETECT: &str = "Detect";
+
+const _: () = assert!(enum_carries(
+    crate::ops::types::shared_types::DEFENSE_TACTIC_VALUES,
+    DEFENSE_TACTIC_ISOLATE
+));
+const _: () = assert!(enum_carries(
+    crate::ops::types::shared_types::DEFENSE_TACTIC_VALUES,
+    DEFENSE_TACTIC_EVICT
+));
+const _: () = assert!(enum_carries(
+    crate::ops::types::shared_types::DEFENSE_TACTIC_VALUES,
+    DEFENSE_TACTIC_DETECT
+));
+
+/// `ActionPriority`: the step is called for now.
+pub const ACTION_PRIORITY_IMMEDIATE: &str = "IMMEDIATE";
+
+/// `ActionPriority`: the step is called for soon. See [`ACTION_PRIORITY_IMMEDIATE`].
+pub const ACTION_PRIORITY_SHORT_TERM: &str = "SHORT_TERM";
+
+/// `ActionPriority`: the step is a standing practice rather than a response.
+pub const ACTION_PRIORITY_STRATEGIC: &str = "STRATEGIC";
+
+const _: () = assert!(enum_carries(
+    crate::ops::types::shared_types::ACTION_PRIORITY_VALUES,
+    ACTION_PRIORITY_IMMEDIATE
+));
+const _: () = assert!(enum_carries(
+    crate::ops::types::shared_types::ACTION_PRIORITY_VALUES,
+    ACTION_PRIORITY_SHORT_TERM
+));
+const _: () = assert!(enum_carries(
+    crate::ops::types::shared_types::ACTION_PRIORITY_VALUES,
+    ACTION_PRIORITY_STRATEGIC
+));
+
+/// `RecommendationCategory`: make the environment harder to act against.
+pub const RECOMMENDATION_HARDENING: &str = "HARDENING";
+
+/// `RecommendationCategory`: look into the activity further. See
+/// [`RECOMMENDATION_HARDENING`].
+pub const RECOMMENDATION_FURTHER_INVESTIGATION: &str = "FURTHER_INVESTIGATION";
+
+/// `RecommendationCategory`: suppress what has been confirmed as expected.
+pub const RECOMMENDATION_SUPPRESSION_RULE: &str = "SUPPRESSION_RULE";
+
+/// `RecommendationCategory`: keep watching.
+pub const RECOMMENDATION_MONITORING: &str = "MONITORING";
+
+/// `RecommendationCategory`: turn a protection on.
+pub const RECOMMENDATION_ENABLE_PROTECTION: &str = "ENABLE_PROTECTION";
+
+const _: () = assert!(enum_carries(
+    crate::ops::types::shared_types::RECOMMENDATION_CATEGORY_VALUES,
+    RECOMMENDATION_HARDENING
+));
+const _: () = assert!(enum_carries(
+    crate::ops::types::shared_types::RECOMMENDATION_CATEGORY_VALUES,
+    RECOMMENDATION_FURTHER_INVESTIGATION
+));
+const _: () = assert!(enum_carries(
+    crate::ops::types::shared_types::RECOMMENDATION_CATEGORY_VALUES,
+    RECOMMENDATION_SUPPRESSION_RULE
+));
+const _: () = assert!(enum_carries(
+    crate::ops::types::shared_types::RECOMMENDATION_CATEGORY_VALUES,
+    RECOMMENDATION_MONITORING
+));
+const _: () = assert!(enum_carries(
+    crate::ops::types::shared_types::RECOMMENDATION_CATEGORY_VALUES,
+    RECOMMENDATION_ENABLE_PROTECTION
+));
+
 /// The summary's remediation steps, which follow the assessed level: the higher the
 /// risk, the more they ask of the operator, and an account with nothing to assess is
 /// asked for nothing.
-fn remediation(no_evidence: bool, risk_level: &str) -> &'static [&'static str] {
+pub fn remediation(no_evidence: bool, risk_level: &str) -> &'static [RemediationStep] {
     if no_evidence {
-        return &["Keep GuardDuty enabled so later activity is analysed."];
+        return &[RemediationStep {
+            action: "Keep GuardDuty enabled so later activity is analysed.",
+            rationale: "The pass read no findings, so there is nothing to respond to; coverage is \
+                        what makes later activity analysable.",
+            defense_tactic: DEFENSE_TACTIC_DETECT,
+            priority: ACTION_PRIORITY_STRATEGIC,
+            category: RECOMMENDATION_ENABLE_PROTECTION,
+        }];
     }
     match risk_level {
         RISK_LEVEL_CRITICAL | RISK_LEVEL_HIGH => &[
-            "Isolate the affected resources.",
-            "Revoke the credentials used against them.",
-            "Escalate to your incident response process.",
+            RemediationStep {
+                action: "Isolate the affected resources.",
+                rationale: "The assessed level means the activity is under way, so cutting the \
+                            affected resources off limits what it can reach.",
+                defense_tactic: DEFENSE_TACTIC_ISOLATE,
+                priority: ACTION_PRIORITY_IMMEDIATE,
+                category: RECOMMENDATION_HARDENING,
+            },
+            RemediationStep {
+                action: "Revoke the credentials used against them.",
+                rationale: "Credentials used in the analysed activity keep working until they are \
+                            revoked.",
+                defense_tactic: DEFENSE_TACTIC_EVICT,
+                priority: ACTION_PRIORITY_IMMEDIATE,
+                category: RECOMMENDATION_HARDENING,
+            },
+            RemediationStep {
+                action: "Escalate to your incident response process.",
+                rationale: "Activity at this level is handled by the process that owns incidents, \
+                            not by the finding alone.",
+                defense_tactic: DEFENSE_TACTIC_DETECT,
+                priority: ACTION_PRIORITY_IMMEDIATE,
+                category: RECOMMENDATION_FURTHER_INVESTIGATION,
+            },
         ],
         RISK_LEVEL_MEDIUM => &[
-            "Review the activity on the affected resources.",
-            "Confirm whether it was expected before archiving the findings.",
+            RemediationStep {
+                action: "Review the activity on the affected resources.",
+                rationale: "The assessed level leaves open whether the activity was expected, \
+                            which only a review of the resources settles.",
+                defense_tactic: DEFENSE_TACTIC_DETECT,
+                priority: ACTION_PRIORITY_SHORT_TERM,
+                category: RECOMMENDATION_FURTHER_INVESTIGATION,
+            },
+            RemediationStep {
+                action: "Confirm whether it was expected before archiving the findings.",
+                rationale: "Archiving activity that was not confirmed hides the next occurrence \
+                            of it.",
+                defense_tactic: DEFENSE_TACTIC_DETECT,
+                priority: ACTION_PRIORITY_SHORT_TERM,
+                category: RECOMMENDATION_SUPPRESSION_RULE,
+            },
         ],
         _ => &[
-            "Monitor the affected resources.",
-            "Archive the findings once the activity is confirmed as expected.",
+            RemediationStep {
+                action: "Monitor the affected resources.",
+                rationale: "At this level the activity calls for watching rather than for a \
+                            response.",
+                defense_tactic: DEFENSE_TACTIC_DETECT,
+                priority: ACTION_PRIORITY_STRATEGIC,
+                category: RECOMMENDATION_MONITORING,
+            },
+            RemediationStep {
+                action: "Archive the findings once the activity is confirmed as expected.",
+                rationale: "Confirmed-expected activity that stays unarchived crowds out the \
+                            findings that are not.",
+                defense_tactic: DEFENSE_TACTIC_DETECT,
+                priority: ACTION_PRIORITY_STRATEGIC,
+                category: RECOMMENDATION_SUPPRESSION_RULE,
+            },
         ],
     }
 }
@@ -526,7 +740,7 @@ fn title_text(evidence: &[&FindingEvidence], risk_level: &str) -> String {
 
 /// The distinct values of `values`, in first-seen order — which, for evidence
 /// ordered by severity, puts the resource type of the worst finding first.
-fn distinct<'a>(values: impl Iterator<Item = &'a str>) -> Vec<String> {
+pub fn distinct<'a>(values: impl Iterator<Item = &'a str>) -> Vec<String> {
     let mut seen: BTreeSet<&str> = BTreeSet::new();
     let mut ordered: Vec<String> = Vec::new();
     for value in values {
@@ -538,7 +752,7 @@ fn distinct<'a>(values: impl Iterator<Item = &'a str>) -> Vec<String> {
 }
 
 /// `count` with the noun that agrees with it.
-fn counted(count: usize, singular: &str, plural: &str) -> String {
+pub fn counted(count: usize, singular: &str, plural: &str) -> String {
     match count {
         1 => format!("1 {singular}"),
         _ => format!("{count} {plural}"),
@@ -548,7 +762,7 @@ fn counted(count: usize, singular: &str, plural: &str) -> String {
 /// `text` within `max` characters, cut on a character boundary so a multi-byte
 /// character is never split — the guard that keeps a derived sentence inside the
 /// modelled length of the member that carries it.
-fn clamped(text: String, max: usize) -> String {
+pub fn clamped(text: String, max: usize) -> String {
     if text.chars().count() <= max {
         return text;
     }

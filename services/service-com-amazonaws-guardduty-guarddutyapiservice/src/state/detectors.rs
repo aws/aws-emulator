@@ -875,8 +875,9 @@ impl Detector {
     /// when an investigation left `RUNNING` or what its pass concluded.
     pub fn settle_investigations(&mut self, now: i64) {
         let evidence = self.finding_evidence();
+        let member_accounts = self.members.len();
         for investigation in self.investigations.values_mut() {
-            investigation.settle(now, &evidence);
+            investigation.settle(now, &evidence, member_accounts);
         }
     }
 
@@ -892,8 +893,9 @@ impl Detector {
             return None;
         }
         let evidence = self.finding_evidence();
+        let member_accounts = self.members.len();
         if let Some(investigation) = self.investigations.get_mut(id) {
-            investigation.settle(now, &evidence);
+            investigation.settle(now, &evidence, member_accounts);
         }
         self.investigations.get(id)
     }

@@ -15,9 +15,23 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-guardduty-guarddutyapis
 #[derive(Debug, Clone, Default)]
 pub struct ListInvestigationsInput {
     pub detector_id: String,
+    pub filter_criteria: Option<InvestigationFilterCriteria>,
     pub sort_criteria: Option<InvestigationSortCriteria>,
     pub max_results: Option<i32>,
     pub next_token: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.guardduty#InvestigationFilterCriteria")]
+#[derive(Debug, Clone, Default)]
+pub struct InvestigationFilterCriteria {
+    pub criterion: Option<std::collections::HashMap<String, InvestigationFilterCondition>>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.guardduty#InvestigationFilterCondition")]
+#[derive(Debug, Clone, Default)]
+pub struct InvestigationFilterCondition {
+    pub equals: Option<Vec<String>>,
+    pub not_equals: Option<Vec<String>>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.guardduty#InvestigationSortCriteria")]
@@ -43,7 +57,10 @@ pub struct InvestigationSummary {
     pub risk_level: Option<String>,
     pub confidence: Option<String>,
     pub title: Option<String>,
+    pub investigation_type: Option<String>,
+    pub finding_id: Option<String>,
     pub account_id: Option<String>,
+    pub admin_account_id: Option<String>,
     pub start_time: Option<::aws_smithy_types::DateTime>,
     pub end_time: Option<::aws_smithy_types::DateTime>,
 }

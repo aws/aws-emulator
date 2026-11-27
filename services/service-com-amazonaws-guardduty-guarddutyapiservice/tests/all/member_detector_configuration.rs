@@ -12,8 +12,11 @@
 //!
 //! 1. A member account's configuration is ONE stored switch per feature: an update
 //!    writes it and a read reports it back under both views — the `Features` list and
-//!    the deprecated `DataSources` nodes — which therefore agree about the status and
-//!    the instant it last changed. The instant moves only when the switch CHANGES.
+//!    the deprecated `DataSources` nodes — which therefore agree about its status. A
+//!    data-source node carries that status alone, the model declaring no other member
+//!    on it (`smithy_query(shape="DataSourceConfigurationsResult")`), so the instant
+//!    the switch last changed is the `Features` entry's, and it moves only when the
+//!    switch CHANGES.
 //! 2. An update configures ONLY the switches it names, for ONLY the member accounts it
 //!    names: every other feature, and every other member, keeps what it had.
 //! 3. A member account's configuration starts where a detector created without a
@@ -97,8 +100,10 @@ const MEMBER_ADDITIONAL_CONFIGURATIONS: [&str; 4] = [
 /// The `DataSources` nodes of a member read that a feature governs, paired with
 /// that feature. The node paths are the `jsonName`s of
 /// `DataSourceConfigurationsResult` and its nested result shapes
-/// (`smithy_query(shape="DataSourceConfigurationsResult")`).
-const GOVERNED_NODES: [(&str, &[&str]); 4] = [
+/// (`smithy_query(shape="DataSourceConfigurationsResult")`). A feature the result
+/// shape has no node for — RDS login activity, for one — is reported under `Features`
+/// alone, which the whole-set rule below covers.
+const GOVERNED_NODES: [(&str, &[&str]); 3] = [
     ("S3_DATA_EVENTS", &["s3Logs"]),
     ("EKS_AUDIT_LOGS", &["kubernetes", "auditLogs"]),
     (
@@ -109,7 +114,6 @@ const GOVERNED_NODES: [(&str, &[&str]); 4] = [
             "ebsVolumes",
         ],
     ),
-    ("RDS_LOGIN_EVENTS", &["database", "rds", "databaseEvents"]),
 ];
 
 /// The data sources GuardDuty always consumes: no `OrgFeature` member and no
@@ -253,16 +257,8 @@ fn feature_instant(configuration: &Value, name: &str, case: &str) -> f64 {
     instant
 }
 
-/// The epoch seconds an ISO-8601 instant names, so a data-source node's instant and
-/// a feature's can be compared.
-fn as_epoch(text: &str, case: &str) -> f64 {
-    ::aws_smithy_types::DateTime::from_str(text, ::aws_smithy_types::date_time::Format::DateTime)
-        .unwrap_or_else(|e| panic!("{case}: {text:?} is not an ISO-8601 instant: {e}"))
-        .as_secs_f64()
-}
-
 /// Assert both views of one member switch report `expected`, and return the instant
-/// they agree on.
+/// the FEATURE view reports for it.
 fn assert_views_agree(
     configuration: &Value,
     feature_name: &str,
@@ -282,18 +278,14 @@ fn assert_views_agree(
         expected,
         "{case}: feature {feature_name} expected {expected}, got {configuration:?}"
     );
-    let text = node["updatedAt"]
-        .as_str()
-        .unwrap_or_else(|| panic!("{case}: expected an updatedAt on dataSources.{}, got {node:?}", path.join(".")))
-        .to_string();
-    let node_epoch = as_epoch(&text, case);
-    let entry_epoch = feature_instant(configuration, feature_name, case);
+    // The node reports the status and nothing else: `UpdatedAt` is a member of the
+    // `Features` view, which is where the instant the switch last changed is read.
     assert!(
-        (node_epoch - entry_epoch).abs() < 0.001,
-        "{case}: the data source and the feature are ONE switch, so their updatedAt must name one \
-         instant: node {text:?} ({node_epoch}), feature {entry_epoch}"
+        node["updatedAt"].is_null(),
+        "{case}: dataSources.{} models no updatedAt, got {node:?}",
+        path.join(".")
     );
-    entry_epoch
+    feature_instant(configuration, feature_name, case)
 }
 
 /// The status a member account's configuration starts a feature in.

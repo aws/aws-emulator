@@ -9,9 +9,12 @@
 //! The rules under test, each asserted over a SET of inputs rather than one recorded
 //! call:
 //!
-//! 1. Every node of the deprecated `DataSources` view reports the status AND the
-//!    last-change instant of the feature that governs it: one stored switch, read
-//!    back under either name. The instant moves only when that switch CHANGES.
+//! 1. Every node of the deprecated `DataSources` view reports the STATUS of the
+//!    feature that governs it: one stored switch, read back under either name. The
+//!    node carries only that status — the model declares no other member on it
+//!    (`smithy_query(shape="DataSourceConfigurationsResult")`) — so the instant the
+//!    switch last CHANGED is the `Features` view's to report, and it moves only when
+//!    the switch changes.
 //! 2. A data source's reported status is the stored configuration, never a function
 //!    of the detector's own `Status`; the three foundational sources (CloudTrail
 //!    management events, DNS logs, VPC flow logs) have no switch at all and always
@@ -33,20 +36,15 @@ use super::detector_lifecycle::{call, create_detector, new_router, Router};
 /// The node paths are the `jsonName`s of `DataSourceConfigurationsResult` and its
 /// nested result shapes (`smithy_query(shape="DataSourceConfigurationsResult")`);
 /// the feature names are `DetectorFeature` members
-/// (`smithy_query(shape="DetectorFeature")`). `database.rds.databaseEvents` is the
-/// data-source view of RDS Protection, which watches Amazon RDS login activity; it is
-/// one of the optional features a bare create enables, so it starts ENABLED.
-const GOVERNED_NODES: [(&str, &[&str], &str); 4] = [
+/// (`smithy_query(shape="DetectorFeature")`). A feature the result shape has no node
+/// for — RDS login activity, for one — is reported under `Features` alone, which is
+/// the whole-set rule below.
+const GOVERNED_NODES: [(&str, &[&str], &str); 3] = [
     ("S3_DATA_EVENTS", &["s3Logs"], "ENABLED"),
     ("EKS_AUDIT_LOGS", &["kubernetes", "auditLogs"], "ENABLED"),
     (
         "EBS_MALWARE_PROTECTION",
         &["malwareProtection", "scanEc2InstanceWithFindings", "ebsVolumes"],
-        "ENABLED",
-    ),
-    (
-        "RDS_LOGIN_EVENTS",
-        &["database", "rds", "databaseEvents"],
         "ENABLED",
     ),
 ];
@@ -147,19 +145,26 @@ fn feature<'a>(got: &'a Value, name: &str) -> &'a Value {
         .unwrap_or_else(|| panic!("feature {name} is not reported at all: got {got:?}"))
 }
 
-/// The ISO-8601 instant a `dataSources` node carries. The members this service
-/// models as strings are rendered with a fixed three-digit millisecond field, so two
-/// of them compare in time order AS TEXT.
-fn node_instant(value: &Value, case: &str) -> String {
-    let text = value["updatedAt"]
-        .as_str()
-        .unwrap_or_else(|| panic!("{case}: expected an updatedAt instant, got {value:?}"))
-        .to_string();
-    assert!(
-        text.starts_with("20") && text.ends_with('Z') && text.len() == "2026-01-02T03:04:05.678Z".len(),
-        "{case}: expected an ISO-8601 instant with a three-digit millisecond field, got {text:?}"
-    );
-    text
+/// The members a `dataSources` node carries: its `Status`, and nothing else. The
+/// result shapes under `DataSourceConfigurationsResult` declare `Status` — and, for
+/// the EBS volumes node, the `Reason` a source was not enabled, which nothing stopped
+/// here (`smithy_query(shape="DataSourceConfigurationsResult")`).
+const NODE_MEMBERS: [&str; 2] = ["status", "reason"];
+
+/// Assert a `dataSources` node carries the members the model declares for it, and no
+/// instant of its own: a data source is a projection of the feature that governs it,
+/// and `UpdatedAt` is that feature's member.
+fn assert_node_members(value: &Value, case: &str) {
+    let object = value
+        .as_object()
+        .unwrap_or_else(|| panic!("{case}: expected a data-source node object, got {value:?}"));
+    for member in object.keys() {
+        assert!(
+            NODE_MEMBERS.contains(&member.as_str()),
+            "{case}: a data-source node carries only {NODE_MEMBERS:?}, got the member {member:?} \
+             in {value:?}"
+        );
+    }
 }
 
 /// The epoch instant a `features` entry carries (`DetectorFeatureConfigurationResult`
@@ -175,23 +180,19 @@ fn feature_instant(value: &Value, case: &str) -> f64 {
     instant
 }
 
-/// The epoch seconds an ISO-8601 instant names, so a node's instant and a feature's
-/// can be compared.
-fn as_epoch(text: &str, case: &str) -> f64 {
-    ::aws_smithy_types::DateTime::from_str(text, ::aws_smithy_types::date_time::Format::DateTime)
-        .unwrap_or_else(|e| panic!("{case}: {text:?} is not an ISO-8601 instant: {e}"))
-        .as_secs_f64()
-}
+/// How close two epoch instants are before they name the same one: the instants this
+/// service stores are milliseconds, so anything under one is the same instant.
+const SAME_INSTANT: f64 = 0.001;
 
 // ---------------------------------------------------------------------------
 // Rules 1 and 2.
 // ---------------------------------------------------------------------------
 
-/// Each switchable data source reports its governing feature's status and the
-/// instant that feature last changed — written through either view, read back
-/// through both.
+/// Each switchable data source reports its governing feature's status, and that
+/// feature's own entry carries the instant the switch last changed — written through
+/// either view, read back through both.
 #[tokio::test]
-async fn a_data_source_node_reports_the_status_and_instant_of_the_feature_that_governs_it() {
+async fn a_data_source_node_reports_the_status_of_the_feature_that_governs_it() {
     for (feature_name, path, default_status) in GOVERNED_NODES {
         let case = format!("{feature_name} -> dataSources.{}", path.join("."));
         let router = new_router();
@@ -230,23 +231,23 @@ async fn a_data_source_node_reports_the_status_and_instant_of_the_feature_that_g
             .await;
             let got = read(&router, &id).await;
             let again = assert_views_agree(&got, feature_name, path, target, &case);
-            assert_eq!(
-                again, last,
-                "{case}: re-applying {target} must not move updatedAt"
+            assert!(
+                (again - last).abs() < SAME_INSTANT,
+                "{case}: re-applying {target} must not move updatedAt: was {last:?}, got {again:?}"
             );
         }
     }
 }
 
 /// Assert both views of one switch report `expected`, and return the instant the
-/// node reports.
+/// FEATURE view reports for it.
 fn assert_views_agree(
     got: &Value,
     feature_name: &str,
     path: &[&str],
     expected: &str,
     case: &str,
-) -> String {
+) -> f64 {
     let node = node(got, path);
     assert_eq!(
         node["status"],
@@ -254,21 +255,14 @@ fn assert_views_agree(
         "{case}: dataSources.{} expected {expected}, got {got:?}",
         path.join(".")
     );
+    assert_node_members(node, case);
     let entry = feature(got, feature_name);
     assert_eq!(
         entry["status"],
         json!(expected),
         "{case}: feature {feature_name} expected {expected}, got {got:?}"
     );
-    let text = node_instant(node, case);
-    let node_epoch = as_epoch(&text, case);
-    let feature_epoch = feature_instant(entry, case);
-    assert!(
-        (node_epoch - feature_epoch).abs() < 0.001,
-        "{case}: the data source and the feature are one switch, so their updatedAt must name one \
-         instant: node {text:?} ({node_epoch}), feature {feature_epoch}"
-    );
-    text
+    feature_instant(entry, case)
 }
 
 /// Writing the switch through the deprecated `DataSources` input is read back
@@ -326,7 +320,7 @@ async fn a_data_source_status_does_not_follow_the_detectors_enable_flag() {
                 json!("ENABLED"),
                 "{case}: feature {feature_name} has no switch, so it reports ENABLED, got {got:?}"
             );
-            node_instant(node(&got, &[json_name]), &case);
+            assert_node_members(node(&got, &[json_name]), &case);
         }
         for (feature_name, path, default_status) in GOVERNED_NODES {
             assert_eq!(
