@@ -23,8 +23,19 @@
 //! maximum, a combination, and none at all), and along how many streams are asked
 //! for against it; the second differs along the FORM of the signal request (a JSON
 //! session description, a bare SDP offer, the documented no-client sentinel, and
-//! four kinds of value that are no offer at all). The last test follows a placed
+//! four kinds of value that are no offer at all). The third follows a placed
 //! session through the operations a live stream gates.
+//!
+//! The last table is the other half of what a placement settles: the lifecycle
+//! instants a session reports. A session reports each of them only once the event it
+//! records has happened to it — `ApplicationStartedAt` once its placement found
+//! capacity to launch the application on, and `StreamingStartedAt` and
+//! `StreamingEndedAt` once a client connection starts and ends streaming, which
+//! needs the stream server's answer to the `SignalRequest` and so happens nowhere in
+//! this emulator. Its rows differ along which of those events a session reached:
+//! none yet, a placement that launched the application, a placement that found no
+//! capacity, a request that was no offer, and a launched stream that was then
+//! terminated.
 //!
 //! Every assertion reads a RESPONSE BODY, through `GetStreamSession`, so a
 //! placement that moved nothing in state fails here.
@@ -32,6 +43,7 @@
 use serde_json::{json, Value};
 use smithy_server_runtime::MultiServiceRouter;
 
+use super::application_read_projection::{poll_until, stream_group_fully_active};
 use super::stream_group_capacity::group_with_locations;
 use super::stream_workflow::{
     call, emulator, ready_application, text, PAST_TRANSITION, REGION,
@@ -45,15 +57,14 @@ const OFFER: &str = concat!(
     r#"s=-\r\nt=0 0\r\nm=video 9 UDP/TLS/RTP/SAVPF 96\r\na=recvonly\r\n"}"#
 );
 
-/// Start one stream session and answer its id. `signal_request` is the offer it
-/// carries; `locations` is left out of the request when empty.
-async fn start_session(
+/// Start one stream session and answer the body the start itself reported.
+async fn started_session(
     router: &MultiServiceRouter,
     case: &str,
     group: &str,
     application: &str,
     signal_request: &str,
-) -> String {
+) -> Value {
     let (status, started) = call(
         router,
         "POST",
@@ -73,11 +84,29 @@ async fn start_session(
         started["Status"], "ACTIVATING",
         "case {case:?}: a start begins the search for capacity, got {started}"
     );
-    text(&started, "/Arn", case)
+    started
+}
+
+/// The session id a stream-session body's ARN ends in.
+fn session_id_of(body: &Value, case: &str) -> String {
+    text(body, "/Arn", case)
         .rsplit('/')
         .next()
         .expect("a stream session ARN ends in the session id")
         .to_string()
+}
+
+/// Start one stream session and answer its id. `signal_request` is the offer it
+/// carries; `locations` is left out of the request when empty.
+async fn start_session(
+    router: &MultiServiceRouter,
+    case: &str,
+    group: &str,
+    application: &str,
+    signal_request: &str,
+) -> String {
+    let started = started_session(router, case, group, application, signal_request).await;
+    session_id_of(&started, case)
 }
 
 /// Read one stream session back and answer its whole body.
@@ -461,4 +490,192 @@ async fn a_placed_session_is_a_live_stream() {
         "case {released:?}: expected the freed stream to be placed, got {status:?} \
          {reason:?}"
     );
+}
+
+/// The instants a stream session reports for its own lifecycle, from
+/// `smithy_query(query="operation", operation="GetStreamSession")`:
+/// `ApplicationStartedAt` is "when the application launched for this stream session",
+/// `StreamingStartedAt` "when streaming started for this stream session, which is
+/// when a client connected", and `StreamingEndedAt` "when streaming ended for this
+/// stream session".
+const LIFECYCLE_INSTANTS: [&str; 3] = [
+    "ApplicationStartedAt",
+    "StreamingStartedAt",
+    "StreamingEndedAt",
+];
+
+/// The two instants that only a client connection can open and close, and which this
+/// emulator therefore never reports: a connection needs the stream server's answer to
+/// the `SignalRequest`, and no stream server runs here.
+const CLIENT_STREAM_INSTANTS: [&str; 2] = ["StreamingStartedAt", "StreamingEndedAt"];
+
+/// One instant of a session body, as the seconds since the epoch the wire carries, or
+/// `None` for a member the body does not report.
+fn instant(body: &Value, member: &str) -> Option<f64> {
+    body.get(member).map(|at| {
+        at.as_f64()
+            .unwrap_or_else(|| panic!("{member} is a timestamp, got {at}"))
+    })
+}
+
+/// Assert `body` reports none of the instants in `members`.
+fn assert_absent(body: &Value, members: &[&str], case: &str) {
+    for member in members {
+        assert!(
+            instant(body, member).is_none(),
+            "case {case:?}: nothing has happened to report {member} for, so it must be \
+             absent, got {body}"
+        );
+    }
+}
+
+/// One row: the case, the `SignalRequest` the start carries, and whether its
+/// placement finds capacity to launch the application on.
+struct LifecycleCase {
+    case: &'static str,
+    signal_request: &'static str,
+    launched: bool,
+}
+
+/// A session reports an event's instant once that event has happened to it, and not
+/// before: the application launch at the placement that ran it, and the streaming
+/// instants not at all while no client can connect.
+#[tokio::test]
+async fn a_session_reports_the_instants_of_the_events_that_happened_to_it() {
+    let router = emulator();
+    let (app_id, app_arn) = ready_application(&router, "lifecycle-instants").await;
+    // Two streams of capacity, so the two rows that are placed find it and the row
+    // after them does not.
+    let configuration = json!({"LocationName": REGION, "AlwaysOnCapacity": 2});
+    let (group_id, _, _) = group_with_locations(
+        &router,
+        "lifecycle-instants-group",
+        &app_arn,
+        std::slice::from_ref(&configuration),
+    )
+    .await;
+    stream_group_fully_active(&router, &group_id, "lifecycle-instants").await;
+
+    let rows = [
+        LifecycleCase {
+            case: "a placement that launched the application",
+            signal_request: OFFER,
+            launched: true,
+        },
+        LifecycleCase {
+            // The documented no-client sentinel starts a stream all the same, so the
+            // application launches for it too.
+            case: "a placement from the no-client sentinel",
+            signal_request: "NO_CLIENT_CONNECTION",
+            launched: true,
+        },
+        LifecycleCase {
+            case: "a placement the location had no capacity for",
+            signal_request: OFFER,
+            launched: false,
+        },
+        LifecycleCase {
+            case: "a request that carried no offer to place",
+            signal_request: r#"{"type":"answer","sdp":"v=0\r\nm=video 9 RTP/SAVPF 96\r\n"}"#,
+            launched: false,
+        },
+    ];
+
+    let mut started = Vec::new();
+    for LifecycleCase {
+        case,
+        signal_request,
+        launched,
+    } in rows
+    {
+        // The start's own body: the session "is starting and preparing to stream", so
+        // nothing has launched or streamed for it yet.
+        let body = started_session(&router, case, &group_id, &app_id, signal_request).await;
+        assert_absent(&body, &LIFECYCLE_INSTANTS, case);
+        started.push((case, session_id_of(&body, case), launched));
+    }
+
+    let mut placed_launch = Vec::new();
+    for (case, session, launched) in &started {
+        let path = format!("/streamgroups/{group_id}/streamsessions/{session}");
+        // Wait for the CONDITION the placement settles into, never for a fixed time.
+        let settled = poll_until(&router, &path, case, |body| {
+            matches!(body["Status"].as_str(), Some("ACTIVE" | "ERROR"))
+        })
+        .await;
+        // A client connection is what starts and ends streaming, and none can be made
+        // here, whatever the placement did.
+        assert_absent(&settled, &CLIENT_STREAM_INSTANTS, case);
+
+        if *launched {
+            assert_eq!(
+                settled["Status"], "ACTIVE",
+                "case {case:?}: expected a placed stream, got {settled}"
+            );
+            let launched_at = instant(&settled, "ApplicationStartedAt").unwrap_or_else(|| {
+                panic!(
+                    "case {case:?}: a placement that found capacity launched the \
+                     application, so ApplicationStartedAt must be reported, got {settled}"
+                )
+            });
+            // The launch happened at the placement, which is the last thing that moved
+            // the session, and never before the session existed.
+            assert_eq!(
+                Some(launched_at),
+                instant(&settled, "LastUpdatedAt"),
+                "case {case:?}: the application launched when the placement completed, \
+                 got {settled}"
+            );
+            let created_at = instant(&settled, "CreatedAt")
+                .unwrap_or_else(|| panic!("case {case:?}: a created session, got {settled}"));
+            assert!(
+                launched_at >= created_at,
+                "case {case:?}: expected the launch at or after the start {created_at}, got \
+                 {launched_at}"
+            );
+            placed_launch.push((case, session.clone(), launched_at));
+        } else {
+            assert_eq!(
+                settled["Status"], "ERROR",
+                "case {case:?}: expected a placement that found nothing, got {settled}"
+            );
+            assert_absent(&settled, &["ApplicationStartedAt"], case);
+        }
+
+        // Reading a session reports the same instants again: nothing about them moves
+        // because somebody looked.
+        let again = poll_until(&router, &path, case, |_| true).await;
+        for member in LIFECYCLE_INSTANTS {
+            assert_eq!(
+                instant(&again, member),
+                instant(&settled, member),
+                "case {case:?}: {member} must not move between two reads, got {again}"
+            );
+        }
+    }
+
+    // A launched stream that is then terminated keeps the instant its application
+    // launched at — the launch happened — and still reports no streaming instants,
+    // because no client ever connected to the stream it ran.
+    let (case, session, launched_at) = placed_launch
+        .first()
+        .expect("the table places at least one stream")
+        .clone();
+    let path = format!("/streamgroups/{group_id}/streamsessions/{session}");
+    let (status, body) = call(&router, "DELETE", &path, None).await;
+    assert_eq!(
+        status, 204,
+        "case {case:?}: expected TerminateStreamSession 204, got {status} {body}"
+    );
+    let stopped = poll_until(&router, &path, case, |body| {
+        body["Status"] == json!("TERMINATED")
+    })
+    .await;
+    assert_eq!(
+        instant(&stopped, "ApplicationStartedAt"),
+        Some(launched_at),
+        "case {case:?}: a stopped stream keeps the instant its application launched at, \
+         got {stopped}"
+    );
+    assert_absent(&stopped, &CLIENT_STREAM_INSTANTS, case);
 }

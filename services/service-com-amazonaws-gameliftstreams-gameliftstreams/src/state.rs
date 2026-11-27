@@ -1441,6 +1441,30 @@ pub struct StreamSession {
     pub log_file_location_uri: Option<String>,
     pub created_at: SystemTime,
     pub last_updated_at: SystemTime,
+    /// When "the application launched for this stream session"
+    /// (`ApplicationStartedAt` documentation), and `None` while nothing has
+    /// launched it.
+    ///
+    /// A session is `ACTIVATING` while it "is starting and preparing to stream" and
+    /// reaches `ACTIVE` — "ready and waiting for a client connection" — once its
+    /// placement found capacity to run the application on, so the launch happens at
+    /// the instant that placement completed and nowhere else: a session still
+    /// searching for capacity, and one whose placement failed, never ran it.
+    pub application_started_at: Option<SystemTime>,
+    /// When "streaming started for this stream session, which is when a client
+    /// connected to the stream session" (`StreamingStartedAt` documentation).
+    ///
+    /// A client connects by completing the WebRTC handshake the `SignalRequest`
+    /// opens, which needs the stream server's answer in `SignalResponse`; this
+    /// emulator runs no stream server, so it mints no `CONNECTED` session and
+    /// nothing starts streaming here (see `ops/create_stream_session_connection.rs`).
+    /// The member is therefore absent rather than carrying an instant at which no
+    /// client connected.
+    pub streaming_started_at: Option<SystemTime>,
+    /// When "streaming ended for this stream session" (`StreamingEndedAt`
+    /// documentation) — the close of the streaming that [`Self::streaming_started_at`]
+    /// opened, so it is set only for a session that streamed.
+    pub streaming_ended_at: Option<SystemTime>,
     /// When the clock owes this session's next status transition, if any.
     pub status_due_at: Option<SystemTime>,
     /// The administrative terminal sessions this stream session has handed out and
@@ -1548,6 +1572,10 @@ impl StreamSession {
             Placement::Placed => {
                 self.status = SESSION_ACTIVE.to_string();
                 self.status_reason = None;
+                // The capacity the stream was placed on is what runs the
+                // application, so the launch is due at the same instant the
+                // placement was (see [`Self::application_started_at`]).
+                self.application_started_at = Some(due);
             }
             Placement::Failed(reason) => {
                 self.status = SESSION_ERROR.to_string();
@@ -2463,6 +2491,12 @@ pub fn region_of(parts: &::http::request::Parts) -> String {
 /// A `SystemTime` as the `Timestamp` the wire carries.
 pub fn timestamp(at: SystemTime) -> ::aws_smithy_types::DateTime {
     ::aws_smithy_types::DateTime::from(at)
+}
+
+/// An instant the service has only once the event it records has happened, as the
+/// `Timestamp` the wire carries — absent for as long as it has not.
+pub fn optional_timestamp(at: Option<SystemTime>) -> Option<::aws_smithy_types::DateTime> {
+    at.map(timestamp)
 }
 
 /// This service's store in the shared engine: call it with a handler's `&*self.engine`.

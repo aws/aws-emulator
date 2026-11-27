@@ -4,18 +4,20 @@
 //! Answers from the stored stream group record, which an `Identifier` names by
 //! bare id or by ARN.
 //!
-//! ## `DesiredCapacity`, `ActiveCapacity` and `IdleCapacity`, members added to this
-//! service's model
+//! ## `DesiredCapacity`, `ActiveCapacity` and `IdleCapacity`, members this crate
+//! declares itself
 //!
-//! The shipped model declares the stream-group outputs without a group-level
+//! The published model declares the stream-group outputs without a group-level
 //! capacity summary, while the recorded AWS responses in corpus
 //! `simparity-wire-aws-v1` report one on every stream-group read: how much capacity
 //! the group's locations have been asked to hold, how much the service has
 //! provisioned for them, and how much of that is idle. A schema-driven serializer
-//! cannot emit a member the model does not declare, so `DesiredCapacity`,
-//! `ActiveCapacity` and `IdleCapacity` were ADDED to `GetStreamGroupOutput`,
-//! `CreateStreamGroupOutput` and `UpdateStreamGroupOutput` in
-//! `smithy-model/com-amazonaws-gameliftstreams-gameliftstreams.json`. No value is
+//! cannot emit a member the model does not declare, and the published snapshot is
+//! kept EXACTLY as shipped, so `GetStreamGroupOutput`, `CreateStreamGroupOutput` and
+//! `UpdateStreamGroupOutput` are generated from the small overlay model
+//! `smithy-model/local-additions.json`, which restates each of them with
+//! `DesiredCapacity`, `ActiveCapacity` and `IdleCapacity` beside the members the
+//! snapshot declares (see `smithy-model/LOCAL-ADDITIONS.md`). No value is
 //! invented for them: each is the roll-up of the group's stored locations
 //! ([`crate::state::StreamGroup::capacity_summary`]), which is the same projection
 //! `LocationStates` is reported from.
@@ -73,7 +75,7 @@
 //!
 //! ## Output
 //!
-//! * `ActiveCapacity` (CapacityValue, min 0) — a member ADDED to this service's model
+//! * `ActiveCapacity` (CapacityValue, min 0) — a member this crate declares itself
 //!   (see above): the stream capacity the service has provisioned across this group's
 //!   locations.
 //! * `Arn` (Identifier, len 1..128, pattern ^(^[a-zA-Z0-9-]+$)|(^arn:aws:gameliftstreams:([^:
@@ -93,7 +95,7 @@
 //!   application that is associated with this stream group.
 //! * `Description` (Description, len 1..80, pattern ^[a-zA-Z0-9-_.!+@/][a-zA-Z0-9-_.!+@/ ]*$)
 //!   — A descriptive label for the stream group.
-//! * `DesiredCapacity` (CapacityValue, min 0) — a member ADDED to this service's model
+//! * `DesiredCapacity` (CapacityValue, min 0) — a member this crate declares itself
 //!   (see above): the stream capacity this group's locations have most recently
 //!   requested.
 //! * `ExpiresAt` (Timestamp) — The time at which this stream group expires. Timestamps are
@@ -102,7 +104,7 @@
 //!   sessions. Only Get and Delete operations will work on an expired stream group.
 //! * `Id` (Id, len 1..32, pattern ^[a-zA-Z0-9-]+$) — A unique ID value that is assigned to
 //!   the resource when it's created. Format example: sg-1AB2C3De4.
-//! * `IdleCapacity` (CapacityValue, min 0) — a member ADDED to this service's model (see
+//! * `IdleCapacity` (CapacityValue, min 0) — a member this crate declares itself (see
 //!   above): how much of the provisioned capacity is not streaming right now.
 //! * `LastUpdatedAt` (Timestamp) — A timestamp that indicates when this resource was last
 //!   updated. Timestamps are expressed using in ISO8601 format, such as:

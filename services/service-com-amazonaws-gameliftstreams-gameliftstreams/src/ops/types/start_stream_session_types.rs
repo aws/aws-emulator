@@ -57,5 +57,8 @@ pub struct StartStreamSessionOutput {
     pub export_files_metadata: Option<ExportFilesMetadata>,
     pub role_arn: Option<String>,
     pub display_configuration: Option<DisplayConfiguration>,
+    pub application_started_at: Option<::aws_smithy_types::DateTime>,
+    pub streaming_started_at: Option<::aws_smithy_types::DateTime>,
+    pub streaming_ended_at: Option<::aws_smithy_types::DateTime>,
 }
 

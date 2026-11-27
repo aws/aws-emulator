@@ -14,7 +14,9 @@ cargo test  -p service-com-amazonaws-gameliftstreams-gameliftstreams
 service-com-amazonaws-gameliftstreams-gameliftstreams/
 ├── build.rs              # calls emulator_core_build_support::generate(...)
 ├── smithy-model/
-│   └── com-amazonaws-gameliftstreams-gameliftstreams.json      # the Smithy model — drives routing + wire shapes
+│   ├── com-amazonaws-gameliftstreams-gameliftstreams.json      # the Smithy model — drives routing + wire shapes
+│   ├── local-additions.json  # overlay model for the group-level capacity members AWS answers with that the snapshot lacks
+│   └── LOCAL-ADDITIONS.md    # what the overlay adds, and why
 ├── OPERATIONS.md         # every operation's contract, re-rendered from the model
 ├── tests/
 │   └── state_roundtrip.rs  # compiled example of the state API

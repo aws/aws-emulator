@@ -1,0 +1,133 @@
+{
+  "smithy": "2.0",
+  "shapes": {
+    "com.amazonaws.gameliftstreams#CreateStreamGroupOutput": {
+      "type": "structure",
+      "members": {
+        "Arn": {
+          "target": "com.amazonaws.gameliftstreams#Identifier",
+          "traits": { "smithy.api#required": {} }
+        },
+        "Description": { "target": "com.amazonaws.gameliftstreams#Description" },
+        "DefaultApplication": { "target": "com.amazonaws.gameliftstreams#DefaultApplication" },
+        "LocationStates": { "target": "com.amazonaws.gameliftstreams#LocationStates" },
+        "StreamClass": { "target": "com.amazonaws.gameliftstreams#StreamClass" },
+        "Id": { "target": "com.amazonaws.gameliftstreams#Id" },
+        "Status": { "target": "com.amazonaws.gameliftstreams#StreamGroupStatus" },
+        "StatusReason": { "target": "com.amazonaws.gameliftstreams#StreamGroupStatusReason" },
+        "LastUpdatedAt": { "target": "smithy.api#Timestamp" },
+        "CreatedAt": { "target": "smithy.api#Timestamp" },
+        "ExpiresAt": { "target": "smithy.api#Timestamp" },
+        "AssociatedApplications": { "target": "com.amazonaws.gameliftstreams#ArnList" },
+        "DesiredCapacity": { "target": "com.amazonaws.gameliftstreams#CapacityValue" },
+        "ActiveCapacity": { "target": "com.amazonaws.gameliftstreams#CapacityValue" },
+        "IdleCapacity": { "target": "com.amazonaws.gameliftstreams#CapacityValue" }
+      },
+      "traits": { "smithy.api#output": {} }
+    },
+    "com.amazonaws.gameliftstreams#GetStreamGroupOutput": {
+      "type": "structure",
+      "members": {
+        "Arn": {
+          "target": "com.amazonaws.gameliftstreams#Identifier",
+          "traits": { "smithy.api#required": {} }
+        },
+        "Description": { "target": "com.amazonaws.gameliftstreams#Description" },
+        "DefaultApplication": { "target": "com.amazonaws.gameliftstreams#DefaultApplication" },
+        "LocationStates": { "target": "com.amazonaws.gameliftstreams#LocationStates" },
+        "StreamClass": { "target": "com.amazonaws.gameliftstreams#StreamClass" },
+        "Id": { "target": "com.amazonaws.gameliftstreams#Id" },
+        "Status": { "target": "com.amazonaws.gameliftstreams#StreamGroupStatus" },
+        "StatusReason": { "target": "com.amazonaws.gameliftstreams#StreamGroupStatusReason" },
+        "LastUpdatedAt": { "target": "smithy.api#Timestamp" },
+        "CreatedAt": { "target": "smithy.api#Timestamp" },
+        "ExpiresAt": { "target": "smithy.api#Timestamp" },
+        "AssociatedApplications": { "target": "com.amazonaws.gameliftstreams#ArnList" },
+        "DesiredCapacity": { "target": "com.amazonaws.gameliftstreams#CapacityValue" },
+        "ActiveCapacity": { "target": "com.amazonaws.gameliftstreams#CapacityValue" },
+        "IdleCapacity": { "target": "com.amazonaws.gameliftstreams#CapacityValue" }
+      },
+      "traits": { "smithy.api#output": {} }
+    },
+    "com.amazonaws.gameliftstreams#UpdateStreamGroupOutput": {
+      "type": "structure",
+      "members": {
+        "Arn": {
+          "target": "com.amazonaws.gameliftstreams#Identifier",
+          "traits": { "smithy.api#required": {} }
+        },
+        "Description": { "target": "com.amazonaws.gameliftstreams#Description" },
+        "DefaultApplication": { "target": "com.amazonaws.gameliftstreams#DefaultApplication" },
+        "LocationStates": { "target": "com.amazonaws.gameliftstreams#LocationStates" },
+        "StreamClass": { "target": "com.amazonaws.gameliftstreams#StreamClass" },
+        "Id": { "target": "com.amazonaws.gameliftstreams#Id" },
+        "Status": { "target": "com.amazonaws.gameliftstreams#StreamGroupStatus" },
+        "StatusReason": { "target": "com.amazonaws.gameliftstreams#StreamGroupStatusReason" },
+        "LastUpdatedAt": { "target": "smithy.api#Timestamp" },
+        "CreatedAt": { "target": "smithy.api#Timestamp" },
+        "ExpiresAt": { "target": "smithy.api#Timestamp" },
+        "AssociatedApplications": { "target": "com.amazonaws.gameliftstreams#ArnList" },
+        "DesiredCapacity": { "target": "com.amazonaws.gameliftstreams#CapacityValue" },
+        "ActiveCapacity": { "target": "com.amazonaws.gameliftstreams#CapacityValue" },
+        "IdleCapacity": { "target": "com.amazonaws.gameliftstreams#CapacityValue" }
+      },
+      "traits": { "smithy.api#output": {} }
+    },
+    "com.amazonaws.gameliftstreams#CapacityValue": { "type": "integer" },
+    "com.amazonaws.gameliftstreams#Identifier": { "type": "string" },
+    "com.amazonaws.gameliftstreams#Description": { "type": "string" },
+    "com.amazonaws.gameliftstreams#Id": { "type": "string" },
+    "com.amazonaws.gameliftstreams#Arn": { "type": "string" },
+    "com.amazonaws.gameliftstreams#ArnList": {
+      "type": "list",
+      "member": { "target": "com.amazonaws.gameliftstreams#Arn" }
+    },
+    "com.amazonaws.gameliftstreams#LocationStates": {
+      "type": "list",
+      "member": { "target": "com.amazonaws.gameliftstreams#LocationState" }
+    },
+    "com.amazonaws.gameliftstreams#LocationState": { "type": "structure", "members": {} },
+    "com.amazonaws.gameliftstreams#DefaultApplication": { "type": "structure", "members": {} },
+    "com.amazonaws.gameliftstreams#StreamClass": {
+      "type": "enum",
+      "members": {
+        "gen4n_high": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "gen4n_high" } },
+        "gen4n_ultra": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "gen4n_ultra" } },
+        "gen4n_win2022": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "gen4n_win2022" } },
+        "gen5n_high": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "gen5n_high" } },
+        "gen5n_ultra": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "gen5n_ultra" } },
+        "gen5n_win2022": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "gen5n_win2022" } },
+        "gen6n_small": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "gen6n_small" } },
+        "gen6n_medium": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "gen6n_medium" } },
+        "gen6n_high": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "gen6n_high" } },
+        "gen6n_ultra": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "gen6n_ultra" } },
+        "gen6n_ultra_win2022": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "gen6n_ultra_win2022" } },
+        "gen6n_pro": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "gen6n_pro" } },
+        "gen6n_pro_win2022": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "gen6n_pro_win2022" } },
+        "gen6n_small_win2022": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "gen6n_small_win2022" } },
+        "gen6n_medium_win2022": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "gen6n_medium_win2022" } },
+        "gen6e_pro": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "gen6e_pro" } },
+        "gen6e_pro_win2022": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "gen6e_pro_win2022" } }
+      }
+    },
+    "com.amazonaws.gameliftstreams#StreamGroupStatus": {
+      "type": "enum",
+      "members": {
+        "ACTIVATING": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "ACTIVATING" } },
+        "UPDATING_LOCATIONS": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "UPDATING_LOCATIONS" } },
+        "ACTIVE": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "ACTIVE" } },
+        "ACTIVE_WITH_ERRORS": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "ACTIVE_WITH_ERRORS" } },
+        "ERROR": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "ERROR" } },
+        "DELETING": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "DELETING" } },
+        "EXPIRED": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "EXPIRED" } }
+      }
+    },
+    "com.amazonaws.gameliftstreams#StreamGroupStatusReason": {
+      "type": "enum",
+      "members": {
+        "internalError": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "internalError" } },
+        "noAvailableInstances": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "noAvailableInstances" } }
+      }
+    }
+  }
+}

@@ -85,6 +85,9 @@
 //!   ]*):([0-9]{12}):([^: ]*)$) — The application streaming in this session. This value is an
 //!   Amazon Resource Name (ARN) that uniquely identifies the application resource. Example
 //!   ARN: arn:aws:gameliftstreams:us-west-2:111122223333:application/a-9ZY8X7Wv6.
+//! * `ApplicationStartedAt` (Timestamp) — A timestamp that indicates when the application
+//!   launched for this stream session. Timestamps are expressed using in ISO8601 format,
+//!   such as: 2022-12-27T22:29:40+00:00 (UTC).
 //! * `Arn` (Arn, len 1..128, pattern ^arn:aws:gameliftstreams:([^: ]*):([0-9]{12}):([^: ]*)$)
 //!   — The Amazon Resource Name (ARN) that's assigned to a stream session resource. When
 //!   combined with the stream group resource ID, this value uniquely identifies the stream
@@ -155,6 +158,13 @@
 //! * `StreamGroupId` (Id, len 1..32, pattern ^[a-zA-Z0-9-]+$) — The unique identifier for the
 //!   Amazon GameLift Streams stream group that is hosting the stream session. Format example:
 //!   sg-1AB2C3De4.
+//! * `StreamingEndedAt` (Timestamp) — A timestamp that indicates when streaming ended for
+//!   this stream session. Timestamps are expressed using in ISO8601 format, such as:
+//!   2022-12-27T22:29:40+00:00 (UTC).
+//! * `StreamingStartedAt` (Timestamp) — A timestamp that indicates when streaming started
+//!   for this stream session, which is when a client connected to the stream session.
+//!   Timestamps are expressed using in ISO8601 format, such as: 2022-12-27T22:29:40+00:00
+//!   (UTC).
 //! * `UserId` (UserId, len 0..1024, pattern ^[-_a-zA-Z0-9/=+]*$) — An opaque, unique
 //!   identifier for an end-user, defined by the developer.
 //! * `WebSdkProtocolUrl` (WebSdkProtocolUrl) — The URL of an S3 bucket that stores Amazon
@@ -332,6 +342,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             export_files_metadata: None,
             role_arn: session.role_arn.clone(),
             display_configuration: session.display_configuration.clone(),
+            application_started_at: crate::state::optional_timestamp(
+                session.application_started_at,
+            ),
+            streaming_started_at: crate::state::optional_timestamp(session.streaming_started_at),
+            streaming_ended_at: crate::state::optional_timestamp(session.streaming_ended_at),
         })
     }
 }

@@ -92,7 +92,8 @@
 //! ## Output
 //!
 //! * `ActiveCapacity`, `DesiredCapacity` and `IdleCapacity` (CapacityValue, min 0) —
-//!   three members ADDED to this service's model: the group's own capacity summary, as
+//!   three members this crate declares itself, from the overlay model
+//!   `smithy-model/local-additions.json`: the group's own capacity summary, as
 //!   `GetStreamGroup` reports it (see the module docs of
 //!   [`crate::ops::get_stream_group`]).
 //! * `Arn` (Identifier, len 1..128, pattern ^(^[a-zA-Z0-9-]+$)|(^arn:aws:gameliftstreams:([^:
