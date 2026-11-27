@@ -2275,3 +2275,197 @@ async fn the_framing_refusal_precedes_the_answer_the_named_operation_would_give(
     );
 }
 
+// ---------------------------------------------------------------------------
+// WHICH framings this endpoint serves at all.
+//
+// RULE: an endpoint serves a request in the framing the request names among the
+// wire protocols its MODEL declares, and in no other
+// (`smithy_query(query="service_info")` -> protocols `["awsJson1_1",
+// "rpcv2Cbor"]`): a request naming one of them is read, dispatched and answered
+// in that one, and a request naming a protocol the model does not declare — or no
+// protocol at all — names no framing it could be read in, so the front door
+// refuses it with the protocol-neutral `404` that carries no `content-type`,
+// ahead of naming an operation, and no operation of this endpoint runs for it.
+//
+// The rows below differ along what that rule generalises over: which marker the
+// request carries (that framing's dispatch header, its media type, its path, a
+// marker of another protocol family, a protocol header naming a framing this
+// endpoint does not serve, no marker at all), which operation it names, and
+// whether that operation would READ or WRITE the store.
+// ---------------------------------------------------------------------------
+
+/// One row of the table below: the case, the uri asked for, the headers beyond
+/// the credential scope, the body bytes, and whether the framing the request
+/// names is one this endpoint serves.
+type DeclaredFramingCase = (
+    &'static str,
+    String,
+    Vec<(&'static str, String)>,
+    Vec<u8>,
+    bool,
+);
+
+#[tokio::test]
+async fn only_the_framings_this_endpoints_model_declares_are_served() {
+    let router = emulator();
+    let alpha = "arn:aws:lex:us-east-1:123456789012:bot:alpha";
+    tag(&router, &[alpha], &[("Env", "prod")]).await;
+
+    // The ARN the refused WRITE rows ask to tag. It must still be untagged
+    // afterwards: a request naming no framing this endpoint serves runs no
+    // operation.
+    let never_written = "arn:aws:lex:us-east-1:123456789012:bot:never-written";
+    let filter = serde_json::json!({ "TagFilters": [{ "Key": "Env", "Values": ["prod"] }] });
+    let write = serde_json::json!({
+        "ResourceARNList": [never_written],
+        "Tags": { "Env": "prod" }
+    });
+    let json_media_type = "application/x-amz-json-1.1";
+
+    let rows: Vec<DeclaredFramingCase> = vec![
+        // The `awsJson1_1` framing: `POST /`, the operation in `X-Amz-Target`,
+        // a JSON body.
+        (
+            "the awsJson framing's dispatch header and media type",
+            "/".to_string(),
+            vec![
+                ("content-type", json_media_type.to_string()),
+                ("x-amz-target", format!("{SERVICE_LABEL}.GetResources")),
+            ],
+            filter.to_string().into_bytes(),
+            true,
+        ),
+        // The same framing naming a WRITE, so a served row covers the mutating
+        // half of the loop too. The write is the tag the store already holds, so
+        // what it leaves behind is what the read at the end asserts.
+        (
+            "the awsJson framing naming a write",
+            "/".to_string(),
+            vec![
+                ("content-type", json_media_type.to_string()),
+                ("x-amz-target", format!("{SERVICE_LABEL}.TagResources")),
+            ],
+            serde_json::json!({ "ResourceARNList": [alpha], "Tags": { "Env": "prod" } })
+                .to_string()
+                .into_bytes(),
+            true,
+        ),
+        // The RPC v2 CBOR framing, named by its own header and its path.
+        (
+            "the CBOR framing's header, media type and path",
+            cbor_path("GetResources"),
+            cbor_framing_headers(),
+            cbor_bytes(&filter, Lengths::Declared),
+            true,
+        ),
+        // The same framing named by its PATH alone, which is what routes it.
+        (
+            "the CBOR framing's path alone",
+            cbor_path("GetTagKeys"),
+            vec![("content-type", CBOR_MEDIA_TYPE.to_string())],
+            cbor_bytes(&serde_json::json!({}), Lengths::Indefinite),
+            true,
+        ),
+        // A request carrying NO protocol marker: `POST /` with a plain JSON media
+        // type and no dispatch header names neither framing.
+        (
+            "no marker at all, with a plain JSON body",
+            "/".to_string(),
+            vec![("content-type", "application/json".to_string())],
+            filter.to_string().into_bytes(),
+            false,
+        ),
+        // The marker of another protocol FAMILY — the form media type the query
+        // protocols carry — which this model does not declare.
+        (
+            "the form media type of the query protocols",
+            "/".to_string(),
+            vec![(
+                "content-type",
+                "application/x-www-form-urlencoded; charset=utf-8".to_string(),
+            )],
+            b"Action=GetResources&Version=2017-01-26".to_vec(),
+            false,
+        ),
+        // A `smithy-protocol` header naming an RPC framing this endpoint does not
+        // serve: the header is that family's marker, and this value is not the
+        // CBOR one.
+        (
+            "a protocol header naming a framing this endpoint does not serve",
+            "/".to_string(),
+            vec![
+                (SMITHY_PROTOCOL.0, "rpc-v2-json".to_string()),
+                ("content-type", "application/json".to_string()),
+            ],
+            filter.to_string().into_bytes(),
+            false,
+        ),
+        // The same, on a request that would WRITE: the refusal precedes the
+        // operation, so nothing is tagged.
+        (
+            "no marker at all, on a request that would write",
+            "/".to_string(),
+            vec![("content-type", "application/json".to_string())],
+            write.to_string().into_bytes(),
+            false,
+        ),
+    ];
+
+    for (case, uri, headers, body, served) in rows {
+        let answer = asked_with(&router, &uri, &headers, body).await;
+        if served {
+            assert_eq!(
+                answer.status, 200,
+                "case {case:?}: a framing this model declares must be served, got {} with {:?}",
+                answer.status, answer.text
+            );
+            assert!(
+                !answer.content_type.is_empty(),
+                "case {case:?}: a served answer carries the framing's media type, got {:?}",
+                answer.text
+            );
+        } else {
+            assert_eq!(
+                answer.status, 404,
+                "case {case:?}: a framing this model does not declare must not be served, got \
+                 {} with {:?}",
+                answer.status, answer.text
+            );
+            assert_eq!(
+                answer.content_type, "",
+                "case {case:?}: the refusal of a request naming no declared framing is \
+                 protocol-neutral, so it carries no content-type, got {:?}",
+                answer.content_type
+            );
+            assert_eq!(
+                answer.text,
+                smithy_server_runtime::UNRECOGNISED_PROTOCOL_BODY,
+                "case {case:?}: expected the front door's protocol-neutral refusal body, got \
+                 {:?}",
+                answer.text
+            );
+        }
+    }
+
+    // Nothing those refusals named ran: the store still holds exactly what the
+    // served calls left in it — the one resource tagged above, and no trace of
+    // the ARN the refused write asked for.
+    let (status, read) = call(&router, "GetResources", serde_json::json!({})).await;
+    assert_eq!(
+        status, 200,
+        "case the read afterwards: expected HTTP 200, got {status} with {read}"
+    );
+    assert_eq!(
+        page_arns(&read),
+        vec![alpha.to_string()],
+        "case the read afterwards: the refused requests must have written nothing, got {read}"
+    );
+    assert_eq!(
+        page_tags(&read, alpha),
+        [("Env".to_string(), "prod".to_string())]
+            .into_iter()
+            .collect::<BTreeMap<String, String>>(),
+        "case the read afterwards: the tags of the one stored resource changed, got {read}"
+    );
+}
+

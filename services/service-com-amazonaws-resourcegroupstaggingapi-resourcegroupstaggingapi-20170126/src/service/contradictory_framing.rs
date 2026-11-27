@@ -2,10 +2,13 @@
 
 //! What this endpoint answers a request whose FRAMING CONTRADICTS ITSELF.
 //!
-//! A request of this endpoint names ONE framing ([`super::request_framing`]): the
-//! `awsJson1_1` one the model names, which posts every operation to `/` and names the
-//! operation in its `X-Amz-Target` header, or Smithy RPC v2 CBOR, which names the operation
-//! in its request PATH and declares itself with `smithy-protocol: rpc-v2-cbor`. The second
+//! A request of this endpoint names ONE of the two framings the model declares
+//! (`smithy_query(query="service_info",model_path="services/service-com-amazonaws-resourcegroupstaggingapi-resourcegroupstaggingapi-20170126/smithy-model/com-amazonaws-resourcegroupstaggingapi-resourcegroupstaggingapi-20170126.json")`
+//! -> protocols `["awsJson1_1", "rpcv2Cbor"]`; see [`super::request_framing`]): the
+//! `awsJson1_1` one, which posts every
+//! operation to `/` and names the operation in its `X-Amz-Target` header, or Smithy RPC v2
+//! CBOR, which names the operation in its request PATH and declares itself with
+//! `smithy-protocol: rpc-v2-cbor`. The second
 //! framing's specification PROHIBITS the first framing's dispatch headers — `X-Amz-Target`
 //! and `X-Amzn-Target` — precisely because the operation is already named by the path: a
 //! request carrying both names its operation twice, in two framings, and the two namings
@@ -21,8 +24,7 @@
 //! is read or written for such a request.
 //!
 //! The class belongs to the front door rather than to this service's modelled error
-//! vocabulary (`smithy_query(query="service_info",model_path="services/service-com-amazonaws-resourcegroupstaggingapi-resourcegroupstaggingapi-20170126/smithy-model/com-amazonaws-resourcegroupstaggingapi-resourcegroupstaggingapi-20170126.json")`
-//! -> protocols `["awsJson1_1"]`, common errors `InternalServiceException`,
+//! vocabulary (that same call's common errors `InternalServiceException`,
 //! `InvalidParameterException`, `ThrottledException`), so no model declares it and it is
 //! stated here rather than serialized through an error schema. It carries no message: the
 //! front door read no operation and no member, so it has nothing to word.
@@ -58,8 +60,9 @@ const JSON_CONTENT_TYPE: &str = "application/json";
 /// prohibits — the one question this module answers a request by.
 ///
 /// The framing is recognised by [`super::request_framing::names_rpc_v2_cbor`], the one rule
-/// the whole endpoint recognises a framing by, so this cannot refuse a request the rest of
-/// the endpoint would read as `awsJson`.
+/// the whole tree recognises a framing by and the one the generated entry selects this
+/// request's protocol with, so this cannot refuse a request the rest of the endpoint would
+/// read as `awsJson`, or miss one it would read as CBOR.
 pub fn frames_itself_contradictorily(req: &RtRequest) -> bool {
     super::request_framing::names_rpc_v2_cbor(req) && carries_a_prohibited_target_header(req)
 }
