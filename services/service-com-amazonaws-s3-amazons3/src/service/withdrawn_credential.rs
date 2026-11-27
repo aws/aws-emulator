@@ -44,37 +44,16 @@ pub const REFUSE_WITHDRAWN_CREDENTIAL: &str = "@refuse-withdrawn-credential";
 /// Whether `access_key_id` names a session of this engine whose PRINCIPAL is gone (see the
 /// module docs).
 ///
-/// Read-only in both stores: the session registry is read for the record the key names and
-/// the IAM store for the role that record names, and neither is written — a credential whose
-/// principal is gone is refused, not forgotten, because the session is still inside the
-/// validity window its mint promised and nothing but a clock may end that.
-///
-/// The two locks are taken one after the other and never at once, and the answer is `false`
-/// for every request that presents no session of this engine: an engine carrying no STS
-/// store, a key no session was minted under, and every credential whose principal stands.
+/// The question itself is the token service's own
+/// ([`sts_store::credential_principal_is_withdrawn`]), so every service that resolves a
+/// credential there refuses the same dead sessions; what is this service's own is the refusal
+/// below that answers one.
 #[must_use]
 pub fn presents_a_withdrawn_credential<Eng: Send + Sync + 'static>(
     engine: &Eng,
     access_key_id: &str,
 ) -> bool {
-    let Some(sts) = sts_store::service_state(engine) else {
-        return false;
-    };
-    // WHICH role the session was minted from, copied out so the registry's guard is given up
-    // before the IAM store's is taken.
-    let Some((role_arn, minted_from)) =
-        sts_store::session_minted_from_role(&sts.lock(), access_key_id)
-    else {
-        return false;
-    };
-    match sts_store::iam_state(engine) {
-        Some(iam) => sts_store::role_principal_is_withdrawn(
-            Some(&iam.lock()),
-            &role_arn,
-            minted_from.as_deref(),
-        ),
-        None => sts_store::role_principal_is_withdrawn(None, &role_arn, minted_from.as_deref()),
-    }
+    sts_store::credential_principal_is_withdrawn(engine, access_key_id)
 }
 
 /// The operation that answers the refusal, holding the codec it renders the envelope with.

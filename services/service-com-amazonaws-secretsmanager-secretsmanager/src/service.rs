@@ -46,7 +46,10 @@
 //! `Status` is `Active`, so a request signed with one whose status the account has moved
 //! off `Active` resolves to NO principal: neither a secret's resource policy nor the
 //! caller's identity policies are consulted, because there is no caller to consult them
-//! for. That is an AUTHENTICATION outcome, so it is refused BEFORE any operation runs and
+//! for. A TEMPORARY credential is in the same position once the principal it speaks for is
+//! gone — a role session whose role the account no longer holds, or holds under another id
+//! than the mint read (`sts_store::credential_principal_is_withdrawn`). That is an
+//! AUTHENTICATION outcome, so it is refused BEFORE any operation runs and
 //! with this service's own unknown-credential code ([`UNUSABLE_CREDENTIAL_CODE`]) rather
 //! than with an authorization denial or any modelled resource error.
 //!
@@ -55,7 +58,8 @@
 //! states it with and hands it the account's own answer for the presented key, read through
 //! the identity service's OWN accessor over the records its `CreateAccessKey` /
 //! `UpdateAccessKey` wrote — the same store this service's authorization reads its
-//! principal's documents from ([`crate::state::authorization`]).
+//! principal's documents from ([`crate::state::authorization`]) — and through the token
+//! service's own registry of the sessions it minted.
 //!
 //! A key the account DELETED is not a record with a status at all: it resolves to no
 //! credential, which the emulator's authentication layer decides before any operation runs
@@ -91,6 +95,7 @@ use smithy_server_runtime::{
 use std::sync::Arc;
 
 use ::service_com_amazonaws_iam_awsidentitymanagementv20100508::state as iam_store;
+use ::service_com_amazonaws_sts_awssecuritytokenservicev20110615::state as sts_store;
 use ::service_common::authentication_refusal::{
     AuthenticationRefusalDefinition, StatedAuthenticationRefusal,
 };
@@ -330,8 +335,8 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
         // A credential the account has withdrawn is refused HERE, before the operation it
         // named runs (see the module docs): the modelled walk deserializes, validates and
         // dispatches before any handler could answer, so this pre-dispatch seam is the only
-        // place an authentication outcome is reachable from. A READ — one lock taken to look
-        // one key up — so a refused request changes nothing a later caller sees, and the
+        // place an authentication outcome is reachable from. A READ — the records are only
+        // looked up — so a refused request changes nothing a later caller sees, and the
         // request's auth schemes are unaffected: the router reads them off the MODELLED
         // operation the routing key names.
         if let Some(refused) = self
@@ -339,6 +344,7 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
             .refusal_for(req, self.entry.protocol(), |access_key_id| {
                 iam_store::service_state(&*self.engine)
                     .is_none_or(|iam| iam.lock().access_key_is_usable(access_key_id))
+                    && !sts_store::credential_principal_is_withdrawn(&*self.engine, access_key_id)
             })
         {
             return Some(refused);

@@ -1477,6 +1477,46 @@ pub fn role_principal_is_withdrawn(
     }
 }
 
+/// Whether the access key id `access_key_id` names a session of this engine whose PRINCIPAL is
+/// gone, so the credential speaks for nobody at all.
+///
+/// The question every service that resolves a credential asks before it reads any policy, in
+/// ONE place: the session registry is read for the record the key names, and the IAM store for
+/// the role that record names, so the same dead sessions are refused whichever service the
+/// credential was presented to. What a service then ANSWERS such a request with is its own
+/// published refusal for an access key id that resolves to nothing
+/// ([`role_principal_is_withdrawn`] states the rule itself).
+///
+/// Read-only in both stores: a credential whose principal is gone is refused, not forgotten,
+/// because the session is still inside the validity window its mint promised and nothing but a
+/// clock may end that. The two guards are taken one after the other and never at once — which
+/// is what [`session_minted_from_role`] copying the two facts out is for.
+///
+/// `false` for every request that presents no session of this engine: an engine carrying no
+/// session registry, a key no session was minted under, a session that is no role's, and every
+/// credential whose principal stands.
+#[must_use]
+pub fn credential_principal_is_withdrawn<Eng: Send + Sync + 'static>(
+    engine: &Eng,
+    access_key_id: &str,
+) -> bool {
+    let Some(sessions) = service_state(engine) else {
+        return false;
+    };
+    // WHICH role the session was minted from, copied out so the registry's guard is given up
+    // before the IAM store's is taken.
+    let Some((role_arn, minted_from)) = session_minted_from_role(&sessions.lock(), access_key_id)
+    else {
+        return false;
+    };
+    match iam_state(engine) {
+        Some(iam) => {
+            role_principal_is_withdrawn(Some(&iam.lock()), &role_arn, minted_from.as_deref())
+        }
+        None => role_principal_is_withdrawn(None, &role_arn, minted_from.as_deref()),
+    }
+}
+
 /// The caller a request's access key id names, with everything its credential carries.
 ///
 /// `long_term` is the identity the key speaks for when it names no session this registry
