@@ -13,6 +13,34 @@ Issue-Commit: cfbb9a1e24eec7d8c98af7d6e9e62a0e8013f018
 
 > _Split out of `issues/things-that-now-work/20261025T062553Z-codebuild-3-of-the-6-divergence-causes-remain-open.md`, whose other two causes are fixed (`StartBuildBatch`'s batch now settles into a terminal status the suite can act on, and CloudFormation now provisions `AWS::CodeBuild::Fleet` through CodeBuild's own `CreateFleet`). This report carries the five replay keys that do NOT pass, re-filed here so they are not recorded as working. Everything below is what the two earlier fixes established about them; a later fixer starts from here rather than from scratch._
 
+## RESOLVED
+
+The capability the report below calls blocked EXISTS in the tree, so everything it states
+about the emulator (the `FAULT` settle, the "no exit code and no output", the
+`mark_wont_fix(platform_blocker)` it recommends) is HISTORY and no longer describes this
+workspace. A command submitted to a sandbox whose session is live is now run in that
+session and the execution reports what the run answered:
+
+* `services/common/src/posix_shell_session.rs` — the workspace's one bounded, CONTAINED
+  in-process shell session. It parses the command with the shell project's grammar half
+  only and performs a fixed catalog of session-local utilities over an in-memory tree: it
+  starts no process, resolves no command name against the host's `PATH`, opens no socket
+  and reads no host file or host environment, failing closed with the status a shell
+  answers for a command it cannot run for every command and form it does not perform.
+* `services/service-com-amazonaws-codebuild-codebuild-20161006/src/state/sandbox_shell.rs`
+  — ONE such session per sandbox, holding that sandbox's environment variables.
+* `ComAmazonawsCodebuildCodebuild20161006State::run_due_command_executions` (`src/state.rs`)
+  — runs the commands of a sandbox in submit order when the clock brings their turn round,
+  and `StoredCommandExecution::record_run` writes the status, `exitCode`,
+  `standardOutputContent` and `standardErrContent` the run answered. A command whose
+  session had already ended still never ran, and ends where that session did.
+
+All five `Issue-Key` replay units pass. The rule is pinned by
+`tests/all/sandbox_command_run_reporting.rs` (what every reader of the execution reports,
+the run owed once, and the run reaching no host program or host file), beside
+`tests/all/sandbox_command_runs.rs` (what each command form answers) and
+`tests/all/command_execution_lifecycle.rs` (the submission itself).
+
 ## Operation
 StartCommandExecution
 
