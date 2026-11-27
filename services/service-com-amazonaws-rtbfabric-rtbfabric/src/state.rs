@@ -1020,13 +1020,27 @@ fn digest(parts: &[&[u8]]) -> [u8; 32] {
 }
 
 /// A tag map rendered canonically (sorted by key), so the same tags in a
-/// different iteration order fingerprint identically.
+/// different iteration order fingerprint identically while two DIFFERENT maps
+/// never render alike.
+///
+/// Each key and each value is written with its own byte length in front of it,
+/// which is what [`digest`] does to the parts it hashes and for the same reason:
+/// a modelled tag value carries no pattern at all and a tag key admits `=`, so
+/// any separator this rendering could choose is a character the tags themselves
+/// may contain. With the lengths in the rendering, where one pair ends and the
+/// next begins is read off it rather than guessed, so `{"a": "b,c=d"}` and
+/// `{"a": "b", "c": "d"}` are the two distinct maps they are.
+///
+/// A map stating no pairs renders as the empty string, the same as no tags at
+/// all: a create holds the tags it was given and neither form gives it any.
 ///
 /// A fingerprint is only ever compared with one computed by the same build in
-/// the same process, so the rest of a request can be rendered with `Debug`; a
-/// `HashMap` cannot, because its iteration order varies between two calls that
-/// carry identical tags.
+/// the same process, so the rest of a request can be rendered with `Debug`,
+/// which quotes and escapes every string it writes; a `HashMap` cannot, because
+/// its iteration order varies between two calls that carry identical tags.
 pub fn canonical_tags(tags: Option<&HashMap<String, String>>) -> String {
+    use std::fmt::Write as _;
+
     let mut pairs: Vec<(&str, &str)> = tags
         .map(|tags| {
             tags.iter()
@@ -1035,11 +1049,11 @@ pub fn canonical_tags(tags: Option<&HashMap<String, String>>) -> String {
         })
         .unwrap_or_default();
     pairs.sort_unstable();
-    pairs
-        .iter()
-        .map(|(key, value)| format!("{key}={value}"))
-        .collect::<Vec<_>>()
-        .join(",")
+    let mut rendered = String::new();
+    for (key, value) in &pairs {
+        let _ = write!(rendered, "{}:{key}{}:{value}", key.len(), value.len());
+    }
+    rendered
 }
 
 /// One DNS label, from arbitrary text: lowercase, only `[a-z0-9-]`, and never
