@@ -710,6 +710,10 @@ pub mod posix_shell_arithmetic;
 /// ONE input (a digest, a count, a selection) — so what a pipeline of them comes to follows
 /// from the bytes that went in.
 pub mod posix_shell_text_filters;
+/// The CLOCK that session reads, and the one program it reads it with (`date`) — so a script
+/// that stamps the window its work happened in reads the same instant, in the same form,
+/// whichever session performs it.
+pub mod posix_shell_clock;
 /// The INSTANCE METADATA SERVICE an emulated node publishes to the programs inside it, and the
 /// HTTP client those programs read it with — one statement of that wire for every service that
 /// holds such a node.

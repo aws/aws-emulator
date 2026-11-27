@@ -335,7 +335,10 @@ const EXEC_COMMAND: &str = "exec";
 /// was given or about the container's own filesystem ([`ContainerShell::run_test`]). `pwd`,
 /// `id`, `ulimit` and `df` REPORT the process this session is — where it runs, who it runs
 /// as, the limits it runs under and the space on the filesystem it writes on — off the
-/// settings its launch resolved ([`PROCESS_REPORT_COMMANDS`]). `break` and `continue` leave the
+/// settings its launch resolved ([`PROCESS_REPORT_COMMANDS`]). `date` writes the instant it ran
+/// at, in the form the invocation asked for, off this emulator's own clock
+/// ([`CLOCK_COMMAND`]), which is how a program whose contract is a measured span states the
+/// window its work happened in. `break` and `continue` leave the
 /// LOOP they stand in ([`BREAK_COMMAND`], [`CONTINUE_COMMAND`]), which is how a program written
 /// as a retry loop ends it.
 /// The commands that work over that filesystem are [`FILE_COMMANDS`]; a command outside either
@@ -345,9 +348,20 @@ const EXEC_COMMAND: &str = "exec";
 pub const BUILT_IN_COMMANDS: &[&str] = &[
     "echo", PRINTF_COMMAND, "true", "false", ":", "exit", "export", "unset", "trap",
     SLEEP_COMMAND,
-    "wait", "test", "[", "set", "exec", "hostname", "pwd", "id", "ulimit", "df", BREAK_COMMAND,
+    "wait", "test", "[", "set", "exec", "hostname", "pwd", "id", "ulimit", "df", CLOCK_COMMAND,
+    BREAK_COMMAND,
     CONTINUE_COMMAND, "stty", "tput",
 ];
+
+/// The command of [`BUILT_IN_COMMANDS`] that reads the CLOCK: "write the date and time".
+///
+/// Its whole effect is inside this session — one line on standard output and a status — so it is
+/// performed in process, off the same clock every other instant of this emulator is read off. WHAT
+/// an invocation asks for and what it writes is this workspace's one reading of that program
+/// ([`::service_common::posix_shell_clock`]), shared with every other session that performs
+/// caller-supplied shell text, so a line a task definition wrote for it reads the same instant in
+/// the same form wherever it runs.
+const CLOCK_COMMAND: &str = ::service_common::posix_shell_clock::CLOCK_PROGRAM;
 
 /// The commands of [`BUILT_IN_COMMANDS`] that report the TERMINAL this session is attached to
 /// — the one an interactive session of an execute-command call is carried over, whose size the
@@ -2535,6 +2549,27 @@ impl ContainerShell {
                 // for and the utility answers success.
                 "wait" => EXIT_SUCCESS,
                 "test" | "[" => self.run_test(name, arguments),
+                // "date — write the date and time": the instant this command ran at, in the
+                // form the invocation asked for ([`CLOCK_COMMAND`]). A form that reading
+                // renders nothing of is a command that did not run ([`Self::declined`]) rather
+                // than an instant nothing stands behind.
+                CLOCK_COMMAND => {
+                    let written = ::service_common::posix_shell_clock::written(
+                        arguments,
+                        ::std::time::SystemTime::now(),
+                    );
+                    let Some(written) = written else {
+                        return self.declined();
+                    };
+                    if self
+                        .write_stdout(&format!("{written}\n"), redirections)
+                        .await
+                    {
+                        EXIT_SUCCESS
+                    } else {
+                        EXIT_FAILURE
+                    }
+                }
                 _ if PROCESS_REPORT_COMMANDS.contains(&name) => {
                     self.run_process_report(name, arguments, redirections).await
                 }
