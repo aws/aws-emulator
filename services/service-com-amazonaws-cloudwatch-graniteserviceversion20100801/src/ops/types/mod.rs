@@ -21,6 +21,7 @@ pub mod delete_alarms_types;
 pub mod delete_anomaly_detector_types;
 pub mod delete_dashboards_types;
 pub mod delete_insight_rules_types;
+pub mod delete_metric_data_query_definition_types;
 pub mod delete_metric_stream_types;
 pub mod delete_resource_metrics_configuration_types;
 pub mod describe_alarm_contributors_types;
@@ -38,6 +39,7 @@ pub mod get_alarm_mute_rule_types;
 pub mod get_dashboard_types;
 pub mod get_dataset_types;
 pub mod get_insight_rule_report_types;
+pub mod get_metric_data_query_definition_types;
 pub mod get_metric_data_types;
 pub mod get_metric_statistics_types;
 pub mod get_metric_stream_types;
@@ -47,6 +49,7 @@ pub mod get_resource_metrics_configuration_types;
 pub mod list_alarm_mute_rules_types;
 pub mod list_dashboards_types;
 pub mod list_managed_insight_rules_types;
+pub mod list_metric_data_query_definitions_types;
 pub mod list_metric_streams_types;
 pub mod list_metrics_types;
 pub mod list_tags_for_resource_types;
@@ -58,8 +61,17 @@ pub mod put_insight_rule_types;
 pub mod put_log_alarm_types;
 pub mod put_managed_insight_rules_types;
 pub mod put_metric_alarm_types;
+pub mod put_metric_data_query_definition_types;
 pub mod put_metric_data_types;
 pub mod put_metric_stream_types;
+/// The type the INSIGHT RULE REPORT read answers through, hand-written beside the rendered
+/// modules: AWS carries a series on it that this model does not declare, so the type cannot be
+/// derived from the model and must not live in a file a refresh rewrites.
+pub mod reported_insight_rule_report_types;
+/// The type every read of a METRIC ALARM reports it through, hand-written beside the rendered
+/// modules: AWS carries a member on it that this model does not declare, so the type cannot be
+/// derived from the model and must not live in a file a refresh rewrites.
+pub mod reported_metric_alarm_types;
 pub mod set_alarm_state_types;
 pub mod shared_types;
 pub mod start_metric_streams_types;
@@ -85,6 +97,8 @@ pub use delete_anomaly_detector_types::*;
 pub use delete_dashboards_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use delete_insight_rules_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use delete_metric_data_query_definition_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use delete_metric_stream_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
@@ -120,6 +134,8 @@ pub use get_dataset_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use get_insight_rule_report_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use get_metric_data_query_definition_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use get_metric_data_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use get_metric_statistics_types::*;
@@ -137,6 +153,8 @@ pub use list_alarm_mute_rules_types::*;
 pub use list_dashboards_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use list_managed_insight_rules_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use list_metric_data_query_definitions_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use list_metric_streams_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
@@ -160,9 +178,15 @@ pub use put_managed_insight_rules_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use put_metric_alarm_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use put_metric_data_query_definition_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use put_metric_data_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use put_metric_stream_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use reported_insight_rule_report_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use reported_metric_alarm_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use set_alarm_state_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]

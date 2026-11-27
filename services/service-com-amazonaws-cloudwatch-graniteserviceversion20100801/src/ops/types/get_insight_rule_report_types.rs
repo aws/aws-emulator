@@ -26,7 +26,6 @@ pub struct GetInsightRuleReportInput {
 #[smithy_macros::smithy(shape = "com.amazonaws.cloudwatch#GetInsightRuleReportOutput")]
 #[derive(Debug, Clone, Default)]
 pub struct GetInsightRuleReportOutput {
-    pub rule_attributes: Option<Vec<String>>,
     pub key_labels: Option<Vec<String>>,
     pub aggregation_statistic: Option<String>,
     pub aggregate_value: Option<f64>,

@@ -196,129 +196,6 @@ pub struct MetricAlarm {
     pub action_configuration: Option<ActionConfiguration>,
 }
 
-/// The `CreationId` member of a metric alarm, appended AFTER the member list the model
-/// declares (which occupies indices 0..=33).
-///
-/// RECORDED behaviour, not modelled: `MetricAlarm` as this model declares it carries no
-/// `CreationId` member
-/// (`smithy_query(query="shape",shape="MetricAlarm",model_path="services/service-com-amazonaws-cloudwatch-graniteserviceversion20100801/smithy-model/com-amazonaws-cloudwatch-graniteserviceversion20100801.json")`),
-/// while CloudWatch reports one on every read of an alarm. `#[smithy_macros::smithy(shape =
-/// …)]` derives a structure's schema and codecs from the model's member list and admits
-/// exactly that list, so a member the model omits cannot be declared through the derive at
-/// all: it is written by [`ReportedMetricAlarm`] instead. The model's own members keep the
-/// indices the derive gives them, so a later model refresh that declares `CreationId` only has
-/// to move the member onto [`MetricAlarm`] and this wrapper disappears.
-const M_CREATION_ID: ::aws_smithy_schema::Schema = ::aws_smithy_schema::Schema::new_member(
-    ::aws_smithy_schema::ShapeId::from_static(
-        "com.amazonaws.cloudwatch#MetricAlarm$CreationId",
-        "com.amazonaws.cloudwatch",
-        "CreationId",
-    ),
-    ::aws_smithy_schema::ShapeType::String,
-    "CreationId",
-    34,
-);
-
-/// One metric alarm as a READ of it reports it: the modelled [`MetricAlarm`] and the
-/// `CreationId` beside it ([`M_CREATION_ID`]).
-///
-/// Every operation that reports a metric alarm reports it through this one projection
-/// (`crate::state::StoredAlarm::reported`), so two readers of the same alarm cannot answer with
-/// different member sets.
-#[derive(Debug, Clone, Default)]
-pub struct ReportedMetricAlarm {
-    /// The alarm, as the model declares it.
-    pub alarm: MetricAlarm,
-    /// The `CreationId` of the write that created the alarm, or `None` for a projection that
-    /// reports no creation identity at all — the abbreviated relationship read, which reports
-    /// an alarm's name, ARN and state only.
-    pub creation_id: Option<String>,
-}
-
-impl ReportedMetricAlarm {
-    /// The shape id and member list of [`MetricAlarm`], with `CreationId` appended last.
-    ///
-    /// The shape IS `MetricAlarm`: this is the same structure the model declares, carrying one
-    /// member more, so it travels under the member that names it (`MetricAlarms`) exactly as
-    /// the modelled shape does.
-    pub const SCHEMA: ::aws_smithy_schema::Schema = ::aws_smithy_schema::Schema::new_struct(
-        ::aws_smithy_schema::ShapeId::from_static(
-            "com.amazonaws.cloudwatch#MetricAlarm",
-            "com.amazonaws.cloudwatch",
-            "MetricAlarm",
-        ),
-        ::aws_smithy_schema::ShapeType::Structure,
-        &[
-            &MetricAlarm::M_ALARM_NAME,
-            &MetricAlarm::M_ALARM_ARN,
-            &MetricAlarm::M_ALARM_DESCRIPTION,
-            &MetricAlarm::M_ALARM_CONFIGURATION_UPDATED_TIMESTAMP,
-            &MetricAlarm::M_ACTIONS_ENABLED,
-            &MetricAlarm::M_OK_ACTIONS,
-            &MetricAlarm::M_ALARM_ACTIONS,
-            &MetricAlarm::M_INSUFFICIENT_DATA_ACTIONS,
-            &MetricAlarm::M_STATE_VALUE,
-            &MetricAlarm::M_STATE_REASON,
-            &MetricAlarm::M_STATE_REASON_DATA,
-            &MetricAlarm::M_STATE_UPDATED_TIMESTAMP,
-            &MetricAlarm::M_METRIC_NAME,
-            &MetricAlarm::M_NAMESPACE,
-            &MetricAlarm::M_STATISTIC,
-            &MetricAlarm::M_EXTENDED_STATISTIC,
-            &MetricAlarm::M_DIMENSIONS,
-            &MetricAlarm::M_PERIOD,
-            &MetricAlarm::M_UNIT,
-            &MetricAlarm::M_EVALUATION_PERIODS,
-            &MetricAlarm::M_DATAPOINTS_TO_ALARM,
-            &MetricAlarm::M_THRESHOLD,
-            &MetricAlarm::M_COMPARISON_OPERATOR,
-            &MetricAlarm::M_TREAT_MISSING_DATA,
-            &MetricAlarm::M_EVALUATE_LOW_SAMPLE_COUNT_PERCENTILE,
-            &MetricAlarm::M_METRICS,
-            &MetricAlarm::M_THRESHOLD_METRIC_ID,
-            &MetricAlarm::M_EVALUATION_STATE,
-            &MetricAlarm::M_STATE_TRANSITIONED_TIMESTAMP,
-            &MetricAlarm::M_EVALUATION_WINDOW,
-            &MetricAlarm::M_WARM_UP_CONFIGURATION,
-            &MetricAlarm::M_EVALUATION_CRITERIA,
-            &MetricAlarm::M_EVALUATION_INTERVAL,
-            &MetricAlarm::M_ACTION_CONFIGURATION,
-            &M_CREATION_ID,
-        ],
-    );
-}
-
-impl ::aws_smithy_schema::serde::SerializableStruct for ReportedMetricAlarm {
-    fn serialize_members(
-        &self,
-        serializer: &mut dyn ::aws_smithy_schema::serde::ShapeSerializer,
-    ) -> ::std::result::Result<(), ::aws_smithy_schema::serde::SerdeError> {
-        ::aws_smithy_schema::serde::SerializableStruct::serialize_members(&self.alarm, serializer)?;
-        if let Some(creation_id) = self.creation_id.as_deref() {
-            serializer.write_string(&M_CREATION_ID, creation_id)?;
-        }
-        Ok(())
-    }
-}
-
-impl ::aws_smithy_schema_server::DeserializableStruct for ReportedMetricAlarm {
-    fn deserialize(
-        deserializer: &mut dyn ::aws_smithy_schema::serde::ShapeDeserializer,
-    ) -> ::std::result::Result<Self, ::aws_smithy_schema::serde::SerdeError> {
-        // An alarm is only ever WRITTEN by this service — `MetricAlarm` is an output shape of
-        // every operation that carries it — so this reads back the modelled members and
-        // nothing else. It exists because the list codec the derive emits for a
-        // `MetricAlarms` member names the trait for whatever type the list holds.
-        <MetricAlarm as ::aws_smithy_schema_server::DeserializableStruct>::deserialize(
-            deserializer,
-        )
-        .map(|alarm| Self {
-            alarm,
-            creation_id: None,
-        })
-    }
-}
-
 #[smithy_macros::smithy(union_for = "com.amazonaws.cloudwatch#EvaluationWindow")]
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone)]
@@ -527,6 +404,10 @@ pub const METRIC_STREAM_OUTPUT_FORMAT_VALUES: &[&str] = &["json", "opentelemetry
 
 /// The values `OTelEnrichmentStatus` accepts on the wire.
 pub const O_TEL_ENRICHMENT_STATUS_VALUES: &[&str] = &["Running", "Stopped"];
+
+
+/// The values `QueryType` accepts on the wire.
+pub const QUERY_TYPE_VALUES: &[&str] = &["METRIC_MATH", "PROMQL", "SQL"];
 
 
 /// The values `RecentlyActive` accepts on the wire.

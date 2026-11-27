@@ -193,6 +193,13 @@ pub mod alarm_history_documents;
 
 pub use alarm_history_documents::*;
 
+/// The metric data query definitions this store holds — the saved queries `PutMetricDataQueryDefinition`
+/// writes and the reader, the listing and the delete act on. Re-exported below, so a handler
+/// reaches them as `crate::state::…` like every other part of this store.
+pub mod metric_data_query_definitions;
+
+pub use metric_data_query_definitions::*;
+
 /// The dashboard document this store holds for a dashboard — the submitted body completed with
 /// the top-level members the service defaults — and how many bytes it holds, which is the size a
 /// dashboard is listed with. Re-exported below, so a handler reaches it as `crate::state::…`
@@ -2356,6 +2363,12 @@ pub struct ComAmazonawsCloudwatchGraniteserviceversion20100801State {
     /// round-trips through `GetResourceMetricsConfiguration` without a field-by-field copy
     /// ([`resource_metrics_configurations`]).
     pub resource_metrics_configurations: HashMap<String, ResourceMetricsConfiguration>,
+    /// The metric data query definitions this store holds, by the Region they live in and the id
+    /// the write that created each one minted ([`MetricDataQueryDefinitionKey`]), written by
+    /// `PutMetricDataQueryDefinition` and read back by `GetMetricDataQueryDefinition` and
+    /// `ListMetricDataQueryDefinitions`.
+    pub metric_data_query_definitions:
+        HashMap<MetricDataQueryDefinitionKey, StoredMetricDataQueryDefinition>,
 }
 
 /// This service's store in the shared engine: call it with a handler's `&*self.engine`.
