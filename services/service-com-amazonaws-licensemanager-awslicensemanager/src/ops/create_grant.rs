@@ -1,15 +1,10 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op CreateGrant
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `CreateGrant`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
-//!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`CreateGrant::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! Mints one grant over a stored license and PERSISTS it in [`crate::state`], keyed
+//! by the ARN it returns, so a later `GetGrant` reports exactly what this call
+//! stored, and a repeat of the same `ClientToken` reports the grant the first call
+//! minted instead of minting a second one.
 //!
 //! ## Shape of an operation
 //!
@@ -175,18 +170,143 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `CreateGrant` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(CreateGrantErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("CreateGrant"))
+        let state = crate::state::service_state(&*self.engine).ok_or_else(store_unavailable)?;
+
+        // The modelled constraints — `Principals` holding exactly one entry, the ARN
+        // patterns, the size of `AllowedOperations` — are refused before this
+        // handler runs. What is checked here is this service's own: the length of
+        // the strings it stores, the Region shape of the value that lands in the
+        // minted ARN, and the enum catalogs.
+        if let Some(why) = crate::state::grant_input_rejection(&crate::state::GrantInput {
+            grant_name: Some(&input.grant_name),
+            home_region: Some(&input.home_region),
+            principals: &input.principals,
+            allowed_operations: &input.allowed_operations,
+            grant_type: input.grant_type.as_deref(),
+            options: input.options.as_ref(),
+            tags: input.tags.as_deref(),
+        }) {
+            return Err(invalid_parameter(why));
+        }
+
+        // The grant principal is the single entry of `Principals`, which the model
+        // bounds at exactly one, so the centralized walk has already refused a
+        // request carrying none.
+        let grantee_principal_arn = input.principals.first().cloned().ok_or_else(|| {
+            invalid_parameter(crate::state::invalid_parameter_message("Principals"))
+        })?;
+
+        // `Options.DesiredStatus` creates the grant already active, and the model
+        // documents it as admitted only for an organization or an
+        // organizational-unit principal.
+        let status = crate::state::created_grant_status(input.options.as_ref());
+        if status == crate::state::GRANT_STATUS_ACTIVE
+            && !crate::state::is_organization_principal(&grantee_principal_arn)
+        {
+            return Err(invalid_parameter(
+                crate::state::ORGANIZATION_PRINCIPAL_REQUIRED_MESSAGE,
+            ));
+        }
+
+        let mut store = state.lock();
+
+        // `ClientToken` is the caller's idempotency key, so the repeat of an
+        // accepted create reports the grant that create minted and mints nothing:
+        // one token, one grant.
+        if let Some(minted) = store.grant_for_client_token(&input.client_token) {
+            return Ok(CreateGrantOutput {
+                grant_arn: Some(minted.arn.clone()),
+                status: Some(minted.status.clone()),
+                version: Some(minted.version.clone()),
+            });
+        }
+
+        // A grant shares the use of a license's entitlements, so there is nothing to
+        // share unless this store HOLDS that license: a stored grant can never name
+        // a license a read cannot resolve.
+        if store.license(&input.license_arn).is_none() {
+            return Err(invalid_parameter(format!(
+                "no license exists with the ARN '{}'",
+                input.license_arn
+            )));
+        }
+
+        let id = store.fresh_grant_id();
+        // A grant belongs to the Region the request named as its home, so that is
+        // the Region segment of its ARN; `HomeRegion` was checked to be a Region
+        // token above, so no caller text beyond one can reach the ARN.
+        let arn = crate::state::grant_arn(&input.home_region, &id);
+        let grant = crate::state::StoredGrant {
+            id,
+            arn: arn.clone(),
+            grant_name: input.grant_name,
+            // A grant created on a license has that license as its parent; a
+            // version of a grant or a distributed grant names another.
+            parent_arn: input.license_arn.clone(),
+            license_arn: input.license_arn,
+            grantee_principal_arn,
+            home_region: input.home_region,
+            status: status.to_string(),
+            // Nothing has moved this grant's status yet, so there is no reason to
+            // report for it.
+            status_reason: None,
+            version: crate::state::FIRST_GRANT_VERSION.to_string(),
+            granted_operations: input.allowed_operations,
+            options: input.options,
+            grant_type: input.grant_type,
+            client_token: input.client_token,
+        };
+        let version = grant.version.clone();
+        // The store is finite, and `insert_grant` is what enforces that: a create
+        // that would take it past its cap stores nothing. This operation models a
+        // resource-limit error, so that is the channel the refusal goes out on.
+        if !store.insert_grant(grant) {
+            return Err(store_full());
+        }
+
+        // Tags supplied at create time go into the same ARN-keyed map the tagging
+        // operations use, so `ListTagsForResource` reports them. The list was
+        // already bounded above and the grant is now stored, so the only way this
+        // can be refused is a bound; the half-made grant goes with it.
+        if let Some(tags) = input.tags {
+            if let Err(why) = store.merge_tags(&arn, &tags) {
+                store.remove_grant(&arn);
+                return Err(invalid_parameter(why));
+            }
+        }
+
+        crate::state::record_mutation(Self::NAME, &arn, ctx.parts());
+        Ok(CreateGrantOutput {
+            grant_arn: Some(arn),
+            status: Some(status.to_string()),
+            version: Some(version),
+        })
     }
+}
+
+/// The modelled server error for a store this handler cannot reach.
+fn store_unavailable() -> CreateGrantError {
+    CreateGrantErrorModeled::ServerInternalException(ServerInternalException {
+        message: Some("the license store is unavailable".to_string()),
+    })
+    .into()
+}
+
+/// The modelled 400 this service answers for a store it will not grow any further.
+fn store_full() -> CreateGrantError {
+    CreateGrantErrorModeled::ResourceLimitExceededException(ResourceLimitExceededException {
+        message: Some(format!(
+            "this emulator already holds the maximum of {} grants",
+            crate::state::MAX_GRANTS
+        )),
+    })
+    .into()
+}
+
+/// The modelled 400 this service answers for a parameter value it will not accept.
+fn invalid_parameter(message: impl Into<String>) -> CreateGrantError {
+    CreateGrantErrorModeled::InvalidParameterValueException(InvalidParameterValueException {
+        message: Some(message.into()),
+    })
+    .into()
 }

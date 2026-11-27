@@ -1,15 +1,19 @@
 // SPDX-License-Identifier: CC0-1.0
 
-//! The granted-license slice over the wire: `CreateLicense` and `GetLicense`, with
-//! the tagging operations that share this service's one ARN-keyed tag map, driven as
-//! awsJson1_1 requests (`POST /`, `X-Amz-Target: AWSLicenseManager.<Operation>`)
-//! through the same `MultiServiceRouter` the production emulator mounts.
+//! The granted-license slice over the wire: `CreateLicense` and `GetLicense`, the
+//! `CreateGrant` and `GetGrant` that share the use of a stored license, and the
+//! tagging operations that reach every one of those resources through this service's
+//! one ARN-keyed tag map, driven as awsJson1_1 requests (`POST /`,
+//! `X-Amz-Target: AWSLicenseManager.<Operation>`) through the same
+//! `MultiServiceRouter` the production emulator mounts.
 //!
 //! The rules under test:
 //!
 //! * `CreateLicense` persists ONE license record and `GetLicense` answers from it,
 //!   so every member of the license body a create carried is what a later read
-//!   reports — whatever its value, size, unit or form.
+//!   reports — whatever its value, size, unit or form. `CreateGrant` and `GetGrant`
+//!   are the same rule over the grant record, as the second half of this file sets
+//!   out.
 //! * the minted identity is a license ARN in the Region the request named as the
 //!   license's home, the license is `AVAILABLE` at once, and its version is the
 //!   first one.
@@ -1194,4 +1198,760 @@ async fn a_license_is_tagged_through_the_same_map_as_every_other_resource() {
     // Tagging does not touch the license itself.
     let stored = get_ok(&router, "tagged at create", &arn).await;
     assert_round_trip("tagged at create", &stored, &body, &arn);
+}
+
+// ---------------------------------------------------------------------------
+// The grant over a stored license: `CreateGrant` and `GetGrant`, which share the
+// store, the identity grammar and the tag map the licence operations above use.
+//
+// The rule is the same one: a create PERSISTS one record of the resource it mints,
+// keyed by the ARN it answers, and the matching read reports that record member for
+// member — so every member of the grant body a create carried is what a later read
+// answers, whatever its value, size or form; the identity minted is an ARN of the
+// Region the request named as the resource's home; `ClientToken` is the idempotency
+// key; and a body this service will not store is refused with a modelled 400 that
+// stores nothing.
+//
+// The rows differ along what the rule generalises over: the grant type (absent and
+// each value the modelled catalog admits), the options (absent, each
+// activation-override behaviour, the desired status), the number of allowed
+// operations (one, three, and every entry the catalog admits, which is the published
+// maximum), the form of the one principal (an account, an organization, an
+// organizational unit), the home Region, and whether the create carried tags.
+// ---------------------------------------------------------------------------
+
+/// Every value the modelled `GrantType` enum admits, in model order
+/// (`smithy_query(query="shape",shape="GrantType")`).
+const GRANT_TYPES: &[&str] = &["BuyerGrant", "DelegateGrant"];
+
+/// Every value the modelled `ActivationOverrideBehavior` enum admits
+/// (`smithy_query(query="shape",shape="ActivationOverrideBehavior")`).
+const ACTIVATION_OVERRIDE_BEHAVIORS: &[&str] =
+    &["DISTRIBUTED_GRANTS_ONLY", "ALL_GRANTS_PERMITTED_BY_ISSUER"];
+
+/// Every value the modelled `AllowedOperation` enum admits
+/// (`smithy_query(query="shape",shape="AllowedOperation")`). The modelled
+/// `AllowedOperationList` holds between one and eight entries, so the whole catalog
+/// is also the largest list a create can carry.
+const ALLOWED_OPERATIONS: &[&str] = &[
+    "CreateGrant",
+    "CheckoutLicense",
+    "CheckoutBorrowLicense",
+    "CheckInLicense",
+    "ExtendConsumptionLicense",
+    "ListPurchasedLicenses",
+    "CreateToken",
+    "ListReceivedLicenses",
+];
+
+/// The status a grant carries until its grantee accepts or rejects it: what a create
+/// that asks for no other answers. One of the modelled `GrantStatus` values.
+const PENDING_ACCEPT: &str = "PENDING_ACCEPT";
+
+/// The status of a grant that is usable at once: the only value
+/// `Options.DesiredStatus` admits
+/// (`smithy_query(query="doc",shape="Options",member="DesiredStatus")`).
+const ACTIVE: &str = "ACTIVE";
+
+/// An account principal: the form that is neither an organization nor an
+/// organizational unit.
+const ACCOUNT_PRINCIPAL: &str = "arn:aws:iam::000000000000:root";
+
+/// An organization principal, as AWS Organizations names one.
+const ORGANIZATION_PRINCIPAL: &str =
+    "arn:aws:organizations::000000000000:organization/o-exampleorgid";
+
+/// An organizational-unit principal, as AWS Organizations names one.
+const OU_PRINCIPAL: &str =
+    "arn:aws:organizations::000000000000:ou/o-exampleorgid/ou-exampleroot-exampleou";
+
+/// Every member the modelled `Grant` read shape declares
+/// (`smithy_query(query="shape",shape="Grant")`).
+const GRANT_MEMBERS: &[&str] = &[
+    "GrantArn",
+    "GrantName",
+    "ParentArn",
+    "LicenseArn",
+    "GranteePrincipalArn",
+    "HomeRegion",
+    "GrantStatus",
+    "StatusReason",
+    "Version",
+    "GrantedOperations",
+    "Options",
+    "GrantType",
+];
+
+/// Whether `arn` is the ARN of a grant whose home Region is `region`:
+/// `arn:aws:license-manager:<region>:<account>:grant:g-<32 hex>`.
+fn is_grant_arn(arn: &str, region: &str) -> bool {
+    let prefix = format!("arn:aws:license-manager:{region}:{ACCOUNT_ID}:grant:");
+    arn.strip_prefix(&prefix)
+        .and_then(|id| id.strip_prefix("g-"))
+        .is_some_and(|hex| hex.len() == 32 && hex.chars().all(|c| c.is_ascii_hexdigit()))
+}
+
+/// Mint one license in `home_region` and return its ARN: the resource a grant shares
+/// the use of, so every grant row needs one.
+async fn license_for_grant(router: &MultiServiceRouter, case: &str, home_region: &str) -> String {
+    let mut body = base_body(&format!("license-token-{case}"));
+    body["LicenseName"] = json!(format!("license-for-{case}"));
+    body["HomeRegion"] = json!(home_region);
+    create_ok(router, case, &body).await
+}
+
+/// The smallest grant body that is accepted, with `client_token` as its idempotency
+/// key: a row overwrites whichever members it is about.
+fn base_grant(client_token: &str, license_arn: &str, home_region: &str) -> Value {
+    json!({
+        "ClientToken": client_token,
+        "GrantName": "base-grant",
+        "LicenseArn": license_arn,
+        "Principals": [ACCOUNT_PRINCIPAL],
+        "HomeRegion": home_region,
+        "AllowedOperations": ["CheckoutLicense"],
+    })
+}
+
+/// The status a create of `body` must answer with: a grant waits for its grantee
+/// unless the request's `Options` ask for it to be created already active.
+fn expected_grant_status(body: &Value) -> &'static str {
+    let asks_for_active = body
+        .get("Options")
+        .and_then(|options| options.get("DesiredStatus"))
+        .and_then(Value::as_str)
+        .is_some_and(|status| status == ACTIVE);
+    if asks_for_active {
+        ACTIVE
+    } else {
+        PENDING_ACCEPT
+    }
+}
+
+/// Create one grant and return the ARN the service minted, failing the case when the
+/// call did not succeed or did not answer the minted identity.
+async fn create_grant_ok(router: &MultiServiceRouter, case: &str, body: &Value) -> String {
+    let (status, response) = call(router, "CreateGrant", body).await;
+    assert_eq!(
+        status, 200,
+        "case {case:?}: expected CreateGrant to answer 200, got {status} {response}"
+    );
+    let arn = response["GrantArn"]
+        .as_str()
+        .unwrap_or_else(|| panic!("case {case:?}: CreateGrant answered no GrantArn: {response}"))
+        .to_string();
+    let home_region = body["HomeRegion"]
+        .as_str()
+        .expect("the case names a home Region");
+    assert!(
+        is_grant_arn(&arn, home_region),
+        "case {case:?}: expected a grant ARN in {home_region}, got {arn:?}"
+    );
+    assert_eq!(
+        response["Status"].as_str(),
+        Some(expected_grant_status(body)),
+        "case {case:?}: expected Status {:?}, got {response}",
+        expected_grant_status(body)
+    );
+    assert_eq!(
+        response["Version"].as_str(),
+        Some("1"),
+        "case {case:?}: expected Version 1, got {response}"
+    );
+    arn
+}
+
+/// Read one grant back, failing the case when the read did not succeed.
+async fn get_grant_ok(router: &MultiServiceRouter, case: &str, arn: &str) -> Value {
+    let (status, response) = call(router, "GetGrant", &json!({"GrantArn": arn})).await;
+    assert_eq!(
+        status, 200,
+        "case {case:?}: expected GetGrant to answer 200, got {status} {response}"
+    );
+    response
+        .get("Grant")
+        .cloned()
+        .unwrap_or_else(|| panic!("case {case:?}: GetGrant answered no Grant: {response}"))
+}
+
+/// Assert the whole grant body `body` created is what the store reports in `stored`,
+/// member by member — including ABSENT for an optional member the create omitted.
+fn assert_grant_round_trip(case: &str, stored: &Value, body: &Value, arn: &str) {
+    for (read_member, created_member) in [
+        ("GrantName", "GrantName"),
+        ("LicenseArn", "LicenseArn"),
+        ("HomeRegion", "HomeRegion"),
+        ("GrantedOperations", "AllowedOperations"),
+        ("Options", "Options"),
+        ("GrantType", "GrantType"),
+    ] {
+        assert_eq!(
+            stored.get(read_member),
+            body.get(created_member),
+            "case {case:?}: GetGrant reported {read_member} = {:?}, expected the created \
+             {created_member} {:?}",
+            stored.get(read_member),
+            body.get(created_member)
+        );
+    }
+    assert_eq!(
+        stored["GrantArn"].as_str(),
+        Some(arn),
+        "case {case:?}: GetGrant reported another grant's ARN: {stored}"
+    );
+    // The one entry of `Principals` is the principal the grant was made to.
+    assert_eq!(
+        stored["GranteePrincipalArn"], body["Principals"][0],
+        "case {case:?}: GetGrant reported another GranteePrincipalArn: {stored}"
+    );
+    // A grant created on a license has that license as its parent.
+    assert_eq!(
+        stored["ParentArn"], body["LicenseArn"],
+        "case {case:?}: GetGrant reported another ParentArn: {stored}"
+    );
+    assert_eq!(
+        stored["GrantStatus"].as_str(),
+        Some(expected_grant_status(body)),
+        "case {case:?}: expected the stored GrantStatus {:?}, got {stored}",
+        expected_grant_status(body)
+    );
+    assert_eq!(
+        stored["Version"].as_str(),
+        Some("1"),
+        "case {case:?}: expected the stored Version 1, got {stored}"
+    );
+    // Nothing has moved this grant's status, so the record carries no reason for it.
+    assert_eq!(
+        stored.get("StatusReason"),
+        None,
+        "case {case:?}: a grant nothing has moved must report no StatusReason: {stored}"
+    );
+}
+
+/// The grant round-trip table: one row per form a grant body takes. `LicenseArn` is
+/// filled in per row with a license minted in that row's home Region.
+fn grant_round_trip_rows() -> Vec<(&'static str, Value)> {
+    let mut rows: Vec<(&'static str, Value)> = vec![
+        (
+            "the smallest body: one allowed operation, an account principal, no optional member",
+            json!({
+                "ClientToken": "token-grant-smallest",
+                "GrantName": "smallest",
+                "Principals": [ACCOUNT_PRINCIPAL],
+                "HomeRegion": "us-east-1",
+                "AllowedOperations": ["CheckoutLicense"],
+            }),
+        ),
+        (
+            "three allowed operations, tags and a grant type",
+            json!({
+                "ClientToken": "token-grant-three-operations",
+                "GrantName": "analytics-seats",
+                "Principals": [ACCOUNT_PRINCIPAL],
+                "HomeRegion": "eu-west-1",
+                "AllowedOperations": [
+                    "CheckoutLicense", "CheckInLicense", "ExtendConsumptionLicense",
+                ],
+                "GrantType": "BuyerGrant",
+                "Tags": [{"Key": "team", "Value": "data"}, {"Key": "env", "Value": "prod"}],
+            }),
+        ),
+        (
+            "every allowed operation the catalog admits, which is the published maximum",
+            json!({
+                "ClientToken": "token-grant-every-operation",
+                "GrantName": "all-operations",
+                "Principals": [ACCOUNT_PRINCIPAL],
+                "HomeRegion": "ap-southeast-2",
+                "AllowedOperations": ALLOWED_OPERATIONS,
+            }),
+        ),
+        (
+            "an organization principal asking for an active grant",
+            json!({
+                "ClientToken": "token-grant-organization-active",
+                "GrantName": "org-wide",
+                "Principals": [ORGANIZATION_PRINCIPAL],
+                "HomeRegion": "us-west-2",
+                "AllowedOperations": ["CheckoutLicense", "CreateToken"],
+                "GrantType": "DelegateGrant",
+                "Options": {
+                    "DesiredStatus": ACTIVE,
+                    "ActivationOverrideBehavior": "DISTRIBUTED_GRANTS_ONLY",
+                },
+            }),
+        ),
+        (
+            "an organizational-unit principal asking for an active grant",
+            json!({
+                "ClientToken": "token-grant-ou-active",
+                "GrantName": "ou-wide",
+                "Principals": [OU_PRINCIPAL],
+                "HomeRegion": "eu-central-1",
+                "AllowedOperations": ["CheckoutBorrowLicense"],
+                "Options": {
+                    "DesiredStatus": ACTIVE,
+                    "ActivationOverrideBehavior": "ALL_GRANTS_PERMITTED_BY_ISSUER",
+                },
+            }),
+        ),
+        (
+            "an empty grant name",
+            json!({
+                "ClientToken": "token-grant-empty-name",
+                "GrantName": "",
+                "Principals": [ACCOUNT_PRINCIPAL],
+                "HomeRegion": "us-east-2",
+                "AllowedOperations": ["ListReceivedLicenses"],
+            }),
+        ),
+    ];
+    // One row per grant type beside an activation-override behaviour, so each entry
+    // of both catalogs is created and read at least once.
+    for (n, grant_type) in GRANT_TYPES.iter().enumerate() {
+        rows.push((
+            "a grant of one modelled type, with an activation override",
+            json!({
+                "ClientToken": format!("token-grant-type-{n}"),
+                "GrantName": format!("typed-{grant_type}"),
+                "Principals": [ACCOUNT_PRINCIPAL],
+                "HomeRegion": "ca-central-1",
+                "AllowedOperations": ["CheckoutLicense"],
+                "GrantType": grant_type,
+                "Options": {
+                    "ActivationOverrideBehavior":
+                        ACTIVATION_OVERRIDE_BEHAVIORS[n % ACTIVATION_OVERRIDE_BEHAVIORS.len()],
+                },
+            }),
+        ));
+    }
+    rows
+}
+
+#[tokio::test]
+async fn a_created_grant_is_what_get_grant_reports() {
+    let router = emulator();
+    let mut arns = BTreeSet::new();
+    for (n, (case, mut body)) in grant_round_trip_rows().into_iter().enumerate() {
+        let home_region = body["HomeRegion"]
+            .as_str()
+            .expect("the row names a home Region")
+            .to_string();
+        let license_arn = license_for_grant(&router, &format!("grant-row-{n}"), &home_region).await;
+        body["LicenseArn"] = json!(license_arn);
+
+        let arn = create_grant_ok(&router, case, &body).await;
+        assert!(
+            arns.insert(arn.clone()),
+            "case {case:?}: the service minted an ARN it had already handed out: {arn}"
+        );
+
+        let stored = get_grant_ok(&router, case, &arn).await;
+        assert_grant_round_trip(case, &stored, &body, &arn);
+
+        // A read reports stored state and changes none of it, so a second read is
+        // the same grant.
+        let again = get_grant_ok(&router, case, &arn).await;
+        assert_eq!(
+            stored, again,
+            "case {case:?}: reading a grant changed what a later read reports"
+        );
+    }
+}
+
+#[tokio::test]
+async fn the_repeat_of_a_grant_create_reports_the_grant_the_first_one_minted() {
+    let router = emulator();
+    let license_arn = license_for_grant(&router, "idempotent", "us-east-1").await;
+    let case = "one client token, one grant";
+    let body = base_grant("token-grant-idempotent", &license_arn, "us-east-1");
+
+    let first = create_grant_ok(&router, case, &body).await;
+
+    // The repeat carries the same token and a DIFFERENT grant body, so an answer
+    // that reported the second body would mean the create had minted or rewritten
+    // something.
+    let mut repeat = body.clone();
+    repeat["GrantName"] = json!("renamed-by-the-repeat");
+    repeat["AllowedOperations"] = json!(["CheckInLicense"]);
+    let again = create_grant_ok(&router, case, &repeat).await;
+    assert_eq!(
+        first, again,
+        "case {case:?}: the repeat of an accepted create must report the first grant's ARN"
+    );
+    let stored = get_grant_ok(&router, case, &first).await;
+    assert_grant_round_trip(case, &stored, &body, &first);
+
+    // Another token is another grant, over the same license.
+    let other_case = "another client token, another grant";
+    let mut other = base_grant("token-grant-idempotent-other", &license_arn, "us-east-1");
+    other["GrantName"] = json!("second-grant");
+    let second = create_grant_ok(&router, other_case, &other).await;
+    assert_ne!(
+        first, second,
+        "case {other_case:?}: a create under another token must mint another grant"
+    );
+    assert_grant_round_trip(
+        other_case,
+        &get_grant_ok(&router, other_case, &second).await,
+        &other,
+        &second,
+    );
+}
+
+/// The grant refusal table: one row per grant body this service will not store, with
+/// the modelled code it is refused under where the handler itself is what refuses it
+/// — a row whose value a modelled constraint already refuses is answered by the
+/// centralized walk, under the `ValidationException` this operation declares.
+fn grant_refusal_rows(license_arn: &str) -> Vec<(&'static str, Value, Option<&'static str>)> {
+    let refused_by_the_handler = Some("InvalidParameterValueException");
+    vec![
+        (
+            "a license ARN the store does not hold",
+            {
+                let mut body = base_grant("token-grant-refused-license", license_arn, "us-east-1");
+                body["LicenseArn"] = json!(format!(
+                    "arn:aws:license-manager:us-east-1:{ACCOUNT_ID}:license:l-{}",
+                    "0".repeat(32)
+                ));
+                body
+            },
+            refused_by_the_handler,
+        ),
+        (
+            "a grant ARN where a license ARN belongs",
+            {
+                let mut body =
+                    base_grant("token-grant-refused-grant-arn", license_arn, "us-east-1");
+                body["LicenseArn"] = json!(format!(
+                    "arn:aws:license-manager:us-east-1:{ACCOUNT_ID}:grant:g-{}",
+                    "1".repeat(32)
+                ));
+                body
+            },
+            refused_by_the_handler,
+        ),
+        (
+            "an active grant asked for an account principal",
+            {
+                let mut body = base_grant("token-grant-refused-desired", license_arn, "us-east-1");
+                body["Options"] = json!({"DesiredStatus": ACTIVE});
+                body
+            },
+            refused_by_the_handler,
+        ),
+        (
+            "a desired status no create admits",
+            {
+                let mut body = base_grant("token-grant-refused-status", license_arn, "us-east-1");
+                body["Principals"] = json!([ORGANIZATION_PRINCIPAL]);
+                body["Options"] = json!({"DesiredStatus": "DISABLED"});
+                body
+            },
+            refused_by_the_handler,
+        ),
+        (
+            "a HomeRegion that is not a Region token",
+            {
+                let mut body = base_grant("token-grant-refused-region", license_arn, "us-east-1");
+                body["HomeRegion"] = json!("us-east-1/../../etc");
+                body
+            },
+            refused_by_the_handler,
+        ),
+        (
+            "a GrantName one character past the stored text bound",
+            {
+                let mut body = base_grant("token-grant-refused-name", license_arn, "us-east-1");
+                body["GrantName"] = json!("n".repeat(2049));
+                body
+            },
+            refused_by_the_handler,
+        ),
+        (
+            "a grant type outside the modelled catalog",
+            {
+                let mut body = base_grant("token-grant-refused-type", license_arn, "us-east-1");
+                body["GrantType"] = json!("SellerGrant");
+                body
+            },
+            None,
+        ),
+        (
+            "an activation override behaviour outside the modelled catalog",
+            {
+                let mut body = base_grant("token-grant-refused-behavior", license_arn, "us-east-1");
+                body["Options"] = json!({"ActivationOverrideBehavior": "EVERY_GRANT"});
+                body
+            },
+            None,
+        ),
+        (
+            "an allowed operation outside the modelled catalog",
+            {
+                let mut body =
+                    base_grant("token-grant-refused-operation", license_arn, "us-east-1");
+                body["AllowedOperations"] = json!(["CheckoutLicense", "DeleteEverything"]);
+                body
+            },
+            None,
+        ),
+        (
+            "no allowed operation at all, one short of the published minimum",
+            {
+                let mut body = base_grant("token-grant-refused-none", license_arn, "us-east-1");
+                body["AllowedOperations"] = json!([]);
+                body
+            },
+            None,
+        ),
+        (
+            "two principals, one past the published maximum",
+            {
+                let mut body =
+                    base_grant("token-grant-refused-principals", license_arn, "us-east-1");
+                body["Principals"] = json!([ACCOUNT_PRINCIPAL, ORGANIZATION_PRINCIPAL]);
+                body
+            },
+            None,
+        ),
+    ]
+}
+
+#[tokio::test]
+async fn a_grant_body_this_service_will_not_store_is_a_modelled_400() {
+    let router = emulator();
+    let license_arn = license_for_grant(&router, "grant-refusals", "us-east-1").await;
+
+    for (case, body, code) in grant_refusal_rows(&license_arn) {
+        let (status, response) = call(&router, "CreateGrant", &body).await;
+        assert_eq!(
+            status, 400,
+            "case {case:?}: expected CreateGrant to answer 400, got {status} {response}"
+        );
+        if let Some(expected) = code {
+            assert_eq!(
+                error_code(&response),
+                expected,
+                "case {case:?}: expected {expected}, got {response}"
+            );
+        }
+
+        // A refused create stored NOTHING, so its `ClientToken` never named a grant:
+        // an accepted create carrying that same token mints one and reports its own
+        // body, rather than reporting a half-made record.
+        let token = body["ClientToken"]
+            .as_str()
+            .expect("every row carries a client token")
+            .to_string();
+        let accepted = base_grant(&token, &license_arn, "us-east-1");
+        let arn = create_grant_ok(&router, case, &accepted).await;
+        assert_grant_round_trip(
+            case,
+            &get_grant_ok(&router, case, &arn).await,
+            &accepted,
+            &arn,
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_grant_name_at_the_stored_text_bound_round_trips() {
+    // The model publishes no length for `GrantName`, so the bound is the store's
+    // own: a name at it is stored and reported, and the row one character past it is
+    // refused by the table above.
+    let router = emulator();
+    let license_arn = license_for_grant(&router, "grant-bounds", "us-east-1").await;
+    let case = "a GrantName at the stored text bound";
+    let mut body = base_grant("token-grant-bound", &license_arn, "us-east-1");
+    body["GrantName"] = json!("n".repeat(2048));
+    let arn = create_grant_ok(&router, case, &body).await;
+    assert_grant_round_trip(case, &get_grant_ok(&router, case, &arn).await, &body, &arn);
+}
+
+#[tokio::test]
+async fn get_grant_answers_only_from_what_is_stored() {
+    let router = emulator();
+    let license_arn = license_for_grant(&router, "grant-reads", "us-east-1").await;
+    let arn = create_grant_ok(
+        &router,
+        "stored",
+        &base_grant("token-grant-reads", &license_arn, "us-east-1"),
+    )
+    .await;
+
+    for (case, body) in [
+        (
+            "an ARN that was never minted",
+            json!({"GrantArn": format!("{arn}-nope")}),
+        ),
+        (
+            "a grant ARN with another id",
+            json!({"GrantArn": format!(
+                "arn:aws:license-manager:us-east-1:{ACCOUNT_ID}:grant:g-{}",
+                "0".repeat(32)
+            )}),
+        ),
+        (
+            "the ARN of the license the grant was made on",
+            json!({"GrantArn": license_arn.clone()}),
+        ),
+        (
+            "a stored grant at a version it does not have",
+            json!({"GrantArn": arn.clone(), "Version": "2"}),
+        ),
+    ] {
+        let (status, response) = call(&router, "GetGrant", &body).await;
+        assert_eq!(
+            status, 400,
+            "case {case:?}: expected GetGrant to answer 400, got {status} {response}"
+        );
+        assert_eq!(
+            error_code(&response),
+            "InvalidParameterValueException",
+            "case {case:?}: expected InvalidParameterValueException, got {response}"
+        );
+    }
+
+    // The version the create minted is still readable, and reports that grant.
+    let (status, response) = call(
+        &router,
+        "GetGrant",
+        &json!({"GrantArn": arn.clone(), "Version": "1"}),
+    )
+    .await;
+    assert_eq!(
+        status, 200,
+        "GetGrant at the stored version must answer 200, got {status} {response}"
+    );
+    assert_eq!(
+        response["Grant"]["GrantArn"].as_str(),
+        Some(arn.as_str()),
+        "GetGrant at the stored version reported another grant: {response}"
+    );
+}
+
+#[tokio::test]
+async fn a_read_grant_carries_every_member_the_modelled_shape_declares() {
+    let router = emulator();
+    let license_arn = license_for_grant(&router, "grant-shape", "us-east-1").await;
+    let case = "the modelled read shape";
+    let mut body = base_grant("token-grant-shape", &license_arn, "us-east-1");
+    body["GrantType"] = json!(GRANT_TYPES[1]);
+    body["Options"] = json!({"ActivationOverrideBehavior": ACTIVATION_OVERRIDE_BEHAVIORS[0]});
+    let arn = create_grant_ok(&router, case, &body).await;
+    let stored = get_grant_ok(&router, case, &arn).await;
+
+    let reported: Map<String, Value> = stored
+        .as_object()
+        .cloned()
+        .unwrap_or_else(|| panic!("case {case:?}: GetGrant answered no Grant object: {stored}"));
+    // Every member the request carried or the service minted is reported; the only
+    // one absent is the status reason, which nothing has set.
+    for member in GRANT_MEMBERS.iter().filter(|m| **m != "StatusReason") {
+        assert!(
+            reported.contains_key(*member),
+            "case {case:?}: the read grant carries no {member}: {stored}"
+        );
+    }
+    for member in reported.keys() {
+        assert!(
+            GRANT_MEMBERS.contains(&member.as_str()),
+            "case {case:?}: the read grant carries {member:?}, which the modelled shape does \
+             not declare: {stored}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_grant_is_tagged_through_the_same_map_as_every_other_resource() {
+    let router = emulator();
+    let license_arn = license_for_grant(&router, "grant-tags", "us-east-1").await;
+    let case = "a grant tagged at create";
+    let mut body = base_grant("token-grant-tags", &license_arn, "us-east-1");
+    body["Tags"] = json!([{"Key": "team", "Value": "data"}, {"Key": "env", "Value": "dev"}]);
+    let arn = create_grant_ok(&router, case, &body).await;
+
+    assert_eq!(
+        listed_tags_of(&router, &arn).await,
+        vec![
+            ("env".to_string(), "dev".to_string()),
+            ("team".to_string(), "data".to_string()),
+        ],
+        "case {case:?}: a grant's create-time tags must be what ListTagsForResource reports"
+    );
+
+    // `TagResource` and `UntagResource` reach a grant through the same map.
+    let (status, response) = call(
+        &router,
+        "TagResource",
+        &json!({
+            "ResourceArn": arn,
+            "Tags": [{"Key": "env", "Value": "prod"}, {"Key": "owner", "Value": "platform"}],
+        }),
+    )
+    .await;
+    assert_eq!(
+        status, 200,
+        "case {case:?}: expected TagResource to answer 200 for a grant, got {status} {response}"
+    );
+    assert_eq!(
+        listed_tags_of(&router, &arn).await,
+        vec![
+            ("env".to_string(), "prod".to_string()),
+            ("owner".to_string(), "platform".to_string()),
+            ("team".to_string(), "data".to_string()),
+        ],
+        "case {case:?}: TagResource must replace a grant's tag value and add the new key"
+    );
+
+    let (status, response) = call(
+        &router,
+        "UntagResource",
+        &json!({"ResourceArn": arn, "TagKeys": ["team", "never-set"]}),
+    )
+    .await;
+    assert_eq!(
+        status, 200,
+        "case {case:?}: expected UntagResource to answer 200 for a grant, got {status} {response}"
+    );
+    assert_eq!(
+        listed_tags_of(&router, &arn).await,
+        vec![
+            ("env".to_string(), "prod".to_string()),
+            ("owner".to_string(), "platform".to_string()),
+        ],
+        "case {case:?}: UntagResource must drop only the keys it named"
+    );
+
+    // Tagging does not touch the grant itself, and the license it was made on keeps
+    // its own tags: one map, keyed by ARN.
+    assert_grant_round_trip(case, &get_grant_ok(&router, case, &arn).await, &body, &arn);
+    assert!(
+        listed_tags_of(&router, &license_arn).await.is_empty(),
+        "case {case:?}: tagging a grant must not tag the license it was made on"
+    );
+}
+
+/// The tags `ListTagsForResource` reports for `arn`, as sorted key/value pairs.
+async fn listed_tags_of(router: &MultiServiceRouter, arn: &str) -> Vec<(String, String)> {
+    let (status, listed) = call(router, "ListTagsForResource", &json!({"ResourceArn": arn})).await;
+    assert_eq!(
+        status, 200,
+        "expected ListTagsForResource to answer 200 for {arn}, got {status} {listed}"
+    );
+    let mut pairs: Vec<(String, String)> = listed["Tags"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .iter()
+        .map(|tag| {
+            (
+                tag["Key"].as_str().unwrap_or_default().to_string(),
+                tag["Value"].as_str().unwrap_or_default().to_string(),
+            )
+        })
+        .collect();
+    pairs.sort();
+    pairs
 }

@@ -22,6 +22,10 @@
 //! reclaims the record released longest ago, which no caller can tell apart,
 //! because a released token is refused whether its record is still held or not.
 //!
+//! A **grant** — the shared use of one license's entitlements, which `CreateGrant`
+//! mints and `GetGrant` reports — is stored the same way, keyed by its ARN, with the
+//! rules and records that belong to it alone in [`grants`].
+//!
 //! Tags live in their own ARN-keyed map rather than on the record: `TagResource`,
 //! `UntagResource` and `ListTagsForResource` are modelled against a generic
 //! `ResourceArn`, so the map is the single place the tags of any taggable resource
@@ -45,6 +49,11 @@ use crate::ops::types::{
     Issuer, IssuerDetails, License, LicenseConfiguration, ManagedResourceSummary, Metadata,
     ProductInformation, Tag, ENTITLEMENT_UNIT_VALUES, RENEW_TYPE_VALUES,
 };
+
+/// The grant — the shared use of one license's entitlements — and the records and
+/// rules that belong to it alone.
+mod grants;
+pub use grants::*;
 
 /// The ARN service namespace for this service: the model's `arnNamespace` and sigv4
 /// name, `license-manager`
@@ -726,9 +735,17 @@ pub struct ComAmazonawsLicensemanagerAwslicensemanagerState {
     /// expiration has released them. A `BTreeMap` so the usage read walks them in one
     /// stable order, and so a token names at most one grant for ever.
     pub license_consumptions: BTreeMap<String, StoredLicenseConsumption>,
+    /// Every grant, keyed by its ARN, for the same reason: one record per grant,
+    /// walked in one stable total order.
+    pub grants: BTreeMap<String, StoredGrant>,
+    /// The ARN each accepted `CreateGrant` `ClientToken` minted, so the repeat of a
+    /// request is idempotent. Written only by [`Self::insert_grant`] and dropped
+    /// with its grant by [`Self::remove_grant`], so it holds at most one entry per
+    /// stored grant and is bounded by [`MAX_GRANTS`].
+    pub grant_client_tokens: BTreeMap<String, String>,
     /// Tags, keyed by resource ARN then tag key. Shared by `TagResource`,
     /// `UntagResource` and `ListTagsForResource`, and seeded from the `Tags` passed
-    /// to `CreateLicenseConfiguration` or `CreateLicense`.
+    /// to `CreateLicenseConfiguration`, `CreateLicense` or `CreateGrant`.
     pub tags: BTreeMap<String, BTreeMap<String, String>>,
     /// Mixed into each generated id so two creates in the same nanosecond differ.
     id_counter: u64,
@@ -1059,15 +1076,17 @@ impl ComAmazonawsLicensemanagerAwslicensemanagerState {
     }
 
     /// Whether `arn` names a resource this service stores, and can therefore tag: a
-    /// license configuration or a license. Both are ARN-keyed and capped, so the
-    /// number of KEYS in the tag map is bounded by
-    /// [`MAX_LICENSE_CONFIGURATIONS`] + [`MAX_LICENSES`].
+    /// license configuration, a license or a grant. Each is ARN-keyed and capped, so
+    /// the number of KEYS in the tag map is bounded by
+    /// [`MAX_LICENSE_CONFIGURATIONS`] + [`MAX_LICENSES`] + [`MAX_GRANTS`].
     ///
     /// `TagResource`, `UntagResource` and `ListTagsForResource` are modelled against
     /// a generic `ResourceArn`, so each of them asks THIS question rather than
     /// naming one resource kind.
     pub fn is_taggable(&self, arn: &str) -> bool {
-        self.license_configurations.contains_key(arn) || self.licenses.contains_key(arn)
+        self.license_configurations.contains_key(arn)
+            || self.licenses.contains_key(arn)
+            || self.grants.contains_key(arn)
     }
 
     /// The tags stored for `arn`, as the modelled `TagList`. Empty when none were
@@ -1113,9 +1132,9 @@ impl ComAmazonawsLicensemanagerAwslicensemanagerState {
     /// * `arn` must name a resource the store holds, so the number of KEYS in the
     ///   outer map can never exceed the number of stored configurations and
     ///   licenses, and is therefore bounded by [`MAX_LICENSE_CONFIGURATIONS`] +
-    ///   [`MAX_LICENSES`]. A tag map entry is also dropped with its resource by
-    ///   [`Self::remove_configuration`] or [`Self::remove_license`], so the map
-    ///   cannot outlive what it describes.
+    ///   [`MAX_LICENSES`] + [`MAX_GRANTS`]. A tag map entry is also dropped with its
+    ///   resource by [`Self::remove_configuration`], [`Self::remove_license`] or
+    ///   [`Self::remove_grant`], so the map cannot outlive what it describes.
     /// * that ARN is length-bounded like every other stored string, so no single
     ///   key can be arbitrarily large.
     /// * the merge may not leave `arn` carrying more than [`MAX_TAGS`] distinct

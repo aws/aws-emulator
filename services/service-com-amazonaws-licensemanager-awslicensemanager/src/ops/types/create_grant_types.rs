@@ -21,6 +21,8 @@ pub struct CreateGrantInput {
     pub home_region: String,
     pub allowed_operations: Vec<String>,
     pub tags: Option<Vec<Tag>>,
+    pub grant_type: Option<String>,
+    pub options: Option<Options>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.licensemanager#CreateGrantResponse")]

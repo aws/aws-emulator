@@ -110,6 +110,7 @@ pub struct Tag {
 #[derive(Debug, Clone, Default)]
 pub struct Options {
     pub activation_override_behavior: Option<String>,
+    pub desired_status: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.licensemanager#Issuer")]
@@ -298,6 +299,7 @@ pub struct Grant {
     pub version: String,
     pub granted_operations: Vec<String>,
     pub options: Option<Options>,
+    pub grant_type: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.licensemanager#License")]
@@ -470,6 +472,7 @@ pub struct ReceivedMetadata {
     pub received_status: Option<String>,
     pub received_status_reason: Option<String>,
     pub allowed_operations: Option<Vec<String>>,
+    pub grant_type: Option<String>,
 }
 
 /// The values `ActivationOverrideBehavior` accepts on the wire.
@@ -477,7 +480,7 @@ pub const ACTIVATION_OVERRIDE_BEHAVIOR_VALUES: &[&str] = &["ALL_GRANTS_PERMITTED
 
 
 /// The values `AllowedOperation` accepts on the wire.
-pub const ALLOWED_OPERATION_VALUES: &[&str] = &["CheckInLicense", "CheckoutBorrowLicense", "CheckoutLicense", "CreateGrant", "CreateToken", "ExtendConsumptionLicense", "ListPurchasedLicenses"];
+pub const ALLOWED_OPERATION_VALUES: &[&str] = &["CheckInLicense", "CheckoutBorrowLicense", "CheckoutLicense", "CreateGrant", "CreateToken", "ExtendConsumptionLicense", "ListPurchasedLicenses", "ListReceivedLicenses"];
 
 
 /// The values `CheckoutType` accepts on the wire.
@@ -498,6 +501,10 @@ pub const ENTITLEMENT_UNIT_VALUES: &[&str] = &["Bits", "Bits/Second", "Bytes", "
 
 /// The values `GrantStatus` accepts on the wire.
 pub const GRANT_STATUS_VALUES: &[&str] = &["ACTIVE", "DELETED", "DISABLED", "FAILED_WORKFLOW", "PENDING_ACCEPT", "PENDING_DELETE", "PENDING_WORKFLOW", "REJECTED", "WORKFLOW_COMPLETED"];
+
+
+/// The values `GrantType` accepts on the wire.
+pub const GRANT_TYPE_VALUES: &[&str] = &["BuyerGrant", "DelegateGrant"];
 
 
 /// The values `InventoryFilterCondition` accepts on the wire.

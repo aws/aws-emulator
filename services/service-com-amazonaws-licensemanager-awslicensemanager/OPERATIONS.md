@@ -50,7 +50,7 @@ contents — read that shape in the model above when you need its own members.
 
 ## CreateGrant
 
-- **Input:** `ClientToken` (string, len 0..2048, pattern ^\S+$, required), `GrantName` (string, required), `LicenseArn` (string, len 0..2048, pattern ^arn:aws[a-zA-Z-]*:[A-Za-z0-9][A-Za-z0-9_/.-]{0,62}:[A-Za-z0-9_/.-]{0,63}:[A-Za-z0-9_/.-]{0,63}:[A-Za-z0-9][A-Za-z0-9:_/ …, required), `Principals` (list<string>, len 1..1, required), `HomeRegion` (string, required), `AllowedOperations` (list<AllowedOperation>, len 1..8, required), `Tags` (list<Tag>)
+- **Input:** `ClientToken` (string, len 0..2048, pattern ^\S+$, required), `GrantName` (string, required), `LicenseArn` (string, len 0..2048, pattern ^arn:aws[a-zA-Z-]*:[A-Za-z0-9][A-Za-z0-9_/.-]{0,62}:[A-Za-z0-9_/.-]{0,63}:[A-Za-z0-9_/.-]{0,63}:[A-Za-z0-9][A-Za-z0-9:_/ …, required), `Principals` (list<string>, len 1..1, required), `HomeRegion` (string, required), `AllowedOperations` (list<AllowedOperation>, len 1..8, required), `Tags` (list<Tag>), `GrantType` (GrantType, one of: BuyerGrant | DelegateGrant), `Options` (Options)
 - **Output:** `GrantArn` (string, len 0..2048, pattern ^arn:aws[a-zA-Z-]*:[A-Za-z0-9][A-Za-z0-9_/.-]{0,62}:[A-Za-z0-9_/.-]{0,63}:[A-Za-z0-9_/.-]{0,63}:[A-Za-z0-9][A-Za-z0-9:_/ …), `Status` (GrantStatus, one of: ACTIVE | DELETED | DISABLED | FAILED_WORKFLOW | PENDING_ACCEPT | PENDING_DELETE | PENDING_WORKFLOW | REJECTED | WORKFLOW_COMPLETED), `Version` (string)
 - **Errors:** `AccessDeniedException (HTTP 401)`, `AuthorizationException (HTTP 403)`, `InvalidParameterValueException (HTTP 400)`, `RateLimitExceededException (HTTP 429)`, `ResourceLimitExceededException (HTTP 400)`, `ServerInternalException (HTTP 500)`, `ValidationException (HTTP 400)`
 
