@@ -1194,6 +1194,20 @@ pub fn quota_exceeded(subject: String) -> ServiceQuotaExceededException {
     }
 }
 
+/// Whether a caller's `Revision` precondition names the revision a stored resource is
+/// currently at.
+///
+/// `ResourceRevision` is a decimal string (len 1..64, pattern `^[0-9]+$`,
+/// `smithy_query(query="shape",shape="ResourceRevision")`), so the member names the
+/// NUMBER it spells and not one spelling of it: `1` and `01` name one revision, and a
+/// value no revision of this store can reach never matches. One implementation for
+/// every operation that takes the precondition — the updates and the deletes, of users
+/// and of groups — so one value held against one resource gets one answer whichever
+/// operation is given it.
+pub fn revision_precondition_holds(expected: &str, current: u64) -> bool {
+    expected.parse::<u64>().ok() == Some(current)
+}
+
 /// The modelled `ConflictException` for an update whose `Revision` precondition does
 /// not hold.
 ///

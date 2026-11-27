@@ -190,12 +190,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // you don't provide this value, the user is deleted regardless of its current
         // revision." The member is a decimal string (`^[0-9]+$`), so it is compared as
         // the number it denotes — `01` and `1` name one revision — and a value too
-        // large to be any revision simply never matches.
+        // large to be any revision simply never matches
+        // (`crate::state::revision_precondition_holds`, the one comparison every
+        // operation that takes the precondition goes through).
         if let Some(expected) = input.revision.as_deref() {
             // A precondition on a user that is already gone has nothing to hold
             // against, so the idempotent success stands.
             if let Some(user) = store.users.get(&user_key) {
-                if expected.parse::<u64>().ok() != Some(user.revision) {
+                if !crate::state::revision_precondition_holds(expected, user.revision) {
                     return Err(DeleteUserErrorModeled::ConflictException(
                         crate::state::revision_conflict(expected, &user.revision()),
                     )

@@ -202,13 +202,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // you don't provide this value, the group is deleted regardless of its current
         // revision." The member is a decimal string (`^[0-9]+$`), so it is compared as
         // the number it denotes — `01` and `1` name one revision — and a value too
-        // large to be any revision simply never matches. Only a conditional delete
+        // large to be any revision simply never matches
+        // (`crate::state::revision_precondition_holds`, the one comparison every
+        // operation that takes the precondition goes through). Only a conditional delete
         // needs to read the record first; an unconditional one is the removal itself.
         if let Some(expected) = input.revision.as_deref() {
             // A precondition on a group that is already gone has nothing to hold
             // against, so the idempotent success stands.
             if let Some(group) = store.groups.get(&group_key) {
-                if expected.parse::<u64>().ok() != Some(group.revision) {
+                if !crate::state::revision_precondition_holds(expected, group.revision) {
                     return Err(DeleteGroupErrorModeled::ConflictException(
                         crate::state::revision_conflict(expected, &group.revision()),
                     )

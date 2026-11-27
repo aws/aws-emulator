@@ -227,9 +227,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         // `Revision` is the caller's precondition: "the update is applied only if it
         // matches the current revision of the user … If the value doesn't match, the
-        // operation fails with a ConflictException."
+        // operation fails with a ConflictException." The member is a decimal string
+        // (`^[0-9]+$`), so what it names is the NUMBER it spells — `01` and `1` name one
+        // revision — which `revision_precondition_holds` is the one comparison for.
         if let Some(expected) = input.revision.as_deref() {
-            if expected != stored.revision() {
+            if !crate::state::revision_precondition_holds(expected, stored.revision) {
                 return Err(UpdateUserErrorModeled::ConflictException(
                     crate::state::revision_conflict(expected, &stored.revision()),
                 )

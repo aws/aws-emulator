@@ -190,6 +190,105 @@ pub fn string(body: &Value, member: &str, case: &str) -> String {
         .to_string()
 }
 
+/// The upper bound of the modelled `ResourceRevision` length: len 1..64, pattern
+/// `^[0-9]+$` (`smithy_query(query="shape",shape="ResourceRevision")`). A value of that
+/// many digits is well-formed, so a request carrying one reaches the handler instead of
+/// being refused at the boundary.
+pub const REVISION_MAX_LEN: usize = 64;
+
+/// How one row of a `Revision`-precondition table spells the value it sends, given the
+/// resource's current revision.
+///
+/// `Revision` is the caller's expected current revision, and the modelled
+/// `ResourceRevision` is a DECIMAL STRING, so the value names the NUMBER it spells:
+/// every spelling of the current revision — padded or not — is that revision, and no
+/// other number is. One table, shared by the user and the group suites and by the
+/// updates and the deletes, so the four operations that take the member are held to one
+/// rule.
+#[derive(Debug, Clone, Copy)]
+pub enum Precondition {
+    /// No `Revision` member at all: the call applies regardless of the revision.
+    Absent,
+    /// The current revision, spelled as the response reported it.
+    Current,
+    /// The current revision with one leading zero.
+    CurrentWithALeadingZero,
+    /// The current revision zero-padded to the longest value the length admits.
+    CurrentPaddedToMaxLength,
+    /// The revision the resource carried before its last update.
+    Stale,
+    /// One past the current revision: a revision it has not reached.
+    OnePast,
+    /// `0`, which no stored resource carries — a create is revision 1.
+    Zero,
+    /// `0` with leading zeros: the same number, still no resource's revision.
+    ZeroPadded,
+    /// The longest value the length admits, far past any revision a store reaches.
+    LongestAllowed,
+}
+
+impl Precondition {
+    /// The member this row sends when the resource is at revision `current`, or `None`
+    /// for the row that sends none.
+    pub fn member(self, current: u64) -> Option<String> {
+        match self {
+            Self::Absent => None,
+            Self::Current => Some(current.to_string()),
+            Self::CurrentWithALeadingZero => Some(format!("0{current}")),
+            Self::CurrentPaddedToMaxLength => {
+                Some(format!("{current:0>width$}", width = REVISION_MAX_LEN))
+            }
+            Self::Stale => Some(current.saturating_sub(1).to_string()),
+            Self::OnePast => Some((current + 1).to_string()),
+            Self::Zero => Some("0".to_string()),
+            Self::ZeroPadded => Some("0".repeat(8)),
+            Self::LongestAllowed => Some("9".repeat(REVISION_MAX_LEN)),
+        }
+    }
+
+    /// Whether the value this row sends names the resource's current revision, and so
+    /// lets the call through.
+    pub fn holds(self) -> bool {
+        matches!(
+            self,
+            Self::Absent
+                | Self::Current
+                | Self::CurrentWithALeadingZero
+                | Self::CurrentPaddedToMaxLength
+        )
+    }
+}
+
+/// The rows a `Revision`-precondition table walks: four values that name the current
+/// revision (one of them by naming no revision at all) and five that do not, spanning
+/// the spellings the modelled pattern admits and both published length bounds.
+///
+/// A row is sent against a resource that has been updated once, so `Stale` has a
+/// revision to name.
+pub const PRECONDITION_ROWS: [(&str, Precondition); 9] = [
+    ("no revision at all", Precondition::Absent),
+    ("the current revision", Precondition::Current),
+    (
+        "the current revision with a leading zero",
+        Precondition::CurrentWithALeadingZero,
+    ),
+    (
+        "the current revision padded to the longest value allowed",
+        Precondition::CurrentPaddedToMaxLength,
+    ),
+    (
+        "the revision before the last update",
+        Precondition::Stale,
+    ),
+    ("one revision past the current", Precondition::OnePast),
+    ("revision zero", Precondition::Zero),
+    ("revision zero, zero-padded", Precondition::ZeroPadded),
+    (
+        "the longest revision allowed",
+        Precondition::LongestAllowed,
+    ),
+];
+
 /// The `Message` of an error body, whichever casing the protocol rendered it in.
 pub fn error_message(body: &Value) -> String {
     body["Message"]

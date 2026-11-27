@@ -21,7 +21,8 @@
 use serde_json::{json, Value};
 
 use crate::harness::{
-    emulator, error_message, ok, refused, string, MISSING_STORE, NOT_FOUND, STORE,
+    emulator, error_message, ok, refused, string, MISSING_STORE, NOT_FOUND, PRECONDITION_ROWS,
+    STORE,
 };
 use crate::identity_store_lifecycle::assert_resource_arn;
 
@@ -871,5 +872,103 @@ async fn an_update_refuses_a_value_the_create_of_the_same_member_refuses() {
             Some(CREATED_DESCRIPTION),
             case,
         );
+    }
+}
+
+/// One `Revision` value held against one group gets one answer whichever operation
+/// takes it, and that answer turns on the NUMBER the value spells rather than on its
+/// spelling: `UpdateGroup` and `DeleteGroup` document the same member with the same
+/// meaning, and the modelled `ResourceRevision` is a decimal string.
+///
+/// The rows are [`crate::harness::PRECONDITION_ROWS`], the same table the user suites
+/// walk, so a user and a group are held to one rule.
+#[tokio::test]
+async fn a_group_revision_value_means_the_same_to_the_update_and_to_the_delete() {
+    for (case, precondition) in PRECONDITION_ROWS {
+        let router = emulator();
+        let display_name = format!("revision {case}");
+        let group = create(&router, STORE, &display_name, case).await;
+        // One update first, so the group has a current revision and a stale one.
+        let settled = ok(
+            &router,
+            "UpdateGroup",
+            json!({
+                "IdentityStoreId": STORE,
+                "GroupId": group.group_id,
+                "Operations": [
+                    { "AttributePath": "description", "AttributeValue": "before the row" },
+                ],
+            }),
+            case,
+        )
+        .await;
+        let current: u64 = string(&settled, "Revision", case)
+            .parse()
+            .unwrap_or_else(|_| panic!("case {case:?}: expected a decimal revision, got {settled}"));
+
+        let mut update = json!({
+            "IdentityStoreId": STORE,
+            "GroupId": group.group_id,
+            "Operations": [
+                { "AttributePath": "description", "AttributeValue": "the row's own value" },
+            ],
+        });
+        let mut delete = json!({ "IdentityStoreId": STORE, "GroupId": group.group_id });
+        if let Some(member) = precondition.member(current) {
+            update["Revision"] = json!(member.clone());
+            delete["Revision"] = json!(member);
+        }
+
+        if precondition.holds() {
+            let updated = ok(&router, "UpdateGroup", update, case).await;
+            let revision = string(&updated, "Revision", case);
+            assert_eq!(
+                revision,
+                (current + 1).to_string(),
+                "case {case:?}: expected the applied update to report revision {}, \
+                 got {revision:?}",
+                current + 1
+            );
+            let reported = describe(&router, STORE, &group.group_id, case).await;
+            assert_attributes(
+                &reported,
+                Some(&display_name),
+                Some("the row's own value"),
+                case,
+            );
+            // The same spelling of the revision the group is NOW at deletes it.
+            if let Some(member) = precondition.member(current + 1) {
+                delete["Revision"] = json!(member);
+            }
+            ok(&router, "DeleteGroup", delete, case).await;
+            refused(
+                &router,
+                "DescribeGroup",
+                json!({ "IdentityStoreId": STORE, "GroupId": group.group_id }),
+                NOT_FOUND,
+                "ResourceNotFoundException",
+                case,
+            )
+            .await;
+        } else {
+            refused(&router, "UpdateGroup", update, 409, "ConflictException", case).await;
+            refused(&router, "DeleteGroup", delete, 409, "ConflictException", case).await;
+            // Neither refusal is a write: the group still holds what it had, at the
+            // revision it had.
+            let reported = describe(&router, STORE, &group.group_id, case).await;
+            assert_attributes(
+                &reported,
+                Some(&display_name),
+                Some("before the row"),
+                case,
+            );
+            let reported_revision = string(&reported, "Revision", case);
+            assert_eq!(
+                reported_revision,
+                current.to_string(),
+                "case {case:?}: expected the group to stay at revision {current}, \
+                 got {reported_revision:?}"
+            );
+        }
     }
 }

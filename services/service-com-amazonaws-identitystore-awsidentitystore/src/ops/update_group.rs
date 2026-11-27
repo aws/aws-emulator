@@ -349,9 +349,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // `Revision` is "the expected current revision of the group … the update is
         // applied only if it matches", so a request carrying one that is not the
         // group's current revision is refused and changes nothing. A request without
-        // one is applied unconditionally.
+        // one is applied unconditionally. The member is a decimal string (`^[0-9]+$`),
+        // so it names the NUMBER it spells — `01` and `1` name one revision — which
+        // `revision_precondition_holds` is the one comparison for.
         if let Some(expected) = input.revision.as_deref() {
-            if expected != stored.revision() {
+            if !crate::state::revision_precondition_holds(expected, stored.revision) {
                 return Err(UpdateGroupErrorModeled::ConflictException(
                     crate::state::revision_conflict(expected, &stored.revision()),
                 )

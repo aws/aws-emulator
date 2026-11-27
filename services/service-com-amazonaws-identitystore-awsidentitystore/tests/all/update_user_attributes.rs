@@ -25,7 +25,10 @@
 use serde_json::{json, Value};
 use smithy_server_runtime::MultiServiceRouter;
 
-use crate::harness::{emulator, error_message, ok, refused, string, MISSING_STORE, NOT_FOUND, STORE};
+use crate::harness::{
+    call, emulator, error_message, ok, refused, string, Precondition, MISSING_STORE, NOT_FOUND,
+    PRECONDITION_ROWS, STORE,
+};
 
 /// The emulator's account id, as it appears in an identity store's ARN — the other
 /// form the modelled `IdentityStoreId` pattern admits.
@@ -1531,5 +1534,174 @@ async fn an_update_refuses_a_value_the_create_of_the_same_member_refuses() {
             after, before,
             "case {case:?}: expected the refused update to leave the user unchanged"
         );
+    }
+}
+
+/// The value the row before this one's row set, so a refused call has something to have
+/// left alone.
+const BEFORE_THE_ROW: &str = "the display name before the row";
+
+/// What a row that is applied sets.
+const THE_ROWS_OWN_VALUE: &str = "the display name the row itself set";
+
+/// Create a user and update it once, so it has a current revision and a stale one.
+/// Returns its id and the revision it is now at.
+async fn user_at_its_second_revision(
+    router: &MultiServiceRouter,
+    case: &str,
+) -> (String, u64) {
+    let user = create_user(router, json!({ "UserName": user_name(case, 0) }), case).await;
+    let (settled, _) = update(router, &user, set("displayName", json!(BEFORE_THE_ROW)), case).await;
+    let current: u64 = settled
+        .parse()
+        .unwrap_or_else(|_| panic!("case {case:?}: expected a decimal revision, got {settled:?}"));
+    (user, current)
+}
+
+/// An `UpdateUser` precondition names the NUMBER its value spells, not one spelling of
+/// it.
+///
+/// The rows differ along the value sent for one and the same user at one and the same
+/// revision: the current revision in three spellings (bare, with a leading zero, and
+/// zero-padded to the modelled maximum length), no value at all, and five numbers that
+/// are not the current revision, including both published length bounds.
+#[tokio::test]
+async fn an_update_applies_only_when_the_revision_value_names_the_current_revision() {
+    for (case, precondition) in PRECONDITION_ROWS {
+        let router = emulator();
+        let (user, current) = user_at_its_second_revision(&router, case).await;
+
+        let mut request = json!({
+            "IdentityStoreId": STORE,
+            "UserId": user.clone(),
+            "Operations": set("displayName", json!(THE_ROWS_OWN_VALUE)),
+        });
+        if let Some(member) = precondition.member(current) {
+            request["Revision"] = json!(member);
+        }
+
+        if precondition.holds() {
+            let updated = ok(&router, "UpdateUser", request, case).await;
+            let revision = string(&updated, "Revision", case);
+            assert_eq!(
+                revision,
+                (current + 1).to_string(),
+                "case {case:?}: expected the applied update to report revision {}, got {revision:?}",
+                current + 1
+            );
+            let described = describe(&router, &user, case).await;
+            assert_member(&described, "DisplayName", &json!(THE_ROWS_OWN_VALUE), case);
+            let stored = string(&described, "Revision", case);
+            assert_eq!(
+                stored, revision,
+                "case {case:?}: expected DescribeUser to report revision {revision:?}, \
+                 got {stored:?}"
+            );
+        } else {
+            refused(
+                &router,
+                "UpdateUser",
+                request,
+                409,
+                "ConflictException",
+                case,
+            )
+            .await;
+            // A refused update is not a write: the attribute and the revision are the
+            // ones the user already had.
+            let described = describe(&router, &user, case).await;
+            assert_member(&described, "DisplayName", &json!(BEFORE_THE_ROW), case);
+            let stored = string(&described, "Revision", case);
+            assert_eq!(
+                stored,
+                current.to_string(),
+                "case {case:?}: expected the user to stay at revision {current}, got {stored:?}"
+            );
+        }
+    }
+}
+
+/// One `Revision` value held against one user gets one answer whichever operation takes
+/// it: `UpdateUser` and `DeleteUser` document the same member with the same meaning, so
+/// a value the delete accepts the update applies, and a value the delete refuses the
+/// update refuses.
+#[tokio::test]
+async fn the_update_and_the_delete_read_one_revision_value_the_same_way() {
+    for (case, precondition) in PRECONDITION_ROWS {
+        if matches!(precondition, Precondition::Absent) {
+            // The unconditional row carries no value to agree about.
+            continue;
+        }
+        let router = emulator();
+        let (user, current) = user_at_its_second_revision(&router, case).await;
+        let member = precondition
+            .member(current)
+            .expect("every row but the absent one sends a value");
+
+        let update_request = json!({
+            "IdentityStoreId": STORE,
+            "UserId": user.clone(),
+            "Revision": member.clone(),
+            "Operations": set("displayName", json!(THE_ROWS_OWN_VALUE)),
+        });
+        let delete_request = json!({
+            "IdentityStoreId": STORE,
+            "UserId": user.clone(),
+            "Revision": member.clone(),
+        });
+
+        if precondition.holds() {
+            ok(&router, "UpdateUser", update_request, case).await;
+            // The applied update moved the revision on, so the same value no longer
+            // names the user's revision — the delete of a user at `current + 1` takes
+            // the same spelling of THAT revision.
+            let next = precondition
+                .member(current + 1)
+                .expect("every row but the absent one sends a value");
+            ok(
+                &router,
+                "DeleteUser",
+                json!({ "IdentityStoreId": STORE, "UserId": user.clone(), "Revision": next }),
+                case,
+            )
+            .await;
+            let (status, _, body) = call(
+                &router,
+                "DescribeUser",
+                json!({ "IdentityStoreId": STORE, "UserId": user.clone() }),
+            )
+            .await;
+            assert_eq!(
+                status, NOT_FOUND,
+                "case {case:?}: expected the deleted user to be gone, got {status} with {body}"
+            );
+        } else {
+            refused(
+                &router,
+                "UpdateUser",
+                update_request,
+                409,
+                "ConflictException",
+                case,
+            )
+            .await;
+            refused(
+                &router,
+                "DeleteUser",
+                delete_request,
+                409,
+                "ConflictException",
+                case,
+            )
+            .await;
+            let described = describe(&router, &user, case).await;
+            let stored = string(&described, "Revision", case);
+            assert_eq!(
+                stored,
+                current.to_string(),
+                "case {case:?}: expected both refusals to leave the user at revision \
+                 {current}, got {stored:?}"
+            );
+        }
     }
 }
