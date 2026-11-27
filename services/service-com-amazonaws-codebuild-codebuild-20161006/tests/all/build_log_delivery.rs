@@ -57,7 +57,11 @@ const SETTLE_DEADLINE: Duration = Duration::from_secs(60);
 const LOOK_AGAIN_AFTER: Duration = Duration::from_millis(25);
 
 /// One emulator carrying IAM, CloudWatch Logs and CodeBuild over ONE shared engine.
-fn emulator() -> MultiServiceRouter {
+///
+/// `pub(crate)`: the suite that pins the agent's own account of a build
+/// (`super::build_log_command_lines`) reads a build's log back through the same three
+/// services, so it shares this harness rather than growing a second copy of it.
+pub(crate) fn emulator() -> MultiServiceRouter {
     let engine: Arc<engine::InMemoryEngine> = Arc::new(engine::InMemoryEngine::new());
     let mut router = MultiServiceRouter::new();
     router.set_request_authentication(false);

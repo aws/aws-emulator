@@ -292,7 +292,10 @@ pub(crate) async fn settled(router: &MultiServiceRouter, id: &str) -> Value {
 }
 
 /// The context message of the phase `phase_type`, or an empty string.
-fn phase_message(build: &Value, phase_type: &str) -> String {
+///
+/// `pub(crate)` for the reason the harness above is: the suite that pins WHOSE destination a
+/// build's output goes to (`codebuild_pipeline_managed_artifacts.rs`) reads the same phase.
+pub(crate) fn phase_message(build: &Value, phase_type: &str) -> String {
     build["phases"]
         .as_array()
         .cloned()

@@ -22,7 +22,10 @@
 //! A build's session is that session with the statuses POSIX gives those conditions, the
 //! shared bounds, and what its commands WROTE kept for the build's log: the bytes a command
 //! writes are what a build's log group carries ([`super::build_run`] delivers them), so this
-//! session keeps them, bounded by [`MAX_LOG_LINES`] and [`MAX_LOG_LINE_BYTES`]. What a
+//! session keeps them, bounded by [`MAX_LOG_LINES`] and [`MAX_LOG_LINE_BYTES`]. The agent's
+//! own line naming each command it RUNS is kept in front of that command's lines
+//! ([`RUNNING_COMMAND`]), because a build's log is the account of the run — which command
+//! produced which output, and which command the build ended on. What a
 //! performed command contributes to the build is its exit status, the lines it wrote, the
 //! variables it sets (a buildspec's `env/exported-variables` are read back off this session)
 //! and the files it writes into the session's own working tree, which the commands after it
@@ -59,6 +62,12 @@ pub const MAX_LOG_LINES: usize = 2_048;
 /// [`MAX_LOG_LINES`].
 pub const MAX_LOG_LINE_BYTES: usize = 16 * 1024;
 
+/// What the build agent writes into the log before it RUNS one command line, in front of the
+/// command as the buildspec wrote it: a build's log is the agent's own account of the build,
+/// and this is the line that says which command the output after it came from. Worded as the
+/// agent's other lines are ([`super::build_run`] delivers those too).
+const RUNNING_COMMAND: &str = "Running command ";
+
 /// How many seconds of `sleep` ONE build's commands may state they took, in total.
 ///
 /// A build runs no longer than the longest execution timeout it may be given:
@@ -77,6 +86,14 @@ pub(super) struct BuildShell {
     /// The paths the build's IMAGE presents in the environment's filesystem, which the
     /// build itself did not produce.
     image_paths: Vec<String>,
+    /// The build's LOG as it has been written so far: the agent's line for each command
+    /// this shell ran, each followed by what that command wrote ([`BuildShell::written`]).
+    log: Vec<String>,
+    /// How many of the session's output and error lines are in [`BuildShell::log`] already,
+    /// so each command contributes the lines IT wrote and no line is kept twice.
+    kept_output: usize,
+    /// See [`BuildShell::kept_output`].
+    kept_errors: usize,
 }
 
 impl BuildShell {
@@ -112,6 +129,9 @@ impl BuildShell {
             // utilities are commands this session performs over it.
             .with_file_utilities(),
             image_paths: Vec::new(),
+            log: Vec::new(),
+            kept_output: 0,
+            kept_errors: 0,
         };
         for (path, contents) in image_files {
             // A file the tree could not hold is one the commands will not find, and it is
@@ -176,21 +196,66 @@ impl BuildShell {
     }
 
     /// Run one command LINE and answer the status the shell answered for it.
+    ///
+    /// The build's log gets the agent's own line naming the command first
+    /// ([`RUNNING_COMMAND`]), and then the lines that command itself wrote, so the log reads
+    /// as the account of the run it is: a client reading it sees which command each line came
+    /// from, and sees the command a build ended on even when that command wrote nothing.
     pub(super) fn run(&mut self, line: &str) -> i32 {
-        self.session.run(line)
+        self.keep(format!("{RUNNING_COMMAND}{line}"));
+        let status = self.session.run(line);
+        self.keep_written();
+        status
     }
 
-    /// What this build's commands WROTE, as the lines the build's log carries: standard
-    /// output and then standard error, each in the order the commands wrote it.
+    /// Keep one line of the build's log, bounded the way the session bounds what a command
+    /// wrote ([`MAX_LOG_LINES`], [`MAX_LOG_LINE_BYTES`]): past the count a line is not kept,
+    /// and a longer line is truncated rather than dropped.
+    fn keep(&mut self, line: String) {
+        if self.log.len() >= MAX_LOG_LINES {
+            return;
+        }
+        let kept = if line.len() > MAX_LOG_LINE_BYTES {
+            line.chars()
+                .scan(0usize, |held, character| {
+                    *held += character.len_utf8();
+                    (*held <= MAX_LOG_LINE_BYTES).then_some(character)
+                })
+                .collect()
+        } else {
+            line
+        };
+        self.log.push(kept);
+    }
+
+    /// Keep the lines the session has written since the last command, which are the ones the
+    /// command that just ran wrote: its output first and then its diagnostics, because the
+    /// session keeps the two streams apart and a log carries both.
+    fn keep_written(&mut self) {
+        let written: Vec<String> = self
+            .session
+            .output()
+            .iter()
+            .skip(self.kept_output)
+            .chain(self.session.errors().iter().skip(self.kept_errors))
+            .cloned()
+            .collect();
+        self.kept_output = self.session.output().len();
+        self.kept_errors = self.session.errors().len();
+        for line in written {
+            self.keep(line);
+        }
+    }
+
+    /// What this build's LOG carries: the agent's line for each command the build ran, each
+    /// followed by what that command wrote on either of its streams.
     ///
     /// The session keeps the two streams apart (a diagnostic is not what a redirection takes
     /// or a substitution captures), and a log carries both, so the delivery joins them here.
-    pub(super) fn written(&self) -> Vec<String> {
-        self.session
-            .output()
-            .iter()
-            .chain(self.session.errors())
-            .cloned()
-            .collect()
+    pub(super) fn written(&mut self) -> Vec<String> {
+        // Anything the session wrote while no command of this build was running is still
+        // the build's output, so it is kept too.
+        self.keep_written();
+        self.log.clone()
     }
 }

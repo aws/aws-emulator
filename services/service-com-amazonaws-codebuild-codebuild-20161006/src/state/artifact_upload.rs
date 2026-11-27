@@ -32,7 +32,10 @@
 //! client error CodeBuild reports for it — the buildspec declaring no artifact file at all,
 //! the paths it declared matching nothing the build produced, or the store not taking an
 //! object — and the build's own `artifacts` then report no location, because nothing of what
-//! the build declared arrived whole.
+//! the build declared arrived whole. The destination a PIPELINE manages is the one place a
+//! buildspec declaring no `artifacts` section at all is not such an error: that action's
+//! output artifact exists whatever the project builds, so the empty archive is what goes
+//! there ([`upload`]).
 //!
 //! What the build then REPORTS for its artifacts is read off the upload: `location` is the
 //! S3 ARN of what was put there, and the checksums are stated only for the packaging AWS
@@ -76,6 +79,12 @@ fn not_uploaded_message(key: &str) -> String {
     format!("The artifact {key} could not be uploaded to the output bucket")
 }
 
+/// The `ArtifactsType` whose destination CODEPIPELINE manages: "CODEPIPELINE: The build
+/// project has build output generated through CodePipeline" (`ProjectArtifacts$type`). A
+/// build of a pipeline's Build action is started with such a destination naming the object the
+/// pipeline assigned that action's output artifact, which is the one place its output may go.
+const ARTIFACTS_TYPE_CODEPIPELINE: &str = "CODEPIPELINE";
+
 /// Where ONE of a build's artifact destinations puts what it is given.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ArtifactDestination {
@@ -86,6 +95,10 @@ pub struct ArtifactDestination {
     pub key: String,
     /// Whether the whole output goes into ONE ZIP object.
     pub zipped: bool,
+    /// Whether this destination is the one CODEPIPELINE manages — the object a pipeline
+    /// assigned the build action's output artifact — rather than one a caller of CodeBuild
+    /// configured a bucket of its own for ([`upload`] is where that tells them apart).
+    pub pipeline_managed: bool,
 }
 
 impl ArtifactDestination {
@@ -98,10 +111,18 @@ impl ArtifactDestination {
 }
 
 /// Where `artifacts` put the output of the build `build_id` — `None` for artifacts that
-/// name no destination of their own, which is every type but the one that stores build
-/// output in a bucket, and any of that type that names no bucket.
+/// name no destination of their own: the type that produces no output at all, and any
+/// destination that names no bucket.
+///
+/// Two types DO name one. `S3` is the destination a caller configured for itself, where
+/// `location` is "the name of the output bucket". `CODEPIPELINE` is the destination a
+/// pipeline manages: the location is the object that pipeline assigned the build action's
+/// output artifact, handed over when the build is started, so a build started with one has
+/// somewhere to put its output and a project that merely declares the type (every build of it
+/// outside a pipeline) has not.
 pub fn destination_of(artifacts: &ProjectArtifacts, build_id: &str) -> Option<ArtifactDestination> {
-    if artifacts.r#type != ARTIFACTS_TYPE_S3 {
+    let pipeline_managed = artifacts.r#type == ARTIFACTS_TYPE_CODEPIPELINE;
+    if artifacts.r#type != ARTIFACTS_TYPE_S3 && !pipeline_managed {
         return None;
     }
     let location = artifacts.location.as_deref()?.trim();
@@ -134,6 +155,7 @@ pub fn destination_of(artifacts: &ProjectArtifacts, build_id: &str) -> Option<Ar
             .packaging
             .as_deref()
             .is_some_and(|packaging| packaging == PACKAGING_ZIP),
+        pipeline_managed,
     })
 }
 
@@ -227,6 +249,13 @@ pub enum ArtifactUpload {
 ///
 /// `declared` is `None` for a build whose buildspec declares no `artifacts` section at
 /// all, which is a different client error from one whose declared paths matched nothing.
+///
+/// A destination the PIPELINE manages is the one exception: a pipeline's Build action
+/// produces its output artifact whatever its project builds, so a buildspec that declares no
+/// `artifacts` section at all puts the EMPTY artifact there — the actions after it read an
+/// archive carrying nothing — rather than failing the build. A buildspec that DOES declare a
+/// section names files it meant to produce, so paths that matched nothing are the client
+/// error they are at any destination.
 pub async fn upload(
     callback: &EmbeddedEmulator,
     region: &str,
@@ -235,14 +264,14 @@ pub async fn upload(
     declared: Option<&ArtifactDeclaration>,
     produced: &[(String, String)],
 ) -> ArtifactUpload {
-    let Some(declaration) = declared else {
-        return ArtifactUpload::Refused(client_error(NO_ARTIFACT_FILES_MESSAGE));
-    };
-    let files = declared_files(declaration, produced);
-    if files.is_empty() {
-        // Either the section named no path at all, or the paths it named matched nothing
-        // the build produced: CodeBuild states the two separately.
-        let message = if declaration.files.is_empty() {
+    let files = declared.map_or_else(Vec::new, |declaration| {
+        declared_files(declaration, produced)
+    });
+    if files.is_empty() && !(destination.pipeline_managed && declared.is_none()) {
+        // Either the buildspec declared no section at all, the section named no path, or
+        // the paths it named matched nothing the build produced: CodeBuild states the
+        // first two the same way and the last one separately.
+        let message = if declared.is_none_or(|declaration| declaration.files.is_empty()) {
             NO_ARTIFACT_FILES_MESSAGE
         } else {
             NO_MATCHING_ARTIFACT_PATHS_MESSAGE
@@ -353,31 +382,38 @@ mod tests {
     /// RULE: an artifact's key is the destination's `path`, namespace and `name` composed
     /// in that order under the bucket its `location` names, with the parts that name
     /// nothing left out; the namespace a destination asks the build for is the build's own
-    /// half of its id, never the project half it also carries.
+    /// half of its id, never the project half it also carries. A destination is resolved for
+    /// the type that stores build output in a bucket and for the one a PIPELINE manages — the
+    /// object it hands the build when it starts it — and for nothing else.
     ///
     /// The rows differ along what the rule generalises over: which of the three parts the
     /// destination states, whether the location carries a prefix, which namespace type it
-    /// asks for, and the name that names the bucket's own root.
+    /// asks for, the name that names the bucket's own root, and which artifacts type names
+    /// the destination.
     #[test]
     fn an_artifacts_key_is_its_destination_composed() {
-        /// One row: the case, the destination's artifacts, and the bucket, key and
-        /// packaging it resolves to.
-        type Row = (&'static str, ProjectArtifacts, Option<(&'static str, &'static str, bool)>);
+        /// One row: the case, the destination's artifacts, and the bucket, key, packaging
+        /// and pipeline-managed answer it resolves to.
+        type Row = (
+            &'static str,
+            ProjectArtifacts,
+            Option<(&'static str, &'static str, bool, bool)>,
+        );
         let rows: Vec<Row> = vec![
             (
                 "a path, a name and no namespace",
                 artifacts("out-bucket", Some("out"), None, Some("build"), None),
-                Some(("out-bucket", "out/build", false)),
+                Some(("out-bucket", "out/build", false, false)),
             ),
             (
                 "the bucket alone",
                 artifacts("out-bucket", None, None, None, None),
-                Some(("out-bucket", "", false)),
+                Some(("out-bucket", "", false, false)),
             ),
             (
                 "a prefix written behind the bucket name",
                 artifacts("out-bucket/team", Some("out"), None, Some("build"), None),
-                Some(("out-bucket", "team/out/build", false)),
+                Some(("out-bucket", "team/out/build", false, false)),
             ),
             (
                 "the build id in the namespace, which is the build's uuid alone",
@@ -392,6 +428,7 @@ mod tests {
                     "out-bucket",
                     "MyArtifacts/11111111-2222-3333-4444-555555555555/MyArtifact.zip",
                     true,
+                    false,
                 )),
             ),
             (
@@ -403,17 +440,44 @@ mod tests {
                     None,
                     None,
                 ),
-                Some(("out-bucket", BUILD_UUID, false)),
+                Some(("out-bucket", BUILD_UUID, false, false)),
             ),
             (
                 "a namespace type that includes nothing",
                 artifacts("out-bucket", None, Some("NONE"), Some("build"), None),
-                Some(("out-bucket", "build", false)),
+                Some(("out-bucket", "build", false, false)),
             ),
             (
                 "a name that is the bucket's own root",
                 artifacts("out-bucket", None, None, Some(NAME_AT_THE_ROOT), None),
-                Some(("out-bucket", "", false)),
+                Some(("out-bucket", "", false, false)),
+            ),
+            (
+                "the object a pipeline manages, as it hands it to the build",
+                ProjectArtifacts {
+                    r#type: ARTIFACTS_TYPE_CODEPIPELINE.to_string(),
+                    location: Some("pipeline-bucket".to_string()),
+                    path: Some("pipe/line".to_string()),
+                    name: Some("BuildOutput".to_string()),
+                    namespace_type: Some("NONE".to_string()),
+                    packaging: Some(PACKAGING_ZIP.to_string()),
+                    ..ProjectArtifacts::default()
+                },
+                Some((
+                    "pipeline-bucket",
+                    "pipe/line/BuildOutput",
+                    true,
+                    true,
+                )),
+            ),
+            (
+                "artifacts CodePipeline manages that name no object",
+                ProjectArtifacts {
+                    r#type: ARTIFACTS_TYPE_CODEPIPELINE.to_string(),
+                    location: None,
+                    ..ProjectArtifacts::default()
+                },
+                None,
             ),
             (
                 "artifacts of a type that names no destination",
@@ -443,6 +507,7 @@ mod tests {
                         destination.bucket.as_str(),
                         destination.key.as_str(),
                         destination.zipped,
+                        destination.pipeline_managed,
                     )
                 });
             assert_eq!(

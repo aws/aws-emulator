@@ -896,3 +896,267 @@ async fn a_privileged_build_action_pushes_the_image_its_commands_built() {
         }
     }
 }
+
+/// The artifact a pipeline's Build action occupies in these rows.
+const BUILD_ARTIFACT: &str = "BuildOutput";
+
+/// The signature every ZIP archive ENDS with ("end of central directory record", ZIP APPNOTE
+/// 4.3.16), which is the whole of an archive that carries no entry.
+const ZIP_END_SIGNATURE: &[u8] = b"PK\x05\x06";
+
+/// The signature a ZIP archive's entry begins with ("local file header signature", ZIP
+/// APPNOTE 4.3.7): an archive carrying no entry has none of them.
+const ZIP_ENTRY_SIGNATURE: &[u8] = b"PK\x03\x04";
+
+/// A pipeline whose Source stage reads `source_key` out of `bucket` and whose Build stage
+/// builds `project` into the artifact [`BUILD_ARTIFACT`] — with no stage after it, so what the
+/// Build action published is read as the object it published rather than through a later
+/// action.
+fn source_and_build(
+    name: &str,
+    role_arn: &str,
+    bucket: &str,
+    source_key: &str,
+    project: &str,
+) -> Value {
+    json!({"pipeline": {
+        "name": name,
+        "roleArn": role_arn,
+        "artifactStore": {"type": "S3", "location": bucket},
+        "stages": [
+            {
+                "name": "Source",
+                "actions": [{
+                    "name": "Source",
+                    "actionTypeId": {
+                        "category": "Source", "owner": "AWS", "provider": "S3", "version": "1",
+                    },
+                    "configuration": {
+                        "S3Bucket": bucket,
+                        "S3ObjectKey": source_key,
+                        "PollForSourceChanges": "false",
+                    },
+                    "outputArtifacts": [{"name": "SourceArtifact"}],
+                }],
+            },
+            {
+                "name": "Build",
+                "actions": [{
+                    "name": "Build",
+                    "actionTypeId": {
+                        "category": "Build",
+                        "owner": "AWS",
+                        "provider": "CodeBuild",
+                        "version": "1",
+                    },
+                    "configuration": {"ProjectName": project},
+                    "inputArtifacts": [{"name": "SourceArtifact"}],
+                    "outputArtifacts": [{"name": BUILD_ARTIFACT}],
+                }],
+            },
+        ],
+    }})
+}
+
+/// Whether `bytes` carries `wanted` anywhere in it.
+fn carries(bytes: &[u8], wanted: &[u8]) -> bool {
+    bytes.windows(wanted.len()).any(|window| window == wanted)
+}
+
+/// RULE: the destination a Build action hands the build is the object the PIPELINE assigned
+/// that action's output artifact, and the action publishes that object whatever its project
+/// builds — so a project whose buildspec declares no `artifacts` section at all settles the
+/// execution `Succeeded` with the EMPTY archive published for the artifact, while one that
+/// declares a section publishes the files it names. A section whose paths match nothing the
+/// build produced is the build's own client error, which the action and the execution report
+/// as the failure it is.
+///
+/// The rows differ along what the rule generalises over: whether the buildspec declares an
+/// `artifacts` section at all, which files it declares, and whether what it declares is among
+/// what the build produced.
+#[tokio::test]
+async fn a_build_action_publishes_its_output_artifact_whatever_the_buildspec_declares() {
+    /// One row: the case, the buildspec the project runs, the status the execution settles
+    /// at, and the entries the published archive carries.
+    struct Row {
+        case: &'static str,
+        buildspec: &'static str,
+        execution_status: &'static str,
+        entries: &'static [&'static str],
+    }
+
+    let rows: &[Row] = &[
+        Row {
+            case: "a buildspec that declares no artifacts section at all",
+            buildspec: "version: 0.2\nphases:\n  build:\n    commands:\n      - echo built\n",
+            execution_status: "Succeeded",
+            entries: &[],
+        },
+        Row {
+            case: "a buildspec that declares the file its commands produced",
+            buildspec: "version: 0.2\nphases:\n  build:\n    commands:\n      \
+                        - cp input.txt output.txt\nartifacts:\n  files:\n    - output.txt\n",
+            execution_status: "Succeeded",
+            entries: &["output.txt"],
+        },
+        Row {
+            case: "a buildspec that declares a file its commands never produced",
+            buildspec: "version: 0.2\nphases:\n  build:\n    commands:\n      - echo built\n\
+                        artifacts:\n  files:\n    - never-written.txt\n",
+            execution_status: "Failed",
+            entries: &[],
+        },
+    ];
+
+    let router = emulator();
+    let bucket = "pipeline-published-artifacts";
+    versioned_bucket(&router, bucket).await;
+    let bucket_objects = format!("arn:aws:s3:::{bucket}/*");
+    let build_role = role_allowing(
+        &router,
+        "ppa-build-role",
+        CODEBUILD_TRUST,
+        &[
+            (&LOG_ACTIONS, "*"),
+            (&ARTIFACT_ACTIONS, bucket_objects.as_str()),
+        ],
+    )
+    .await;
+    let pipeline_role = role_allowing(
+        &router,
+        "ppa-pipeline-role",
+        PIPELINE_TRUST,
+        &[
+            (&BUILD_ACTIONS, "*"),
+            (&ARTIFACT_ACTIONS, bucket_objects.as_str()),
+        ],
+    )
+    .await;
+
+    for (index, row) in rows.iter().enumerate() {
+        let case = row.case;
+        let source_key = format!("ppa-source-{index}.zip");
+        let project = format!("ppa-project-{index}");
+        let pipeline = format!("ppa-pipeline-{index}");
+
+        let entries: Vec<(&str, &[u8])> = vec![("input.txt", b"ppa-marker")];
+        let (status, body) = s3(
+            &router,
+            "PUT",
+            &format!("/{bucket}/{source_key}"),
+            &crate::execution_engine::zip_of(&entries),
+        )
+        .await;
+        assert_eq!(
+            status,
+            200,
+            "case {case:?}: the source object must be put, got {status} with {}",
+            String::from_utf8_lossy(&body)
+        );
+
+        cb_ok(
+            &router,
+            case,
+            "CreateProject",
+            &json!({
+                "name": project,
+                "serviceRole": build_role,
+                "source": {"type": "CODEPIPELINE", "buildspec": row.buildspec},
+                "artifacts": {"type": "CODEPIPELINE"},
+                "environment": {
+                    "type": "LINUX_CONTAINER",
+                    "image": "aws/codebuild/standard:7.0",
+                    "computeType": "BUILD_GENERAL1_SMALL",
+                },
+            }),
+        )
+        .await;
+        cp_ok(
+            &router,
+            case,
+            "CreatePipeline",
+            &source_and_build(&pipeline, &pipeline_role, bucket, &source_key, &project),
+        )
+        .await;
+
+        let (execution, status) = settled_execution(&router, case, &pipeline).await;
+        let detail = action_execution(&router, case, &pipeline, &execution, "Build").await;
+        assert_eq!(
+            status, row.execution_status,
+            "case {case:?}: expected the execution to reach {}, got {status} with the Build \
+             action reporting {detail}",
+            row.execution_status
+        );
+
+        // The build the action followed, whose own outcome the action reported.
+        let build_id = detail["output"]["executionResult"]["externalExecutionId"]
+            .as_str()
+            .unwrap_or_else(|| {
+                panic!("case {case:?}: the action must report the build it started, got {detail}")
+            })
+            .to_string();
+        let build = settled_build(&router, case, &build_id).await;
+        if row.execution_status == "Failed" {
+            assert_eq!(
+                build["buildStatus"].as_str(),
+                Some("FAILED"),
+                "case {case:?}: the action's failure is the build's own, got {build}"
+            );
+            continue;
+        }
+        assert_eq!(
+            build["buildStatus"].as_str(),
+            Some("SUCCEEDED"),
+            "case {case:?}: every command of the buildspec runs, so the build succeeds, got \
+             {build}"
+        );
+
+        // The object the action published for its output artifact, as a later action
+        // addresses it — and the archive that object really holds.
+        let location = detail["output"]["outputArtifacts"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .find(|artifact| artifact["name"].as_str() == Some(BUILD_ARTIFACT))
+            .map(|artifact| artifact["s3location"].clone())
+            .unwrap_or(Value::Null);
+        assert_eq!(
+            location["bucket"].as_str(),
+            Some(bucket),
+            "case {case:?}: the output artifact must be published in the artifact store, got \
+             {detail}"
+        );
+        let key = location["key"]
+            .as_str()
+            .unwrap_or_else(|| {
+                panic!("case {case:?}: the output artifact must be published at a key, got {detail}")
+            })
+            .to_string();
+        let (status, bytes) = s3(&router, "GET", &format!("/{bucket}/{key}"), b"").await;
+        assert_eq!(
+            status, 200,
+            "case {case:?}: the published artifact must be the object at {key}, got {status}"
+        );
+        assert!(
+            carries(&bytes, ZIP_END_SIGNATURE),
+            "case {case:?}: expected an archive at {key}, got {} bytes",
+            bytes.len()
+        );
+        for entry in row.entries {
+            assert!(
+                carries(&bytes, entry.as_bytes()),
+                "case {case:?}: expected the archive at {key} to carry {entry:?}, got {} bytes",
+                bytes.len()
+            );
+        }
+        if row.entries.is_empty() {
+            assert!(
+                !carries(&bytes, ZIP_ENTRY_SIGNATURE),
+                "case {case:?}: a buildspec declaring no artifacts section publishes the EMPTY \
+                 archive, got {} bytes at {key}",
+                bytes.len()
+            );
+        }
+    }
+}

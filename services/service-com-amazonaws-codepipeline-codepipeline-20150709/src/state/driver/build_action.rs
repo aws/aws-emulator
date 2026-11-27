@@ -36,12 +36,13 @@ use super::{service_error_detail, FAILURE_CONFIGURATION_ERROR, FAILURE_JOB_FAILE
 /// The `StatusType` a build that ran to success reports (`Build$buildStatus`).
 const BUILD_SUCCEEDED: &str = "SUCCEEDED";
 
-/// The `ArtifactsType` of a destination whose objects go into a bucket of the account's
-/// object store: "S3: The build project stores build output in Amazon S3"
-/// (`ProjectArtifacts$type`). The pipeline's artifact store IS such a bucket, so the
-/// destination a build action hands the build is one of that type, at the key the output
-/// artifact occupies.
-const ARTIFACTS_TYPE_S3: &str = "S3";
+/// The `ArtifactsType` of a destination CODEPIPELINE itself manages: "CODEPIPELINE: The build
+/// project has build output generated through CodePipeline" (`ProjectArtifacts$type`). The
+/// object the build's output goes into is the one this execution assigned the action's OUTPUT
+/// artifact, so the start hands that object over as the destination's location — which is
+/// what CodePipeline manages about it — and the build is still a build whose artifacts are
+/// the pipeline's rather than ones a caller of CodeBuild configured for itself.
+const ARTIFACTS_TYPE_CODEPIPELINE: &str = "CODEPIPELINE";
 
 /// The `ArtifactNamespace` that puts nothing of its own into the artifact's key: "NONE: Do
 /// not include the build ID". The key is the one this execution assigned the output
@@ -109,7 +110,7 @@ pub(super) async fn run_codebuild_start(
         };
         match ::aws_sdk_codebuild::types::ProjectArtifacts::builder()
             .r#type(::aws_sdk_codebuild::types::ArtifactsType::from(
-                ARTIFACTS_TYPE_S3,
+                ARTIFACTS_TYPE_CODEPIPELINE,
             ))
             .location(&output.bucket)
             .path(path)
