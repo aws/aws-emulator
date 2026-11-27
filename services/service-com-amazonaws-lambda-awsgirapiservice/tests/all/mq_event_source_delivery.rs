@@ -14,7 +14,8 @@
 //! the whole batch it took; a mapping whose queue the broker does not hold, and one whose
 //! polling is paused, consume nothing at all — and a mapping that cannot consume the queue it
 //! names reports that it could not reach its source as its `LastProcessingResult`, which is
-//! how "this mapping delivers nothing" is told apart from "nothing was ever polled".
+//! how "this mapping delivers nothing" is told apart from "nothing was ever polled" — and that
+//! reading is replaced by itself once the queue it names is declared.
 //!
 //! The rows differ along what the rule generalises over: how many messages are waiting, how
 //! many one batch may hold, whether criteria decide which of them are handed over, whether
@@ -43,7 +44,7 @@ use amq_protocol::protocol::{basic, channel, connection, queue, AMQPClass};
 use amq_protocol::types::{FieldTable, LongString, ShortString};
 use serde_json::{json, Value};
 use service_com_amazonaws_lambda_awsgirapiservice::state::{
-    LAST_PROCESSING_RESULT_CONNECTION_ERROR, LAST_PROCESSING_RESULT_NO_RECORDS,
+    LAST_PROCESSING_RESULT_BROKER_CONNECT_FAILED, LAST_PROCESSING_RESULT_NO_RECORDS,
     LAST_PROCESSING_RESULT_OK,
 };
 use smithy_server_runtime::MultiServiceRouter;
@@ -251,7 +252,7 @@ const ROWS: &[Row] = &[
         published: &[r#"{"order":"one"}"#],
         delivered: &[],
         left_on_the_queue: Some(1),
-        settled_results: &[LAST_PROCESSING_RESULT_CONNECTION_ERROR],
+        settled_results: &[LAST_PROCESSING_RESULT_BROKER_CONNECT_FAILED],
     },
     // Polling paused: "when false, Lambda pauses polling and invocation", so the messages
     // stay on the queue while the control delivers.
@@ -423,6 +424,76 @@ async fn a_mapping_consumes_the_broker_queue_it_names() {
 
         publisher.close().await;
     }
+}
+
+/// The body published once the queue the mapping names has been declared, whose delivery is
+/// what says the mapping recovered rather than keeping the reading of its broken source.
+const RECOVERED_BODY: &str = r#"{"order":"declared-later"}"#;
+
+/// RULE, read over time: the connect failure a mapping records is a reading of its SOURCE as
+/// that source stands, so a queue declared on the broker AFTER the mapping was made replaces
+/// that reading by itself — the mapping, still `Enabled` and still polling, then consumes what
+/// the queue holds and reports the attempt it made on it.
+///
+/// This is the other half of the failure reading: a mapping that cannot consume its source
+/// reports the connect failure for as long as the fault lasts and no longer, which is what
+/// makes the reading a reading of state rather than a verdict the mapping keeps.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_queue_declared_after_the_mapping_replaces_the_connect_failure() {
+    let case = "a queue declared after the mapping was made";
+    let router = router_with_queues();
+    let (broker_arn, host, port) = running_rabbitmq_broker(&router, case).await;
+
+    let results = sink_queue(&router, case, "esm-recovery-results").await;
+    let function = "mq-esm-recovery-consumer";
+    given_consumer(&router, case, function, &broker_arn, SOURCE_QUEUE, 10, &results).await;
+    let row = Row {
+        case,
+        mapped_queue: SOURCE_QUEUE,
+        enabled: true,
+        batch_size: 10,
+        patterns: &[],
+        published: &[],
+        delivered: &[],
+        left_on_the_queue: None,
+        settled_results: &[LAST_PROCESSING_RESULT_BROKER_CONNECT_FAILED],
+    };
+    let uuid = given_mapping(&router, case, function, &broker_arn, &row).await;
+    await_mapping_state(&router, case, &uuid, STATE_ENABLED).await;
+
+    // Nothing has declared the queue yet, so there is nothing on this broker for the mapping to
+    // consume and that is what it reports.
+    let reported = processing_result_until(&router, &uuid, row.settled_results).await;
+    assert_eq!(
+        reported.as_deref(),
+        Some(LAST_PROCESSING_RESULT_BROKER_CONNECT_FAILED),
+        "case {case:?}: a mapping naming a queue the broker does not hold must report the \
+         connect failure, got {reported:?}"
+    );
+
+    // The queue is declared over the broker's own wire, by a client of it, and a message
+    // published to it.
+    let mut publisher = Publisher::open(case, &host, port).await;
+    publisher.declare_queue(SOURCE_QUEUE).await;
+    publisher.publish(SOURCE_QUEUE, RECOVERED_BODY).await;
+
+    let seen = delivered_within_budget(&router, case, &results, 1).await;
+    assert_eq!(
+        seen,
+        vec![RECOVERED_BODY.to_string()],
+        "case {case:?}: the mapping must deliver what the queue holds once it is declared, got \
+         {seen:?}"
+    );
+    let after = processing_result_until(&router, &uuid, DRAINED_RESULTS).await;
+    assert!(
+        after
+            .as_deref()
+            .is_some_and(|result| DRAINED_RESULTS.contains(&result)),
+        "case {case:?}: the reading of the broken source must be replaced by the reading of a \
+         pass over the queue, expected one of {DRAINED_RESULTS:?}, got {after:?}"
+    );
+
+    publisher.close().await;
 }
 
 /// RULE: what a BATCH of an Amazon MQ broker is handed over as is the broker's own ENGINE's

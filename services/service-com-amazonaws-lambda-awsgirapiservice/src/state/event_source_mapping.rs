@@ -225,17 +225,36 @@ pub const LAST_PROCESSING_RESULT_OK: &str = "OK";
 /// is not checkpointed past it and a queue source deletes none of its messages.
 pub const LAST_PROCESSING_RESULT_FUNCTION_CALL_FAILED: &str = "PROBLEM: Function call failed";
 
-/// `LastProcessingResult` after a pass that could not REACH the event source at all, in that
-/// same `PROBLEM: <reason>` form — the sentence AWS Lambda words a mapping's failure to
-/// connect to its source in, naming the mapping's own source configuration as what to check.
+/// `LastProcessingResult` after a pass of a mapping on an APACHE KAFKA cluster that could not
+/// REACH its event source at all, in that same `PROBLEM: <reason>` form — the sentence Lambda
+/// words such a mapping's failure to connect in, naming the mapping's own source configuration
+/// as what to check.
 ///
-/// It is a reading of the SOURCE and not of the function: a mapping whose source Lambda
-/// cannot consume from — a broker that is not there, or one holding no queue of the name the
-/// mapping consumes — has made no attempt at a batch, so this is what its last pass came to,
-/// and the mapping keeps polling, which is what lets the reading change by itself once the
-/// source is in place.
+/// It is a reading of the SOURCE and not of the function: a mapping whose cluster Lambda
+/// cannot consume from — one that is not there, or one holding none of the topics the mapping
+/// names — has made no attempt at a batch, so this is what its last pass came to, and the
+/// mapping keeps polling, which is what lets the reading change by itself once the source is
+/// in place.
+///
+/// Each KIND of event source carries its own wording for that same failure — an Amazon MQ
+/// broker's is [`LAST_PROCESSING_RESULT_BROKER_CONNECT_FAILED`] — because this text is the
+/// whole durable record a client reads a broken source off, so none of them is a sentence to
+/// word here for a source it was not observed on.
 pub const LAST_PROCESSING_RESULT_CONNECTION_ERROR: &str =
     "PROBLEM: Connection error. Please check your event source connection configuration.";
+
+/// `LastProcessingResult` after a pass of a mapping on an AMAZON MQ broker that could not
+/// consume its event source, in that same `PROBLEM: <reason>` form: the sentence Lambda words
+/// a broker source's failure to be connected to in, which is FIXED text whole — the queue
+/// name, the broker, its host and the instant of the pass are no part of it.
+///
+/// Every way such a pass fails to consume is that one reading: a broker that answers no client
+/// yet, one that is gone, and one holding no queue of the name the mapping consumes are each a
+/// failure to connect to the source, and none of them is an attempt at a batch. The mapping
+/// keeps polling while it reports this — it stays `Enabled` — which is what lets the reading
+/// change by itself once the queue is declared.
+pub const LAST_PROCESSING_RESULT_BROKER_CONNECT_FAILED: &str =
+    "PROBLEM: Failed to connect with event source.";
 
 /// Where in ONE shard of a mapping's event source that mapping reads next.
 ///

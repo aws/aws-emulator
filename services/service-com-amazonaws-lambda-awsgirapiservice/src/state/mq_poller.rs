@@ -36,7 +36,7 @@
 //!   acknowledge it. A queue the broker does not hold is nothing this consumer can consume
 //!   from, so a mapping naming one is `Enabled` and simply delivers nothing, recording that
 //!   it could not reach its source
-//!   ([`LAST_PROCESSING_RESULT_CONNECTION_ERROR`]) — the reading a pass over a queue that IS
+//!   ([`LAST_PROCESSING_RESULT_BROKER_CONNECT_FAILED`]) — the reading a pass over a queue that IS
 //!   there replaces by itself, which is what makes the mapping recover when the queue is
 //!   declared later.
 //! * GATHER. "For ... Amazon MQ ... event sources, the default batching window is 500 ms"
@@ -82,7 +82,7 @@ use ::service_com_amazonaws_mq_mq::state::SharedMessageBroker;
 use super::event_source_poller::{Clients, PollerClaim};
 use super::{
     batch_is_due, service_state, ComAmazonawsLambdaAwsgirapiserviceState,
-    EVENT_SOURCE_MAPPING_STATE_ENABLED, LAST_PROCESSING_RESULT_CONNECTION_ERROR,
+    EVENT_SOURCE_MAPPING_STATE_ENABLED, LAST_PROCESSING_RESULT_BROKER_CONNECT_FAILED,
     LAST_PROCESSING_RESULT_FUNCTION_CALL_FAILED, LAST_PROCESSING_RESULT_NO_RECORDS,
     LAST_PROCESSING_RESULT_OK, POLL_INTERVAL, STATE_ACTIVE,
 };
@@ -338,7 +338,7 @@ async fn poll_pass<Eng: Send + Sync + 'static>(
         if let Some(gathering) = session.gathering.get_mut(&target.uuid) {
             gathering.hand_back();
         }
-        record_attempt(&state, &target, LAST_PROCESSING_RESULT_CONNECTION_ERROR);
+        record_attempt(&state, &target, LAST_PROCESSING_RESULT_BROKER_CONNECT_FAILED);
         return;
     };
     let gathering = session.gathering.entry(target.uuid.clone()).or_default();
@@ -372,7 +372,7 @@ async fn poll_pass<Eng: Send + Sync + 'static>(
         // back to it, which takes none of them while it is gone and all of them once it is
         // declared again.
         gathering.hand_back();
-        record_attempt(&state, &target, LAST_PROCESSING_RESULT_CONNECTION_ERROR);
+        record_attempt(&state, &target, LAST_PROCESSING_RESULT_BROKER_CONNECT_FAILED);
         return;
     }
     let waited = gathering
