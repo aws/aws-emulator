@@ -4211,12 +4211,19 @@ pub fn attribute_depth_exceeds(value: &AttributeValue, limit: usize) -> bool {
     false
 }
 
+/// The stored size of ONE attribute of an item: its name plus its value.
+///
+/// The one term every total over an item's bytes is built from, so a part of an item and the
+/// whole of it are weighed identically ([`item_size`], and the part an update leaves
+/// untouched, which is SUBTRACTED from that whole
+/// ([`UpdateRequestShape::untouched_bytes`])).
+pub fn attribute_size(name: &str, value: &AttributeValue) -> i64 {
+    byte_len(name.len()).saturating_add(attribute_value_size(value))
+}
+
 /// The stored size of one item: every attribute's name plus its value.
 pub fn item_size(item: &Item) -> i64 {
-    sum_of(
-        item.iter()
-            .map(|(name, value)| byte_len(name.len()).saturating_add(attribute_value_size(value))),
-    )
+    sum_of(item.iter().map(|(name, value)| attribute_size(name, value)))
 }
 
 /// The `ValidationException` a bad `N` value earns, naming the rule its text breaks.
@@ -4486,7 +4493,7 @@ pub(crate) fn check_collection_rules(value: &AttributeValue) -> Result<(), Reque
 }
 
 /// Add up sizes without overflowing.
-fn sum_of(sizes: impl Iterator<Item = i64>) -> i64 {
+pub(crate) fn sum_of(sizes: impl Iterator<Item = i64>) -> i64 {
     sizes.fold(0i64, i64::saturating_add)
 }
 
@@ -4832,9 +4839,9 @@ mod vectors;
 pub use vectors::*;
 
 /// What an UPDATE's resulting item is charged against the documented item-size ceiling — the
-/// floor the key portion of an item carries — in its own file: it is one rule, read by every
-/// surface that applies a change to a stored item. Re-exported below, so every caller still
-/// names it `crate::state::…`.
+/// floor under the part of the item the change does not address — in its own file: it is one
+/// rule, read by every surface that applies a change to a stored item. Re-exported below, so
+/// every caller still names it `crate::state::…`.
 mod update_item_size;
 pub use update_item_size::*;
 

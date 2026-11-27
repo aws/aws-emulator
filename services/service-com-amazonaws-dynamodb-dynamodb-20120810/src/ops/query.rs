@@ -13,12 +13,16 @@
 //! first ([`KeyCondition::resolve`]). The expression grammar is parsed here — it is
 //! DynamoDB's own, so there is no third-party parser for it — by
 //! [`parse_key_condition_expression`], which takes a comparison with the operand on
-//! either side of the operator. An expression defect the REQUEST alone settles (its
-//! syntax, a substitution token it uses but does not define) is refused there, before
-//! any table is looked up; an operand is held to the types the operator it was written
-//! with compares ([`check_operand_type`]) where it BINDS to the key attribute its
-//! comparison names, so a query addressing a table this account does not hold is
-//! refused as the absent table it names whatever its operands are.
+//! either side of the operator. The defects the OPERANDS of one condition carry are
+//! answered in the order the expression WROTE them ([`operand_defects`]), so an expression
+//! carrying two of them earns the one its text states first; the ones the REQUEST settles
+//! (its syntax, a substitution token it uses but does not define, two literal `BETWEEN`
+//! bounds that draw no range, and an operand outside the vocabulary of the operator or
+//! function it was written with) are refused there, before any table is looked up, while
+//! what EQUALITY's operand may be is a fact of the key SCHEMA and is refused where the
+//! condition binds to it, so a query addressing a table this account does not hold is
+//! refused as the absent table it names whenever that is the only thing wrong with its
+//! operands.
 //!
 //! `FilterExpression` is applied AFTER the key conditions have selected the page —
 //! "a filter expression is applied after a Query finishes, but before the results are
@@ -485,21 +489,31 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // Every token the request DEFINES must be one an expression uses: an unused
         // entry of either substitution table makes the whole request invalid, however
         // well-formed the expressions that ignore it are.
+        //
+        // The key condition answers the undefined tokens of its OWN text, in the order that
+        // text states its operands' defects ([`parse_key_condition_expression`]): a token it
+        // writes first was already refused above, and one it writes after an operand its
+        // comparison cannot take is held behind that operand, which binds to the key schema.
+        // So this pass reads that member for the tokens it REFERENCES and leaves its
+        // undefined ones to it ([`crate::state::Substitutions::check_all_referenced_outside`]).
         crate::state::Substitutions::new(
             input.expression_attribute_names.as_ref(),
             input.expression_attribute_values.as_ref(),
         )
-        .check_all_referenced(&[
-            (
-                "KeyConditionExpression",
-                input.key_condition_expression.as_deref(),
-            ),
-            ("FilterExpression", input.filter_expression.as_deref()),
-            (
-                PROJECTION_EXPRESSION,
-                input.projection_expression.as_deref(),
-            ),
-        ])
+        .check_all_referenced_outside(
+            &[
+                (
+                    "KeyConditionExpression",
+                    input.key_condition_expression.as_deref(),
+                ),
+                ("FilterExpression", input.filter_expression.as_deref()),
+                (
+                    PROJECTION_EXPRESSION,
+                    input.projection_expression.as_deref(),
+                ),
+            ],
+            &["KeyConditionExpression"],
+        )
         .map_err(lift)?;
         // A value a key condition or a filter compares against is held to the documented
         // rules for its type, exactly as a value a write stores is: the rules belong to
@@ -518,7 +532,18 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let caller = crate::state::request_caller(&*self.engine, ctx);
         let mut store = state.lock();
         store.apply_due_transitions(now);
-        let table = store.active_table(&region, &name, now).map_err(lift)?;
+        // A refusal is reported only where the service can judge it, so a condition whose
+        // first defect is one only the KEY SCHEMA settles ([`first_operand_defect`]) and that
+        // addresses a table this account does not hold earns the defect the REQUEST settles
+        // after it, if its text states one ([`first_request_settled_defect`]) — and the absent
+        // resource otherwise.
+        let table = store
+            .active_table(&region, &name, now)
+            .map_err(|absent| {
+                first_request_settled_defect(&comparisons)
+                    .map_or(absent, |defect| defect.refusal)
+            })
+            .map_err(lift)?;
         // The one rule about the paths this query names that the table settles: a key
         // attribute is declared as a scalar, so a path that reaches inside one addresses
         // no location this table can hold ([`crate::state::check_scalar_key_paths`]).
@@ -1085,16 +1110,38 @@ impl Operator {
     /// SCALAR type is refused as the condition parameter whose type does not match the
     /// schema's ([`crate::state::Table::key_condition_value`]) rather than here.
     ///
-    /// Asked where the condition BINDS to a key schema ([`KeyCondition::resolve`]), which
-    /// is only once the addressed table has been resolved: the question is about the
-    /// condition rather than about the request's syntax, so a `Query` naming a table that
-    /// is not there is told the resource is not there whatever its operands are typed as.
+    /// Asked WHEN the rule it states can be settled ([`Self::vocabulary_is_its_own`]): an
+    /// operator with a vocabulary of its own holds its operand to it where the expression is
+    /// read, like every other member of this service that compares a literal, while what
+    /// EQUALITY's operand may be is asked where the condition BINDS to a key schema
+    /// ([`KeyCondition::resolve`]) — so a `Query` naming a table that is not there is told the
+    /// resource is not there when that is the only thing wrong with its operands.
     fn compares(self, datatype: &str) -> bool {
         match self {
             Self::BeginsWith => matches!(datatype, "S" | "B"),
             Self::Equal => matches!(datatype, "S" | "N" | "B" | "BOOL" | "NULL"),
             _ => matches!(datatype, "S" | "N" | "B"),
         }
+    }
+
+    /// Whether the types this comparison or function can be made against at all are the
+    /// OPERATOR's OWN vocabulary — settled by the request — rather than the key schema's
+    /// business.
+    ///
+    /// The comparisons that ORDER their two sides order the three types DynamoDB orders and
+    /// nothing else, and `begins_with` takes a prefix, which only String and Binary have:
+    /// neither rule mentions a schema, so an operand outside them is the request's own mistake
+    /// and is refused where the expression is read — exactly as the condition and filter
+    /// grammar of this service refuses the same operand
+    /// ([`crate::state::check_orderable_operand`]), which needs no table either.
+    ///
+    /// EQUALITY compares ONE value, of whatever type the key attribute it is stated about is
+    /// declared as, so what its operand may be is the SCHEMA's to settle: both the refusal for
+    /// a type no key can be ([`Self::compares`]) and the one for a type that schema does not
+    /// declare ([`crate::state::Table::key_condition_value`]) are reported where the condition
+    /// binds to it.
+    fn vocabulary_is_its_own(self) -> bool {
+        self != Self::Equal
     }
 }
 
@@ -1153,8 +1200,8 @@ enum OperandDefect {
     /// alone settles, read where the expression is PARSED.
     Undefined(String),
     /// An operand of a type the operator or function it was written with does not compare —
-    /// a fact of the condition rather than of the request's syntax, read where the
-    /// condition binds to the key schema it is stated against.
+    /// the operator's own vocabulary where it has one, and the key schema's business for
+    /// equality ([`Operator::vocabulary_is_its_own`]).
     Type { written: Operator, datatype: String },
 }
 
@@ -1171,42 +1218,48 @@ impl OperandDefect {
     }
 }
 
-/// The `:placeholder` of the first operand `ExpressionAttributeValues` does not define, read
-/// in the order the expression wrote the operands.
-///
-/// A token the expression dereferences and the request never defined is a defect of the
-/// REQUEST — the expression cannot even be read as a condition without it — so it is
-/// answered where the expression is parsed, before any table is resolved, and it wins over
-/// every rule about the condition itself whichever of them the text states first.
-fn first_undefined_operand(comparisons: &[Comparison]) -> Option<OperandDefect> {
-    comparisons
-        .iter()
-        .flat_map(|comparison| comparison.operands.iter())
-        .find_map(|operand| match operand {
-            Operand::Undefined(placeholder) => {
-                Some(OperandDefect::Undefined(placeholder.clone()))
-            }
-            Operand::Defined(_) => None,
-        })
+/// One defect a key condition's OPERANDS carry: how it is refused, and WHEN.
+struct KeyConditionDefect {
+    refusal: crate::state::RequestError,
+    /// Whether the REQUEST alone settles it, which is what decides whether it is answered
+    /// before the addressed table is resolved: a placeholder nothing defines stands for no
+    /// value at all, two literal `BETWEEN` bounds draw their range (or fail to) without any
+    /// schema, and the types a comparison ORDERS or a function takes a PREFIX of are that
+    /// operator's own vocabulary ([`Operator::vocabulary_is_its_own`]) — while what EQUALITY's
+    /// operand may be is a fact of the key SCHEMA, so a table that is not there answers ahead
+    /// of it.
+    settled_by_the_request: bool,
 }
 
-/// The defect the FIRST defective operand of `comparisons` carries, read in the order the
-/// expression wrote the operands, or `None` where every operand is one its comparison can
-/// be made with.
+/// The defects `comparisons`' operands carry, in the order the expression wrote the operands
+/// and the clauses — empty where every operand is one its comparison can be made with.
 ///
-/// Both defects an operand can carry are read in this one walk, so this is total whichever
-/// reader produced the comparisons: a placeholder the request never defined stands for no
-/// value, and an operand its comparison or function cannot be made against at all is no
-/// operand for it ([`Operator::compares`]). What EQUALITY's operand may be beyond being a
-/// single value is the type the schema declares for the key it binds to, so that is settled
-/// where it binds and not here.
-fn first_operand_defect(comparisons: &[Comparison]) -> Option<OperandDefect> {
+/// Every defect an operand can carry is read in this ONE walk, so an expression carrying
+/// two of them earns the one its text states first, whichever kinds they are: a placeholder
+/// the request never defined stands for no value; an operand its comparison or function
+/// cannot be made against at all is no operand for it ([`Operator::compares`]); and the two
+/// bounds of a `BETWEEN` draw a range only when they are of one type and the right way round
+/// ([`crate::state::check_between_bounds`]). The per-operand rule is asked ahead of the two
+/// rules relating one `BETWEEN`'s bounds to EACH OTHER, exactly as the condition and filter
+/// grammar of this service asks them ([`crate::state::ParsedCondition`]): a bound of a type
+/// the comparator orders nothing in is no bound of a range to begin with.
+///
+/// The whole ordered list rather than its head alone, because WHICH of them can be answered
+/// depends on what is in hand: a defect only the key schema settles cannot be reported for a
+/// table that is not there, and then the request-settled defect the expression states after it
+/// is what the request earns ([`first_request_settled_defect`]).
+///
+/// What EQUALITY's operand may be beyond being a single value is the type the schema declares
+/// for the key it binds to, so that is settled where it binds and not here.
+fn operand_defects(comparisons: &[Comparison]) -> Vec<KeyConditionDefect> {
+    let mut defects = Vec::new();
     for comparison in comparisons {
         for operand in &comparison.operands {
             match operand {
-                Operand::Undefined(placeholder) => {
-                    return Some(OperandDefect::Undefined(placeholder.clone()))
-                }
+                Operand::Undefined(placeholder) => defects.push(KeyConditionDefect {
+                    refusal: OperandDefect::Undefined(placeholder.clone()).refusal(),
+                    settled_by_the_request: true,
+                }),
                 Operand::Defined(value) => {
                     // A legacy `KeyConditions` entry states its comparison as a
                     // `ComparisonOperator` value rather than as expression text, and its
@@ -1217,16 +1270,55 @@ fn first_operand_defect(comparisons: &[Comparison]) -> Option<OperandDefect> {
                     };
                     let datatype = crate::state::attribute_value_type(value);
                     if !written.compares(datatype) {
-                        return Some(OperandDefect::Type {
-                            written,
-                            datatype: datatype.to_string(),
+                        defects.push(KeyConditionDefect {
+                            refusal: OperandDefect::Type {
+                                written,
+                                datatype: datatype.to_string(),
+                            }
+                            .refusal(),
+                            settled_by_the_request: written.vocabulary_is_its_own(),
                         });
                     }
                 }
             }
         }
+        if comparison.operator != Operator::Between {
+            continue;
+        }
+        let (Some(low), Some(high)) = (
+            comparison.operands.first().and_then(Operand::defined),
+            comparison.operands.get(1).and_then(Operand::defined),
+        ) else {
+            continue;
+        };
+        if let Err(refusal) = crate::state::check_between_bounds(KEY_CONDITION_MEMBER, low, high) {
+            defects.push(KeyConditionDefect {
+                refusal,
+                settled_by_the_request: true,
+            });
+        }
     }
-    None
+    defects
+}
+
+/// The defect the first defective operand of `comparisons` carries — the one the expression's
+/// text states first ([`operand_defects`]).
+fn first_operand_defect(comparisons: &[Comparison]) -> Option<KeyConditionDefect> {
+    operand_defects(comparisons).into_iter().next()
+}
+
+/// The first defect of `comparisons`' operands the REQUEST alone settles, whichever position
+/// the expression wrote it in.
+///
+/// What a condition carrying a defect only the KEY SCHEMA can settle earns when there is no
+/// schema to settle it against: a refusal is reported only where the service can judge it, so
+/// the defect the expression states first is passed over and the request-settled defect after
+/// it is the answer. A condition carrying none at all is answered as the absent resource it
+/// addressed.
+fn first_request_settled_defect(comparisons: &[Comparison]) -> Option<KeyConditionDefect> {
+    operand_defects(comparisons)
+        .into_iter()
+        .find(|defect| defect.settled_by_the_request)
 }
 
 /// The key conditions a `Query` runs, encoded against the key schema the query was
@@ -1287,17 +1379,13 @@ impl KeyCondition {
         schema: &[KeySchemaElement],
         comparisons: Vec<Comparison>,
     ) -> Result<Self, crate::state::RequestError> {
-        // The types this condition's operands can be compared with at all
-        // ([`Operator::compares`]), read in the order the expression wrote the operands.
-        // Asked HERE and not where the expression was parsed: the question is about the
-        // condition rather than about the request's text, so a `Query` addressed to a table
-        // that is not there is told the resource is not there instead. A token the request
-        // never defined is the one operand defect the parse does answer
-        // ([`first_undefined_operand`]), so no undefined operand reaches this walk from an
-        // expression; the walk stays total because a legacy `KeyConditions` entry states its
-        // operands directly.
+        // The defects this condition's operands carry, read in the order the expression
+        // wrote them ([`operand_defects`]). The ones the REQUEST alone settles were already
+        // answered where the expression was parsed, so what reaches here is an operand
+        // EQUALITY cannot compare — a fact of the key schema, which is why it is asked only
+        // once the table the condition is read against has been resolved.
         if let Some(defect) = first_operand_defect(&comparisons) {
-            return Err(defect.refusal());
+            return Err(defect.refusal);
         }
         // ONE attribute carries ONE clause, whichever half of the key it is and however
         // many clauses the condition states in all ([`one_condition_per_key`]): a
@@ -2211,7 +2299,7 @@ fn multiple_attribute_names_in_one_condition() -> crate::state::RequestError {
 ///
 /// Every defect the PARSE reads is reported where it sits, so an expression carrying two
 /// of them earns the one its text states first: a syntax error, and a substitution token the
-/// request uses but never defined ([`first_undefined_operand`]). Both are settled by the
+/// request uses but never defined ([`first_operand_defect`]). Both are settled by the
 /// REQUEST alone — an expression that dereferences a token nothing defines cannot be read as
 /// a condition at all — so both are answered before any table is resolved. What the parse
 /// does NOT judge is the condition ITSELF: the types its operands can be compared with, and
@@ -2253,20 +2341,22 @@ fn parse_key_condition_expression(
         let error = parser.syntax();
         return Err(syntax(&parser, error));
     }
-    // A placeholder `ExpressionAttributeValues` does not define stands for no value at all,
-    // so the expression cannot be read as a condition: that is settled by the REQUEST and is
+    // The defects the condition's OPERANDS carry are read in one walk, in the order the
+    // expression wrote them ([`operand_defects`]), and the FIRST of them is the one this
+    // request earns. Where that one is settled by the REQUEST — a placeholder
+    // `ExpressionAttributeValues` does not define, which stands for no value at all; two
+    // literal `BETWEEN` bounds that draw no range; an operand outside the vocabulary of the
+    // operator or function it was written with ([`Operator::vocabulary_is_its_own`]) — it is
     // answered here, whatever table the request addressed and whatever else its text states.
-    // An operand of a type its operator cannot compare is a defect of the CONDITION, read
-    // where the condition binds to the key schema ([`KeyCondition::resolve`]) — which is
-    // only once the addressed table has been resolved.
-    if let Some(defect) = first_undefined_operand(&comparisons) {
-        return Err(defect.refusal());
+    // Where it is a fact of the key SCHEMA — what EQUALITY's operand may be — it is answered
+    // where the condition binds to that schema ([`KeyCondition::resolve`]), which is only once
+    // the addressed table has been resolved; a defect stated AFTER it is not reported in its
+    // place.
+    if let Some(defect) = first_operand_defect(&comparisons) {
+        if defect.settled_by_the_request {
+            return Err(defect.refusal);
+        }
     }
-    // A `BETWEEN` whose bounds the request stated the wrong way round selects nothing
-    // whatever the table holds, which is the request's own mistake: held to the one
-    // statement of that rule every member a `BETWEEN` can be written in shares
-    // ([`crate::state::check_between_bounds`]).
-    check_between_bounds(&comparisons)?;
     // A reserved word written out as a name is refused once the expression has PARSED:
     // in an expression the grammar cannot read, a keyword is not yet an attribute name
     // at all, so the parse defect is what such a request earns. The rule itself is the
@@ -2310,27 +2400,6 @@ fn grouping_of(tokens: &[Token]) -> Vec<crate::state::GroupToken> {
             _ => crate::state::GroupToken::Other,
         })
         .collect()
-}
-
-/// Hold every `BETWEEN` of a key condition to the order its two bounds have to be in.
-///
-/// Both bounds are operands the request stated, so the rule is settled before any table is
-/// resolved, in the one wording this service states it in
-/// ([`crate::state::check_between_bounds`]).
-fn check_between_bounds(comparisons: &[Comparison]) -> Result<(), crate::state::RequestError> {
-    for comparison in comparisons {
-        if comparison.operator != Operator::Between {
-            continue;
-        }
-        let (Some(low), Some(high)) = (
-            comparison.operands.first().and_then(Operand::defined),
-            comparison.operands.get(1).and_then(Operand::defined),
-        ) else {
-            continue;
-        };
-        crate::state::check_between_bounds(KEY_CONDITION_MEMBER, low, high)?;
-    }
-    Ok(())
 }
 
 /// Recursive-descent parser over the tokens of one key condition expression.

@@ -13,7 +13,9 @@
 //!   names the operator as the expression WROTE it;
 //! * a defect the REQUEST alone settles — the expression's syntax, a substitution token it
 //!   uses but never defined — is refused before any table is resolved, so those are the
-//!   only key-condition refusals a query against an absent table can earn;
+//!   only key-condition refusals a query against an absent table can earn, and a condition
+//!   whose text states a defect of the CONDITION first is answered for the absent table
+//!   instead;
 //! * either side of a comparison may carry the operand: `:v >= sk` states about the
 //!   attribute exactly what `sk <= :v` does;
 //! * every defect is reported where the reading of the expression reaches it, so the
@@ -343,12 +345,14 @@ async fn the_defect_a_key_condition_states_first_is_the_one_answered() {
 
     let undefined = "Invalid KeyConditionExpression: An expression attribute value used in \
                      expression is not defined; attribute value: :undef";
-    // Each row: a condition carrying TWO defects, and the one answered. A token the request
-    // never defined is a defect of the REQUEST — the expression cannot be read as a condition
-    // without it — so it is answered wherever the expression writes it, and it wins over an
-    // operand whose type its comparison cannot take, which is a defect of the CONDITION read
-    // where the condition binds to the key schema. A SYNTAX error is the request's too, and
-    // the parse stops at it.
+    // Each row: a condition carrying TWO defects, and the one answered. The defects an
+    // OPERAND can carry are answered in the order the expression WROTE them, so the one its
+    // text states first is the one reported — a token the request never defined where that
+    // comes first, and an operand whose type its comparison cannot take where THAT does. WHEN
+    // each is answered still follows what settles it: the undefined token is a defect of the
+    // REQUEST and needs no table, while the ill-typed operand is a defect of the CONDITION,
+    // read where the condition binds to the key schema. A SYNTAX error is the request's too,
+    // and the parse stops at it.
     let cases: Vec<(&str, &str, Value, String)> = vec![
         (
             "the undefined value is written first",
@@ -360,13 +364,13 @@ async fn the_defect_a_key_condition_states_first_is_the_one_answered() {
             "the bad operand is written first",
             "begins_with(sk, :n) AND pk = :undef",
             json!({":n": {"N": "1"}}),
-            undefined.to_string(),
+            incorrect_operand("begins_with", "N"),
         ),
         (
             "the bad operand is written first, in a BETWEEN",
             "sk BETWEEN :n AND :undef",
             json!({":n": {"BOOL": true}}),
-            undefined.to_string(),
+            incorrect_operand("BETWEEN", "BOOL"),
         ),
         (
             "the undefined value is written first, in a BETWEEN",
@@ -378,12 +382,12 @@ async fn the_defect_a_key_condition_states_first_is_the_one_answered() {
             "the bad operand is written first, operand-first in its own comparison",
             ":n < sk AND pk = :undef",
             json!({":n": {"NULL": true}}),
-            undefined.to_string(),
+            incorrect_operand("<", "NULL"),
         ),
         (
             // With every token DEFINED, the operand is the only defect left and it is the
-            // one answered — so the rows above are the undefined token winning and not the
-            // operand rule going unstated.
+            // one answered — so the rows above are each the defect written first winning and
+            // not the operand rule going unstated.
             "the bad operand with every token defined",
             "begins_with(sk, :n) AND pk = :p",
             json!({":n": {"N": "1"}, ":p": {"S": "p"}}),

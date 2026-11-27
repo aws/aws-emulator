@@ -47,9 +47,10 @@ const UPDATE_TOO_BIG: &str = "Item size to update has exceeded the maximum allow
 /// The local secondary index every indexed row declares.
 const INDEX: &str = "by-local-sort";
 
-/// How many bytes each of the three key attributes' VALUES carries. Ten, so the item's
-/// primary-key portion is past the floor the update path charges a short key at
-/// (`state::KEY_PORTION_FLOOR_BYTES`) and the boundary this suite reads is the quota itself.
+/// How many bytes each of the three key attributes' VALUES carries. Ten, so the part of the
+/// item an update leaves untouched is past the floor the update path charges a short one at
+/// (`state::UNTOUCHED_PORTION_FLOOR_BYTES`) and the boundary this suite reads is the quota
+/// itself.
 const KEY_VALUE_BYTES: usize = 10;
 
 /// The bytes the item below stores BESIDE its payload attribute's VALUE: the three key

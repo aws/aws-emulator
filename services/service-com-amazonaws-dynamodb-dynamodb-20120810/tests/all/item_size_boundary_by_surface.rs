@@ -6,8 +6,9 @@
 //! CHARGED crosses the documented 400 KB (409,600-byte) item ceiling, charged over the bytes
 //! the item stores — "the lengths of its attribute names and values" ("Item sizes and
 //! formats"), its key attributes among them — plus what the SHAPE of the request stating the
-//! change costs: a change stated as an `UpdateExpression` is charged its primary-key portion
-//! at a minimum of `state::KEY_PORTION_FLOOR_BYTES` whatever it actually holds, while one
+//! change costs: a change stated as an `UpdateExpression` is charged the part of the item it
+//! does not address — here its primary key — at a minimum of
+//! `state::UNTOUCHED_PORTION_FLOOR_BYTES` whatever it actually holds, while one
 //! stated without an expression is charged the item alone. So the item charged exactly
 //! 409,600 bytes is written and read back whole, and the same change one byte longer is
 //! refused 400 `ValidationException` with the sentence the update path words that quota with,
@@ -20,8 +21,9 @@
 //! the FLAT ceiling a carried item is held to, which has no key floor of its own.
 //!
 //! Source of the ceiling: "Service, Account, and Table Quotas" in the Amazon DynamoDB
-//! Developer Guide ("The maximum item size in DynamoDB is 400 KB"); the key portion's floor on
-//! the expression path is measured behavior (`state::KEY_PORTION_FLOOR_BYTES`).
+//! Developer Guide ("The maximum item size in DynamoDB is 400 KB"); the floor under the part
+//! of the item a change does not address is measured behavior
+//! (`state::UNTOUCHED_PORTION_FLOOR_BYTES`).
 
 use serde_json::{json, Value};
 
@@ -32,7 +34,8 @@ use crate::table_items::create_active_table;
 const MAX_ITEM_BYTES: usize = 400 * 1024;
 
 /// The least an item's primary-key portion is charged against that ceiling when the change
-/// is stated as an expression, as the service states it (`state::KEY_PORTION_FLOOR_BYTES`).
+/// is stated as an expression and the key is all it leaves untouched, as the service states it
+/// (`state::UNTOUCHED_PORTION_FLOOR_BYTES`).
 const KEY_PORTION_FLOOR: usize = 22;
 
 /// AWS's fixed sentence for a CHANGE that would leave the item past the ceiling.

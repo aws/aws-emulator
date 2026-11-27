@@ -4,10 +4,11 @@
 //! the same ceiling for every item whose primary key holds less than the floor.
 //!
 //! The rule under test: what an update's resulting item is charged against the documented
-//! 400 KB item ceiling is its non-key bytes plus what its primary-key portion is charged, and
-//! the key portion is charged at a MINIMUM — `state::KEY_PORTION_FLOOR_BYTES` — however few
-//! bytes it actually holds. Two consequences, both asserted here over measured boundaries
-//! rather than computed ones:
+//! 400 KB item ceiling is the bytes of the attributes the change addresses plus what the part
+//! of the item it leaves alone — here the primary key, which is all these items hold besides
+//! the written attribute — is charged, and that part is charged at a MINIMUM —
+//! `state::UNTOUCHED_PORTION_FLOOR_BYTES` — however few bytes it actually holds. Two
+//! consequences, both asserted here over measured boundaries rather than computed ones:
 //!
 //! * a key portion below that floor buys no headroom, so the largest change two items accept
 //!   is the SAME when their keys differ only in how many bytes they hold below the floor —
@@ -29,8 +30,9 @@
 //! measured boundary is re-asserted through it.
 //!
 //! Source of the ceiling: "Service, Account, and Table Quotas" in the Amazon DynamoDB
-//! Developer Guide ("The maximum item size in DynamoDB is 400 KB"). The key portion's floor is
-//! measured behavior, stated once by the service (`state::KEY_PORTION_FLOOR_BYTES`).
+//! Developer Guide ("The maximum item size in DynamoDB is 400 KB"). The floor under the
+//! untouched part of an item is measured behavior, stated once by the service
+//! (`state::UNTOUCHED_PORTION_FLOOR_BYTES`).
 //! `update_item_size_floor.rs` crosses the same ceiling with every update surface; this suite
 //! is about where the ceiling SITS as the key portion varies.
 
@@ -43,7 +45,8 @@ use crate::table_items::create_active_table;
 const MAX_ITEM_BYTES: usize = 400 * 1024;
 
 /// The least an item's primary-key portion is charged against that ceiling on the update
-/// path, as the service states it (`state::KEY_PORTION_FLOOR_BYTES`).
+/// path, where it is all the change leaves untouched, as the service states it
+/// (`state::UNTOUCHED_PORTION_FLOOR_BYTES`).
 const KEY_PORTION_FLOOR: usize = 22;
 
 /// AWS's fixed sentence for a change that would grow the stored item past the ceiling.

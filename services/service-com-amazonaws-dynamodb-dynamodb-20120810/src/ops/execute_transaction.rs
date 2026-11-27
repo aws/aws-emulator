@@ -909,7 +909,7 @@ fn write_transaction<Eng: ::std::marker::Send + ::std::marker::Sync + 'static>(
                         if crate::state::update_size_exceeded(
                             table,
                             &item,
-                            crate::state::UpdateRequestShape::StatedWithoutAnExpression,
+                            &crate::state::UpdateRequestShape::StatedWithoutAnExpression,
                         ) {
                             return Err(crate::scaffolded::Scaffolded::validation(
                                 crate::state::ITEM_UPDATE_SIZE_EXCEEDED_MESSAGE,

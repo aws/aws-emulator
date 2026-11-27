@@ -53,7 +53,8 @@
 //! the update path words that quota with, like every other failure an action is found to have
 //! by applying it against the item its key holds. An item that FITS the quota and crosses only
 //! the CHARGED ceiling — what the request's own accounting adds on top of the stored bytes: the
-//! key portion charged at its floor, the frame each clause costs — asks for more than the
+//! untouched part of the item charged at its floor, the frame each clause costs — asks for more
+//! than the
 //! update path admits, which is a fact of the request, so the CALL is refused in the class and
 //! the sentence the single-item `UpdateItem` of the same expression is refused with. The
 //! documented ceiling of 100 action requests is the model's own
@@ -1319,8 +1320,9 @@ fn refused_key(refusal: crate::state::KeyRefusal) -> ElementRefusal {
 /// held.
 ///
 /// What an update is weighed against is not the quota alone: on top of the bytes the item
-/// stores it adds what the REQUEST's own shape costs — the key portion charged at a floor, so
-/// a short key buys no headroom, and the frame each clause of the expression costs
+/// stores it adds what the REQUEST's own shape costs — the part of the item the change does
+/// not address charged at a floor, so an item short of it buys no headroom, and the frame each
+/// clause of the expression costs
 /// ([`crate::state::update_charged_size`]). A crossing of that charged ceiling is therefore
 /// one of two different things, and the bytes the item itself STORES are what tell them
 /// apart:
@@ -1400,7 +1402,7 @@ fn update_asks_for_an_oversized_item(
             // operand this reading can charge
             // ([`crate::state::ParsedUpdate::request_shape`]), which is the reading this
             // question wants. The pass that reads the stored item charges it there.
-            crate::state::update_size_exceeded(table, &asked, applied.request_shape(None))
+            crate::state::update_size_exceeded(table, &asked, &applied.request_shape(None))
         }
         Err(crate::state::RequestError::Validation(message)) => {
             message == crate::state::ITEM_UPDATE_SIZE_EXCEEDED_MESSAGE
@@ -1784,11 +1786,11 @@ fn resolve_element(
                 .map_err(crate::state::unenveloped)
                 .map_err(refused_element)?;
             // Sized over what this element ASKED FOR, exactly as the single-item
-            // `UpdateItem` of the same expression is: the item's non-key bytes plus
-            // what its key portion is charged, plus the entry a local secondary index of
-            // the table holds for it ([`crate::state::update_size_exceeded`]) plus the
-            // frame each clause of the update costs
-            // ([`crate::state::ParsedUpdate::request_shape`]).
+            // `UpdateItem` of the same expression is: the bytes of the attributes the change
+            // addresses plus what the part of the item it leaves alone is charged, plus the
+            // entry a local secondary index of the table holds for it
+            // ([`crate::state::update_size_exceeded`]) plus the frame each clause of the
+            // update costs ([`crate::state::ParsedUpdate::request_shape`]).
             //
             // WHO answers for a crossing of that CHARGED ceiling follows whether the item
             // this change LEAVES is past the quota in its OWN bytes
@@ -1802,7 +1804,7 @@ fn resolve_element(
             if crate::state::update_size_exceeded(
                 table,
                 &item,
-                applied.request_shape(before.as_ref()),
+                &applied.request_shape(before.as_ref()),
             ) {
                 return Err(crossed_the_item_quota(table, &item));
             }

@@ -5,8 +5,9 @@
 //! accounting makes, which refuses the CALL rather than cancelling the transaction.
 //!
 //! The rule under test: an update is weighed against the 400 KB item quota over what the item it
-//! leaves is CHARGED — the bytes it stores, with its primary-key portion charged at a minimum
-//! floor (`state::KEY_PORTION_FLOOR_BYTES`) where the change is stated as an expression, so the
+//! leaves is CHARGED — the bytes it stores, with the part of it the change does not address
+//! charged at a minimum floor (`state::UNTOUCHED_PORTION_FLOOR_BYTES`) where the change is stated
+//! as an expression, so the
 //! transaction's `Update` tops out exactly where the single-item `UpdateItem` of the same
 //! expression does. Where the item itself fits the quota and only that charged ceiling is crossed,
 //! nothing became too large: the request asks for more than the update path admits, so the CALL is
@@ -34,7 +35,7 @@
 //! for it is the service-common `ValidationException`.
 
 use serde_json::{json, Value};
-use service_com_amazonaws_dynamodb_dynamodb_20120810::state::KEY_PORTION_FLOOR_BYTES;
+use service_com_amazonaws_dynamodb_dynamodb_20120810::state::UNTOUCHED_PORTION_FLOOR_BYTES;
 use smithy_server_runtime::MultiServiceRouter;
 
 use crate::emulator::{call, emulator, error_code, message, ok};
@@ -172,11 +173,12 @@ async fn a_call_refused_for_the_update_ceiling_applies_none_of_its_actions() {
     let router = emulator();
     create_active_table(&router, TABLE, &[(KEY, "HASH", "S")]).await;
 
-    // The key portion of every item here holds three bytes — the one-byte attribute name beside a
-    // two-byte value — fewer than the floor, so the key is charged that floor and the boundary
-    // sits under the quota by what the key does not fill.
+    // The part of every item here the change leaves alone holds three bytes — the one-byte key
+    // attribute's name beside a two-byte value — fewer than the floor, so it is charged that
+    // floor and the boundary sits under the quota by what it does not fill.
     let key_bytes = KEY.len() + 2;
-    let floor = usize::try_from(KEY_PORTION_FLOOR_BYTES).expect("the key-portion floor is a count");
+    let floor =
+        usize::try_from(UNTOUCHED_PORTION_FLOOR_BYTES).expect("the untouched-portion floor is a count");
     let charged_key = key_bytes.max(floor);
     // At the boundary what the item the change leaves is CHARGED is exactly the quota; one byte
     // more crosses it while the bytes that item STORES are still inside the quota, which is the

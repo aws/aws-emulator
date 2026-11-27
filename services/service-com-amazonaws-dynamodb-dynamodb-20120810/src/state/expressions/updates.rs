@@ -248,22 +248,38 @@ impl ParsedUpdate {
     /// accounting ([`UpdateRequestShape`]).
     ///
     /// Which is a fact of the MEMBER the update travelled in: an `UpdateExpression`
-    /// states clauses and is charged their frames and the key-portion floor beside them,
-    /// while the legacy per-attribute map states no clause at all and is charged the item
-    /// alone.
+    /// states clauses and is charged their frames beside the floor under the part of the
+    /// item it does not address, while the legacy per-attribute map states no clause at all
+    /// and is charged the item alone.
     ///
     /// `before` is the item the addressed key held when the update was applied (`None` for a
     /// key that held none), which is what an arithmetic clause's operands were read against
     /// ([`Self::arithmetic_operand_charge`]).
     pub fn request_shape(&self, before: Option<&Item>) -> UpdateRequestShape {
         if self.member == UPDATE_EXPRESSION_MEMBER {
-            UpdateRequestShape::StatedAsAnExpression(
-                self.request_shape_charge()
+            UpdateRequestShape::StatedAsAnExpression {
+                clauses: self
+                    .request_shape_charge()
                     .saturating_add(self.arithmetic_operand_charge(before)),
-            )
+                addressed: self.addressed_attributes(),
+            }
         } else {
             UpdateRequestShape::StatedWithoutAnExpression
         }
+    }
+
+    /// The top-level attributes this update's clauses ADDRESS — the attribute every action
+    /// names, whether it writes into it, reaches inside it or takes something away.
+    ///
+    /// What the item-size accounting charges in full rather than against the floor under the
+    /// part of the item the change leaves alone ([`UpdateRequestShape`]): an attribute a
+    /// clause names is what the request asked for, while the rest of the item is what the
+    /// change found there.
+    pub(super) fn addressed_attributes(&self) -> ::std::collections::BTreeSet<String> {
+        self.actions
+            .iter()
+            .map(|action| action.path().attribute().to_string())
+            .collect()
     }
 
     /// Parse one `UpdateExpression`: the `SET`, `REMOVE`, `ADD` and `DELETE` sections,

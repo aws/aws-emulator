@@ -923,13 +923,13 @@ fn update_item(
     crate::state::canonicalize_item(&mut item).map_err(at_table(name))?;
     // A statement states its change without an expression, so nothing is charged on top of
     // the item it leaves ([`crate::state::update_size_exceeded`]): no clause frame and no
-    // floor under its key portion.
+    // floor under any part of it.
     {
         let table = store.active_table(region, name, now)?;
         if crate::state::update_size_exceeded(
             table,
             &item,
-            crate::state::UpdateRequestShape::StatedWithoutAnExpression,
+            &crate::state::UpdateRequestShape::StatedWithoutAnExpression,
         ) {
             return Err(SlotFailure::validation(
                 crate::state::ITEM_UPDATE_SIZE_EXCEEDED_MESSAGE,

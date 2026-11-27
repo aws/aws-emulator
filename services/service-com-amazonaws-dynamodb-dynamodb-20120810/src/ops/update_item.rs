@@ -629,14 +629,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             // ([`crate::state::ParsedUpdate::request_shape`]), so the largest operand one
             // write may carry moves with the clauses stated beside it — while a change
             // stated through the legacy map states no clause and is charged the item
-            // alone. The item itself is charged its non-key bytes plus what its key
-            // portion is charged ([`crate::state::update_size_exceeded`]), whose floor on
-            // the expression path is why that boundary does not move between two items
-            // keyed by different numbers of bytes.
+            // alone. The item itself is charged the bytes of the attributes the change
+            // ADDRESSES plus what the part it leaves alone is charged
+            // ([`crate::state::update_size_exceeded`]), whose floor on the expression path is
+            // why that boundary does not move between two items that differ only in bytes the
+            // change never touched.
             if crate::state::update_size_exceeded(
                 table,
                 &item,
-                update.request_shape(before.as_ref()),
+                &update.request_shape(before.as_ref()),
             ) {
                 return Err(crate::scaffolded::Scaffolded::validation(
                     crate::state::ITEM_UPDATE_SIZE_EXCEEDED_MESSAGE,

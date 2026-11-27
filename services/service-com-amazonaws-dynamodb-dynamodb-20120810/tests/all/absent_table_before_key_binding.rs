@@ -4,21 +4,23 @@
 //! condition can carry.
 //!
 //! THE RULE: a `KeyConditionExpression` defect that the REQUEST alone settles — the
-//! expression's syntax, and a substitution token the expression uses but the request never
-//! defined — is refused before the addressed table is resolved, so it is answered even for a
-//! table this account does not hold. Every other key-condition rule is about the CONDITION
-//! itself — the types its operands can be compared with at all, and how it BINDS to the key
-//! attributes of the schema it is read against: how many comparisons that schema has key
-//! attributes for, which attributes they name, and the type that schema declares for each key
-//! — so each is only reached once the table has been found, and a `Query` naming an absent
-//! table is refused `ResourceNotFoundException` ("the operation tried to access a nonexistent
-//! table or index") however many clauses it states and however its operands are typed.
+//! expression's syntax, a substitution token the expression uses but the request never
+//! defined, and an operand outside the vocabulary the operator or function it was written with
+//! has of its own (the three types DynamoDB orders for a comparison that orders its sides, a
+//! String or Binary prefix for `begins_with`) — is refused before the addressed table is
+//! resolved, so it is answered even for a table this account does not hold. Every other
+//! key-condition rule is about how the condition BINDS to the key attributes of the schema it
+//! is read against: how many comparisons that schema has key attributes for, which attributes
+//! they name, and what an EQUALITY may compare a key declared of one type against — so each is
+//! only reached once the table has been found, and a `Query` naming an absent table is refused
+//! `ResourceNotFoundException` ("the operation tried to access a nonexistent table or index")
+//! however many clauses it states.
 //!
 //! The rows span what the rule generalises over: which KIND of defect the condition carries
 //! (syntax, an undefined value placeholder, an undefined name alias, an operand of a type no
 //! comparison orders, an operand of a type `begins_with` has no prefix for, an equality
 //! operand of a type no schema declares, more clauses than the schema has key attributes, and
-//! the combinations of a request-settled defect with a condition one), whether the table is
+//! the combinations of a request-settled defect with a binding one), whether the table is
 //! absent or present, and whether the read is a `Query` on the table itself or on one of its
 //! secondary indexes.
 //!
@@ -141,7 +143,7 @@ fn rows() -> Vec<Row> {
             case: "a number where begins_with needs a prefix",
             condition: "pk = :p AND begins_with(sk, :n)",
             values: json!({":p": {"S": "p"}, ":n": {"N": "1"}}),
-            before_the_lookup: None,
+            before_the_lookup: Some(incorrect_operand("begins_with", "N")),
             against_the_table: incorrect_operand("begins_with", "N"),
         },
         Row {
@@ -172,7 +174,7 @@ fn rows() -> Vec<Row> {
             case: "an operand written before its operator, of a type no comparison orders",
             condition: ":p >= pk",
             values: json!({":p": {"NULL": true}}),
-            before_the_lookup: None,
+            before_the_lookup: Some(incorrect_operand(">=", "NULL")),
             against_the_table: incorrect_operand(">=", "NULL"),
         },
     ]
@@ -276,10 +278,17 @@ async fn an_absent_table_answers_before_an_index_key_schema_binds() {
             ),
         ),
         (
+            // A comparison that ORDERS its sides orders the three types DynamoDB orders and
+            // nothing else, which is the operator's own vocabulary and needs no schema.
             "an operand no comparison orders on an index read",
             "gpk >= :p",
             json!({":p": {"BOOL": false}}),
-            ("ResourceNotFoundException", NOT_FOUND.to_string()),
+            (
+                "ValidationException",
+                "Invalid KeyConditionExpression: Incorrect operand type for operator or \
+                 function; operator or function: >=, operand type: BOOL"
+                    .to_string(),
+            ),
         ),
         (
             "an equality operand of another type on an index read",

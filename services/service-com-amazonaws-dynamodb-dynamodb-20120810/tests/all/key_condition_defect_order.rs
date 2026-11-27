@@ -3,13 +3,18 @@
 //! WHICH defect a `KeyConditionExpression` carrying TWO of them is refused for, driven end
 //! to end.
 //!
-//! THE RULE: a `:placeholder` the request never defined is a defect of the REQUEST — an
-//! expression that dereferences a token nothing defines cannot be read as a condition at all
-//! — so it is answered wherever the expression writes it, before the addressed table is
-//! resolved, and it wins over an operand of a type the operator or function it was written
-//! with does not compare: that one is a fact of the CONDITION, read where the condition binds
-//! to the key schema, so it needs the table to be there
-//! (`crate::absent_table_before_key_binding` states that half).
+//! THE RULE: the defects a key condition's OPERANDS carry are answered in the order the
+//! expression WROTE them, so an expression carrying two of them earns the one its text states
+//! first — a `:placeholder` the request never defined where that comes first, and an operand of
+//! a type the operator or function it was written with does not compare where THAT does. WHEN
+//! each is answered follows what settles it: a token nothing defines and an operand outside the
+//! vocabulary a comparison or function has of its own (the types DynamoDB orders, a String or
+//! Binary prefix) are defects of the REQUEST, answered before the addressed table is resolved,
+//! while what EQUALITY's operand may be is a fact of the key SCHEMA, read where the condition
+//! binds to it (`crate::absent_table_before_key_binding` states that half). A refusal is
+//! reported only where the service can judge it, so a condition whose first defect needs a key
+//! schema and names a table this account does not hold earns the request-settled defect its
+//! text states AFTER it, and the absent resource only where it states none at all.
 //!
 //! The rows span what the rule generalises over: whether the undefined token is written
 //! before or after the ill-typed operand, which operator or function the ill-typed operand
@@ -96,7 +101,7 @@ struct Row {
 const NOT_FOUND: &str = "Requested resource not found";
 
 /// The rows: each condition carries BOTH defects — or only the ill-typed operand — and the
-/// message is the undefined token's wherever one is written, the operand's otherwise.
+/// message is the one the expression's text states FIRST.
 fn rows() -> Vec<Row> {
     vec![
         Row {
@@ -110,29 +115,29 @@ fn rows() -> Vec<Row> {
             case: "the bad prefix operand is written first, before the undefined placeholder",
             condition: "begins_with(sk, :n) AND pk = :undef",
             values: json!({":n": {"N": "1"}}),
-            expected: undefined_value(),
-            expected_without_the_table: undefined_value(),
+            expected: incorrect_operand("begins_with", "N"),
+            expected_without_the_table: incorrect_operand("begins_with", "N"),
         },
         Row {
             case: "a list operand written first, before the undefined placeholder",
             condition: "sk >= :l AND pk = :undef",
             values: json!({":l": {"L": [{"S": "a"}]}}),
-            expected: undefined_value(),
-            expected_without_the_table: undefined_value(),
+            expected: incorrect_operand(">=", "L"),
+            expected_without_the_table: incorrect_operand(">=", "L"),
         },
         Row {
             case: "a map operand on the partition key, before the undefined placeholder",
             condition: "pk = :m AND sk = :undef",
             values: json!({":m": {"M": {"a": {"S": "a"}}}}),
-            expected: undefined_value(),
+            expected: incorrect_operand("=", "M"),
             expected_without_the_table: undefined_value(),
         },
         Row {
             case: "a string-set operand written OPERAND first, before the undefined one",
             condition: ":ss < sk AND pk = :undef",
             values: json!({":ss": {"SS": ["a", "b"]}}),
-            expected: undefined_value(),
-            expected_without_the_table: undefined_value(),
+            expected: incorrect_operand("<", "SS"),
+            expected_without_the_table: incorrect_operand("<", "SS"),
         },
         Row {
             case: "the undefined placeholder as the low bound of a BETWEEN",
@@ -142,22 +147,25 @@ fn rows() -> Vec<Row> {
             expected_without_the_table: undefined_value(),
         },
         Row {
+            // The recorded shape of a BETWEEN bound the comparator orders nothing in: the
+            // bound is reported as the OPERAND it is, with the operator as written, ahead of
+            // the undefined token after it and ahead of the rule relating the two bounds.
             case: "a bad low bound of a BETWEEN, before the undefined high bound",
             condition: "sk BETWEEN :b AND :undef",
             values: json!({":b": {"BOOL": false}}),
-            expected: undefined_value(),
-            expected_without_the_table: undefined_value(),
+            expected: incorrect_operand("BETWEEN", "BOOL"),
+            expected_without_the_table: incorrect_operand("BETWEEN", "BOOL"),
         },
         Row {
             case: "three clauses, the bad operand in the middle one",
-            condition: "pk = :p AND begins_with(sk, :n) AND other = :undef",
+            condition: "pk = :p AND begins_with(sk, :n) AND extra = :undef",
             values: json!({":p": {"S": "p"}, ":n": {"N": "7"}}),
-            expected: undefined_value(),
-            expected_without_the_table: undefined_value(),
+            expected: incorrect_operand("begins_with", "N"),
+            expected_without_the_table: incorrect_operand("begins_with", "N"),
         },
         Row {
             case: "three clauses, the undefined placeholder in the first one",
-            condition: "pk = :undef AND sk = :nul AND other = :o",
+            condition: "pk = :undef AND sk = :nul AND extra = :o",
             values: json!({":nul": {"NULL": true}, ":o": {"S": "o"}}),
             expected: undefined_value(),
             expected_without_the_table: undefined_value(),
@@ -166,8 +174,8 @@ fn rows() -> Vec<Row> {
             case: "a parenthesised group whose operand is the first defect",
             condition: "(sk > :nul) AND pk = :undef",
             values: json!({":nul": {"NULL": true}}),
-            expected: undefined_value(),
-            expected_without_the_table: undefined_value(),
+            expected: incorrect_operand(">", "NULL"),
+            expected_without_the_table: incorrect_operand(">", "NULL"),
         },
         // The same ill-typed operands with every token DEFINED: with no request-settled
         // defect left, each is refused for its operand — and only where the table is there.
@@ -176,14 +184,14 @@ fn rows() -> Vec<Row> {
             condition: "pk = :p AND begins_with(sk, :n)",
             values: json!({":p": {"S": "p"}, ":n": {"N": "1"}}),
             expected: incorrect_operand("begins_with", "N"),
-            expected_without_the_table: NOT_FOUND.to_string(),
+            expected_without_the_table: incorrect_operand("begins_with", "N"),
         },
         Row {
             case: "a list operand under an ordering comparator, every token defined",
             condition: "sk >= :l AND pk = :p",
             values: json!({":p": {"S": "p"}, ":l": {"L": [{"S": "a"}]}}),
             expected: incorrect_operand(">=", "L"),
-            expected_without_the_table: NOT_FOUND.to_string(),
+            expected_without_the_table: incorrect_operand(">=", "L"),
         },
         Row {
             case: "a map operand on the partition key, every token defined",
@@ -197,7 +205,7 @@ fn rows() -> Vec<Row> {
             condition: ":ss < sk AND pk = :p",
             values: json!({":p": {"S": "p"}, ":ss": {"SS": ["a", "b"]}}),
             expected: incorrect_operand("<", "SS"),
-            expected_without_the_table: NOT_FOUND.to_string(),
+            expected_without_the_table: incorrect_operand("<", "SS"),
         },
         Row {
             // The recorded shape: an equality operand of a type no key schema declares,
@@ -226,8 +234,9 @@ fn request_for(row: &Row, table: &str) -> Value {
     })
 }
 
-/// RULE: against a table that is there, the undefined token is the refusal wherever it is
-/// written; with every token defined, the ill-typed operand is.
+/// RULE: against a table that is there, the defect the expression's text states FIRST is the
+/// refusal — the undefined token where it is written first, the ill-typed operand where that
+/// is.
 #[tokio::test]
 async fn the_operand_defect_the_expression_states_first_is_the_one_answered() {
     let router = seeded().await;
@@ -250,10 +259,11 @@ async fn the_operand_defect_the_expression_states_first_is_the_one_answered() {
     }
 }
 
-/// RULE, the other half: an undefined token is settled by the REQUEST, so the same row earns
-/// the same sentence when the table it addresses does not exist at all — while an operand
-/// whose type its comparison cannot take is a fact of the CONDITION, which an absent table
-/// answers before.
+/// RULE, the other half: a defect the REQUEST settles is answered whatever table was
+/// addressed, so a row carrying one earns it when the table it addresses does not exist at all
+/// — whether its text states that defect first or after an operand defect only the key schema
+/// could settle — while a row whose only defect needs that schema is answered as the absent
+/// table it named.
 #[tokio::test]
 async fn the_same_defect_is_answered_for_a_table_this_account_does_not_hold() {
     let router = emulator();

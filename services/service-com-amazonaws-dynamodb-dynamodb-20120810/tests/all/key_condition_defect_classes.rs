@@ -15,9 +15,10 @@
 //! * an operand its comparison cannot be made against AT ALL — a collection, or a
 //!   non-orderable value under a comparator that ORDERS — is its own sentence, naming the
 //!   operator as the expression wrote it, while an EQUALITY operand the comparison DOES take
-//!   is held to the type the SCHEMA declares for the key it binds to. Both are facts of the
-//!   CONDITION rather than of the request's text, so neither is answered for a table that is
-//!   not there: the existence check decides first.
+//!   is held to the type the SCHEMA declares for the key it binds to. The types a comparison
+//!   ORDERS and the prefix `begins_with` takes are that operator's own vocabulary, settled by
+//!   the request, so that sentence is answered whatever table was named; what EQUALITY's
+//!   operand may be is the key schema's business, so there the existence check decides first.
 //!
 //! The CONTROL at the end drives the forms the member DOES take, including the
 //! operand-first spelling of a comparison, so the refusals above are this classification
@@ -219,70 +220,81 @@ async fn two_clauses_about_one_key_attribute_break_the_one_clause_rule() {
 async fn an_operand_is_held_to_its_comparison_first_and_to_the_schema_second() {
     let router = seeded().await;
 
-    // Each row: the condition, the operand it compares the sort key with, and the class
+    // Each row: the condition, the operand it compares the sort key with, the class
     // the refusal belongs to — the COMPARISON's own domain, or the type the SCHEMA declares
-    // for the key. The rows span the comparators that order, the one function the member
-    // has, every collection type and the two single-valued types that are no key type.
-    for (case, condition, value, outside_the_comparison) in [
+    // for the key — and whether that class is settled by the REQUEST alone. The rows span the
+    // comparators that order, the one function the member has, every collection type and the
+    // two single-valued types that are no key type.
+    for (case, condition, value, outside_the_comparison, settled_by_the_request) in [
         (
             "a list under an ordering comparator",
             "pk = :p AND sk >= :v",
             json!({"L": [{"S": "a"}]}),
             Some(operand_type(">=", "L")),
+            true,
         ),
         (
             "a map under an ordering comparator",
             "pk = :p AND sk < :v",
             json!({"M": {"inner": {"S": "a"}}}),
             Some(operand_type("<", "M")),
+            true,
         ),
         (
             "a boolean under an ordering comparator",
             "pk = :p AND sk > :v",
             json!({"BOOL": true}),
             Some(operand_type(">", "BOOL")),
+            true,
         ),
         (
             "a null under an ordering comparator",
             "pk = :p AND sk <= :v",
             json!({"NULL": true}),
             Some(operand_type("<=", "NULL")),
+            true,
         ),
         (
             "a string set under equality",
             "pk = :p AND sk = :v",
             json!({"SS": ["a"]}),
             Some(operand_type("=", "SS")),
+            false,
         ),
         (
             "a number set under equality",
             "pk = :p AND sk = :v",
             json!({"NS": ["1"]}),
             Some(operand_type("=", "NS")),
+            false,
         ),
         (
             "a number where the function needs a prefix",
             "pk = :p AND begins_with(sk, :v)",
             json!({"N": "1"}),
             Some(operand_type("begins_with", "N")),
+            true,
         ),
         (
             "a boolean under equality",
             "pk = :p AND sk = :v",
             json!({"BOOL": true}),
             None,
+            false,
         ),
         (
             "a null under equality",
             "pk = :p AND sk = :v",
             json!({"NULL": true}),
             None,
+            false,
         ),
         (
             "a number under equality, against a string sort key",
             "pk = :p AND sk = :v",
             json!({"N": "1"}),
             None,
+            false,
         ),
     ] {
         let request = query(
@@ -299,23 +311,28 @@ async fn an_operand_is_held_to_its_comparison_first_and_to_the_schema_second() {
             "case {case:?}: expected {expected:?}, got {stated:?}"
         );
 
-        // The SAME condition against a table this account does not hold: BOTH classes are
-        // facts of the condition rather than of the request's text, so neither can be
-        // answered for a schema that does not exist — the existence check decides.
+        // The SAME condition against a table this account does not hold: the vocabulary a
+        // comparison or function has of its OWN is settled by the request, so that class is
+        // answered whatever table was named, while what EQUALITY's operand may be is the key
+        // SCHEMA's business — there the existence check decides.
         let (status, answered) = call(
             &router,
             "Query",
             query(ABSENT, condition, json!({":p": {"S": "p"}, ":v": value})),
         )
         .await;
+        let (code, stated) = if settled_by_the_request {
+            ("ValidationException".to_string(), expected.clone())
+        } else {
+            (
+                "ResourceNotFoundException".to_string(),
+                "Requested resource not found".to_string(),
+            )
+        };
         assert_eq!(
             (status, error_code(&answered), message(&answered)),
-            (
-                400,
-                "ResourceNotFoundException".to_string(),
-                "Requested resource not found".to_string()
-            ),
-            "case {case:?} on the missing table: expected the existence check to decide, got \
+            (400, code.clone(), stated.clone()),
+            "case {case:?} on the missing table: expected {code} with {stated:?}, got \
              {status} with {answered}"
         );
     }

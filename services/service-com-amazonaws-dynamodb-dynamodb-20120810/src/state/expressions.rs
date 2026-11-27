@@ -1291,6 +1291,28 @@ impl<'a> Substitutions<'a> {
         self.check_tokens_referenced(expressions)
     }
 
+    /// The same rules, where the reader of one of those members answers the UNDEFINED tokens
+    /// of its own text itself.
+    ///
+    /// A member whose reader decides which of the defects its own text states is answered —
+    /// the defects an operand can carry, read in the order the expression wrote them — has
+    /// already reported an undefined token it writes FIRST, and is holding one it writes after
+    /// a defect of its own behind that defect. So this pass collects the tokens such a member
+    /// references, which is what the unused-entry rule needs, without reporting one the
+    /// request does not define: doing so would answer a defect written LATER in place of the
+    /// one the member's text states first.
+    ///
+    /// Every other member is held to the rule exactly as [`Substitutions::check_all_referenced`]
+    /// holds it.
+    pub fn check_all_referenced_outside(
+        &self,
+        expressions: &[(&str, Option<&str>)],
+        answered_by_their_own_reader: &[&str],
+    ) -> Result<(), RequestError> {
+        self.check_tables_well_formed(expressions)?;
+        self.check_tokens_referenced_outside(expressions, answered_by_their_own_reader)
+    }
+
     /// The first half of that rule: what each substitution table the request SENT says
     /// about itself, read without looking at any expression's text — its keys are tokens
     /// an expression could write, the request carries an expression they could be
@@ -1355,12 +1377,25 @@ impl<'a> Substitutions<'a> {
         &self,
         expressions: &[(&str, Option<&str>)],
     ) -> Result<(), RequestError> {
+        self.check_tokens_referenced_outside(expressions, &[])
+    }
+
+    /// That half, where the members in `answered_by_their_own_reader` report the undefined
+    /// tokens of their own text themselves
+    /// ([`Substitutions::check_all_referenced_outside`]): their tokens still count as
+    /// REFERENCED, and one they do not define is left to that reader.
+    fn check_tokens_referenced_outside(
+        &self,
+        expressions: &[(&str, Option<&str>)],
+        answered_by_their_own_reader: &[&str],
+    ) -> Result<(), RequestError> {
         let mut names: BTreeSet<String> = BTreeSet::new();
         let mut values: BTreeSet<String> = BTreeSet::new();
         for (member, expression) in expressions {
             let Some(expression) = expression else {
                 continue;
             };
+            let answered_elsewhere = answered_by_their_own_reader.contains(member);
             let Ok(tokens) = tokenize_expression(member, expression) else {
                 // An expression this cannot read tells nothing about which tokens it
                 // references, and the parser that reads it for real refuses it with the
@@ -1370,13 +1405,13 @@ impl<'a> Substitutions<'a> {
             for token in tokens {
                 match token {
                     ExprToken::Alias(alias) => {
-                        if self.name(&alias).is_err() {
+                        if !answered_elsewhere && self.name(&alias).is_err() {
                             return Err(undefined_name(member, &alias));
                         }
                         names.insert(alias);
                     }
                     ExprToken::Placeholder(placeholder) => {
-                        if self.value(&placeholder).is_err() {
+                        if !answered_elsewhere && self.value(&placeholder).is_err() {
                             return Err(undefined_value(member, &placeholder));
                         }
                         values.insert(placeholder);

@@ -7,7 +7,8 @@
 //! CHARGED crosses the documented 400 KB item ceiling, and what is charged is the bytes the
 //! item stores — its attribute names and values, the key attributes among them — plus what the
 //! SHAPE of the request stating the change costs: a change stated as an `UpdateExpression` is
-//! charged its primary-key portion at a minimum of `state::KEY_PORTION_FLOOR_BYTES` whatever
+//! charged its primary-key portion — the part these items leave untouched — at a minimum of
+//! `state::UNTOUCHED_PORTION_FLOOR_BYTES` whatever
 //! it actually holds, while a change stated without an expression — a PartiQL `UPDATE` — is
 //! charged the item alone. So the largest change an item accepts is the ceiling less what the
 //! rest of the item already holds and less the part of that floor its key does not fill; one
@@ -36,7 +37,8 @@ use crate::table_items::create_active_table;
 const MAX_ITEM_BYTES: usize = 400 * 1024;
 
 /// The least an item's primary-key portion is charged against that ceiling when the change is
-/// stated as an expression, as the service states it (`state::KEY_PORTION_FLOOR_BYTES`).
+/// stated as an expression, as the service states it
+/// (`state::UNTOUCHED_PORTION_FLOOR_BYTES`).
 const KEY_PORTION_FLOOR: usize = 22;
 
 /// AWS's fixed sentence for a change that would grow the stored item past the ceiling.

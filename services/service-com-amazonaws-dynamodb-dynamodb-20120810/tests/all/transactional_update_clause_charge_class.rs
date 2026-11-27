@@ -40,9 +40,9 @@ const MAX_ITEM_BYTES: usize = 400 * 1024;
 const UPDATE_TOO_BIG: &str = "Item size to update has exceeded the maximum allowed size";
 
 /// The table every row addresses. Its key portion holds exactly the floor the update path
-/// charges a key portion at (`state::KEY_PORTION_FLOOR_BYTES`, 22 bytes: a two-byte name and a
-/// twenty-byte value), so the key is charged the bytes it holds and the only charge left over
-/// the item's own bytes is the one the CLAUSES carry.
+/// charges the untouched part of an item at (`state::UNTOUCHED_PORTION_FLOOR_BYTES`, 22 bytes:
+/// a two-byte name and a twenty-byte value), so the key is charged the bytes it holds and the
+/// only charge left over the item's own bytes is the one the CLAUSES carry.
 const TABLE: &str = "TxnClauseChargeCeiling";
 const PARTITION: &str = "pk";
 const PARTITION_VALUE: &str = "12345678901234567890";

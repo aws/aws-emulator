@@ -4,8 +4,9 @@
 //! shape is refused at the same operand length on every one of them.
 //!
 //! The rule under test: what an update is charged against the documented 400 KB item ceiling
-//! is the bytes the item it leaves behind stores — its key attributes charged at a minimum of
-//! their own, `state::KEY_PORTION_FLOOR_BYTES` — plus a frame per clause the request states.
+//! is the bytes the item it leaves behind stores — the part of it the change does not address,
+//! its key attributes among them, charged at a minimum of its own,
+//! `state::UNTOUCHED_PORTION_FLOOR_BYTES` — plus a frame per clause the request states.
 //! Nothing else enters it, so the SMALLEST operand length one request shape is refused at is a
 //! property of that shape and of the item's non-key bytes alone: it does not move from one
 //! item or table to the next because one item's primary key holds fewer bytes than the other's
@@ -42,7 +43,7 @@
 //! about the boundary being the SAME on two items of the same shape.
 
 use serde_json::{json, Value};
-use service_com_amazonaws_dynamodb_dynamodb_20120810::state::KEY_PORTION_FLOOR_BYTES;
+use service_com_amazonaws_dynamodb_dynamodb_20120810::state::UNTOUCHED_PORTION_FLOOR_BYTES;
 use smithy_server_runtime::MultiServiceRouter;
 
 use crate::emulator::{call, describe_when_active, emulator, error_code, message, ok};
@@ -176,11 +177,12 @@ const SHAPES: &[Shape] = &[
 async fn the_refusal_boundary_of_a_request_shape_does_not_move_between_items() {
     let router = emulator();
 
-    // One ceiling is shared by the items whose key portion holds LESS than the floor that
-    // portion is charged at, so every row of this suite has to lie in that domain: a row that
-    // left it says so here rather than reporting a boundary that moved.
-    let floor = usize::try_from(KEY_PORTION_FLOOR_BYTES)
-        .expect("the floor a key portion is charged at is a byte count");
+    // One ceiling is shared by the items whose untouched part holds LESS than the floor that
+    // part is charged at, so every row of this suite has to lie in that domain: a row that
+    // left it says so here rather than reporting a boundary that moved. Every item here holds
+    // its key alone before the change, so its key portion IS that untouched part.
+    let floor = usize::try_from(UNTOUCHED_PORTION_FLOOR_BYTES)
+        .expect("the floor the untouched part of an item is charged at is a byte count");
     let in_domain = std::iter::once(("the reference", REFERENCE_KEY_BYTES)).chain(
         CONTROLS
             .iter()

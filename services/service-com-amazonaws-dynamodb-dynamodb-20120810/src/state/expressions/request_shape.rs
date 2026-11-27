@@ -28,8 +28,9 @@
 //!
 //! What this does NOT settle is where the boundary sits in ABSOLUTE terms for a plain
 //! single-assignment update: that is the item ceiling's own accounting
-//! ([`super::update_charged_size`], which charges the item's key portion at
-//! [`super::KEY_PORTION_FLOOR_BYTES`]), and the frames are differences invariant under it.
+//! ([`super::update_charged_size`], which charges the part of the item the change does not
+//! address at [`super::UNTOUCHED_PORTION_FLOOR_BYTES`]), and the frames are differences
+//! invariant under it.
 //! Each is read off the boundary of a write that already carries ONE assignment, so that
 //! assignment is the baseline the differences are counted from and costs nothing of its own
 //! ([`BASELINE_CLAUSE_CHARGE`]): a single-clause update is sized against the item ceiling over
