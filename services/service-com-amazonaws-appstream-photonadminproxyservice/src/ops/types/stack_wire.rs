@@ -37,7 +37,7 @@ use ::aws_smithy_types::DateTime;
 
 use super::{
     AccessEndpoint, AgentAccessConfig, ApplicationSettingsResponse, ContentRedirection, StackError,
-    StorageConnector, StreamingExperienceSettings, UserSetting,
+    StorageConnector, StreamingExperienceSettings, UserSetting, WebAuthnRedirection,
 };
 
 /// The namespace the member the on-disk model does not declare sits in: NOT this service's
@@ -46,7 +46,7 @@ const RECORDED_NAMESPACE: &str = "com.amazonaws.appstream.recorded";
 
 /// Describes a stack, as every operation that reports one answers it.
 ///
-/// The first seventeen members are `com.amazonaws.appstream#Stack`'s, in the model's member
+/// The first eighteen members are `com.amazonaws.appstream#Stack`'s, in the model's member
 /// order. `state` is the one AppStream reports beyond the published model: the stack's own
 /// lifecycle state.
 #[derive(Debug, Clone, Default)]
@@ -66,6 +66,7 @@ pub struct Stack {
     pub embed_host_domains: Option<Vec<String>>,
     pub streaming_experience_settings: Option<StreamingExperienceSettings>,
     pub content_redirection: Option<ContentRedirection>,
+    pub web_authn_redirection: Option<WebAuthnRedirection>,
     pub agent_access_config: Option<AgentAccessConfig>,
     pub storage_connector_authentication: Option<String>,
     /// The stack's lifecycle state, the member the on-disk model does not declare.
@@ -112,10 +113,12 @@ impl Stack {
         modelled_member!("StreamingExperienceSettings", ShapeType::Structure, 13);
     pub const M_CONTENT_REDIRECTION: Schema =
         modelled_member!("ContentRedirection", ShapeType::Structure, 14);
+    pub const M_WEB_AUTHN_REDIRECTION: Schema =
+        modelled_member!("WebAuthnRedirection", ShapeType::Structure, 15);
     pub const M_AGENT_ACCESS_CONFIG: Schema =
-        modelled_member!("AgentAccessConfig", ShapeType::Structure, 15);
+        modelled_member!("AgentAccessConfig", ShapeType::Structure, 16);
     pub const M_STORAGE_CONNECTOR_AUTHENTICATION: Schema =
-        modelled_member!("StorageConnectorAuthentication", ShapeType::String, 16);
+        modelled_member!("StorageConnectorAuthentication", ShapeType::String, 17);
 
     /// The one member the model does not declare, appended last and in
     /// [`RECORDED_NAMESPACE`].
@@ -127,7 +130,7 @@ impl Stack {
         ),
         ShapeType::String,
         "State",
-        17,
+        18,
     );
 
     pub const SCHEMA: Schema = Schema::new_struct(
@@ -153,6 +156,7 @@ impl Stack {
             &Self::M_EMBED_HOST_DOMAINS,
             &Self::M_STREAMING_EXPERIENCE_SETTINGS,
             &Self::M_CONTENT_REDIRECTION,
+            &Self::M_WEB_AUTHN_REDIRECTION,
             &Self::M_AGENT_ACCESS_CONFIG,
             &Self::M_STORAGE_CONNECTOR_AUTHENTICATION,
             &Self::M_STATE,
@@ -232,6 +236,9 @@ impl SerializableStruct for Stack {
         if let Some(value) = self.content_redirection.as_ref() {
             s.write_struct(&Self::M_CONTENT_REDIRECTION, value)?;
         }
+        if let Some(value) = self.web_authn_redirection.as_ref() {
+            s.write_struct(&Self::M_WEB_AUTHN_REDIRECTION, value)?;
+        }
         if let Some(value) = self.agent_access_config.as_ref() {
             s.write_struct(&Self::M_AGENT_ACCESS_CONFIG, value)?;
         }
@@ -310,13 +317,16 @@ impl DeserializableStruct for Stack {
                     stack.content_redirection = Some(ContentRedirection::deserialize(d)?);
                 }
                 Some(15) => {
-                    stack.agent_access_config = Some(AgentAccessConfig::deserialize(d)?);
+                    stack.web_authn_redirection = Some(WebAuthnRedirection::deserialize(d)?);
                 }
                 Some(16) => {
+                    stack.agent_access_config = Some(AgentAccessConfig::deserialize(d)?);
+                }
+                Some(17) => {
                     stack.storage_connector_authentication =
                         Some(d.read_string(&Self::M_STORAGE_CONNECTOR_AUTHENTICATION)?)
                 }
-                Some(17) => stack.state = Some(d.read_string(&Self::M_STATE)?),
+                Some(18) => stack.state = Some(d.read_string(&Self::M_STATE)?),
                 _ => {}
             }
             Ok(())

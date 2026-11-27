@@ -1,15 +1,15 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op DescribeImageBuilders
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `DescribeImageBuilders`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
+//! Reads the image builders this account holds and renders each stored record as the
+//! modelled `ImageBuilder`, a page at a time. With no `Names` every stored builder is
+//! reported; with `Names` only those, and a name this account holds no builder under
+//! answers `ResourceNotFoundException`.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`DescribeImageBuilders::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! A read of the builders' own state: the guard is written through ONLY to materialise the
+//! transitions the clock has already made due (a builder a create or a start brought up is
+//! `RUNNING` once its span has passed, whether or not anybody called), so what this reports
+//! is what every later caller sees too.
 //!
 //! ## Shape of an operation
 //!
@@ -138,20 +138,70 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
     async fn handle(
         &self,
         input: Self::Input,
-        ctx: &smithy_server_runtime::OperationContext<'_>,
+        _ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `DescribeImageBuilders` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(DescribeImageBuildersErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("DescribeImageBuilders"))
+        // The records one page carries, as [`crate::state::page_size`] decides it from the
+        // `MaxResults` the request asked for and this read's own page ceiling. The model
+        // puts no `@range` on the member (`smithy_query(query="operation",
+        // operation="DescribeImageBuilders")` reports `MaxResults` as a plain `Integer`),
+        // so the boundary validator passes any value through and the shared rule is what
+        // refuses a page of fewer than one record.
+        let page_size =
+            crate::state::page_size(input.max_results, crate::state::IMAGE_BUILDER_PAGE_SIZE)
+                .map_err(crate::scaffolded::Scaffolded::validation)?;
+
+        // See `create_stack.rs` for why an engine without this service's store answers
+        // "not written for that engine" rather than a fabricated success.
+        let state = crate::state::service_state(&*self.engine).ok_or_else(|| {
+            crate::scaffolded::Scaffolded::not_implemented("DescribeImageBuilders")
+        })?;
+        // Written through only to materialise what the clock already owes the stored
+        // builders, which is what makes this read report the state every later caller
+        // sees.
+        let mut state = state.lock();
+        state.settle_image_builder_states();
+
+        // "Retrieves a list that describes one or more specified image builders, if the
+        // image builder names are provided. Otherwise, all image builders in the account
+        // are described."
+        let selected: ::std::collections::BTreeSet<String> = match &input.names {
+            Some(names) if !names.is_empty() => {
+                for name in names {
+                    if !state.image_builders.contains_key(name) {
+                        return Err(
+                            DescribeImageBuildersErrorModeled::ResourceNotFoundException(
+                                ResourceNotFoundException {
+                                    message: Some(crate::state::resource_not_found_message(
+                                        crate::state::IMAGE_BUILDER_KIND,
+                                        name,
+                                    )),
+                                },
+                            )
+                            .into(),
+                        );
+                    }
+                }
+                names.iter().cloned().collect()
+            }
+            _ => state.image_builders.keys().cloned().collect(),
+        };
+
+        let page = crate::state::paginate_sized(&selected, input.next_token.as_deref(), page_size)
+            .ok_or_else(|| {
+                crate::scaffolded::Scaffolded::validation(
+                    "NextToken is not a pagination token this service issued",
+                )
+            })?;
+        let image_builders: Vec<ImageBuilder> = page
+            .names
+            .iter()
+            .filter_map(|name| state.image_builders.get(name))
+            .map(crate::state::ImageBuilderRecord::to_image_builder)
+            .collect();
+
+        Ok(DescribeImageBuildersOutput {
+            image_builders: Some(image_builders),
+            next_token: page.next_token,
+        })
     }
 }

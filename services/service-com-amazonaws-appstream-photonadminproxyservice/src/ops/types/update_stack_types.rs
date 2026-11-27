@@ -28,6 +28,7 @@ pub struct UpdateStackInput {
     pub embed_host_domains: Option<Vec<String>>,
     pub streaming_experience_settings: Option<StreamingExperienceSettings>,
     pub content_redirection: Option<ContentRedirection>,
+    pub web_authn_redirection: Option<WebAuthnRedirection>,
     pub agent_access_config: Option<AgentAccessConfigForUpdate>,
     pub storage_connector_authentication: Option<String>,
 }
@@ -38,6 +39,8 @@ pub struct AgentAccessConfigForUpdate {
     pub settings: Option<Vec<AgentAccessSetting>>,
     pub s3_bucket_arn: Option<String>,
     pub screenshots_upload_enabled: Option<bool>,
+    pub replay_session_enabled: Option<bool>,
+    pub kms_key_arn: Option<String>,
     pub screen_resolution: Option<String>,
     pub screen_image_format: Option<String>,
     pub user_control_mode: Option<String>,

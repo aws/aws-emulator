@@ -1,15 +1,14 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op StopImageBuilder
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `StopImageBuilder`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
+//! Stops the specified image builder: the stored builder moves to `STOPPING` and the clock
+//! owes it `STOPPED` once the span has passed ([`crate::state::PendingState`]), so a caller
+//! reading straight after the call still sees the transient state and nothing sleeps for
+//! the span.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`StopImageBuilder::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! A stop of a builder that already has no instance, or one already on its way to having
+//! none, asks for nothing new: it is answered with the builder as it stands and starts no
+//! second span.
 //!
 //! ## Shape of an operation
 //!
@@ -139,18 +138,52 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `StopImageBuilder` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(StopImageBuilderErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("StopImageBuilder"))
+        // `ctx` carries request metadata only; this operation reads nothing from it.
+        let _ = ctx;
+        // See `create_stack.rs` for why an engine without this service's store answers
+        // "not written for that engine" rather than a fabricated success.
+        let state = crate::state::service_state(&*self.engine)
+            .ok_or_else(|| crate::scaffolded::Scaffolded::not_implemented("StopImageBuilder"))?;
+        let mut state = state.lock();
+        // Whatever the create or an earlier start or stop already owes is due on the clock,
+        // not on this call.
+        state.settle_image_builder_states();
+
+        let Some(builder) = state.image_builders.get_mut(&input.name) else {
+            return Err(StopImageBuilderErrorModeled::ResourceNotFoundException(
+                ResourceNotFoundException {
+                    message: Some(crate::state::resource_not_found_message(
+                        crate::state::IMAGE_BUILDER_KIND,
+                        &input.name,
+                    )),
+                },
+            )
+            .into());
+        };
+
+        // A builder that has no instance, or is already on its way to having none, is in
+        // the state this call asks for: stopping it again asks for nothing new, so nothing
+        // is changed and no second span is started.
+        let already_stopping = builder
+            .owed_state()
+            .is_some_and(|owed| owed == crate::state::IMAGE_BUILDER_STATE_STOPPED);
+        if !builder.is_stopped() && !already_stopping {
+            builder.state = crate::state::IMAGE_BUILDER_STATE_STOPPING.to_string();
+            // Stopping an image builder terminates its instance, and that instance goes
+            // away on the clock: the instant the builder is due to have none is stored and
+            // nothing waits for it here. Whatever the create or a start still owed this
+            // builder is superseded — the instance it was bringing up is the one this call
+            // terminates.
+            builder.pending_state = Some(crate::state::PendingState {
+                state: crate::state::IMAGE_BUILDER_STATE_STOPPED,
+                due_at: ::std::time::Instant::now() + crate::state::IMAGE_BUILDER_STATE_SPAN,
+            });
+        }
+
+        // The result renders the stored record, so what this answers is what a later
+        // `DescribeImageBuilders` reports.
+        Ok(StopImageBuilderOutput {
+            image_builder: Some(builder.to_image_builder()),
+        })
     }
 }

@@ -230,6 +230,7 @@ impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
             update_directory_config::UpdateDirectoryConfig,
             update_entitlement::UpdateEntitlement,
             update_fleet::UpdateFleet,
+            update_image_builder::UpdateImageBuilder,
             update_image_permissions::UpdateImagePermissions,
             update_stack::UpdateStack,
             update_theme_for_stack::UpdateThemeForStack,

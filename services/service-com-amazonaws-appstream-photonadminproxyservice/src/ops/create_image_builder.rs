@@ -1,15 +1,21 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op CreateImageBuilder
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `CreateImageBuilder`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
+//! Creates an image builder: one [`crate::state::ImageBuilderRecord`] written under the
+//! name the request allocates, launched from the image the request selects by name or by
+//! ARN, and reported back from the stored record — so the create's own response and every
+//! later `DescribeImageBuilders` project one builder.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`CreateImageBuilder::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! The builder's instance comes up on the CLOCK, as this operation's documentation states:
+//! "The initial state of the builder is PENDING. When it is ready, the state is RUNNING."
+//! The create stores the instant `RUNNING` is due from ([`crate::state::PendingState`]) and
+//! nothing sleeps for the span, so a caller reading straight after the call still sees the
+//! transient state.
+//!
+//! What the builder reports about the image it runs — the image's ARN and the operating
+//! system platform — is read off the stored image rather than echoed from the request: the
+//! request may select the image by name, and the `ImageBuilder` shape reports only the ARN
+//! and the platform, so a builder can only report an image this store really holds.
 //!
 //! ## Shape of an operation
 //!
@@ -241,18 +247,178 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `CreateImageBuilder` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(CreateImageBuilderErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("CreateImageBuilder"))
+        // See `create_stack.rs` for why an engine without this service's store answers
+        // "not written for that engine" rather than a fabricated success.
+        let state = crate::state::service_state(&*self.engine).ok_or_else(|| {
+            crate::scaffolded::Scaffolded::not_implemented("CreateImageBuilder")
+        })?;
+        let region = crate::state::request_region(ctx.parts());
+
+        // "The name of the image used to create the image builder" beside "the ARN of the
+        // public, private, or shared image to use": the builder is launched FROM one image,
+        // which the request selects one way or the other — so naming both is an incorrect
+        // combination of parameters, the reading `describe_images.rs` applies to the same
+        // pair of members, and naming neither selects no image to launch at all. Settled
+        // from the request, before anything is looked up or written.
+        let selector = match (
+            input.image_name.as_deref().filter(|name| !name.is_empty()),
+            input.image_arn.as_deref().filter(|arn| !arn.is_empty()),
+        ) {
+            (Some(_), Some(_)) => {
+                return Err(
+                    CreateImageBuilderErrorModeled::InvalidParameterCombinationException(
+                        InvalidParameterCombinationException {
+                            message: Some(crate::state::image_selector_combination_message()),
+                        },
+                    )
+                    .into(),
+                );
+            }
+            (Some(name), None) => ImageSelector::Name(name),
+            (None, Some(arn)) => ImageSelector::Arn(arn),
+            (None, None) => {
+                return Err(
+                    CreateImageBuilderErrorModeled::InvalidParameterCombinationException(
+                        InvalidParameterCombinationException {
+                            message: Some(crate::state::image_selector_required_message()),
+                        },
+                    )
+                    .into(),
+                );
+            }
+        };
+
+        // "The Amazon Resource Name (ARN) of the IAM role to apply to the image builder":
+        // the builder RUNS AS that role, so whether this account holds a role under the ARN
+        // that this service may assume is IAM's answer — asked the way
+        // `create_app_block_builder.rs` asks it for the other builder resource, with no
+        // guard held, and BEFORE anything is written.
+        if let Some(role_arn) = input.iam_role_arn.as_deref() {
+            if ::service_common::iam_role::role_is_unassumable(
+                ctx,
+                &region,
+                role_arn,
+                crate::state::SERVICE_PRINCIPAL,
+            )
+            .await
+            {
+                return Err(CreateImageBuilderErrorModeled::InvalidRoleException(
+                    InvalidRoleException {
+                        message: Some(crate::state::invalid_role_message(role_arn)),
+                    },
+                )
+                .into());
+            }
+        }
+
+        let mut state = state.lock();
+
+        // `Name` is "a unique name for the image builder", so a name the account already
+        // holds addresses the builder it has rather than minting a second one.
+        if state.image_builders.contains_key(&input.name) {
+            return Err(
+                CreateImageBuilderErrorModeled::ResourceAlreadyExistsException(
+                    ResourceAlreadyExistsException {
+                        message: Some(crate::state::resource_already_exists_message(
+                            crate::state::IMAGE_BUILDER_KIND,
+                            &input.name,
+                        )),
+                    },
+                )
+                .into(),
+            );
+        }
+
+        // CC-02 growth bound: the store must not grow per request without a ceiling.
+        if state.image_builders.len() >= crate::state::MAX_RECORDS_PER_STORE {
+            return Err(CreateImageBuilderErrorModeled::LimitExceededException(
+                LimitExceededException {
+                    message: Some(crate::state::limit_exceeded_message("image builders")),
+                },
+            )
+            .into());
+        }
+
+        // The image the builder is launched from has to exist: an image this account cannot
+        // see is one that was not found, under the same sentence every other read of the
+        // catalog refuses an absent image with (`describe_images.rs`).
+        let image = match selector {
+            ImageSelector::Name(name) => state.images.get(name).ok_or_else(|| {
+                CreateImageBuilderErrorModeled::ResourceNotFoundException(
+                    ResourceNotFoundException {
+                        message: Some(crate::state::resource_not_found_message(
+                            crate::state::IMAGE_KIND,
+                            name,
+                        )),
+                    },
+                )
+            })?,
+            ImageSelector::Arn(arn) => state.image_by_arn(&region, arn).ok_or_else(|| {
+                CreateImageBuilderErrorModeled::ResourceNotFoundException(
+                    ResourceNotFoundException {
+                        message: Some(crate::state::tagged_resource_not_found_message(arn)),
+                    },
+                )
+            })?,
+        };
+        // Read off the stored image while it is borrowed, so the record below holds what
+        // the catalog states rather than what the request wrote.
+        let image_arn = image.arn(&region);
+        let platform = image.platform.clone();
+
+        let record = crate::state::ImageBuilderRecord {
+            arn: crate::state::image_builder_arn(&region, &input.name),
+            name: input.name.clone(),
+            image_arn: Some(image_arn),
+            description: input.description,
+            display_name: input.display_name,
+            vpc_config: input.vpc_config,
+            instance_type: input.instance_type,
+            platform: Some(platform),
+            iam_role_arn: input.iam_role_arn,
+            // The builder's instance is coming up, and is due to be up once the span has
+            // passed: the state is `PENDING` until then and `RUNNING` afterwards, applied
+            // by whichever call reads the builder after that instant.
+            state: crate::state::IMAGE_BUILDER_STATE_PENDING.to_string(),
+            pending_state: Some(crate::state::PendingState {
+                state: crate::state::IMAGE_BUILDER_STATE_RUNNING,
+                due_at: ::std::time::Instant::now() + crate::state::IMAGE_BUILDER_STATE_SPAN,
+            }),
+            // A freshly created builder has changed state for no reason yet and carries no
+            // errors.
+            state_change_reason: None,
+            image_builder_errors: Vec::new(),
+            created_time: crate::state::now(),
+            enable_default_internet_access: input.enable_default_internet_access,
+            domain_join_info: input.domain_join_info,
+            // Nothing in this emulator provisions an elastic network interface, so the
+            // builder reports none rather than an address nothing answers at.
+            network_access_configuration: None,
+            latest_appstream_agent_version: Some(
+                crate::state::latest_appstream_agent_version(
+                    input.appstream_agent_version.as_deref(),
+                )
+                .to_string(),
+            ),
+            appstream_agent_version: input.appstream_agent_version,
+            access_endpoints: input.access_endpoints.unwrap_or_default(),
+            root_volume_config: input.root_volume_config,
+            disable_imdsv1: input.disable_imdsv1,
+            agent_access_config: input.agent_access_config,
+            tags: input.tags.unwrap_or_default().into_iter().collect(),
+        };
+
+        let image_builder = record.to_image_builder();
+        state.image_builders.insert(record.name.clone(), record);
+        Ok(CreateImageBuilderOutput {
+            image_builder: Some(image_builder),
+        })
     }
+}
+
+/// How a request selects the image the builder is launched from: by the image's name or by
+/// its ARN, the two members this operation models for it.
+enum ImageSelector<'a> {
+    Name(&'a str),
+    Arn(&'a str),
 }

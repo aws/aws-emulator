@@ -354,6 +354,24 @@ pub struct FleetError {
     pub error_message: Option<String>,
 }
 
+#[smithy_macros::smithy(shape = "com.amazonaws.appstream#ImageBuilderAgentAccessConfig")]
+#[derive(Debug, Clone, Default)]
+pub struct ImageBuilderAgentAccessConfig {
+    pub settings: Vec<AgentAccessSetting>,
+    pub s3_bucket_arn: Option<String>,
+    pub screenshots_upload_enabled: Option<bool>,
+    pub screen_resolution: String,
+    pub screen_image_format: String,
+    pub user_control_mode: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.appstream#AgentAccessSetting")]
+#[derive(Debug, Clone, Default)]
+pub struct AgentAccessSetting {
+    pub agent_action: String,
+    pub permission: String,
+}
+
 #[smithy_macros::smithy(shape = "com.amazonaws.appstream#ImageBuilder")]
 #[derive(Debug, Clone, Default)]
 pub struct ImageBuilder {
@@ -378,6 +396,7 @@ pub struct ImageBuilder {
     pub root_volume_config: Option<VolumeConfig>,
     pub latest_appstream_agent_version: Option<String>,
     pub disable_imdsv1: Option<bool>,
+    pub agent_access_config: Option<ImageBuilderAgentAccessConfig>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.appstream#ImageBuilderStateChangeReason")]
@@ -395,9 +414,10 @@ pub struct NetworkAccessConfiguration {
     pub eni_id: Option<String>,
 }
 
-// `Image` is NOT derived here: the image AppStream reports carries members the on-disk
-// model does not declare, so its schema and codec are written out in
-// [`super::image_wire`] — the same arrangement `Stack` and `Theme` take.
+// `Image` is NOT declared here, although every operation that reports an image reaches
+// it: AppStream answers with members of it the on-disk model does not declare, which the
+// derive cannot admit, so the shape is written out by hand in `super::image_wire` and
+// re-exported from `types` in this one's place.
 
 #[smithy_macros::smithy(shape = "com.amazonaws.appstream#ImageStateChangeReason")]
 #[derive(Debug, Clone, Default)]
@@ -463,27 +483,30 @@ pub struct UrlRedirectionConfig {
     pub denied_urls: Option<Vec<String>>,
 }
 
+#[smithy_macros::smithy(shape = "com.amazonaws.appstream#WebAuthnRedirection")]
+#[derive(Debug, Clone, Default)]
+pub struct WebAuthnRedirection {
+    pub enabled: bool,
+    pub process_compatibility_list: Option<Vec<String>>,
+}
+
 #[smithy_macros::smithy(shape = "com.amazonaws.appstream#AgentAccessConfig")]
 #[derive(Debug, Clone, Default)]
 pub struct AgentAccessConfig {
     pub settings: Vec<AgentAccessSetting>,
     pub s3_bucket_arn: Option<String>,
     pub screenshots_upload_enabled: Option<bool>,
+    pub replay_session_enabled: Option<bool>,
+    pub kms_key_arn: Option<String>,
     pub screen_resolution: String,
     pub screen_image_format: String,
     pub user_control_mode: Option<String>,
 }
 
-#[smithy_macros::smithy(shape = "com.amazonaws.appstream#AgentAccessSetting")]
-#[derive(Debug, Clone, Default)]
-pub struct AgentAccessSetting {
-    pub agent_action: String,
-    pub permission: String,
-}
-
-// `Stack` is declared in `types/stack_wire.rs`, not here: AppStream reports a member on it
-// that the on-disk model does not declare, so its schema and codec cannot come from the
-// derive. See that module's own note.
+// `Stack` is NOT declared here, although every operation that reports a stack reaches it:
+// AppStream answers with a member of it the on-disk model does not declare, which the
+// derive cannot admit, so the shape is written out by hand in `super::stack_wire` and
+// re-exported from `types` in this one's place.
 
 #[smithy_macros::smithy(shape = "com.amazonaws.appstream#StackError")]
 #[derive(Debug, Clone, Default)]
@@ -507,9 +530,10 @@ pub struct ThemeFooterLink {
     pub footer_link_url: Option<String>,
 }
 
-// `Theme` is declared in `types/theme_wire.rs`, not here: AppStream reports six members on
-// it that the on-disk model does not declare, so its schema and codec cannot come from the
-// derive. See that module's own note.
+// `Theme` is NOT declared here, although every operation that reports a stack's branding
+// reaches it: AppStream answers with members of it the on-disk model does not declare,
+// which the derive cannot admit, so the shape is written out by hand in
+// `super::theme_wire` and re-exported from `types` in this one's place.
 
 #[smithy_macros::smithy(shape = "com.amazonaws.appstream#ResourceInUseException")]
 #[derive(Debug, Clone, Default)]
@@ -522,7 +546,7 @@ pub const ACCESS_ENDPOINT_TYPE_VALUES: &[&str] = &["STREAMING"];
 
 
 /// The values `Action` accepts on the wire.
-pub const ACTION_VALUES: &[&str] = &["AUTO_TIME_ZONE_REDIRECTION", "CLIPBOARD_COPY_FROM_LOCAL_DEVICE", "CLIPBOARD_COPY_TO_LOCAL_DEVICE", "DOMAIN_PASSWORD_SIGNIN", "DOMAIN_SMART_CARD_SIGNIN", "FILE_DOWNLOAD", "FILE_UPLOAD", "PRINTING_TO_LOCAL_DEVICE"];
+pub const ACTION_VALUES: &[&str] = &["AUTO_TIME_ZONE_REDIRECTION", "CLIPBOARD_COPY_FROM_LOCAL_DEVICE", "CLIPBOARD_COPY_TO_LOCAL_DEVICE", "DOMAIN_PASSWORD_SIGNIN", "DOMAIN_SMART_CARD_SIGNIN", "FILE_DOWNLOAD", "FILE_UPLOAD", "PRINTING_TO_LOCAL_DEVICE", "SMART_CARD_REDIRECTION"];
 
 
 /// The values `AgentAction` accepts on the wire.
@@ -593,6 +617,10 @@ pub const FLEET_STATE_VALUES: &[&str] = &["RUNNING", "STARTING", "STOPPED", "STO
 pub const FLEET_TYPE_VALUES: &[&str] = &["ALWAYS_ON", "ELASTIC", "ON_DEMAND"];
 
 
+/// The values `ImageBuilderAttribute` accepts on the wire.
+pub const IMAGE_BUILDER_ATTRIBUTE_VALUES: &[&str] = &["AGENT_ACCESS_CONFIG"];
+
+
 /// The values `ImageBuilderState` accepts on the wire.
 pub const IMAGE_BUILDER_STATE_VALUES: &[&str] = &["DELETING", "FAILED", "PENDING", "PENDING_IMAGE_IMPORT", "PENDING_QUALIFICATION", "PENDING_SYNCING_APPS", "REBOOTING", "RUNNING", "SNAPSHOTTING", "STOPPED", "STOPPING", "SYNCING_APPS", "UPDATING", "UPDATING_AGENT"];
 
@@ -638,7 +666,7 @@ pub const PERMISSION_VALUES: &[&str] = &["DISABLED", "ENABLED"];
 
 
 /// The values `PlatformType` accepts on the wire.
-pub const PLATFORM_TYPE_VALUES: &[&str] = &["AMAZON_LINUX2", "RHEL8", "ROCKY_LINUX8", "UBUNTU_PRO_2404", "WINDOWS", "WINDOWS_SERVER_2016", "WINDOWS_SERVER_2019", "WINDOWS_SERVER_2022", "WINDOWS_SERVER_2025"];
+pub const PLATFORM_TYPE_VALUES: &[&str] = &["AMAZON_LINUX2", "RHEL8", "ROCKY_LINUX8", "UBUNTU_PRO_2404", "WINDOWS", "WINDOWS_11", "WINDOWS_SERVER_2016", "WINDOWS_SERVER_2019", "WINDOWS_SERVER_2022", "WINDOWS_SERVER_2025"];
 
 
 /// The values `PreferredProtocol` accepts on the wire.
@@ -666,7 +694,7 @@ pub const SOFTWARE_DEPLOYMENT_STATUS_VALUES: &[&str] = &["FAILED_TO_INSTALL", "F
 
 
 /// The values `StackAttribute` accepts on the wire.
-pub const STACK_ATTRIBUTE_VALUES: &[&str] = &["ACCESS_ENDPOINTS", "AGENT_ACCESS_CONFIG", "CONTENT_REDIRECTION", "EMBED_HOST_DOMAINS", "FEEDBACK_URL", "IAM_ROLE_ARN", "REDIRECT_URL", "STORAGE_CONNECTORS", "STORAGE_CONNECTOR_AUTHENTICATION", "STORAGE_CONNECTOR_GOOGLE_DRIVE", "STORAGE_CONNECTOR_HOMEFOLDERS", "STORAGE_CONNECTOR_ONE_DRIVE", "STREAMING_EXPERIENCE_SETTINGS", "THEME_NAME", "USER_SETTINGS"];
+pub const STACK_ATTRIBUTE_VALUES: &[&str] = &["ACCESS_ENDPOINTS", "AGENT_ACCESS_CONFIG", "AGENT_ACCESS_CONFIG_KMS_KEY_ARN", "CONTENT_REDIRECTION", "EMBED_HOST_DOMAINS", "FEEDBACK_URL", "IAM_ROLE_ARN", "REDIRECT_URL", "STORAGE_CONNECTORS", "STORAGE_CONNECTOR_AUTHENTICATION", "STORAGE_CONNECTOR_GOOGLE_DRIVE", "STORAGE_CONNECTOR_HOMEFOLDERS", "STORAGE_CONNECTOR_ONE_DRIVE", "STREAMING_EXPERIENCE_SETTINGS", "THEME_NAME", "USER_SETTINGS", "WEB_AUTHN_REDIRECTION"];
 
 
 /// The values `StackErrorCode` accepts on the wire.

@@ -54,18 +54,17 @@ use ::aws_smithy_schema::Schema;
 use ::service_common::validation_message;
 use ::smithy_server_runtime::{Refusal, Refused, Violation, ViolationKind};
 
-/// `StackAttribute`'s admissible values as this service PUBLISHES them: the fifteen the
+/// `StackAttribute`'s admissible values as this service PUBLISHES them: the seventeen the
 /// shipped model declares (`smithy_query(query="shape", shape="StackAttribute")`, also kept
-/// as `crate::ops::types::STACK_ATTRIBUTE_VALUES`) plus the three the refusal of a value
+/// as `crate::ops::types::STACK_ATTRIBUTE_VALUES`) plus the one the refusal of a value
 /// outside the set advertises and the shipped enum does not declare — the computer-use
-/// interface of agent access, the WebAuthn redirection, and the KMS key agent access
-/// encrypts with.
+/// interface of agent access.
 ///
 /// Which values a member ADMITS is not decided here — that is the enum the member targets,
 /// so the boundary still refuses a value the shipped model does not declare — and this only
 /// decides which attributes the refusal SAYS a stack has.
 ///
-/// In the model's DECLARATION order, with the three the shipped enum does not declare last.
+/// In the model's DECLARATION order, with the one the shipped enum does not declare last.
 /// The order a refusal lists is not this one: it is the order the front door walks its own
 /// table of these values (`service_common::validation_message::hashed_enum_order`). What
 /// the order here DOES decide is the one thing that walk cannot — two values the table puts
@@ -87,11 +86,11 @@ const PUBLISHED_STACK_ATTRIBUTES: &[&str] = &[
     "ACCESS_ENDPOINTS",
     "STREAMING_EXPERIENCE_SETTINGS",
     "CONTENT_REDIRECTION",
+    "WEB_AUTHN_REDIRECTION",
     "AGENT_ACCESS_CONFIG",
     "STORAGE_CONNECTOR_AUTHENTICATION",
-    "AGENT_ACCESS_CONFIG_COMPUTER_USE_INTERFACE_ID",
-    "WEB_AUTHN_REDIRECTION",
     "AGENT_ACCESS_CONFIG_KMS_KEY_ARN",
+    "AGENT_ACCESS_CONFIG_COMPUTER_USE_INTERFACE_ID",
 ];
 
 /// The enumerated types whose admissible set this service publishes other than the shipped

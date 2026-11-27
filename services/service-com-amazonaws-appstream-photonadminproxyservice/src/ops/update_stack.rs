@@ -353,6 +353,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         if let Some(content_redirection) = input.content_redirection {
             record.content_redirection = Some(content_redirection);
         }
+        if let Some(web_authn_redirection) = input.web_authn_redirection {
+            record.web_authn_redirection = Some(web_authn_redirection);
+        }
         if let Some(authentication) = input.storage_connector_authentication {
             record.storage_connector_authentication = Some(authentication);
         }
@@ -415,7 +418,22 @@ fn supplied_member(input: &UpdateStackInput, attribute: &str) -> Option<&'static
             input.streaming_experience_settings.is_some(),
         ),
         "CONTENT_REDIRECTION" => ("ContentRedirection", input.content_redirection.is_some()),
+        "WEB_AUTHN_REDIRECTION" => (
+            "WebAuthnRedirection",
+            input.web_authn_redirection.is_some(),
+        ),
         "AGENT_ACCESS_CONFIG" => ("AgentAccessConfig", input.agent_access_config.is_some()),
+        // The attribute clears ONE field of the agent access configuration — the key
+        // Replay Session artifacts are encrypted with — so only an update that names THAT
+        // field conflicts with it: one carrying the other agent access members asks
+        // nothing of the key.
+        "AGENT_ACCESS_CONFIG_KMS_KEY_ARN" => (
+            "AgentAccessConfig.KmsKeyArn",
+            input
+                .agent_access_config
+                .as_ref()
+                .is_some_and(|config| config.kms_key_arn.is_some()),
+        ),
         "STORAGE_CONNECTOR_AUTHENTICATION" => (
             "StorageConnectorAuthentication",
             input.storage_connector_authentication.is_some(),
@@ -454,7 +472,16 @@ fn delete_attribute(record: &mut crate::state::StackRecord, attribute: &str) {
         "ACCESS_ENDPOINTS" => record.access_endpoints.clear(),
         "STREAMING_EXPERIENCE_SETTINGS" => record.streaming_experience_settings = None,
         "CONTENT_REDIRECTION" => record.content_redirection = None,
+        "WEB_AUTHN_REDIRECTION" => record.web_authn_redirection = None,
         "AGENT_ACCESS_CONFIG" => record.agent_access_config = None,
+        // The key alone: the rest of the agent access configuration stays, which is what
+        // the attribute names (`AgentAccessConfigForUpdate$KmsKeyArn`: "To remove the key,
+        // use AttributesToDelete with the AGENT_ACCESS_CONFIG_KMS_KEY_ARN value").
+        "AGENT_ACCESS_CONFIG_KMS_KEY_ARN" => {
+            if let Some(config) = record.agent_access_config.as_mut() {
+                config.kms_key_arn = None;
+            }
+        }
         "STORAGE_CONNECTOR_AUTHENTICATION" => record.storage_connector_authentication = None,
         // THEME_NAME names the stack's theme, a resource of its own
         // (`CreateThemeForStack` / `DeleteThemeForStack`), and IAM_ROLE_ARN names a
@@ -473,6 +500,12 @@ fn delete_attribute(record: &mut crate::state::StackRecord, attribute: &str) {
 /// configuration has nothing to merge onto, so the members `AgentAccessConfig` requires
 /// must all be present; a missing one is refused as an incorrect combination of
 /// parameters rather than invented here.
+///
+/// One member decides another: `ReplaySessionEnabled` "setting this attribute to false
+/// also removes the KmsKeyArn value from the stack" (`smithy_query(query="doc",
+/// shape="AgentAccessConfigForUpdate", member="ReplaySessionEnabled")`), since the key is
+/// what those artifacts are encrypted with and there are none to encrypt once Replay
+/// Session is off.
 fn merge_agent_access_config(
     stored: Option<&AgentAccessConfig>,
     update: &AgentAccessConfigForUpdate,
@@ -488,6 +521,9 @@ fn merge_agent_access_config(
         ))
     };
 
+    let replay_session_enabled = update
+        .replay_session_enabled
+        .or_else(|| stored.and_then(|stored| stored.replay_session_enabled));
     Ok(AgentAccessConfig {
         settings: match (update.settings.clone(), stored) {
             (Some(settings), _) => settings,
@@ -511,6 +547,16 @@ fn merge_agent_access_config(
         screenshots_upload_enabled: update
             .screenshots_upload_enabled
             .or_else(|| stored.and_then(|stored| stored.screenshots_upload_enabled)),
+        replay_session_enabled,
+        // The key the Replay Session artifacts are encrypted with goes with the Replay
+        // Session itself: once the merged configuration has it off, the stack holds no key.
+        kms_key_arn: match replay_session_enabled {
+            Some(false) => None,
+            _ => update
+                .kms_key_arn
+                .clone()
+                .or_else(|| stored.and_then(|stored| stored.kms_key_arn.clone())),
+        },
         user_control_mode: update
             .user_control_mode
             .clone()

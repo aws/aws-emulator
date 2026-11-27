@@ -321,6 +321,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     .unwrap_or_else(crate::state::default_streaming_experience_settings),
             ),
             content_redirection: input.content_redirection,
+            web_authn_redirection: input.web_authn_redirection,
             agent_access_config: input.agent_access_config,
             storage_connector_authentication: input.storage_connector_authentication,
             // A created stack is already usable, which is the state it reports from here on

@@ -27,6 +27,7 @@ pub struct CreateStackInput {
     pub embed_host_domains: Option<Vec<String>>,
     pub streaming_experience_settings: Option<StreamingExperienceSettings>,
     pub content_redirection: Option<ContentRedirection>,
+    pub web_authn_redirection: Option<WebAuthnRedirection>,
     pub agent_access_config: Option<AgentAccessConfig>,
     pub storage_connector_authentication: Option<String>,
 }

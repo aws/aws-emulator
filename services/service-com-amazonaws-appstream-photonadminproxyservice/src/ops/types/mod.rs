@@ -81,9 +81,8 @@ pub mod drain_session_instance_types;
 pub mod enable_user_types;
 pub mod expire_session_types;
 pub mod get_export_image_task_types;
-// The image every reader reports, whose wire form carries six members the on-disk model
-// does not declare — so its schema and codec are written out rather than derived. See that
-// module's own note.
+/// `Image`, declared by hand rather than through the derive: AppStream reports members
+/// of it the on-disk model does not declare (see the module's own documentation).
 pub mod image_wire;
 pub mod list_associated_fleets_types;
 pub mod list_associated_stacks_types;
@@ -91,9 +90,8 @@ pub mod list_entitled_applications_types;
 pub mod list_export_image_tasks_types;
 pub mod list_tags_for_resource_types;
 pub mod shared_types;
-// The stack every reader reports, whose wire form carries a member the on-disk model does
-// not declare — so its schema and codec are written out rather than derived. See that
-// module's own note.
+/// `Stack`, declared by hand rather than through the derive: AppStream reports a member
+/// of it the on-disk model does not declare (see the module's own documentation).
 pub mod stack_wire;
 pub mod start_app_block_builder_types;
 pub mod start_fleet_types;
@@ -103,9 +101,8 @@ pub mod stop_app_block_builder_types;
 pub mod stop_fleet_types;
 pub mod stop_image_builder_types;
 pub mod tag_resource_types;
-// The theme every reader of a stack's custom branding reports, whose wire form carries six
-// members the on-disk model does not declare — so its schema and codec are written out
-// rather than derived. See that module's own note.
+/// `Theme`, declared by hand rather than through the derive: AppStream reports members of
+/// it the on-disk model does not declare (see the module's own documentation).
 pub mod theme_wire;
 pub mod untag_resource_types;
 pub mod update_app_block_builder_types;
@@ -113,6 +110,7 @@ pub mod update_application_types;
 pub mod update_directory_config_types;
 pub mod update_entitlement_types;
 pub mod update_fleet_types;
+pub mod update_image_builder_types;
 pub mod update_image_permissions_types;
 pub mod update_stack_types;
 pub mod update_theme_for_stack_types;
@@ -297,6 +295,8 @@ pub use update_directory_config_types::*;
 pub use update_entitlement_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use update_fleet_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use update_image_builder_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use update_image_permissions_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]

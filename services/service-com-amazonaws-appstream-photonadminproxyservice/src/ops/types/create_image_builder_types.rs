@@ -31,6 +31,7 @@ pub struct CreateImageBuilderInput {
     pub softwares_to_install: Option<Vec<String>>,
     pub softwares_to_uninstall: Option<Vec<String>>,
     pub disable_imdsv1: Option<bool>,
+    pub agent_access_config: Option<ImageBuilderAgentAccessConfig>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.appstream#CreateImageBuilderResult")]

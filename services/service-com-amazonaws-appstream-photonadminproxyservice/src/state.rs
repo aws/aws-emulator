@@ -95,6 +95,21 @@
 //! back — one of them, when the read names it — a page at a time, and deleting the stack
 //! removes the entitlements it owns.
 //!
+//! Image builders live here as well, in their own module ([`image_builders`]):
+//! `CreateImageBuilder` resolves the image the request selects against the stored image
+//! catalog and writes one [`ImageBuilderRecord`] under the name it allocates,
+//! `UpdateImageBuilder` applies the members it is given to that record and clears the
+//! attributes its `AttributesToDelete` names ([`ImageBuilderRecord::delete_attribute`]),
+//! and `DescribeImageBuilders` renders the stored records back, a page at a time. A
+//! builder's own instance state lives here too, with the transition the clock owes it: the
+//! create leaves the record `PENDING` and records the instant from which `RUNNING` is due
+//! ([`PendingState`]), `StopImageBuilder` moves it to `STOPPING` and records the instant
+//! from which `STOPPED` is due, and the read materialises what is already due before it
+//! reports
+//! ([`ComAmazonawsAppstreamPhotonadminproxyserviceState::settle_image_builder_states`]).
+//! That state is also the gate `UpdateImageBuilder` applies
+//! ([`image_builder_accepts_update`]).
+//!
 //! Records hold the MODELLED sub-shapes (`StorageConnector`, `UserSetting`,
 //! `VpcConfig`, …) rather than copies of them, so what a Describe returns is literally
 //! what the Create persisted.
@@ -130,6 +145,7 @@
 mod access_endpoints;
 mod app_block_builder_updates;
 mod entitlements;
+mod image_builders;
 mod images;
 mod stack_attribute_conflicts;
 mod stack_defaults;
@@ -141,6 +157,7 @@ mod wire_refusals;
 pub use access_endpoints::*;
 pub use app_block_builder_updates::*;
 pub use entitlements::*;
+pub use image_builders::*;
 pub use images::*;
 pub use stack_attribute_conflicts::*;
 pub use stack_defaults::*;
@@ -159,7 +176,7 @@ use crate::ops::types::{
     LastReportGenerationExecutionError, ResourceError, S3Location, ScriptDetails, Session, Stack,
     StackError, StorageConnector, StreamingExperienceSettings, Theme, ThemeFooterLink,
     UsageReportSubscription, User, UserSetting, UserStackAssociation, UserStackAssociationError,
-    VolumeConfig, VpcConfig,
+    VolumeConfig, VpcConfig, WebAuthnRedirection,
 };
 
 /// The ARN namespace this service stamps on every resource ARN
@@ -660,6 +677,9 @@ pub const FLEET_ARN_RESOURCE_TYPE: &str = "fleet";
 /// The ARN `resource-type` segment of an app block builder.
 pub const APP_BLOCK_BUILDER_ARN_RESOURCE_TYPE: &str = "app-block-builder";
 
+/// The ARN `resource-type` segment of an image builder.
+pub const IMAGE_BUILDER_ARN_RESOURCE_TYPE: &str = "image-builder";
+
 /// The ARN `resource-type` segment of an app block, the segment before the app block's
 /// name in `arn:aws:appstream:<region>:<account>:app-block/<name>`.
 pub const APP_BLOCK_ARN_RESOURCE_TYPE: &str = "app-block";
@@ -705,6 +725,7 @@ pub fn tagged_resource_not_found_message(resource_arn: &str) -> String {
         STACK_ARN_RESOURCE_TYPE => STACK_KIND.to_string(),
         FLEET_ARN_RESOURCE_TYPE => FLEET_KIND.to_string(),
         APP_BLOCK_BUILDER_ARN_RESOURCE_TYPE => APP_BLOCK_BUILDER_KIND.to_string(),
+        IMAGE_BUILDER_ARN_RESOURCE_TYPE => IMAGE_BUILDER_KIND.to_string(),
         APP_BLOCK_ARN_RESOURCE_TYPE => APP_BLOCK_KIND.to_string(),
         APPLICATION_ARN_RESOURCE_TYPE => APPLICATION_KIND.to_string(),
         other => other.replace('-', " "),
@@ -756,6 +777,15 @@ pub fn app_block_builder_arn(region: &str, name: &str) -> String {
         ARN_NAMESPACE,
         region,
         &format!("{APP_BLOCK_BUILDER_ARN_RESOURCE_TYPE}/{name}"),
+    )
+}
+
+/// `arn:aws:appstream:<region>:<account>:image-builder/<name>`.
+pub fn image_builder_arn(region: &str, name: &str) -> String {
+    ::emulator_server::emulator_arn(
+        ARN_NAMESPACE,
+        region,
+        &format!("{IMAGE_BUILDER_ARN_RESOURCE_TYPE}/{name}"),
     )
 }
 
@@ -832,6 +862,7 @@ pub struct StackRecord {
     pub embed_host_domains: Vec<String>,
     pub streaming_experience_settings: Option<StreamingExperienceSettings>,
     pub content_redirection: Option<ContentRedirection>,
+    pub web_authn_redirection: Option<WebAuthnRedirection>,
     pub agent_access_config: Option<AgentAccessConfig>,
     pub storage_connector_authentication: Option<String>,
     /// The lifecycle state this stack reports, written once by the create
@@ -875,6 +906,7 @@ impl StackRecord {
             embed_host_domains: reported(&self.embed_host_domains),
             streaming_experience_settings: self.streaming_experience_settings.clone(),
             content_redirection: self.content_redirection.clone(),
+            web_authn_redirection: self.web_authn_redirection.clone(),
             agent_access_config: self.agent_access_config.clone(),
             storage_connector_authentication: self.storage_connector_authentication.clone(),
             state: Some(self.state.clone()),
@@ -1861,6 +1893,9 @@ pub struct ComAmazonawsAppstreamPhotonadminproxyserviceState {
     /// App block builders by `Name`. `BTreeMap` so every Describe page walks a stable
     /// order.
     pub app_block_builders: BTreeMap<String, AppBlockBuilderRecord>,
+    /// Image builders by `Name` — the name a `CreateImageBuilder` mints the resource
+    /// under. `BTreeMap` so every Describe page walks a stable order.
+    pub image_builders: BTreeMap<String, ImageBuilderRecord>,
     /// App blocks by `Name` — the name a `CreateAppBlock` mints the resource under, which
     /// is also what a `DeleteAppBlock` names. `BTreeMap` so every page of a read walks a
     /// stable order.
@@ -1949,6 +1984,7 @@ impl Default for ComAmazonawsAppstreamPhotonadminproxyserviceState {
             themes: BTreeMap::new(),
             fleets: BTreeMap::new(),
             app_block_builders: BTreeMap::new(),
+            image_builders: BTreeMap::new(),
             app_blocks: BTreeMap::new(),
             applications: BTreeMap::new(),
             sessions: BTreeMap::new(),
@@ -2219,6 +2255,19 @@ impl ComAmazonawsAppstreamPhotonadminproxyserviceState {
         }
     }
 
+    /// Apply every image-builder transition the clock has already made due.
+    ///
+    /// The same rule as [`Self::settle_app_block_builder_states`], for the resource whose
+    /// instance a `CreateImageBuilder` or a `StartImageBuilder` brings up and a
+    /// `StopImageBuilder` terminates: the builder reaches that state at an instant the
+    /// call fixed, so the transition is owed whether or not anybody calls again.
+    pub fn settle_image_builder_states(&mut self) {
+        let now = ::std::time::Instant::now();
+        for builder in self.image_builders.values_mut() {
+            builder.settle_state(now);
+        }
+    }
+
     /// The tags the resource with this ARN carries, for reading; `None` when this
     /// service holds no resource under that ARN.
     ///
@@ -2242,6 +2291,11 @@ impl ComAmazonawsAppstreamPhotonadminproxyserviceState {
                 .map(|record| &record.tags),
             APP_BLOCK_BUILDER_ARN_RESOURCE_TYPE => self
                 .app_block_builders
+                .get(&name)
+                .filter(|record| record.arn == resource_arn)
+                .map(|record| &record.tags),
+            IMAGE_BUILDER_ARN_RESOURCE_TYPE => self
+                .image_builders
                 .get(&name)
                 .filter(|record| record.arn == resource_arn)
                 .map(|record| &record.tags),
@@ -2279,6 +2333,11 @@ impl ComAmazonawsAppstreamPhotonadminproxyserviceState {
                 .map(|record| &mut record.tags),
             APP_BLOCK_BUILDER_ARN_RESOURCE_TYPE => self
                 .app_block_builders
+                .get_mut(&name)
+                .filter(|record| record.arn == resource_arn)
+                .map(|record| &mut record.tags),
+            IMAGE_BUILDER_ARN_RESOURCE_TYPE => self
+                .image_builders
                 .get_mut(&name)
                 .filter(|record| record.arn == resource_arn)
                 .map(|record| &mut record.tags),
