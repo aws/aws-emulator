@@ -40,6 +40,11 @@
 //! handler, the store and response serialization all run: the state checks after each
 //! refusal are read back through `GetDomain` and `ListDomains`, the way a client reads
 //! them.
+//!
+//! The wire harness, the row table and the refusal's wording below are `pub(crate)` because
+//! [`crate::identity_center_patch_refusal_ordering`] asserts the same rule over the same
+//! rows from the calls that FOLLOW a refusal, and drives them through this harness rather
+//! than a second copy of it.
 
 use std::sync::Arc;
 
@@ -62,8 +67,8 @@ use omni::ops::types::{
 use super::validation_message_wording::error_envelope;
 
 /// The error `UpdateDomain` models for a request it cannot apply, and its status.
-const VALIDATION_EXCEPTION: &str = "ValidationException";
-const VALIDATION_STATUS: u16 = 400;
+pub(crate) const VALIDATION_EXCEPTION: &str = "ValidationException";
+pub(crate) const VALIDATION_STATUS: u16 = 400;
 
 /// The whole sentence a patch that would leave a domain federating through Identity Center
 /// with no instance behind it earns, written out here so a change to the wording fails this
@@ -72,7 +77,7 @@ const VALIDATION_STATUS: u16 = 400;
 /// Wholly fixed text: it names the member whose value is missing and the provider that
 /// required it, and carries nothing of the request — no `domainId`, no name, no provider
 /// list.
-const PRECONDITION_MESSAGE: &str =
+pub(crate) const PRECONDITION_MESSAGE: &str =
     "identityCenterInstanceArn is required when authorizationProviders includes IDC";
 
 /// The region every call below is signed for.
@@ -80,7 +85,7 @@ const REGION: &str = "us-west-2";
 
 /// An Identity Center instance ARN satisfying `IdentityCenterInstanceArn`'s modelled
 /// `^arn:aws[a-z-]*:sso:::instance/[a-zA-Z0-9-]+$`.
-const INSTANCE_ARN: &str = "arn:aws:sso:::instance/ssoins-1234567890abcdef";
+pub(crate) const INSTANCE_ARN: &str = "arn:aws:sso:::instance/ssoins-1234567890abcdef";
 
 /// A second instance ARN, for the patch that moves a domain from one instance to another.
 const OTHER_INSTANCE_ARN: &str = "arn:aws:sso:::instance/ssoins-fedcba0987654321";
@@ -88,7 +93,7 @@ const OTHER_INSTANCE_ARN: &str = "arn:aws:sso:::instance/ssoins-fedcba0987654321
 /// The `identityProviderConfiguration` a request carries: naming `instance`, or naming an
 /// `identityCenterConfiguration` with no instance ARN, or empty.
 #[derive(Clone, Copy, Debug)]
-enum Configuration {
+pub(crate) enum Configuration {
     /// No `identityProviderConfiguration` member at all.
     Absent,
     /// The member, present and empty — no `identityCenterConfiguration`.
@@ -100,7 +105,7 @@ enum Configuration {
 }
 
 impl Configuration {
-    fn build(self) -> Option<IdentityProviderConfiguration> {
+    pub(crate) fn build(self) -> Option<IdentityProviderConfiguration> {
         match self {
             Self::Absent => None,
             Self::Empty => Some(IdentityProviderConfiguration::default()),
@@ -118,25 +123,42 @@ impl Configuration {
 
 /// One row: the domain it provisions and the patch it then submits.
 #[derive(Clone, Debug)]
-struct Row {
+pub(crate) struct Row {
     /// What the row is about, named in every assertion it makes.
-    case: &'static str,
-    stored_name: &'static str,
-    stored_providers: &'static [&'static str],
+    pub(crate) case: &'static str,
+    pub(crate) stored_name: &'static str,
+    pub(crate) stored_providers: &'static [&'static str],
     stored_configuration: Configuration,
-    patch_name: Option<&'static str>,
-    patch_providers: Option<&'static [&'static str]>,
+    pub(crate) patch_name: Option<&'static str>,
+    pub(crate) patch_providers: Option<&'static [&'static str]>,
     patch_configuration: Configuration,
+}
+
+impl Row {
+    /// The provider list the patch would leave the domain with: the one it names, or the one
+    /// the domain already holds when it names none.
+    pub(crate) fn resulting_providers(&self) -> Vec<String> {
+        self.patch_providers
+            .unwrap_or(self.stored_providers)
+            .iter()
+            .map(|provider| (*provider).to_string())
+            .collect()
+    }
+
+    /// The name the patch would leave the domain with.
+    pub(crate) fn resulting_name(&self) -> &'static str {
+        self.patch_name.unwrap_or(self.stored_name)
+    }
 }
 
 /// One emulator: the service mounted on a router over one engine, so a create is
 /// observable by the reader that runs next.
-struct Wire {
+pub(crate) struct Wire {
     router: MultiServiceRouter,
 }
 
 impl Wire {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let engine: Arc<engine::InMemoryEngine> = Arc::new(engine::InMemoryEngine::new());
         let mut router = MultiServiceRouter::new();
         router.set_request_authentication(false);
@@ -177,7 +199,7 @@ impl Wire {
     }
 
     /// The account's domain, created over the same wire.
-    async fn create_domain(&self, row: &Row) -> Domain {
+    pub(crate) async fn create_domain(&self, row: &Row) -> Domain {
         let case = row.case;
         let (status, body) = self
             .call(
@@ -205,7 +227,19 @@ impl Wire {
     }
 
     /// The patch the row submits, as the status and body it answered with.
-    async fn update_domain(&self, row: &Row, domain_id: &str) -> (u16, bytes::Bytes) {
+    pub(crate) async fn update_domain(&self, row: &Row, domain_id: &str) -> (u16, bytes::Bytes) {
+        self.update_domain_carrying(row, domain_id, row.patch_configuration)
+            .await
+    }
+
+    /// The row's patch carrying `configuration` in place of its own — how a refused patch is
+    /// resubmitted once it names an Identity Center instance.
+    pub(crate) async fn update_domain_carrying(
+        &self,
+        row: &Row,
+        domain_id: &str,
+        configuration: Configuration,
+    ) -> (u16, bytes::Bytes) {
         self.call(
             "UpdateDomain",
             UPDATE_DOMAIN_INPUT_SCHEMA,
@@ -218,14 +252,14 @@ impl Wire {
                         .map(|provider| (*provider).to_string())
                         .collect()
                 }),
-                identity_provider_configuration: row.patch_configuration.build(),
+                identity_provider_configuration: configuration.build(),
             },
         )
         .await
     }
 
     /// The domain the store holds, read back through the operation that reports it.
-    async fn get_domain(&self, case: &str, domain_id: &str) -> Domain {
+    pub(crate) async fn get_domain(&self, case: &str, domain_id: &str) -> Domain {
         let (status, body) = self
             .call(
                 "GetDomain",
@@ -244,7 +278,7 @@ impl Wire {
     }
 
     /// The Identity Center instance the account's listing reports for `domain_id`.
-    async fn listed_instance_arn(&self, case: &str, domain_id: &str) -> Option<String> {
+    pub(crate) async fn listed_instance_arn(&self, case: &str, domain_id: &str) -> Option<String> {
         let (status, body) = self
             .call(
                 "ListDomains",
@@ -270,7 +304,11 @@ impl Wire {
 }
 
 /// Decode one success body into the output shape it carries.
-fn decode<O: DeserializableStruct>(case: &str, operation: &str, body: &bytes::Bytes) -> O {
+pub(crate) fn decode<O: DeserializableStruct>(
+    case: &str,
+    operation: &str,
+    body: &bytes::Bytes,
+) -> O {
     let codec = CborCodec::default();
     let mut deserializer = codec.create_deserializer(body);
     O::deserialize(&mut deserializer)
@@ -278,7 +316,7 @@ fn decode<O: DeserializableStruct>(case: &str, operation: &str, body: &bytes::By
 }
 
 /// The instance ARN a domain's identity-provider configuration names.
-fn instance_arn(domain: &Domain) -> Option<&str> {
+pub(crate) fn instance_arn(domain: &Domain) -> Option<&str> {
     domain
         .identity_provider_configuration
         .as_ref()
@@ -287,7 +325,7 @@ fn instance_arn(domain: &Domain) -> Option<&str> {
 }
 
 /// The rows whose patch would leave the domain listing IDC with no instance behind it.
-fn refused_rows() -> Vec<Row> {
+pub(crate) fn refused_rows() -> Vec<Row> {
     vec![
         Row {
             case: "switching an IAM-only domain to IDC",
