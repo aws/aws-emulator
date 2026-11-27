@@ -15,7 +15,11 @@
 //! created, one whose name only resembles a live one, a FIFO topic, and one the
 //! owning service DELETED after it had been tagged — and, on the writing side, how
 //! many tags the request carries, a tag with an empty value, and which of the two
-//! APIs wrote them.
+//! APIs wrote them. On the READING side they span the filter forms `TagFilters`
+//! admits — a key with one value, with several, with none at all, a value or a key
+//! no topic carries, and two filters AND-ed — over an estate of topics that share a
+//! key with different values, so a filter selects a topic by its OWN value and a
+//! filter nothing satisfies selects nothing.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -417,6 +421,232 @@ async fn a_live_topic_is_tagged_through_either_api_into_one_tag_set() {
         assert_eq!(
             left, expected,
             "case {case}: expected the untag to leave {expected:?}, got {left:?}"
+        );
+    }
+}
+
+/// A topic created with `Tags`, through Amazon SNS's own `CreateTopic`, with the ARN
+/// that service minted for it.
+///
+/// The awsQuery form carries a tag list as `Tags.member.<n>.Key`/`.Value`, which is
+/// the spelling the SNS model's `TagList` is serialized under.
+async fn tagged_topic(
+    router: &MultiServiceRouter,
+    name: &str,
+    tags: &[(&str, &str)],
+) -> String {
+    let mut fields: Vec<(String, String)> = vec![("Name".to_string(), name.to_string())];
+    for (index, (key, value)) in tags.iter().enumerate() {
+        let position = index + 1;
+        fields.push((format!("Tags.member.{position}.Key"), (*key).to_string()));
+        fields.push((format!("Tags.member.{position}.Value"), (*value).to_string()));
+    }
+    let borrowed: Vec<(&str, &str)> = fields
+        .iter()
+        .map(|(name, value)| (name.as_str(), value.as_str()))
+        .collect();
+    require(&sns_ok(router, "CreateTopic", &borrowed).await, "TopicArn")
+}
+
+/// The ARNs one `TagFilters` request selects, sorted, with the answer asserted to be
+/// the modelled success — so a filter that selects nothing is read as the empty
+/// `ResourceTagMappingList` it is and not as a refusal.
+async fn selected(router: &MultiServiceRouter, case: &str, filters: Value) -> Vec<String> {
+    let (status, body) = tagging(
+        router,
+        "GetResources",
+        json!({ "TagFilters": filters.clone() }),
+    )
+    .await;
+    assert_eq!(
+        status, 200,
+        "case {case}: GetResources with TagFilters {filters} must answer 200, got {status} \
+         with body {body}"
+    );
+    let mut arns = page_arns(&body);
+    arns.sort();
+    arns
+}
+
+/// `TagFilters` selects a topic when, for EVERY filter, the topic's tag set holds that
+/// filter's key with one of the values the filter lists — any value when it lists none
+/// ("If you specify more than one filter in a single request, the response returns only
+/// those resources that satisfy all filters"; "if you specify a filter that contains more
+/// than one value for a key, the response returns resources that match any of the
+/// specified values for that key"; "if you don't specify a value for a key, the response
+/// returns all resources that are tagged with that key, with any or no value" —
+/// `GetResourcesInput$TagFilters`). So each of several topics sharing one key is selected
+/// by its OWN value and by no other, and a key or value nothing carries selects nothing:
+/// a 200 whose `ResourceTagMappingList` is empty.
+///
+/// The estate spans what the rule generalises over: how the tag reached the topic (a
+/// create's `Tags`, a later `TagResource`), how many keys the topic carries, a topic
+/// sharing the key with another value, a topic carrying the same VALUE under another key,
+/// and a topic nothing ever tagged ("GetResources does not return untagged resources").
+#[tokio::test]
+async fn tag_filters_select_the_topics_whose_own_tag_set_satisfies_every_filter() {
+    let router = emulator();
+
+    // One key the estate shares, so one query reaches several topics, and the two
+    // values that tell them apart.
+    let key = "Run";
+    let one = "run-one";
+    let two = "run-two";
+
+    let created = tagged_topic(&router, "sns-filter-created", &[(key, one)]).await;
+    let different = tagged_topic(&router, "sns-filter-different", &[(key, two)]).await;
+    let both = tagged_topic(&router, "sns-filter-both", &[(key, one), ("Stage", one)]).await;
+    let other_key = tagged_topic(&router, "sns-filter-other-key", &[("Stage", one)]).await;
+    let untagged = topic(&router, "sns-filter-untagged").await;
+
+    // Tagged through the OWNING service AFTER its create, which is the same one tag
+    // set read from the other side.
+    let written = topic(&router, "sns-filter-written").await;
+    let _ = sns_ok(
+        &router,
+        "TagResource",
+        &[
+            ("ResourceArn", written.as_str()),
+            ("Tags.member.1.Key", key),
+            ("Tags.member.1.Value", one),
+        ],
+    )
+    .await;
+
+    let mut key_is_one = vec![created.clone(), both.clone(), written.clone()];
+    key_is_one.sort();
+    let mut key_any_value = vec![
+        created.clone(),
+        both.clone(),
+        written.clone(),
+        different.clone(),
+    ];
+    key_any_value.sort();
+
+    // Columns: the case, the `TagFilters` value, and the ARNs it selects.
+    let rows: &[(&str, Value, Vec<String>)] = &[
+        (
+            "the key and the value one topic set",
+            json!([{ "Key": key, "Values": [one] }]),
+            key_is_one.clone(),
+        ),
+        (
+            "the key and the OTHER value",
+            json!([{ "Key": key, "Values": [two] }]),
+            vec![different.clone()],
+        ),
+        (
+            "both values of the key, which are OR-ed",
+            json!([{ "Key": key, "Values": [one, two] }]),
+            key_any_value.clone(),
+        ),
+        (
+            "the key with no values, which matches any value",
+            json!([{ "Key": key }]),
+            key_any_value.clone(),
+        ),
+        (
+            "the key with an empty value list, which matches any value",
+            json!([{ "Key": key, "Values": [] }]),
+            key_any_value,
+        ),
+        (
+            "a value no topic was ever tagged with",
+            json!([{ "Key": key, "Values": ["run-three"] }]),
+            Vec::new(),
+        ),
+        (
+            "a key no topic carries, with a value one of them does",
+            json!([{ "Key": "Owner", "Values": [one] }]),
+            Vec::new(),
+        ),
+        (
+            "two filters, which are AND-ed",
+            json!([{ "Key": key, "Values": [one] }, { "Key": "Stage", "Values": [one] }]),
+            vec![both.clone()],
+        ),
+        (
+            "two filters the same topic cannot satisfy",
+            json!([{ "Key": key, "Values": [two] }, { "Key": "Stage", "Values": [one] }]),
+            Vec::new(),
+        ),
+        (
+            "the other key alone",
+            json!([{ "Key": "Stage" }]),
+            {
+                let mut both_keys = vec![both.clone(), other_key.clone()];
+                both_keys.sort();
+                both_keys
+            },
+        ),
+    ];
+
+    for (case, filters, expected) in rows {
+        let answer = selected(&router, case, filters.clone()).await;
+        assert_eq!(
+            &answer, expected,
+            "case {case:?}: expected TagFilters {filters} to select {expected:?}, got {answer:?}"
+        );
+        assert!(
+            !answer.contains(&untagged),
+            "case {case:?}: a topic nothing ever tagged is in no answer, got {answer:?}"
+        );
+    }
+}
+
+/// An untag through the OWNING service withdraws exactly that topic from the queries
+/// its tag answered: the tag set the index reports is the topic's own, so removing the
+/// key there removes the topic from every filter naming it, leaves the siblings that
+/// still carry it selected, and leaves a filter nothing satisfies answering 200 with an
+/// empty `ResourceTagMappingList`.
+#[tokio::test]
+async fn an_untag_through_amazon_sns_withdraws_only_that_topic_from_its_tag_query() {
+    let router = emulator();
+    let key = "Run";
+    let value = "run-one";
+
+    let withdrawn = tagged_topic(&router, "sns-untag-withdrawn", &[(key, value)]).await;
+    let sibling = tagged_topic(&router, "sns-untag-sibling", &[(key, value)]).await;
+    let mut both = vec![withdrawn.clone(), sibling.clone()];
+    both.sort();
+
+    let filter = json!([{ "Key": key, "Values": [value] }]);
+    let answer = selected(&router, "both topics tagged", filter.clone()).await;
+    assert_eq!(
+        answer, both,
+        "case both topics tagged: expected {both:?}, got {answer:?}"
+    );
+
+    // Columns: the case, the topic untagged through Amazon SNS, and what the filter
+    // selects afterwards.
+    let rows: &[(&str, &String, Vec<String>)] = &[
+        (
+            "one of the two untagged",
+            &withdrawn,
+            vec![sibling.clone()],
+        ),
+        ("both untagged", &sibling, Vec::new()),
+    ];
+
+    for (case, arn, expected) in rows {
+        let _ = sns_ok(
+            &router,
+            "UntagResource",
+            &[("ResourceArn", arn.as_str()), ("TagKeys.member.1", key)],
+        )
+        .await;
+        let answer = selected(&router, case, filter.clone()).await;
+        assert_eq!(
+            &answer, expected,
+            "case {case:?}: expected the filter to select {expected:?} after untagging \
+             {arn}, got {answer:?}"
+        );
+        // The owning service's own reader agrees: there is ONE tag set, and the untag
+        // emptied it.
+        let held = sns_tags(&router, arn).await;
+        assert!(
+            held.is_empty(),
+            "case {case:?}: expected Amazon SNS to hold no tag for {arn}, got {held:?}"
         );
     }
 }
