@@ -12,20 +12,22 @@
 //! The rules under test, each asserted over a TABLE spanning the four families and
 //! the status the set was in when the delete arrived, rather than over one call:
 //!
-//! 1. A delete takes the set off the detector the instant the call is served. What it
-//!    leaves on the set's own id is the family's: an UPLOADED LIST keeps a readable
-//!    record and reports the terminal member of its status enum
-//!    (`smithy_query(shape="IpSetStatus")` and its threat-list sibling carry
-//!    `DELETED`) while still reporting what the create stored, whereas an ENTITY SET
-//!    is gone — its id is refused as absent from the instant the delete answers.
-//! 2. An id the detector does not hold is refused with its family's own absence
-//!    refusal, and the SAME one whatever put the id out of reach — a value no create
-//!    ever minted, or one a delete took out of the detector's holdings: the uploaded
-//!    lists answer HTTP 400 under the `InvalidInputException` class, the entity sets
-//!    HTTP 404 under `ResourceNotFoundException`, each with its own fixed sentence
-//!    (see [`assert_uploaded_list_absent`] and [`assert_entity_set_absent`]) — except
-//!    that an id outside the alphabet an entity-set id is constrained to is refused
-//!    as a CONSTRAINT violation there, before anything is resolved.
+//! 1. A delete takes the set off the detector the instant the call is served, and
+//!    leaves its record READABLE on its own id reporting the delete member of the
+//!    family's status enum (`smithy_query(shape="IpSetStatus")` and its three
+//!    siblings all carry `DELETE_PENDING` and `DELETED`), still reporting what the
+//!    create stored. Which member comes first is the family's: an uploaded list
+//!    settles on the terminal `DELETED` at once, while an entity set's removal is
+//!    asynchronous, so it is `DELETE_PENDING` until the clock owes it `DELETED`.
+//! 2. An id the detector holds no record for is refused with its family's own
+//!    absence refusal, and the SAME one whatever put the id out of reach — a value
+//!    no create ever minted, or one whose deleted record the store no longer
+//!    retains: HTTP 400 under the `InvalidInputException` class with the family's
+//!    one fixed sentence ([`assert_absence_refusal`], and
+//!    [`assert_entity_set_absent`] for the entity sets' own sentence) — except that
+//!    an id outside the alphabet an
+//!    entity-set id is constrained to is refused as a CONSTRAINT violation there,
+//!    before anything is resolved.
 //! 3. A SECOND delete is that same refusal, and writes nothing: the detector's own
 //!    `UpdatedAt` moved on the first delete and does not move again.
 //! 4. The collection stops naming a deleted set, and the name it held is free: a
@@ -38,12 +40,11 @@ use crate::detector_lifecycle::{call, enabled_detector, error_code, error_shape,
 use crate::entity_set_id_refusal_classes::assert_entity_set_id_constraint_violation;
 use service_com_amazonaws_guardduty_guarddutyapiservice::scaffolded::{
     BAD_REQUEST_EXCEPTION, ENTITY_SET_NOT_FOUND_MESSAGE, INVALID_INPUT_EXCEPTION,
-    RESOURCE_NOT_FOUND_EXCEPTION,
 };
 use service_com_amazonaws_guardduty_guarddutyapiservice::state::{
-    ENTITY_SET_ACTIVE, ENTITY_SET_INACTIVE, IP_SET_ACTIVE, IP_SET_DELETED, IP_SET_INACTIVE,
-    NO_SUCH_RESOURCE_MESSAGE, THREAT_INTEL_SET_ACTIVE, THREAT_INTEL_SET_DELETED,
-    THREAT_INTEL_SET_INACTIVE,
+    ENTITY_SET_ACTIVE, ENTITY_SET_DELETED, ENTITY_SET_DELETE_PENDING, ENTITY_SET_INACTIVE,
+    IP_SET_ACTIVE, IP_SET_DELETED, IP_SET_INACTIVE, NO_SUCH_RESOURCE_MESSAGE,
+    THREAT_INTEL_SET_ACTIVE, THREAT_INTEL_SET_DELETED, THREAT_INTEL_SET_INACTIVE,
 };
 
 /// A well-formed set id (32 lowercase hex characters, the form this service mints)
@@ -59,12 +60,31 @@ const SETTLE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
 /// below ever ends on it.
 const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(25);
 
-/// Assert `status`/`body` is the absence refusal the UPLOADED-LIST families — an
-/// IPSet and a threat list — answer an id the detector does not hold with: HTTP 400,
+/// Assert `status`/`body` is the absence refusal BOTH ENTITY-SET families answer an
+/// id the detector holds no record for with: the shared client rejection carrying
+/// the entity sets' own fixed sentence.
+///
+/// It is the same CLASS every other family answers
+/// ([`assert_absence_refusal`]) and differs only in that sentence:
+/// `BadRequestException` is the only client error either family's operations
+/// declare (`smithy_query(operation="GetThreatEntitySet")`), so a 404 class is one
+/// neither may answer.
+pub(crate) fn assert_entity_set_absent(case: &str, status: u16, body: &Value, id: &str) {
+    assert_absence_refusal(case, status, body, id, ENTITY_SET_NOT_FOUND_MESSAGE);
+}
+
+/// Assert `status`/`body` is the one client rejection this service answers an
+/// identifier it holds no resource for with, carrying `expected_message`: HTTP 400,
 /// the `InvalidInputException` class in the body's `__type` and its `type` member,
-/// the modelled `BadRequestException` envelope in `x-amzn-errortype`, and one fixed
+/// the modelled `BadRequestException` envelope in `x-amzn-errortype`, and a fixed
 /// sentence that names neither the member nor the caller's value.
-pub(crate) fn assert_uploaded_list_absent(case: &str, status: u16, body: &Value, id: &str) {
+pub(crate) fn assert_absence_refusal(
+    case: &str,
+    status: u16,
+    body: &Value,
+    id: &str,
+    expected_message: &str,
+) {
     assert_eq!(
         status, 400,
         "case {case:?}: expected 400, got {status} {body:?}"
@@ -87,46 +107,8 @@ pub(crate) fn assert_uploaded_list_absent(case: &str, status: u16, body: &Value,
     );
     let message = body["message"].as_str().unwrap_or_default();
     assert_eq!(
-        message, NO_SUCH_RESOURCE_MESSAGE,
-        "case {case:?}: expected {NO_SUCH_RESOURCE_MESSAGE:?}, got {message:?}"
-    );
-    assert!(
-        !message.contains(id),
-        "case {case:?}: the refusal must not echo the id {id:?}, got {message:?}"
-    );
-}
-
-/// Assert `status`/`body` is the absence refusal BOTH ENTITY-SET families answer an
-/// id the detector does not hold with: HTTP 404 with the `ResourceNotFoundException`
-/// class in the body's `__type`, in its `type` member AND in `x-amzn-errortype` (the
-/// class is a modelled shape of this service, `httpError` 404 —
-/// `smithy_query(shape="ResourceNotFoundException")`), carrying one fixed sentence
-/// that names neither the member nor the caller's value.
-pub(crate) fn assert_entity_set_absent(case: &str, status: u16, body: &Value, id: &str) {
-    assert_eq!(
-        status, 404,
-        "case {case:?}: expected 404, got {status} {body:?}"
-    );
-    let class = error_code(body);
-    assert_eq!(
-        class, RESOURCE_NOT_FOUND_EXCEPTION,
-        "case {case:?}: expected the {RESOURCE_NOT_FOUND_EXCEPTION} class, got {class:?} {body:?}"
-    );
-    assert_eq!(
-        body["type"].as_str().unwrap_or_default(),
-        RESOURCE_NOT_FOUND_EXCEPTION,
-        "case {case:?}: expected the class in the body's type member, got {body:?}"
-    );
-    let shape = error_shape(body);
-    assert_eq!(
-        shape, RESOURCE_NOT_FOUND_EXCEPTION,
-        "case {case:?}: expected {RESOURCE_NOT_FOUND_EXCEPTION} in x-amzn-errortype, got \
-         {shape:?} {body:?}"
-    );
-    let message = body["message"].as_str().unwrap_or_default();
-    assert_eq!(
-        message, ENTITY_SET_NOT_FOUND_MESSAGE,
-        "case {case:?}: expected {ENTITY_SET_NOT_FOUND_MESSAGE:?}, got {message:?}"
+        message, expected_message,
+        "case {case:?}: expected {expected_message:?}, got {message:?}"
     );
     assert!(
         !message.contains(id),
@@ -155,17 +137,25 @@ struct Family {
     /// The member of this family's own status enum a set GuardDuty is not using
     /// settles on.
     inactive_status: &'static str,
-    /// The `Status` the family's own read reports once a delete has been served, or
-    /// `None` for a family whose delete DROPS the record, which leaves nothing to
-    /// report and refuses the id as absent instead.
-    deleted_status: Option<&'static str>,
-    /// Whether an id this family holds no record for is refused with the entity-set
-    /// families' 404 rather than the uploaded lists' 400.
-    not_found_absence: bool,
+    /// The `Status` the family's own read reports STRAIGHT AFTER a delete is
+    /// served: the terminal member for a family whose removal is synchronous, the
+    /// transitional one for a family whose removal the clock settles.
+    accepted_delete_status: &'static str,
+    /// The `Status` the family's own read settles on once the removal is done.
+    settled_delete_status: &'static str,
+    /// Whether this family enforces the entity-set id alphabet on the identifier
+    /// before resolving it, so a value outside that alphabet is a constraint
+    /// violation rather than an absence.
+    constrains_id_form: bool,
+    /// The fixed sentence this family refuses an identifier it holds no record for
+    /// with.
+    absence_message: &'static str,
 }
 
-/// Every detector-scoped set family, with the two whose delete RETAINS a readable
-/// record and the two whose delete releases the id.
+/// Every detector-scoped set family. All four RETAIN a readable record when a
+/// delete is served; they differ in the sentence their absence refusal carries, in
+/// whether the id's form is constrained, and in whether the removal settles at once
+/// or through the transitional status.
 fn families() -> Vec<Family> {
     vec![
         Family {
@@ -176,8 +166,10 @@ fn families() -> Vec<Family> {
             format: "TXT",
             active_status: IP_SET_ACTIVE,
             inactive_status: IP_SET_INACTIVE,
-            deleted_status: Some(IP_SET_DELETED),
-            not_found_absence: false,
+            accepted_delete_status: IP_SET_DELETED,
+            settled_delete_status: IP_SET_DELETED,
+            constrains_id_form: false,
+            absence_message: NO_SUCH_RESOURCE_MESSAGE,
         },
         Family {
             case: "threatintelset",
@@ -187,8 +179,10 @@ fn families() -> Vec<Family> {
             format: "STIX",
             active_status: THREAT_INTEL_SET_ACTIVE,
             inactive_status: THREAT_INTEL_SET_INACTIVE,
-            deleted_status: Some(THREAT_INTEL_SET_DELETED),
-            not_found_absence: false,
+            accepted_delete_status: THREAT_INTEL_SET_DELETED,
+            settled_delete_status: THREAT_INTEL_SET_DELETED,
+            constrains_id_form: false,
+            absence_message: NO_SUCH_RESOURCE_MESSAGE,
         },
         Family {
             case: "threatentityset",
@@ -199,8 +193,10 @@ fn families() -> Vec<Family> {
             format: "ALIEN_VAULT",
             active_status: ENTITY_SET_ACTIVE,
             inactive_status: ENTITY_SET_INACTIVE,
-            deleted_status: None,
-            not_found_absence: true,
+            accepted_delete_status: ENTITY_SET_DELETE_PENDING,
+            settled_delete_status: ENTITY_SET_DELETED,
+            constrains_id_form: true,
+            absence_message: ENTITY_SET_NOT_FOUND_MESSAGE,
         },
         Family {
             case: "trustedentityset",
@@ -210,19 +206,15 @@ fn families() -> Vec<Family> {
             format: "PROOF_POINT",
             active_status: ENTITY_SET_ACTIVE,
             inactive_status: ENTITY_SET_INACTIVE,
-            deleted_status: None,
-            not_found_absence: true,
+            accepted_delete_status: ENTITY_SET_DELETE_PENDING,
+            settled_delete_status: ENTITY_SET_DELETED,
+            constrains_id_form: true,
+            absence_message: ENTITY_SET_NOT_FOUND_MESSAGE,
         },
     ]
 }
 
 impl Family {
-    /// Is this family's absence refusal the entity-set 404? It is exactly the two
-    /// entity-set families.
-    fn refuses_with_not_found(&self) -> bool {
-        self.not_found_absence
-    }
-
     /// The settled member of this family's status enum a create that did or did not
     /// ask GuardDuty to use the set ends up on.
     fn settled_status(&self, activate: bool) -> &'static str {
@@ -265,11 +257,7 @@ impl Family {
     }
 
     fn assert_absent(&self, case: &str, status: u16, body: &Value, id: &str) {
-        if self.refuses_with_not_found() {
-            assert_entity_set_absent(case, status, body, id);
-        } else {
-            assert_uploaded_list_absent(case, status, body, id);
-        }
+        assert_absence_refusal(case, status, body, id, self.absence_message);
     }
 
     /// Assert how this family refuses `id`. An id outside the alphabet an entity-set
@@ -278,7 +266,7 @@ impl Family {
     /// else, and every form on the uploaded lists, is the family's own absence
     /// refusal.
     fn assert_refused(&self, case: &str, status: u16, body: &Value, id: &str, well_formed: bool) {
-        if self.refuses_with_not_found() && !well_formed {
+        if self.constrains_id_form && !well_formed {
             assert_entity_set_id_constraint_violation(case, status, body, self.id_member, id);
         } else {
             self.assert_absent(case, status, body, id);
@@ -420,36 +408,30 @@ async fn a_delete_completes_and_the_deleted_id_is_refused_afterwards() {
             );
             let after_first_delete = detector_updated_at(&router, &detector_id, &case).await;
 
-            // Rule 1: what the delete left on the id is the family's. A family that
-            // RETAINS the record answers with the terminal member of its status
-            // enum, still reporting what the create stored; a family whose delete
-            // releases the id refuses it as absent from the very next read, with no
-            // window and no waiting.
+            // Rule 1: the record is still READABLE on its own id, reporting the
+            // status the delete put it in and everything the create stored. Which
+            // delete member comes first is the family's: a synchronous removal is
+            // already terminal, an asynchronous one is transitional until the clock
+            // owes it the terminal member.
             let (status, body) = family.get(&router, &detector_id, &set_id).await;
-            match family.deleted_status {
-                Some(terminal) => {
-                    assert_eq!(
-                        status, 200,
-                        "case {case:?}: a deleted set stays readable while its record is held, \
-                         got {status} {body:?}"
-                    );
-                    assert_eq!(
-                        body["status"].as_str().unwrap_or_default(),
-                        terminal,
-                        "case {case:?}: expected {terminal} straight after the delete, got \
-                         {body:?}"
-                    );
-                    // The read reports what the create stored: the delete moved the
-                    // status and nothing else.
-                    assert_eq!(
-                        body["name"].as_str().unwrap_or_default(),
-                        "deleted_set-1",
-                        "case {case:?}: a deleted record must still report the stored name, got \
-                         {body:?}"
-                    );
-                }
-                None => family.assert_absent(&case, status, &body, &set_id),
-            }
+            assert_eq!(
+                status, 200,
+                "case {case:?}: a deleted set stays readable while its record is held, got \
+                 {status} {body:?}"
+            );
+            assert_eq!(
+                body["status"].as_str().unwrap_or_default(),
+                family.accepted_delete_status,
+                "case {case:?}: expected {} straight after the delete, got {body:?}",
+                family.accepted_delete_status
+            );
+            // The read reports what the create stored: the delete moved the status
+            // and nothing else.
+            assert_eq!(
+                body["name"].as_str().unwrap_or_default(),
+                "deleted_set-1",
+                "case {case:?}: a deleted record must still report the stored name, got {body:?}"
+            );
 
             // Rule 3: a second delete is the family's absence refusal, and moves
             // neither the record nor the detector.
@@ -462,27 +444,40 @@ async fn a_delete_completes_and_the_deleted_id_is_refused_afterwards() {
                  expected {after_first_delete:?}, got {after_second_delete:?}"
             );
 
-            // Rule 1 again: a family that retains the record keeps reporting the
-            // terminal member of its status enum and what the create stored, and a
-            // family that releases the id keeps refusing it — so a second read
-            // agrees with the first either way and nothing walks a deleted set back.
+            // Rule 1 again: the record settles on the terminal member of its status
+            // enum and stays there, still reporting what the create stored — so a
+            // later read agrees with the first and nothing walks a deleted set back.
+            let settled = family
+                .read_until_status(
+                    &router,
+                    &detector_id,
+                    &set_id,
+                    family.settled_delete_status,
+                    &case,
+                )
+                .await;
+            let settled = settled.unwrap_or_else(|| {
+                panic!(
+                    "case {case:?}: a deleted set must settle on {} while its record is held",
+                    family.settled_delete_status
+                )
+            });
+            assert_eq!(
+                settled["name"].as_str().unwrap_or_default(),
+                "deleted_set-1",
+                "case {case:?}: a settled deletion still reports the stored name, got {settled:?}"
+            );
             let (status, body) = family.get(&router, &detector_id, &set_id).await;
-            match family.deleted_status {
-                Some(terminal) => {
-                    assert_eq!(
-                        body["status"].as_str().unwrap_or_default(),
-                        terminal,
-                        "case {case:?}: {terminal} is terminal, got {status} {body:?}"
-                    );
-                    assert_eq!(
-                        body["name"].as_str().unwrap_or_default(),
-                        "deleted_set-1",
-                        "case {case:?}: a settled deletion still reports the stored name, got \
-                         {body:?}"
-                    );
-                }
-                None => family.assert_absent(&case, status, &body, &set_id),
-            }
+            assert_eq!(
+                status, 200,
+                "case {case:?}: the retained record stays readable, got {status} {body:?}"
+            );
+            assert_eq!(
+                body["status"].as_str().unwrap_or_default(),
+                family.settled_delete_status,
+                "case {case:?}: {} is terminal, got {body:?}",
+                family.settled_delete_status
+            );
 
             // Rule 4: the collection stops naming it.
             let listed = family.list(&router, &detector_id).await;

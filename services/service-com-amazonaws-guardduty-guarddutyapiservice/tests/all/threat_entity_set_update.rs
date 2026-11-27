@@ -29,14 +29,17 @@
 //!    writes them, so an update carrying a `Name` outside the documented alphabet or
 //!    a `Location` that is not a valid Amazon S3 URL is refused with HTTP 400 under
 //!    the `InvalidInputException` class, naming the MEMBER, and writes nothing.
-//! 4. An id the store does not resolve is refused with the entity-set families'
-//!    absence refusal — HTTP 404 under the `ResourceNotFoundException` class, with
+//! 4. An id the store holds no record for is refused with the entity-set families'
+//!    absence refusal — HTTP 400 under the `InvalidInputException` class, with
 //!    one fixed sentence that names neither the member nor the caller's value — and
-//!    updates nothing. That covers the id of a set a delete has taken out of the
-//!    detector's holdings, and, a threat entity set being a sub-resource of a
-//!    REGIONAL detector, an id only the Region that created it may update (where the
+//!    updates nothing. A threat entity set being a sub-resource of a
+//!    REGIONAL detector, that covers an id only the Region that created it may
+//!    update (where the
 //!    detector is what the request fails to resolve, so the refusal is the detector
-//!    family's).
+//!    family's). A set whose own DELETE is already running is a different refusal:
+//!    the change collides with work in flight
+//!    (`state::OPERATION_IN_PROGRESS_MESSAGE`), so no update walks a deleted set
+//!    back into use.
 //! 5. An update touches only the set its id names: a SIBLING threat entity set under
 //!    the same detector, the detector's trusted entity set and another detector's
 //!    sets are untouched, and the detector's own `UpdatedAt` does not move, because
@@ -52,8 +55,14 @@ use crate::entity_set_id_refusal_classes::assert_entity_set_id_constraint_violat
 use crate::set_delete_terminality::assert_entity_set_absent;
 use service_com_amazonaws_guardduty_guarddutyapiservice::state::{
     DETECTOR_ID_MEMBER, ENTITY_SET_ACTIVATING, ENTITY_SET_ACTIVE, ENTITY_SET_DEACTIVATING,
-    ENTITY_SET_INACTIVE, ENTITY_SET_TRANSITION_MILLIS, THREAT_ENTITY_SET_ID_MEMBER,
+    ENTITY_SET_DELETED, ENTITY_SET_DELETE_PENDING, ENTITY_SET_INACTIVE,
+    ENTITY_SET_TRANSITION_MILLIS, OPERATION_IN_PROGRESS_MESSAGE, THREAT_ENTITY_SET_ID_MEMBER,
 };
+
+/// The error class this service names a request it refuses because work it
+/// collides with is already running: its own server error shape, carried in the
+/// body's `__type` and its `type` member.
+const IN_PROGRESS_CLASS: &str = "InternalServerErrorException";
 
 /// The error class every client rejection on this service carries in the body's
 /// `__type` discriminator.
@@ -790,14 +799,16 @@ async fn an_unresolvable_id_is_refused_rather_than_answered() {
     );
 }
 
-/// A set a delete has taken out of the detector's holdings is gone, so its id is
-/// refused for a WRITE exactly like one the detector never held — an update must not
-/// bring a deleted set back. Its own read is refused the same way, so the refusal is
-/// checked against that read as well as against the update.
+/// A set whose own delete is already running is not a set an update may move: the
+/// record is there, so the refusal reports the COLLISION with that work rather than
+/// an absence, and the set keeps the status and the values the delete left it with.
+/// Asserted at both ends of the removal — while it is still pending and once the
+/// clock has settled it — so no update can walk a deleted set back into use.
 #[tokio::test]
 async fn a_set_whose_delete_was_accepted_cannot_be_updated() {
-    // The rows differ along the update the refused call carries: a rename plus an
-    // activation, and a location-only write.
+    // The rows differ along the update the refused call carries — a rename plus an
+    // activation, and a location-only write — and along how far the removal has got
+    // when it arrives.
     for (case, update) in [
         (
             "an update that renames and activates",
@@ -808,21 +819,96 @@ async fn a_set_whose_delete_was_accepted_cannot_be_updated() {
             json!({"location": "s3://guardduty-lists/revived.txt"}),
         ),
     ] {
-        let (router, detector_id) = detector().await;
-        let set_id = created(&router, &detector_id, case, base_create("TXT", false)).await;
-        let (status, body) = delete_set(&router, &detector_id, &set_id).await;
-        assert_eq!(
-            status, 200,
-            "case {case:?}: expected the delete to answer 200, got {status} {body:?}"
+        for stage in [ENTITY_SET_DELETE_PENDING, ENTITY_SET_DELETED] {
+            let case = &format!("{case}, refused at {stage}");
+            let (router, detector_id) = detector().await;
+            let set_id = created(&router, &detector_id, case, base_create("TXT", false)).await;
+            let (status, body) = delete_set(&router, &detector_id, &set_id).await;
+            assert_eq!(
+                status, 200,
+                "case {case:?}: expected the delete to answer 200, got {status} {body:?}"
+            );
+            // The stage this row refuses the update at: the pending removal is
+            // already there to be read, and the settled one is waited for on the
+            // CONDITION the read reports.
+            if stage == ENTITY_SET_DELETED {
+                let settled = read_until_status(&router, &detector_id, &set_id, stage, case).await;
+                assert!(
+                    settled.is_some(),
+                    "case {case:?}: a retained deleted record must settle on {stage}"
+                );
+            }
+            let before = status_of(&router, &detector_id, &set_id, case).await;
+            assert_eq!(
+                before, stage,
+                "case {case:?}: expected the removal to be at {stage}, got {before:?}"
+            );
+
+            let (status, body) = update_set(&router, &detector_id, &set_id, update.clone()).await;
+            assert_eq!(
+                status, 400,
+                "case {case:?}: expected 400, got {status} {body:?}"
+            );
+            let class = error_code(&body);
+            assert_eq!(
+                class, IN_PROGRESS_CLASS,
+                "case {case:?}: expected the {IN_PROGRESS_CLASS} class, got {class:?} {body:?}"
+            );
+            let message = body["message"].as_str().unwrap_or_default();
+            assert_eq!(
+                message, OPERATION_IN_PROGRESS_MESSAGE,
+                "case {case:?}: expected the in-progress sentence, got {message:?}"
+            );
+            assert!(
+                !message.contains(set_id.as_str()),
+                "case {case:?}: the refusal must not echo {set_id:?}, got {message:?}"
+            );
+
+            // The refused update revived nothing: the retained record still reports
+            // the removal's own status and the name the create stored, never the one
+            // the update asked for.
+            let got = read(&router, &detector_id, &set_id, case).await;
+            assert_eq!(
+                got["name"], "base_set-1",
+                "case {case:?}: a refused update must not touch the stored set, got {got:?}"
+            );
+            let after = got["status"].as_str().unwrap_or_default();
+            assert!(
+                after == ENTITY_SET_DELETE_PENDING || after == ENTITY_SET_DELETED,
+                "case {case:?}: the set must still be on its way out, so it is \
+                 {ENTITY_SET_DELETE_PENDING} or {ENTITY_SET_DELETED}, got {after:?}"
+            );
+        }
+    }
+}
+
+/// Read a set until it reports `want`, or until the deadline passes — the CONDITION
+/// ends the wait, never a fixed pause. Answers the read that saw it, or `None` once
+/// the service has stopped holding the record.
+async fn read_until_status(
+    router: &Router,
+    detector_id: &str,
+    set_id: &str,
+    want: &str,
+    case: &str,
+) -> Option<Value> {
+    // Generous on purpose: the wait ends on the condition, and this is only the
+    // deadline past which the emulator is considered broken.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        let (status, got) = get_set(router, detector_id, set_id).await;
+        if status != 200 {
+            return None;
+        }
+        if got["status"].as_str() == Some(want) {
+            return Some(got);
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "case {case:?}: {set_id} never reached {want}, last read {got:?}"
         );
-
-        let (status, body) = update_set(&router, &detector_id, &set_id, update).await;
-        assert_entity_set_absent(case, status, &body, &set_id);
-
-        // The refused update revived nothing: the id is still refused as absent,
-        // never answered with a live set under the name the update asked for.
-        let (status, got) = get_set(&router, &detector_id, &set_id).await;
-        assert_entity_set_absent(case, status, &got, &set_id);
+        // Only the pause between attempts; the loop never ends on it.
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
     }
 }
 

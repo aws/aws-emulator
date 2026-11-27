@@ -3,12 +3,14 @@
 //! @op GetTrustedEntitySet
 //! IMPLEMENTED: reports the trusted entity set `CreateTrustedEntitySet` stored under the
 //! detector, materialising only the status change the CLOCK already made due. A set
-//! whose delete has been served is gone, so its id is refused exactly like one no
-//! create ever minted. An id outside
+//! whose delete has been served is still reported while its record is retained,
+//! carrying the status the deletion put it in
+//! ([`crate::state::ENTITY_SET_DELETE_PENDING`], then
+//! [`crate::state::ENTITY_SET_DELETED`] once the clock owes it). An id outside
 //! the alphabet the member is constrained to is refused with the constraint-violation
 //! template ([`crate::scaffolded::entity_set_id_constraint_rejection`]); an id of the right
 //! form that names no set is refused with the family's own absence sentence under the
-//! modelled 404, never a hollow 200.
+//! modelled client-error status, never a hollow 200.
 //!
 //! This is the ONLY file to touch for this operation.
 //!
@@ -187,22 +189,24 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             ));
         };
         // A set whose delete this service has served is one the detector no longer
-        // holds: the deletion DROPS the record
-        // ([`crate::state::delete_entity_set`]), so its id resolves to nothing here
-        // from that instant on, with no window in which the read still answers and
-        // no dependence on how long the caller waited.
+        // HOLDS, but the record is RETAINED
+        // ([`crate::state::DELETED_ENTITY_SETS_RETAINED`]) so this read keeps
+        // answering on its id with the status the deletion put it in: the delete is
+        // asynchronous and `Status` is `@required` here, so
+        // `DELETE_PENDING` and then `DELETED` are what a client polling the removal
+        // observes.
         let Some(set) = detector
             .trusted_entity_sets
             .get_mut(&input.trusted_entity_set_id)
         else {
             // An entity-set id this detector holds no record for — one no create
-            // minted, one minted under another detector, and one a delete has
-            // taken away — is one absence, reported the
+            // minted, one minted under another detector, and one whose retained
+            // record the store no longer keeps — is one absence, reported the
             // way BOTH entity-set families report it
-            // ([`crate::scaffolded::ENTITY_SET_NOT_FOUND_MESSAGE`]): HTTP 404 under
-            // the `ResourceNotFoundException` class, with one fixed sentence that
-            // names neither the member nor the value.
-            return Err(crate::scaffolded::Scaffolded::not_found(
+            // ([`crate::scaffolded::ENTITY_SET_NOT_FOUND_MESSAGE`]): the client
+            // rejection this service answers every refused request with, with one
+            // fixed sentence that names neither the member nor the value.
+            return Err(crate::scaffolded::Scaffolded::invalid_input(
                 crate::scaffolded::ENTITY_SET_NOT_FOUND_MESSAGE,
             ));
         };

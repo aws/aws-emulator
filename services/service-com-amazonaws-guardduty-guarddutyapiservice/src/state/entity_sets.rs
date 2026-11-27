@@ -8,10 +8,13 @@
 //! stored plus the status the set is in; the status moves only when the CLOCK
 //! owes it, through [`EntitySetRecord::settle`].
 //!
-//! A set a delete has been served for is no longer one the service HOLDS: the
-//! deletion drops the record ([`delete_entity_set`]), so the id it named resolves
-//! to nothing from that instant on and every read of it is refused the way an id
-//! no create ever minted is.
+//! A set a delete has been served for is no longer one the service HOLDS, but it
+//! stays OBSERVABLE: the deletion stamps the record [`ENTITY_SET_DELETE_PENDING`]
+//! and the clock owes it [`ENTITY_SET_DELETED`] ([`delete_entity_set`]), so the
+//! read keeps answering on that id while the record is retained and a client can
+//! watch the removal finish. The retention is bounded
+//! ([`DELETED_ENTITY_SETS_RETAINED`]); once the record is gone, the id is refused
+//! the way one no create ever minted is.
 
 use super::*;
 
@@ -44,10 +47,38 @@ pub const ENTITY_SET_DEACTIVATING: &str = "DEACTIVATING";
 /// the transient status, and short enough that nothing has to wait long for the
 /// settled one.
 ///
-/// A DELETION has no such span: an entity set's delete drops the record
-/// ([`delete_entity_set`]), so there is no transitional status for it to move
-/// through and nothing left for a read to report.
+/// A DELETION is the same kind of span: the delete is accepted at
+/// [`ENTITY_SET_DELETE_PENDING`] and the clock owes [`ENTITY_SET_DELETED`] this
+/// same span later ([`EntitySetRecord::begin_delete`]), so a caller polling the
+/// read observes the documented progression rather than a removal that was
+/// already over before it could look.
 pub const ENTITY_SET_TRANSITION_MILLIS: i64 = 500;
+
+/// The `TrustedEntitySetStatus` a set whose delete has been accepted is in while
+/// the removal is in flight. TRANSIENT — the clock owes it [`ENTITY_SET_DELETED`]
+/// [`ENTITY_SET_TRANSITION_MILLIS`] later. See [`ENTITY_SET_INACTIVE`] for the
+/// enum.
+pub const ENTITY_SET_DELETE_PENDING: &str = "DELETE_PENDING";
+
+/// The `TrustedEntitySetStatus` a removed set settles on. Terminal — nothing
+/// moves a deleted entity set to any other status. See [`ENTITY_SET_INACTIVE`]
+/// for the enum.
+pub const ENTITY_SET_DELETED: &str = "DELETED";
+
+/// How many DELETED entity sets one detector retains per family, so a read can
+/// still report the [`ENTITY_SET_DELETE_PENDING`] / [`ENTITY_SET_DELETED`] status
+/// the delete moved the set to.
+///
+/// A deleted record is kept because `Status` is `@required` on both families'
+/// reads and both status enums carry those two members
+/// (`smithy_query(operation="GetThreatEntitySet")`), so the progression a delete
+/// starts is observable rather than a refusal. The retention is BOUNDED for the
+/// same reason [`THREAT_ENTITY_SETS_PER_DETECTOR`] bounds the live sets: a caller
+/// creating and deleting in a loop must not be able to make the service retain
+/// records without limit. It is the entity sets' counterpart of
+/// [`DELETED_IP_SETS_RETAINED`] and [`DELETED_THREAT_INTEL_SETS_RETAINED`], and
+/// takes the same number as the live allowance for the same reason.
+pub const DELETED_ENTITY_SETS_RETAINED: usize = THREAT_ENTITY_SETS_PER_DETECTOR;
 
 /// The wire name of the `TrustedEntitySetId` member, as the request carries it in
 /// its URI label and the create reports it
@@ -269,6 +300,13 @@ pub struct EntitySetRecord {
     pub status_due_millis: Option<i64>,
     pub created_at_millis: i64,
     pub updated_at_millis: i64,
+    /// The instant a delete was ACCEPTED for this set, or `None` while no delete
+    /// has been. It is both the answer to [`Self::is_deleting`] and the key
+    /// [`evict_deleted_entity_sets`] drops the retained records by, oldest
+    /// deletion first, so nothing moves it once the delete is accepted — not the
+    /// clock settling [`ENTITY_SET_DELETE_PENDING`] to [`ENTITY_SET_DELETED`],
+    /// which would otherwise reorder two deletions accepted within one span.
+    pub deleted_at_millis: Option<i64>,
     /// `ErrorDetails`: only an `ERROR` set carries one.
     pub error_details: Option<String>,
 }
@@ -325,7 +363,42 @@ impl EntitySetRecord {
             created_at_millis: now,
             updated_at_millis: now,
             error_details: None,
+            deleted_at_millis: None,
         }
+    }
+
+    /// Has a delete already been accepted for this set — is it
+    /// [`ENTITY_SET_DELETE_PENDING`] or [`ENTITY_SET_DELETED`]?
+    ///
+    /// Such a record is no longer a set the detector HOLDS: it is still REPORTED,
+    /// so the family's read can answer with the status the delete put it in, but
+    /// GuardDuty is not keeping the list, so it occupies none of the detector's
+    /// slots, no listing names it, no replayed `ClientToken` resolves to it and no
+    /// update may move it.
+    pub fn is_deleting(&self) -> bool {
+        self.deleted_at_millis.is_some()
+    }
+
+    /// Accept this set's deletion: [`ENTITY_SET_DELETE_PENDING`] now, with the
+    /// clock owing [`ENTITY_SET_DELETED`] at [`ENTITY_SET_TRANSITION_MILLIS`].
+    /// Reports whether this call is the one that accepted it.
+    ///
+    /// A record already being deleted is left exactly where it is — neither the
+    /// status nor the instant the clock owes it moves — so a repeated delete
+    /// neither restarts the transition nor walks a `DELETED` record backwards, and
+    /// it answers `false` so a caller writes nothing else either. Whatever status
+    /// the set was in when the delete arrived, including a transition the clock had
+    /// not settled yet, the deletion replaces what was owed: nothing activates a
+    /// set on its way out.
+    pub fn begin_delete(&mut self, now: i64) -> bool {
+        if self.is_deleting() {
+            return false;
+        }
+        self.status = ENTITY_SET_DELETE_PENDING.to_string();
+        self.status_due_millis = Some(now.saturating_add(ENTITY_SET_TRANSITION_MILLIS));
+        self.updated_at_millis = now;
+        self.deleted_at_millis = Some(now);
+        true
     }
 
     /// Apply the status change the CLOCK already made due, if any.
@@ -346,6 +419,7 @@ impl EntitySetRecord {
         self.status = match self.status.as_str() {
             ENTITY_SET_ACTIVATING => ENTITY_SET_ACTIVE.to_string(),
             ENTITY_SET_DEACTIVATING => ENTITY_SET_INACTIVE.to_string(),
+            ENTITY_SET_DELETE_PENDING => ENTITY_SET_DELETED.to_string(),
             other => other.to_string(),
         };
         self.status_due_millis = None;
@@ -403,22 +477,69 @@ impl EntitySetRecord {
     }
 }
 
-/// Serve the deletion of the entity set `id` names within `sets`, one of a
-/// detector's entity-set maps, reporting whether such a set was there to delete.
+/// Accept the deletion of the entity set `id` names within `sets`, one of a
+/// detector's entity-set maps.
+///
+/// `None` when the map holds no such set at all, which is the absence a delete
+/// refuses; `Some(true)` when this call is the one that accepted the deletion, and
+/// `Some(false)` when a delete had already been accepted for it — the caller needs
+/// that distinction because only the first delete changes the set of LIVE
+/// sub-resources the detector holds, and so only the first moves the detector's own
+/// `UpdatedAt`.
 ///
 /// Shared by BOTH entity-set deletes, so the trusted and the threat set cannot
-/// drift on what a delete does: the record is DROPPED, so from that instant the
-/// detector holds no entity set under that id — its listing stops naming it, its
-/// own read is refused as absent, a replayed `ClientToken` mints a new set rather
-/// than handing this one back, and a second delete has nothing left to delete.
+/// drift on what a delete does: the set moves to [`ENTITY_SET_DELETE_PENDING`] and
+/// the clock owes it [`ENTITY_SET_DELETED`] ([`EntitySetRecord::begin_delete`]),
+/// which is what the family's own read reports afterwards, while from that instant
+/// the detector no longer HOLDS it — its listing stops naming it, a replayed
+/// `ClientToken` mints a new set rather than handing this one back, no update may
+/// move it and a second delete has nothing left to accept.
 ///
-/// Dropping the record is also what BOUNDS this store under create-and-delete
-/// churn: a deletion gives a slot back instead of leaving a record behind, so no
-/// retention allowance is needed and no caller can grow the map by deleting.
-/// It is the entity sets' counterpart of what a filter's and a publishing
-/// destination's delete does, and it differs from the uploaded lists (an IPSet and
-/// a threat list), whose record is retained so their own read can report the
-/// terminal status of the status enum.
-pub fn delete_entity_set(sets: &mut BTreeMap<String, EntitySetRecord>, id: &str) -> bool {
-    sets.remove(id).is_some()
+/// Keeping the record is what lets a read report that status, so this is also where
+/// the retention is BOUNDED ([`evict_deleted_entity_sets`]): the same rule the
+/// uploaded lists follow ([`Detector::delete_ip_set`],
+/// [`Detector::delete_threat_intel_set`]), since an entity set is the same kind of
+/// uploaded list under a newer API and its status enum carries the same two delete
+/// members.
+pub fn delete_entity_set(
+    sets: &mut BTreeMap<String, EntitySetRecord>,
+    id: &str,
+    now: i64,
+) -> Option<bool> {
+    let accepted = sets.get_mut(id)?.begin_delete(now);
+    if accepted {
+        evict_deleted_entity_sets(sets, Some(id));
+    }
+    Some(accepted)
+}
+
+/// Drop deleted entity sets from `sets`, oldest deletion first, until at most
+/// [`DELETED_ENTITY_SETS_RETAINED`] remain, so the TOTAL one map holds is bounded
+/// at its live allowance plus that retention however many create-and-delete cycles
+/// a caller sends.
+///
+/// `keep` is never evicted: it is the record the delete that triggered this just
+/// accepted, and a caller reads that one back.
+pub fn evict_deleted_entity_sets(sets: &mut BTreeMap<String, EntitySetRecord>, keep: Option<&str>) {
+    let surplus = sets
+        .values()
+        .filter(|set| set.is_deleting())
+        .count()
+        .saturating_sub(DELETED_ENTITY_SETS_RETAINED);
+    if surplus == 0 {
+        return;
+    }
+    // The oldest deletions first: `deleted_at_millis` is the instant the delete was
+    // ACCEPTED and nothing moves it afterwards, and `tick_millis` makes those
+    // instants strictly increasing, so the ordering is total and the id only breaks
+    // a tie that cannot arise.
+    let mut deleted: Vec<(i64, String)> = sets
+        .values()
+        .filter(|set| set.is_deleting() && Some(set.id.as_str()) != keep)
+        .map(|set| (set.deleted_at_millis.unwrap_or_default(), set.id.clone()))
+        .collect();
+    deleted.sort_unstable();
+    for (_, id) in deleted.into_iter().take(surplus) {
+        sets.remove(&id);
+    }
 }

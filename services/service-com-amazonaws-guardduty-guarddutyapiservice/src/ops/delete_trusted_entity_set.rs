@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op DeleteTrustedEntitySet
-//! IMPLEMENTED: deletes the trusted entity set the request names from
+//! IMPLEMENTED: accepts the deletion of the trusted entity set the request names in
 //! [`crate::state`] — the detector no longer HAS it, so a second
 //! `DeleteTrustedEntitySet` refuses its id with the entity-set families' absence
-//! refusal, `ListTrustedEntitySets` stops naming it and `GetTrustedEntitySet`
-//! refuses it exactly like an id no create ever minted. The detector's
+//! refusal and `ListTrustedEntitySets` stops naming it, while
+//! `GetTrustedEntitySet` keeps reporting the retained record with the status the
+//! deletion put it in ([`crate::state::ENTITY_SET_DELETE_PENDING`], then
+//! [`crate::state::ENTITY_SET_DELETED`] once the clock owes it). The detector's
 //! single trusted-entity-set slot is freed, so a later create succeeds. An id outside
 //! the alphabet the member is constrained to never reaches that lookup: it is refused
 //! with the constraint-violation template
@@ -173,17 +175,22 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         };
         // An entity-set id this detector does not hold is the absence BOTH
         // entity-set families report the same way
-        // ([`crate::scaffolded::ENTITY_SET_NOT_FOUND_MESSAGE`]): HTTP 404 under the
-        // `ResourceNotFoundException` class, one fixed sentence, whatever the form
-        // of the id and whoever minted it.
+        // ([`crate::scaffolded::ENTITY_SET_NOT_FOUND_MESSAGE`]): the client
+        // rejection this service answers every refused request with, one fixed
+        // sentence, whatever the form of the id and whoever minted it.
         //
-        // A set whose delete this service has already served is that same absence:
-        // the detector no longer has it, so there is no second deletion to perform.
-        if !detector
+        // A set whose delete this service has already accepted is that same
+        // absence: the detector no longer has it, so there is no second deletion to
+        // perform and nothing left to accept. Its record is still RETAINED so the
+        // family's read can report the status the deletion put it in, but being
+        // readable on its own id is not the same as being a set this detector
+        // holds.
+        if detector
             .trusted_entity_sets
-            .contains_key(&input.trusted_entity_set_id)
+            .get(&input.trusted_entity_set_id)
+            .is_none_or(crate::state::EntitySetRecord::is_deleting)
         {
-            return Err(crate::scaffolded::Scaffolded::not_found(
+            return Err(crate::scaffolded::Scaffolded::invalid_input(
                 crate::scaffolded::ENTITY_SET_NOT_FOUND_MESSAGE,
             ));
         }
@@ -203,17 +210,23 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         };
 
         // "Deletes the trusted entity set that is associated with the specified
-        // trustedEntitySetId" (this operation's own documentation): the set is GONE
-        // once this call is served — its record is dropped
-        // ([`crate::state::delete_entity_set`]), so from this instant
-        // `ListTrustedEntitySets` stops naming it, `GetTrustedEntitySet` refuses its
-        // id as absent, the detector's single slot is free, a replayed
-        // `ClientToken` mints a new set instead of handing this one back, no write
-        // resolves it and a second delete has nothing left to delete.
-        let deleted = detector.delete_trusted_entity_set(&input.trusted_entity_set_id);
-        if deleted {
-            // The detector holds one fewer sub-resource than before, which is the
-            // same change `CreateTrustedEntitySet` records on it in the other
+        // trustedEntitySetId" (this operation's own documentation). The removal is
+        // ASYNCHRONOUS: the set is taken off the detector here — from this instant
+        // `ListTrustedEntitySets` stops naming it, the detector's single slot is
+        // free, a replayed `ClientToken` mints a new set instead of handing this one
+        // back, no update resolves it and a second delete has nothing left to accept
+        // — while its record is RETAINED at
+        // [`crate::state::ENTITY_SET_DELETE_PENDING`] with the clock owing
+        // [`crate::state::ENTITY_SET_DELETED`], which is what `GetTrustedEntitySet`
+        // reports while the removal is in flight and once it is done.
+        // `delete_trusted_entity_set` is what accepts the deletion and bounds the
+        // deleted records the detector retains.
+        let accepted = detector
+            .delete_trusted_entity_set(&input.trusted_entity_set_id, now)
+            .unwrap_or(false);
+        if accepted {
+            // The detector holds one fewer LIVE sub-resource than before, which is
+            // the same change `CreateTrustedEntitySet` records on it in the other
             // direction.
             detector.updated_at_millis = now;
         }

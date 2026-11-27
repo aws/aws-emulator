@@ -12,25 +12,30 @@
 //! The rule under test: the service holds an entity set from the create that minted it
 //! until the delete that takes it away, and an id it holds no entity set for resolves
 //! to NOTHING — however the id came to name no set. So every one of those ways gets the
-//! one absence refusal both families share, HTTP 404 under the
-//! `ResourceNotFoundException` class with the fixed sentence
+//! one absence refusal both families share, HTTP 400 under the
+//! `InvalidInputException` class with the fixed sentence
 //! `scaffolded::ENTITY_SET_NOT_FOUND_MESSAGE`, which names neither the member nor the
 //! value:
 //!
 //! * an id no create ever minted;
 //! * an id a create minted under ANOTHER detector, in this Region or in another;
-//! * an id a delete has taken away, read straight afterwards and read again later;
+//! * an id a delete has taken away, for the DELETE that has nothing left to accept
+//!   and again once a replacement has been created;
 //! * an id whose set was deleted and then REPLACED by a new create, where the
-//!   replacement answers on its own id and the deleted one stays refused.
+//!   replacement answers on its own id and the deleted one stays out of the
+//!   collection.
 //!
 //! What this rule does not reach: an id outside the alphabet the member is constrained
 //! to is a CONSTRAINT violation decided from the request before anything is resolved
 //! (`entity_set_id_refusal_classes.rs` owns that class), so it is asserted here only to
-//! show the absence refusal did not swallow it.
+//! show the absence refusal did not swallow it — and the READ of an id whose delete
+//! was served is not an absence at all while the record is retained
+//! (`entity_set_delete_observability.rs` owns that progression and
+//! `entity_set_delete_retention.rs` the bound past which it becomes one).
 //!
 //! `entity_set_delete_observability.rs` owns what a delete leaves on the id it named
 //! and `entity_set_delete_retention.rs` what churn leaves behind; this suite owns the
-//! one absence the four ways above share.
+//! one absence the ways above share.
 
 use serde_json::{json, Value};
 
@@ -211,6 +216,21 @@ impl Family {
         let (status, body) = self.delete_in(router, REGION, detector_id, set_id).await;
         assert_entity_set_absent(&format!("{case}: delete"), status, &body, set_id);
     }
+
+    /// Assert the DELETE of `set_id` answers the shared absence refusal, which is
+    /// what a second delete of a set the detector no longer holds gets. The read is
+    /// not asserted here: while the deleted record is retained it reports the
+    /// removal instead (`entity_set_delete_observability.rs`).
+    async fn assert_delete_absent(
+        &self,
+        router: &Router,
+        detector_id: &str,
+        set_id: &str,
+        case: &str,
+    ) {
+        let (status, body) = self.delete_in(router, REGION, detector_id, set_id).await;
+        assert_entity_set_absent(&format!("{case}: delete"), status, &body, set_id);
+    }
 }
 
 /// A router holding one enabled detector in [`REGION`].
@@ -321,12 +341,13 @@ async fn an_id_the_detector_holds_no_set_for_is_refused_as_absent() {
 // An id a delete has taken away, and the replacement a later create mints.
 // ---------------------------------------------------------------------------
 
-/// The delete-then-confirm loop a client runs: delete the set, read the id back to
-/// confirm it is gone, then create the replacement and read THAT back. The rows differ
-/// along the create body, so the rule holds for every form of set, and the confirmation
-/// read must reach its not-found branch at once rather than after any wait.
+/// The delete-then-replace loop a client runs: delete the set, confirm the detector
+/// no longer holds it by asking the DELETE again, then create the replacement and read
+/// THAT back. The rows differ along the create body, so the rule holds for every form
+/// of set, and the confirmation must reach its absence branch at once rather than
+/// after any wait.
 #[tokio::test]
-async fn a_deleted_set_is_refused_as_absent_and_its_replacement_is_not() {
+async fn a_deleted_set_is_no_longer_held_and_its_replacement_is_a_resource_of_its_own() {
     for family in &FAMILIES {
         for (row, body) in create_bodies() {
             let case = format!("{}: {row}", family.case);
@@ -349,10 +370,10 @@ async fn a_deleted_set_is_refused_as_absent_and_its_replacement_is_not() {
                 "case {case:?}: expected the delete to answer 200, got {status} {deleted:?}"
             );
 
-            // The confirmation read, and the second delete a cleanup loop would make:
-            // both are the shared absence refusal.
+            // The second delete a cleanup loop would make: the detector no longer
+            // holds the set, so there is nothing left to accept.
             family
-                .assert_absent_to_both(&router, &detector_id, &set_id, case)
+                .assert_delete_absent(&router, &detector_id, &set_id, case)
                 .await;
 
             // The replacement: a create under the same name is served, answers on an
@@ -378,7 +399,7 @@ async fn a_deleted_set_is_refused_as_absent_and_its_replacement_is_not() {
                  with, got {read_back:?}"
             );
             family
-                .assert_absent_to_both(&router, &detector_id, &set_id, case)
+                .assert_delete_absent(&router, &detector_id, &set_id, case)
                 .await;
 
             // The detector's collection names the replacement and nothing else of

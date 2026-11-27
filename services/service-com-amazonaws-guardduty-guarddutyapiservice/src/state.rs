@@ -97,7 +97,8 @@ pub struct ComAmazonawsGuarddutyGuarddutyapiserviceState {
     /// ([`MAX_MEMBERS_PER_DETECTOR`], [`MAX_FILTERS_PER_ACCOUNT_PER_REGION`],
     /// [`IP_SETS_PER_DETECTOR`] plus [`DELETED_IP_SETS_RETAINED`],
     /// [`THREAT_INTEL_SETS_PER_DETECTOR`],
-    /// [`THREAT_ENTITY_SETS_PER_DETECTOR`]), so the whole map is finite whatever a
+    /// [`THREAT_ENTITY_SETS_PER_DETECTOR`] plus
+    /// [`DELETED_ENTITY_SETS_RETAINED`]), so the whole map is finite whatever a
     /// caller sends.
     pub detectors: HashMap<String, Detector>,
     /// `ClientToken` -> the detector a `CreateDetector` minted under it, so a

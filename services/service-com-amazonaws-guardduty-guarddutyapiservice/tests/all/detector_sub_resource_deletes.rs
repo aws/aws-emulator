@@ -64,10 +64,9 @@ struct Family {
     address: Address,
     /// The HTTP status a delete answers for a label this detector does not hold —
     /// one no create saved, and one a delete has already taken off the detector,
-    /// which are the same absence. It is the family's own absence refusal: the
-    /// entity-set families answer 404 under `ResourceNotFoundException`, every other
-    /// family 400 under `InvalidInputException`. Either way the second call changes
-    /// which sub-resources the detector holds not at all.
+    /// which are the same absence: HTTP 400 under `InvalidInputException`, the one
+    /// client rejection every family of this service answers. Either way the second
+    /// call changes which sub-resources the detector holds not at all.
     absence_status: u16,
     /// A well-formed label of this family that no create here ever saved, so a delete
     /// naming it is refused and removes nothing.
@@ -121,7 +120,7 @@ fn families() -> Vec<Family> {
             absent_label: "feedfacefeedfacefeedfacefeedface",
         },
         Family {
-            case: "threat entity set, OTX_CSV, activated, a repeated delete refused with 404",
+            case: "threat entity set, OTX_CSV, activated, a repeated delete refused",
             segment: "threatentityset",
             create: json!({
                 "name": "deletes-threat-entities",
@@ -130,12 +129,12 @@ fn families() -> Vec<Family> {
                 "activate": true,
             }),
             address: Address::MintedId("threatEntitySetId"),
-            absence_status: 404,
+            absence_status: 400,
             absent_label: "0123456789abcdef0123456789abcdef",
         },
         Family {
-            case: "trusted entity set, FIRE_EYE, not activated, tagged, a repeated delete refused \
-                   with 404",
+            case: "trusted entity set, FIRE_EYE, not activated, tagged, a repeated delete \
+                   refused",
             segment: "trustedentityset",
             create: json!({
                 "name": "deletes-trusted-entities",
@@ -145,7 +144,7 @@ fn families() -> Vec<Family> {
                 "tags": {"env": "test", "owner": "team-a"},
             }),
             address: Address::MintedId("trustedEntitySetId"),
-            absence_status: 404,
+            absence_status: 400,
             absent_label: "fedcba9876543210fedcba9876543210",
         },
         Family {

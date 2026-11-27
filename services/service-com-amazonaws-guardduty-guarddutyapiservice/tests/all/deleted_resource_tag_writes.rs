@@ -20,7 +20,7 @@
 //!    dropped by the delete or RETAINED in a deletion status, and
 //!    whether or not any span this service opens has elapsed.
 //! 2. Reporting follows the record: a class whose delete RETAINS it still reports it
-//!    in the terminal status of its own status enum and still reports its tags, a
+//!    under the status its deletion moved it to and still reports its tags, a
 //!    class whose delete DROPS it reports neither, and a refused write moves no tag
 //!    map either way.
 //! 3. The refusal is scoped to the deleted record: every resource still live accepts
@@ -33,7 +33,8 @@ use crate::resource_tag_addition::tag_in;
 use crate::resource_tag_removal::{tag_map, tagged_resources, tags_of, untag_in, uri_label, Tagged};
 use service_com_amazonaws_guardduty_guarddutyapiservice::service::refusals::INVALID_RESOURCE_ARN_MESSAGE;
 use service_com_amazonaws_guardduty_guarddutyapiservice::state::{
-    IP_SET_DELETED, TAGGED_SUB_RESOURCE_SEGMENTS, THREAT_INTEL_SET_DELETED,
+    ENTITY_SET_DELETED, ENTITY_SET_DELETE_PENDING, IP_SET_DELETED, TAGGED_SUB_RESOURCE_SEGMENTS,
+    THREAT_INTEL_SET_DELETED,
 };
 
 /// The Region every request in this suite is signed for.
@@ -64,13 +65,17 @@ const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(25);
 
 /// What one class's own read answers once its delete has been served.
 enum OwnRead {
-    /// The record is RETAINED and still reported: the terminal `Status` of its own
-    /// status enum, which is what its read answers from the delete onwards.
-    Reported(&'static str),
+    /// The record is RETAINED and still reported: the `Status` its read answers
+    /// straight after the delete, and the terminal one its removal settles on — the
+    /// same member for a family whose removal is synchronous, and the transitional
+    /// one first for a family whose removal the clock settles.
+    Reported {
+        accepted: &'static str,
+        terminal: &'static str,
+    },
     /// The record is no longer one the detector holds, so its own read refuses with
     /// this HTTP status: the 400 of this service's classified rejection for the
-    /// detector, a filter and a publishing destination, and the entity sets' own 404
-    /// absence refusal.
+    /// detector, a filter and a publishing destination.
     Refused(u16),
 }
 
@@ -85,13 +90,13 @@ struct Class {
     own_read: OwnRead,
     /// Whether the tag REPORT still resolves it. The tagging seam reports the tags of
     /// a record the store retains, which is every class whose delete does not DROP
-    /// the record — so it is reported for the uploaded lists, whose own reads report
-    /// the deleted record too, and for nothing else.
+    /// the record — so it is reported for the uploaded lists and the entity sets,
+    /// whose own reads report the deleted record too, and for nothing else.
     tags_still_reported: bool,
 }
 
-/// Every class a tagging ARN names. A filter, a publishing destination, an entity
-/// set and the detector itself leave nothing behind: their delete drops the record.
+/// Every class a tagging ARN names. A filter, a publishing destination and the
+/// detector itself leave nothing behind: their delete drops the record.
 const CLASSES: [Class; 7] = [
     Class {
         case: "the detector itself",
@@ -108,28 +113,40 @@ const CLASSES: [Class; 7] = [
     Class {
         case: "an IPSet",
         segment: "ipset",
-        own_read: OwnRead::Reported(IP_SET_DELETED),
+        own_read: OwnRead::Reported {
+            accepted: IP_SET_DELETED,
+            terminal: IP_SET_DELETED,
+        },
         tags_still_reported: true,
     },
     Class {
         case: "a ThreatIntelSet",
         segment: "threatintelset",
-        own_read: OwnRead::Reported(THREAT_INTEL_SET_DELETED),
+        own_read: OwnRead::Reported {
+            accepted: THREAT_INTEL_SET_DELETED,
+            terminal: THREAT_INTEL_SET_DELETED,
+        },
         tags_still_reported: true,
     },
     Class {
         case: "a trusted entity set",
         segment: "trustedentityset",
-        // An entity set's delete drops the record, so its own read answers the
-        // entity-set families' 404 absence refusal.
-        own_read: OwnRead::Refused(404),
-        tags_still_reported: false,
+        // An entity set's removal is asynchronous, so its retained record reports
+        // the transitional status until the clock owes it the terminal one.
+        own_read: OwnRead::Reported {
+            accepted: ENTITY_SET_DELETE_PENDING,
+            terminal: ENTITY_SET_DELETED,
+        },
+        tags_still_reported: true,
     },
     Class {
         case: "a threat entity set",
         segment: "threatentityset",
-        own_read: OwnRead::Refused(404),
-        tags_still_reported: false,
+        own_read: OwnRead::Reported {
+            accepted: ENTITY_SET_DELETE_PENDING,
+            terminal: ENTITY_SET_DELETED,
+        },
+        tags_still_reported: true,
     },
     Class {
         case: "a publishing destination",
@@ -256,8 +273,8 @@ async fn refuses_every_write_on_a_deleted_sub_resource(settled: bool) {
         // than for a span: every class whose record is reported publishes the
         // terminal status it ends on.
         for class in &sub_resources {
-            if let OwnRead::Reported(settled) = &class.own_read {
-                read_until_status(&router, resource_of(&resources, class), settled, class.case)
+            if let OwnRead::Reported { terminal, .. } = &class.own_read {
+                read_until_status(&router, resource_of(&resources, class), terminal, class.case)
                     .await;
             }
         }
@@ -279,22 +296,29 @@ async fn refuses_every_write_on_a_deleted_sub_resource(settled: bool) {
         assert_refused(&format!("untagging {case}"), &arn, status, &body);
 
         // Its own read: the families whose delete RETAINS a readable record report
-        // the terminal status of their own status enum, and the classes whose delete
-        // DROPS the record refuse the id — the detector, a filter and a publishing
-        // destination with this service's classified rejection, an entity set with
-        // the entity-set families' absence refusal.
+        // the status their removal is in, and the classes whose delete DROPS the
+        // record refuse the id with this service's classified rejection — the
+        // detector, a filter and a publishing destination.
         let (status, body) = read(&router, resource).await;
         match &class.own_read {
-            OwnRead::Reported(terminal) => {
+            OwnRead::Reported { accepted, terminal } => {
                 assert_eq!(
                     status, 200,
                     "case {case:?}: a record this family retains must stay reported, got {status} \
                      {body:?}"
                 );
                 let actual_status = body["status"].as_str().unwrap_or_default();
-                assert_eq!(
-                    actual_status, *terminal,
-                    "case {case:?}: expected the terminal {terminal:?}, got {actual_status:?}"
+                // Once every span has come due only the terminal status may be
+                // reported; straight after the delete either member of the
+                // removal is correct, because the clock settles it on its own.
+                let allowed: &[&str] = if settled {
+                    &[terminal]
+                } else {
+                    &[accepted, terminal]
+                };
+                assert!(
+                    allowed.contains(&actual_status),
+                    "case {case:?}: expected one of {allowed:?}, got {actual_status:?} {body:?}"
                 );
             }
             OwnRead::Refused(expected_status) => assert_eq!(

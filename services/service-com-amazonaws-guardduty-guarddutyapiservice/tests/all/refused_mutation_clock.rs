@@ -84,26 +84,12 @@ struct Row {
     body: Option<Value>,
 }
 
-/// The collections whose own absence refusal is the 404 `ResourceNotFoundException`
-/// (`httpError` 404 — `smithy_query(shape="ResourceNotFoundException")`): both
-/// entity-set families report an id the detector does not hold that way, while every
-/// other family answers this service's classified 400. The clock rule is the same for
-/// either, which is what this suite asserts.
-const NOT_FOUND_COLLECTIONS: [&str; 2] = ["trustedentityset", "threatentityset"];
-
-impl Row {
-    /// The HTTP status this row's refusal carries: its resource family's own absence
-    /// refusal, or the detector family's when the row names a detector the store does
-    /// not hold.
-    fn refused_status(&self) -> u16 {
-        let collection = self.suffix.split('/').next().unwrap_or_default();
-        if !self.absent_detector && NOT_FOUND_COLLECTIONS.contains(&collection) {
-            404
-        } else {
-            400
-        }
-    }
-}
+/// The HTTP status every refusal in this suite carries: HTTP 400, the one client
+/// rejection every family of this service answers — for a sub-resource id the
+/// detector does not hold as much as for a `DetectorId` the store does not hold. The
+/// clock rule is the same whichever family is addressed, which is what this suite
+/// asserts.
+const REFUSED_STATUS: u16 = 400;
 
 /// Every detector-scoped mutation that acts on something the request NAMES, refused
 /// in each of the ways these handlers refuse one: a `DetectorId` the store does not
@@ -312,10 +298,9 @@ async fn refused_mutations_leave_the_clock_where_the_wall_clock_is() {
             let (status, refusal) =
                 call(&router, row.method, &refused_path, row.body.clone()).await;
             assert_eq!(
-                status,
-                row.refused_status(),
-                "case {case:?}: refused call {attempt} must answer {}, got {status} {refusal:?}",
-                row.refused_status()
+                status, REFUSED_STATUS,
+                "case {case:?}: refused call {attempt} must answer {REFUSED_STATUS}, got {status} \
+                 {refusal:?}"
             );
         }
 

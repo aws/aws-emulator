@@ -17,8 +17,11 @@
 //!    class, carrying the validation-error template — how many violations were
 //!    detected, the member path the request spelled, and the pattern the value had to
 //!    satisfy — and nothing of the caller's value.
-//! 2. An identifier of the right FORM that names no set is an ABSENCE: the modelled
-//!    HTTP 404 `ResourceNotFoundException` with the one fixed sentence the family
+//! 2. An identifier of the right FORM that names no set is an ABSENCE: HTTP 400
+//!    under this service's `InvalidInputException` class in the
+//!    `BadRequestException` envelope — the only client error either family's
+//!    operations declare (`smithy_query(operation="GetThreatEntitySet")`) — with the
+//!    one fixed sentence the family
 //!    words it with, naming neither the member, nor the value, nor which family was
 //!    addressed. An id no create minted, a stored id in another spelling, one minted
 //!    for the other family and one another detector minted are all that same absence.
@@ -46,15 +49,6 @@ const BAD_REQUEST: &str = "BadRequestException";
 
 /// The error CLASS a 400 carries in the body's `__type` and `type`.
 const INVALID_INPUT: &str = "InvalidInputException";
-
-/// The modelled not-found error, `httpError` 404
-/// (`smithy_query(shape="ResourceNotFoundException")`). On this family it is BOTH the
-/// class in the body and the shape in the header.
-const RESOURCE_NOT_FOUND: &str = "ResourceNotFoundException";
-
-// The fixed sentences under test, written out here rather than read from the service
-// so that this suite pins the WORDS and not merely the service's agreement with
-// itself.
 
 /// What the entity-set family answers for an identifier of the right form that names
 /// no set.
@@ -203,12 +197,14 @@ fn constraint_violation(member: &str) -> Expected {
     }
 }
 
-/// The absence an identifier of the right form that names no set earns.
+/// The absence an identifier of the right form that names no set earns: the same
+/// status, class and envelope every client rejection of this service carries, and
+/// the family's own sentence.
 fn absent_entity_set() -> Expected {
     Expected {
-        status: 404,
-        class: RESOURCE_NOT_FOUND,
-        shape: RESOURCE_NOT_FOUND,
+        status: 400,
+        class: INVALID_INPUT,
+        shape: BAD_REQUEST,
         message: NOT_FOUND_MESSAGE.to_string(),
     }
 }
@@ -350,11 +346,11 @@ async fn an_identifier_outside_the_alphabet_is_refused_with_the_validation_templ
 }
 
 // ---------------------------------------------------------------------------
-// Rule 2: an identifier of the right form that names nothing is the modelled 404.
+// Rule 2: an identifier of the right form that names nothing is the absence.
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn a_well_formed_identifier_naming_no_set_is_the_modelled_not_found() {
+async fn a_well_formed_identifier_naming_no_set_is_the_familys_absence() {
     let router = new_router();
     let detector = enabled_detector(&router).await;
 
