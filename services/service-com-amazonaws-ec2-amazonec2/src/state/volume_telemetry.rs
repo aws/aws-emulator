@@ -35,12 +35,29 @@
 //! sampler. A reader taking a statistic of a period therefore sees exactly the operations performed
 //! in it: the `Sum` of `VolumeWriteBytes` over a period is the bytes written in it.
 //!
-//! Nothing is published for a volume nothing read or wrote, and a volume that is not attached is
-//! not a device of any guest, so no I/O can happen on it at all — which is what makes the series
-//! stop when the volume is detached.
+//! # ... and when one happens for a period nothing moved in
+//!
+//! "Data is only reported to CloudWatch when the volume is attached to an instance" (Amazon EBS
+//! User Guide, "Amazon EBS CloudWatch metrics"): an ATTACHED volume is a volume Amazon EBS is
+//! measuring, and it reports what it measured for every period of its own cadence — one minute for
+//! the SSD volume types and five for the others ([`PUBLICATION_PERIODS`]) — so a period in which
+//! nothing moved carries a reading of ZERO rather than no reading at all. That is what makes the
+//! series of an attached volume tell an IDLE volume from one nothing is measuring, and what makes
+//! the series STOP at the detach: a volume that is attached to nothing is reported for no period at
+//! all ([`due_volume_samples`]), and publication starts again, from the period it is attached in,
+//! when something attaches it.
+//!
+//! Only COMPLETE periods are reported that way — the period a reading would measure has to be over
+//! before there is anything to report of it — and only the periods the volume was attached for,
+//! which is why publication for a volume this store has not reported yet starts at the period the
+//! first report falls in rather than at the volume's own creation.
+//!
+//! Nothing is published for a volume that is not attached, so a volume detached from every instance
+//! is not a device of any guest, no I/O can happen on it at all, and no period of it is reported —
+//! which is what makes the series stop when the volume is detached.
 
-use ::std::collections::BTreeMap;
-use ::std::time::SystemTime;
+use ::std::collections::{BTreeMap, BTreeSet};
+use ::std::time::{Instant, SystemTime};
 
 use super::guest_cloudwatch_agent::AgentSample;
 use super::guest_disk_io::VolumeIo;
@@ -128,8 +145,41 @@ pub const VOLUME_METRICS: &[VolumeMetric] = &[
     },
 ];
 
-/// How many I/O records ONE volume keeps waiting to be published.
+/// How often Amazon EBS reports an attached volume's series, per volume TYPE: "For … volumes,
+/// metrics are reported to CloudWatch every 1 minute" for the SSD types, and every 5 minutes for
+/// the others (Amazon EBS User Guide, "Amazon EBS CloudWatch metrics").
 ///
+/// The cadence of the ZERO readings an attached volume publishes for the periods nothing moved in
+/// (see the module docs); the datapoints of I/O something performed carry the instant it was
+/// performed at and are not on this grid at all.
+pub const PUBLICATION_PERIODS: &[(&[&str], i64)] = &[
+    (&["gp2", "gp3", "io1", "io2"], 60),
+    (&["st1", "sc1", "standard"], 300),
+];
+
+/// The period Amazon EBS reports a volume of `volume_type` at ([`PUBLICATION_PERIODS`]), and the
+/// one-minute cadence for a type this emulator knows no figure for — the cadence of every type AWS
+/// publishes a figure of one minute for, and the one a volume created with no type at all gets,
+/// its default type being an SSD one.
+#[must_use]
+pub fn publication_period(volume_type: Option<&str>) -> i64 {
+    let named = volume_type.unwrap_or_default();
+    PUBLICATION_PERIODS
+        .iter()
+        .find(|(types, _)| types.contains(&named))
+        .map_or(60, |(_, period)| *period)
+}
+
+/// How many of those periods ONE publication reports at most.
+///
+/// A store that nothing has read for an hour owes every period of it; this is the bound on what one
+/// publication materialises for one volume, so the datapoints of a long-idle account arrive over
+/// the next few publications rather than all at once. Well above the periods between two
+/// publications of a store something is using, the metric clock publishing far more often than
+/// once a period ([`super::instance_telemetry::drive_instance_metric_clock`]).
+pub const MAX_PERIODS_PER_PUBLICATION: i64 = 10;
+
+/// How many I/O records ONE volume keeps waiting to be published.///
 /// The records are published off the next request this service serves and off the metric clock, so
 /// one waits for the length of a request at most; this bounds what a guest performing I/O without
 /// anything reading the account can make this process hold, by dropping the OLDEST, the way a
@@ -165,29 +215,94 @@ impl VolumeRecord {
     }
 }
 
-/// The datapoints the account's volumes owe, taking the I/O records they carry as published.
+/// The datapoints the account's volumes owe at `now`, taking the I/O records they carry as
+/// published.
 ///
 /// Each record is one transfer that happened, so it becomes one datapoint per metric it is a
 /// measurement of — and nothing at all for the measurements it is not: a transfer that only read
 /// publishes no write series, and a volume of a type Amazon EBS publishes no consumed-IOPS series
-/// for carries none. No instant is passed in, because each datapoint carries the instant its own
-/// I/O was performed at ([`VolumeIoRecord::at_secs`]).
-pub fn due_volume_samples(store: &mut ComAmazonawsEc2Amazonec2State) -> Vec<AgentSample> {
+/// for carries none. No instant decides those: each datapoint carries the instant its own I/O was
+/// performed at ([`VolumeIoRecord::at_secs`]).
+///
+/// `now` decides the OTHER half: the periods of an ATTACHED volume that are over and carry no I/O
+/// at all, each of which is a reading of zero (see the module docs). A volume attached to nothing
+/// owes none of those, which is what makes its series stop at the detach.
+pub fn due_volume_samples(
+    store: &mut ComAmazonawsEc2Amazonec2State,
+    now: SystemTime,
+) -> Vec<AgentSample> {
     let mut samples: Vec<AgentSample> = Vec::new();
+    let at_secs = epoch_secs(now);
+    // The clock the attachments are read against, which is the monotonic one they are held on.
+    let reading = Instant::now();
     for (volume_id, record) in &mut store.volumes {
-        if record.guest_io.is_empty() {
-            continue;
-        }
         let provisioned_iops = record
             .view
             .volume_type
             .as_deref()
             .is_some_and(|volume_type| PROVISIONED_IOPS_VOLUME_TYPES.contains(&volume_type));
+        let period = publication_period(record.view.volume_type.as_deref());
+        // The periods the I/O something performed on this volume falls in: those are reported from
+        // the records themselves, so no zero is reported for them.
+        let mut moved_in: BTreeSet<i64> = BTreeSet::new();
         for performed in ::std::mem::take(&mut record.guest_io) {
+            moved_in.insert(period_of(performed.at_secs, period));
             samples.extend(samples_of(volume_id, &performed, provisioned_iops));
         }
+        // ... and the periods it was ATTACHED for that are over and carry none.
+        if record.attachments_at(reading).is_empty() {
+            // Amazon EBS reports nothing for a volume attached to nothing, and starts again from
+            // the period something attaches it in.
+            record.io_published_through_secs = None;
+            continue;
+        }
+        let current = period_of(at_secs, period);
+        let Some(published_through) = record.io_published_through_secs else {
+            // The first report of this volume: the periods before it are periods nothing was
+            // measuring it for, so none of them is reported.
+            record.io_published_through_secs = Some(current);
+            continue;
+        };
+        let from = published_through
+            .saturating_add(period)
+            .max(current.saturating_sub(period.saturating_mul(MAX_PERIODS_PER_PUBLICATION)));
+        let mut reported = published_through;
+        let mut period_start = from;
+        while period_start < current {
+            if !moved_in.contains(&period_start) {
+                samples.extend(idle_samples_of(volume_id, period_start, provisioned_iops));
+            }
+            reported = period_start;
+            period_start = period_start.saturating_add(period);
+        }
+        record.io_published_through_secs = Some(reported.max(published_through));
     }
     samples
+}
+
+/// The START of the `period`-long period `at_secs` falls in, which is the instant a reading of that
+/// period carries — the grid CloudWatch aggregates a period of that length on.
+fn period_of(at_secs: i64, period: i64) -> i64 {
+    let period = period.max(1);
+    at_secs - at_secs.rem_euclid(period)
+}
+
+/// The datapoints an attached volume owes for a period NOTHING moved in: a reading of zero for
+/// every series it publishes, carrying that period's own instant.
+fn idle_samples_of(volume_id: &str, at_secs: i64, provisioned_iops: bool) -> Vec<AgentSample> {
+    let dimensions = BTreeMap::from([(VOLUME_ID_DIMENSION.to_string(), volume_id.to_string())]);
+    VOLUME_METRICS
+        .iter()
+        .filter(|metric| provisioned_iops || !metric.provisioned_iops_only)
+        .map(|metric| AgentSample {
+            namespace: NAMESPACE.to_string(),
+            metric_name: metric.name.to_string(),
+            dimensions: dimensions.clone(),
+            value: 0.0,
+            unit: Some(metric.unit.to_string()),
+            at_secs,
+        })
+        .collect()
 }
 
 /// The datapoints ONE transfer on the volume `volume_id` is a measurement of.

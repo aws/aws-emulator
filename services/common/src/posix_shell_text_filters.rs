@@ -20,11 +20,14 @@
 //!   when it was given one;
 //! * `cut -c LIST` / `-f LIST [-d DELIM]` — "select portions of each line of a file", the
 //!   characters or the delimited fields the list names, one output line per input line;
-//! * `head -n COUNT` — "the first COUNT lines of each file", ten lines when no count is given,
-//!   written in any of the forms the count is given in (`-n COUNT`, `-nCOUNT`,
-//!   `--lines=COUNT`, and the obsolescent `-COUNT`);
-//! * `tail -n COUNT` — "the last COUNT lines of each file", ten lines when no count is given,
-//!   which is the other end of the same selection `head` makes;
+//! * `head -n COUNT` / `-c COUNT` — "the first COUNT lines of each file", ten lines when no
+//!   count is given, written in any of the forms the count is given in (`-n COUNT`, `-nCOUNT`,
+//!   `--lines=COUNT`, and the obsolescent `-COUNT`) — or "the first NUM bytes of each file" for
+//!   the invocation that names BYTES instead (`-c NUM`, `-cNUM`, `--bytes=NUM`), which is how a
+//!   program reads a stated number of bytes off something that is not lines at all;
+//! * `tail -n COUNT` / `-c COUNT` — "the last COUNT lines of each file", ten lines when no count
+//!   is given, which is the other end of the same selection `head` makes, and the last NUM bytes
+//!   for the invocation that names bytes;
 //! * `sort [-r] [-u] [-n] [-f] [-b]` — "write sorted concatenation of all FILE(s)": the lines
 //!   of its input in order, "reverse[d]" by `-r`, with "only the first of an equal run" kept by
 //!   `-u`, compared "according to string numerical value" by `-n`, with "lower case folded to
@@ -254,10 +257,10 @@ enum Work {
     Count(Count),
     /// `cut`, selecting one portion of each line.
     Cut(Portion),
-    /// `head`, keeping the first lines.
-    Head(usize),
-    /// `tail`, keeping the last lines.
-    Tail(usize),
+    /// `head`, keeping the first lines or the first bytes.
+    Head(Extent),
+    /// `tail`, keeping the last lines or the last bytes.
+    Tail(Extent),
     /// `sort`, writing the lines of its input in order.
     Sort(SortWork),
     /// `uniq`, writing one line per run of adjacent equal lines.
@@ -302,6 +305,16 @@ pub struct Filter {
     work: Work,
     /// The file operand, and `None` for an invocation that reads standard input.
     file: Option<String>,
+}
+
+/// How much of its input `head` or `tail` keeps.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Extent {
+    /// `-n COUNT`: that many LINES of it.
+    Lines(usize),
+    /// `-c NUM`: that many BYTES of it ("print the first NUM bytes of each file", `head`; the
+    /// last NUM for `tail`).
+    Bytes(usize),
 }
 
 /// How many lines `head` writes when the invocation names no count: "head will print the first
@@ -381,8 +394,8 @@ impl Filter {
         let work = match name {
             "wc" => Work::Count(count_of(&options)?),
             "cut" => Work::Cut(portion_of(&options)?),
-            "head" => Work::Head(head_lines(&options)?),
-            "tail" => Work::Tail(head_lines(&options)?),
+            "head" => Work::Head(head_extent(&options)?),
+            "tail" => Work::Tail(head_extent(&options)?),
             "sort" => Work::Sort(sort_work(&options)?),
             "uniq" => Work::Uniq(uniq_work(&options)?),
             "sha256sum" => Work::Digest(Digester::Sha256),
@@ -417,8 +430,8 @@ impl Filter {
                 })
             }
             Work::Cut(portion) => Selection::wrote(cut_lines(portion, input)),
-            Work::Head(lines) => Selection::wrote(head_of(*lines, input)),
-            Work::Tail(lines) => Selection::wrote(tail_of(*lines, input)),
+            Work::Head(extent) => Selection::wrote(head_of(*extent, input)),
+            Work::Tail(extent) => Selection::wrote(tail_of(*extent, input)),
             Work::Sort(work) => Selection::wrote(sorted(*work, input)),
             Work::Uniq(work) => Selection::wrote(uniq_lines(*work, input)),
             Work::Translate(work) => Selection::wrote(translated(work, input)),
@@ -437,8 +450,8 @@ fn value_taking_options(name: &str) -> &'static [&'static str] {
     match name {
         // `cut`'s lists and its delimiter.
         "cut" => &["-c", "-f", "-d"],
-        // `head`'s and `tail`'s line count.
-        "head" | "tail" => &["-n"],
+        // `head`'s and `tail`'s line count, and the byte count they take instead.
+        "head" | "tail" => &["-n", "-c", "--bytes"],
         // `base64`'s wrapping width.
         "base64" => &["-w", "--wrap"],
         // `grep`'s pattern, for the invocation that names it with an option rather than as its
@@ -526,36 +539,54 @@ fn non_empty(value: Option<&str>) -> Option<&str> {
     value.filter(|value| !value.is_empty())
 }
 
-/// How many lines a `head` or `tail` invocation keeps, or `None` for an option form this
+/// How much of its input a `head` or `tail` invocation keeps, or `None` for an option form this
 /// module does not perform.
 ///
 /// The count is written in any of the forms the utility takes it in: `-n COUNT`, `-nCOUNT`,
 /// `--lines=COUNT`, and the obsolescent `-COUNT` — "`-NUM` … same as `-n NUM`" (the GNU
-/// coreutils manual), which is how a script written `tail -1` names one line.
+/// coreutils manual), which is how a script written `tail -1` names one line. An invocation that
+/// names BYTES instead takes its count the same ways (`-c NUM`, `-cNUM`, `--bytes=NUM`), and one
+/// naming both kinds at once is a form the utility performs nothing of.
 ///
 /// A count written with a SIGN is not read as a count: `-n +COUNT` means "begin at line
 /// COUNT" to `tail` and "all but the last COUNT" to `head`, neither of which is the count of
 /// the lines kept.
-fn head_lines(options: &[String]) -> Option<usize> {
-    let mut lines = None;
+fn head_extent(options: &[String]) -> Option<Extent> {
+    let mut extent: Option<Extent> = None;
     for option in options {
-        let written = match option.strip_prefix("-n").or_else(|| {
-            option
-                .strip_prefix("--lines=")
-                .or_else(|| option.strip_prefix("--lines"))
-        }) {
-            Some(value) => non_empty(Some(value))?,
+        let read = if let Some(value) = option
+            .strip_prefix("--bytes=")
+            .or_else(|| option.strip_prefix("--bytes"))
+            .or_else(|| option.strip_prefix("-c"))
+        {
+            Extent::Bytes(written_count(value)?)
+        } else if let Some(value) = option
+            .strip_prefix("-n")
+            .or_else(|| option.strip_prefix("--lines="))
+            .or_else(|| option.strip_prefix("--lines"))
+        {
+            Extent::Lines(written_count(value)?)
+        } else {
             // The obsolescent form, whose digits follow the one dash: an option that is not
             // digits at all is no count, and so no form this module performs.
-            None => non_empty(option.strip_prefix('-'))?,
-        }
-        .trim();
-        if written.starts_with('+') || written.starts_with('-') {
+            Extent::Lines(written_count(option.strip_prefix('-')?)?)
+        };
+        // One kind at a time: an invocation naming lines AND bytes writes neither selection.
+        if extent.is_some_and(|held| held != read) {
             return None;
         }
-        lines = Some(written.parse::<usize>().ok()?);
+        extent = Some(read);
     }
-    Some(lines.unwrap_or(DEFAULT_HEAD_LINES))
+    Some(extent.unwrap_or(Extent::Lines(DEFAULT_HEAD_LINES)))
+}
+
+/// The count `written` states, or `None` when it states none (see [`head_extent`] on a sign).
+fn written_count(written: &str) -> Option<usize> {
+    let written = non_empty(Some(written))?.trim();
+    if written.starts_with('+') || written.starts_with('-') {
+        return None;
+    }
+    written.parse::<usize>().ok()
 }
 
 /// What a `base64` invocation's options ask for, or `None` for an option form this module does
@@ -1007,8 +1038,47 @@ fn cut_lines(portion: &Portion, input: &str) -> String {
     written
 }
 
+/// The first lines or bytes of `input` the invocation keeps.
+fn head_of(extent: Extent, input: &str) -> String {
+    match extent {
+        Extent::Lines(lines) => first_lines(lines, input),
+        Extent::Bytes(bytes) => first_bytes(bytes, input),
+    }
+}
+
+/// The last lines or bytes of it.
+fn tail_of(extent: Extent, input: &str) -> String {
+    match extent {
+        Extent::Lines(lines) => last_lines(lines, input),
+        Extent::Bytes(bytes) => last_bytes(bytes, input),
+    }
+}
+
+/// The first `bytes` bytes of `input`, cut on a character boundary.
+///
+/// A session's streams and files carry TEXT, so what a utility writes is text as well: a cut
+/// inside a character would be neither the bytes the invocation named nor text, so the cut falls
+/// back to the boundary before it — which, for the single-byte characters a payload read off a
+/// device comes to, is exactly the count named.
+fn first_bytes(bytes: usize, input: &str) -> String {
+    let mut cut = bytes.min(input.len());
+    while cut > 0 && !input.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    input[..cut].to_string()
+}
+
+/// ... and the last `bytes` bytes of it, cut the same way.
+fn last_bytes(bytes: usize, input: &str) -> String {
+    let mut from = input.len().saturating_sub(bytes);
+    while from < input.len() && !input.is_char_boundary(from) {
+        from = from.saturating_add(1);
+    }
+    input[from..].to_string()
+}
+
 /// The first `lines` lines of `input`, each with the newline it carried.
-fn head_of(lines: usize, input: &str) -> String {
+fn first_lines(lines: usize, input: &str) -> String {
     let mut written = String::new();
     let ends_with_newline = input.ends_with('\n');
     let held = lines_of(input);
@@ -1024,7 +1094,7 @@ fn head_of(lines: usize, input: &str) -> String {
 }
 
 /// The last `lines` lines of `input`, each with the newline it carried.
-fn tail_of(lines: usize, input: &str) -> String {
+fn last_lines(lines: usize, input: &str) -> String {
     let mut written = String::new();
     let ends_with_newline = input.ends_with('\n');
     let held = lines_of(input);
@@ -1883,7 +1953,8 @@ mod tests {
             ("cut with a multi-character delimiter", "cut", words(&["-d::", "-f1"])),
             ("an option whose value was never written", "cut", words(&["-c"])),
             ("head with a count that is not one", "head", words(&["-n", "two"])),
-            ("head with an option it has none of", "head", words(&["-c", "2"])),
+            ("head with a byte count that is not one", "head", words(&["-c", "two"])),
+            ("head naming lines and bytes at once", "head", words(&["-c", "2", "-n", "3"])),
             ("tail with a count that is not one", "tail", words(&["-n", "two"])),
             // `-n +COUNT` is a POSITION, not a count of the lines kept.
             ("tail from a position rather than a count", "tail", words(&["-n", "+2"])),

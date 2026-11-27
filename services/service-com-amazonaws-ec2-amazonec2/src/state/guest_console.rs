@@ -136,10 +136,13 @@ pub const MAX_GUEST_FILES: usize = 64;
 /// Sized for a machine that performs real BLOCK I/O: a guest generates a payload on its own
 /// storage, writes it through a device and reads it back ([`super::guest_disk_io`]), so the
 /// machine's storage holds a payload of the size one volume holds for its guest
-/// ([`super::guest_disk_io::MAX_VOLUME_GUEST_BYTES`]) rather than the few kilobytes a boot script's
-/// own files come to. Still the EMULATOR's own number, and still far below what would cost this
-/// process anything noticeable.
-pub const MAX_GUEST_FILE_BYTES: usize = super::guest_disk_io::MAX_VOLUME_GUEST_BYTES;
+/// ([`super::guest_disk_io::MAX_VOLUME_GUEST_BYTES`]) AND the machine's own files beside it — the
+/// ones its boot wrote and the ones an earlier run left. A payload of that size filling the WHOLE
+/// of this would mean a write refused for want of room on a filesystem the machine itself reports
+/// gibibytes of ([`super::guest_filesystem`]), which is a refusal no filesystem of that size
+/// gives, so the machine's storage holds one of those payloads and as much again. Still the
+/// EMULATOR's own number, and still far below what would cost this process anything noticeable.
+pub const MAX_GUEST_FILE_BYTES: usize = 2 * super::guest_disk_io::MAX_VOLUME_GUEST_BYTES;
 
 /// How many commands ONE boot's program performs before the session is given up on.
 ///
@@ -901,7 +904,18 @@ fn run_guest_program(
     )
     // Where a datagram this program SENDS goes: the machine's own network stack, which is
     // what carries it to whatever of this guest is listening ([`super::guest_services`]).
-    .with_datagram_sink(::std::sync::Arc::new(services.clone()));
+    .with_datagram_sink(::std::sync::Arc::new(services.clone()))
+    // ... and where the bytes of its BLOCK DEVICES come from: the volumes attached to it, so a
+    // program that reads a device with any utility reads what that volume holds
+    // ([`super::guest_disk_io`]).
+    .with_block_device_bytes(::std::sync::Arc::new(disks.clone()));
+    // ... and where a write to the machine's own storage is reported: the volume that storage IS,
+    // so the bytes this program writes into a file of the root filesystem are I/O on the root
+    // volume ([`super::guest_disk_io::storage_write_sink`]).
+    let volume = match super::guest_disk_io::storage_write_sink(disks, &machine.block_devices) {
+        Some(sink) => volume.with_file_write_sink(sink),
+        None => volume,
+    };
     let mut session = ShellSession::in_volume(
         guest_environment(machine, number),
         SessionConfig {

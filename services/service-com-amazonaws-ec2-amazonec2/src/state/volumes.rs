@@ -402,6 +402,14 @@ pub struct VolumeRecord {
     /// another. Empty for every volume nothing has written, which is a volume whose every byte
     /// reads as zero.
     pub guest_data: super::guest_disk_io::VolumeData,
+    /// The instant a guest last read or wrote those bytes, and `None` for a volume no guest has
+    /// performed I/O on.
+    ///
+    /// What the store reclaims by when the bytes it retains for every volume at once reach their
+    /// ceiling ([`crate::state::guest_disk_io::MAX_RETAINED_VOLUME_BYTES`]): the data a guest has
+    /// not touched for longest is what goes back first, so a write to a device with room is never
+    /// refused for want of room taken by a volume written long ago.
+    pub guest_data_at: Option<SystemTime>,
     /// The I/O a guest has performed on this volume and nothing has published yet, in the order it
     /// happened ([`crate::state::volume_telemetry`], which states what one record is and what it is
     /// published as).
@@ -409,6 +417,12 @@ pub struct VolumeRecord {
     /// Empty for every volume nothing has read or written, and emptied as the datapoints are
     /// published: an operation is published once, being a thing that happened once.
     pub guest_io: Vec<super::volume_telemetry::VolumeIoRecord>,
+    /// The last PERIOD of this volume's own `AWS/EBS` cadence that has been reported, as the epoch
+    /// seconds that period starts at — and `None` for a volume Amazon EBS is reporting nothing
+    /// for, which is every volume attached to nothing
+    /// ([`crate::state::volume_telemetry::due_volume_samples`], which states what is reported for
+    /// a period nothing moved in).
+    pub io_published_through_secs: Option<i64>,
 }
 
 impl VolumeRecord {
@@ -431,7 +445,11 @@ impl VolumeRecord {
             // A volume is created empty — every byte of a fresh volume reads as zero — and nothing
             // has performed I/O on one before it is attached to anything.
             guest_data: super::guest_disk_io::VolumeData::default(),
+            guest_data_at: None,
             guest_io: Vec::new(),
+            // Nothing has been reported for a volume that has just been created, and nothing is
+            // reported for one attached to nothing.
+            io_published_through_secs: None,
         }
     }
 

@@ -415,7 +415,7 @@ pub fn publish_instance_metrics_at<Eng: Send + Sync + 'static>(
         // are measurements of operations that already happened
         // ([`super::volume_telemetry::due_volume_samples`]).
         let mut agent_samples = due_agent_samples(&mut store, now);
-        agent_samples.extend(super::volume_telemetry::due_volume_samples(&mut store));
+        agent_samples.extend(super::volume_telemetry::due_volume_samples(&mut store, now));
         let publishing = store.instances.values().any(publishes_metrics);
         (samples, agent_samples, publishing)
     };

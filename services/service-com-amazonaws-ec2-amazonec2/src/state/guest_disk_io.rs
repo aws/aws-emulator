@@ -104,21 +104,45 @@ pub const MAX_VOLUME_TRANSFER_BYTES: usize = MAX_VOLUME_GUEST_BYTES;
 /// ([`super::guest_commands::MAX_GUEST_RUN_COMMANDS`]) and each copy moves at most
 /// [`MAX_VOLUME_TRANSFER_BYTES`], so without this a script could make one request copy that
 /// product. Every copy of the run is charged against it ([`GuestDisks::allowance`]), and a copy
-/// with nothing left to spend answers the way one at the end of a device does. Several full-size
-/// copies' worth — far above the few a script writing and reading a payload back performs, and far
-/// below what would cost this process anything noticeable.
-pub const MAX_GUEST_RUN_TRANSFER_BYTES: usize = 256 * 1024 * 1024;
-
-/// How many bytes of CALLER-WRITTEN GUEST data this store retains in TOTAL: the machines' own
-/// storage ([`super::guest_console::MAX_GUEST_FILE_BYTES`]) and the volumes' data
-/// ([`MAX_VOLUME_GUEST_BYTES`]) together.
+/// with nothing left to spend answers the way one at the end of a device does.
 ///
-/// The one ceiling on those bytes, and the reason the two bounds above are per-record figures
-/// rather than the whole story: a client can create many instances and many volumes, so what the
-/// store retains for all of them at once is bounded here. A write that would take it past this is
+/// It is a bound on the work one request costs and NOT on what the process holds — a copy's bytes
+/// are materialised while it is performed and gone after it, and what OUTLIVES a run is bounded
+/// where it is kept ([`MAX_GUEST_DATA_BYTES`]). So it is stated for the SEQUENCE a script that uses
+/// a volume performs: generating a payload on the machine's own storage, copying it through the
+/// device and reading the range back is three copies of a whole one's worth, and a script that does
+/// that for several volumes, or checks its work twice, performs several such sequences. Sixteen
+/// whole copies — far above any of those, and far below what would cost this process anything
+/// noticeable, the bytes of one copy being all it holds at once.
+pub const MAX_GUEST_RUN_TRANSFER_BYTES: usize = 16 * MAX_VOLUME_TRANSFER_BYTES;
+
+/// How many bytes of CALLER-WRITTEN GUEST data this store retains, for EACH of the two kinds of it:
+/// the machines' own storage ([`super::guest_console::MAX_GUEST_FILE_BYTES`] is what one machine
+/// may hold of it) and the volumes' data ([`MAX_VOLUME_GUEST_BYTES`] what one volume may).
+///
+/// The ceiling on those bytes, and the reason the two bounds above are per-record figures rather
+/// than the whole story: a client can create many instances and many volumes, so what the store
+/// retains for all of them at once is bounded here. A write that would take it past this is
 /// answered the way a write past the end of a device is ([`NO_SPACE`]), and the room comes back
 /// when the volume or the instance holding it goes.
+///
+/// It is counted PER KIND and not over the two together: what a client left on one machine's
+/// filesystem is not what refuses a write to some volume's device, and the bytes on a volume are
+/// not what leaves a machine's filesystem — which the machine itself reports gibibytes of
+/// ([`super::guest_filesystem`]) — with no room for a payload.
 pub const MAX_GUEST_DATA_BYTES: usize = 256 * 1024 * 1024;
+
+/// How many of those bytes the store KEEPS for the volumes' data once a run has finished.
+///
+/// What a guest wrote through a device is the volume's and outlives the run that wrote it, so
+/// without this the volumes written EARLIEST would come to hold the whole ceiling above and a copy
+/// to a device with room for it would be refused for want of store room — a refusal no device
+/// gives, and one that depends on what some other volume was written long before rather than on
+/// anything about this one. So this is what the volumes keep between runs, and the rest of the
+/// ceiling is the room a run's own writes and the machines' own storage have
+/// ([`ComAmazonawsEc2Amazonec2State::reclaim_volume_guest_data`], which takes the bytes back from
+/// the volumes whose data a guest has not touched for longest).
+pub const MAX_RETAINED_VOLUME_BYTES: usize = MAX_GUEST_DATA_BYTES / 2;
 
 /// The block size one copy uses when the invocation names none: "read and write up to BYTES bytes
 /// at a time (default: 512)" (`dd(1)`).
@@ -367,6 +391,26 @@ impl GuestDisks {
         held.moved = held.moved.saturating_add(bytes);
     }
 
+    /// Record that `bytes` were WRITTEN through the volume `volume_id` by something other than the
+    /// copy program: a write to a file of the machine's own storage, which is a write through the
+    /// volume that storage IS.
+    ///
+    /// Only the I/O is recorded, never the bytes: those are the machine's filesystem's to keep
+    /// ([`super::guest_console`]), and what the volume's own series measure is the transfer
+    /// ([`super::volume_telemetry`]).
+    fn wrote_through(&self, volume_id: &str, bytes: usize) {
+        let moved = i64::try_from(bytes).unwrap_or(i64::MAX);
+        if moved <= 0 {
+            return;
+        }
+        let mut held = self.held();
+        let performed = held.written.io.entry(volume_id.to_string()).or_default();
+        performed.write_bytes = performed.write_bytes.saturating_add(moved);
+        performed.write_ops = performed
+            .write_ops
+            .saturating_add(super::volume_telemetry::operations_for(moved));
+    }
+
     /// The shared record, with a lock an earlier panic poisoned taken rather than propagated: the
     /// bytes of a machine outlive the program that was writing them.
     fn held(&self) -> MutexGuard<'_, DiskActivity> {
@@ -456,6 +500,86 @@ impl GuestDisks {
             .write_ops
             .saturating_add(super::volume_telemetry::operations_for(moved));
         taken
+    }
+}
+
+impl ::service_common::posix_shell_volume::BlockDeviceBytes for GuestDisks {    /// The bytes the block device at `path` holds, as a READ of the device from its start answers
+    /// them: what the volume behind it holds, and zeroes for the part of it nothing has written.
+    ///
+    /// Why a guest's tree is given this: a block device is not a file of the machine's
+    /// filesystem, so what it holds is not what the tree keeps at the path the kernel publishes
+    /// the device at — it is the volume's own bytes, held here. A program of the guest reads a
+    /// device with whatever utility it likes (a digest, `cat`, `head`, the copy program), and
+    /// every one of them has to read those bytes: a device answering nothing to all but one
+    /// utility is a device presenting none of what was just written to it.
+    ///
+    /// Bounded exactly like a read the copy program performs ([`MAX_VOLUME_TRANSFER_BYTES`], and
+    /// what the run has left of its own budget): the answer is MATERIALISED here, so a device
+    /// larger than that answers its first bytes — the short read a device gives at the end of
+    /// what one read may move — and the read is charged against the run that performed it and
+    /// counted into the volume's own series, because it is I/O on that volume like any other.
+    fn device_bytes(&self, path: &str) -> Option<Vec<u8>> {
+        let disk = self.disk_at(path)?;
+        let allowance = self.allowance();
+        if allowance == 0 {
+            return Some(Vec::new());
+        }
+        let answered = self.read(&disk, 0, allowance);
+        self.charge(answered.len());
+        Some(answered)
+    }
+}
+
+/// Where a write to a file of the machine's OWN STORAGE is reported: the volume that storage IS,
+/// which is the instance's ROOT volume — and `None` for a machine whose devices carry no root
+/// volume, whose filesystem is on nothing this store holds.
+///
+/// Why a guest's tree reports its writes here: the root filesystem of an instance IS an attached
+/// Amazon EBS volume, so the bytes a program writes into a file of it are bytes written THROUGH
+/// that volume, which is what the volume's own series measure ("the total number of bytes
+/// transferred", `VolumeWriteBytes`). A root volume whose series knew nothing about those writes
+/// would be a volume taking a client's whole payload and reporting no write at all, while the same
+/// payload written through a data volume's device reports one.
+///
+/// The BYTES stay where they are: a file of the machine's storage is held by that machine
+/// ([`super::guest_console`]), and what goes onto the volume here is the I/O, not a second copy of
+/// the file.
+#[must_use]
+pub fn storage_write_sink(
+    disks: &GuestDisks,
+    devices: &[GuestBlockDevice],
+) -> Option<::std::sync::Arc<dyn ::service_common::posix_shell_volume::FileWrites>> {
+    let volume_id = devices
+        .iter()
+        .find(|device| device.root)
+        .map(|device| device.volume_id.clone())?;
+    Some(Arc::new(StorageWrites {
+        disks: disks.clone(),
+        volume_id,
+    }))
+}
+
+/// The sink [`storage_write_sink`] hands over: the devices the writes are recorded against, and
+/// the volume the machine's own storage is.
+#[derive(Debug)]
+struct StorageWrites {
+    /// What the run has done to the machine's volumes.
+    disks: GuestDisks,
+    /// The volume the machine's root filesystem is.
+    volume_id: String,
+}
+
+impl ::service_common::posix_shell_volume::FileWrites for StorageWrites {
+    /// One write the machine's filesystem took, as I/O on the volume that filesystem is: the bytes
+    /// the file holds now are what the filesystem put on the volume for it.
+    fn wrote(&self, written: &::service_common::posix_shell_volume::FileWritten<'_>) {
+        self.disks
+            .wrote_through(&self.volume_id, written.contents.len());
+    }
+
+    /// A removal moves no bytes onto the volume, so it is no transfer to measure.
+    fn removed(&self, path: &str) {
+        let _ = path;
     }
 }
 
@@ -1084,30 +1208,36 @@ impl ComAmazonawsEc2Amazonec2State {
                 Some((device.volume_id.clone(), record.guest_data.clone()))
             })
             .collect();
-        // What the STORE has room to hold for these volumes: its own ceiling less everything it
-        // holds for the account's guests, and what these volumes hold already is theirs to keep.
+        // What the STORE has room to hold for these volumes while this run writes them: its own
+        // ceiling less what it holds for the account's OTHER volumes, and what these volumes hold
+        // already is theirs to keep. What the machines' own storage holds is not in it: the two
+        // kinds of guest data are counted on their own ([`MAX_GUEST_DATA_BYTES`]), so a payload a
+        // client left on a machine's filesystem is never what refuses a write to a device.
         let held_here: usize = data.values().map(VolumeData::held_bytes).sum();
         let room = MAX_GUEST_DATA_BYTES
-            .saturating_sub(self.guest_data_bytes())
+            .saturating_sub(self.volume_guest_data_bytes())
             .saturating_add(held_here);
         GuestDisks::holding(devices, data).with_room(room)
     }
 
-    /// How many bytes of CALLER-WRITTEN guest data this store holds now: the machines' own storage
-    /// and the volumes' data, which is what [`MAX_GUEST_DATA_BYTES`] is the ceiling on.
+    /// How many bytes of CALLER-WRITTEN guest data this store holds for the VOLUMES now, which is
+    /// what [`MAX_GUEST_DATA_BYTES`] is the ceiling on while a run writes them and
+    /// [`MAX_RETAINED_VOLUME_BYTES`] the one on what they keep afterwards.
     #[must_use]
-    pub(super) fn guest_data_bytes(&self) -> usize {
-        let volumes: usize = self
-            .volumes
+    pub(super) fn volume_guest_data_bytes(&self) -> usize {
+        self.volumes
             .values()
             .map(|volume| volume.guest_data.held_bytes())
-            .sum();
-        let machines: usize = self
-            .instances
+            .sum()
+    }
+
+    /// ... and how many it holds for the MACHINES' own storage, the other kind that ceiling bounds.
+    #[must_use]
+    pub(super) fn machine_guest_data_bytes(&self) -> usize {
+        self.instances
             .values()
             .map(|instance| super::guest_memory::stored_bytes(&instance.guest_files))
-            .sum();
-        volumes.saturating_add(machines)
+            .sum()
     }
 
     /// How many bytes the guest of the instance `instance_id` names may hold on the MACHINE's own
@@ -1115,14 +1245,18 @@ impl ComAmazonawsEc2Amazonec2State {
     /// never more than the store's own ceiling leaves for it ([`MAX_GUEST_DATA_BYTES`]).
     ///
     /// Asked wherever the tree a program of that guest works over is built, so what one machine
-    /// can make this store retain is bounded by what every other machine and volume holds.
+    /// can make this store retain is bounded by what every other machine holds. What the VOLUMES
+    /// hold is not in it: a filesystem the machine itself reports gibibytes of
+    /// ([`super::guest_filesystem`]) has room for a payload whatever was written through some
+    /// volume's device, and the volumes' own bytes are bounded where they are held
+    /// ([`MAX_RETAINED_VOLUME_BYTES`]).
     #[must_use]
     pub(super) fn guest_storage_allowance(&self, instance_id: &str) -> usize {
         let held = self.instances.get(instance_id).map_or(0, |instance| {
             super::guest_memory::stored_bytes(&instance.guest_files)
         });
         MAX_GUEST_DATA_BYTES
-            .saturating_sub(self.guest_data_bytes())
+            .saturating_sub(self.machine_guest_data_bytes())
             .saturating_add(held)
             .min(super::guest_console::MAX_GUEST_FILE_BYTES)
     }
@@ -1134,11 +1268,19 @@ impl ComAmazonawsEc2Amazonec2State {
     /// move to another instance; the I/O is recorded as something that HAPPENED at `at`, which is
     /// what the volume's own `AWS/EBS` series is published from ([`super::volume_telemetry`]). A
     /// volume this store no longer holds keeps nothing: there is no volume for the bytes to be on.
+    ///
+    /// What the store retains for every volume at once is brought back under its ceiling here
+    /// ([`Self::reclaim_volume_guest_data`]), once the bytes this run left are on their volumes —
+    /// so the room the NEXT run writes in is room this store really has.
     pub(super) fn apply_guest_disk_writes(&mut self, written: GuestDiskWrites, at: SystemTime) {
         let GuestDiskWrites { data, io } = written;
+        // The volumes this run reached, which are the ones whose bytes it is holding for the
+        // client that just wrote or read them: never the ones reclaimed below.
+        let touched: ::std::collections::BTreeSet<String> = data.keys().cloned().collect();
         for (volume_id, bytes) in data {
             if let Some(record) = self.volumes.get_mut(&volume_id) {
                 record.guest_data = bytes;
+                record.guest_data_at = Some(at);
             }
         }
         for (volume_id, performed) in io {
@@ -1147,6 +1289,54 @@ impl ComAmazonawsEc2Amazonec2State {
             }
             if let Some(record) = self.volumes.get_mut(&volume_id) {
                 record.record_guest_io(performed, at);
+            }
+        }
+        self.reclaim_volume_guest_data(&touched);
+    }
+
+    /// Bring the bytes this store retains for the volumes' guest data back under
+    /// [`MAX_RETAINED_VOLUME_BYTES`], taking them from the volumes that are LEAST likely to be
+    /// read next — and never from `keep`, the volumes the run that just finished reached.
+    ///
+    /// Which volume gives its bytes back first: one attached to nothing, whose data no guest can
+    /// read at all without attaching it again, before one a machine holds; and among those, the
+    /// one whose data a guest has not touched for longest
+    /// ([`super::VolumeRecord::guest_data_at`]). A volume gives back the whole of its data rather
+    /// than part of it, the way a device whose bytes are gone reads as zero throughout.
+    ///
+    /// This is the one place those bytes are reclaimed, so what bounds the store is a bound on what
+    /// it KEEPS rather than a refusal of a write the device itself would have taken.
+    fn reclaim_volume_guest_data(&mut self, keep: &::std::collections::BTreeSet<String>) {
+        let mut retained: usize = self.volume_guest_data_bytes();
+        if retained <= MAX_RETAINED_VOLUME_BYTES {
+            return;
+        }
+        let now = ::std::time::Instant::now();
+        // The volumes whose bytes may go back, in the order they go: unattached before attached,
+        // least recently touched before the rest, and the id last so the order is total.
+        let mut reclaimable: Vec<(bool, Option<SystemTime>, String)> = self
+            .volumes
+            .iter()
+            .filter(|(volume_id, volume)| {
+                !keep.contains(volume_id.as_str()) && !volume.guest_data.is_empty()
+            })
+            .map(|(volume_id, volume)| {
+                (
+                    !volume.attachments_at(now).is_empty(),
+                    volume.guest_data_at,
+                    volume_id.clone(),
+                )
+            })
+            .collect();
+        reclaimable.sort();
+        for (_, _, volume_id) in reclaimable {
+            if retained <= MAX_RETAINED_VOLUME_BYTES {
+                return;
+            }
+            if let Some(record) = self.volumes.get_mut(&volume_id) {
+                retained = retained.saturating_sub(record.guest_data.held_bytes());
+                record.guest_data = VolumeData::default();
+                record.guest_data_at = None;
             }
         }
     }

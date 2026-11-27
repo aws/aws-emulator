@@ -208,6 +208,26 @@ pub trait FileWrites: ::std::fmt::Debug + Send + Sync {
     fn removed(&self, path: &str);
 }
 
+/// Where the BYTES one of the machine's BLOCK DEVICES come from: the component that holds the
+/// storage behind that device.
+///
+/// A tree is given one ([`ShellVolume::with_block_device_bytes`]) because a block device of a
+/// machine is not a file of its filesystem: what it holds lives wherever the component owning the
+/// storage keeps it — an attached volume's own bytes — and a program of the guest reads the device
+/// with whatever utility it likes (`cat`, `head`, a digest, a copy), not only with the one that
+/// knows about that component. Without this, every utility but that one reads such a device as an
+/// empty file, which is a device presenting none of the bytes something just wrote to it.
+///
+/// What the implementation answers is read out of its own state and bounded by it — a device can
+/// be far larger than anything this process would materialise — and nothing here opens a device,
+/// starts a process or reaches a host path.
+pub trait BlockDeviceBytes: ::std::fmt::Debug + Send + Sync {
+    /// The bytes the block device at the resolved `path` holds, as a read of the device from its
+    /// start answers them — `None` for a path that is no block device of this machine, which is
+    /// then whatever else the tree holds there.
+    fn device_bytes(&self, path: &str) -> Option<Vec<u8>>;
+}
+
 /// What one DEVICE of the tree does with the lines written to it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Device {
@@ -421,6 +441,9 @@ pub struct ShellVolume {
     /// Where a write to one of this tree's OWN files is reported, for a tree whose owner gave
     /// it one ([`ShellVolume::with_file_write_sink`]).
     writes: Option<Arc<dyn FileWrites>>,
+    /// Where the bytes of the machine's BLOCK DEVICES come from, for a tree whose owner gave it
+    /// one ([`ShellVolume::with_block_device_bytes`]).
+    block_devices: Option<Arc<dyn BlockDeviceBytes>>,
     limits: VolumeLimits,
 }
 
@@ -492,6 +515,7 @@ impl ShellVolume {
             mounts: Vec::new(),
             datagrams: None,
             writes: None,
+            block_devices: None,
             limits,
         }
     }
@@ -510,6 +534,15 @@ impl ShellVolume {
     #[must_use]
     pub fn with_datagram_sink(mut self, sink: Arc<dyn DatagramSink>) -> Self {
         self.datagrams = Some(sink);
+        self
+    }
+
+    /// The same tree, with `bytes` as where the bytes of the machine's BLOCK DEVICES come from
+    /// ([`BlockDeviceBytes`]) — so a READ of one answers what the storage behind it holds, with
+    /// whatever utility the program reads it.
+    #[must_use]
+    pub fn with_block_device_bytes(mut self, bytes: Arc<dyn BlockDeviceBytes>) -> Self {
+        self.block_devices = Some(bytes);
         self
     }
 
@@ -803,16 +836,8 @@ impl ShellVolume {
     /// files are.
     #[must_use]
     pub fn read(&self, path: &str) -> Option<String> {
-        let resolved = self.resolve(path)?;
-        if let Some(read) = self.in_mount(&resolved, |files, inside| files.read(inside)) {
-            return read;
-        }
-        if let Some(Device::Discard) = self.devices.get(&resolved) {
-            return Some(String::new());
-        }
-        self.files
-            .get(&resolved)
-            .map(|contents| String::from_utf8_lossy(contents).into_owned())
+        self.read_bytes(path)
+            .map(|contents| String::from_utf8_lossy(&contents).into_owned())
     }
 
     /// The BYTES the file at `path` holds, which is the file itself — `None` for the paths
@@ -825,6 +850,16 @@ impl ShellVolume {
         }
         if let Some(Device::Discard) = self.devices.get(&resolved) {
             return Some(Vec::new());
+        }
+        // A BLOCK DEVICE of the machine holds what the component owning its storage holds, and
+        // not what this tree keeps at the path the device is published at: asked before the
+        // tree's own files, so every utility that reads a path reads the device's own bytes.
+        if let Some(bytes) = self
+            .block_devices
+            .as_ref()
+            .and_then(|devices| devices.device_bytes(&resolved))
+        {
+            return Some(bytes);
         }
         self.files.get(&resolved).cloned()
     }

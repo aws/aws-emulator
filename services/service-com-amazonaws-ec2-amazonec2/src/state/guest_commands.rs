@@ -122,7 +122,18 @@ pub const MAX_GUEST_RUN_OUTPUT_LINE_BYTES: usize = 2_048;
 /// the few kilobytes a line of text comes to. What the whole RUN may move through those copies is
 /// bounded beside it ([`super::guest_disk_io::MAX_GUEST_RUN_TRANSFER_BYTES`]), so the commands a
 /// script carries cannot multiply it.
-pub const MAX_GUEST_RUN_PIPE_BYTES: usize = super::guest_disk_io::MAX_VOLUME_TRANSFER_BYTES;
+///
+/// A copy's worth is the bytes it moved AND the newline the LAST of its lines is written with: a
+/// program's output reaches the stage after it one line at a time, each closed by a newline, so a
+/// payload whose own last byte is not one costs that byte more than the payload itself. Without it
+/// a read of exactly what one copy may move is a stage that carries NOTHING — the digest a client
+/// takes of the bytes it just read back would be the digest of no bytes at all — so the stage is as
+/// wide as a whole copy's worth and that one byte.
+pub const MAX_GUEST_RUN_PIPE_BYTES: usize =
+    super::guest_disk_io::MAX_VOLUME_TRANSFER_BYTES + LINE_TERMINATOR_BYTES;
+
+/// The one byte a line a program wrote is CLOSED by (see [`MAX_GUEST_RUN_PIPE_BYTES`]).
+const LINE_TERMINATOR_BYTES: usize = 1;
 
 /// What one program run in a guest answered: the lines it wrote, the lines it reported it
 /// could not do and the status it exited with.
@@ -376,7 +387,19 @@ impl ComAmazonawsEc2Amazonec2State {
         // Where a datagram this script SENDS goes: the machine's own network stack, which
         // carries it to whatever of this guest is listening
         // ([`super::guest_services::GuestServices::send_datagram`]).
-        .with_datagram_sink(::std::sync::Arc::new(services.clone()));
+        .with_datagram_sink(::std::sync::Arc::new(services.clone()))
+        // ... and where the bytes of its BLOCK DEVICES come from: the volumes attached to it, so
+        // a command that reads a device with any utility — a digest, `cat`, `head` — reads what
+        // that volume holds ([`super::guest_disk_io`]).
+        .with_block_device_bytes(::std::sync::Arc::new(disks.clone()));
+        // ... and where a write to the machine's own storage is reported: the volume that storage
+        // IS, so the bytes a script writes into a file of the root filesystem are I/O on the root
+        // volume ([`super::guest_disk_io::storage_write_sink`]).
+        let volume = match super::guest_disk_io::storage_write_sink(&disks, &machine.block_devices)
+        {
+            Some(sink) => volume.with_file_write_sink(sink),
+            None => volume,
+        };
         let session = ShellSession::in_volume(
             guest_environment(&machine, number),
             SessionConfig {
