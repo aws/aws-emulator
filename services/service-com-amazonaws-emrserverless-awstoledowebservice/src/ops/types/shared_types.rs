@@ -278,6 +278,12 @@ pub struct RetryPolicy {
     pub max_failed_attempts_per_hour: Option<i32>,
 }
 
+#[smithy_macros::smithy(shape = "com.amazonaws.emrserverless#FlexExecution")]
+#[derive(Debug, Clone, Default)]
+pub struct FlexExecution {
+    pub enabled: Option<bool>,
+}
+
 #[smithy_macros::smithy(shape = "com.amazonaws.emrserverless#TotalResourceUtilization")]
 #[derive(Debug, Clone, Default)]
 pub struct TotalResourceUtilization {

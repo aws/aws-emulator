@@ -25,6 +25,7 @@ pub struct StartJobRunInput {
     pub name: Option<String>,
     pub mode: Option<String>,
     pub retry_policy: Option<RetryPolicy>,
+    pub flex_execution: Option<FlexExecution>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.emrserverless#StartJobRunResponse")]

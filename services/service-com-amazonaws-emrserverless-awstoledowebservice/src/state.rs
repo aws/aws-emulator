@@ -60,8 +60,9 @@ use sha2::{Digest, Sha256};
 use crate::ops::types::{
     Application, ApplicationSummary, AutoStartConfig, AutoStopConfig, CloudWatchLoggingConfiguration,
     Configuration, ConfigurationOverrides, ConflictException, CreateApplicationInput,
-    DiskEncryptionConfiguration, IdentityCenterConfiguration, IdentityCenterConfigurationInput,
-    ImageConfiguration, ImageConfigurationInput, JobDriver, JobRun, JobRunSummary,
+    DiskEncryptionConfiguration, FlexExecution, IdentityCenterConfiguration,
+    IdentityCenterConfigurationInput, ImageConfiguration, ImageConfigurationInput, JobDriver,
+    JobRun, JobRunSummary,
     JobLevelCostAllocationConfiguration, ManagedPersistenceMonitoringConfiguration,
     MonitoringConfiguration, ResourceNotFoundException, ResourceUtilization, RetryPolicy, Session,
     SessionSummary, TotalResourceUtilization, ValidationException, WorkerTypeSpecification,
@@ -1025,6 +1026,9 @@ impl JobRunRecord {
             attempt: run.attempt,
             attempt_created_at: run.attempt_created_at,
             attempt_updated_at: run.attempt_updated_at,
+            // The capacity the run executes on is reported by the summary too: a list of the
+            // runs an application holds says of each one what a read of it says.
+            flex_execution: run.flex_execution.clone(),
         }
     }
 }
@@ -2016,6 +2020,29 @@ pub fn adopt_retry_policy(mode: &str, policy: Option<RetryPolicy>) -> Option<Ret
     Some(RetryPolicy {
         max_attempts: Some(policy.max_attempts.unwrap_or(DEFAULT_MAX_ATTEMPTS)),
         max_failed_attempts_per_hour: policy.max_failed_attempts_per_hour,
+    })
+}
+
+/// `FlexExecution$enabled` for a run whose submit carried Flex settings without saying
+/// whether they are on: the member "enables Amazon EMR Serverless Flex capacity for the job
+/// run and defaults to false".
+pub const DEFAULT_FLEX_EXECUTION_ENABLED: bool = false;
+
+/// The `flexExecution` to persist for a job run: the caller's settings, with that documented
+/// default filled in where the submit carried the block without the member.
+///
+/// `StartJobRunRequest$flexExecution` is "the Amazon EMR Serverless Flex settings for the job
+/// run. If you don't specify these settings, the job run doesn't use Flex capacity" — so a
+/// submit that named no settings leaves the run with none to report and nothing is invented
+/// for it, while a submit that named them has them reported by every read of the run, with
+/// `enabled` resolved to the value in force.
+pub fn adopt_flex_execution(flex_execution: Option<FlexExecution>) -> Option<FlexExecution> {
+    flex_execution.map(|flex_execution| FlexExecution {
+        enabled: Some(
+            flex_execution
+                .enabled
+                .unwrap_or(DEFAULT_FLEX_EXECUTION_ENABLED),
+        ),
     })
 }
 

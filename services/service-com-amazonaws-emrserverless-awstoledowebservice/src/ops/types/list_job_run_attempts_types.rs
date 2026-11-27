@@ -45,5 +45,6 @@ pub struct JobRunAttemptSummary {
     pub release_label: String,
     pub r#type: Option<String>,
     pub attempt: Option<i32>,
+    pub flex_execution: Option<FlexExecution>,
 }
 

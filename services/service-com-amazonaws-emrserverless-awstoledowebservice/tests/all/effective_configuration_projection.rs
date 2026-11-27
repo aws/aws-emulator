@@ -20,12 +20,15 @@
 //! 3. `GetSessionEndpoint` reports an endpoint a client can actually connect to: the
 //!    address THIS emulator is served at, with the application and the session it names in
 //!    its path — never a host AWS publishes its own endpoints at.
+//! 4. A read of a JOB RUN reports the Flex settings the submit put the run under, with the
+//!    documented default of the member it left out filled in, and `ListJobRuns` reports the
+//!    same of it.
 
 use serde_json::{json, Value};
 
 use super::application_lifecycle::{
-    call, create_application, emulator, get_application, minimal_create, wait_for_transition,
-    Answer,
+    call, create_application, emulator, get_application, get_job_run, list_job_runs, minimal_create,
+    minimal_job_run, start_job_run, started_application, wait_for_transition, Answer,
 };
 use super::session_lifecycle::{get_session, minimal_session, session_application, start_session};
 use super::update_application::update_application;
@@ -46,6 +49,11 @@ const AWS_HOST_SUFFIX: &str = "amazonaws.com";
 const DEFAULT_IDLE_TIMEOUT_MINUTES: i64 = 15;
 const MIN_IDLE_TIMEOUT_MINUTES: i64 = 1;
 const MAX_IDLE_TIMEOUT_MINUTES: i64 = 10080;
+
+/// `FlexExecution$enabled` "enables Amazon EMR Serverless Flex capacity for the job run and
+/// defaults to false" (`smithy_query(query="shape",shape="FlexExecution")`), written out here
+/// rather than read from `crate::state` so a wrong default in `src/` cannot make this pass.
+const DEFAULT_FLEX_EXECUTION_ENABLED: bool = false;
 
 /// A KMS key ARN satisfying `EncryptionKeyArn`'s pattern
 /// (`smithy_query(query="shape",shape="ManagedPersistenceMonitoringConfiguration")`).
@@ -585,5 +593,84 @@ async fn a_session_endpoint_leads_back_to_this_emulator() {
                  {endpoint:?} twice"
             );
         }
+    }
+}
+
+/// Suite 4: a read of a JOB RUN reports the Flex settings the submit put it under — the block
+/// the submit carried, with `enabled` resolved to the value in force, and nothing at all for a
+/// submit that carried none, which is what "if you don't specify these settings, the job run
+/// doesn't use Flex capacity" leaves to report. `GetJobRun` and the `ListJobRuns` summary
+/// answer the same, because both read the one stored record.
+#[tokio::test]
+async fn a_read_reports_the_flex_settings_a_job_run_was_submitted_under() {
+    let router = emulator();
+    let application_id = started_application(&router, "tok-flex-app").await;
+
+    // The rows differ along what the submit carried: no block at all, the block with no
+    // member, and the member at each of its two values.
+    let cases: Vec<(&str, Option<Value>, Value)> = vec![
+        ("no Flex settings at all", None, Value::Null),
+        (
+            "the block with no member, so its documented default is in force",
+            Some(json!({})),
+            json!({ "enabled": DEFAULT_FLEX_EXECUTION_ENABLED }),
+        ),
+        (
+            "Flex capacity asked for",
+            Some(json!({ "enabled": true })),
+            json!({ "enabled": true }),
+        ),
+        (
+            "Flex capacity declined",
+            Some(json!({ "enabled": false })),
+            json!({ "enabled": false }),
+        ),
+    ];
+
+    for (index, (case, submitted, expected)) in cases.into_iter().enumerate() {
+        let mut body = minimal_job_run(&format!("tok-flex-{index}"));
+        if let Some(flex_execution) = submitted.clone() {
+            body["flexExecution"] = flex_execution;
+        }
+        let started = start_job_run(&router, &application_id, body).await;
+        assert_eq!(
+            started.status, 200,
+            "case {case:?}: StartJobRun expected 200, got {} with {:?}",
+            started.status, started.body
+        );
+        let job_run_id = started
+            .at("/jobRunId")
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+
+        let fetched = get_job_run(&router, &application_id, &job_run_id).await;
+        assert_eq!(
+            fetched.status, 200,
+            "case {case:?}: GetJobRun expected 200, got {} with {:?}",
+            fetched.status, fetched.body
+        );
+        assert_eq!(
+            fetched.at("/jobRun/flexExecution"),
+            expected,
+            "case {case:?}: a submit carrying {submitted:?} reads back as {expected:?}, got {:?}",
+            fetched.at("/jobRun/flexExecution")
+        );
+
+        // The summary a list serves says of the run what a read of it says.
+        let listed = list_job_runs(&router, &application_id, "").await;
+        let summary = listed
+            .body
+            .get("jobRuns")
+            .and_then(Value::as_array)
+            .and_then(|entries| entries.iter().find(|entry| entry["id"] == json!(job_run_id)))
+            .cloned()
+            .unwrap_or(Value::Null);
+        assert_eq!(
+            summary.get("flexExecution").cloned().unwrap_or(Value::Null),
+            expected,
+            "case {case:?}: the ListJobRuns summary must report the same Flex settings as \
+             GetJobRun ({expected:?}), got {summary:?}"
+        );
     }
 }

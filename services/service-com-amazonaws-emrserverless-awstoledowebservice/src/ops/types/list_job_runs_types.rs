@@ -49,5 +49,6 @@ pub struct JobRunSummary {
     pub attempt: Option<i32>,
     pub attempt_created_at: Option<::aws_smithy_types::DateTime>,
     pub attempt_updated_at: Option<::aws_smithy_types::DateTime>,
+    pub flex_execution: Option<FlexExecution>,
 }
 

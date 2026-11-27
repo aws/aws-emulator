@@ -62,6 +62,8 @@
 //!   Serverless cancels it automatically. For BATCH mode job runs, the maximum value is 10080
 //!   minutes (7 days) starting with Amazon EMR release 7.11. Setting a value of 0 to disable
 //!   the timeout is no longer supported for BATCH mode job runs.
+//! * `flexExecution` (FlexExecution) — The Amazon EMR Serverless Flex settings for the job
+//!   run. If you don't specify these settings, the job run doesn't use Flex capacity.
 //! * `jobDriver` (JobDriver) — The job driver for the job run.
 //! * `mode` (JobRunMode, one of: BATCH | STREAMING) — The mode of the job run when it starts.
 //! * `name` (String256, len 1..256, pattern .*\S.*) — The optional job run name. This doesn't
@@ -342,6 +344,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> StartJobRun<Eng> 
             queued_duration_milliseconds: None,
             image_configuration: record.application.image_configuration.clone(),
             worker_type_specifications: record.application.worker_type_specifications.clone(),
+            // The capacity the run executes on is the one THIS submit asked for, so the Flex
+            // settings it carried are stored on the run and reported by every read of it; a
+            // submit that named none leaves the run off Flex capacity, with nothing to report.
+            flex_execution: crate::state::adopt_flex_execution(input.flex_execution),
         };
 
         record.job_runs.insert(

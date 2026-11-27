@@ -58,5 +58,6 @@ pub struct JobRun {
     pub queued_duration_milliseconds: Option<i64>,
     pub image_configuration: Option<ImageConfiguration>,
     pub worker_type_specifications: Option<std::collections::HashMap<String, WorkerTypeSpecification>>,
+    pub flex_execution: Option<FlexExecution>,
 }
 
