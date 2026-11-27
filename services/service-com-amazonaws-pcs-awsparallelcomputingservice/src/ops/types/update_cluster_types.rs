@@ -27,6 +27,7 @@ pub struct UpdateClusterSlurmConfigurationRequest {
     pub slurm_custom_settings: Option<Vec<SlurmCustomSetting>>,
     pub slurmdbd_custom_settings: Option<Vec<SlurmdbdCustomSetting>>,
     pub cgroup_custom_settings: Option<Vec<CgroupCustomSetting>>,
+    pub job_submit_plugins: Option<Vec<JobSubmitPlugin>>,
     pub accounting: Option<UpdateAccountingRequest>,
     pub slurm_rest: Option<UpdateSlurmRestRequest>,
 }

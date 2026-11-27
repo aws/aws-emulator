@@ -222,8 +222,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // create's are: the model bounds none of them, so one request could otherwise size
         // one stored record arbitrarily.
         let slurm = input.slurm_configuration.as_ref();
-        let stored_lists: [(&str, usize); 3] = [
+        let stored_lists: [(&str, usize); 4] = [
             ("subnetIds", input.subnet_ids.as_ref().map_or(0, Vec::len)),
+            (
+                "securityGroupIds",
+                input.security_group_ids.as_ref().map_or(0, Vec::len),
+            ),
             (
                 "slurmConfiguration.slurmCustomSettings",
                 slurm.map_or(0, |slurm| {
@@ -311,6 +315,20 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     UpdateComputeNodeGroupErrorModeled::ValidationException(refusal).into(),
                 );
             }
+        }
+        // Security groups this update would configure DIRECTLY on the group are EC2's
+        // resources, resolved through the gate the create path shares
+        // (`crate::state::ec2_security_groups`). An EMPTY list names none to resolve: it
+        // removes the direct configuration rather than naming a membership
+        // ([`crate::state::stored_direct_setting`]).
+        if let Some(refusal) = crate::state::ec2_security_groups::violation(
+            ctx,
+            &region,
+            input.security_group_ids.as_deref().unwrap_or_default(),
+        )
+        .await
+        {
+            return Err(UpdateComputeNodeGroupErrorModeled::ValidationException(refusal).into());
         }
 
         // The principal a refusal of the CALLER names, read before this service's store is
@@ -437,8 +455,27 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             group.subnet_ids = subnet_ids;
             changed = true;
         }
+        // The two members this update takes against a target that admits the EMPTY value:
+        // each names a configuration made directly on the group, which the empty value
+        // REMOVES ([`crate::state::stored_direct_setting`], the rule the create path shares).
+        if input.security_group_ids.is_some() {
+            group.security_group_ids = crate::state::stored_direct_setting(
+                group.security_group_ids.take(),
+                input.security_group_ids,
+            );
+            changed = true;
+        }
+        if input.ssh_key_name.is_some() {
+            group.ssh_key_name =
+                crate::state::stored_direct_setting(group.ssh_key_name.take(), input.ssh_key_name);
+            changed = true;
+        }
+        if let Some(mode) = input.launch_template_mode {
+            group.launch_template_mode = mode;
+            changed = true;
+        }
         if let Some(template) = input.custom_launch_template {
-            group.custom_launch_template = template;
+            group.custom_launch_template = Some(template);
             changed = true;
         }
         if let Some(purchase_option) = input.purchase_option {
@@ -469,6 +506,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             let stored = group.slurm_configuration.take();
             group.slurm_configuration =
                 Some(crate::state::apply_compute_node_group_slurm_update(stored, slurm));
+            changed = true;
+        }
+        if let Some(checks) = input.instance_health_checks {
+            // "These settings replace all of the current instance health check settings of
+            // the compute node group" (`UpdateInstanceHealthChecksRequest`): the request
+            // states a WHOLE set, so it replaces the stored one rather than merging into it.
+            group.instance_health_checks = Some(checks.into());
             changed = true;
         }
         if let Some(actions) = input.node_lifecycle_actions {

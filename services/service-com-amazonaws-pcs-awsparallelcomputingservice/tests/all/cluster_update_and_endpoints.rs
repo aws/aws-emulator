@@ -47,6 +47,14 @@ mod idempotent_update_retry;
 #[path = "cluster_update_and_endpoints/queue_update.rs"]
 mod queue_update;
 
+// Which configuration members a compute node group and a cluster carry across a create, an
+// update and every later read — the direct settings whose update target admits the EMPTY
+// value, the launch-template mode that decides whether the caller's own template is
+// reported, the instance health checks, and a cluster's job submit plugins — is its own
+// suite, declared the same way.
+#[path = "cluster_update_and_endpoints/compute_node_group_configuration_members.rs"]
+mod compute_node_group_configuration_members;
+
 use serde_json::{json, Value};
 use service_com_amazonaws_pcs_awsparallelcomputingservice::service::wire::CLIENT_ERROR_STATUS;
 

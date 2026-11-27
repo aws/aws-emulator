@@ -14,7 +14,9 @@ cargo test  -p service-com-amazonaws-pcs-awsparallelcomputingservice
 service-com-amazonaws-pcs-awsparallelcomputingservice/
 ├── build.rs              # calls emulator_core_build_support::generate(...)
 ├── smithy-model/
-│   └── com-amazonaws-pcs-awsparallelcomputingservice.json      # the Smithy model — drives routing + wire shapes
+│   ├── com-amazonaws-pcs-awsparallelcomputingservice.json      # the Smithy model — drives routing + wire shapes
+│   ├── local-additions.json  # overlay model for the member AWS reports that the snapshot lacks
+│   └── LOCAL-ADDITIONS.md    # what the overlay restates, and why
 ├── OPERATIONS.md         # every operation's contract, re-rendered from the model
 ├── tests/
 │   └── state_roundtrip.rs  # compiled example of the state API

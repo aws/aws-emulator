@@ -11,10 +11,11 @@ use super::*;
 
 smithy_macros::smithy_model!("smithy-model/com-amazonaws-pcs-awsparallelcomputingservice.json");
 
-// `ResourceNotFoundException` is NOT declared here: the wire carries a member on it that
-// this model does not declare (the ARN an ARN-addressed refusal reports), which the derive
-// cannot express, so the shape, its schema and its serializer are written out in
-// `resource_not_found_wire`.
+// `com.amazonaws.pcs#ResourceNotFoundException` is NOT declared here: AWS answers it with a
+// member this snapshot does not declare, so it is declared in `resource_not_found_wire.rs`
+// from the overlay model `smithy-model/local-additions.json` (see
+// `smithy-model/LOCAL-ADDITIONS.md`). It is re-exported by `types/mod.rs` like every other
+// shape, so `ResourceNotFoundException` resolves unchanged.
 
 #[smithy_macros::smithy(shape = "com.amazonaws.pcs#ServiceQuotaExceededException")]
 #[derive(Debug, Clone, Default)]
@@ -45,6 +46,22 @@ pub struct SlurmdbdCustomSetting {
 pub struct CgroupCustomSetting {
     pub parameter_name: String,
     pub parameter_value: String,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.pcs#JobSubmitPlugin")]
+#[derive(Debug, Clone, Default)]
+pub struct JobSubmitPlugin {
+    pub name: String,
+    pub r#type: String,
+    pub script_source: JobSubmitScriptSource,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.pcs#JobSubmitScriptSource")]
+#[derive(Debug, Clone, Default)]
+pub struct JobSubmitScriptSource {
+    pub script_location: String,
+    pub s3_version_id: Option<String>,
+    pub checksum: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.pcs#Cluster")]
@@ -78,6 +95,7 @@ pub struct ClusterSlurmConfiguration {
     pub slurm_custom_settings: Option<Vec<SlurmCustomSetting>>,
     pub slurmdbd_custom_settings: Option<Vec<SlurmdbdCustomSetting>>,
     pub cgroup_custom_settings: Option<Vec<CgroupCustomSetting>>,
+    pub job_submit_plugins: Option<Vec<JobSubmitPlugin>>,
     pub auth_key: Option<SlurmAuthKey>,
     pub jwt_auth: Option<JwtAuth>,
     pub accounting: Option<Accounting>,
@@ -216,6 +234,33 @@ pub struct ScriptSource {
     pub checksum: Option<String>,
 }
 
+#[smithy_macros::smithy(shape = "com.amazonaws.pcs#InstanceHealthChecks")]
+#[derive(Debug, Clone, Default)]
+pub struct InstanceHealthChecks {
+    pub health_monitoring: Option<HealthMonitoring>,
+    pub deep_health_checks: Option<DeepHealthChecks>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.pcs#HealthMonitoring")]
+#[derive(Debug, Clone, Default)]
+pub struct HealthMonitoring {
+    pub mode: Option<String>,
+    pub repair_action: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.pcs#DeepHealthChecks")]
+#[derive(Debug, Clone, Default)]
+pub struct DeepHealthChecks {
+    pub on_start: Option<DeepHealthCheckOnStart>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.pcs#DeepHealthCheckOnStart")]
+#[derive(Debug, Clone, Default)]
+pub struct DeepHealthCheckOnStart {
+    pub profile: Option<String>,
+    pub repair_action: Option<String>,
+}
+
 #[smithy_macros::smithy(shape = "com.amazonaws.pcs#CustomLaunchTemplate")]
 #[derive(Debug, Clone, Default)]
 pub struct CustomLaunchTemplate {
@@ -245,6 +290,9 @@ pub struct SpotOptions {
 #[smithy_macros::smithy(shape = "com.amazonaws.pcs#ComputeNodeGroup")]
 #[derive(Debug, Clone)]
 pub struct ComputeNodeGroup {
+    pub ami_id: Option<String>,
+    pub security_group_ids: Option<Vec<String>>,
+    pub ssh_key_name: Option<String>,
     pub name: String,
     pub id: String,
     pub arn: String,
@@ -252,16 +300,17 @@ pub struct ComputeNodeGroup {
     pub created_at: ::aws_smithy_types::DateTime,
     pub modified_at: ::aws_smithy_types::DateTime,
     pub status: String,
-    pub ami_id: Option<String>,
     pub subnet_ids: Vec<String>,
     pub purchase_option: Option<String>,
-    pub custom_launch_template: CustomLaunchTemplate,
+    pub launch_template_mode: String,
+    pub custom_launch_template: Option<CustomLaunchTemplate>,
     pub iam_instance_profile_arn: String,
     pub scaling_configuration: ScalingConfiguration,
     pub instance_configs: Vec<InstanceConfig>,
     pub spot_options: Option<SpotOptions>,
     pub slurm_configuration: Option<ComputeNodeGroupSlurmConfiguration>,
     pub node_lifecycle_actions: Option<NodeLifecycleActions>,
+    pub instance_health_checks: Option<InstanceHealthChecks>,
     pub error_info: Option<Vec<ErrorInfo>>,
 }
 
@@ -319,12 +368,36 @@ pub const CLUSTER_STATUS_VALUES: &[&str] = &["ACTIVE", "CREATE_FAILED", "CREATIN
 pub const COMPUTE_NODE_GROUP_STATUS_VALUES: &[&str] = &["ACTIVE", "CREATE_FAILED", "CREATING", "DELETED", "DELETE_FAILED", "DELETING", "RESUMING", "SUSPENDED", "SUSPENDING", "UPDATE_FAILED", "UPDATING"];
 
 
+/// The values `DeepHealthCheckOnStartProfile` accepts on the wire.
+pub const DEEP_HEALTH_CHECK_ON_START_PROFILE_VALUES: &[&str] = &["LONG", "MEDIUM", "NONE", "QUICK"];
+
+
+/// The values `DeepHealthCheckOnStartRepairAction` accepts on the wire.
+pub const DEEP_HEALTH_CHECK_ON_START_REPAIR_ACTION_VALUES: &[&str] = &["AUTO", "ISOLATE", "NONE", "REPLACE"];
+
+
 /// The values `EndpointType` accepts on the wire.
 pub const ENDPOINT_TYPE_VALUES: &[&str] = &["SLURMCTLD", "SLURMDBD", "SLURMRESTD"];
 
 
 /// The values `ExecutionPolicy` accepts on the wire.
 pub const EXECUTION_POLICY_VALUES: &[&str] = &["EVERY_BOOT", "FIRST_BOOT_ONLY"];
+
+
+/// The values `HealthMonitoringMode` accepts on the wire.
+pub const HEALTH_MONITORING_MODE_VALUES: &[&str] = &["NONE", "STANDARD"];
+
+
+/// The values `HealthMonitoringRepairAction` accepts on the wire.
+pub const HEALTH_MONITORING_REPAIR_ACTION_VALUES: &[&str] = &["AUTO", "ISOLATE", "NONE", "REPLACE"];
+
+
+/// The values `JobSubmitPluginType` accepts on the wire.
+pub const JOB_SUBMIT_PLUGIN_TYPE_VALUES: &[&str] = &["STARLARK"];
+
+
+/// The values `LaunchTemplateMode` accepts on the wire.
+pub const LAUNCH_TEMPLATE_MODE_VALUES: &[&str] = &["CUSTOM", "MANAGED"];
 
 
 /// The values `NetworkType` accepts on the wire.

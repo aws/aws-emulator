@@ -87,14 +87,15 @@ use crate::ops::types::{
     ClusterSlurmConfigurationRequest, ClusterSummary, ComputeNodeGroup,
     ComputeNodeGroupConfiguration, ComputeNodeGroupSlurmConfiguration,
     ComputeNodeGroupSlurmConfigurationRequest, ComputeNodeGroupSummary, ConflictException,
-    CustomLaunchTemplate, Endpoint, ErrorInfo, InstanceConfig, JwtAuth, JwtKey, Networking,
-    NetworkingRequest, NodeLifecycleActions, NodeLifecycleActionsRequest, Queue,
-    QueueSlurmConfiguration, QueueSlurmConfigurationRequest, QueueSummary,
-    ResourceNotFoundException, ScalingConfiguration, ScalingConfigurationRequest, Scheduler,
-    SchedulerRequest, ServiceQuotaExceededException, SlurmAuthKey, SlurmRest, SlurmRestRequest,
-    SpotOptions, UpdateClusterSlurmConfigurationRequest,
-    UpdateComputeNodeGroupSlurmConfigurationRequest, UpdateNodeLifecycleActionsRequest,
-    UpdateQueueSlurmConfigurationRequest, ValidationException, ValidationExceptionField,
+    CustomLaunchTemplate, Endpoint, ErrorInfo, InstanceConfig, InstanceHealthChecks,
+    InstanceHealthChecksRequest, JwtAuth, JwtKey, Networking, NetworkingRequest,
+    NodeLifecycleActions, NodeLifecycleActionsRequest, Queue, QueueSlurmConfiguration,
+    QueueSlurmConfigurationRequest, QueueSummary, ResourceNotFoundException, ScalingConfiguration,
+    ScalingConfigurationRequest, Scheduler, SchedulerRequest, ServiceQuotaExceededException,
+    SlurmAuthKey, SlurmRest, SlurmRestRequest, SpotOptions, UpdateClusterSlurmConfigurationRequest,
+    UpdateComputeNodeGroupSlurmConfigurationRequest, UpdateInstanceHealthChecksRequest,
+    UpdateNodeLifecycleActionsRequest, UpdateQueueSlurmConfigurationRequest, ValidationException,
+    ValidationExceptionField,
 };
 
 /// The `ClusterStatus`/`QueueStatus`/`ComputeNodeGroupStatus` member a just-created
@@ -214,6 +215,16 @@ pub const DEFAULT_PURGE_TIME_IN_DAYS: i32 = -1;
 /// "If you don't provide this option, it defaults to price capacity optimized"
 /// (`SpotOptions$allocationStrategy`), spelled as the enum spells that member.
 pub const DEFAULT_SPOT_ALLOCATION_STRATEGY: &str = "price-capacity-optimized";
+
+/// The `LaunchTemplateMode` in which a compute node group runs on a launch template of the
+/// CALLER's: "`CUSTOM` – The compute node group uses the launch template in
+/// `customLaunchTemplate`" (`ComputeNodeGroup$launchTemplateMode`, which the model also
+/// declares `@default("CUSTOM")`, so a request naming no mode asks for this one), spelled as
+/// `LaunchTemplateMode` spells that member.
+///
+/// A group in any other mode runs on a launch template PCS manages, so it reports none of the
+/// caller's ([`ComputeNodeGroupRecord::to_api`]).
+pub const LAUNCH_TEMPLATE_MODE_CUSTOM: &str = "CUSTOM";
 
 /// The `PurchaseOption` a compute node group carries when the request named none: "If you
 /// don't provide this option, it defaults to On-Demand"
@@ -374,8 +385,20 @@ pub struct ComputeNodeGroupRecord {
     /// applies when the request names none ([`DEFAULT_PURCHASE_OPTION`]), so a stored group
     /// always carries the purchasing decision it runs on.
     pub purchase_option: String,
-    /// The launch template the request named.
-    pub custom_launch_template: CustomLaunchTemplate,
+    /// The security groups the request configured DIRECTLY on the group, if any. Absent
+    /// where none were: "PCS uses the security groups in the custom launch template" then
+    /// (`ComputeNodeGroup$securityGroupIds`).
+    pub security_group_ids: Option<Vec<String>>,
+    /// The EC2 key pair the request configured DIRECTLY on the group, if any. Absent where
+    /// none was, for the same reason as [`Self::security_group_ids`]
+    /// (`ComputeNodeGroup$sshKeyName`).
+    pub ssh_key_name: Option<String>,
+    /// A `LaunchTemplateMode` member. Always set: the member carries the documented
+    /// [`LAUNCH_TEMPLATE_MODE_CUSTOM`] where the request named none, so a stored group always
+    /// carries which kind of launch template it runs on.
+    pub launch_template_mode: String,
+    /// The launch template the request named, if any.
+    pub custom_launch_template: Option<CustomLaunchTemplate>,
     /// The instance profile the request named.
     pub iam_instance_profile_arn: String,
     /// The scaling bounds the request asked for.
@@ -388,6 +411,8 @@ pub struct ComputeNodeGroupRecord {
     pub slurm_configuration: Option<ComputeNodeGroupSlurmConfiguration>,
     /// Lifecycle actions, when the request carried any.
     pub node_lifecycle_actions: Option<NodeLifecycleActions>,
+    /// Instance health checks, when the request carried any.
+    pub instance_health_checks: Option<InstanceHealthChecks>,
     /// Provisioning errors. Empty on the path the emulator implements.
     pub error_info: Vec<ErrorInfo>,
     /// The tags the create request carried.
@@ -679,15 +704,27 @@ impl ComputeNodeGroupRecord {
             modified_at: self.modified_at,
             status: self.status.clone(),
             ami_id: self.ami_id.clone(),
+            security_group_ids: self.security_group_ids.clone(),
+            ssh_key_name: self.ssh_key_name.clone(),
             subnet_ids: self.subnet_ids.clone(),
             purchase_option: Some(self.purchase_option.clone()),
-            custom_launch_template: self.custom_launch_template.clone(),
+            launch_template_mode: self.launch_template_mode.clone(),
+            // "This value is present when `launchTemplateMode` is `CUSTOM` and isn't present
+            // when `launchTemplateMode` is `MANAGED`"
+            // (`ComputeNodeGroup$customLaunchTemplate`): in the managed mode PCS creates and
+            // manages the launch template itself, so no template of the caller's is reported
+            // for the group, whatever one an earlier request left stored.
+            custom_launch_template: match self.launch_template_mode.as_str() {
+                LAUNCH_TEMPLATE_MODE_CUSTOM => self.custom_launch_template.clone(),
+                _ => None,
+            },
             iam_instance_profile_arn: self.iam_instance_profile_arn.clone(),
             scaling_configuration: self.scaling_configuration.clone(),
             instance_configs: self.instance_configs.clone(),
             spot_options: self.spot_options.clone(),
             slurm_configuration: self.slurm_configuration.clone(),
             node_lifecycle_actions: self.node_lifecycle_actions.clone(),
+            instance_health_checks: self.instance_health_checks.clone(),
             error_info: non_empty(&self.error_info),
         }
     }
@@ -1859,6 +1896,9 @@ pub fn apply_slurm_update(
     if let Some(settings) = update.cgroup_custom_settings {
         merged.cgroup_custom_settings = Some(settings);
     }
+    if let Some(plugins) = update.job_submit_plugins {
+        merged.job_submit_plugins = Some(plugins);
+    }
     if let Some(accounting) = update.accounting {
         let previous = merged.accounting.take();
         merged.accounting = Some(Accounting {
@@ -1915,6 +1955,50 @@ pub fn stored_scale_down_idle_time_override(
         None => stored,
         Some(REMOVE_SCALE_DOWN_IDLE_TIME_OVERRIDE) => None,
         Some(seconds) => Some(seconds),
+    }
+}
+
+/// Whether a value a request carried is the EMPTY one — the value that REMOVES a direct
+/// configuration rather than setting one ([`stored_direct_setting`]).
+pub trait DirectSetting {
+    /// `true` for the empty list and the empty string, the two forms the `…OrEmpty` targets
+    /// admit.
+    fn is_cleared(&self) -> bool;
+}
+
+impl DirectSetting for String {
+    fn is_cleared(&self) -> bool {
+        self.is_empty()
+    }
+}
+
+impl<T> DirectSetting for Vec<T> {
+    fn is_cleared(&self) -> bool {
+        self.is_empty()
+    }
+}
+
+/// The value a stored record carries for a member that holds a configuration made DIRECTLY
+/// on the resource — the ONE place every path that stores one writes it, create and update
+/// alike.
+///
+/// THE RULE: such a member is reported only while the resource carries a configuration of its
+/// own — "This value isn't present if security groups aren't configured directly on the
+/// compute node group. In that case, PCS uses the security groups in the custom launch
+/// template" (`ComputeNodeGroup$securityGroupIds`, worded the same way on
+/// `ComputeNodeGroup$sshKeyName`) — and the UPDATE path takes it against a target that admits
+/// the EMPTY value (`SecurityGroupIdListOrEmpty`, `KeyPairNameOrEmpty`, whose `@length`
+/// minimum is 0 where the create's `KeyPairName` is 1). So a request carrying the empty value
+/// stores NO direct configuration, any other value it carries replaces the stored one, and a
+/// request that omits the member leaves the stored one alone.
+pub fn stored_direct_setting<T: DirectSetting>(
+    stored: Option<T>,
+    requested: Option<T>,
+) -> Option<T> {
+    match requested {
+        None => stored,
+        Some(value) if value.is_cleared() => None,
+        Some(value) => Some(value),
     }
 }
 
@@ -2214,6 +2298,7 @@ impl From<ClusterSlurmConfigurationRequest> for ClusterSlurmConfiguration {
             slurm_custom_settings: request.slurm_custom_settings,
             slurmdbd_custom_settings: request.slurmdbd_custom_settings,
             cgroup_custom_settings: request.cgroup_custom_settings,
+            job_submit_plugins: request.job_submit_plugins,
             // Neither key is a member of the REQUEST: PCS generates the Slurm keys itself
             // and keeps each in a Secrets Manager secret, so what a cluster reports here is
             // written when those secrets are created ([`cluster_secrets`]) rather than taken
@@ -2264,6 +2349,31 @@ impl From<NodeLifecycleActionsRequest> for NodeLifecycleActions {
         Self {
             stages: request.stages,
             script_caching_policy: request.script_caching_policy,
+        }
+    }
+}
+
+/// Both request shapes for a group's instance health checks declare the same two members
+/// against the same two shapes, and each states a WHOLE set of settings rather than a merge
+/// into one: "These settings replace all of the current instance health check settings of the
+/// compute node group" (`UpdateInstanceHealthChecksRequest`). No default of the settings
+/// inside is materialised here: "`GetComputeNodeGroup` doesn't return a `repairAction` that
+/// you didn't specify" (`HealthMonitoring$repairAction`, worded the same on
+/// `DeepHealthCheckOnStart$repairAction`), so a read reports what the request carried.
+impl From<InstanceHealthChecksRequest> for InstanceHealthChecks {
+    fn from(request: InstanceHealthChecksRequest) -> Self {
+        Self {
+            health_monitoring: request.health_monitoring,
+            deep_health_checks: request.deep_health_checks,
+        }
+    }
+}
+
+impl From<UpdateInstanceHealthChecksRequest> for InstanceHealthChecks {
+    fn from(request: UpdateInstanceHealthChecksRequest) -> Self {
+        Self {
+            health_monitoring: request.health_monitoring,
+            deep_health_checks: request.deep_health_checks,
         }
     }
 }

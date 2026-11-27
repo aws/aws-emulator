@@ -243,9 +243,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // `@length(min: 1, max: 200)` with bounded keys and values, enforced at the
         // boundary.
         let slurm = input.slurm_configuration.as_ref();
-        let stored_lists: [(&str, usize); 3] = [
+        let stored_lists: [(&str, usize); 4] = [
             ("subnetIds", input.subnet_ids.len()),
             ("instanceConfigs", input.instance_configs.len()),
+            (
+                "securityGroupIds",
+                input.security_group_ids.as_ref().map_or(0, Vec::len),
+            ),
             (
                 "slurmConfiguration.slurmCustomSettings",
                 slurm.map_or(0, |slurm| {
@@ -333,6 +337,22 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             &region,
             &input.subnet_ids,
             &cluster_subnet_ids,
+        )
+        .await
+        {
+            return Err(CreateComputeNodeGroupErrorModeled::ValidationException(refusal).into());
+        }
+
+        // Security groups configured DIRECTLY on the group are EC2's resources too — "PCS uses
+        // these security groups instead of the security groups in the custom launch template"
+        // (`ComputeNodeGroup$securityGroupIds`) — so they are resolved against EC2 before
+        // anything is minted, through the gate the cluster's control-plane ENI membership goes
+        // through (`crate::state::ec2_security_groups`). The list is bounded above, so the hop
+        // is not sized by the request.
+        if let Some(refusal) = crate::state::ec2_security_groups::violation(
+            ctx,
+            &region,
+            input.security_group_ids.as_deref().unwrap_or_default(),
         )
         .await
         {
@@ -495,6 +515,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             created_at: now,
             modified_at: now,
             ami_id: input.ami_id,
+            // A direct configuration the group carries only while the request made one: an
+            // empty list configures no security group of its own, which is what
+            // `ComputeNodeGroup$securityGroupIds` reports as absent
+            // ([`crate::state::stored_direct_setting`], the rule the update path shares).
+            security_group_ids: crate::state::stored_direct_setting(
+                None,
+                input.security_group_ids,
+            ),
+            ssh_key_name: crate::state::stored_direct_setting(None, input.ssh_key_name),
             subnet_ids: input.subnet_ids,
             // "If you don't provide this option, it defaults to On-Demand"
             // (`CreateComputeNodeGroupRequest$purchaseOption`, worded the same on the
@@ -505,6 +534,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 .purchase_option
                 .unwrap_or_else(|| crate::state::DEFAULT_PURCHASE_OPTION.to_string()),
             custom_launch_template: input.custom_launch_template,
+            // `@default("CUSTOM")`, so the request states the mode whether or not it named
+            // one, and the stored group carries which kind of launch template it runs on.
+            launch_template_mode: input.launch_template_mode,
             iam_instance_profile_arn: input.iam_instance_profile_arn,
             scaling_configuration: input.scaling_configuration.into(),
             instance_configs: input.instance_configs,
@@ -514,6 +546,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             spot_options: input.spot_options.map(crate::state::stored_spot_options),
             slurm_configuration: input.slurm_configuration.map(Into::into),
             node_lifecycle_actions: input.node_lifecycle_actions.map(Into::into),
+            instance_health_checks: input.instance_health_checks.map(Into::into),
             error_info: Vec::new(),
             tags: input.tags.unwrap_or_default(),
             pending: Some(crate::state::PendingChange::Activate),

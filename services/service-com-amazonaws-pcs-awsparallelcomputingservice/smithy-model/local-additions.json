@@ -1,0 +1,25 @@
+{
+  "smithy": "2.0",
+  "shapes": {
+    "com.amazonaws.pcs#ResourceNotFoundException": {
+      "type": "structure",
+      "members": {
+        "message": { "target": "smithy.api#String", "traits": { "smithy.api#required": {} } },
+        "resourceId": { "target": "smithy.api#String", "traits": { "smithy.api#required": {} } },
+        "resourceType": { "target": "smithy.api#String", "traits": { "smithy.api#required": {} } },
+        "resourceArn": { "target": "com.amazonaws.pcs#Arn" }
+      },
+      "traits": {
+        "smithy.api#error": "client",
+        "smithy.api#httpError": 404
+      }
+    },
+    "com.amazonaws.pcs#Arn": {
+      "type": "string",
+      "traits": {
+        "smithy.api#length": { "min": 1, "max": 1011 },
+        "smithy.api#pattern": "^arn:aws.*:pcs:.*:[0-9]{12}:.*/[a-z0-9_\\-]+$"
+      }
+    }
+  }
+}

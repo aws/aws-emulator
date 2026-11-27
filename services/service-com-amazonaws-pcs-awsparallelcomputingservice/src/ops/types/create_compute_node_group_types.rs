@@ -14,18 +14,22 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-pcs-awsparallelcomputin
 #[smithy_macros::smithy(shape = "com.amazonaws.pcs#CreateComputeNodeGroupRequest")]
 #[derive(Debug, Clone, Default)]
 pub struct CreateComputeNodeGroupInput {
+    pub ami_id: Option<String>,
+    pub security_group_ids: Option<Vec<String>>,
+    pub ssh_key_name: Option<String>,
     pub cluster_identifier: String,
     pub compute_node_group_name: String,
-    pub ami_id: Option<String>,
     pub subnet_ids: Vec<String>,
     pub purchase_option: Option<String>,
-    pub custom_launch_template: CustomLaunchTemplate,
+    pub launch_template_mode: String,
+    pub custom_launch_template: Option<CustomLaunchTemplate>,
     pub iam_instance_profile_arn: String,
     pub scaling_configuration: ScalingConfigurationRequest,
     pub instance_configs: Vec<InstanceConfig>,
     pub spot_options: Option<SpotOptions>,
     pub slurm_configuration: Option<ComputeNodeGroupSlurmConfigurationRequest>,
     pub node_lifecycle_actions: Option<NodeLifecycleActionsRequest>,
+    pub instance_health_checks: Option<InstanceHealthChecksRequest>,
     pub client_token: Option<String>,
     pub tags: Option<std::collections::HashMap<String, String>>,
 }
@@ -43,6 +47,13 @@ pub struct ComputeNodeGroupSlurmConfigurationRequest {
 pub struct NodeLifecycleActionsRequest {
     pub stages: NodeLifecycleStages,
     pub script_caching_policy: String,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.pcs#InstanceHealthChecksRequest")]
+#[derive(Debug, Clone, Default)]
+pub struct InstanceHealthChecksRequest {
+    pub health_monitoring: Option<HealthMonitoring>,
+    pub deep_health_checks: Option<DeepHealthChecks>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.pcs#CreateComputeNodeGroupResponse")]

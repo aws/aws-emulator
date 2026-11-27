@@ -29,5 +29,6 @@ pub struct RegisterComputeNodeGroupInstanceOutput {
     pub compute_node_group_name: Option<String>,
     pub node_lifecycle_actions: Option<NodeLifecycleActions>,
     pub scheduler_version: Option<String>,
+    pub instance_health_checks: Option<InstanceHealthChecks>,
 }
 
