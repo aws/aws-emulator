@@ -17,6 +17,12 @@ service-com-amazonaws-sts-awssecuritytokenservicev20110615 = { workspace = true 
 # organization out of that service's store rather than keeping a copy here
 # (src/state.rs).
 service-com-amazonaws-organizations-awsorganizationsv20161128 = { workspace = true }
+# A billing group is AWS Billing Conductor's own resource, and an account's
+# membership of one is what shapes its billing view's data into the PRO_FORMA
+# domain and names the group's primary account — so `ListBillingViewSegments`
+# reads the membership history out of THAT service's store
+# (src/state/account_relationships.rs).
+service-com-amazonaws-billingconductor-awsbillingconductor = { workspace = true }
 # A custom billing view comes to carry a resource-based policy when the account
 # SHARES it, which is AWS Resource Access Manager's action and not an operation this
 # service's model declares — so `GetResourcePolicy` derives the document from that

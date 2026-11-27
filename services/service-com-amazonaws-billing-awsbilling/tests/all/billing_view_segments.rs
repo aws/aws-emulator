@@ -172,17 +172,17 @@ fn seeds() -> Vec<Seed> {
 
 /// One segment as a response reports it.
 #[derive(Debug, Clone, PartialEq)]
-struct Reported {
-    domain: Option<String>,
-    begin: Option<f64>,
-    end: Option<f64>,
-    management_account_id: Option<String>,
-    billing_group_primary_account_id: Option<String>,
-    billing_transfer_account_id: Option<String>,
+pub(crate) struct Reported {
+    pub(crate) domain: Option<String>,
+    pub(crate) begin: Option<f64>,
+    pub(crate) end: Option<f64>,
+    pub(crate) management_account_id: Option<String>,
+    pub(crate) billing_group_primary_account_id: Option<String>,
+    pub(crate) billing_transfer_account_id: Option<String>,
 }
 
 /// The segments a response reports, in the order it reports them.
-fn reported(body: &Value) -> Vec<Reported> {
+pub(crate) fn reported(body: &Value) -> Vec<Reported> {
     body["items"]
         .as_array()
         .cloned()
@@ -236,7 +236,7 @@ fn persist(engine: &Arc<engine::InMemoryEngine>, arn: &str) {
 }
 
 /// The whole stored timeline, key by key, so a read can be shown not to write.
-fn timeline(engine: &Arc<engine::InMemoryEngine>) -> Vec<String> {
+pub(crate) fn timeline(engine: &Arc<engine::InMemoryEngine>) -> Vec<String> {
     let state = engine.state::<ComAmazonawsBillingAwsbillingState>();
     let state = state.lock();
     state
@@ -248,7 +248,7 @@ fn timeline(engine: &Arc<engine::InMemoryEngine>) -> Vec<String> {
 
 /// One call, asserted to have answered 200, with its reported segments and its
 /// `nextToken`.
-async fn list(
+pub(crate) async fn list(
     router: &MultiServiceRouter,
     case: &str,
     request: &Value,
@@ -265,7 +265,7 @@ async fn list(
 }
 
 /// A request for the PRIMARY view over the half-open period `[begin, end)`.
-fn over(begin: i64, end: i64) -> Value {
+pub(crate) fn over(begin: i64, end: i64) -> Value {
     json!({
         "arn": PRIMARY_ARN,
         "timeRange": { "beginDateInclusive": begin, "endDateExclusive": end },

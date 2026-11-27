@@ -10,9 +10,13 @@
 //! [`ComAmazonawsBillingAwsbillingState::billing_view_segments`] — the periods
 //! over which its billing domain and account relationships did not change,
 //! which `ListBillingViewSegments` reports; see the `billing_view_segments`
-//! module below. What a read reports as a view's **health** is not stored
-//! beside the view but derived, on every read, from the state that view depends
-//! on — see the `health` module below.
+//! module below. The account relationships those segments report are NOT
+//! this service's facts — they belong to AWS Organizations and to Billing
+//! Conductor — so they are read off those services' stores on every read, which
+//! is what makes a relationship change answer with several segments; see the
+//! `account_relationships` module. What a read reports as a view's **health** is
+//! not stored beside the view but derived, on every read, from the state that
+//! view depends on — see the `health` module below.
 //!
 //! Its second resource is the account's **billing preferences**:
 //! `UpdateBillingPreferences` writes [`ComAmazonawsBillingAwsbillingState::billing_preferences`]
@@ -91,6 +95,12 @@ pub use money::*;
 mod billing_view_segments;
 
 pub use billing_view_segments::*;
+
+/// The account relationships those segments report, read off the stores of the
+/// services that own them.
+mod account_relationships;
+
+pub use account_relationships::*;
 
 /// The decision the tagging operations share about the resource an ARN names.
 mod tagging;
@@ -741,10 +751,12 @@ pub struct ComAmazonawsBillingAwsbillingState {
     /// reclaimed by [`Self::forget_view`] when that view is deleted.
     ///
     /// Seeded with the one open-ended segment of the account's default PRIMARY
-    /// view: its relationships have not changed, so its whole history is one
-    /// segment. A relationship change is recorded by closing the segment in
-    /// effect and opening another at the instant it changed, which is what makes
-    /// one request answer with several segments.
+    /// view: its own recorded history is one period, bounded on neither side.
+    /// What a record states is not all a read reports: the account
+    /// relationships a segment carries belong to the services that own them, so
+    /// a change recorded THERE splits a recorded period into several reported
+    /// segments ([`reported_segments`]), and a record states a relationship only
+    /// where this service recorded one itself.
     pub billing_view_segments: BTreeMap<String, BillingViewSegment>,
     /// Every persisted credit allocation, keyed and ordered by
     /// [`CreditAllocation::key`] so `GetCreditAllocationHistory`'s page
@@ -860,13 +872,12 @@ impl Default for ComAmazonawsBillingAwsbillingState {
             health_status_reasons: Vec::new(),
             tags: BTreeMap::new(),
         };
-        // The default view's domain is the account's own final charges: the
-        // account belongs to no organization (see
-        // `organization_management_account_id`, the fact read from the
-        // Organizations store), no billing group and no billing transfer by
-        // default, so the segment carries no account relationship and is
-        // bounded on neither side — nothing has changed over the account's
-        // whole history.
+        // The default view's domain is the account's own final charges, and the
+        // record states no account relationship: which organization the account
+        // belongs to and which billing group shapes its data are the owning
+        // services' facts, read on every read rather than frozen here (see the
+        // `account_relationships` module), so this one record is the view's
+        // whole recorded history and is bounded on neither side.
         let primary_segment =
             BillingViewSegment::in_effect(&primary.arn, BILLING_DOMAIN_BILLABLE);
         let mut billing_view_segments = BTreeMap::new();

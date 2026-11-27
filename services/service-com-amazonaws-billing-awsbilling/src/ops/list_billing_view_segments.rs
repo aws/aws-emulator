@@ -9,6 +9,15 @@
 //! relationships that held over it; a view whose relationships changed
 //! mid-period therefore answers with several segments, and a hidden record is
 //! omitted, so the answer can cover less than the requested period.
+//! The account relationships a segment reports are NOT this service's facts:
+//! whether the account belonged to an organization, and which billing group
+//! shaped its data into the `PRO_FORMA` domain, are AWS Organizations' and
+//! Billing Conductor's own records, read off those stores on every read (see
+//! `crate::state::account_relationship_timeline`) rather than copied here. So a
+//! change recorded there — the account joining an organization, a billing-group
+//! membership beginning or ending — is exactly what cuts one recorded period
+//! into several reported segments, and a record states a relationship itself
+//! only where this service recorded one.
 //! The segments are ordered oldest first and paginated with `maxResults` and an
 //! opaque `nextToken` that resumes after the last segment the previous page
 //! returned. That token is a cut point in ONE view's timeline over ONE period,
@@ -426,6 +435,18 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // off that service's store BEFORE this one is locked, so serving this
         // request never holds two services' stores at once.
         let management_account = crate::state::organization_management_account_id(&*self.engine);
+        // The account relationships a segment reports are the facts of the
+        // services that OWN them — the organization of AWS Organizations, the
+        // billing group of Billing Conductor — so the timeline of their changes
+        // is read off those stores the same way, each under its own guard and
+        // all of them before this one is locked. The view this read answers for
+        // is one of the caller's own account (an ARN of any other account is
+        // refused above, and a request naming none is answered for the caller's
+        // PRIMARY view), so the relationships are that account's.
+        let relationships = crate::state::account_relationship_timeline(
+            &*self.engine,
+            crate::state::caller_account_id(),
+        );
         let state = crate::state::service_state(&*self.engine)
             .ok_or_else(|| unavailable("the billing view store is unavailable"))?;
         let state = state.lock();
@@ -474,22 +495,24 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             None => None,
         };
 
-        // The view's timeline, oldest first: the stored segments that overlap
-        // the requested period and are not hidden. The page resumes strictly
-        // after the key of the last segment the previous page returned, so a
-        // segment recorded between pages cannot make the walk skip or repeat
-        // another one.
-        let mut matched: Vec<(&String, &crate::state::BillingViewSegment)> = state
-            .billing_view_segments_of(&view.arn)
-            .filter(|(key, _)| {
-                resume_after
-                    .as_deref()
-                    .is_none_or(|after| key.as_str() > after)
-            })
-            .filter(|(_, segment)| {
-                !segment.hidden && segment.overlaps(begin_secs, end_secs)
-            })
-            .collect();
+        // The view's timeline, oldest first: the stored records that overlap the
+        // requested period and are not hidden, each refined by the account
+        // relationships that held over it — so a relationship that changed
+        // inside one recorded period reports as several segments, each with its
+        // own time range. The page resumes strictly after the key of the last
+        // entry the previous page returned, so an entry recorded between pages
+        // cannot make the walk skip or repeat another one.
+        let mut matched = crate::state::reported_segments(
+            state.billing_view_segments_of(&view.arn),
+            &relationships,
+            begin_secs,
+            end_secs,
+        );
+        matched.retain(|entry| {
+            resume_after
+                .as_deref()
+                .is_none_or(|after| entry.key.as_str() > after)
+        });
 
         // `maxResults` is modelled 1..100 and refused outside it before this
         // handler runs; the page size is held inside those bounds here as well,
@@ -503,8 +526,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         );
         let next_token = if matched.len() > limit {
             matched.truncate(limit);
-            matched.last().map(|(key, _)| {
-                crate::state::encode_scoped_page_token(&page_key, Self::NAME, &scope, key)
+            matched.last().map(|entry| {
+                crate::state::encode_scoped_page_token(&page_key, Self::NAME, &scope, &entry.key)
             })
         } else {
             None
@@ -513,30 +536,20 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         Ok(ListBillingViewSegmentsOutput {
             items: matched
                 .into_iter()
-                .map(|(_, segment)| {
+                .map(|entry| BillingViewSegmentsListElement {
+                    domain: Some(entry.domain),
                     // "Each segment covers a portion of the requested time
                     // period": a stored period wider than the requested one is
                     // reported clipped to what the caller asked about.
-                    let (segment_begin, segment_end) =
-                        segment.clipped(begin_secs, end_secs);
-                    BillingViewSegmentsListElement {
-                        domain: Some(segment.domain.clone()),
-                        time_range: Some(BillingViewSegmentTimeRange {
-                            begin_date_inclusive: Some(crate::state::timestamp_at_secs(
-                                segment_begin,
-                            )),
-                            end_date_exclusive: Some(crate::state::timestamp_at_secs(
-                                segment_end,
-                            )),
-                        }),
-                        billing_transfer_account_id: segment
-                            .billing_transfer_account_id
-                            .clone(),
-                        management_account_id: segment.management_account_id.clone(),
-                        billing_group_primary_account_id: segment
-                            .billing_group_primary_account_id
-                            .clone(),
-                    }
+                    time_range: Some(BillingViewSegmentTimeRange {
+                        begin_date_inclusive: Some(crate::state::timestamp_at_secs(
+                            entry.begin_secs,
+                        )),
+                        end_date_exclusive: Some(crate::state::timestamp_at_secs(entry.end_secs)),
+                    }),
+                    billing_transfer_account_id: entry.billing_transfer_account_id,
+                    management_account_id: entry.management_account_id,
+                    billing_group_primary_account_id: entry.billing_group_primary_account_id,
                 })
                 .collect(),
             next_token,
