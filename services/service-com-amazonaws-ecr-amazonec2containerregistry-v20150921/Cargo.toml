@@ -78,6 +78,10 @@ aws-sdk-kms = { version = "1", default-features = false, features = ["rt-tokio",
 aws-sigv4 = { version = "1", features = ["http1"] }
 # The signing identity `aws-sigv4` takes: this registry's own ephemeral download-plane key.
 aws-credential-types = "1"
+# The `replicationBackfillId` a started replication backfill is addressed by is a UUID
+# (`ReplicationBackfillId`'s own `@pattern`), minted by this crate rather than laid out by
+# hand (`state::replication_backfill`).
+uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
 # Declares one module per `tests/all/<name>.rs` file, so this crate's one integration-test

@@ -44,16 +44,10 @@ pub struct ImageFailure {
     pub failure_reason: Option<String>,
 }
 
-#[smithy_macros::smithy(shape = "com.amazonaws.ecr#Image")]
-#[derive(Debug, Clone, Default)]
-pub struct Image {
-    pub registry_id: Option<String>,
-    pub repository_name: Option<String>,
-    pub image_id: Option<ImageIdentifier>,
-    pub image_manifest: Option<String>,
-    pub image_manifest_media_type: Option<String>,
-    pub image_manifest_size: Option<i64>,
-}
+// `com.amazonaws.ecr#Image` is NOT declared here: AWS answers it with a member this
+// snapshot does not declare, so it is declared in `image_types.rs` from the overlay model
+// `smithy-model/local-additions.json` (see `smithy-model/LOCAL-ADDITIONS.md`). It is
+// re-exported by `types/mod.rs` like every other shape, so `Image` resolves unchanged.
 
 #[smithy_macros::smithy(shape = "com.amazonaws.ecr#LimitExceededException")]
 #[derive(Debug, Clone, Default)]
@@ -262,6 +256,7 @@ pub struct ReplicationConfiguration {
 pub struct ReplicationRule {
     pub destinations: Vec<ReplicationDestination>,
     pub repository_filters: Option<Vec<RepositoryFilter>>,
+    pub delete_replication: Option<DeleteReplication>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.ecr#ReplicationDestination")]
@@ -271,21 +266,31 @@ pub struct ReplicationDestination {
     pub registry_id: String,
 }
 
-// `skip_validation = ["filter"]`: the value class a repository filter carries is WIDER at
-// ECR than this model spells it. The expression ECR's own validator holds for
-// `RepositoryFilterValue` — the one it quotes back in a refusal — admits the `*` wildcard
-// in every character class and states the value's length as a leading look-ahead, while
-// the model's `@pattern` admits no wildcard and states `@length(2..256)` beside it. The
-// boundary walk enforces what the model declares and its engine compiles no look-around,
-// so this member is kept off the walk and judged by
-// `crate::state::refused_repository_filters`, which checks the published expression's body
-// and its length bound and quotes that expression. `filterType` stays on the walk: its
-// enumerated type is a constraint the model and the service agree on.
-#[smithy_macros::smithy(shape = "com.amazonaws.ecr#RepositoryFilter", skip_validation = ["filter"])]
+// `com.amazonaws.ecr#RepositoryFilter` is NOT declared here: one of its members is held to
+// a value class this service polices itself rather than at the request boundary, which is a
+// statement about the service rather than about the model, so it is declared in
+// `repository_filter_types.rs`. It is re-exported by `types/mod.rs` like every other shape,
+// so `RepositoryFilter` resolves unchanged.
+
+#[smithy_macros::smithy(shape = "com.amazonaws.ecr#DeleteReplication")]
 #[derive(Debug, Clone, Default)]
-pub struct RepositoryFilter {
-    pub filter: String,
-    pub filter_type: String,
+pub struct DeleteReplication {
+    pub enabled: bool,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.ecr#ReplicationBackfillProgress")]
+#[derive(Debug, Clone, Default)]
+pub struct ReplicationBackfillProgress {
+    pub total_replication_count: i32,
+    pub completed_replication_count: i32,
+    pub failed_replication_count: i32,
+    pub failure_codes: Vec<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.ecr#ReplicationBackfillNotFoundException")]
+#[derive(Debug, Clone, Default)]
+pub struct ReplicationBackfillNotFoundException {
+    pub message: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.ecr#LayersNotFoundException")]
@@ -372,6 +377,14 @@ pub const LIFECYCLE_POLICY_TARGET_STORAGE_CLASS_VALUES: &[&str] = &["ARCHIVE"];
 pub const R_C_T_APPLIED_FOR_VALUES: &[&str] = &["CREATE_ON_PUSH", "PULL_THROUGH_CACHE", "REPLICATION"];
 
 
+/// The values `ReplicationBackfillResultStatus` accepts on the wire.
+pub const REPLICATION_BACKFILL_RESULT_STATUS_VALUES: &[&str] = &["COMPLETE", "FAILED"];
+
+
+/// The values `ReplicationBackfillStatus` accepts on the wire.
+pub const REPLICATION_BACKFILL_STATUS_VALUES: &[&str] = &["COMPLETE", "FAILED", "IN_PROGRESS", "PREPARING", "STOPPED", "STOPPING"];
+
+
 /// The values `ReplicationStatus` accepts on the wire.
 pub const REPLICATION_STATUS_VALUES: &[&str] = &["COMPLETE", "FAILED", "IN_PROGRESS"];
 
@@ -385,7 +398,7 @@ pub const SCAN_FREQUENCY_VALUES: &[&str] = &["CONTINUOUS_SCAN", "MANUAL", "SCAN_
 
 
 /// The values `ScanStatus` accepts on the wire.
-pub const SCAN_STATUS_VALUES: &[&str] = &["ACTIVE", "COMPLETE", "FAILED", "FINDINGS_UNAVAILABLE", "IMAGE_ARCHIVED", "IN_PROGRESS", "LIMIT_EXCEEDED", "PENDING", "SCAN_ELIGIBILITY_EXPIRED", "UNSUPPORTED_IMAGE"];
+pub const SCAN_STATUS_VALUES: &[&str] = &["ACTIVE", "COMPLETE", "FAILED", "FINDINGS_UNAVAILABLE", "IMAGE_ARCHIVED", "IMAGE_SIZE_EXCEEDED", "IN_PROGRESS", "LIMIT_EXCEEDED", "PENDING", "SCAN_ELIGIBILITY_EXPIRED", "UNSUPPORTED_IMAGE"];
 
 
 /// The values `ScanType` accepts on the wire.

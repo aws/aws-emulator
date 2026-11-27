@@ -178,7 +178,7 @@ macro_rules! audited {
 /// Every modelled operation of this service, each constructed from the shared engine and
 /// served behind the audit recorder.
 ///
-/// EVERY one is here — the 58 operations `smithy_query(query="list_operations")` lists — the
+/// EVERY one is here — the operations `smithy_query(query="list_operations")` lists — the
 /// ones this emulator has not implemented included: a stub answers 501 and the wrapper
 /// records nothing for it, so an operation implemented later is auditable the moment it
 /// serves a call rather than when someone remembers to add it.
@@ -222,6 +222,7 @@ pub fn audited_table<Eng: Send + Sync + 'static>(engine: &Arc<Eng>) -> Operation
         describe_images::DescribeImages => reports,
         describe_pull_through_cache_rules::DescribePullThroughCacheRules => reports,
         describe_registry::DescribeRegistry => reports,
+        describe_replication_backfill_results::DescribeReplicationBackfillResults => reports,
         describe_repositories::DescribeRepositories => reports,
         describe_repository_creation_templates::DescribeRepositoryCreationTemplates => reports,
         get_account_setting::GetAccountSetting => reports,
@@ -237,6 +238,7 @@ pub fn audited_table<Eng: Send + Sync + 'static>(engine: &Arc<Eng>) -> Operation
         list_image_referrers::ListImageReferrers => reports,
         list_images::ListImages => reports,
         list_pull_time_update_exclusions::ListPullTimeUpdateExclusions => reports,
+        list_replication_backfills::ListReplicationBackfills => reports,
         list_tags_for_resource::ListTagsForResource => reports,
         put_account_setting::PutAccountSetting => mutates,
         put_image::PutImage => mutates,
@@ -251,6 +253,8 @@ pub fn audited_table<Eng: Send + Sync + 'static>(engine: &Arc<Eng>) -> Operation
         set_repository_policy::SetRepositoryPolicy => mutates,
         start_image_scan::StartImageScan => mutates,
         start_lifecycle_policy_preview::StartLifecyclePolicyPreview => mutates,
+        start_replication_backfill::StartReplicationBackfill => mutates,
+        stop_replication_backfill::StopReplicationBackfill => mutates,
         tag_resource::TagResource => mutates,
         untag_resource::UntagResource => mutates,
         update_image_storage_class::UpdateImageStorageClass => mutates,

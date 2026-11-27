@@ -14,7 +14,9 @@ cargo test  -p service-com-amazonaws-ecr-amazonec2containerregistry-v20150921
 service-com-amazonaws-ecr-amazonec2containerregistry-v20150921/
 ├── build.rs              # calls emulator_core_build_support::generate(...)
 ├── smithy-model/
-│   └── com-amazonaws-ecr-amazonec2containerregistry-v20150921.json      # the Smithy model — drives routing + wire shapes
+│   ├── com-amazonaws-ecr-amazonec2containerregistry-v20150921.json      # the Smithy model — drives routing + wire shapes
+│   ├── local-additions.json  # overlay model for the member AWS answers with that the snapshot lacks
+│   └── LOCAL-ADDITIONS.md    # what that overlay is for, and where each shape of it is declared
 ├── OPERATIONS.md         # every operation's contract, re-rendered from the model
 ├── tests/
 │   └── state_roundtrip.rs  # compiled example of the state API
@@ -31,7 +33,13 @@ service-com-amazonaws-ecr-amazonec2containerregistry-v20150921/
 Each file in `src/ops/` owns exactly one operation and declares which one
 via an `@op` header comment. `build.rs` globs this directory and generates
 both the module list and the operation set, so adding a file is all that
-is needed — there is no central registry to update.
+is needed for the model-derived half.
+
+This service serves every modelled operation behind its own management-event
+recorder, so an operation ADDED by a model refresh also needs its row in
+`src/service/management_events.rs`'s `audited_table` — that table is the routing
+table this service answers from, so an operation missing from it answers
+`501 NotImplemented` however complete its handler is.
 
 Every generated stub starts out **scaffolded, not implemented**: it is fully typed
 and registered, and it answers **HTTP 501 `NotImplemented`** until you write it. It

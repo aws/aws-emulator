@@ -84,6 +84,10 @@ struct DueCopy {
     digest: String,
     /// The Region of the registry the image is copied INTO.
     destination_region: String,
+    /// The instant the copy is STORED at, which is the instant the clock owed it: the
+    /// destination's record of the image is dated by it, so a copy made late is not dated by
+    /// whoever got round to making it.
+    at: SystemTime,
 }
 
 /// The image one copy delivers, as it is read out of the source repository: everything the
@@ -107,7 +111,23 @@ struct Replica {
 /// the source registry itself and is refused when the configuration is stored
 /// (`PutReplicationConfiguration`), so it is never copied into here either.
 fn delivers_into_this_registry(source_region: &str, replication: &ImageReplication) -> bool {
-    replication.registry_id == super::registry_id() && replication.region != source_region
+    delivers_into(source_region, &replication.region, &replication.registry_id)
+}
+
+/// Whether a copy from the registry in `source_region` into the registry
+/// `destination_registry_id` holds in `destination_region` is one this emulator can make.
+///
+/// The one statement of which destinations this emulator holds a registry for, reached by
+/// the copies a push owes ([`delivers_into_this_registry`]) and by the copies a backfill of
+/// the registry's existing images owes ([`super::replication_backfill`]) alike: a
+/// destination it answers `false` for is one whose registry is not here, so a copy for it is
+/// reported by its status rather than made.
+pub fn delivers_into(
+    source_region: &str,
+    destination_region: &str,
+    destination_registry_id: &str,
+) -> bool {
+    destination_registry_id == super::registry_id() && destination_region != source_region
 }
 
 impl ComAmazonawsEcrAmazonec2containerregistryV20150921State {
@@ -148,6 +168,21 @@ impl ComAmazonawsEcrAmazonec2containerregistryV20150921State {
             .min()
     }
 
+    /// When the earliest piece of work this registry still owes its destinations fell or
+    /// falls due, or `None` when it owes none: the copies a push started
+    /// ([`Self::next_replication_due`]) and the transitions a backfill of the registry's
+    /// existing images owes
+    /// ([`Self::next_replication_backfill_due`]), which one task settles together.
+    pub fn next_registry_copy_due(&self) -> Option<SystemTime> {
+        [
+            self.next_replication_due(),
+            self.next_replication_backfill_due(),
+        ]
+        .into_iter()
+        .flatten()
+        .min()
+    }
+
     /// Take the registry's ONE delivery task slot, or answer `false` when a task already
     /// holds it or there is no copy left to make.
     ///
@@ -156,7 +191,7 @@ impl ComAmazonawsEcrAmazonec2containerregistryV20150921State {
     /// either finds the slot free or is seen by that task's own last look: one of the two
     /// always makes the copy.
     fn claim_delivery_task(&mut self) -> bool {
-        if self.replication_delivery_running || self.next_replication_due().is_none() {
+        if self.replication_delivery_running || self.next_registry_copy_due().is_none() {
             return false;
         }
         self.replication_delivery_running = true;
@@ -183,6 +218,7 @@ impl ComAmazonawsEcrAmazonec2containerregistryV20150921State {
                         repository_name: name.clone(),
                         digest: image.digest.clone(),
                         destination_region: copy.region.clone(),
+                        at: copy.complete_due_at,
                     });
                 }
             }
@@ -209,10 +245,6 @@ impl ComAmazonawsEcrAmazonec2containerregistryV20150921State {
             .repository(&copy.source_region, &copy.repository_name)
             .ok()?;
         let image = source.images.get(&copy.digest)?;
-        let record = image
-            .replications
-            .iter()
-            .find(|candidate| candidate.region == copy.destination_region)?;
         if !source.missing_layers(&image.manifest).is_empty() {
             return None;
         }
@@ -222,16 +254,44 @@ impl ComAmazonawsEcrAmazonec2containerregistryV20150921State {
             .collect();
         // The replica is born through the one constructor a stored image is born through,
         // from the manifest bytes as they stand, and it is pushed into the destination at
-        // the instant the clock owed this copy its completion.
+        // the instant the clock owed this copy.
         Some(Replica {
             image: ImageRecord::pushed(
                 image.digest.clone(),
                 image.manifest.clone(),
                 image.manifest_media_type.clone(),
-                record.complete_due_at,
+                copy.at,
             ),
             blobs,
             tags: image.tags.clone(),
+        })
+    }
+
+    /// Copy the image `digest` of the repository `repository_name` of the registry in
+    /// `source_region` into this account's registry in `destination_region`, dated `at`, and
+    /// answer whether the copy was made.
+    ///
+    /// The one copy this service makes, whether what asks for it is the push that stored the
+    /// image (the registry's replication configuration, [`Self::settle_replications`]) or a
+    /// backfill of the images the registry already held
+    /// ([`super::replication_backfill`]): both deliver the same whole image —
+    /// the manifest bytes verbatim, the blobs it references and the tags pointing at it —
+    /// into the same destination, under the same refusal when the destination cannot take it
+    /// whole ([`Self::can_take`]).
+    pub fn copy_image_into(
+        &mut self,
+        source_region: &str,
+        repository_name: &str,
+        digest: &str,
+        destination_region: &str,
+        at: SystemTime,
+    ) -> bool {
+        self.copy_image(&DueCopy {
+            source_region: source_region.to_string(),
+            repository_name: repository_name.to_string(),
+            digest: digest.to_string(),
+            destination_region: destination_region.to_string(),
+            at,
         })
     }
 
@@ -466,8 +526,13 @@ impl DeliveryTask {
     /// task of its own: one of the two always makes the copy.
     fn settle(&mut self) -> (usize, Option<SystemTime>) {
         let mut store = self.state.lock();
-        let made = store.settle_replications(SystemTime::now());
-        let next = store.next_replication_due();
+        let now = SystemTime::now();
+        // Both the copies a push owes and the transitions a backfill owes: one registry
+        // task makes every copy the registry owes its destinations, whatever asked for it.
+        let made = store
+            .settle_replications(now)
+            .saturating_add(store.settle_replication_backfills(now));
+        let next = store.next_registry_copy_due();
         if next.is_none() {
             store.replication_delivery_running = false;
             self.released = true;

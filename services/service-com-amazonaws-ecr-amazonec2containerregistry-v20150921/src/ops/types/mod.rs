@@ -36,6 +36,7 @@ pub mod describe_image_signing_status_types;
 pub mod describe_images_types;
 pub mod describe_pull_through_cache_rules_types;
 pub mod describe_registry_types;
+pub mod describe_replication_backfill_results_types;
 pub mod describe_repositories_types;
 pub mod describe_repository_creation_templates_types;
 pub mod get_account_setting_types;
@@ -47,10 +48,12 @@ pub mod get_registry_policy_types;
 pub mod get_registry_scanning_configuration_types;
 pub mod get_repository_policy_types;
 pub mod get_signing_configuration_types;
+pub mod image_types;
 pub mod initiate_layer_upload_types;
 pub mod list_image_referrers_types;
 pub mod list_images_types;
 pub mod list_pull_time_update_exclusions_types;
+pub mod list_replication_backfills_types;
 pub mod list_tags_for_resource_types;
 pub mod put_account_setting_types;
 pub mod put_image_scanning_configuration_types;
@@ -62,10 +65,13 @@ pub mod put_registry_scanning_configuration_types;
 pub mod put_replication_configuration_types;
 pub mod put_signing_configuration_types;
 pub mod register_pull_time_update_exclusion_types;
+pub mod repository_filter_types;
 pub mod set_repository_policy_types;
 pub mod shared_types;
 pub mod start_image_scan_types;
 pub mod start_lifecycle_policy_preview_types;
+pub mod start_replication_backfill_types;
+pub mod stop_replication_backfill_types;
 pub mod tag_resource_types;
 pub mod untag_resource_types;
 pub mod update_image_storage_class_types;
@@ -119,6 +125,8 @@ pub use describe_pull_through_cache_rules_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use describe_registry_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use describe_replication_backfill_results_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use describe_repositories_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use describe_repository_creation_templates_types::*;
@@ -141,6 +149,8 @@ pub use get_repository_policy_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use get_signing_configuration_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use image_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use initiate_layer_upload_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use list_image_referrers_types::*;
@@ -148,6 +158,8 @@ pub use list_image_referrers_types::*;
 pub use list_images_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use list_pull_time_update_exclusions_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use list_replication_backfills_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use list_tags_for_resource_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
@@ -171,6 +183,8 @@ pub use put_signing_configuration_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use register_pull_time_update_exclusion_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use repository_filter_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use set_repository_policy_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use shared_types::*;
@@ -178,6 +192,10 @@ pub use shared_types::*;
 pub use start_image_scan_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use start_lifecycle_policy_preview_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use start_replication_backfill_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use stop_replication_backfill_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use tag_resource_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]

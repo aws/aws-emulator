@@ -1,0 +1,41 @@
+{
+  "smithy": "2.0",
+  "shapes": {
+    "com.amazonaws.ecr#Image": {
+      "type": "structure",
+      "members": {
+        "registryId": { "target": "com.amazonaws.ecr#RegistryId" },
+        "repositoryName": { "target": "com.amazonaws.ecr#RepositoryName" },
+        "imageId": { "target": "com.amazonaws.ecr#ImageIdentifier" },
+        "imageManifest": { "target": "com.amazonaws.ecr#ImageManifest" },
+        "imageManifestMediaType": { "target": "com.amazonaws.ecr#MediaType" },
+        "imageManifestSize": { "target": "smithy.api#Long" }
+      }
+    },
+    "com.amazonaws.ecr#RegistryId": {
+      "type": "string",
+      "traits": {
+        "smithy.api#pattern": "^[0-9]{12}$"
+      }
+    },
+    "com.amazonaws.ecr#RepositoryName": {
+      "type": "string",
+      "traits": {
+        "smithy.api#length": { "min": 2, "max": 256 },
+        "smithy.api#pattern": "^[a-z0-9]+((\\.|_|__|-+)[a-z0-9]+)*(\\/[a-z0-9]+((\\.|_|__|-+)[a-z0-9]+)*)*$"
+      }
+    },
+    "com.amazonaws.ecr#ImageManifest": {
+      "type": "string",
+      "traits": {
+        "smithy.api#length": { "min": 1, "max": 4194304 }
+      }
+    },
+    "com.amazonaws.ecr#MediaType": {
+      "type": "string"
+    },
+    "com.amazonaws.ecr#ImageIdentifier": {
+      "type": "structure"
+    }
+  }
+}

@@ -14,8 +14,9 @@
 //!
 //! That is why the class is judged HERE rather than at the request boundary. The boundary's
 //! walk is driven by the model's own constraints, so it would enforce the narrower spelling
-//! — `RepositoryFilter$filter` therefore carries `skip_validation` in
-//! `src/ops/types/shared_types.rs`, keeping that spelling off the walk — and the walk's
+//! — `RepositoryFilter$filter` therefore carries `skip_validation` where that shape is
+//! declared (`src/ops/types/repository_filter_types.rs`), keeping that spelling off the
+//! walk — and the walk's
 //! regular-expression engine compiles no look-around, so the published expression cannot be
 //! installed there verbatim either. The two halves the look-ahead states are checked
 //! separately instead ([`LENGTH`] beside [`BODY`]), and the expression a refusal quotes is

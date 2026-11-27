@@ -2978,6 +2978,15 @@ pub struct ComAmazonawsEcrAmazonec2containerregistryV20150921State {
     /// arrives while a task is stopping arm one of its own. See
     /// [`replication::deliver_when_due`].
     pub replication_delivery_running: bool,
+    /// The replication backfills of this registry, by the `replicationBackfillId`
+    /// `StartReplicationBackfill` answered with — the id the describe and the stop address
+    /// one by. Registry-wide, like the configuration a backfill re-runs, and a `BTreeMap`
+    /// so a listing and its pagination tokens have one deterministic order. Bounded by
+    /// [`replication_backfill::MAX_REPLICATION_BACKFILLS`], and an ended one is dropped
+    /// once it is past the window a read still reports it in
+    /// ([`replication_backfill::BACKFILL_RETENTION`]). See
+    /// `state/replication_backfill.rs`.
+    pub replication_backfills: BTreeMap<String, replication_backfill::ReplicationBackfill>,
 }
 
 impl ComAmazonawsEcrAmazonec2containerregistryV20150921State {
@@ -4539,6 +4548,12 @@ pub mod signing;
 /// of the store it reaches) here, so it is reached as `crate::state::replication::…` like
 /// every other part of this store.
 pub mod replication;
+/// The backfills that replicate the registry's EXISTING images to a destination its
+/// replication configuration already names, in `state/replication_backfill.rs`. Declared
+/// (and not glob re-exported, so a handler names the part of the store it reaches) here, so
+/// it is reached as `crate::state::replication_backfill::…` like every other part of this
+/// store.
+pub mod replication_backfill;
 /// The KMS grant a repository encrypted with a customer managed key holds on that key, in
 /// `state/key_grant.rs`. Declared (and not glob re-exported, so a handler names the KMS hop
 /// it makes) here, so it is reached as `crate::state::key_grant::…` like every other part of
