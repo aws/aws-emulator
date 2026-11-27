@@ -204,7 +204,12 @@ fn on_page(drawn: &GrayImage, (width, height): (u32, u32), background: u8, at: (
     page
 }
 
-fn turned(page: &GrayImage, turns: u8) -> GrayImage {
+/// `page` after `turns` clockwise quarter turns, which is how the same sheet reaches the
+/// service when it was fed in turned.
+///
+/// `pub(crate)`: `crate::page_turns_of_a_pixel_face` submits its pages at each of their
+/// quarter turns through this same helper rather than growing one of its own.
+pub(crate) fn turned(page: &GrayImage, turns: u8) -> GrayImage {
     match turns % 4 {
         1 => image::imageops::rotate90(page),
         2 => image::imageops::rotate180(page),

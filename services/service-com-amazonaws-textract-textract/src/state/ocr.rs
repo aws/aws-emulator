@@ -52,7 +52,10 @@
 //!    each of its quarter turns ([`Ink::turned`]), because a document can be scanned or
 //!    photographed turned. The reading that accounts for most of the page's own ink
 //!    ([`PageRead::strength`]) is the page's own, and the angle it was read at is what the
-//!    `WORD` blocks report as `Geometry$RotationAngle`. Each turn is read once more every
+//!    `WORD` blocks report as `Geometry$RotationAngle`. A turn whose reading could not stand
+//!    in place of the one taken as submitted — because that one already accounts for as much
+//!    of the page's ink as any reading can ([`MOST_PAGE_INK_A_READING_NAMES`]) — is not read
+//!    at all. Each turn that is read is read once more every
 //!    way something that is NOT a character can be joining the marks of a line — a rule
 //!    drawn across it, a panel of light text on a dark ground ([`Ink::variants`]) — and
 //!    again the reading that accounts for most of the ink is the one reported.
@@ -90,9 +93,9 @@
 //! `spawn_blocking(..).await` that drives it is a real await point a timeout, a
 //! cancellation or a shutdown can land on.
 //!
-//! One page is read several ways — a fixed four quarter turns, each read every way a rule
-//! or a panel could be joining its marks, so at most a dozen readings — and each reading is
-//! held to the same per-page ceilings ([`MAX_RASTER_PIXELS`], [`MAX_GLYPHS_PER_PAGE`]). The
+//! One page is read several ways — at most a fixed four quarter turns, each read every way a
+//! rule or a panel could be joining its marks, so at most a dozen readings — and each reading
+//! is held to the same per-page ceilings ([`MAX_RASTER_PIXELS`], [`MAX_GLYPHS_PER_PAGE`]). The
 //! work and the memory one request can cause therefore stay a fixed multiple of one page's,
 //! which no request can choose.
 
@@ -136,10 +139,11 @@ pub const MAX_GLYPHS_PER_PAGE: usize = 2_500;
 /// what might be joining the marks of its lines). A page whose reading would cost more
 /// naming than this is reported as too large rather than ground through: see [`Budget`].
 ///
-/// It is set so that a page of ordinary text is read at every one of its turns and still
-/// has naming to spare — a page of [`MAX_GLYPHS_PER_PAGE`] marks read at four turns is
-/// 10,000 of them, with the rest for the pieces the segmentation considers — while a page
-/// crafted to make every run of ink look like several characters at every turn runs out.
+/// It is set so that a page of ordinary text is read at every turn of it that could stand in
+/// place of the reading taken as submitted ([`MOST_PAGE_INK_A_READING_NAMES`]) and still has
+/// naming to spare — a page of [`MAX_GLYPHS_PER_PAGE`] marks read at four turns is 10,000 of
+/// them, with the rest for the pieces the segmentation considers — while a page crafted to
+/// make every run of ink look like several characters at every turn runs out.
 pub const MAX_NAMINGS_PER_PAGE: usize = 30_000;
 
 /// How much of a page's ink one reading of it must have accounted for ([`PageRead::
@@ -179,6 +183,22 @@ const MIN_QUARTER_TURN_GAIN: f32 = 0.5;
 /// well the page was read ([`PageRead::strength`]): two, since what a word is, as against a
 /// sliver of several lines read across them, is characters side by side.
 const MIN_WORD_CHARACTERS: usize = 2;
+
+/// The most of a page's own ink ONE READING of it can be credited with having named
+/// ([`PageRead::strength`]).
+///
+/// A mark's ink counts for how far its match beat the floor every reported character has to
+/// clear ([`glyphs::MIN_MATCH`]), and no match beats that floor by more than the whole of
+/// the mark's ink, so a reading that named every mark of the page as closely as a template
+/// can be named stands exactly here. It is a ceiling on the measure rather than a limit of
+/// its own: the boxes two marks occupy may overlap — a letter whose ink reaches back under
+/// the one before it — and the same ink is then credited to each of them, which no reading
+/// of a page may be credited more than once for.
+///
+/// What it is FOR: a reading that already stands this high, by the margin another reading
+/// would have to beat it by, cannot be bettered, so the readings that could not stand in its
+/// place are not taken at all ([`read_raster`]).
+const MOST_PAGE_INK_A_READING_NAMES: f32 = 1.0 - glyphs::MIN_MATCH;
 
 /// How much of the page's ink a QUARTER or a HALF turn of it must itself have accounted for
 /// ([`PageRead::strength`]) to be the turn the page is reported as read at.
@@ -631,41 +651,36 @@ pub fn read_raster(bytes: &[u8], format: ImageFormat) -> Result<Recognised, Unre
     let mut budget = Budget::new();
     // A document can be scanned or photographed turned, and a page's characters are only
     // recognisable at the angle they were drawn at, so the page is read as submitted AND at
-    // each of its quarter turns. The reading of the page AS SUBMITTED stands unless the best
-    // of the turns reads it clearly better, so a page with little ink, or a page of marks
-    // that are no characters at all, is never reported sideways on a coincidence.
+    // each of its quarter turns. The reading of the page AS SUBMITTED stands unless a turn
+    // of it reads the page clearly better BY THAT TURN's own margin ([`turn_gain`]), so a
+    // page with little ink, or a page of marks that are no characters at all, is never
+    // reported sideways on a coincidence — and the strongest of the turns that do stand in
+    // its place is the one reported.
     let upright = read_every_way(&ink, Orientation::upright(&ink), &mut budget)?;
-    let mut turned: Option<(u8, PageRead)> = None;
+    let mut turned: Option<PageRead> = None;
     for turns in 1..4u8 {
+        let gain = turn_gain(turns);
+        // A turn is READ only where its reading could stand in place of the upright one. A
+        // reading of this page accounts for at most [`MOST_PAGE_INK_A_READING_NAMES`] of its
+        // ink, so once the upright reading stands that high by the margin this turn would
+        // have to beat it by, no reading at this turn can be the page's own — and reading it
+        // would cost the whole of a page's recognition to answer a question already settled.
+        if upright.strength() * (1.0 + gain) >= MOST_PAGE_INK_A_READING_NAMES {
+            continue;
+        }
         let orientation = Orientation::turned(&ink, turns);
         let read = read_every_way(&ink.turned(turns), orientation, &mut budget)?;
+        if !read.describes_better(&upright, gain) {
+            continue;
+        }
         if turned
             .as_ref()
-            .is_none_or(|(_, held)| read.strength() > held.strength())
+            .is_none_or(|held| read.strength() > held.strength())
         {
-            turned = Some((turns, read));
+            turned = Some(read);
         }
     }
-    let best = match turned {
-        // A HALF turn of a page of text is still a page of lines of text, so the two
-        // readings are comparable mark for mark and the better of them decides. A QUARTER
-        // turn reads ACROSS the page's lines instead of along them, which turns one line of
-        // text into a column of slivers of several: a reading like that has to be clearly
-        // better, not a little better, to be the page's own.
-        Some((turns, read))
-            if read.describes_better(
-                &upright,
-                if turns == 2 {
-                    MIN_ROTATION_GAIN
-                } else {
-                    MIN_QUARTER_TURN_GAIN
-                },
-            ) =>
-        {
-            read
-        }
-        _ => upright,
-    };
+    let best = turned.unwrap_or(upright);
 
     Ok(Recognised {
         confidence: percentage(best.score_total, best.score_count),
@@ -674,6 +689,22 @@ pub fn read_raster(bytes: &[u8], format: ImageFormat) -> Result<Recognised, Unre
         rotation: best.rotation,
         content,
     })
+}
+
+/// How much better than the page as submitted a reading taken at `turns` quarter turns has
+/// to read for the page to be reported as read at that turn.
+///
+/// A HALF turn of a page of text is still a page of lines of text, so the two readings are
+/// comparable mark for mark and the better of them decides ([`MIN_ROTATION_GAIN`]). A
+/// QUARTER turn reads ACROSS the page's lines instead of along them, which turns one line of
+/// text into a column of slivers of several: a reading like that has to be clearly better,
+/// not a little better, to be the page's own ([`MIN_QUARTER_TURN_GAIN`]).
+fn turn_gain(turns: u8) -> f32 {
+    if turns % 4 == 2 {
+        MIN_ROTATION_GAIN
+    } else {
+        MIN_QUARTER_TURN_GAIN
+    }
 }
 
 /// Read one turn of a page every way something that is NOT a character can be joining the
@@ -771,11 +802,16 @@ impl PageRead {
     /// characters come in words, so a reading that falls into single marks standing apart —
     /// which is what a page read ACROSS its own lines falls into — has accounted for none of
     /// it, however well each of those marks happens to match something.
+    ///
+    /// No reading is credited with more than the share one that named every mark of the page
+    /// perfectly would stand at ([`MOST_PAGE_INK_A_READING_NAMES`]): the boxes of two marks
+    /// may overlap, where a letter's ink reaches back under the one before it, and the ink
+    /// they share is the page's once however many marks were read from it.
     fn strength(&self) -> f32 {
         if self.page_ink <= 0.0 {
             return 0.0;
         }
-        (self.named_ink / self.page_ink).max(0.0)
+        (self.named_ink / self.page_ink).clamp(0.0, MOST_PAGE_INK_A_READING_NAMES)
     }
 
     /// How well the characters this reading named agree with the ink they were named from:
@@ -3590,6 +3626,68 @@ mod figures;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// One reading of a page, credited with `named_ink` of the `page_ink` the page carries
+    /// and agreeing with the characters it named at `agreement`.
+    fn reading(named_ink: f32, page_ink: f32, agreement: f32) -> PageRead {
+        PageRead {
+            text: String::new(),
+            score_total: agreement,
+            score_count: 1,
+            named_ink,
+            page_ink,
+            lines: Vec::new(),
+            rotation: 0.0,
+        }
+    }
+
+    /// A reading is credited with at most the share of a page's ink that naming every mark of
+    /// it perfectly accounts for, and a turn goes unread exactly where no reading of it could
+    /// have stood in place of the reading taken as submitted.
+    ///
+    /// Both directions, because the saving rests on the equivalence: where the reading as
+    /// submitted stands high enough that the turn is skipped, even the strongest reading
+    /// there can be does NOT describe the page better, and where it does not stand that high
+    /// the turn is read — and a reading that really is better does stand in its place.
+    ///
+    /// The rows span what the rule turns on: how much of the page's ink the reading taken as
+    /// submitted accounted for, and which turn is weighed against it.
+    #[test]
+    fn a_turn_goes_unread_exactly_where_no_reading_of_it_could_stand_in_its_place() {
+        // The ink the page carries, and a reading credited with far more of it than any
+        // reading can be: the same ink is the page's once however many marks were read from
+        // it, so the share reported is the ceiling rather than what the sum came to. It is
+        // therefore the strongest reading of this page there can be.
+        let page_ink = 400.0f32;
+        let strongest = reading(3.0 * page_ink, page_ink, 1.0);
+        assert!(
+            (strongest.strength() - MOST_PAGE_INK_A_READING_NAMES).abs() < f32::EPSILON,
+            "case a reading credited three times over: the share reported is the most a \
+             reading can account for ({MOST_PAGE_INK_A_READING_NAMES}), got {}",
+            strongest.strength()
+        );
+        for (case, share) in [
+            ("read as well as a reading can be", 1.0f32),
+            ("read a hair under that", 0.98),
+            ("read poorly", 0.2),
+        ] {
+            let upright = reading(share * MOST_PAGE_INK_A_READING_NAMES * page_ink, page_ink, 1.0);
+            for turns in 1..4u8 {
+                let gain = turn_gain(turns);
+                let unread =
+                    upright.strength() * (1.0 + gain) >= MOST_PAGE_INK_A_READING_NAMES;
+                assert_eq!(
+                    !unread,
+                    strongest.describes_better(&upright, gain),
+                    "case {case:?}, turn {turns}: a turn goes unread exactly where no \
+                     reading of it could stand in place of the upright reading, which \
+                     stands at {} of the {MOST_PAGE_INK_A_READING_NAMES} a reading can \
+                     account for",
+                    upright.strength()
+                );
+            }
+        }
+    }
 
     /// The naming one request may do is bounded whatever the page: the budget admits exactly
     /// [`MAX_NAMINGS_PER_PAGE`] namings, wherever in the reading they happen, and then says

@@ -27,6 +27,11 @@
 //!
 //! The rows differ along what the rule generalises over: the family, the raster or pixel
 //! size, the weight, the polarity of the ink, and the format the page is submitted in.
+//!
+//! The rows of one family are spread over several tests, each reading its own pages through
+//! one shared helper: recognising a page is the work of reading its every mark, so a test
+//! that read a whole family's table would hold up every build and every merge it runs in for
+//! as long as all of those pages take, while the tests of one family run beside each other.
 
 use embedded_graphics::draw_target::DrawTarget;
 use embedded_graphics::geometry::{Dimensions, Point, Size};
@@ -132,7 +137,14 @@ impl DrawTarget for Canvas {
 }
 
 /// Draw `lines` with one of the X11 fixed bitmap faces, at that face's own raster.
-fn pixel_page(lines: &[&str], font: &MonoFont<'static>, polarity: Polarity) -> GrayImage {
+///
+/// `pub(crate)`: `crate::page_turns_of_a_pixel_face` draws its pages with this same
+/// renderer rather than growing one of its own.
+pub(crate) fn pixel_page(
+    lines: &[&str],
+    font: &MonoFont<'static>,
+    polarity: Polarity,
+) -> GrayImage {
     let cell = font.character_size;
     let pitch = cell.height as usize + 5;
     let margin = 12usize;
@@ -268,42 +280,20 @@ async fn read_page(
     blocks
 }
 
-/// A page set in a PIXEL face is read character for character, at every raster those faces
-/// are cut at and whichever way its ink is drawn.
+/// Read a page set in each of `cases` and assert it comes back character for character.
 ///
-/// The rasters are the X11 fixed faces' own (`embedded_graphics::mono_font::ascii`): a page
-/// set in one of them is what a document rendered at a dozen pixels to the line carries.
-#[tokio::test]
-async fn a_page_set_in_a_pixel_face_reads_the_characters_it_was_drawn_with() {
+/// The rows of the three tables below are run through this, so each of them asserts the same
+/// thing of its own rasters: the LINE blocks report the lines the page was drawn from and the
+/// WORD blocks the words it sets. The table is split across tests rather than read in one of
+/// them because recognising a page is the work of reading its every mark, and a test that
+/// reads a dozen pages holds up every build it runs in for as long as all of them take.
+async fn pixel_pages_read_the_characters_they_were_drawn_with(
+    cases: &[(&str, &MonoFont<'static>, Polarity, ImageFormat)],
+) {
     let router = harness();
-    let cases: Vec<(&str, &MonoFont<'static>, Polarity, ImageFormat)> = vec![
-        ("6x9", &ascii::FONT_6X9, dark_on_light(), ImageFormat::Png),
-        ("6x10", &ascii::FONT_6X10, dark_on_light(), ImageFormat::Png),
-        ("6x12", &ascii::FONT_6X12, dark_on_light(), ImageFormat::Png),
-        ("6x13", &ascii::FONT_6X13, dark_on_light(), ImageFormat::Png),
-        ("7x13", &ascii::FONT_7X13, dark_on_light(), ImageFormat::Png),
-        ("7x14", &ascii::FONT_7X14, dark_on_light(), ImageFormat::Png),
-        ("8x13", &ascii::FONT_8X13, dark_on_light(), ImageFormat::Png),
-        ("9x15", &ascii::FONT_9X15, dark_on_light(), ImageFormat::Png),
-        ("9x18", &ascii::FONT_9X18, dark_on_light(), ImageFormat::Png),
-        ("10x20", &ascii::FONT_10X20, dark_on_light(), ImageFormat::Png),
-        (
-            "9x18, light ink on a dark page",
-            &ascii::FONT_9X18,
-            light_on_dark(),
-            ImageFormat::Png,
-        ),
-        (
-            "9x18, submitted as a JPEG",
-            &ascii::FONT_9X18,
-            dark_on_light(),
-            ImageFormat::Jpeg,
-        ),
-    ];
-
     for (case, font, polarity, format) in cases {
-        let page = pixel_page(LINES, font, polarity);
-        let blocks = read_page(&router, case, &page, format).await;
+        let page = pixel_page(LINES, font, *polarity);
+        let blocks = read_page(&router, case, &page, *format).await;
         assert_eq!(
             texts_of(&blocks, "LINE"),
             LINES.iter().map(ToString::to_string).collect::<Vec<_>>(),
@@ -317,78 +307,77 @@ async fn a_page_set_in_a_pixel_face_reads_the_characters_it_was_drawn_with() {
     }
 }
 
-/// A page set in a PROPORTIONAL outline face, at a size the recogniser holds no template
-/// at, is read as the text it was drawn with: one line per line of ink, the words the page
-/// sets, and nearly every word character for character.
+/// A page set in one of the SMALLER pixel faces is read character for character, at every
+/// raster those faces are cut at.
 ///
-/// The glyph identities are not all asserted: ink drawn by an outline rasteriser is no copy
-/// of any template, so what the rule asks for is that the page's own text comes back, not
-/// that two faces' ink agrees exactly.
+/// The rasters are the X11 fixed faces' own (`embedded_graphics::mono_font::ascii`): a page
+/// set in one of them is what a document rendered at a dozen pixels to the line carries.
 #[tokio::test]
-async fn a_page_set_in_a_proportional_outline_face_reads_the_text_it_was_drawn_with() {
-    let router = harness();
-    let cases: Vec<(&str, &'static [u8], f32, Polarity, ImageFormat)> = vec![
+async fn a_page_set_in_a_pixel_face_reads_the_characters_it_was_drawn_with() {
+    pixel_pages_read_the_characters_they_were_drawn_with(&[
+        ("6x9", &ascii::FONT_6X9, dark_on_light(), ImageFormat::Png),
+        ("6x10", &ascii::FONT_6X10, dark_on_light(), ImageFormat::Png),
+        ("6x12", &ascii::FONT_6X12, dark_on_light(), ImageFormat::Png),
+        ("6x13", &ascii::FONT_6X13, dark_on_light(), ImageFormat::Png),
+        ("7x13", &ascii::FONT_7X13, dark_on_light(), ImageFormat::Png),
+    ])
+    .await;
+}
+
+/// The same of the LARGER rasters those faces are cut at, up to the largest of them.
+#[tokio::test]
+async fn a_page_set_in_a_large_pixel_face_reads_the_characters_it_was_drawn_with() {
+    pixel_pages_read_the_characters_they_were_drawn_with(&[
+        ("7x14", &ascii::FONT_7X14, dark_on_light(), ImageFormat::Png),
+        ("8x13", &ascii::FONT_8X13, dark_on_light(), ImageFormat::Png),
+        ("9x15", &ascii::FONT_9X15, dark_on_light(), ImageFormat::Png),
+        ("9x18", &ascii::FONT_9X18, dark_on_light(), ImageFormat::Png),
+        ("10x20", &ascii::FONT_10X20, dark_on_light(), ImageFormat::Png),
+    ])
+    .await;
+}
+
+/// The same whichever way the page's ink is drawn and whatever format it is submitted in: a
+/// page of light ink on a dark ground reads as the page it is, and so does one coded as a
+/// JPEG, whose coding leaves a halo around every stroke.
+#[tokio::test]
+async fn a_page_set_in_a_pixel_face_reads_it_however_its_ink_and_format_are() {
+    pixel_pages_read_the_characters_they_were_drawn_with(&[
         (
-            "regular, 22 pixels",
-            ttf_noto_sans::REGULAR,
-            22.0,
-            dark_on_light(),
-            ImageFormat::Png,
-        ),
-        (
-            "regular, 26 pixels",
-            ttf_noto_sans::REGULAR,
-            26.0,
-            dark_on_light(),
-            ImageFormat::Png,
-        ),
-        (
-            "regular, 32 pixels",
-            ttf_noto_sans::REGULAR,
-            32.0,
-            dark_on_light(),
-            ImageFormat::Png,
-        ),
-        (
-            "regular, 36 pixels",
-            ttf_noto_sans::REGULAR,
-            36.0,
-            dark_on_light(),
-            ImageFormat::Png,
-        ),
-        (
-            "bold, 24 pixels",
-            ttf_noto_sans::BOLD,
-            24.0,
-            dark_on_light(),
-            ImageFormat::Png,
-        ),
-        (
-            "bold, 32 pixels",
-            ttf_noto_sans::BOLD,
-            32.0,
-            dark_on_light(),
-            ImageFormat::Png,
-        ),
-        (
-            "regular, 26 pixels, light ink on a dark page",
-            ttf_noto_sans::REGULAR,
-            26.0,
+            "9x18, light ink on a dark page",
+            &ascii::FONT_9X18,
             light_on_dark(),
             ImageFormat::Png,
         ),
         (
-            "regular, 26 pixels, submitted as a JPEG",
-            ttf_noto_sans::REGULAR,
-            26.0,
+            "9x18, submitted as a JPEG",
+            &ascii::FONT_9X18,
             dark_on_light(),
             ImageFormat::Jpeg,
         ),
-    ];
+    ])
+    .await;
+}
 
+/// Read a page set in each of `cases` and assert the text it was drawn with comes back: one
+/// line per line of ink, the words the page sets, and nearly every word character for
+/// character.
+///
+/// The glyph identities are not all asserted: ink drawn by an outline rasteriser is no copy
+/// of any template, so what the rule asks for is that the page's own text comes back, not
+/// that two faces' ink agrees exactly.
+///
+/// The rows of the four tests below are run through this, each with its own sizes, weight,
+/// polarity or format: a page in this family is read twice over to pin that the blocks come
+/// from its pixels, so a table of all of them in one test would hold up every build it runs
+/// in for as long as sixteen readings take.
+async fn outline_pages_read_the_text_they_were_drawn_with(
+    cases: &[(&str, &'static [u8], f32, Polarity, ImageFormat)],
+) {
+    let router = harness();
     for (case, face, size, polarity, format) in cases {
-        let page = outline_page(LINES, face, size, polarity);
-        let blocks = read_page(&router, case, &page, format).await;
+        let page = outline_page(LINES, face, *size, *polarity);
+        let blocks = read_page(&router, case, &page, *format).await;
         let read = read_words(&blocks);
         let drawn = drawn_words(LINES);
         assert_eq!(
@@ -437,12 +426,103 @@ async fn a_page_set_in_a_proportional_outline_face_reads_the_text_it_was_drawn_w
         }
         // The same pixels answer the same way: the blocks come from what was read, not
         // from a roll.
-        let again = read_page(&router, case, &page, format).await;
+        let again = read_page(&router, case, &page, *format).await;
         assert_eq!(
             again, blocks,
             "case {case:?}: the same page must answer with the same blocks"
         );
     }
+}
+
+/// A page set in a PROPORTIONAL outline face, at a size the recogniser holds no template
+/// at, is read as the text it was drawn with.
+#[tokio::test]
+async fn a_page_set_in_a_proportional_outline_face_reads_the_text_it_was_drawn_with() {
+    outline_pages_read_the_text_they_were_drawn_with(&[
+        (
+            "regular, 22 pixels",
+            ttf_noto_sans::REGULAR,
+            22.0,
+            dark_on_light(),
+            ImageFormat::Png,
+        ),
+        (
+            "regular, 26 pixels",
+            ttf_noto_sans::REGULAR,
+            26.0,
+            dark_on_light(),
+            ImageFormat::Png,
+        ),
+    ])
+    .await;
+}
+
+/// The same at the LARGER sizes a document is set at, where an outline is rasterised onto a
+/// coarser fraction of its own strokes.
+#[tokio::test]
+async fn a_page_set_in_a_large_proportional_outline_face_reads_the_text_it_was_drawn_with() {
+    outline_pages_read_the_text_they_were_drawn_with(&[
+        (
+            "regular, 32 pixels",
+            ttf_noto_sans::REGULAR,
+            32.0,
+            dark_on_light(),
+            ImageFormat::Png,
+        ),
+        (
+            "regular, 36 pixels",
+            ttf_noto_sans::REGULAR,
+            36.0,
+            dark_on_light(),
+            ImageFormat::Png,
+        ),
+    ])
+    .await;
+}
+
+/// The same of a page set in the BOLD cut of that face, whose heavier stroke fills the
+/// counters a letter is told apart by.
+#[tokio::test]
+async fn a_page_set_in_a_bold_proportional_outline_face_reads_the_text_it_was_drawn_with() {
+    outline_pages_read_the_text_they_were_drawn_with(&[
+        (
+            "bold, 24 pixels",
+            ttf_noto_sans::BOLD,
+            24.0,
+            dark_on_light(),
+            ImageFormat::Png,
+        ),
+        (
+            "bold, 32 pixels",
+            ttf_noto_sans::BOLD,
+            32.0,
+            dark_on_light(),
+            ImageFormat::Png,
+        ),
+    ])
+    .await;
+}
+
+/// The same whichever way the page's ink is drawn and whatever format it is submitted in.
+#[tokio::test]
+async fn a_page_set_in_a_proportional_outline_face_reads_it_however_its_ink_and_format_are() {
+    outline_pages_read_the_text_they_were_drawn_with(&[
+        (
+            "regular, 26 pixels, light ink on a dark page",
+            ttf_noto_sans::REGULAR,
+            26.0,
+            light_on_dark(),
+            ImageFormat::Png,
+        ),
+        (
+            "regular, 26 pixels, submitted as a JPEG",
+            ttf_noto_sans::REGULAR,
+            26.0,
+            dark_on_light(),
+            ImageFormat::Jpeg,
+        ),
+    ])
+    .await;
 }
 
 /// The figures of a NUMBER are one word, however narrow a figure is and whatever advance
@@ -451,19 +531,14 @@ async fn a_page_set_in_a_proportional_outline_face_reads_the_text_it_was_drawn_w
 /// A proportional face sets every figure on the same advance, so a `1` inks a fraction of
 /// its own cell and leaves a gap as wide as a space's either side of it. A number separated
 /// by those gaps alone falls into several words, which no page drew.
-#[tokio::test]
-async fn the_figures_of_a_number_are_read_as_one_word() {
+///
+/// The rows of the three tests below are run through this, each with its own sizes and
+/// weight: reading a page is the work of reading its every mark, so a table of every size in
+/// one test would hold up every build it runs in for as long as all of them take.
+async fn the_figures_of_a_number_are_one_word(cases: &[(&str, &'static [u8], f32)]) {
     let router = harness();
-    let cases: Vec<(&str, &'static [u8], f32)> = vec![
-        ("regular, 22 pixels", ttf_noto_sans::REGULAR, 22.0),
-        ("regular, 26 pixels", ttf_noto_sans::REGULAR, 26.0),
-        ("regular, 32 pixels", ttf_noto_sans::REGULAR, 32.0),
-        ("regular, 36 pixels", ttf_noto_sans::REGULAR, 36.0),
-        ("bold, 24 pixels", ttf_noto_sans::BOLD, 24.0),
-    ];
-
     for (case, face, size) in cases {
-        let page = outline_page(LINES, face, size, dark_on_light());
+        let page = outline_page(LINES, face, *size, dark_on_light());
         let blocks = read_page(&router, case, &page, ImageFormat::Png).await;
         let words = texts_of(&blocks, "WORD");
         for number in NUMBERS {
@@ -475,7 +550,7 @@ async fn the_figures_of_a_number_are_read_as_one_word() {
         // The rule does not swallow the spaces a page really sets between two numbers: a
         // line of two separated numbers is read as two words of the lengths drawn.
         let separated = ["Invoice 4821 3307"];
-        let page = outline_page(&separated, face, size, dark_on_light());
+        let page = outline_page(&separated, face, *size, dark_on_light());
         let blocks = read_page(&router, case, &page, ImageFormat::Png).await;
         let read: Vec<usize> = texts_of(&blocks, "WORD")
             .iter()
@@ -488,6 +563,34 @@ async fn the_figures_of_a_number_are_read_as_one_word() {
             texts_of(&blocks, "WORD")
         );
     }
+}
+
+/// A number's figures are one word on a page set at the sizes a document's own text is set
+/// at.
+#[tokio::test]
+async fn the_figures_of_a_number_are_read_as_one_word() {
+    the_figures_of_a_number_are_one_word(&[
+        ("regular, 22 pixels", ttf_noto_sans::REGULAR, 22.0),
+        ("regular, 26 pixels", ttf_noto_sans::REGULAR, 26.0),
+    ])
+    .await;
+}
+
+/// The same at the LARGER sizes, where the gap a narrow figure leaves inside its own cell is
+/// several pixels wider than at the sizes above.
+#[tokio::test]
+async fn the_figures_of_a_number_are_read_as_one_word_at_a_large_size() {
+    the_figures_of_a_number_are_one_word(&[
+        ("regular, 32 pixels", ttf_noto_sans::REGULAR, 32.0),
+        ("regular, 36 pixels", ttf_noto_sans::REGULAR, 36.0),
+    ])
+    .await;
+}
+
+/// The same in the BOLD cut, whose heavier stroke inks more of a figure's own cell.
+#[tokio::test]
+async fn the_figures_of_a_number_are_read_as_one_word_in_a_bold_face() {
+    the_figures_of_a_number_are_one_word(&[("bold, 24 pixels", ttf_noto_sans::BOLD, 24.0)]).await;
 }
 
 /// The TOKENS a page carries are read character for character, at every size a document is
@@ -535,7 +638,7 @@ async fn a_page_of_tokens_is_read_character_for_character() {
 }
 
 /// Two characters a proportional face sets as ONE run of inked columns are read as the two
-/// characters they are.
+/// characters they are, on a page set at `size` pixels.
 ///
 /// The rule under test: the `Text` a raster operation reports is the characters the page was
 /// drawn with, and where one character ends is settled by the ink — not by the column a
@@ -555,10 +658,11 @@ async fn a_page_of_tokens_is_read_character_for_character() {
 /// which a page set in any face has to be read apart.
 ///
 /// The rows differ along what the rule generalises over: which character reaches under its
-/// neighbour, which letterform classes the token draws from, and the size the page is set
-/// at.
-#[tokio::test]
-async fn two_characters_set_as_one_run_of_ink_are_read_as_two() {
+/// neighbour, and which letterform classes the token draws from. The SIZE the page is set at
+/// is the axis the three tests below differ along, one size each, because reading a page is
+/// the work of reading its every mark: a test that read every token at every size would hold
+/// up every build it runs in for as long as all of them take.
+async fn tokens_set_as_one_run_of_ink_are_read_as_two(size: f32) {
     let router = harness();
     let tokens = [
         // A `J` after a capital, a figure and a round letter.
@@ -577,28 +681,44 @@ async fn two_characters_set_as_one_run_of_ink_are_read_as_two() {
         "68B9A057",
     ];
     for token in tokens {
-        for size in [18.0f32, 24.0, 32.0] {
-            let case = format!("{token} at {size} pixels");
-            let drawn = format!("SIM2REAL {token}");
-            let page = outline_page(&[&drawn], ttf_noto_sans::REGULAR, size, dark_on_light());
-            let blocks = read_page(&router, &case, &page, ImageFormat::Png).await;
-            let bare =
-                |text: &str| -> String { text.chars().filter(|ch| !ch.is_whitespace()).collect() };
-            assert_eq!(
-                bare(&texts_of(&blocks, "LINE").join("")),
-                bare(&drawn),
-                "case {case:?}: the characters drawn must be the characters read, got {:?}",
-                texts_of(&blocks, "LINE")
-            );
-            // The token is ONE word: two characters whose boxes overlap are not two words,
-            // and neither are two whose strokes touch.
-            assert!(
-                texts_of(&blocks, "WORD").iter().any(|word| word == token),
-                "case {case:?}: the token is one word of the page, got {:?}",
-                texts_of(&blocks, "WORD")
-            );
-        }
+        let case = format!("{token} at {size} pixels");
+        let drawn = format!("SIM2REAL {token}");
+        let page = outline_page(&[&drawn], ttf_noto_sans::REGULAR, size, dark_on_light());
+        let blocks = read_page(&router, &case, &page, ImageFormat::Png).await;
+        let bare =
+            |text: &str| -> String { text.chars().filter(|ch| !ch.is_whitespace()).collect() };
+        assert_eq!(
+            bare(&texts_of(&blocks, "LINE").join("")),
+            bare(&drawn),
+            "case {case:?}: the characters drawn must be the characters read, got {:?}",
+            texts_of(&blocks, "LINE")
+        );
+        // The token is ONE word: two characters whose boxes overlap are not two words,
+        // and neither are two whose strokes touch.
+        assert!(
+            texts_of(&blocks, "WORD").iter().any(|word| word == token),
+            "case {case:?}: the token is one word of the page, got {:?}",
+            texts_of(&blocks, "WORD")
+        );
     }
+}
+
+/// Every token of the table, on a page set SMALL.
+#[tokio::test]
+async fn two_characters_set_as_one_run_of_ink_are_read_as_two() {
+    tokens_set_as_one_run_of_ink_are_read_as_two(18.0).await;
+}
+
+/// The same at the middling size a document's own text is set at.
+#[tokio::test]
+async fn two_characters_set_as_one_run_of_ink_are_read_as_two_at_a_middling_size() {
+    tokens_set_as_one_run_of_ink_are_read_as_two(24.0).await;
+}
+
+/// The same at a size whose strokes are several pixels wide.
+#[tokio::test]
+async fn two_characters_set_as_one_run_of_ink_are_read_as_two_at_a_large_size() {
+    tokens_set_as_one_run_of_ink_are_read_as_two(32.0).await;
 }
 
 /// The analysis path reads the same page the same way: the words a number is read as are
