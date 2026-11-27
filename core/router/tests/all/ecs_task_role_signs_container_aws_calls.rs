@@ -11,7 +11,8 @@
 //! attaching the grant to the role lifts the refusal on the next task, a role granted another
 //! action is refused this one, and a task that resolves no task role at all locates no
 //! credentials to call with. The container's own exit status is the status its program ended
-//! with either way.
+//! with either way — so a program that ENDS WITH the status of its one call makes the grant
+//! decide the `exitCode` a stopped task reports for that container.
 //!
 //! Why this suite lives beside the router: nothing about the decision belongs to one service.
 //! The role and its policies are IAM's records, the session is the token service's, the
@@ -988,6 +989,283 @@ async fn a_retrying_program_takes_each_attempt_and_ends() {
             held.is_none(),
             "case {case:?}: every refused attempt must have stored nothing at {key:?}, got \
              {held:?}"
+        );
+    }
+}
+
+/// The status the AWS CLI exits with for a call it MADE: "0 -- Command was successful. There
+/// were no errors thrown by either the CLI or by the service the request was made to." SOURCE:
+/// the AWS CLI's own return codes, written out here rather than read off the service's
+/// constants so a wrong status is caught instead of mirrored.
+const CALL_MADE: i64 = 0;
+
+/// The status a HIGH-LEVEL transfer command exits with when its call was refused: "1 -- Limited
+/// errors … For `s3` commands, this means at least one or more s3 transfers failed." SOURCE: the
+/// same list of return codes.
+const TRANSFER_REFUSED: i64 = 1;
+
+/// The status a LOW-LEVEL `s3api` command exits with when its call was refused: "254 -- The
+/// command was successfully parsed and a request was made to the specified service but the
+/// service returned an error." SOURCE: the same list of return codes.
+const API_CALL_REFUSED: i64 = 254;
+
+/// The bytes every program below writes into its file and carries into the bucket.
+const EXIT_STATUS_PAYLOAD: &str = "payload-exit-status";
+
+/// `Task$stopCode` of a task Amazon ECS stopped because an essential container of it exited,
+/// from that member's own list of codes.
+const ESSENTIAL_CONTAINER_EXITED: &str = "EssentialContainerExited";
+
+/// The sentence Amazon ECS words that code with in `Task$stoppedReason`.
+const ESSENTIAL_CONTAINER_EXITED_REASON: &str = "Essential container in task exited";
+
+/// One row of the table below: a program whose own exit status is the status of the ONE AWS
+/// call it makes, and the status that call's refusal exits with.
+struct ExitStatusRow {
+    /// What the row is called in an assertion.
+    arm: &'static str,
+    /// The family its revision is registered under. The SAME revision is launched twice — once
+    /// before the grant is attached and once after — which is the shape of a client's repair.
+    family: &'static str,
+    /// The object its call addresses.
+    key: &'static str,
+    /// The program its container runs, given that key.
+    program: fn(&str) -> String,
+    /// Whether that program PRINTS the status it read before ending with it, which is the form
+    /// dimension the rows differ along.
+    prints_status: bool,
+    /// The CLI's own account of a call the service refused, as that command group words it: the
+    /// transfer commands report the transfer that failed, and the low-level commands report the
+    /// operation the error came back from.
+    refusal_line: &'static str,
+    /// The status the CLI exits with while the task role carries no grant for the call.
+    refused_status: i64,
+}
+
+/// How the high-level transfer commands report a transfer that was not made.
+const TRANSFER_REFUSAL_LINE: &str = "upload failed:";
+
+/// How the low-level commands report an error the service answered: "An error occurred
+/// (<code>) when calling the <operation> operation", the CLI's own wording.
+const API_REFUSAL_LINE: &str = "when calling the PutObject operation";
+
+/// What `row` must have printed for a container that ended with `status`: the status itself for
+/// a program that names it, and nothing at all for one that leaves it to its last command.
+fn printed_status(row: &ExitStatusRow, status: i64) -> Option<String> {
+    row.prints_status.then(|| status.to_string())
+}
+
+/// A high-level transfer whose status the program NAMES: it reads the status of the command it
+/// just ran and ends with it.
+fn transfer_naming_its_status(key: &str) -> String {
+    format!(
+        "echo {EXIT_STATUS_PAYLOAD} > /tmp/out.txt; \
+         aws s3 cp /tmp/out.txt s3://{BUCKET}/{key}; status=$?; \
+         echo \"STATUS=$status\"; exit $status"
+    )
+}
+
+/// The same transfer as the LAST command the program runs, which is the other way its status
+/// reaches the container: "the exit status of a shell shall be the exit status of the last
+/// command it executed", with no `exit` written at all.
+fn transfer_as_the_last_command(key: &str) -> String {
+    format!("echo {EXIT_STATUS_PAYLOAD} > /tmp/out.txt; aws s3 cp /tmp/out.txt s3://{BUCKET}/{key}")
+}
+
+/// A low-level object write whose status the program names.
+fn api_write_naming_its_status(key: &str) -> String {
+    format!(
+        "echo {EXIT_STATUS_PAYLOAD} > /tmp/payload; \
+         aws s3api put-object --bucket {BUCKET} --key {key} --body /tmp/payload; status=$?; \
+         echo \"STATUS=$status\"; exit $status"
+    )
+}
+
+/// The same low-level write as the last command the program runs.
+fn api_write_as_the_last_command(key: &str) -> String {
+    format!(
+        "echo {EXIT_STATUS_PAYLOAD} > /tmp/payload; \
+         aws s3api put-object --bucket {BUCKET} --key {key} --body /tmp/payload"
+    )
+}
+
+/// RULE: a task Amazon ECS stopped because an essential container of it exited reports THAT
+/// container's own exit status — `Container$exitCode`, "the exit code returned from the
+/// container" — so a program whose status is the status of its one AWS call has the task role's
+/// grant decide the `exitCode` `DescribeTasks` reports: the status the CLI documents for a call
+/// the owning service refused while the role carries no grant, and the status of a call made
+/// once the one statement is attached to that role.
+///
+/// The rows differ along what the rule generalises over: the command group the call is made
+/// through (the high-level transfer and the low-level object write, whose documented refusal
+/// statuses differ) and the form the program propagates it in (named with `exit`, and left as
+/// the status of the last command it ran). Every row is launched twice — before the grant and
+/// after it — against the SAME role, so the only difference between the two reads is the
+/// policy in force.
+///
+/// Both phases launch every task before polling any of them: what each task waits on is the
+/// moves its own clock owes it, and those are owed concurrently.
+#[tokio::test]
+async fn the_task_roles_grant_decides_the_exit_status_a_stopped_task_reports() {
+    let case = "the exit status of the call";
+    let (router, engine) = emulator();
+    let (subnet, execution) = given_the_account(&router, &engine, case, "exitstatusexec").await;
+    let role_name = "exitstatustaskrole";
+    let task_role = role(&router, case, role_name).await;
+
+    let rows: [ExitStatusRow; 4] = [
+        ExitStatusRow {
+            arm: "a transfer whose status the program names",
+            family: "exitstatuscpnamed",
+            key: "exit-status-cp-named.txt",
+            program: transfer_naming_its_status,
+            prints_status: true,
+            refusal_line: TRANSFER_REFUSAL_LINE,
+            refused_status: TRANSFER_REFUSED,
+        },
+        ExitStatusRow {
+            arm: "a transfer as the program's last command",
+            family: "exitstatuscplast",
+            key: "exit-status-cp-last.txt",
+            program: transfer_as_the_last_command,
+            prints_status: false,
+            refusal_line: TRANSFER_REFUSAL_LINE,
+            refused_status: TRANSFER_REFUSED,
+        },
+        ExitStatusRow {
+            arm: "an object write whose status the program names",
+            family: "exitstatusapinamed",
+            key: "exit-status-api-named.txt",
+            program: api_write_naming_its_status,
+            prints_status: true,
+            refusal_line: API_REFUSAL_LINE,
+            refused_status: API_CALL_REFUSED,
+        },
+        ExitStatusRow {
+            arm: "an object write as the program's last command",
+            family: "exitstatusapilast",
+            key: "exit-status-api-last.txt",
+            program: api_write_as_the_last_command,
+            prints_status: false,
+            refusal_line: API_REFUSAL_LINE,
+            refused_status: API_CALL_REFUSED,
+        },
+    ];
+    for row in &rows {
+        register(
+            &router,
+            case,
+            row.family,
+            &execution,
+            Some(task_role.as_str()),
+            &(row.program)(row.key),
+        )
+        .await;
+    }
+
+    // PHASE 1 — the role carries no grant for the write: the owning service refuses the call,
+    // and the status that refusal exits with is the status the stopped task reports.
+    let mut launched = Vec::new();
+    for row in &rows {
+        launched.push((row, run_task(&router, case, row.family, &subnet, None).await));
+    }
+    for (row, task_arn) in &launched {
+        let arm = row.arm;
+        let (lines, task) = stopped_task(&router, case, task_arn).await;
+        let container = task["containers"][0].clone();
+        assert_eq!(
+            container["exitCode"].as_i64(),
+            Some(row.refused_status),
+            "case {case:?} arm {arm:?}: expected exitCode {:?} on the refused call, got \
+             {container} with {lines:?}",
+            row.refused_status
+        );
+        assert_eq!(
+            task["stopCode"].as_str(),
+            Some(ESSENTIAL_CONTAINER_EXITED),
+            "case {case:?} arm {arm:?}: expected the stop code of an essential container that \
+             exited, got {task}"
+        );
+        assert_eq!(
+            task["stoppedReason"].as_str(),
+            Some(ESSENTIAL_CONTAINER_EXITED_REASON),
+            "case {case:?} arm {arm:?}: expected the reason Amazon ECS words that code with, \
+             got {task}"
+        );
+        assert!(
+            lines.iter().any(|line| line.contains(ACCESS_DENIED)),
+            "case {case:?} arm {arm:?}: expected the owning service's own refusal in what the \
+             container wrote, got {lines:?}"
+        );
+        assert!(
+            lines.iter().any(|line| line.contains(row.refusal_line)),
+            "case {case:?} arm {arm:?}: expected the CLI's own account of the refused call \
+             ({:?}) in what the container wrote, got {lines:?}",
+            row.refusal_line
+        );
+        assert_eq!(
+            reported(&lines, "STATUS"),
+            printed_status(row, row.refused_status),
+            "case {case:?} arm {arm:?}: expected the program to read the status of the call it \
+             ran, got {lines:?}"
+        );
+        let held = held_object(&router, row.key).await;
+        assert!(
+            held.is_none(),
+            "case {case:?} arm {arm:?}: the refused call must have stored nothing, got {held:?}"
+        );
+    }
+
+    // The repair: the ONE statement the calls need, attached to the same role through IAM's own
+    // API — nothing about the task definitions changes.
+    grant(
+        &router,
+        case,
+        role_name,
+        "write-the-objects",
+        &["s3:PutObject"],
+        &format!("arn:aws:s3:::{BUCKET}/*"),
+    )
+    .await;
+
+    // PHASE 2 — the same revisions launched again: every call is made, so every container ends
+    // with the status of a call that was made and every object holds the bytes it carried.
+    let mut repaired = Vec::new();
+    for row in &rows {
+        repaired.push((row, run_task(&router, case, row.family, &subnet, None).await));
+    }
+    for (row, task_arn) in &repaired {
+        let arm = row.arm;
+        let (lines, task) = stopped_task(&router, case, task_arn).await;
+        let container = task["containers"][0].clone();
+        assert_eq!(
+            container["exitCode"].as_i64(),
+            Some(CALL_MADE),
+            "case {case:?} arm {arm:?}: expected exitCode {CALL_MADE:?} once the grant is in \
+             force, got {container} with {lines:?}"
+        );
+        assert!(
+            !lines.iter().any(|line| line.contains(ACCESS_DENIED)),
+            "case {case:?} arm {arm:?}: expected no refusal once the grant is in force, got \
+             {lines:?}"
+        );
+        assert!(
+            !lines.iter().any(|line| line.contains(row.refusal_line)),
+            "case {case:?} arm {arm:?}: expected no failed call once the grant is in force, \
+             got {lines:?}"
+        );
+        assert_eq!(
+            reported(&lines, "STATUS"),
+            printed_status(row, CALL_MADE),
+            "case {case:?} arm {arm:?}: expected the program to read the status of the call it \
+             ran, got {lines:?}"
+        );
+        let held = held_object(&router, row.key).await;
+        assert_eq!(
+            held.as_deref().map(str::trim),
+            Some(EXIT_STATUS_PAYLOAD),
+            "case {case:?} arm {arm:?}: expected the object to hold what the container wrote, \
+             got {held:?}"
         );
     }
 }
