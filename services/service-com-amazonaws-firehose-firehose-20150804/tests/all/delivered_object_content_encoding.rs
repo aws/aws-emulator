@@ -50,8 +50,8 @@ struct Row {
 /// The compression cases.
 ///
 /// One row per value the `CompressionFormat` enum admits (`smithy_query(query="shape",
-/// shape="CompressionFormat")`: `ZIP`, `ZSTD`, `HADOOP_SNAPPY`, `Snappy`, `GZIP`,
-/// `UNCOMPRESSED`), plus the member left out altogether for the documented default. Each
+/// shape="CompressionFormat")`: `UNCOMPRESSED`, `GZIP`, `ZIP`, `Snappy`,
+/// `HADOOP_SNAPPY`), plus the member left out altogether for the documented default. Each
 /// compressed row's coding is the declared format in lower case; `UNCOMPRESSED` and the
 /// absent member carry none.
 fn rows() -> Vec<Row> {
@@ -75,11 +75,6 @@ fn rows() -> Vec<Row> {
             case: "ZIP",
             declared: Some("ZIP"),
             coding: Some("zip"),
-        },
-        Row {
-            case: "ZSTD",
-            declared: Some("ZSTD"),
-            coding: Some("zstd"),
         },
         Row {
             case: "Snappy",

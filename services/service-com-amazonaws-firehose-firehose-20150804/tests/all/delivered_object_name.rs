@@ -56,7 +56,7 @@ struct Row {
 /// the delimiter, and one whose own `!{timestamp:...}` expression replaces the automatic
 /// segments), the `CompressionFormat` whose default extension the name takes (every value
 /// `smithy_query(query="shape", shape="CompressionFormat")` lists: `UNCOMPRESSED` with none,
-/// `GZIP` with `.gz`, `ZIP` with `.zip`, `ZSTD` with `.zst`, and `Snappy` and `HADOOP_SNAPPY`
+/// `GZIP` with `.gz`, `ZIP` with `.zip`, and `Snappy` and `HADOOP_SNAPPY`
 /// sharing `.snappy`, plus the member left out), a `FileExtension` overriding that default,
 /// and how many records the flushed buffer holds.
 fn rows() -> Vec<Row> {
@@ -91,14 +91,6 @@ fn rows() -> Vec<Row> {
             compression: Some("ZIP"),
             file_extension: None,
             extension: ".zip",
-            records: 1,
-        },
-        Row {
-            case: "a prefix with ZSTD, whose default extension the name takes",
-            prefix: Some("zst/"),
-            compression: Some("ZSTD"),
-            file_extension: None,
-            extension: ".zst",
             records: 1,
         },
         // Both formats that compress with Snappy carry the SAME extension: the container

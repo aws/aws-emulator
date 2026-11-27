@@ -3862,13 +3862,12 @@ fn compressed(body: Vec<u8>, target: &S3Target) -> Option<Encoded> {
         // "Specify a file extension. It will override the default file extension"
         // (`FileExtension`) — the default being the one the compression format carries:
         // Firehose names a delivered object `<prefix><stream>-<version>-<stamp>-<uuid>` plus
-        // that format's file extension, which is `.gz` for GZIP, `.zip` for ZIP, `.zst` for
-        // ZSTD and `.snappy` for BOTH Snappy and HADOOP_SNAPPY — the two share the extension
-        // and differ only in the container the bytes are framed in. An uncompressed object
+        // that format's file extension, which is `.gz` for GZIP, `.zip` for ZIP and
+        // `.snappy` for BOTH Snappy and HADOOP_SNAPPY — the two share the extension and
+        // differ only in the container the bytes are framed in. An uncompressed object
         // carries no extension at all.
         "GZIP" => (gzip(&body)?, ".gz"),
         "ZIP" => (zip(&body)?, ".zip"),
-        "ZSTD" => (zstd(&body)?, ".zst"),
         "Snappy" => (snappy(&body)?, SNAPPY_EXTENSION),
         "HADOOP_SNAPPY" => (hadoop_snappy(&body)?, SNAPPY_EXTENSION),
         UNCOMPRESSED => (body, ""),
@@ -3919,14 +3918,6 @@ fn zip(body: &[u8]) -> Option<Vec<u8>> {
         .ok()?;
     archive.write_all(body).ok()?;
     Some(archive.finish().ok()?.into_inner())
-}
-
-/// `body` as a Zstandard frame.
-fn zstd(body: &[u8]) -> Option<Vec<u8>> {
-    Some(::ruzstd::encoding::compress_to_vec(
-        body,
-        ::ruzstd::encoding::CompressionLevel::Fastest,
-    ))
 }
 
 /// The bytes a `Snappy` stream opens with: the magic of the framed Snappy container the

@@ -44,6 +44,12 @@ mod record_de_aggregation;
 #[path = "destination_delivery/active_partition_quota.rs"]
 mod active_partition_quota;
 
+/// Which compression formats a destination can ask for: the ones `CompressionFormat`
+/// declares, each delivering an object, and no other. A child of this suite for the same
+/// reason as the modules above, and on its harness.
+#[path = "destination_delivery/compression_formats_follow_the_model.rs"]
+mod compression_formats_follow_the_model;
+
 /// The endpoint every request here reaches the emulator on.
 const HOST: &str = "127.0.0.1:9297";
 
@@ -549,7 +555,6 @@ enum Compression {
     Uncompressed,
     Gzip,
     Zip,
-    Zstd,
     Snappy,
     HadoopSnappy,
 }
@@ -562,7 +567,6 @@ impl Compression {
             Self::Uncompressed => None,
             Self::Gzip => Some("GZIP"),
             Self::Zip => Some("ZIP"),
-            Self::Zstd => Some("ZSTD"),
             Self::Snappy => Some("Snappy"),
             Self::HadoopSnappy => Some("HADOOP_SNAPPY"),
         }
@@ -576,7 +580,6 @@ impl Compression {
         match self {
             Self::Gzip => ".gz",
             Self::Zip => ".zip",
-            Self::Zstd => ".zst",
             Self::Snappy | Self::HadoopSnappy => ".snappy",
             Self::Uncompressed => "",
         }
@@ -604,14 +607,6 @@ impl Compression {
                     .expect("a ZIP object must hold an entry")
                     .read_to_end(&mut decoded)
                     .expect("a ZIP entry must read");
-                decoded
-            }
-            Self::Zstd => {
-                let mut decoded = Vec::new();
-                ruzstd::decoding::StreamingDecoder::new(body)
-                    .expect("a ZSTD object must open as a Zstandard frame")
-                    .read_to_end(&mut decoded)
-                    .expect("a ZSTD object must decode");
                 decoded
             }
             Self::Snappy => {
@@ -753,17 +748,6 @@ fn delivery_rows() -> Vec<DeliveryRow> {
             automatic_time_prefix: true,
             file_extension: None,
             records: vec!["archive this"],
-            separator: "",
-        },
-        DeliveryRow {
-            case: "an extended destination compressing with ZSTD",
-            member: "ExtendedS3DestinationConfiguration",
-            config: s3_destination("{bucket}", Some("zstd/")),
-            compression: Compression::Zstd,
-            key_prefix: "zstd/",
-            automatic_time_prefix: true,
-            file_extension: None,
-            records: vec!["zstandard", "payload"],
             separator: "",
         },
         DeliveryRow {

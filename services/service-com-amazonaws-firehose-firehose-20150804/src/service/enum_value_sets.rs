@@ -18,15 +18,15 @@
 //! list index — and a type this model gains needs nothing added here. What the derivation
 //! cannot read off a value is the order the service's own SET was built in, which decides
 //! the listing wherever two of a type's values share one bucket. That order is the order
-//! the values were pushed in, and for all but one of this service's types it is the order
-//! the model declares them in; the one that differs is published below
+//! the values were pushed in, which is neither the sorted catalogue the generated schema
+//! presents a type's values in nor, for every type, the order the model declares them in;
+//! the one type of this service whose listing turns on it is published below
 //! ([`BUILT_ENUM_VALUE_SETS`]), as the service's API reference publishes that member's
 //! valid values.
 //!
 //! The evidence for the listing is the two sets this service's refusals are recorded
-//! stating: `ProcessorType`'s, which the derivation reproduces from the model's own
-//! declaration order, and `CompressionFormat`'s, which it reproduces from the published
-//! order below.
+//! stating: `ProcessorType`'s, which the derivation reproduces from the values alone, and
+//! `CompressionFormat`'s, which it reproduces from the published order below.
 
 use ::service_common::validation_message::{
     in_hashed_enum_order, in_stated_enum_order, StatedEnumValueSets,
@@ -54,35 +54,23 @@ const PROCESSOR_TYPE_VALUE_SET: [&str; 6] = [
 /// below is built in: `GZIP` and `UNCOMPRESSED` share a bucket, so which of the two is
 /// stated first is decided by which was pushed later.
 #[cfg(test)]
-const COMPRESSION_FORMAT_VALUE_SET: [&str; 6] = [
-    "ZIP",
-    "ZSTD",
-    "HADOOP_SNAPPY",
-    "Snappy",
-    "GZIP",
-    "UNCOMPRESSED",
-];
+const COMPRESSION_FORMAT_VALUE_SET: [&str; 5] =
+    ["ZIP", "HADOOP_SNAPPY", "Snappy", "GZIP", "UNCOMPRESSED"];
 
 /// The order the set of compression formats is built in: the order this service's API
-/// reference publishes the valid values of a `CompressionFormat` member in — `UNCOMPRESSED`,
-/// `GZIP`, `ZIP`, `Snappy`, `HADOOP_SNAPPY`, with `ZSTD` last, as the value added after the
-/// other five.
+/// reference publishes the valid values of a `CompressionFormat` member in, which is the
+/// order the model declares them in as well (`smithy_query(query="shape",
+/// shape="CompressionFormat")`: `UNCOMPRESSED`, `GZIP`, `ZIP`, `Snappy`, `HADOOP_SNAPPY`).
 ///
-/// This checkout's model declares the same six in another order entirely
-/// (`smithy_query(query="shape", shape="CompressionFormat")`: `ZIP`, `ZSTD`,
-/// `HADOOP_SNAPPY`, `Snappy`, `GZIP`, `UNCOMPRESSED`), which is why the order has to be
-/// published here rather than read off the model. Only the relative order of values that
-/// share a bucket is observable in a listing, so the one thing this row decides is that
-/// `UNCOMPRESSED` was pushed before `GZIP` — and the stated set that follows from it is the
-/// one the service's refusal is recorded stating ([`COMPRESSION_FORMAT_VALUE_SET`]).
-const COMPRESSION_FORMAT_BUILT_ORDER: &[&str] = &[
-    "UNCOMPRESSED",
-    "GZIP",
-    "ZIP",
-    "Snappy",
-    "HADOOP_SNAPPY",
-    "ZSTD",
-];
+/// It has to be published here because the values do NOT reach a refusal in that order: the
+/// generated schema carries a type's values as a sorted catalogue
+/// (`crate::ops::types::shared_types::COMPRESSION_FORMAT_VALUES`), which pushes
+/// `UNCOMPRESSED` after `GZIP`. Only the relative order of values that share a bucket is
+/// observable in a listing, so the one thing this row decides is that `UNCOMPRESSED` was
+/// pushed before `GZIP` — and the stated set that follows from it is the one the service's
+/// refusal is recorded stating ([`COMPRESSION_FORMAT_VALUE_SET`]).
+const COMPRESSION_FORMAT_BUILT_ORDER: &[&str] =
+    &["UNCOMPRESSED", "GZIP", "ZIP", "Snappy", "HADOOP_SNAPPY"];
 
 /// Every enumerated type of this service whose own set is built in an order other than the
 /// one this checkout's model declares: the values as the model declares them, and the order
@@ -212,15 +200,15 @@ mod tests {
         );
     }
 
-    /// A type whose own set is built in an order the model does not carry is stated from
-    /// THAT order: the seam reproduces the set this service's refusal is recorded stating,
-    /// whichever order the schema presented the values in.
+    /// A type whose own set is built in an order the values do not reach the clause in is
+    /// stated from THAT order: the seam reproduces the set this service's refusal is
+    /// recorded stating, whichever order the schema presented the values in.
     #[test]
     fn a_published_set_is_stated_from_the_order_the_service_built_it_in() {
         // (case, the order the values reached the clause in)
-        let presented: [(&str, Vec<&str>); 3] = [
+        let presented: [(&str, Vec<&str>); 4] = [
             (
-                "the order this checkout's model declares",
+                "the order this service states them in",
                 COMPRESSION_FORMAT_VALUE_SET.to_vec(),
             ),
             (
@@ -230,6 +218,13 @@ mod tests {
             (
                 "the generated catalogue's sorted order",
                 crate::ops::types::shared_types::COMPRESSION_FORMAT_VALUES.to_vec(),
+            ),
+            (
+                // The built order below, which is also the order the model declares (the
+                // doc comment on that constant cites the `smithy_query` it comes from), so
+                // this one case covers both presentations while they coincide.
+                "the order the service's own set is built in",
+                COMPRESSION_FORMAT_BUILT_ORDER.to_vec(),
             ),
         ];
 

@@ -138,14 +138,13 @@ const PROCESSOR_PARAMETER_NAME_LISTING: &str = "DataMessageExtraction, NumberOfR
 
 /// `CompressionFormat` as the model declares it.
 const COMPRESSION_FORMAT_DECLARED: &[&str] =
-    &["ZIP", "ZSTD", "HADOOP_SNAPPY", "Snappy", "GZIP", "UNCOMPRESSED"];
+    &["UNCOMPRESSED", "GZIP", "ZIP", "Snappy", "HADOOP_SNAPPY"];
 
-/// `CompressionFormat`'s six values in the order the rule derives over the order this
-/// service's own set is built in (`UNCOMPRESSED`, `GZIP`, `ZIP`, `Snappy`, `HADOOP_SNAPPY`,
-/// `ZSTD`), `GZIP` and `UNCOMPRESSED` sharing one bucket and `GZIP` having been pushed
-/// later. The listing this service's refusal is recorded stating; here it coincides with
-/// the order this checkout's model happens to declare the six in.
-const COMPRESSION_FORMAT_LISTING: &str = "ZIP, ZSTD, HADOOP_SNAPPY, Snappy, GZIP, UNCOMPRESSED";
+/// `CompressionFormat`'s five values in the order the rule derives over the order this
+/// service's own set is built in (`UNCOMPRESSED`, `GZIP`, `ZIP`, `Snappy`,
+/// `HADOOP_SNAPPY`), `GZIP` and `UNCOMPRESSED` sharing one bucket and `GZIP` having been
+/// pushed later. The listing this service's refusal is recorded stating.
+const COMPRESSION_FORMAT_LISTING: &str = "ZIP, HADOOP_SNAPPY, Snappy, GZIP, UNCOMPRESSED";
 
 /// `OrcCompression` as the model declares it.
 const ORC_COMPRESSION_DECLARED: &[&str] = &["NONE", "ZLIB", "SNAPPY"];
@@ -479,14 +478,13 @@ async fn a_listing_is_neither_the_declaration_order_nor_a_sort_of_the_values() {
     // Which types this service's refusals state in an order other than the model's
     // declaration order, and so would be got wrong by a renderer that walked the schema.
     // (The two two-value types above are stated in their declaration order, so they
-    // discriminate nothing and are not asked to; so is `CompressionFormat`, whose set the
-    // derivation reaches over the order the SERVICE built that set in — which, for these
-    // six values, lands on the order this checkout's model happens to declare them in. The
-    // sort assertion below still covers it, and the `CompressionFormat` tests at the end of
-    // this suite pin its listing member by member.)
+    // discriminate nothing and are not asked to. The sort assertion below covers every row,
+    // and the `CompressionFormat` tests at the end of this suite pin its listing member by
+    // member.)
     let not_the_declaration_order = [
         "ProcessorType",
         "ProcessorParameterName",
+        "CompressionFormat",
         "OrcCompression",
         "ElasticsearchIndexRotationPeriod",
     ];
@@ -713,7 +711,7 @@ fn compression_format_positions() -> Vec<Position> {
                 "DeliveryStreamName": "compression-outside-update",
                 "CurrentDeliveryStreamVersionId": "1",
                 "DestinationId": "destinationId-000000000001",
-                "ExtendedS3DestinationUpdate": { "CompressionFormat": "ZSTD-1" },
+                "ExtendedS3DestinationUpdate": { "CompressionFormat": "LZ4" },
             }),
             path: "extendedS3DestinationUpdate.compressionFormat",
         },
@@ -725,7 +723,7 @@ fn compression_format_positions() -> Vec<Position> {
                 "DeliveryStreamName": "compression-outside-legacy-update",
                 "CurrentDeliveryStreamVersionId": "1",
                 "DestinationId": "destinationId-000000000001",
-                "S3DestinationUpdate": { "CompressionFormat": "zstd" },
+                "S3DestinationUpdate": { "CompressionFormat": "snappy" },
             }),
             path: "s3DestinationUpdate.compressionFormat",
         },

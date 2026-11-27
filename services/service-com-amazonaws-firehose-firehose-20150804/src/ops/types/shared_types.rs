@@ -471,7 +471,7 @@ pub const AMAZONOPENSEARCHSERVICE_S3_BACKUP_MODE_VALUES: &[&str] = &["AllDocumen
 
 
 /// The values `CompressionFormat` accepts on the wire.
-pub const COMPRESSION_FORMAT_VALUES: &[&str] = &["GZIP", "HADOOP_SNAPPY", "Snappy", "UNCOMPRESSED", "ZIP", "ZSTD"];
+pub const COMPRESSION_FORMAT_VALUES: &[&str] = &["GZIP", "HADOOP_SNAPPY", "Snappy", "UNCOMPRESSED", "ZIP"];
 
 
 /// The values `Connectivity` accepts on the wire.
