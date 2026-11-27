@@ -55,8 +55,9 @@ pub use routing_rules::{
 };
 pub use tagging::{
     created_tags_within_quota, resource_tags, resource_tags_mut, tag_count_within_quota,
-    tagged_resource, tagging_unresolved, TaggedResource, ARN_VENDOR, TAGGING_UNRESOLVED_CODE,
-    TAGGING_UNRESOLVED_MESSAGE, TAGGING_UNRESOLVED_STATUS, TAGS_PER_RESOURCE_QUOTA,
+    tagged_resource, tagging_unresolved, TaggedResource, TaggedResourceId, ARN_VENDOR,
+    TAGGING_UNRESOLVED_CODE, TAGGING_UNRESOLVED_MESSAGE, TAGGING_UNRESOLVED_STATUS,
+    TAGS_PER_RESOURCE_QUOTA,
 };
 
 use crate::ops::types::{
@@ -74,7 +75,8 @@ use crate::ops::types::{
 pub const PROVISIONING_DELAY: Duration = Duration::from_millis(500);
 
 /// The region a request that carries no SigV4 credential scope is treated as
-/// addressing, for the DNS name a gateway is assigned.
+/// addressing: the Region a resource such a request creates belongs to, and the
+/// one every DNS name this service assigns falls back to.
 pub const DEFAULT_REGION: &str = "us-east-1";
 
 /// How many requester gateways, and how many responder gateways, the store holds
@@ -199,6 +201,12 @@ pub const GATEWAY_TYPE_EXTERNAL: &str = "EXTERNAL";
 #[derive(Debug, Clone)]
 pub struct RequesterGateway {
     pub gateway_id: String,
+    /// The Region this gateway was created in, as the creating request's SigV4
+    /// credential scope named it ([`request_region`]) — the one Region fact the
+    /// record holds, so that whatever Region a later caller signs for, an ARN of
+    /// this gateway resolves exactly when its Region field names THIS Region. See
+    /// [`tagged_resource`].
+    pub region: String,
     pub domain_name: String,
     pub status: String,
     /// The instant the clock makes this record's pending status — the one a
@@ -258,6 +266,8 @@ impl RequesterGateway {
 #[derive(Debug, Clone)]
 pub struct ResponderGateway {
     pub gateway_id: String,
+    /// The Region this gateway was created in: see [`RequesterGateway::region`].
+    pub region: String,
     pub status: String,
     /// See [`RequesterGateway::settles_at`].
     pub settles_at: Option<SystemTime>,
@@ -1069,24 +1079,47 @@ fn dns_label(text: &str) -> Option<String> {
     (!trimmed.is_empty()).then(|| trimmed.to_string())
 }
 
-/// The region the caller addressed, from the request's SigV4 credential scope;
-/// [`DEFAULT_REGION`] when the request carries no scope (an anonymous call).
+/// The Region the caller addressed, VERBATIM from the request's SigV4 credential
+/// scope; [`DEFAULT_REGION`] when the request carries no scope (an anonymous call)
+/// or names an empty one.
+///
+/// Verbatim because this is the Region a created resource BELONGS to, and a Region
+/// is written into an ARN's Region field, whose grammar (`[a-zA-Z0-9_-]+`, the
+/// modelled `RtbTaggableResourceArn` pattern) is wider than a DNS label's: a Region
+/// reduced to a DNS label here would be one no ARN of that resource could spell.
+/// The DNS names built from a Region reduce it themselves ([`region_dns_label`]),
+/// which is the only place the narrower grammar applies.
 pub fn request_region(parts: &::http::request::Parts) -> String {
     ::emulator_server::sigv4_credential_scope(&parts.headers)
-        .and_then(|scope| dns_label(&scope.region))
+        .map(|scope| scope.region)
+        .filter(|region| !region.is_empty())
         .unwrap_or_else(|| DEFAULT_REGION.to_string())
+}
+
+/// `region` as one label of a DNS name: the modelled `DomainName` pattern admits
+/// only `[a-z0-9-]` per label, while a Region may carry more, so a name built from
+/// a Region reduces it ([`dns_label`]) and falls back to [`DEFAULT_REGION`] — itself
+/// a label — when nothing of it survives.
+fn region_dns_label(region: &str) -> String {
+    dns_label(region).unwrap_or_else(|| DEFAULT_REGION.to_string())
 }
 
 /// The DNS name this service assigns a gateway: the gateway's own id as the
 /// leftmost label under the service's regional zone.
 pub fn gateway_domain_name(gateway_id: &str, region: &str) -> String {
-    format!("{gateway_id}.rtbfabric.{region}.amazonaws.com")
+    format!(
+        "{gateway_id}.rtbfabric.{}.amazonaws.com",
+        region_dns_label(region)
+    )
 }
 
 /// The public name an `EXTERNAL` responder gateway accepts inbound external
 /// links on. An `INTERNAL` gateway has none.
 pub fn external_inbound_endpoint(gateway_id: &str, region: &str) -> String {
-    format!("{gateway_id}.inbound.rtbfabric.{region}.amazonaws.com")
+    format!(
+        "{gateway_id}.inbound.rtbfabric.{}.amazonaws.com",
+        region_dns_label(region)
+    )
 }
 
 /// This service's store in the shared engine: call it with a handler's `&*self.engine`.

@@ -258,6 +258,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let gateway_id = store.mint_gateway_id();
         let gateway = crate::state::RequesterGateway {
             domain_name: crate::state::gateway_domain_name(&gateway_id, &region),
+            // The Region this gateway belongs to, from the creating call's own
+            // credential scope: the record carries it, so an ARN of this gateway
+            // resolves on this Region whatever Region a later caller signs for.
+            region,
             // Creation is asynchronous: the gateway is reported in a non-terminal
             // status and the clock owes the move to ACTIVE.
             status: crate::state::GATEWAY_STATUS_PENDING_CREATION.to_string(),

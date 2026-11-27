@@ -341,7 +341,7 @@ fn is_link_id(value: &str) -> bool {
 }
 
 /// One label of `DomainName`: `[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?`.
-fn is_dns_label(label: &str) -> bool {
+pub(crate) fn is_dns_label(label: &str) -> bool {
     (1..=63).contains(&label.len())
         && label
             .chars()
@@ -351,7 +351,11 @@ fn is_dns_label(label: &str) -> bool {
 }
 
 /// `DomainName`: len 1..255, two or more labels joined by dots.
-fn is_domain_name(value: &str) -> bool {
+///
+/// The one reading of the modelled pattern in this crate's suites: a suite that
+/// asserts a name this service assigns is a `DomainName` the model admits calls this
+/// rather than spelling the grammar again.
+pub(crate) fn is_domain_name(value: &str) -> bool {
     let labels: Vec<&str> = value.split('.').collect();
     (1..=255).contains(&value.len()) && labels.len() >= 2 && labels.iter().all(|l| is_dns_label(l))
 }

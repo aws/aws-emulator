@@ -9,6 +9,13 @@
 //! about exactly the same set of resources, and cannot drift apart about which ARN
 //! names what.
 //!
+//! An ARN names a Region as well as a resource, and a resource of this service is in
+//! the Region it was created in — the Region its gateway's record holds — so that is
+//! what the ARN's Region field is held against ([`names_its_own_region`]). Nothing
+//! here reads the Region the CALLING request was signed for: a tagging call resolves
+//! a record exactly as the resource's own read does, irrespective of the caller's
+//! credential scope.
+//!
 //! Which records this surface can address is whatever the store holds once the clock
 //! has been settled, so each of the three handlers calls
 //! [`settle_all`](super::ComAmazonawsRtbfabricRtbfabricState::settle_all) before it
@@ -102,15 +109,32 @@ pub fn tagging_unresolved<E>() -> crate::scaffolded::Scaffolded<E> {
     )
 }
 
-/// What a tagging ARN addresses: the ids its resource field carries, read against
-/// the one grammar the modelled `RtbTaggableResourceArn` pattern states
-/// (`gateway/<gatewayId>`, optionally `/link/<linkId>`, optionally
-/// `/routing-rule/<ruleId>`).
+/// What a tagging ARN addresses: the Region its Region field names, and the
+/// resource its resource field does.
+///
+/// Both are needed to say WHICH record is addressed, because a stored resource
+/// belongs to the Region it was created in: [`resource_tags`] resolves the ids and
+/// holds the record's own Region against [`region`](Self::region).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TaggedResource<'a> {
+    /// The ARN's Region field, exactly as the caller spelled it. Compared with the
+    /// Region the addressed record was created in, never with the Region the
+    /// CALLING request was signed for: a resource is in one Region whoever asks
+    /// about it, exactly as every other read of this crate resolves a record
+    /// irrespective of the caller's credential scope.
+    pub region: &'a str,
+    /// The resource the ARN's resource field names.
+    pub resource: TaggedResourceId<'a>,
+}
+
+/// The ids a tagging ARN's resource field carries, read against the one grammar the
+/// modelled `RtbTaggableResourceArn` pattern states (`gateway/<gatewayId>`,
+/// optionally `/link/<linkId>`, optionally `/routing-rule/<ruleId>`).
 ///
 /// Which of these this store can actually hold is [`resource_tags`]'s table, the
 /// same one [`resource_tags_mut`] writes through.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TaggedResource<'a> {
+pub enum TaggedResourceId<'a> {
     /// A requester or responder gateway: `gateway/<gatewayId>`.
     Gateway {
         /// The `gatewayId` the ARN names.
@@ -139,39 +163,56 @@ pub enum TaggedResource<'a> {
     },
 }
 
-/// The resource `resource_arn` addresses in the account and Region this request was
-/// made against, or `None` when it addresses none.
+impl<'a> TaggedResourceId<'a> {
+    /// The gateway this ARN is addressed through, which every form of it names
+    /// first: the gateway itself, or the gateway a link or a rule on that link
+    /// hangs off. It is what says which Region the addressed resource is in, since
+    /// a link and a rule belong to the gateway they are addressed through.
+    #[must_use]
+    pub fn gateway_id(&self) -> &'a str {
+        match *self {
+            Self::Gateway { gateway_id }
+            | Self::Link { gateway_id, .. }
+            | Self::LinkRoutingRule { gateway_id, .. } => gateway_id,
+        }
+    }
+}
+
+/// What `resource_arn` addresses in this emulator's own account, or `None` when it
+/// addresses nothing this service can hold.
 ///
 /// The ARN is read through the one cross-service ARN parse, so the vendor field says
 /// whose resource is named. A tagging call is answered about this emulator's own
-/// account ([`::engine::emulator_account_id`]) in the Region the request addressed:
-/// an ARN naming another partition, another account or another Region names a
-/// resource this store never holds, which is the same answer as one naming a gateway
-/// that was never created.
-pub fn tagged_resource<'a>(resource_arn: &'a str, region: &str) -> Option<TaggedResource<'a>> {
+/// account ([`::engine::emulator_account_id`]): an ARN naming another partition or
+/// another account names a resource this store never holds, which is the same answer
+/// as one naming a gateway that was never created. The Region field is carried out
+/// of here rather than compared here, because what it has to agree with is the
+/// Region of the RECORD it names, which only the store knows ([`resource_tags`]).
+pub fn tagged_resource(resource_arn: &str) -> Option<TaggedResource<'_>> {
     let arn = ::service_common::arn::parse_of(resource_arn, ARN_VENDOR)?;
-    if arn.partition != ARN_PARTITION
-        || arn.region != region
-        || arn.account != ::engine::emulator_account_id()
-    {
+    if arn.partition != ARN_PARTITION || arn.account != ::engine::emulator_account_id() {
         return None;
     }
 
     let segments: Vec<&str> = arn.resource.split('/').collect();
-    Some(match segments[..] {
-        [GATEWAY_SEGMENT, gateway_id] => TaggedResource::Gateway { gateway_id },
-        [GATEWAY_SEGMENT, gateway_id, LINK_SEGMENT, link_id] => TaggedResource::Link {
+    let resource = match segments[..] {
+        [GATEWAY_SEGMENT, gateway_id] => TaggedResourceId::Gateway { gateway_id },
+        [GATEWAY_SEGMENT, gateway_id, LINK_SEGMENT, link_id] => TaggedResourceId::Link {
             gateway_id,
             link_id,
         },
         [GATEWAY_SEGMENT, gateway_id, LINK_SEGMENT, link_id, ROUTING_RULE_SEGMENT, rule_id] => {
-            TaggedResource::LinkRoutingRule {
+            TaggedResourceId::LinkRoutingRule {
                 gateway_id,
                 link_id,
                 rule_id,
             }
         }
         _ => return None,
+    };
+    Some(TaggedResource {
+        region: arn.region,
+        resource,
     })
 }
 
@@ -222,6 +263,45 @@ fn link_tags_mut<'a>(
         .map(|link| &mut link.tags)
 }
 
+/// The Region the gateway `gateway_id` was created in, whichever kind of gateway
+/// the store holds under that id; `None` when it holds none.
+///
+/// A gateway id names a gateway of ONE kind, so the two maps are asked in turn and
+/// the first that holds it answers.
+fn gateway_region<'a>(
+    state: &'a ComAmazonawsRtbfabricRtbfabricState,
+    gateway_id: &str,
+) -> Option<&'a str> {
+    state
+        .requester_gateways
+        .get(gateway_id)
+        .map(|gateway| gateway.region.as_str())
+        .or_else(|| {
+            state
+                .responder_gateways
+                .get(gateway_id)
+                .map(|gateway| gateway.region.as_str())
+        })
+}
+
+/// Whether `addressed`'s Region field names the Region the addressed resource is
+/// actually in — the ONE place a tagging ARN's Region field is held to anything.
+///
+/// The Region of a resource of this service is the Region the gateway it is
+/// addressed through was created in: a link and a routing rule hang off that
+/// gateway and are addressed only through it, so they are where it is. An ARN
+/// naming any other Region names a resource this store never holds, which is the
+/// same answer as one naming a gateway that was never created — and the Region the
+/// CALLING request was signed for is not consulted, so one resource answers the
+/// same whoever asks about it.
+fn names_its_own_region(
+    state: &ComAmazonawsRtbfabricRtbfabricState,
+    addressed: TaggedResource<'_>,
+) -> bool {
+    gateway_region(state, addressed.resource.gateway_id())
+        .is_some_and(|region| region == addressed.region)
+}
+
 /// The tags the addressed record holds, or `None` when this store holds no such
 /// record.
 ///
@@ -229,16 +309,20 @@ fn link_tags_mut<'a>(
 /// any kind the store holds — one between two gateways read from either of its two
 /// ends, or an external link of either direction read through the gateway it was
 /// created on — and a routing rule read through its own link from either of that
-/// link's ends. Every record that carries a caller-assigned `tags` map is reachable
-/// here, since a tag map is managed through this surface whichever call assigned it.
-/// An ARN naming a record this store does not hold is answered exactly as an ARN
-/// naming a gateway that was never created is.
+/// link's ends, each in the Region its gateway was created in
+/// ([`names_its_own_region`]). Every record that carries a caller-assigned `tags`
+/// map is reachable here, since a tag map is managed through this surface whichever
+/// call assigned it. An ARN naming a record this store does not hold is answered
+/// exactly as an ARN naming a gateway that was never created is.
 pub fn resource_tags<'a>(
     state: &'a ComAmazonawsRtbfabricRtbfabricState,
-    resource: TaggedResource<'_>,
+    addressed: TaggedResource<'_>,
 ) -> Option<&'a HashMap<String, String>> {
-    match resource {
-        TaggedResource::Gateway { gateway_id } => state
+    if !names_its_own_region(state, addressed) {
+        return None;
+    }
+    match addressed.resource {
+        TaggedResourceId::Gateway { gateway_id } => state
             .requester_gateways
             .get(gateway_id)
             .map(|gateway| &gateway.tags)
@@ -248,11 +332,11 @@ pub fn resource_tags<'a>(
                     .get(gateway_id)
                     .map(|gateway| &gateway.tags)
             }),
-        TaggedResource::Link {
+        TaggedResourceId::Link {
             gateway_id,
             link_id,
         } => link_tags(state, gateway_id, link_id),
-        TaggedResource::LinkRoutingRule {
+        TaggedResourceId::LinkRoutingRule {
             gateway_id,
             link_id,
             rule_id,
@@ -265,14 +349,18 @@ pub fn resource_tags<'a>(
 /// The tags of the addressed record, to be changed in place; `None` when this store
 /// holds no such record.
 ///
-/// Addresses exactly the records [`resource_tags`] reports, so a tag write and the
-/// read that follows it cannot disagree about which resource was named.
+/// Addresses exactly the records [`resource_tags`] reports — the same Region gate
+/// included — so a tag write and the read that follows it cannot disagree about
+/// which resource was named.
 pub fn resource_tags_mut<'a>(
     state: &'a mut ComAmazonawsRtbfabricRtbfabricState,
-    resource: TaggedResource<'_>,
+    addressed: TaggedResource<'_>,
 ) -> Option<&'a mut HashMap<String, String>> {
-    match resource {
-        TaggedResource::Gateway { gateway_id } => {
+    if !names_its_own_region(state, addressed) {
+        return None;
+    }
+    match addressed.resource {
+        TaggedResourceId::Gateway { gateway_id } => {
             // One id names a gateway of ONE kind, so the requester map is asked first
             // and the responder map only for an id it does not hold.
             match state.requester_gateways.get_mut(gateway_id) {
@@ -283,11 +371,11 @@ pub fn resource_tags_mut<'a>(
                     .map(|gateway| &mut gateway.tags),
             }
         }
-        TaggedResource::Link {
+        TaggedResourceId::Link {
             gateway_id,
             link_id,
         } => link_tags_mut(state, gateway_id, link_id),
-        TaggedResource::LinkRoutingRule {
+        TaggedResourceId::LinkRoutingRule {
             gateway_id,
             link_id,
             rule_id,

@@ -143,7 +143,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        let region = crate::state::request_region(ctx.parts());
+        let _ = ctx;
         let now = ::std::time::SystemTime::now();
 
         let state = crate::state::service_state(&*self.engine).ok_or_else(|| {
@@ -158,7 +158,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // the crate no longer holds.
         store.settle_all(now);
 
-        let resource = crate::state::tagged_resource(&input.resource_arn, &region)
+        let resource = crate::state::tagged_resource(&input.resource_arn)
             .ok_or_else(crate::state::tagging_unresolved)?;
         let tags = crate::state::resource_tags_mut(&mut store, resource)
             .ok_or_else(crate::state::tagging_unresolved)?;

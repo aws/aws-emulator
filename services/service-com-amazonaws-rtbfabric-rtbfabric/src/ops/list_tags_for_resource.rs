@@ -149,7 +149,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
     ) -> Result<Self::Output, Self::Error> {
         // Reporting only: the sole write is the set of status transitions the clock
         // had already made due at this instant, owed whether or not anybody read.
-        let region = crate::state::request_region(ctx.parts());
+        let _ = ctx;
         let now = ::std::time::SystemTime::now();
 
         let state = crate::state::service_state(&*self.engine).ok_or_else(|| {
@@ -164,7 +164,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // answer about one set of records.
         store.settle_all(now);
 
-        let resource = crate::state::tagged_resource(&input.resource_arn, &region)
+        let resource = crate::state::tagged_resource(&input.resource_arn)
             .ok_or_else(crate::state::tagging_unresolved)?;
         let tags = crate::state::resource_tags(&store, resource)
             .ok_or_else(crate::state::tagging_unresolved)?;

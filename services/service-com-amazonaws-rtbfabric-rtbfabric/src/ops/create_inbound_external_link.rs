@@ -176,7 +176,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
         let now = ::std::time::SystemTime::now();
-        let region = crate::state::request_region(ctx.parts());
+        let _ = ctx;
 
         let state = crate::state::service_state(&*self.engine).ok_or_else(|| {
             CreateInboundExternalLinkErrorModeled::InternalServerException(
@@ -216,6 +216,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             )
             .into());
         }
+        // The link is reached under the gateway's own inbound name, so the Region
+        // that name carries is the Region the GATEWAY belongs to — read off its
+        // record — and not the Region whichever call opened this link was signed
+        // for, which would name the link under a zone the gateway does not answer on.
+        let gateway_region = gateway.region.clone();
 
         // See `create_requester_gateway` for the `@idempotencyToken` contract; the
         // token is scoped to this operation, so it never collides with a create of
@@ -302,7 +307,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             domain_name: crate::state::inbound_external_link_domain_name(
                 &input.gateway_id,
                 &link_id,
-                &region,
+                &gateway_region,
             ),
             link_id: link_id.clone(),
             gateway_id: input.gateway_id.clone(),

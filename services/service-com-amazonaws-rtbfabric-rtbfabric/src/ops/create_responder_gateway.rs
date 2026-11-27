@@ -335,6 +335,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         let gateway_id = store.mint_gateway_id();
         let mut gateway = crate::state::ResponderGateway {
+            // The Region this gateway belongs to, from the creating call's own
+            // credential scope: see `create_requester_gateway`.
+            region,
             // Stored exactly as the caller named it: a gateway reached through a
             // managed endpoint has no domain name, and the service does not
             // invent one.
@@ -367,8 +370,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // public inbound endpoint. The type is read off the record through the one
         // reading of it the whole crate shares.
         if gateway.is_external() {
-            gateway.external_inbound_endpoint =
-                Some(crate::state::external_inbound_endpoint(&gateway_id, &region));
+            // Built from the Region the gateway belongs to, which is the record's own
+            // now, rather than from the Region of whichever call reads it next.
+            let endpoint = crate::state::external_inbound_endpoint(&gateway_id, &gateway.region);
+            gateway.external_inbound_endpoint = Some(endpoint);
         }
 
         let output = CreateResponderGatewayOutput {
