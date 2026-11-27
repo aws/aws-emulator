@@ -30,6 +30,7 @@ pub struct ProcessPaymentInput {
 pub enum PaymentInput {
     cryptoX402(CryptoX402PaymentInput),
     Mpp(MppPaymentInput),
+    awsBillingX402(AwsBillingX402PaymentInput),
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.bedrockagentcore#CryptoX402PaymentInput")]
@@ -46,6 +47,29 @@ pub struct MppPaymentInput {
     pub version: String,
     pub www_authenticate_headers: Vec<String>,
     pub buyer_pays_gas_fees: Option<bool>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.bedrockagentcore#AwsBillingX402PaymentInput")]
+#[derive(Debug, Clone, Default)]
+pub struct AwsBillingX402PaymentInput {
+    pub version: String,
+    pub payload: ::aws_smithy_types::Document,
+    pub options: Option<AwsBillingPaymentOptions>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.bedrockagentcore#AwsBillingPaymentOptions")]
+#[derive(Debug, Clone, Default)]
+pub struct AwsBillingPaymentOptions {
+    pub dpop_jwk: Option<DpopJwk>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.bedrockagentcore#DpopJwk")]
+#[derive(Debug, Clone, Default)]
+pub struct DpopJwk {
+    pub kty: String,
+    pub crv: String,
+    pub x: String,
+    pub y: String,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.bedrockagentcore#ProcessPaymentResponse")]
@@ -68,6 +92,7 @@ pub struct ProcessPaymentOutput {
 pub enum PaymentOutput {
     cryptoX402(CryptoX402PaymentOutput),
     Mpp(MppPaymentOutput),
+    awsBillingX402(AwsBillingX402PaymentOutput),
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.bedrockagentcore#CryptoX402PaymentOutput")]
@@ -83,5 +108,12 @@ pub struct MppPaymentOutput {
     pub version: String,
     pub selected_payment_id: String,
     pub payment_credential: String,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.bedrockagentcore#AwsBillingX402PaymentOutput")]
+#[derive(Debug, Clone, Default)]
+pub struct AwsBillingX402PaymentOutput {
+    pub version: String,
+    pub payment_token: String,
 }
 

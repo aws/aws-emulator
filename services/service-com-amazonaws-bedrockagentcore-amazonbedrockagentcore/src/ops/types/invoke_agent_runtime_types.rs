@@ -36,6 +36,7 @@ pub struct InvokeAgentRuntimeInput {
 #[derive(Debug, Clone, Default)]
 pub struct InvokeAgentRuntimeOutput {
     pub runtime_session_id: Option<String>,
+    pub session_endpoint_url: Option<String>,
     pub mcp_session_id: Option<String>,
     pub mcp_protocol_version: Option<String>,
     pub trace_id: Option<String>,

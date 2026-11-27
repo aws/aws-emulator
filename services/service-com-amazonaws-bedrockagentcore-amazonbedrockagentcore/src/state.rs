@@ -159,6 +159,12 @@ pub use resource_token_auth_sessions::*;
 mod batch_evaluations;
 pub use batch_evaluations::*;
 
+/// The dataset run a batch evaluation carries out before it evaluates anything:
+/// [`resolve_dataset_execution`], which settles the dataset version and the agent runtime
+/// version the job runs against.
+mod dataset_executions;
+pub use dataset_executions::*;
+
 /// The agent-runtime plane: [`resolve_runtime_endpoint`], which says which endpoint of
 /// which runtime a data-plane call addresses, and [`RuntimeSessionRecord`], the sessions
 /// running in one.

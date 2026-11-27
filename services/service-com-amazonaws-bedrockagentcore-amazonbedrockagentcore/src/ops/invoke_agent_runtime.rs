@@ -446,6 +446,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         Ok(InvokeAgentRuntimeOutput {
             // The session the invocation ran in, which a later call addresses it by.
             runtime_session_id: Some(session_id),
+            // "The HTTPS endpoint that addresses this runtime session directly. This value
+            // is returned only when the agent runtime is configured with allowed ports and
+            // direct runtime access is available for the session. If this value is not
+            // present, use `InvokeAgentRuntime` to communicate with the session." No
+            // allowed-ports configuration exists to put on a runtime — `CreateAgentRuntime`
+            // models none — so no session of this emulator is reachable at an endpoint of
+            // its own, and the member is absent rather than carrying an address nothing
+            // answers at.
+            session_endpoint_url: None,
             // The trace context travels back to the caller as the request carried it: these
             // are the caller's own values, propagated rather than minted here.
             trace_id: input.trace_id,

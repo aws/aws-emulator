@@ -38,6 +38,7 @@ pub struct GetBatchEvaluationOutput {
     pub description: Option<String>,
     pub updated_at: Option<::aws_smithy_types::DateTime>,
     pub kms_key_arn: Option<String>,
+    pub dataset_execution_details: Option<DatasetExecutionDetails>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.bedrockagentcore#InsightResult")]
@@ -50,34 +51,6 @@ pub struct InsightResult {
     pub affected_session_count: Option<i32>,
     pub sample_sessions: Option<Vec<SampleSession>>,
     pub root_causes: Option<Vec<InsightRootCause>>,
-}
-
-#[smithy_macros::smithy(shape = "com.amazonaws.bedrockagentcore#SampleSession")]
-#[derive(Debug, Clone, Default)]
-pub struct SampleSession {
-    pub session_id: String,
-    pub last_seen_at: Option<::aws_smithy_types::DateTime>,
-    pub findings: Option<Vec<SessionFinding>>,
-}
-
-#[smithy_macros::smithy(shape = "com.amazonaws.bedrockagentcore#SessionFinding")]
-#[derive(Debug, Clone, Default)]
-pub struct SessionFinding {
-    pub target_id: Option<String>,
-    pub target_type: Option<String>,
-    pub description: String,
-    pub category: Option<String>,
-    pub confidence: Option<f64>,
-}
-
-#[smithy_macros::smithy(shape = "com.amazonaws.bedrockagentcore#InsightRootCause")]
-#[derive(Debug, Clone, Default)]
-pub struct InsightRootCause {
-    pub name: String,
-    pub explanation: String,
-    pub affected_session_count: Option<i32>,
-    pub suggested_fix: Option<String>,
-    pub sample_sessions: Option<Vec<SampleSession>>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.bedrockagentcore#FailureAnalysisResultContent")]
@@ -188,5 +161,34 @@ pub struct ExecutionSummaryAffectedSession {
     pub session_id: String,
     pub approach_taken: String,
     pub final_outcome: String,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.bedrockagentcore#DatasetExecutionDetails")]
+#[derive(Debug, Clone)]
+pub struct DatasetExecutionDetails {
+    pub dataset: DatasetDetails,
+    pub agent_invocation: AgentInvocationDetails,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.bedrockagentcore#DatasetDetails")]
+#[derive(Debug, Clone, Default)]
+pub struct DatasetDetails {
+    pub dataset_id: String,
+    pub dataset_version: String,
+}
+
+#[smithy_macros::smithy(union_for = "com.amazonaws.bedrockagentcore#AgentInvocationDetails")]
+#[allow(clippy::large_enum_variant)]
+#[derive(Debug, Clone)]
+pub enum AgentInvocationDetails {
+    agentCoreRuntime(AgentCoreRuntimeInvocationDetails),
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.bedrockagentcore#AgentCoreRuntimeInvocationDetails")]
+#[derive(Debug, Clone, Default)]
+pub struct AgentCoreRuntimeInvocationDetails {
+    pub agent_runtime_endpoint_arn: String,
+    pub agent_runtime_version: String,
+    pub request_template: Option<String>,
 }
 

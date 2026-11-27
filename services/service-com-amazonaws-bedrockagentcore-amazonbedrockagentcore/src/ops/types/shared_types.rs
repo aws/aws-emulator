@@ -41,88 +41,12 @@ pub struct UnauthorizedException {
     pub message: Option<String>,
 }
 
-/// The modelled 400 for a refusal a request MEMBER is at fault for, which is what
-/// `reason` classifies and `fieldList` names: the whole shape, as the model declares it.
 #[smithy_macros::smithy(shape = "com.amazonaws.bedrockagentcore#ValidationException")]
 #[derive(Debug, Clone, Default)]
 pub struct ValidationException {
     pub message: String,
     pub reason: String,
     pub field_list: Option<Vec<ValidationExceptionField>>,
-}
-
-/// The same modelled `ValidationException`, for a refusal NO request member is at fault
-/// for: the resource the request addresses is in a state that no longer permits the call.
-///
-/// `reason` classifies WHICH member failed its constraints (`ValidationExceptionReason` =
-/// CannotParse | FieldValidationFailed | IdempotentParameterMismatchException |
-/// EventInOtherSession | ResourceConflict, source: `smithy_query(query="shape",
-/// shape="ValidationExceptionReason")`) and `fieldList` names those members, so a refusal
-/// over a resource's state carries neither: every member of such a request is well formed,
-/// and a client reading `FieldValidationFailed` would re-validate input that was never at
-/// fault instead of taking the recovery the state calls for. Both members are therefore
-/// declared unsupported, which keeps them out of this shape's schema and so out of the body
-/// the framework writes — `reason` is `@required`, so the whole shape above cannot leave it
-/// out. Everything else is the model's: the same shape id, the same `message` member, so
-/// the status (400), the error code and the message are unchanged.
-#[smithy_macros::smithy(
-    shape = "com.amazonaws.bedrockagentcore#ValidationException",
-    unsupported = ["reason", "fieldList"]
-)]
-#[derive(Debug, Clone, Default)]
-pub struct ResourceStateValidationException {
-    pub message: String,
-}
-
-/// Which of the two bodies above a modelled `ValidationException` this service raises goes
-/// on the wire as — the payload of the `ValidationException` variant of an operation whose
-/// refusals can be of either class.
-///
-/// The variant, the error code (`ValidationException`) and the status (400) are the same
-/// for both; only the members beyond `message` differ, and which class a refusal belongs to
-/// is the handler's statement about WHAT it refused, never about the operation it refused
-/// it in.
-#[derive(Debug, Clone)]
-pub enum ValidationRefusal {
-    /// A request member is at fault: `reason`, and a `fieldList` wherever the member can be
-    /// named, travel with the message.
-    Field(ValidationException),
-    /// No request member is at fault — the addressed resource's state refused the call — so
-    /// the body carries `message` alone.
-    ResourceState(ResourceStateValidationException),
-}
-
-impl ValidationRefusal {
-    /// The refusal of a call the addressed resource's state does not permit, carrying
-    /// `message` alone.
-    pub fn resource_state(message: impl Into<String>) -> Self {
-        Self::ResourceState(ResourceStateValidationException {
-            message: message.into(),
-        })
-    }
-}
-
-impl ::std::fmt::Display for ValidationRefusal {
-    fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
-        match self {
-            Self::Field(refusal) => refusal.fmt(f),
-            Self::ResourceState(refusal) => refusal.fmt(f),
-        }
-    }
-}
-
-impl ::std::error::Error for ValidationRefusal {}
-
-impl ::aws_smithy_schema::serde::SerializableStruct for ValidationRefusal {
-    fn serialize_members(
-        &self,
-        serializer: &mut dyn ::aws_smithy_schema::serde::ShapeSerializer,
-    ) -> ::std::result::Result<(), ::aws_smithy_schema::serde::SerdeError> {
-        match self {
-            Self::Field(refusal) => refusal.serialize_members(serializer),
-            Self::ResourceState(refusal) => refusal.serialize_members(serializer),
-        }
-    }
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.bedrockagentcore#ValidationExceptionField")]
@@ -364,6 +288,34 @@ pub struct EvaluationExpectedTrajectory {
     pub tool_names: Option<Vec<String>>,
 }
 
+#[smithy_macros::smithy(shape = "com.amazonaws.bedrockagentcore#SampleSession")]
+#[derive(Debug, Clone, Default)]
+pub struct SampleSession {
+    pub session_id: String,
+    pub last_seen_at: Option<::aws_smithy_types::DateTime>,
+    pub findings: Option<Vec<SessionFinding>>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.bedrockagentcore#SessionFinding")]
+#[derive(Debug, Clone, Default)]
+pub struct SessionFinding {
+    pub target_id: Option<String>,
+    pub target_type: Option<String>,
+    pub description: String,
+    pub category: Option<String>,
+    pub confidence: Option<f64>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.bedrockagentcore#InsightRootCause")]
+#[derive(Debug, Clone, Default)]
+pub struct InsightRootCause {
+    pub name: String,
+    pub explanation: String,
+    pub affected_session_count: Option<i32>,
+    pub suggested_fix: Option<String>,
+    pub sample_sessions: Option<Vec<SampleSession>>,
+}
+
 #[smithy_macros::smithy(shape = "com.amazonaws.bedrockagentcore#Evaluator")]
 #[derive(Debug, Clone, Default)]
 pub struct Evaluator {
@@ -453,6 +405,7 @@ pub struct EvaluationJobResults {
 #[derive(Debug, Clone, Default)]
 pub struct EvaluatorSummary {
     pub evaluator_id: Option<String>,
+    pub evaluation_dimension_name: Option<String>,
     pub statistics: Option<EvaluatorStatistics>,
     pub total_evaluated: Option<i32>,
     pub total_failed: Option<i32>,
@@ -462,6 +415,108 @@ pub struct EvaluatorSummary {
 #[derive(Debug, Clone, Default)]
 pub struct EvaluatorStatistics {
     pub average_score: Option<f64>,
+}
+
+#[smithy_macros::smithy(union_for = "com.amazonaws.bedrockagentcore#TraceSourceConfig")]
+#[allow(clippy::large_enum_variant)]
+#[derive(Debug, Clone)]
+pub enum TraceSourceConfig {
+    cloudWatchLogs(CloudWatchLogsSourceConfig),
+    onlineEvaluation(OnlineEvaluationSourceConfig),
+    batchEvaluation(BatchEvaluationSourceConfig),
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.bedrockagentcore#CloudWatchLogsSourceConfig")]
+#[derive(Debug, Clone, Default)]
+pub struct CloudWatchLogsSourceConfig {
+    pub log_group_names: Option<Vec<String>>,
+    pub log_group_name_prefixes: Option<Vec<String>>,
+    pub service_names: Vec<String>,
+    pub start_time: Option<::aws_smithy_types::DateTime>,
+    pub end_time: Option<::aws_smithy_types::DateTime>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.bedrockagentcore#OnlineEvaluationSourceConfig")]
+#[derive(Debug, Clone, Default)]
+pub struct OnlineEvaluationSourceConfig {
+    pub online_evaluation_config_arn: String,
+    pub start_time: Option<::aws_smithy_types::DateTime>,
+    pub end_time: Option<::aws_smithy_types::DateTime>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.bedrockagentcore#BatchEvaluationSourceConfig")]
+#[derive(Debug, Clone, Default)]
+pub struct BatchEvaluationSourceConfig {
+    pub batch_evaluation_arn: String,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.bedrockagentcore#GenerationFilters")]
+#[derive(Debug, Clone, Default)]
+pub struct GenerationFilters {
+    pub attribute_filters: Option<Vec<GenerationAttributeFilter>>,
+    pub turn_count: Option<TurnCountRange>,
+    pub evaluator_filters: Option<Vec<EvaluatorFilter>>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.bedrockagentcore#GenerationAttributeFilter")]
+#[derive(Debug, Clone)]
+pub struct GenerationAttributeFilter {
+    pub key: String,
+    pub operator: String,
+    pub value: GenerationFilterValue,
+}
+
+#[smithy_macros::smithy(union_for = "com.amazonaws.bedrockagentcore#GenerationFilterValue")]
+#[allow(clippy::large_enum_variant)]
+#[derive(Debug, Clone)]
+pub enum GenerationFilterValue {
+    stringValue(String),
+    doubleValue(f64),
+    booleanValue(bool),
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.bedrockagentcore#TurnCountRange")]
+#[derive(Debug, Clone, Default)]
+pub struct TurnCountRange {
+    pub min: Option<i32>,
+    pub max: Option<i32>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.bedrockagentcore#EvaluatorFilter")]
+#[derive(Debug, Clone)]
+pub struct EvaluatorFilter {
+    pub evaluator_id: String,
+    pub evaluation_dimension_name: Option<String>,
+    pub operator: String,
+    pub value: GenerationFilterValue,
+    pub aggregation: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.bedrockagentcore#GenerationSamplingConfig")]
+#[derive(Debug, Clone, Default)]
+pub struct GenerationSamplingConfig {
+    pub max_scenarios: Option<i32>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.bedrockagentcore#GroundTruthConfig")]
+#[derive(Debug, Clone, Default)]
+pub struct GroundTruthConfig {
+    pub fields: Vec<String>,
+    pub quality_filters: Option<Vec<EvaluatorFilter>>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.bedrockagentcore#RedactionConfiguration")]
+#[derive(Debug, Clone, Default)]
+pub struct RedactionConfiguration {
+    pub identifiers: Option<Vec<String>>,
+    pub custom_data_identifiers: Option<Vec<CustomDataIdentifier>>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.bedrockagentcore#CustomDataIdentifier")]
+#[derive(Debug, Clone, Default)]
+pub struct CustomDataIdentifier {
+    pub name: String,
+    pub regex: String,
 }
 
 #[smithy_macros::smithy(union_for = "com.amazonaws.bedrockagentcore#RecommendationConfig")]
@@ -865,10 +920,10 @@ pub struct Amount {
     pub currency: String,
 }
 
-/// Declared WITHOUT `#[smithy_macros::smithy(shape = ...)]`: its `createdAt` and
-/// `updatedAt` target `DateTimestamp` (`@timestampFormat("date-time")`), which the derive
-/// drops, so this shape's schema and serializer are hand-written in
-/// [`super::date_time_wire`].
+/// `PaymentSession`. Its schema and serializer are hand-written in
+/// [`super::date_time_wire`] rather than derived, because `createdAt` and `updatedAt`
+/// target a `@timestampFormat("date-time")` shape the derive does not carry onto a member
+/// schema.
 #[derive(Debug, Clone)]
 pub struct PaymentSession {
     pub payment_session_id: String,
@@ -881,8 +936,8 @@ pub struct PaymentSession {
     pub updated_at: ::aws_smithy_types::DateTime,
 }
 
-/// Declared WITHOUT the derive for the same reason as [`PaymentSession`]: its `updatedAt`
-/// targets `DateTimestamp`, so [`super::date_time_wire`] carries its schema and serializer.
+/// `AvailableLimits`. Its schema and serializer are hand-written in
+/// [`super::date_time_wire`], for the reason given on [`PaymentSession`].
 #[derive(Debug, Clone, Default)]
 pub struct AvailableLimits {
     pub available_spend_amount: Option<Amount>,
@@ -895,6 +950,14 @@ pub const A_B_TEST_EXECUTION_STATUS_VALUES: &[&str] = &["NOT_STARTED", "PAUSED",
 
 /// The values `ABTestStatus` accepts on the wire.
 pub const A_B_TEST_STATUS_VALUES: &[&str] = &["ACTIVE", "CREATE_FAILED", "CREATING", "DELETE_FAILED", "DELETING", "FAILED", "UPDATE_FAILED", "UPDATING"];
+
+
+/// The values `AgentInsightArchiveStatus` accepts on the wire.
+pub const AGENT_INSIGHT_ARCHIVE_STATUS_VALUES: &[&str] = &["ACTIVE", "ARCHIVED"];
+
+
+/// The values `AgentInsightCustomerMetadataStatus` accepts on the wire.
+pub const AGENT_INSIGHT_CUSTOMER_METADATA_STATUS_VALUES: &[&str] = &["AVAILABLE", "CUSTOMER_KEY_UNAVAILABLE", "UNAVAILABLE"];
 
 
 /// The values `AutomationStreamStatus` accepts on the wire.
@@ -941,6 +1004,10 @@ pub const CRYPTO_WALLET_NETWORK_VALUES: &[&str] = &["ETHEREUM", "SOLANA"];
 pub const CURRENCY_VALUES: &[&str] = &["USD"];
 
 
+/// The values `DatasetGenerationStatus` accepts on the wire.
+pub const DATASET_GENERATION_STATUS_VALUES: &[&str] = &["COMPLETED", "COMPLETED_WITH_ERRORS", "DELETING", "FAILED", "IN_PROGRESS"];
+
+
 /// The values `DescriptorType` accepts on the wire.
 pub const DESCRIPTOR_TYPE_VALUES: &[&str] = &["A2A", "AGENT_SKILLS", "CUSTOM", "MCP"];
 
@@ -961,6 +1028,14 @@ pub const EXTRACTION_MODE_VALUES: &[&str] = &["SKIP"];
 pub const FINDING_TARGET_TYPE_VALUES: &[&str] = &["SPAN_ID", "SPAN_NAME", "TRACE_ID"];
 
 
+/// The values `GenerationFilterOperator` accepts on the wire.
+pub const GENERATION_FILTER_OPERATOR_VALUES: &[&str] = &["Contains", "Equals", "GreaterThan", "GreaterThanOrEqual", "LessThan", "LessThanOrEqual", "NotContains", "NotEquals"];
+
+
+/// The values `GroundTruthField` accepts on the wire.
+pub const GROUND_TRUTH_FIELD_VALUES: &[&str] = &["expected_response", "expected_trajectory"];
+
+
 /// The values `InsightType` accepts on the wire.
 pub const INSIGHT_TYPE_VALUES: &[&str] = &["FAILURE"];
 
@@ -971,6 +1046,14 @@ pub const INSIGHTS_FAILURE_CATEGORY_VALUES: &[&str] = &["coding-use-case-specifi
 
 /// The values `InstrumentBalanceToken` accepts on the wire.
 pub const INSTRUMENT_BALANCE_TOKEN_VALUES: &[&str] = &["USDC"];
+
+
+/// The values `JwkEllipticCurve` accepts on the wire.
+pub const JWK_ELLIPTIC_CURVE_VALUES: &[&str] = &["P-256", "P-384", "P-521"];
+
+
+/// The values `JwkKeyType` accepts on the wire.
+pub const JWK_KEY_TYPE_VALUES: &[&str] = &["EC"];
 
 
 /// The values `MemoryRecordOperatorType` accepts on the wire.
@@ -1014,7 +1097,7 @@ pub const PAYMENT_STATUS_VALUES: &[&str] = &["PROOF_GENERATED"];
 
 
 /// The values `PaymentType` accepts on the wire.
-pub const PAYMENT_TYPE_VALUES: &[&str] = &["CRYPTO_X402", "MPP"];
+pub const PAYMENT_TYPE_VALUES: &[&str] = &["AWS_BILLING_X402", "CRYPTO_X402", "MPP"];
 
 
 /// The values `RecommendationStatus` accepts on the wire.
@@ -1029,8 +1112,16 @@ pub const RECOMMENDATION_TYPE_VALUES: &[&str] = &["SYSTEM_PROMPT_RECOMMENDATION"
 pub const RECORD_EXPIRY_ACTION_VALUES: &[&str] = &["REMOVE"];
 
 
+/// The values `RedactionIdentifier` accepts on the wire.
+pub const REDACTION_IDENTIFIER_VALUES: &[&str] = &["ADDRESS", "AWS_SECRET_KEY", "BANK_ACCOUNT_NUMBER_DE", "BANK_ACCOUNT_NUMBER_ES", "BANK_ACCOUNT_NUMBER_FR", "BANK_ACCOUNT_NUMBER_GB", "BANK_ACCOUNT_NUMBER_IT", "BANK_ACCOUNT_NUMBER_US", "CEP_CODE_BR", "CNPJ_BR", "CPF_CODE_BR", "CREDIT_CARD_EXPIRATION", "CREDIT_CARD_MAGNETIC_STRIPE", "CREDIT_CARD_NUMBER", "CREDIT_CARD_SECURITY_CODE", "DATE_OF_BIRTH", "DRIVERS_LICENSE_AT", "DRIVERS_LICENSE_AU", "DRIVERS_LICENSE_BE", "DRIVERS_LICENSE_BG", "DRIVERS_LICENSE_CA", "DRIVERS_LICENSE_CY", "DRIVERS_LICENSE_CZ", "DRIVERS_LICENSE_DE", "DRIVERS_LICENSE_DK", "DRIVERS_LICENSE_EE", "DRIVERS_LICENSE_ES", "DRIVERS_LICENSE_FI", "DRIVERS_LICENSE_FR", "DRIVERS_LICENSE_GB", "DRIVERS_LICENSE_GR", "DRIVERS_LICENSE_HR", "DRIVERS_LICENSE_HU", "DRIVERS_LICENSE_IE", "DRIVERS_LICENSE_IT", "DRIVERS_LICENSE_LT", "DRIVERS_LICENSE_LU", "DRIVERS_LICENSE_LV", "DRIVERS_LICENSE_MT", "DRIVERS_LICENSE_NL", "DRIVERS_LICENSE_PL", "DRIVERS_LICENSE_PT", "DRIVERS_LICENSE_RO", "DRIVERS_LICENSE_SE", "DRIVERS_LICENSE_SI", "DRIVERS_LICENSE_SK", "DRIVERS_LICENSE_US", "DRUG_ENFORCEMENT_AGENCY_NUMBER_US", "ELECTORAL_ROLL_NUMBER_GB", "EMAIL_ADDRESS", "HEALTHCARE_PROCEDURE_CODE_US", "HEALTH_INSURANCE_CARD_NUMBER_EU", "HEALTH_INSURANCE_CLAIM_NUMBER_US", "HEALTH_INSURANCE_NUMBER_FR", "INDIVIDUAL_TAX_IDENTIFICATION_NUMBER_US", "INSEE_CODE_FR", "IP_ADDRESS", "LAT_LONG", "MEDICARE_BENEFICIARY_NUMBER_US", "NAME", "NATIONAL_DRUG_CODE_US", "NATIONAL_IDENTIFICATION_NUMBER_DE", "NATIONAL_IDENTIFICATION_NUMBER_ES", "NATIONAL_IDENTIFICATION_NUMBER_IT", "NATIONAL_INSURANCE_NUMBER_GB", "NATIONAL_PROVIDER_ID_US", "NHS_NUMBER_GB", "NIE_NUMBER_ES", "NIF_NUMBER_ES", "OPEN_SSH_PRIVATE_KEY", "PASSPORT_NUMBER_CA", "PASSPORT_NUMBER_DE", "PASSPORT_NUMBER_ES", "PASSPORT_NUMBER_FR", "PASSPORT_NUMBER_GB", "PASSPORT_NUMBER_IT", "PASSPORT_NUMBER_US", "PERMANENT_RESIDENCE_NUMBER_CA", "PERSONAL_HEALTH_NUMBER_CA", "PGP_PRIVATE_KEY", "PHONE_NUMBER_BR", "PHONE_NUMBER_DE", "PHONE_NUMBER_ES", "PHONE_NUMBER_FR", "PHONE_NUMBER_GB", "PHONE_NUMBER_IT", "PHONE_NUMBER_US", "PKCS_PRIVATE_KEY", "POSTAL_CODE_CA", "PUTTY_PRIVATE_KEY", "RG_NUMBER_BR", "SOCIAL_INSURANCE_NUMBER_CA", "SSN_ES", "SSN_US", "TAX_ID_DE", "TAX_ID_ES", "TAX_ID_FR", "TAX_ID_GB", "VEHICLE_IDENTIFICATION_NUMBER", "ZIP_CODE_US"];
+
+
 /// The values `RegistryRecordStatus` accepts on the wire.
 pub const REGISTRY_RECORD_STATUS_VALUES: &[&str] = &["APPROVED", "DEPRECATED", "DRAFT", "PENDING_APPROVAL", "REJECTED"];
+
+
+/// The values `ResultAggregation` accepts on the wire.
+pub const RESULT_AGGREGATION_VALUES: &[&str] = &["AllMatch", "AnyMatch", "Max", "Mean", "Min"];
 
 
 /// The values `ResultDestination` accepts on the wire.
@@ -1039,6 +1130,10 @@ pub const RESULT_DESTINATION_VALUES: &[&str] = &["DEDICATED_LOG_GROUP", "SOURCE_
 
 /// The values `Role` accepts on the wire.
 pub const ROLE_VALUES: &[&str] = &["ASSISTANT", "OTHER", "TOOL", "USER"];
+
+
+/// The values `ScenarioType` accepts on the wire.
+pub const SCENARIO_TYPE_VALUES: &[&str] = &["DYNAMIC", "FIXED"];
 
 
 /// The values `ScreenshotFormat` accepts on the wire.

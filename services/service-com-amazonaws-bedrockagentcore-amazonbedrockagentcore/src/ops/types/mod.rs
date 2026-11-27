@@ -14,11 +14,6 @@
 //! here named after an operation would make that operation's own module name
 //! ambiguous inside `ops` (`E0659`).
 
-// The schema and serializer for each response shape with a `@timestampFormat("date-time")`
-// member, because the vendored codegen drops that trait. Hand-added, not generated; see
-// the module's own note.
-pub mod date_time_wire;
-
 pub mod batch_create_memory_records_types;
 pub mod batch_delete_memory_records_types;
 pub mod batch_update_memory_records_types;
@@ -27,9 +22,18 @@ pub mod create_ab_test_types;
 pub mod create_event_types;
 pub mod create_payment_instrument_types;
 pub mod create_payment_session_types;
+// Hand-authored modules, not rendered from the model: `date_time_wire` carries the schema
+// and serializer of every response shape with a `@timestampFormat("date-time")` member,
+// the two `invoke_*_types` modules carry the request and event shapes of the hand-authored
+// event-stream operations (`src/ops/SKIPPED_STUBS.md`), and `validation_refusal` carries
+// the payload of the modelled `ValidationException`. They are declared here because
+// `use super::types::*` is how every handler reaches a shape.
+pub mod date_time_wire;
+pub mod validation_refusal;
 pub mod delete_ab_test_types;
 pub mod delete_batch_evaluation_types;
 pub mod delete_capacity_provider_session_types;
+pub mod delete_dataset_generation_types;
 pub mod delete_event_types;
 pub mod delete_memory_record_types;
 pub mod delete_payment_instrument_types;
@@ -38,9 +42,11 @@ pub mod delete_recommendation_types;
 pub mod evaluate_types;
 pub mod get_ab_test_types;
 pub mod get_agent_card_types;
+pub mod get_agent_insight_types;
 pub mod get_batch_evaluation_types;
 pub mod get_browser_session_types;
 pub mod get_code_interpreter_session_types;
+pub mod get_dataset_generation_types;
 pub mod get_event_types;
 pub mod get_memory_record_types;
 pub mod get_payment_instrument_balance_types;
@@ -58,11 +64,14 @@ pub mod invoke_agent_runtime_types;
 pub mod invoke_browser_types;
 pub mod invoke_code_interpreter_types;
 pub mod invoke_harness_types;
+pub mod invoke_web_search_types;
 pub mod list_ab_tests_types;
 pub mod list_actors_types;
+pub mod list_agent_insights_types;
 pub mod list_batch_evaluations_types;
 pub mod list_browser_sessions_types;
 pub mod list_code_interpreter_sessions_types;
+pub mod list_dataset_generations_types;
 pub mod list_events_types;
 pub mod list_memory_extraction_jobs_types;
 pub mod list_memory_records_types;
@@ -78,6 +87,7 @@ pub mod shared_types;
 pub mod start_batch_evaluation_types;
 pub mod start_browser_session_types;
 pub mod start_code_interpreter_session_types;
+pub mod start_dataset_generation_types;
 pub mod start_memory_extraction_job_types;
 pub mod start_recommendation_types;
 pub mod stop_batch_evaluation_types;
@@ -85,10 +95,9 @@ pub mod stop_browser_session_types;
 pub mod stop_code_interpreter_session_types;
 pub mod stop_runtime_session_types;
 pub mod update_ab_test_types;
+pub mod update_agent_insight_types;
 pub mod update_browser_stream_types;
 
-#[allow(ambiguous_glob_reexports, unused_imports)]
-pub use date_time_wire::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use batch_create_memory_records_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
@@ -106,11 +115,17 @@ pub use create_payment_instrument_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use create_payment_session_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use date_time_wire::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use validation_refusal::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use delete_ab_test_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use delete_batch_evaluation_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use delete_capacity_provider_session_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use delete_dataset_generation_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use delete_event_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
@@ -128,11 +143,15 @@ pub use get_ab_test_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use get_agent_card_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use get_agent_insight_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use get_batch_evaluation_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use get_browser_session_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use get_code_interpreter_session_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use get_dataset_generation_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use get_event_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
@@ -168,15 +187,21 @@ pub use invoke_code_interpreter_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use invoke_harness_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use invoke_web_search_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use list_ab_tests_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use list_actors_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use list_agent_insights_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use list_batch_evaluations_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use list_browser_sessions_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use list_code_interpreter_sessions_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use list_dataset_generations_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use list_events_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
@@ -208,6 +233,8 @@ pub use start_browser_session_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use start_code_interpreter_session_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use start_dataset_generation_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use start_memory_extraction_job_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use start_recommendation_types::*;
@@ -221,6 +248,8 @@ pub use stop_code_interpreter_session_types::*;
 pub use stop_runtime_session_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use update_ab_test_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use update_agent_insight_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use update_browser_stream_types::*;
 

@@ -1060,6 +1060,10 @@ fn reported(unit: &Unit<'_>, evaluator: &ResolvedEvaluator) -> EvaluationResultC
             trace_id: unit.trace_id.clone(),
             span_id: unit.span_id.clone(),
         }),
+        // A dimension name identifies which dimension of a MULTI-DIMENSIONAL rating scale
+        // a result scored, and a rating is an evaluator's output: nothing here scored any
+        // dimension, for the same reason `value` and `label` are absent.
+        evaluation_dimension_name: None,
         // A numerical or categorical rating on the evaluator's own rating scale, which
         // only an evaluator produces.
         value: None,

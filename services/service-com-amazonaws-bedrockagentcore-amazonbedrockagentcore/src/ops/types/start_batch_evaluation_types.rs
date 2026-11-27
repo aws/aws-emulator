@@ -24,6 +24,7 @@ pub struct StartBatchEvaluationInput {
     pub kms_key_arn: Option<String>,
     pub description: Option<String>,
     pub output_config: Option<OutputConfig>,
+    pub dataset_execution_config: Option<DatasetExecutionConfig>,
 }
 
 #[smithy_macros::smithy(union_for = "com.amazonaws.bedrockagentcore#EvaluationMetadata")]
@@ -69,6 +70,34 @@ pub struct GroundTruthTurn {
 #[derive(Debug, Clone)]
 pub enum GroundTruthTurnInput {
     Prompt(String),
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.bedrockagentcore#DatasetExecutionConfig")]
+#[derive(Debug, Clone)]
+pub struct DatasetExecutionConfig {
+    pub dataset: DatasetSource,
+    pub agent_invocation: AgentInvocationConfig,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.bedrockagentcore#DatasetSource")]
+#[derive(Debug, Clone, Default)]
+pub struct DatasetSource {
+    pub dataset_id: String,
+    pub dataset_version: Option<String>,
+}
+
+#[smithy_macros::smithy(union_for = "com.amazonaws.bedrockagentcore#AgentInvocationConfig")]
+#[allow(clippy::large_enum_variant)]
+#[derive(Debug, Clone)]
+pub enum AgentInvocationConfig {
+    agentCoreRuntime(AgentCoreRuntimeInvocation),
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.bedrockagentcore#AgentCoreRuntimeInvocation")]
+#[derive(Debug, Clone, Default)]
+pub struct AgentCoreRuntimeInvocation {
+    pub agent_runtime_endpoint_arn: String,
+    pub request_template: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.bedrockagentcore#StartBatchEvaluationResponse")]

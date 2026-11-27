@@ -37,7 +37,8 @@ use std::collections::HashMap;
 use std::time::{Duration, SystemTime};
 
 use crate::ops::types::{
-    BatchEvaluationSummary, DataSourceConfig, EvaluationMetadata, Evaluator, Insight, OutputConfig,
+    BatchEvaluationSummary, DataSourceConfig, DatasetExecutionDetails, EvaluationMetadata,
+    Evaluator, Insight, OutputConfig,
 };
 
 use super::{
@@ -193,6 +194,11 @@ pub struct BatchEvaluationRecord {
     /// supplied, kept with the job so what it was started with is what is held.
     pub evaluation_metadata: Option<EvaluationMetadata>,
     pub output_config: Option<OutputConfig>,
+    /// The dataset run this job carries out before it evaluates anything, as the start
+    /// RESOLVED it ([`super::resolve_dataset_execution`]): the dataset version its
+    /// scenarios come from and the agent runtime version they are sent to, settled at the
+    /// instant the job started. `None` for a job whose start asked for no dataset run.
+    pub dataset_execution_details: Option<DatasetExecutionDetails>,
     pub tags: Option<HashMap<String, String>>,
     pub kms_key_arn: Option<String>,
     pub created_at: SystemTime,
@@ -220,6 +226,7 @@ impl BatchEvaluationRecord {
         insights: Option<Vec<Insight>>,
         evaluation_metadata: Option<EvaluationMetadata>,
         output_config: Option<OutputConfig>,
+        dataset_execution_details: Option<DatasetExecutionDetails>,
         tags: Option<HashMap<String, String>>,
         kms_key_arn: Option<String>,
         created_at: SystemTime,
@@ -235,6 +242,7 @@ impl BatchEvaluationRecord {
             insights,
             evaluation_metadata,
             output_config,
+            dataset_execution_details,
             tags,
             kms_key_arn,
             created_at,

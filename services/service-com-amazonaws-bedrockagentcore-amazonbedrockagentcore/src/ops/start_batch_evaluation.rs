@@ -11,6 +11,17 @@
 //! its lifecycle on the clock ([`crate::state::BatchEvaluationRecord::status_as_of`]) —
 //! nothing is slept for here.
 //!
+//! A start may also ask for a DATASET RUN (`datasetExecutionConfig`): the scenarios of a
+//! dataset version are sent to an agent runtime endpoint and the sessions they produce
+//! are what gets evaluated. That configuration names a dataset whose version may be left
+//! open and an endpoint without its agent runtime version, while
+//! `GetBatchEvaluation`'s `datasetExecutionDetails` reports both settled, so it is
+//! RESOLVED here, once, against the CONTROL plane that owns the dataset and the endpoint
+//! ([`crate::state::resolve_dataset_execution`]) and the resolved details are what the
+//! job holds. A dataset, a version or an endpoint this account cannot run is refused
+//! rather than started as a job that could never run, and so is a start that asks for a
+//! dataset run without what the model documents must accompany it.
+//!
 //! `clientToken` is an `@idempotencyToken`, so a replayed token answers with the job it
 //! already started rather than starting a second one. Two starts that carry no token, or
 //! different ones, are two jobs even when they name the same `batchEvaluationName`: each
@@ -179,6 +190,72 @@ impl From<StartBatchEvaluationErrorModeled> for StartBatchEvaluationError {
     }
 }
 
+/// Refuse the request, naming the member it was refused over both in the message and in
+/// the `fieldList` a client reads programmatically.
+///
+/// `reason` is `ValidationExceptionReason`'s `FieldValidationFailed` (source:
+/// smithy_query query="shape" shape="ValidationExceptionReason", values CannotParse |
+/// FieldValidationFailed | IdempotentParameterMismatchException | EventInOtherSession |
+/// ResourceConflict), which is the member-level failure every case here is.
+fn refused(member: &str, message: String) -> StartBatchEvaluationErrorModeled {
+    StartBatchEvaluationErrorModeled::ValidationException(ValidationException {
+        message: message.clone(),
+        reason: crate::service::validation::FIELD_VALIDATION_FAILED.to_string(),
+        field_list: Some(vec![ValidationExceptionField {
+            name: member.to_string(),
+            message,
+        }]),
+    })
+}
+
+/// What a start that asks for a DATASET RUN has to carry beside the run itself: "You must
+/// also specify `evaluators` and a `dataSourceConfig` that uses `cloudWatchLogs` […] You
+/// can't specify `insights` or an `onlineEvaluationConfigSource` data source with this
+/// field" (source: smithy_query query="doc" shape="StartBatchEvaluationRequest"
+/// member="datasetExecutionConfig").
+///
+/// A start that asks for no dataset run is not held to any of it: the three members are
+/// independent of each other without one.
+fn dataset_run_companions(
+    input: &StartBatchEvaluationInput,
+) -> Result<(), StartBatchEvaluationErrorModeled> {
+    if input.dataset_execution_config.is_none() {
+        return Ok(());
+    }
+    if input
+        .evaluators
+        .as_ref()
+        .is_none_or(|asked_for| asked_for.is_empty())
+    {
+        return Err(refused(
+            "evaluators",
+            "A batch evaluation that runs the scenarios of a dataset must also specify \
+             evaluators."
+                .to_string(),
+        ));
+    }
+    if !matches!(input.data_source_config, DataSourceConfig::cloudWatchLogs(_)) {
+        return Err(refused(
+            "dataSourceConfig",
+            "A batch evaluation that runs the scenarios of a dataset must specify a \
+             dataSourceConfig that uses cloudWatchLogs."
+                .to_string(),
+        ));
+    }
+    if input
+        .insights
+        .as_ref()
+        .is_some_and(|asked_for| !asked_for.is_empty())
+    {
+        return Err(refused(
+            "insights",
+            "A batch evaluation that runs the scenarios of a dataset cannot specify insights."
+                .to_string(),
+        ));
+    }
+    Ok(())
+}
+
 /// A stored batch evaluation job as this operation reports it, as of `now`: the identity
 /// this call minted, the configuration it was started with and the status the clock
 /// implies for a job started at that instant.
@@ -246,8 +323,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             })
         })?;
 
-        let mut store = state.lock();
-
+        let store = state.lock();
         // `clientToken` is an `@idempotencyToken` whose documented effect is that a token
         // matching an earlier request is ignored rather than refused: answer with the job
         // that token already started, so no second job is started.
@@ -256,7 +332,42 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 return Ok(started_output(started, ::std::time::SystemTime::now()));
             }
         }
+        // The dataset run is resolved against the CONTROL plane, which owns both the
+        // dataset and the agent runtime endpoint, so this plane's own store is not held
+        // while that one is read.
+        drop(store);
 
+        // What a start that asks for a dataset run has to carry beside it.
+        dataset_run_companions(&input)?;
+
+        // The dataset run this job will carry out, SETTLED at the instant it starts: the
+        // version of the dataset its scenarios come from and the agent runtime version
+        // they are sent to. A dataset, a version or an endpoint this account cannot run is
+        // refused here rather than started as a job that could never run.
+        let dataset_execution_details = match input.dataset_execution_config.as_ref() {
+            None => None,
+            Some(requested) => Some(
+                crate::state::resolve_dataset_execution(
+                    &*self.engine,
+                    requested,
+                    ::std::time::SystemTime::now(),
+                )
+                .map_err(|unavailable| match unavailable {
+                    crate::state::DatasetExecutionUnavailable::Refused { member, message } => {
+                        refused(member, message)
+                    }
+                    crate::state::DatasetExecutionUnavailable::StoreUnavailable(message) => {
+                        StartBatchEvaluationErrorModeled::InternalServerException(
+                            InternalServerException {
+                                message: Some(message),
+                            },
+                        )
+                    }
+                })?,
+            ),
+        };
+
+        let mut store = state.lock();
         let seq = store.next_seq();
         let created_at = ::std::time::SystemTime::now();
         let record = crate::state::BatchEvaluationRecord::started(
@@ -269,6 +380,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             input.insights.clone(),
             input.evaluation_metadata.clone(),
             input.output_config.clone(),
+            dataset_execution_details,
             input.tags.clone(),
             input.kms_key_arn.clone(),
             created_at,

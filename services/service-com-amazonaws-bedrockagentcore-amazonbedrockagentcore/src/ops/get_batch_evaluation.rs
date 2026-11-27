@@ -253,6 +253,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             description: job.description.clone(),
             updated_at: Some(::aws_smithy_types::DateTime::from(job.updated_at_as_of(now))),
             kms_key_arn: job.kms_key_arn.clone(),
+            // The dataset run the start RESOLVED, which is what this job ran: the version
+            // of the dataset its scenarios came from and the agent runtime version they
+            // were sent to, as they stood when the job started. `None` for a job whose
+            // start asked for no dataset run.
+            dataset_execution_details: job.dataset_execution_details.clone(),
         })
     }
 }

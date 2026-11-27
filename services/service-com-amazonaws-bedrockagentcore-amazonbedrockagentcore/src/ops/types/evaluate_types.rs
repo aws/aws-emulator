@@ -71,6 +71,7 @@ pub struct EvaluationResultContent {
     pub evaluator_arn: String,
     pub evaluator_id: String,
     pub evaluator_name: String,
+    pub evaluation_dimension_name: Option<String>,
     pub explanation: Option<String>,
     pub context: Context,
     pub value: Option<f64>,
