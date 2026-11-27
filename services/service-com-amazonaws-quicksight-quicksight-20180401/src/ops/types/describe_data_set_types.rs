@@ -50,6 +50,7 @@ pub struct DataSet {
     pub use_as: Option<String>,
     pub data_prep_configuration: Option<DataPrepConfiguration>,
     pub semantic_model_configuration: Option<SemanticModelConfiguration>,
+    pub unmaterialized_calculated_columns: Option<Vec<UnmaterializedCalculatedColumn>>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.quicksight#OutputColumn")]

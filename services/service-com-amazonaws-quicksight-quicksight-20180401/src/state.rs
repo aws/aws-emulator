@@ -56,6 +56,7 @@ use crate::ops::types::{
     ResourcePermission,
     RowLevelPermissionDataSet, RowLevelPermissionTagConfiguration, SemanticModelConfiguration,
     SslProperties, Tag, Theme, ThemeAlias, ThemeConfiguration, ThemeVersion, TopicDetails,
+    UnmaterializedCalculatedColumn,
     VpcConnectionProperties,
 };
 
@@ -1029,6 +1030,10 @@ pub struct DataSetRecord {
     pub use_as: Option<String>,
     pub data_prep_configuration: Option<DataPrepConfiguration>,
     pub semantic_model_configuration: Option<SemanticModelConfiguration>,
+    /// The unmaterialized calculated columns the data set declares: columns computed at
+    /// analysis time rather than stored in the prepared data, persisted as submitted so
+    /// every later read reports the list the create was given.
+    pub unmaterialized_calculated_columns: Option<Vec<UnmaterializedCalculatedColumn>>,
     pub permissions: Vec<ResourcePermission>,
     pub tags: Vec<Tag>,
     /// SPICE bytes this data set holds. Nothing has been ingested into an emulated
@@ -1063,6 +1068,7 @@ impl DataSetRecord {
             use_as: self.use_as.clone(),
             data_prep_configuration: self.data_prep_configuration.clone(),
             semantic_model_configuration: self.semantic_model_configuration.clone(),
+            unmaterialized_calculated_columns: self.unmaterialized_calculated_columns.clone(),
         }
     }
 

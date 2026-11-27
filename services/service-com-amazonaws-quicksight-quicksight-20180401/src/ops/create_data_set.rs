@@ -365,6 +365,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 use_as: input.use_as,
                 data_prep_configuration: input.data_prep_configuration,
                 semantic_model_configuration: input.semantic_model_configuration,
+                unmaterialized_calculated_columns: input.unmaterialized_calculated_columns,
                 permissions: input.permissions.unwrap_or_default(),
                 tags: input.tags.unwrap_or_default(),
                 // Nothing has been loaded into SPICE yet.

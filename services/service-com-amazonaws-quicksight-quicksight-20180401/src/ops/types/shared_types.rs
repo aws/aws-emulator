@@ -292,6 +292,21 @@ pub struct PreconditionNotMetException {
     pub request_id: Option<String>,
 }
 
+#[smithy_macros::smithy(shape = "com.amazonaws.quicksight#ValidationException")]
+#[derive(Debug, Clone, Default)]
+pub struct ValidationException {
+    pub message: String,
+    pub request_id: Option<String>,
+    pub field_list: Option<Vec<ValidationExceptionField>>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.quicksight#ValidationExceptionField")]
+#[derive(Debug, Clone, Default)]
+pub struct ValidationExceptionField {
+    pub name: String,
+    pub message: String,
+}
+
 #[smithy_macros::smithy(shape = "com.amazonaws.quicksight#ConflictException")]
 #[derive(Debug, Clone, Default)]
 pub struct ConflictException {
@@ -307,11 +322,43 @@ pub struct ResourceExistsException {
     pub request_id: Option<String>,
 }
 
-#[smithy_macros::smithy(shape = "com.amazonaws.quicksight#AccountCustomization")]
+#[smithy_macros::smithy(shape = "com.amazonaws.quicksight#ExternalIdpPublicAuthCodeAuthorizingConfig")]
 #[derive(Debug, Clone, Default)]
-pub struct AccountCustomization {
-    pub default_theme: Option<String>,
-    pub default_email_customization_template: Option<String>,
+pub struct ExternalIdpPublicAuthCodeAuthorizingConfig {
+    pub client_id: String,
+    pub issuer_url: String,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.quicksight#IdpClientSecretInput")]
+#[derive(Debug, Clone, Default)]
+pub struct IdpClientSecretInput {
+    pub regional_secret_manager_arns: std::collections::HashMap<String, String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.quicksight#IdcTrustedTokenIssuerConfig")]
+#[derive(Debug, Clone, Default)]
+pub struct IdcTrustedTokenIssuerConfig {
+    pub idc_trusted_token_issuer_arn: String,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.quicksight#QuickAuthenticationConfigInput")]
+#[derive(Debug, Clone, Default)]
+pub struct QuickAuthenticationConfigInput {
+    pub quick_authentication_type: String,
+    pub quick_authentication_configuration_detail_input: Option<QuickAuthenticationConfigurationDetailInput>,
+}
+
+#[smithy_macros::smithy(union_for = "com.amazonaws.quicksight#QuickAuthenticationConfigurationDetailInput")]
+#[allow(clippy::large_enum_variant)]
+#[derive(Debug, Clone)]
+pub enum QuickAuthenticationConfigurationDetailInput {
+    QuickManagedPublicAuthCode(QuickManagedAuthCodeQuickAuthenticationConfigInput),
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.quicksight#QuickManagedAuthCodeQuickAuthenticationConfigInput")]
+#[derive(Debug, Clone, Default)]
+pub struct QuickManagedAuthCodeQuickAuthenticationConfigInput {
+    pub redirect_uris: Vec<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.quicksight#Tag")]
@@ -319,6 +366,20 @@ pub struct AccountCustomization {
 pub struct Tag {
     pub key: String,
     pub value: String,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.quicksight#QuickManagedPublicAuthCodeQuickAuthenticationConfig")]
+#[derive(Debug, Clone, Default)]
+pub struct QuickManagedPublicAuthCodeQuickAuthenticationConfig {
+    pub redirect_uris: Vec<String>,
+    pub client_id: String,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.quicksight#AccountCustomization")]
+#[derive(Debug, Clone, Default)]
+pub struct AccountCustomization {
+    pub default_theme: Option<String>,
+    pub default_email_customization_template: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.quicksight#ResourceUnavailableException")]
@@ -5864,6 +5925,9 @@ pub struct Capabilities {
     pub create_and_update_mcp_action: Option<String>,
     pub share_mcp_action: Option<String>,
     pub use_mcp_action: Option<String>,
+    pub local_mcp_action: Option<String>,
+    pub create_and_update_local_mcp_action: Option<String>,
+    pub use_local_mcp_action: Option<String>,
     pub open_api_action: Option<String>,
     pub create_and_update_open_api_action: Option<String>,
     pub share_open_api_action: Option<String>,
@@ -7177,6 +7241,16 @@ pub struct UploadedDocumentMetadata {
     pub name: Option<String>,
 }
 
+#[smithy_macros::smithy(shape = "com.amazonaws.quicksight#UnmaterializedCalculatedColumn")]
+#[derive(Debug, Clone, Default)]
+pub struct UnmaterializedCalculatedColumn {
+    pub column_id: String,
+    pub column_name: String,
+    pub expression: String,
+    pub r#type: Option<String>,
+    pub sub_type: Option<String>,
+}
+
 #[smithy_macros::smithy(shape = "com.amazonaws.quicksight#InvalidDataSetParameterValueException")]
 #[derive(Debug, Clone, Default)]
 pub struct InvalidDataSetParameterValueException {
@@ -7330,6 +7404,7 @@ pub struct RedshiftParameters {
     pub host: Option<String>,
     pub port: i32,
     pub database: String,
+    pub federated_catalog: Option<String>,
     pub cluster_id: Option<String>,
     pub iam_parameters: Option<RedshiftIAMParameters>,
     pub identity_center_configuration: Option<IdentityCenterConfiguration>,
@@ -7694,6 +7769,12 @@ pub struct ConcurrentUpdatingException {
     pub request_id: Option<String>,
 }
 
+#[smithy_macros::smithy(shape = "com.amazonaws.quicksight#InboundConnectorConfig")]
+#[derive(Debug, Clone, Default)]
+pub struct InboundConnectorConfig {
+    pub inbound_connector_type: String,
+}
+
 #[smithy_macros::smithy(shape = "com.amazonaws.quicksight#KnowledgeBaseConfiguration")]
 #[derive(Debug, Clone, Default)]
 pub struct KnowledgeBaseConfiguration {
@@ -7737,6 +7818,20 @@ pub struct VideoExtractionConfiguration {
 #[derive(Debug, Clone, Default)]
 pub struct AccessControlConfiguration {
     pub is_acl_enabled: Option<bool>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.quicksight#KnowledgeBaseRefreshFrequency")]
+#[derive(Debug, Clone, Default)]
+pub struct KnowledgeBaseRefreshFrequency {
+    pub interval: String,
+    pub refresh_on_day: Option<KnowledgeBaseScheduleRefreshOnEntity>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.quicksight#KnowledgeBaseScheduleRefreshOnEntity")]
+#[derive(Debug, Clone, Default)]
+pub struct KnowledgeBaseScheduleRefreshOnEntity {
+    pub day_of_week: Option<String>,
+    pub day_of_month: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.quicksight#ProfileLimitValue")]
@@ -8323,6 +8418,20 @@ pub struct InvalidParameterException {
     pub request_id: Option<String>,
 }
 
+#[smithy_macros::smithy(shape = "com.amazonaws.quicksight#QuickAuthenticationConfig")]
+#[derive(Debug, Clone, Default)]
+pub struct QuickAuthenticationConfig {
+    pub quick_authentication_type: String,
+    pub quick_authentication_configuration_detail: Option<QuickAuthenticationConfigurationDetail>,
+}
+
+#[smithy_macros::smithy(union_for = "com.amazonaws.quicksight#QuickAuthenticationConfigurationDetail")]
+#[allow(clippy::large_enum_variant)]
+#[derive(Debug, Clone)]
+pub enum QuickAuthenticationConfigurationDetail {
+    QuickManagedPublicAuthCode(QuickManagedPublicAuthCodeQuickAuthenticationConfig),
+}
+
 #[smithy_macros::smithy(shape = "com.amazonaws.quicksight#ActionConnectorError")]
 #[derive(Debug, Clone, Default)]
 pub struct ActionConnectorError {
@@ -8897,6 +9006,15 @@ pub struct RegisteredCustomerManagedKey {
     pub default_key: bool,
 }
 
+#[smithy_macros::smithy(shape = "com.amazonaws.quicksight#KnowledgeBaseRefreshScheduleSummary")]
+#[derive(Debug, Clone, Default)]
+pub struct KnowledgeBaseRefreshScheduleSummary {
+    pub schedule_id: String,
+    pub schedule_frequency: KnowledgeBaseRefreshFrequency,
+    pub start_time: Option<::aws_smithy_types::DateTime>,
+    pub state: Option<String>,
+}
+
 #[smithy_macros::smithy(shape = "com.amazonaws.quicksight#LimitsProfile")]
 #[derive(Debug, Clone)]
 pub struct LimitsProfile {
@@ -9327,6 +9445,14 @@ pub struct TopicSearchFilter {
     pub value: String,
 }
 
+/// The values `AccessControlApplicationAuthenticationType` accepts on the wire.
+pub const ACCESS_CONTROL_APPLICATION_AUTHENTICATION_TYPE_VALUES: &[&str] = &["OIDC"];
+
+
+/// The values `AccessControlApplicationStatus` accepts on the wire.
+pub const ACCESS_CONTROL_APPLICATION_STATUS_VALUES: &[&str] = &["DISABLED", "ENABLED"];
+
+
 /// The values `ActionConnectorErrorType` accepts on the wire.
 pub const ACTION_CONNECTOR_ERROR_TYPE_VALUES: &[&str] = &["INTERNAL_FAILURE"];
 
@@ -9448,7 +9574,7 @@ pub const ASSET_BUNDLE_IMPORT_JOB_STATUS_VALUES: &[&str] = &["FAILED", "FAILED_R
 
 
 /// The values `AssetType` accepts on the wire.
-pub const ASSET_TYPE_VALUES: &[&str] = &["AGENT", "KNOWLEDGE_BASE", "SPACE"];
+pub const ASSET_TYPE_VALUES: &[&str] = &["AGENT", "FLOW", "KNOWLEDGE_BASE", "SPACE"];
 
 
 /// The values `AssignmentStatus` accepts on the wire.
@@ -9537,6 +9663,10 @@ pub const CATEGORY_FILTER_TYPE_VALUES: &[&str] = &["CUSTOM_FILTER", "CUSTOM_FILT
 
 /// The values `ClientCredentialsSource` accepts on the wire.
 pub const CLIENT_CREDENTIALS_SOURCE_VALUES: &[&str] = &["PLAIN_CREDENTIALS"];
+
+
+/// The values `ClientSecretSourceType` accepts on the wire.
+pub const CLIENT_SECRET_SOURCE_TYPE_VALUES: &[&str] = &["IDP_PROVIDED"];
 
 
 /// The values `ColorFillType` accepts on the wire.
@@ -9860,7 +9990,7 @@ pub const GEOSPATIAL_SELECTED_POINT_STYLE_VALUES: &[&str] = &["CLUSTER", "HEATMA
 
 
 /// The values `GovernedAction` accepts on the wire.
-pub const GOVERNED_ACTION_VALUES: &[&str] = &["SHARE"];
+pub const GOVERNED_ACTION_VALUES: &[&str] = &["PUBLISH", "SHARE"];
 
 
 /// The values `GroupFilterAttribute` accepts on the wire.
@@ -9895,12 +10025,24 @@ pub const IDENTITY_STORE_VALUES: &[&str] = &["QUICKSIGHT"];
 pub const IDENTITY_TYPE_VALUES: &[&str] = &["IAM", "IAM_IDENTITY_CENTER", "QUICKSIGHT"];
 
 
+/// The values `IdpAuthorizingType` accepts on the wire.
+pub const IDP_AUTHORIZING_TYPE_VALUES: &[&str] = &["EXTERNAL_IDP_CONFIDENTIAL_AUTH_CODE", "EXTERNAL_IDP_PUBLIC_AUTH_CODE", "IDC_AUTH_CODE", "QUICK_MANAGED_AUTH_CODE"];
+
+
 /// The values `ImageCustomActionTrigger` accepts on the wire.
 pub const IMAGE_CUSTOM_ACTION_TRIGGER_VALUES: &[&str] = &["CLICK", "MENU"];
 
 
 /// The values `ImageExtractionStatus` accepts on the wire.
 pub const IMAGE_EXTRACTION_STATUS_VALUES: &[&str] = &["DISABLED", "ENABLED"];
+
+
+/// The values `InboundConnectorStatus` accepts on the wire.
+pub const INBOUND_CONNECTOR_STATUS_VALUES: &[&str] = &["DISABLED", "ENABLED"];
+
+
+/// The values `InboundConnectorType` accepts on the wire.
+pub const INBOUND_CONNECTOR_TYPE_VALUES: &[&str] = &["QUICK_DESKTOP"];
 
 
 /// The values `IncludeFolderMembers` accepts on the wire.
@@ -9955,8 +10097,16 @@ pub const K_P_I_SPARKLINE_TYPE_VALUES: &[&str] = &["AREA", "LINE"];
 pub const K_P_I_VISUAL_STANDARD_LAYOUT_TYPE_VALUES: &[&str] = &["CLASSIC", "VERTICAL"];
 
 
+/// The values `KbDayOfWeek` accepts on the wire.
+pub const KB_DAY_OF_WEEK_VALUES: &[&str] = &["FRIDAY", "MONDAY", "SATURDAY", "SUNDAY", "THURSDAY", "TUESDAY", "WEDNESDAY"];
+
+
 /// The values `KbIngestionStatus` accepts on the wire.
 pub const KB_INGESTION_STATUS_VALUES: &[&str] = &["CANCELLED", "CANCELLING", "COMPLETED", "FAILED", "INCOMPLETE", "QUEUED", "RUNNING", "TIMEOUT"];
+
+
+/// The values `KbRefreshInterval` accepts on the wire.
+pub const KB_REFRESH_INTERVAL_VALUES: &[&str] = &["DAILY", "HOURLY", "MONTHLY", "WEEKLY"];
 
 
 /// The values `KnowledgeBaseSearchFilterName` accepts on the wire.
@@ -10135,8 +10285,16 @@ pub const PIVOT_TABLE_SUBTOTAL_LEVEL_VALUES: &[&str] = &["ALL", "CUSTOM", "LAST"
 pub const PLUGIN_VISUAL_AXIS_NAME_VALUES: &[&str] = &["GROUP_BY", "VALUE"];
 
 
+/// The values `PolicyType` accepts on the wire.
+pub const POLICY_TYPE_VALUES: &[&str] = &["CUSTOM_PERMISSIONS", "LIMITS_PROFILE"];
+
+
 /// The values `PrimaryValueDisplayType` accepts on the wire.
 pub const PRIMARY_VALUE_DISPLAY_TYPE_VALUES: &[&str] = &["ACTUAL", "COMPARISON", "HIDDEN"];
+
+
+/// The values `PrincipalType` accepts on the wire.
+pub const PRINCIPAL_TYPE_VALUES: &[&str] = &["ACCOUNT", "GROUP", "USER"];
 
 
 /// The values `PropertyRole` accepts on the wire.
@@ -10169,6 +10327,10 @@ pub const Q_SEARCH_STATUS_VALUES: &[&str] = &["DISABLED", "ENABLED"];
 
 /// The values `QueryExecutionMode` accepts on the wire.
 pub const QUERY_EXECUTION_MODE_VALUES: &[&str] = &["AUTO", "MANUAL"];
+
+
+/// The values `QuickAuthenticationType` accepts on the wire.
+pub const QUICK_AUTHENTICATION_TYPE_VALUES: &[&str] = &["QUICK_MANAGED_PUBLIC_AUTH_CODE"];
 
 
 /// The values `RadarChartAxesRangeScale` accepts on the wire.
@@ -10243,6 +10405,10 @@ pub const ROW_LEVEL_PERMISSION_FORMAT_VERSION_VALUES: &[&str] = &["VERSION_1", "
 pub const ROW_LEVEL_PERMISSION_POLICY_VALUES: &[&str] = &["DENY_ACCESS", "GRANT_ACCESS"];
 
 
+/// The values `ScheduleState` accepts on the wire.
+pub const SCHEDULE_STATE_VALUES: &[&str] = &["DISABLED", "ENABLED"];
+
+
 /// The values `SearchAppsFilterName` accepts on the wire.
 pub const SEARCH_APPS_FILTER_NAME_VALUES: &[&str] = &["APP_ID", "APP_NAME", "DIRECT_QUICKSIGHT_OWNER", "DIRECT_QUICKSIGHT_SOLE_OWNER", "DIRECT_QUICKSIGHT_VIEWER_OR_OWNER"];
 
@@ -10277,6 +10443,10 @@ pub const SELF_UPGRADE_REQUEST_STATUS_VALUES: &[&str] = &["APPROVED", "DENIED", 
 
 /// The values `SelfUpgradeStatus` accepts on the wire.
 pub const SELF_UPGRADE_STATUS_VALUES: &[&str] = &["ADMIN_APPROVAL", "AUTO_APPROVAL"];
+
+
+/// The values `ServiceRoleType` accepts on the wire.
+pub const SERVICE_ROLE_TYPE_VALUES: &[&str] = &["CUSTOMER_MANAGED", "QUICKSIGHT_MANAGED"];
 
 
 /// The values `ServiceType` accepts on the wire.

@@ -65,6 +65,21 @@ static M_UPDATED_ASSIGNMENT_ARN: Schema = Schema::new_member(
     7,
 );
 
+/// `CreateIAMPolicyAssignmentResponse$Arn` — the created assignment's own ARN.
+///
+/// Index 7: the response declares seven members and no `Arn`
+/// (`smithy_query(query="shape", shape="CreateIAMPolicyAssignmentResponse")`).
+static M_CREATED_ASSIGNMENT_ARN: Schema = Schema::new_member(
+    ShapeId::from_static(
+        "com.amazonaws.quicksight#CreateIAMPolicyAssignmentResponse$Arn",
+        NAMESPACE,
+        "Arn",
+    ),
+    ShapeType::String,
+    "Arn",
+    7,
+);
+
 /// `DeleteIAMPolicyAssignmentResponse$Arn` — the deleted assignment's own ARN.
 ///
 /// Index 3: the response declares three members and no `Arn`
@@ -138,6 +153,23 @@ impl DeserializableStruct for ReportedIamPolicyAssignment {
             _ => String::new(),
         };
         Ok(Self { assignment, arn })
+    }
+}
+
+/// What `CreateIAMPolicyAssignment` answers: the modelled response, and the created
+/// assignment's own ARN beside it.
+#[derive(Debug, Clone, Default)]
+pub struct ReportedIamPolicyAssignmentCreation {
+    /// The members the model declares for `CreateIAMPolicyAssignmentResponse`.
+    pub response: CreateIAMPolicyAssignmentOutput,
+    /// The created assignment's own ARN — [`crate::state::iam_policy_assignment_arn`].
+    pub arn: String,
+}
+
+impl SerializableStruct for ReportedIamPolicyAssignmentCreation {
+    fn serialize_members(&self, s: &mut dyn ShapeSerializer) -> Result<(), SerdeError> {
+        self.response.serialize_members(s)?;
+        s.write_string(&M_CREATED_ASSIGNMENT_ARN, self.arn.as_str())
     }
 }
 

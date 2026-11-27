@@ -30,6 +30,7 @@ pub struct UpdateDataSetInput {
     pub performance_configuration: Option<PerformanceConfiguration>,
     pub data_prep_configuration: Option<DataPrepConfiguration>,
     pub semantic_model_configuration: Option<SemanticModelConfiguration>,
+    pub unmaterialized_calculated_columns: Option<Vec<UnmaterializedCalculatedColumn>>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.quicksight#UpdateDataSetResponse")]

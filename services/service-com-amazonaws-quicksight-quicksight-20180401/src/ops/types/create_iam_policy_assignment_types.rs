@@ -25,9 +25,6 @@ pub struct CreateIAMPolicyAssignmentInput {
 #[smithy_macros::smithy(shape = "com.amazonaws.quicksight#CreateIAMPolicyAssignmentResponse")]
 #[derive(Debug, Clone, Default)]
 pub struct CreateIAMPolicyAssignmentOutput {
-    /// The ARN of the assignment this call created. QuickSight reports it on the
-    /// create, so the member is declared on the response shape this service serves.
-    pub arn: Option<String>,
     pub assignment_name: Option<String>,
     pub assignment_id: Option<String>,
     pub assignment_status: Option<String>,

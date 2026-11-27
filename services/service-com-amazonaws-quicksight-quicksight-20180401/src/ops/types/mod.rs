@@ -14,16 +14,20 @@
 //! here named after an operation would make that operation's own module name
 //! ambiguous inside `ops` (`E0659`).
 
-// The structures this service reports a member the on-disk model does not declare in —
-// see that module's own note. Declared beside the generated `*_types` modules and
-// re-exported with them, so `use super::types::*` resolves these shapes too.
+// The members this service's success bodies carry that the on-disk model does not declare,
+// and the wire support each one needs — see that module's own note. Declared here so
+// `use super::types::*` resolves them wherever a modelled structure is paired with one.
 pub mod recorded_members;
 
 pub mod batch_create_topic_reviewed_answer_types;
 pub mod batch_delete_knowledge_base_types;
+pub mod batch_delete_policy_assignment_by_policy_types;
 pub mod batch_delete_topic_reviewed_answer_types;
 pub mod batch_describe_user_limits_types;
+pub mod batch_put_policy_assignment_by_policy_types;
 pub mod cancel_ingestion_types;
+pub mod create_access_control_application_secret_types;
+pub mod create_access_control_application_types;
 pub mod create_account_customization_types;
 pub mod create_account_subscription_types;
 pub mod create_action_connector_types;
@@ -42,7 +46,9 @@ pub mod create_folder_types;
 pub mod create_group_membership_types;
 pub mod create_group_types;
 pub mod create_iam_policy_assignment_types;
+pub mod create_inbound_connector_types;
 pub mod create_ingestion_types;
+pub mod create_knowledge_base_refresh_schedule_types;
 pub mod create_knowledge_base_types;
 pub mod create_limits_profile_types;
 pub mod create_namespace_types;
@@ -58,6 +64,8 @@ pub mod create_topic_refresh_schedule_types;
 pub mod create_topic_types;
 pub mod create_topic_v2_types;
 pub mod create_vpc_connection_types;
+pub mod delete_access_control_application_secret_types;
+pub mod delete_access_control_application_types;
 pub mod delete_account_custom_permission_types;
 pub mod delete_account_customization_types;
 pub mod delete_account_subscription_types;
@@ -82,10 +90,13 @@ pub mod delete_group_membership_types;
 pub mod delete_group_types;
 pub mod delete_iam_policy_assignment_types;
 pub mod delete_identity_propagation_config_types;
+pub mod delete_inbound_connector_types;
+pub mod delete_knowledge_base_refresh_schedule_types;
 pub mod delete_knowledge_base_types;
 pub mod delete_limits_profile_types;
 pub mod delete_namespace_types;
 pub mod delete_o_auth_client_application_types;
+pub mod delete_policy_assignment_types;
 pub mod delete_refresh_schedule_types;
 pub mod delete_role_custom_permission_types;
 pub mod delete_role_membership_types;
@@ -101,6 +112,7 @@ pub mod delete_user_by_principal_id_types;
 pub mod delete_user_custom_permission_types;
 pub mod delete_user_types;
 pub mod delete_vpc_connection_types;
+pub mod describe_access_control_application_types;
 pub mod describe_account_custom_permission_types;
 pub mod describe_account_customization_types;
 pub mod describe_account_settings_types;
@@ -142,10 +154,12 @@ pub mod describe_folder_types;
 pub mod describe_group_membership_types;
 pub mod describe_group_types;
 pub mod describe_iam_policy_assignment_types;
+pub mod describe_inbound_connector_types;
 pub mod describe_ingestion_types;
 pub mod describe_ip_restriction_types;
 pub mod describe_key_registration_types;
 pub mod describe_knowledge_base_permissions_types;
+pub mod describe_knowledge_base_refresh_schedule_types;
 pub mod describe_knowledge_base_types;
 pub mod describe_limits_profile_types;
 pub mod describe_namespace_types;
@@ -153,6 +167,7 @@ pub mod describe_o_auth_client_application_types;
 pub mod describe_q_personalization_configuration_types;
 pub mod describe_quick_sight_q_search_configuration_types;
 pub mod describe_refresh_schedule_types;
+pub mod describe_resource_permissions_types;
 pub mod describe_role_custom_permission_types;
 pub mod describe_self_upgrade_configuration_types;
 pub mod describe_space_permissions_types;
@@ -179,7 +194,9 @@ pub mod get_dashboard_embed_url_types;
 pub mod get_flow_metadata_types;
 pub mod get_flow_permissions_types;
 pub mod get_identity_context_types;
+pub mod get_policy_assignment_types;
 pub mod get_session_embed_url_types;
+pub mod list_access_control_applications_types;
 pub mod list_action_connectors_types;
 pub mod list_agents_types;
 pub mod list_analyses_types;
@@ -203,11 +220,15 @@ pub mod list_groups_types;
 pub mod list_iam_policy_assignments_for_user_types;
 pub mod list_iam_policy_assignments_types;
 pub mod list_identity_propagation_configs_types;
+pub mod list_inbound_connector_application_associations_types;
+pub mod list_inbound_connectors_types;
 pub mod list_ingestions_types;
+pub mod list_knowledge_base_refresh_schedules_types;
 pub mod list_knowledge_bases_types;
 pub mod list_limits_profiles_types;
 pub mod list_namespaces_types;
 pub mod list_o_auth_client_applications_types;
+pub mod list_principals_for_policy_types;
 pub mod list_refresh_schedules_types;
 pub mod list_role_memberships_types;
 pub mod list_self_upgrades_types;
@@ -230,6 +251,7 @@ pub mod list_users_types;
 pub mod list_vpc_connections_types;
 pub mod predict_qa_results_types;
 pub mod put_data_set_refresh_properties_types;
+pub mod put_policy_assignment_types;
 pub mod register_user_types;
 pub mod restore_analysis_types;
 pub mod search_action_connectors_types;
@@ -254,6 +276,8 @@ pub mod start_dashboard_snapshot_job_schedule_types;
 pub mod start_dashboard_snapshot_job_types;
 pub mod tag_resource_types;
 pub mod untag_resource_types;
+pub mod update_access_control_application_secret_types;
+pub mod update_access_control_application_types;
 pub mod update_account_custom_permission_types;
 pub mod update_account_customization_types;
 pub mod update_account_settings_types;
@@ -288,9 +312,12 @@ pub mod update_folder_types;
 pub mod update_group_types;
 pub mod update_iam_policy_assignment_types;
 pub mod update_identity_propagation_config_types;
+pub mod update_inbound_connector_application_associations_types;
+pub mod update_inbound_connector_types;
 pub mod update_ip_restriction_types;
 pub mod update_key_registration_types;
 pub mod update_knowledge_base_permissions_types;
+pub mod update_knowledge_base_refresh_schedule_types;
 pub mod update_knowledge_base_types;
 pub mod update_limits_profile_types;
 pub mod update_o_auth_client_application_types;
@@ -298,6 +325,7 @@ pub mod update_public_sharing_settings_types;
 pub mod update_q_personalization_configuration_types;
 pub mod update_quick_sight_q_search_configuration_types;
 pub mod update_refresh_schedule_types;
+pub mod update_resource_permissions_types;
 pub mod update_role_custom_permission_types;
 pub mod update_self_upgrade_configuration_types;
 pub mod update_self_upgrade_types;
@@ -321,15 +349,25 @@ pub mod update_user_types;
 pub mod update_vpc_connection_types;
 
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use recorded_members::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use batch_create_topic_reviewed_answer_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use batch_delete_knowledge_base_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use batch_delete_policy_assignment_by_policy_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use batch_delete_topic_reviewed_answer_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use batch_describe_user_limits_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use batch_put_policy_assignment_by_policy_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use cancel_ingestion_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use create_access_control_application_secret_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use create_access_control_application_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use create_account_customization_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
@@ -367,7 +405,11 @@ pub use create_group_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use create_iam_policy_assignment_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use create_inbound_connector_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use create_ingestion_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use create_knowledge_base_refresh_schedule_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use create_knowledge_base_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
@@ -398,6 +440,10 @@ pub use create_topic_types::*;
 pub use create_topic_v2_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use create_vpc_connection_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use delete_access_control_application_secret_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use delete_access_control_application_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use delete_account_custom_permission_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
@@ -447,6 +493,10 @@ pub use delete_iam_policy_assignment_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use delete_identity_propagation_config_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use delete_inbound_connector_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use delete_knowledge_base_refresh_schedule_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use delete_knowledge_base_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use delete_limits_profile_types::*;
@@ -454,6 +504,8 @@ pub use delete_limits_profile_types::*;
 pub use delete_namespace_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use delete_o_auth_client_application_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use delete_policy_assignment_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use delete_refresh_schedule_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
@@ -484,6 +536,8 @@ pub use delete_user_custom_permission_types::*;
 pub use delete_user_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use delete_vpc_connection_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use describe_access_control_application_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use describe_account_custom_permission_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
@@ -567,6 +621,8 @@ pub use describe_group_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use describe_iam_policy_assignment_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use describe_inbound_connector_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use describe_ingestion_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use describe_ip_restriction_types::*;
@@ -574,6 +630,8 @@ pub use describe_ip_restriction_types::*;
 pub use describe_key_registration_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use describe_knowledge_base_permissions_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use describe_knowledge_base_refresh_schedule_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use describe_knowledge_base_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
@@ -588,6 +646,8 @@ pub use describe_q_personalization_configuration_types::*;
 pub use describe_quick_sight_q_search_configuration_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use describe_refresh_schedule_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use describe_resource_permissions_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use describe_role_custom_permission_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
@@ -641,7 +701,11 @@ pub use get_flow_permissions_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use get_identity_context_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use get_policy_assignment_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use get_session_embed_url_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use list_access_control_applications_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use list_action_connectors_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
@@ -689,7 +753,13 @@ pub use list_iam_policy_assignments_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use list_identity_propagation_configs_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use list_inbound_connector_application_associations_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use list_inbound_connectors_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use list_ingestions_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use list_knowledge_base_refresh_schedules_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use list_knowledge_bases_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
@@ -698,6 +768,8 @@ pub use list_limits_profiles_types::*;
 pub use list_namespaces_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use list_o_auth_client_applications_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use list_principals_for_policy_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use list_refresh_schedules_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
@@ -743,7 +815,7 @@ pub use predict_qa_results_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use put_data_set_refresh_properties_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
-pub use recorded_members::*;
+pub use put_policy_assignment_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use register_user_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
@@ -792,6 +864,10 @@ pub use start_dashboard_snapshot_job_types::*;
 pub use tag_resource_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use untag_resource_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use update_access_control_application_secret_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use update_access_control_application_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use update_account_custom_permission_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
@@ -861,11 +937,17 @@ pub use update_iam_policy_assignment_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use update_identity_propagation_config_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use update_inbound_connector_application_associations_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use update_inbound_connector_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use update_ip_restriction_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use update_key_registration_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use update_knowledge_base_permissions_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use update_knowledge_base_refresh_schedule_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use update_knowledge_base_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
@@ -880,6 +962,8 @@ pub use update_q_personalization_configuration_types::*;
 pub use update_quick_sight_q_search_configuration_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use update_refresh_schedule_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use update_resource_permissions_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use update_role_custom_permission_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]

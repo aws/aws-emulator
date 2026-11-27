@@ -10,6 +10,12 @@
 //! identities are persisted as given, so every later read of that assignment reports
 //! the rule this call was given.
 //!
+//! The body also reports the created assignment's own ARN, which this model revision
+//! declares on no assignment response: it is paired with the modelled members by
+//! [`crate::ops::types::ReportedIamPolicyAssignmentCreation`], as the describe, update
+//! and delete bodies pair theirs. The `## Output` list below is the model's, so it names
+//! only the modelled members.
+//!
 //! ## Shape of an operation
 //!
 //! Each operation is a struct that owns the shared engine and implements
@@ -173,7 +179,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
     for CreateIAMPolicyAssignment<Eng>
 {
     type Input = CreateIAMPolicyAssignmentInput;
-    type Output = CreateIAMPolicyAssignmentOutput;
+    type Output = ReportedIamPolicyAssignmentCreation;
     type Error = CreateIAMPolicyAssignmentError;
 
     const NAME: &'static str = "CreateIAMPolicyAssignment";
@@ -278,22 +284,24 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         };
         // The response reports the record that was stored, so what a caller is told it
         // created is what a later read of the store answers with.
-        let response = CreateIAMPolicyAssignmentOutput {
+        let response = ReportedIamPolicyAssignmentCreation {
             // The assignment's own ARN, derived from the account that owns it and the
             // name that identifies it there.
-            arn: Some(crate::state::iam_policy_assignment_arn(
+            arn: crate::state::iam_policy_assignment_arn(
                 &record.aws_account_id,
                 &record.assignment_name,
-            )),
-            assignment_name: Some(record.assignment_name.clone()),
-            assignment_id: Some(record.assignment_id.clone()),
-            assignment_status: Some(record.assignment_status.clone()),
-            policy_arn: record.policy_arn.clone(),
-            identities: record.identities.clone(),
-            request_id: Some(request_id),
-            // `Status` is this response's `@httpResponseCode` member, so it IS the
-            // call's HTTP status: the assignment was created by this call.
-            status: 201,
+            ),
+            response: CreateIAMPolicyAssignmentOutput {
+                assignment_name: Some(record.assignment_name.clone()),
+                assignment_id: Some(record.assignment_id.clone()),
+                assignment_status: Some(record.assignment_status.clone()),
+                policy_arn: record.policy_arn.clone(),
+                identities: record.identities.clone(),
+                request_id: Some(request_id),
+                // `Status` is this response's `@httpResponseCode` member, so it IS the
+                // call's HTTP status: the assignment was created by this call.
+                status: 201,
+            },
         };
         store.iam_policy_assignments.insert(key, record);
 
