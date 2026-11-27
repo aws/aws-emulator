@@ -486,10 +486,10 @@ async fn every_agentcore_signed_request_is_dispatched_instead_of_refused_as_ambi
     //
     // Each row names the answer of the ONE service that owns the route, which is what
     // excludes both routing failures: `AmbiguousService` (500, two claimants) and
-    // `UnknownService` (404, none). An operation that is still scaffolded answers the
-    // scaffold's `501 NotImplemented`, and one whose own resource lookup misses answers its
-    // modelled `404 ResourceNotFoundException` — both answers from the service that owns the
-    // route, where the router's refusals are not.
+    // `UnknownService` (404, none). An operation whose own resource lookup misses answers its
+    // modelled `404 ResourceNotFoundException`, and one whose work this emulator cannot do at
+    // all — running a container image — answers its modelled `424 RuntimeClientError`; both
+    // answers come from the service that owns the route, where the router's refusals do not.
     let rows: [(&str, &str, String, Value, u16, &str); 9] = [
         (
             "CreateGateway, the operation this issue was filed on",
@@ -567,12 +567,13 @@ async fn every_agentcore_signed_request_is_dispatched_instead_of_refused_as_ambi
             "",
         ),
         (
-            "InvokeAgentRuntime on the data plane, its invocation still scaffolded",
+            "InvokeAgentRuntime on the data plane, whose runtime is deployed from a container \
+             image this emulator starts none of",
             "POST",
             format!("/runtimes/{}/invocations", label(&runtime_arn)),
             json!({}),
-            501,
-            "NotImplemented",
+            424,
+            "RuntimeClientError",
         ),
         (
             "InvokeAgentRuntime on an agent nothing created",

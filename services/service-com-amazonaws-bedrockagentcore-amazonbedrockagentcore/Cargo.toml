@@ -50,18 +50,21 @@ tracing = { workspace = true }
 # reviewed here. One version is pinned for the whole workspace, so the binary carries
 # a single QuickJS.
 rquickjs = "0.14"
-# The PYTHON half of the code interpreter's `executeCode` RUNS the submitted program, so
-# it needs a contained Python interpreter — and this crate adds NO execution substrate of
-# its own for it. It drives the ONE contained interpreter this workspace already holds
+# Two things this crate RUNS caller-supplied Python for need a contained interpreter, and
+# this crate adds NO execution substrate of its own for either: the PYTHON half of the code
+# interpreter's `executeCode`, which runs the program a caller submits, and
+# `InvokeAgentRuntime`, which runs the code an agent runtime was DEPLOYED from. Both drive
+# the ONE contained interpreter this workspace already holds
 # (`state::execution::python` of the crate below), exactly as the Amazon EMR notebook and
 # Spark-step planes do: one interpreter per run, built with its host-reaching surface
 # compiled out, its native modules narrowed to an allow-list, its `posix` that crate's own
 # with every host-reaching call refused, and the deadline, step, memory, recursion and
-# output bounds enforced in host code the caller's program cannot reach. The kernel the
-# program runs in, and the session workspace it reads and writes, are ordinary Python this
-# crate supplies on the run's import path (`state::code_interpreter_python`); the only
-# filesystem a run sees is that in-memory workspace, and the run is given no seam to
-# dispatch an AWS call on.
+# output bounds enforced in host code the caller's program cannot reach. What this crate
+# supplies on a run's import path is ordinary Python of its own: the kernel a submitted
+# program runs in with the session workspace it reads and writes
+# (`state::code_interpreter_python`), and the AgentCore runtime contract an invocation is
+# delivered through (`state::agent_runtime_run`). The only filesystem either run sees is an
+# in-memory one, and neither is given a seam to dispatch an AWS call on.
 service-com-amazonaws-lambda-awsgirapiservice = { workspace = true }
 # `png`: encodes a browser session's viewport as the PNG image `InvokeBrowser`'s
 # `screenshot` action answers with — the one format `ScreenshotFormat` declares — so the
@@ -111,6 +114,10 @@ emulator-core-build-support = { workspace = true }
 # Declares one module per `tests/all/<name>.rs`, so a new suite is picked up by being
 # there rather than by a hand-kept list.
 automod = { workspace = true }
+# Writes the .zip an agent runtime's code artifact is normally stored as, so the test that
+# pins how a deployment's modules are read drives a REAL archive rather than bytes that
+# happen to pass. `deflate` is the compression a .zip entry carries; nothing else is needed.
+zip = { version = "9", default-features = false, features = ["deflate"] }
 sha2 = { workspace = true }
 hex = { workspace = true }
 # IAM and the token service, mounted beside this one in the test harness: the policies a

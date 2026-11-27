@@ -229,6 +229,22 @@ fn session_key(agent_runtime_id: &str, runtime_session_id: &str) -> String {
     format!("{agent_runtime_id}/{runtime_session_id}")
 }
 
+/// Mint the `runtimeSessionId` an invocation that named none runs under.
+///
+/// The id has to satisfy BOTH shapes it travels in: the one the answer reports it as
+/// (`SessionId`, pattern `^[a-zA-Z0-9][a-zA-Z0-9-_]*$`, length 1..100) and the one a later
+/// call addresses the same session by (`SessionType`, length 33..256), so it is exactly 33
+/// characters — the instant the session was established in epoch milliseconds and the
+/// engine-wide sequence, sixteen lowercase hex digits each, which keeps two sessions
+/// established in one millisecond apart.
+pub fn mint_runtime_session_id(seq: u64) -> String {
+    let millis = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map_or(0, |since_epoch| since_epoch.as_millis());
+    let millis = u64::try_from(millis).unwrap_or(0);
+    format!("{millis:016x}-{seq:016x}")
+}
+
 impl ComAmazonawsBedrockagentcoreAmazonbedrockagentcoreState {
     /// Record that an invocation established `session`, evicting the least recently written
     /// record once the store passes [`MAX_RUNTIME_SESSIONS`].

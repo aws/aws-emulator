@@ -164,6 +164,25 @@ pub(super) fn agentcore_members(
     Ok(request)
 }
 
+/// Carry a request member a declaration states as a SCALAR in the one member of the
+/// STRUCTURE the API takes it as.
+///
+/// A resource type states a configuration whose API shape is a structure with a single
+/// required member as that member's own scalar — one value, so the type publishes one
+/// property for it — while the API takes the structure. The two are the same statement, so
+/// the scalar is carried into `member` of that structure rather than handed to the API where
+/// an object belongs, which the call refuses as a type error and the deployment reports as a
+/// failed resource. A declaration that already states the structure is left exactly as it is,
+/// and one stating nothing at all adds nothing.
+fn scalar_in_member(request: &mut Map<String, Value>, property: &str, member: &str) {
+    let Some(Value::String(scalar)) = request.get(property) else {
+        return;
+    };
+    let mut held = Map::new();
+    held.insert(member.to_string(), Value::String(scalar.clone()));
+    request.insert(property.to_string(), Value::Object(held));
+}
+
 /// The tag MAP a create carries: the tags the declaration asks for beside the ones
 /// CloudFormation gives the resource ([`tags_of`]), or `None` where there are none at all.
 pub(super) fn agentcore_tags(
@@ -301,6 +320,18 @@ const RUNTIME_VERBATIM_PROPERTIES: &[&str] = &["EnvironmentVariables"];
 /// is the one member CloudFormation decides.
 const RUNTIME_OMITTED_PROPERTIES: &[&str] = &[TAGS_PROPERTY, RUNTIME_NAME_PROPERTY];
 
+/// The member the runtime's create and update take the server protocol in, and the member of
+/// THAT STRUCTURE the protocol itself is stated in.
+///
+/// `protocolConfiguration` is a structure whose one required member is `serverProtocol`
+/// (source: smithy_query query="shape" shape="ProtocolConfiguration"), while the resource
+/// type states the protocol as the SCALAR that member takes (`ProtocolConfiguration: HTTP`),
+/// so the declared scalar is carried in that member ([`scalar_in_member`]) rather than handed
+/// to a structure member as a string.
+const RUNTIME_PROTOCOL_MEMBER: &str = "protocolConfiguration";
+/// See [`RUNTIME_PROTOCOL_MEMBER`].
+const RUNTIME_SERVER_PROTOCOL_MEMBER: &str = "serverProtocol";
+
 /// The members an answered runtime reports, as `(attribute, member)`: the three values this
 /// type publishes as return values, read off the answer rather than recomputed here.
 const RUNTIME_ATTRIBUTES: &[(&str, &str)] = &[
@@ -341,6 +372,11 @@ pub(super) async fn create_agentcore_runtime(
         RUNTIME_VERBATIM_PROPERTIES,
         RUNTIME_OMITTED_PROPERTIES,
     )?;
+    scalar_in_member(
+        &mut request,
+        RUNTIME_PROTOCOL_MEMBER,
+        RUNTIME_SERVER_PROTOCOL_MEMBER,
+    );
     request.insert(
         "agentRuntimeName".to_string(),
         Value::String(agentcore_name(
@@ -422,11 +458,16 @@ pub(super) async fn update_agentcore_runtime(
             return Ok(None);
         }
     }
-    let request = agentcore_members(
+    let mut request = agentcore_members(
         declared,
         RUNTIME_VERBATIM_PROPERTIES,
         RUNTIME_OMITTED_PROPERTIES,
     )?;
+    scalar_in_member(
+        &mut request,
+        RUNTIME_PROTOCOL_MEMBER,
+        RUNTIME_SERVER_PROTOCOL_MEMBER,
+    );
     let answered = call_rest_json_named(
         ctx,
         AGENTCORE_SIGNING_NAME,

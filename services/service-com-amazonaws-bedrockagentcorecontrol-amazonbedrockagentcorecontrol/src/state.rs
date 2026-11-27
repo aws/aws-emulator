@@ -1758,6 +1758,11 @@ pub mod agent_runtime_deletion;
 /// order. Re-exported, so a handler names `crate::state::…` for it exactly as it
 /// does for the runtime that holds the versions.
 pub mod agent_runtime_versions;
+/// The CODE a runtime version's `codeConfiguration` artifact names, read out of
+/// the object storage that holds it — what the plane that invokes a runtime hands
+/// to the engine running the deployed code. Re-exported, so a handler names
+/// `crate::state::…` for it exactly as it does for the runtime itself.
+pub mod agent_runtime_code;
 /// The Kinesis data stream a memory's `streamDeliveryResources` names, and whether
 /// this account really holds it — the dependency a create of such a memory is
 /// resolved against before it is accepted. Re-exported, so a handler names
@@ -1792,6 +1797,7 @@ pub use name_conflicts::*;
 pub use agent_runtime_default_endpoint::*;
 pub use agent_runtime_deletion::*;
 pub use agent_runtime_versions::*;
+pub use agent_runtime_code::*;
 pub use harness_updates::*;
 pub use memory_stream_delivery::*;
 pub use api_key_credential_providers::*;

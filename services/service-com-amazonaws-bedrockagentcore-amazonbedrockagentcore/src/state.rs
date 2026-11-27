@@ -236,6 +236,17 @@ pub use code_interpreter_tasks::*;
 mod code_interpreter_python;
 pub use code_interpreter_python::*;
 
+/// WHAT an invocation of an agent runtime endpoint runs: the artifact the version it
+/// addresses was deployed from, read off the component that owns agent runtimes, and the
+/// modules the deployed code is imported from.
+mod deployed_agent;
+pub use deployed_agent::*;
+
+/// The invocation itself: the deployed agent's own code run in the one contained
+/// interpreter this workspace embeds, and the body it answered with.
+mod agent_runtime_run;
+pub use agent_runtime_run::*;
+
 /// What the built-in tools publish about the sessions a caller holds open:
 /// [`report_active_sessions`], the `AWS/Bedrock-AgentCore` gauge every call that opens or
 /// closes a session samples, and the clock that keeps sampling it while one is open.

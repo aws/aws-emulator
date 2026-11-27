@@ -1,13 +1,11 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op InvokeAgentRuntime
-//! SCAFFOLDED, NOT IMPLEMENTED: the INVOCATION itself — handing a payload to the agent the
-//! runtime runs and answering with what it produced — is not written yet, so a request that
-//! gets as far as it is answered HTTP 501 `NotImplemented`. That work has its own gap issue;
-//! this file is the ONLY file to touch for this operation.
+//! One invocation of an agent runtime, DELIVERED to the agent the runtime was deployed
+//! from: the request's payload reaches the deployed code's entry point, and the answer is
+//! the body that code produced.
 //!
-//! What IS decided here is everything AWS decides AHEAD of the invocation, because those
-//! answers are not the invocation's to withhold:
+//! What this operation decides, in the order AWS decides it:
 //!
 //! * IAM — the identity-based policies in force on the calling principal decide whether it
 //!   may invoke the agent the request addresses ([`crate::state::authorize`]), before this
@@ -17,13 +15,22 @@
 //!   plane, so the agent and the alias the `qualifier` names are resolved against the
 //!   component that owns them ([`crate::state::resolve_runtime_endpoint`]), and a request
 //!   naming neither is answered with the modelled `ResourceNotFoundException` (404) that
-//!   names the qualifier and the agent it asked for.
+//!   names the qualifier and the agent it asked for;
+//! * the DEPLOYMENT — the version that endpoint points at was deployed from an artifact
+//!   ([`crate::state::deployed_agent`]), and a `codeConfiguration` artifact's own source is
+//!   read out of the object storage holding it
+//!   ([`::service_com_amazonaws_bedrockagentcorecontrol_amazonbedrockagentcorecontrol::state::artifact_code`]);
+//! * the INVOCATION — the deployed code RUNS, in the one contained interpreter this
+//!   workspace embeds ([`crate::state::run_agent`]), and what it returned is the
+//!   `response` payload with the `contentType` it answered in. Nothing here composes a body:
+//!   an artifact nothing in this emulator can run (a container image, a runtime no engine
+//!   serves) is reported as work nothing ran, with the modelled `RuntimeClientError` (424),
+//!   and so is an agent that raised or ran past one of the invocation's bounds.
 //!
-//! A 501 past those two means "nobody has written the invocation yet", never "the emulator
-//! is broken". Replace it with real behaviour and delete the SCAFFOLDED marker line above;
-//! that line is the machine-readable record of which operations are still stubs
-//! (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`), so leaving it on an
-//! implemented operation under-reports progress.
+//! The invocation ESTABLISHES the runtime session it runs under, which is what
+//! `StopRuntimeSession` stops ([`crate::state::RuntimeSessionRecord`]): the caller's
+//! `runtimeSessionId` names it, and an invocation that names none runs under the one this
+//! service mints for it.
 //!
 //! ## Shape of an operation
 //!
@@ -173,6 +180,32 @@
 #[allow(unused_imports)]
 use super::types::*;
 
+use std::sync::Arc;
+use std::time::{Duration, SystemTime};
+
+use ::service_com_amazonaws_bedrockagentcorecontrol_amazonbedrockagentcorecontrol as control_plane;
+
+/// How many invocations of deployed agents this service runs at once.
+///
+/// An EMULATOR bound: each one runs an interpreter in this process, so the number of them
+/// bounds what the engine can hold however many calls arrive at once, and it keeps the
+/// blocking pool from filling with CPU-bound runs. It is the service's own, over every
+/// caller of this endpoint.
+const MAX_CONCURRENT_INVOCATIONS: usize = 4;
+
+/// How long a call waits for one of those run slots before it is answered with the modelled
+/// `ThrottlingException` instead of queueing behind other callers' agents.
+const PERMIT_WAIT: Duration = Duration::from_secs(5);
+
+/// The most bytes of `payload` this emulator hands to a deployed agent.
+///
+/// An EMULATOR ceiling, not the modelled one: `payload` admits 100 MB, and the whole of it
+/// would be held in this process's memory on the way to the run, so a larger body is
+/// refused with the operation's modelled `ServiceQuotaExceededException` rather than
+/// materialised. Far above any agent request, and far below what would cost this host
+/// anything noticeable.
+const MAX_PAYLOAD_BYTES: usize = 8 * 1024 * 1024;
+
 // `#[operation_error]` below expands to an invocation of the LOCAL declarative
 // `smithy!` macro, which this line is what emits into the module. Without it the
 // expansion fails with `cannot find macro 'smithy' in this scope` and the
@@ -220,6 +253,9 @@ impl From<InvokeAgentRuntimeErrorModeled> for InvokeAgentRuntimeError {
 /// concrete engine where it mounts the service, not here.
 pub struct InvokeAgentRuntime<Eng> {
     engine: ::std::sync::Arc<Eng>,
+    /// The run slots [`MAX_CONCURRENT_INVOCATIONS`] declares, held by the service rather
+    /// than by one request, so the bound is over every caller of this endpoint.
+    runs: Arc<::tokio::sync::Semaphore>,
 }
 
 impl<Eng> InvokeAgentRuntime<Eng> {
@@ -227,8 +263,28 @@ impl<Eng> InvokeAgentRuntime<Eng> {
     /// construction-time dependency, so engine access is guaranteed by the time any
     /// request runs. Called by the generated `EmulatedService::new(engine)` constructor.
     pub fn new(engine: ::std::sync::Arc<Eng>) -> Self {
-        Self { engine }
+        Self {
+            engine,
+            runs: Arc::new(::tokio::sync::Semaphore::new(MAX_CONCURRENT_INVOCATIONS)),
+        }
     }
+}
+
+/// This operation's modelled 424 `RuntimeClientError`: the deployment an invocation
+/// addresses produced no answer — nothing in this emulator can run it, its code could not be
+/// loaded, or the agent itself raised or ran past one of the invocation's bounds.
+fn runtime_client_error(message: impl Into<String>) -> InvokeAgentRuntimeErrorModeled {
+    InvokeAgentRuntimeErrorModeled::RuntimeClientError(RuntimeClientError {
+        message: Some(message.into()),
+    })
+}
+
+/// This operation's modelled 500 `InternalServerException`, for what is this emulator's
+/// fault rather than the request's.
+fn internal(message: impl Into<String>) -> InvokeAgentRuntimeErrorModeled {
+    InvokeAgentRuntimeErrorModeled::InternalServerException(InternalServerException {
+        message: Some(message.into()),
+    })
 }
 
 impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_runtime::Operation
@@ -256,11 +312,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // The endpoint this invocation is addressed to, read off the component that owns
         // agent runtimes: a payload cannot be handed to an agent that does not exist, and
         // an alias naming no endpoint on one addresses nothing either.
-        crate::state::resolve_runtime_endpoint(
+        let addressed = crate::state::resolve_runtime_endpoint(
             &*self.engine,
             &input.agent_runtime_arn,
             input.qualifier.as_deref(),
-            ::std::time::SystemTime::now(),
+            SystemTime::now(),
         )
         .map_err(|unavailable| match unavailable {
             crate::state::RuntimeEndpointUnavailable::NotFound(message) => {
@@ -271,15 +327,140 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 )
             }
             crate::state::RuntimeEndpointUnavailable::StoreUnavailable(message) => {
-                InvokeAgentRuntimeErrorModeled::InternalServerException(InternalServerException {
-                    message: Some(message),
-                })
+                internal(message)
             }
         })?;
 
-        // Everything past here is the invocation itself: the agent the runtime runs is the
-        // caller's own program, and running it is the work the SCAFFOLDED marker at the top
-        // of this file still records as unwritten.
-        Err(crate::scaffolded::Scaffolded::not_implemented("InvokeAgentRuntime"))
+        // WHAT that endpoint runs: the artifact the version it points at was deployed from.
+        let deployed = crate::state::deployed_agent(
+            &*self.engine,
+            &input.agent_runtime_arn,
+            &addressed.agent_runtime_id,
+            &addressed.endpoint_name,
+        )
+        .map_err(|unavailable| match unavailable {
+            crate::state::AgentUnavailable::NotFound(message) => {
+                InvokeAgentRuntimeErrorModeled::ResourceNotFoundException(
+                    ResourceNotFoundException {
+                        message: Some(message),
+                    },
+                )
+            }
+            crate::state::AgentUnavailable::StoreUnavailable(message) => internal(message),
+            crate::state::AgentUnavailable::NotRunnable(message) => runtime_client_error(message),
+        })?;
+        if !crate::state::runs_python(&deployed.runtime) {
+            return Err(runtime_client_error(crate::state::no_engine_for(&deployed.runtime)).into());
+        }
+        if input.payload.len() > MAX_PAYLOAD_BYTES {
+            return Err(InvokeAgentRuntimeErrorModeled::ServiceQuotaExceededException(
+                ServiceQuotaExceededException {
+                    message: Some(format!(
+                        "the payload of one invocation may be at most {MAX_PAYLOAD_BYTES} bytes \
+                         in this emulator"
+                    )),
+                },
+            )
+            .into());
+        }
+
+        // The deployed code itself, out of the object storage that holds the artifact — the
+        // component that owns agent runtimes reads it, because the location is its record.
+        let region = crate::state::request_region(ctx.parts());
+        let objects = control_plane::state::artifact_code(ctx, &region, &deployed.code)
+            .await
+            .map_err(|unavailable| match unavailable {
+                control_plane::state::CodeUnavailable::NotHeld(message) => {
+                    runtime_client_error(message)
+                }
+                control_plane::state::CodeUnavailable::Unreadable(message) => internal(message),
+            })?;
+        let modules = crate::state::deployed_modules(&objects).map_err(runtime_client_error)?;
+
+        // The session this invocation runs under, which `StopRuntimeSession` stops: the
+        // caller's own id names it, and one that named none runs under the id this service
+        // mints for the session it is establishing.
+        let state = crate::state::service_state(&*self.engine)
+            .ok_or_else(|| internal("the shared engine does not carry this service's state"))?;
+        let session_id = match input.runtime_session_id.clone() {
+            Some(named) if !named.is_empty() => named,
+            _ => {
+                let mut store = state.lock();
+                let seq = store.next_seq();
+                crate::state::mint_runtime_session_id(seq)
+            }
+        };
+
+        // One of the service's run slots, waited for only as long as [`PERMIT_WAIT`]: past
+        // that the caller is throttled rather than left queueing behind other callers'
+        // agents. Held until this run ends, however it ends.
+        let permit = ::tokio::time::timeout(PERMIT_WAIT, Arc::clone(&self.runs).acquire_owned())
+            .await
+            .map_err(|_| {
+                InvokeAgentRuntimeErrorModeled::ThrottlingException(ThrottlingException {
+                    message: Some(
+                        "Too many invocations are running on this agent runtime. Retry the \
+                         request."
+                            .to_string(),
+                    ),
+                })
+            })?
+            .map_err(|error| internal(format!("the run slots are gone: {error}")))?;
+        let answered = crate::state::run_agent(&crate::state::AgentRun {
+            modules: &modules,
+            entry_point: &deployed.entry_point,
+            payload: &input.payload,
+            content_type: input.content_type.as_deref(),
+            accept: input.accept.as_deref(),
+            session_id: &session_id,
+            user_id: input.runtime_user_id.as_deref(),
+            invoked_arn: &input.agent_runtime_arn,
+            environment: &deployed.environment,
+        })
+        .await;
+        drop(permit);
+
+        // The invocation really ran in the session, so the session is recorded whatever the
+        // agent came to: a stop addresses the session an invocation established.
+        {
+            let mut store = state.lock();
+            store.insert_runtime_session(crate::state::RuntimeSessionRecord::started(
+                &addressed.agent_runtime_id,
+                &addressed.endpoint_name,
+                &session_id,
+                SystemTime::now(),
+            ));
+        }
+
+        let answered = answered.map_err(|failure| match failure {
+            crate::state::AgentRunFailure::Raised {
+                error_type,
+                error_message,
+            } => runtime_client_error(format!(
+                "the deployed agent raised {error_type}: {error_message}"
+            )),
+            crate::state::AgentRunFailure::Stopped(reason) => runtime_client_error(reason),
+            crate::state::AgentRunFailure::NotRun(reason) => internal(reason),
+        })?;
+
+        Ok(InvokeAgentRuntimeOutput {
+            // The session the invocation ran in, which a later call addresses it by.
+            runtime_session_id: Some(session_id),
+            // The trace context travels back to the caller as the request carried it: these
+            // are the caller's own values, propagated rather than minted here.
+            trace_id: input.trace_id,
+            trace_parent: input.trace_parent,
+            trace_state: input.trace_state,
+            baggage: input.baggage,
+            mcp_session_id: input.mcp_session_id,
+            mcp_protocol_version: input.mcp_protocol_version,
+            content_type: answered.content_type,
+            response: answered.body,
+            // The status the DEPLOYED CODE answered its invocation with, which this member
+            // is bound to as the response's own code: "a status code of 200 indicates a
+            // successful operation. Other status codes indicate various error conditions"
+            // — the agent's own, never one composed here.
+            status_code: Some(i32::from(answered.status)),
+        })
     }
 }
