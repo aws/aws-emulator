@@ -193,9 +193,10 @@ fn is_oversized_sensitive_payload(violation: &Violation) -> bool {
 /// validation path spells it with, from the operation input down.
 ///
 /// `smithy_query(query="shape",shape="TagsMap,Tags")`: the tag maps of this model are
-/// reached as `PutDeploymentParameterRequest$tags` (the constrained `TagsMap`,
+/// reached as `PutDeploymentParameterRequest$tags` and
+/// `StartDeploymentConfigurationJobRequest$tags` (the constrained `TagsMap`,
 /// `length max 50`) and `TagResourceRequest$tags` (`Tags`, which the model leaves
-/// unconstrained), so both are reported at the path `tags`.
+/// unconstrained), so all three are reported at the path `tags`.
 ///
 /// Spelled as the whole trail for the reason [`SENSITIVE_MEMBER_PATHS`] gives: only a
 /// STRUCTURE member contributes a segment the model named, so a path ending in a

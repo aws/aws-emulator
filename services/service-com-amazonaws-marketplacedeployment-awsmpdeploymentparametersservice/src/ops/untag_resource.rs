@@ -22,7 +22,7 @@
 //!
 //! Resolving the label is the sequence every operation that addresses a deployment
 //! parameter by a caller-supplied `resourceArn` runs, written once as
-//! `crate::state::write_tagged_parameter` (the writing view of that sequence); what
+//! `crate::state::write_tagged_resource` (the writing view of that sequence); what
 //! follows is what the sequence decides, and this handler adds only the removal from
 //! the resolved record. Because the removal IS a write to the stored record, the
 //! sequence refreshes the instant the record reports as last written
@@ -36,7 +36,7 @@
 //! front-end's own identity rather than the modelled `ValidationException` shape
 //! name), raised before the store is consulted at all. An ARN that IS one of this
 //! service's and names no stored record is a 404 carrying this service's own
-//! `NotFoundException` code (`crate::state::parameter_not_found`), which is the code
+//! `NotFoundException` code (`crate::state::tagged_resource_not_found`), which is the code
 //! its recorded responses use rather than the modelled `ResourceNotFoundException`
 //! shape name. A record whose `expirationDate` has passed is "scheduled for
 //! deletion" and is dropped before the ARN is resolved
@@ -198,7 +198,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // Manager secret with it, and that deletion cannot be made under the store
         // guard, so it is carried out here — on both paths, because the deletion is
         // one the clock owed whatever this request is answered with.
-        let answered = crate::state::write_tagged_parameter(
+        let answered = crate::state::write_tagged_resource(
             &*self.engine,
             &input.resource_arn,
             UntagResourceErrorModeled::InternalServerException,
@@ -213,7 +213,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 // `@idempotent`: removing a key the record does not hold is a no-op,
                 // so the same call repeated answers the same success.
                 for key in &input.tag_keys {
-                    record.tags.remove(key);
+                    record.tags_mut().remove(key);
                 }
                 Ok(UntagResourceOutput {})
             },

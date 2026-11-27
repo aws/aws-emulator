@@ -30,7 +30,8 @@ use service_com_amazonaws_marketplacedeployment_awsmpdeploymentparametersservice
 };
 
 use crate::deployment_parameters::{
-    emulator, error_code, field_name, list_tags, message, provision, put, tags_of, CATALOG,
+    data_as_a_service, emulator, error_code, field_name, get_configuration, get_job, list_jobs,
+    list_tags, message, provision, put, start_job, tags_of, CATALOG, DELIVERY_OPTION,
 };
 
 /// A body naming `agreement_id`, in the minimal shape a write takes.
@@ -144,6 +145,105 @@ async fn a_catalog_that_names_no_catalog_is_refused_before_the_target_is_resolve
         tags_of(&listed),
         std::collections::BTreeMap::new(),
         "a create carrying no tags must store none, got {listed:?}"
+    );
+}
+
+#[tokio::test]
+async fn the_catalog_rule_holds_for_every_operation_of_the_deployment_configuration_slice() {
+    let (router, engine) = emulator();
+    // A product the account holds under the catalog it serves, so no row below is
+    // refused for naming no product instead of for its catalog.
+    provision(&engine, CATALOG, "agmt-config-catalog", &["prod-config-catalog"]);
+
+    // The four operations that name a catalog and address a deployment
+    // configuration. A `catalog` naming no catalog is judged by each of them before
+    // the product, the job or the configuration is resolved, so every row is the
+    // same 400 whichever operation it reaches.
+    let unsupported = ["NotTheRealMarketplace", "awsmarketplace", "AWSMarketplaceToo"];
+    for catalog in unsupported {
+        assert!(
+            !is_supported_catalog(catalog),
+            "the row must name no supported catalog, got {catalog:?}"
+        );
+        let answers = vec![
+            (
+                "StartDeploymentConfigurationJob",
+                start_job(
+                    &router,
+                    catalog,
+                    "prod-config-catalog",
+                    DELIVERY_OPTION,
+                    &json!({
+                        "configuration": data_as_a_service("https://catalog.example.com/start"),
+                    }),
+                )
+                .await,
+            ),
+            (
+                "GetDeploymentConfigurationJob",
+                get_job(
+                    &router,
+                    catalog,
+                    "prod-config-catalog",
+                    DELIVERY_OPTION,
+                    "0123456789abcdef",
+                )
+                .await,
+            ),
+            (
+                "ListDeploymentConfigurationJobs",
+                list_jobs(&router, catalog, "prod-config-catalog", DELIVERY_OPTION, "").await,
+            ),
+            (
+                "GetDeploymentConfiguration",
+                get_configuration(&router, catalog, "prod-config-catalog", DELIVERY_OPTION).await,
+            ),
+        ];
+        for (operation, (status, answer)) in answers {
+            assert_eq!(
+                status, 400,
+                "{operation} with catalog {catalog:?}: a catalog naming no catalog must be 400, \
+                 got {status} {answer:?}"
+            );
+            assert_eq!(
+                error_code(&answer),
+                "ValidationException",
+                "{operation} with catalog {catalog:?}: expected ValidationException, \
+                 got {answer:?}"
+            );
+            assert_eq!(
+                field_name(&answer),
+                "catalog",
+                "{operation} with catalog {catalog:?}: the refusal must name the catalog member, \
+                 got {answer:?}"
+            );
+            let reported = message(&answer);
+            assert!(
+                reported.contains(CATALOG),
+                "{operation} with catalog {catalog:?}: the refusal must list the supported \
+                 catalog, got {reported:?}"
+            );
+        }
+    }
+
+    // Nothing above started a job: the refusal precedes every write, and the
+    // supported catalog is still served.
+    let (status, listed) = list_jobs(
+        &router,
+        CATALOG,
+        "prod-config-catalog",
+        DELIVERY_OPTION,
+        "",
+    )
+    .await;
+    assert_eq!(
+        status, 200,
+        "the supported catalog must still be served, got {status} {listed:?}"
+    );
+    assert_eq!(
+        listed.get("jobs").and_then(Value::as_array).map(Vec::len),
+        Some(0),
+        "a refused start must have recorded no job, got {listed:?}"
     );
 }
 

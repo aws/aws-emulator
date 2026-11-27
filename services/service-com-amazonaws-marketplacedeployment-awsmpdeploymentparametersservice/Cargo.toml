@@ -28,6 +28,10 @@ tracing = { workspace = true }
 # matched from the single constant that states it rather than from a second,
 # hand-written statement of the same class.
 regex = "1.13"
+# The maintained URL parser, so whether a deployment configuration's fulfillment URL
+# is a valid absolute HTTPS URL is decided by an RFC 3986 / WHATWG parser rather than
+# by a hand-written reading of the grammar.
+url = "2"
 # The AWS SDK for Secrets Manager, driven over the emulator's own in-process
 # transport: a deployment parameter's `secretString` is held in a Secrets Manager
 # secret, which is the service that owns secret values.

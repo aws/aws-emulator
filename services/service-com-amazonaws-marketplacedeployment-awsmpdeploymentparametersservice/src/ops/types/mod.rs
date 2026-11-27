@@ -14,18 +14,30 @@
 //! here named after an operation would make that operation's own module name
 //! ambiguous inside `ops` (`E0659`).
 
+pub mod get_deployment_configuration_job_types;
+pub mod get_deployment_configuration_types;
+pub mod list_deployment_configuration_jobs_types;
 pub mod list_tags_for_resource_types;
 pub mod put_deployment_parameter_types;
 pub mod shared_types;
+pub mod start_deployment_configuration_job_types;
 pub mod tag_resource_types;
 pub mod untag_resource_types;
 
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use get_deployment_configuration_job_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use get_deployment_configuration_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use list_deployment_configuration_jobs_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use list_tags_for_resource_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use put_deployment_parameter_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use shared_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use start_deployment_configuration_job_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use tag_resource_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]

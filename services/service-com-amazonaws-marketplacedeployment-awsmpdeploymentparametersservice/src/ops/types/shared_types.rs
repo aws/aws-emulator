@@ -11,6 +11,19 @@ use super::*;
 
 smithy_macros::smithy_model!("smithy-model/com-amazonaws-marketplacedeployment-awsmpdeploymentparametersservice.json");
 
+#[smithy_macros::smithy(union_for = "com.amazonaws.marketplacedeployment#DeploymentConfigurationDetail")]
+#[allow(clippy::large_enum_variant)]
+#[derive(Debug, Clone)]
+pub enum DeploymentConfigurationDetail {
+    dataAsAService(DataAsAServiceConfigurationDetail),
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.marketplacedeployment#DataAsAServiceConfigurationDetail")]
+#[derive(Debug, Clone, Default)]
+pub struct DataAsAServiceConfigurationDetail {
+    pub fulfillment_url: String,
+}
+
 #[smithy_macros::smithy(shape = "com.amazonaws.marketplacedeployment#AccessDeniedException")]
 #[derive(Debug, Clone, Default)]
 pub struct AccessDeniedException {
@@ -48,4 +61,16 @@ pub struct ConflictException {
     pub message: String,
     pub resource_id: String,
 }
+
+/// The values `DeliveryOptionType` accepts on the wire.
+pub const DELIVERY_OPTION_TYPE_VALUES: &[&str] = &["data-as-a-service"];
+
+
+/// The values `DeploymentConfigurationJobErrorCode` accepts on the wire.
+pub const DEPLOYMENT_CONFIGURATION_JOB_ERROR_CODE_VALUES: &[&str] = &["ENDPOINT_INVALID", "FULFILLMENT_URL_UNREACHABLE", "INTERNAL_ERROR"];
+
+
+/// The values `DeploymentConfigurationJobStatus` accepts on the wire.
+pub const DEPLOYMENT_CONFIGURATION_JOB_STATUS_VALUES: &[&str] = &["FAILED", "IN_PROGRESS", "SUCCEEDED"];
+
 

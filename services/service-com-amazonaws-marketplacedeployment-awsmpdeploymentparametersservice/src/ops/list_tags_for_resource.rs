@@ -14,10 +14,10 @@
 //!
 //! Resolving the label is the sequence every operation that addresses a deployment
 //! parameter by a caller-supplied `resourceArn` runs, written once as
-//! `crate::state::with_tagged_parameter` — the REPORTING view of that sequence,
+//! `crate::state::with_tagged_resource` — the REPORTING view of that sequence,
 //! which leaves the instant the record reports as last written where the last write
 //! left it, since reporting a record is not writing it (the writing view,
-//! `crate::state::write_tagged_parameter`, is what the two tagging writes take);
+//! `crate::state::write_tagged_resource`, is what the two tagging writes take);
 //! what follows is what that sequence decides,
 //! and this handler adds only the reporting of the resolved record's tag map.
 //!
@@ -28,7 +28,7 @@
 //! front-end's own identity rather than the modelled `ValidationException` shape
 //! name), raised before the store is consulted at all. An ARN that IS one of this
 //! service's and names no stored record is a 404 carrying this service's own
-//! `NotFoundException` code (`crate::state::parameter_not_found`), which is the code
+//! `NotFoundException` code (`crate::state::tagged_resource_not_found`), which is the code
 //! its recorded responses use rather than the modelled `ResourceNotFoundException`
 //! shape name.
 //!
@@ -182,7 +182,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // deletion belongs to Secrets Manager and cannot be made under the store
         // guard, so it is carried out here, on both paths — it is a deletion the clock
         // owed, not a step of reporting anything.
-        let answered = crate::state::with_tagged_parameter(
+        let answered = crate::state::with_tagged_resource(
             &*self.engine,
             &input.resource_arn,
             ListTagsForResourceErrorModeled::InternalServerException,

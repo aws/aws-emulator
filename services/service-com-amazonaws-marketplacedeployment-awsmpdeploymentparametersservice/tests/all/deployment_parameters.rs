@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: CC0-1.0
 
-//! End-to-end HTTP tests for the deployment-parameter slice of this service.
+//! End-to-end HTTP tests for this service's two resource slices.
 //!
 //! Every case drives the real wire path — the production `MultiServiceRouter`,
 //! restJson1 routing and serialization, the modelled-constraint walk and the
@@ -18,7 +18,10 @@
 //! * an ARN of this service's vendor naming no stored record is a 404 carrying this
 //!   service's own `NotFoundException` code, a value this API cannot address at all a
 //!   400 `BadRequestException` (the `resource_arn_validation` suite owns that rule),
-//!   and a request outside the modelled constraints a `ValidationException`.
+//!   and a request outside the modelled constraints a `ValidationException`;
+//! * a deployment configuration is published by a JOB, and every operation of
+//!   that slice reports what the job records hold — the second half of this file
+//!   states those rules beside the cases that pin them.
 //!
 //! The harness below (the router, the signed request, and the per-operation
 //! callers) is `pub(crate)` because the sibling suites in this target —
@@ -1323,5 +1326,1050 @@ async fn interleaved_tag_and_untag_calls_track_an_independent_tag_model() {
         tags_of(&first),
         tags_of(&second),
         "ListTagsForResource is @readonly: two reads must agree, got {first:?} then {second:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The DEPLOYMENT-CONFIGURATION slice of this service: the job that publishes a
+// configuration, the configuration it publishes, and that configuration's tags.
+//
+// The rules these cases pin:
+//
+// * `StartDeploymentConfigurationJob` records ONE job and answers the
+//   `IN_PROGRESS` status the model fixes for it; what the job DOES is decided by
+//   the configuration it carries — a fulfillment URL that is a public absolute
+//   HTTPS URL is published, one that is not fails the job with the modelled
+//   `ENDPOINT_INVALID` code and leaves the active configuration as it was;
+// * every later report — `GetDeploymentConfigurationJob`,
+//   `ListDeploymentConfigurationJobs`, `GetDeploymentConfiguration` and the
+//   tagging operations — is read out of those records, so what one answers is
+//   what the others answer;
+// * a job is addressed INSIDE the product and delivery option of its path;
+// * `tags` are applied by the start that CREATES the configuration and changed
+//   afterwards only through `TagResource` / `UntagResource`;
+// * one `clientToken` replays its own start and refuses a different one.
+//
+// The harness above is reused: the same router, the same signed request.
+// ---------------------------------------------------------------------------
+
+use std::time::{Duration, SystemTime};
+
+use service_com_amazonaws_marketplacedeployment_awsmpdeploymentparametersservice::ops::types::{
+    DELIVERY_OPTION_TYPE_VALUES, DEPLOYMENT_CONFIGURATION_JOB_ERROR_CODE_VALUES,
+    DEPLOYMENT_CONFIGURATION_JOB_STATUS_VALUES,
+};
+use service_com_amazonaws_marketplacedeployment_awsmpdeploymentparametersservice::state::deployment_configuration::{
+    ENDPOINT_INVALID_MESSAGE, JOB_ERROR_ENDPOINT_INVALID, JOB_STATUS_FAILED,
+    JOB_STATUS_IN_PROGRESS, JOB_STATUS_SUCCEEDED, MAX_RESULTS_DEFAULT,
+};
+
+/// The delivery option type every case below names: the one value the modelled
+/// `DeliveryOptionType` declares, which
+/// `the_statuses_and_error_codes_this_service_reports_are_values_the_model_declares`
+/// asserts against the generated value list.
+pub(crate) const DELIVERY_OPTION: &str = "data-as-a-service";
+
+/// The longest `fulfillmentUrl` the model admits
+/// (`DeploymentConfigurationFulfillmentUrl`, `length 1..2048`).
+const FULFILLMENT_URL_MAX_LEN: usize = 2048;
+
+/// How long a case looks again for a job's terminal status before giving up.
+///
+/// GENEROUS on purpose: the terminal status is due a span after the start and the
+/// cases below wait for the CONDITION, so this is only the point at which a job
+/// that never settles is reported as a failure rather than hanging the suite.
+const JOB_BUDGET: Duration = Duration::from_secs(60);
+
+/// How often a case looks again while waiting for that status.
+const POLL_INTERVAL: Duration = Duration::from_millis(25);
+
+/// A `DeploymentConfigurationDetail` carrying the Data as a Service member.
+pub(crate) fn data_as_a_service(fulfillment_url: &str) -> Value {
+    json!({ "dataAsAService": { "fulfillmentUrl": fulfillment_url } })
+}
+
+/// `POST /catalogs/{catalog}/products/{productId}/delivery-options/{type}/deployment-configuration/jobs`.
+pub(crate) async fn start_job(
+    router: &MultiServiceRouter,
+    catalog: &str,
+    product_id: &str,
+    delivery_option_type: &str,
+    body: &Value,
+) -> (u16, Value) {
+    call(
+        router,
+        "POST",
+        &format!(
+            "/catalogs/{}/products/{}/delivery-options/{}/deployment-configuration/jobs",
+            pct(catalog),
+            pct(product_id),
+            pct(delivery_option_type)
+        ),
+        Some(body),
+    )
+    .await
+}
+
+/// `GET …/deployment-configuration/jobs/{jobId}`.
+pub(crate) async fn get_job(
+    router: &MultiServiceRouter,
+    catalog: &str,
+    product_id: &str,
+    delivery_option_type: &str,
+    job_id: &str,
+) -> (u16, Value) {
+    call(
+        router,
+        "GET",
+        &format!(
+            "/catalogs/{}/products/{}/delivery-options/{}/deployment-configuration/jobs/{}",
+            pct(catalog),
+            pct(product_id),
+            pct(delivery_option_type),
+            pct(job_id)
+        ),
+        None,
+    )
+    .await
+}
+
+/// `GET …/deployment-configuration/jobs`, with `query` appended verbatim (`""`
+/// for a request that names neither `maxResults` nor `nextToken`).
+pub(crate) async fn list_jobs(
+    router: &MultiServiceRouter,
+    catalog: &str,
+    product_id: &str,
+    delivery_option_type: &str,
+    query: &str,
+) -> (u16, Value) {
+    call(
+        router,
+        "GET",
+        &format!(
+            "/catalogs/{}/products/{}/delivery-options/{}/deployment-configuration/jobs{query}",
+            pct(catalog),
+            pct(product_id),
+            pct(delivery_option_type)
+        ),
+        None,
+    )
+    .await
+}
+
+/// `GET …/deployment-configuration`.
+pub(crate) async fn get_configuration(
+    router: &MultiServiceRouter,
+    catalog: &str,
+    product_id: &str,
+    delivery_option_type: &str,
+) -> (u16, Value) {
+    call(
+        router,
+        "GET",
+        &format!(
+            "/catalogs/{}/products/{}/delivery-options/{}/deployment-configuration",
+            pct(catalog),
+            pct(product_id),
+            pct(delivery_option_type)
+        ),
+        None,
+    )
+    .await
+}
+
+/// The `status` an answered job or job summary reports.
+pub(crate) fn status_of(body: &Value) -> String {
+    body.get("status")
+        .and_then(Value::as_str)
+        .unwrap_or("<no status>")
+        .to_string()
+}
+
+/// The `jobId` an answered job reports.
+fn job_id_of(body: &Value) -> String {
+    body.get("jobId")
+        .and_then(Value::as_str)
+        .unwrap_or("<no jobId>")
+        .to_string()
+}
+
+/// The `fulfillmentUrl` of the configuration an answer carries.
+fn fulfillment_url_of(body: &Value) -> String {
+    body.pointer("/configuration/dataAsAService/fulfillmentUrl")
+        .and_then(Value::as_str)
+        .unwrap_or("<no fulfillmentUrl>")
+        .to_string()
+}
+
+/// The `jobId`s of a page, in the order the page lists them.
+fn listed_job_ids(body: &Value) -> Vec<String> {
+    body.get("jobs")
+        .and_then(Value::as_array)
+        .map(|jobs| jobs.iter().map(job_id_of).collect())
+        .unwrap_or_default()
+}
+
+/// Whether `job_id` satisfies the modelled `DeploymentConfigurationJobId`
+/// (`length 1..64`, `^[a-z0-9]+$`).
+fn is_job_id(job_id: &str) -> bool {
+    (1..=64).contains(&job_id.len())
+        && job_id
+            .bytes()
+            .all(|b| b.is_ascii_digit() || b.is_ascii_lowercase())
+}
+
+/// The ARN this emulator must report for the deployment configuration of
+/// `(catalog, product_id, delivery_option_type)`: the resource portion the
+/// model's own `aws.api#arn` template states for the `DeploymentConfiguration`
+/// resource.
+fn expected_configuration_arn(
+    catalog: &str,
+    product_id: &str,
+    delivery_option_type: &str,
+) -> String {
+    format!(
+        "arn:aws:{SIGNING_NAME}:{REGION}:{ACCOUNT}:catalogs/{catalog}/products/{product_id}/\
+         delivery-options/{delivery_option_type}"
+    )
+}
+
+/// Look again at `job_id` until it has left `IN_PROGRESS`, and answer the body
+/// that reported the terminal status.
+///
+/// The job's terminal status is due a span after the start and every call of this
+/// service materialises what the clock has already made due, so this waits for the
+/// CONDITION rather than for a length of time.
+async fn settled_job(
+    router: &MultiServiceRouter,
+    case: &str,
+    catalog: &str,
+    product_id: &str,
+    job_id: &str,
+) -> Value {
+    let deadline = SystemTime::now() + JOB_BUDGET;
+    let mut last = (0_u16, Value::Null);
+    while SystemTime::now() < deadline {
+        last = get_job(router, catalog, product_id, DELIVERY_OPTION, job_id).await;
+        assert_eq!(
+            last.0, 200,
+            "case {case:?}: GetDeploymentConfigurationJob must succeed, got {} {:?}",
+            last.0, last.1
+        );
+        if status_of(&last.1) != JOB_STATUS_IN_PROGRESS {
+            return last.1;
+        }
+        tokio::time::sleep(POLL_INTERVAL).await;
+    }
+    panic!(
+        "case {case:?}: job {job_id} never left {JOB_STATUS_IN_PROGRESS}, last answer {:?}",
+        last.1
+    );
+}
+
+/// One row of the publish table: a configuration to publish, and what the job
+/// started with it does.
+struct Publish {
+    case: &'static str,
+    product_id: &'static str,
+    fulfillment_url: String,
+    tags: BTreeMap<String, String>,
+    expected_status: &'static str,
+}
+
+/// The publish table. The rows differ along what the rule generalises over: the
+/// FORM of the fulfillment URL — its scheme, whether it is absolute at all, a
+/// host name against a host that is an IP literal (v4 and v6), a port, a path and
+/// a query, the modelled maximum length — and the tags the start carries.
+///
+/// The failing rows are the two halves of the condition the modelled
+/// `ENDPOINT_INVALID` code is documented for: not a valid absolute HTTPS URL, and
+/// a network location that is private or loopback.
+fn publish_table() -> Vec<Publish> {
+    let longest = {
+        let prefix = "https://example.com/";
+        format!(
+            "{prefix}{}",
+            "a".repeat(FULFILLMENT_URL_MAX_LEN - prefix.len())
+        )
+    };
+    vec![
+        Publish {
+            case: "a plain https host, one tag",
+            product_id: "prod-config-plain",
+            fulfillment_url: "https://fulfilment.example.com/start".to_string(),
+            tags: tag_map(&[("env", "prod")]),
+            expected_status: JOB_STATUS_SUCCEEDED,
+        },
+        Publish {
+            case: "a port, a path and a query, no tags",
+            product_id: "prod-config-port",
+            fulfillment_url: "https://fulfilment.example.com:8443/start?tenant=acme".to_string(),
+            tags: BTreeMap::new(),
+            expected_status: JOB_STATUS_SUCCEEDED,
+        },
+        Publish {
+            case: "a public IPv4 literal",
+            product_id: "prod-config-ipv4",
+            fulfillment_url: "https://203.0.113.10/landing".to_string(),
+            tags: tag_map(&[("team", "platform"), ("tier", "1")]),
+            expected_status: JOB_STATUS_SUCCEEDED,
+        },
+        Publish {
+            case: "a public IPv6 literal",
+            product_id: "prod-config-ipv6",
+            fulfillment_url: "https://[2001:db8::1]/landing".to_string(),
+            tags: BTreeMap::new(),
+            expected_status: JOB_STATUS_SUCCEEDED,
+        },
+        Publish {
+            case: "a URL at the modelled maximum length",
+            product_id: "prod-config-longest",
+            fulfillment_url: longest,
+            tags: BTreeMap::new(),
+            expected_status: JOB_STATUS_SUCCEEDED,
+        },
+        Publish {
+            case: "the http scheme, which is not https",
+            product_id: "prod-config-http",
+            fulfillment_url: "http://fulfilment.example.com/start".to_string(),
+            tags: BTreeMap::new(),
+            expected_status: JOB_STATUS_FAILED,
+        },
+        Publish {
+            case: "no scheme at all, so not an absolute URL",
+            product_id: "prod-config-relative",
+            fulfillment_url: "fulfilment.example.com/start".to_string(),
+            tags: BTreeMap::new(),
+            expected_status: JOB_STATUS_FAILED,
+        },
+        Publish {
+            case: "the loopback host name",
+            product_id: "prod-config-localhost",
+            fulfillment_url: "https://localhost/start".to_string(),
+            tags: BTreeMap::new(),
+            expected_status: JOB_STATUS_FAILED,
+        },
+        Publish {
+            case: "a private IPv4 address",
+            product_id: "prod-config-private",
+            fulfillment_url: "https://10.0.0.5/start".to_string(),
+            tags: BTreeMap::new(),
+            expected_status: JOB_STATUS_FAILED,
+        },
+        Publish {
+            case: "the IPv6 loopback address",
+            product_id: "prod-config-ipv6-loopback",
+            fulfillment_url: "https://[::1]/start".to_string(),
+            tags: BTreeMap::new(),
+            expected_status: JOB_STATUS_FAILED,
+        },
+    ]
+}
+
+#[tokio::test]
+async fn a_job_publishes_or_fails_by_what_the_configuration_it_carries_is() {
+    let (router, engine) = emulator();
+    let products: Vec<&str> = publish_table().iter().map(|row| row.product_id).collect();
+    provision(&engine, CATALOG, "agmt-config", &products);
+
+    // Every job is started FIRST and looked at afterwards: the terminal status is
+    // due a span after each start, so starting them together is what keeps this
+    // case waiting for one span rather than one per row.
+    let mut started: Vec<(Publish, String)> = Vec::new();
+    let mut minted: BTreeSet<String> = BTreeSet::new();
+    for row in publish_table() {
+        let case = row.case;
+        let mut body = json!({ "configuration": data_as_a_service(&row.fulfillment_url) });
+        if !row.tags.is_empty() {
+            body.as_object_mut().expect("an object body").insert(
+                "tags".to_string(),
+                Value::Object(row.tags.iter().map(|(k, v)| (k.clone(), json!(v))).collect()),
+            );
+        }
+        let (status, answer) =
+            start_job(&router, CATALOG, row.product_id, DELIVERY_OPTION, &body).await;
+        assert_eq!(
+            status, 200,
+            "case {case:?}: StartDeploymentConfigurationJob must succeed, got {status} {answer:?}"
+        );
+        let job_id = job_id_of(&answer);
+        assert!(
+            is_job_id(&job_id),
+            "case {case:?}: expected a minted ^[a-z0-9]+$ job id of at most 64 characters, \
+             got {job_id:?}"
+        );
+        assert!(
+            minted.insert(job_id.clone()),
+            "case {case:?}: expected a freshly minted job id, got the already-minted {job_id:?}"
+        );
+        assert_eq!(
+            status_of(&answer),
+            JOB_STATUS_IN_PROGRESS,
+            "case {case:?}: the model fixes the started job's status, got {answer:?}"
+        );
+        assert_eq!(
+            fulfillment_url_of(&answer),
+            row.fulfillment_url,
+            "case {case:?}: expected the submitted configuration back, got {answer:?}"
+        );
+        assert!(
+            answer.get("createdAt").is_some(),
+            "case {case:?}: a started job must report when it was created, got {answer:?}"
+        );
+        started.push((row, job_id));
+    }
+
+    for (row, job_id) in started {
+        let case = row.case;
+        let settled = settled_job(&router, case, CATALOG, row.product_id, &job_id).await;
+        assert_eq!(
+            status_of(&settled),
+            row.expected_status,
+            "case {case:?}: expected the job to reach {}, got {settled:?}",
+            row.expected_status
+        );
+        assert_eq!(
+            job_id_of(&settled),
+            job_id,
+            "case {case:?}: expected the job that was started, got {settled:?}"
+        );
+        assert_eq!(
+            fulfillment_url_of(&settled),
+            row.fulfillment_url,
+            "case {case:?}: expected the configuration the job was started with, got {settled:?}"
+        );
+        assert!(
+            settled.get("endedAt").is_some(),
+            "case {case:?}: a job that reached a terminal status must report when it ended, \
+             got {settled:?}"
+        );
+
+        let arn = settled.get("configurationArn").and_then(Value::as_str);
+        let reported_code = settled.get("errorCode").and_then(Value::as_str);
+        let reported_message = settled.get("message").and_then(Value::as_str);
+        if row.expected_status == JOB_STATUS_SUCCEEDED {
+            assert_eq!(
+                arn,
+                Some(
+                    expected_configuration_arn(CATALOG, row.product_id, DELIVERY_OPTION).as_str()
+                ),
+                "case {case:?}: a succeeded job must report the published configuration's ARN, \
+                 got {settled:?}"
+            );
+            assert_eq!(
+                (reported_code, reported_message),
+                (None, None),
+                "case {case:?}: errorCode and message are reported only for a FAILED job, \
+                 got {settled:?}"
+            );
+
+            // The read that proves the publish: the configuration is now the active
+            // one of its resource.
+            let (status, active) =
+                get_configuration(&router, CATALOG, row.product_id, DELIVERY_OPTION).await;
+            assert_eq!(
+                status, 200,
+                "case {case:?}: GetDeploymentConfiguration must report the published \
+                 configuration, got {status} {active:?}"
+            );
+            assert_eq!(
+                fulfillment_url_of(&active),
+                row.fulfillment_url,
+                "case {case:?}: expected the published configuration, got {active:?}"
+            );
+        } else {
+            assert_eq!(
+                arn, None,
+                "case {case:?}: configurationArn is reported only for a SUCCEEDED job, \
+                 got {settled:?}"
+            );
+            assert_eq!(
+                reported_code,
+                Some(JOB_ERROR_ENDPOINT_INVALID),
+                "case {case:?}: expected the modelled error code for a URL that cannot be \
+                 published, got {settled:?}"
+            );
+            assert_eq!(
+                reported_message,
+                Some(ENDPOINT_INVALID_MESSAGE),
+                "case {case:?}: expected the documented reason for that code, got {settled:?}"
+            );
+
+            // A failed job publishes nothing, so the resource still has no active
+            // configuration at all.
+            let (status, answer) =
+                get_configuration(&router, CATALOG, row.product_id, DELIVERY_OPTION).await;
+            assert_eq!(
+                status, 404,
+                "case {case:?}: a failed job must leave the resource without an active \
+                 configuration, got {status} {answer:?}"
+            );
+            assert_eq!(
+                error_code(&answer),
+                "ResourceNotFoundException",
+                "case {case:?}: expected the modelled not-found shape, got {answer:?}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_job_and_a_configuration_are_addressed_inside_the_product_the_path_names() {
+    let (router, engine) = emulator();
+    provision(
+        &engine,
+        CATALOG,
+        "agmt-addressed",
+        &["prod-addressed", "prod-other", "prod-empty"],
+    );
+
+    let (status, started) = start_job(
+        &router,
+        CATALOG,
+        "prod-addressed",
+        DELIVERY_OPTION,
+        &json!({ "configuration": data_as_a_service("https://addressed.example.com/start") }),
+    )
+    .await;
+    assert_eq!(status, 200, "the setup start must succeed, got {started:?}");
+    let job_id = job_id_of(&started);
+
+    // Each row names a resource the request's path addresses and the segment the
+    // service must blame when it does not resolve. A job of ANOTHER product is not
+    // this resource's job, which the model calls out in as many words.
+    let rows: Vec<(&str, &str, &str, &str)> = vec![
+        (
+            "a job id nothing minted",
+            "prod-addressed",
+            "0123456789abcdef",
+            "JobId",
+        ),
+        (
+            "a job of another product",
+            "prod-other",
+            job_id.as_str(),
+            "JobId",
+        ),
+        (
+            "a product the account does not hold",
+            "prod-unheld",
+            job_id.as_str(),
+            "ProductId",
+        ),
+    ];
+    for (case, product_id, requested_job, blamed) in rows {
+        let (status, answer) =
+            get_job(&router, CATALOG, product_id, DELIVERY_OPTION, requested_job).await;
+        assert_eq!(
+            status, 404,
+            "case {case:?}: expected a not-found, got {status} {answer:?}"
+        );
+        assert_eq!(
+            error_code(&answer),
+            "ResourceNotFoundException",
+            "case {case:?}: expected the modelled not-found shape, got {answer:?}"
+        );
+        let reported = message(&answer);
+        assert!(
+            reported.starts_with(&format!("{blamed}: ")),
+            "case {case:?}: the not-found must blame {blamed}, got {reported:?}"
+        );
+    }
+
+    // The job its own path addresses still resolves, so nothing above refused it for
+    // the wrong reason.
+    let (status, answer) =
+        get_job(&router, CATALOG, "prod-addressed", DELIVERY_OPTION, &job_id).await;
+    assert_eq!(
+        status, 200,
+        "the job of the product that started it must resolve, got {status} {answer:?}"
+    );
+
+    // A product nobody has published a configuration for has no active
+    // configuration, and a product the account does not hold is the outer resource.
+    for (case, product_id, blamed) in [
+        ("a held product with no succeeded job", "prod-empty", "DeliveryOptionType"),
+        ("a product the account does not hold", "prod-unheld", "ProductId"),
+    ] {
+        let (status, answer) = get_configuration(&router, CATALOG, product_id, DELIVERY_OPTION).await;
+        assert_eq!(
+            status, 404,
+            "case {case:?}: expected a not-found, got {status} {answer:?}"
+        );
+        assert!(
+            message(&answer).starts_with(&format!("{blamed}: ")),
+            "case {case:?}: the not-found must blame {blamed}, got {answer:?}"
+        );
+    }
+
+    // A start against a product the account does not hold writes nothing: a product
+    // exists because a seller published it, out of band of this API.
+    let (status, answer) = start_job(
+        &router,
+        CATALOG,
+        "prod-unheld",
+        DELIVERY_OPTION,
+        &json!({ "configuration": data_as_a_service("https://unheld.example.com/start") }),
+    )
+    .await;
+    assert_eq!(
+        status, 404,
+        "a start for a product the account does not hold must be a not-found, \
+         got {status} {answer:?}"
+    );
+    assert!(
+        message(&answer).starts_with("ProductId: "),
+        "that not-found must blame ProductId, got {answer:?}"
+    );
+    let (status, listed) = list_jobs(&router, CATALOG, "prod-unheld", DELIVERY_OPTION, "").await;
+    assert_eq!(
+        status, 200,
+        "listing a product with no jobs must succeed, got {status} {listed:?}"
+    );
+    assert_eq!(
+        listed_job_ids(&listed),
+        Vec::<String>::new(),
+        "the refused start must have recorded no job, got {listed:?}"
+    );
+}
+
+#[tokio::test]
+async fn list_reports_one_resources_jobs_newest_first_one_page_at_a_time() {
+    let (router, engine) = emulator();
+    provision(&engine, CATALOG, "agmt-paged", &["prod-paged", "prod-quiet"]);
+
+    // Five jobs for one resource, in a known order, plus one for a sibling product
+    // that no page below may carry.
+    let mut in_start_order: Vec<String> = Vec::new();
+    for i in 0..5 {
+        let (status, started) = start_job(
+            &router,
+            CATALOG,
+            "prod-paged",
+            DELIVERY_OPTION,
+            &json!({
+                "configuration": data_as_a_service(&format!("https://paged-{i}.example.com/start")),
+            }),
+        )
+        .await;
+        assert_eq!(status, 200, "start {i} must succeed, got {started:?}");
+        in_start_order.push(job_id_of(&started));
+    }
+    let (status, other) = start_job(
+        &router,
+        CATALOG,
+        "prod-quiet",
+        DELIVERY_OPTION,
+        &json!({ "configuration": data_as_a_service("https://quiet.example.com/start") }),
+    )
+    .await;
+    assert_eq!(status, 200, "the sibling start must succeed, got {other:?}");
+    let sibling = job_id_of(&other);
+
+    let newest_first: Vec<String> = in_start_order.iter().rev().cloned().collect();
+
+    // A page holds at most `maxResults` jobs and the token names the job the NEXT
+    // page starts at, so walking the pages walks the order exactly once.
+    for page_size in [1_usize, 2, 5, 100] {
+        let mut walked: Vec<String> = Vec::new();
+        let mut token: Option<String> = None;
+        let mut pages = 0;
+        loop {
+            let query = match &token {
+                Some(token) => format!("?maxResults={page_size}&nextToken={}", pct(token)),
+                None => format!("?maxResults={page_size}"),
+            };
+            let (status, page) =
+                list_jobs(&router, CATALOG, "prod-paged", DELIVERY_OPTION, &query).await;
+            assert_eq!(
+                status, 200,
+                "page size {page_size}: ListDeploymentConfigurationJobs must succeed, \
+                 got {status} {page:?}"
+            );
+            let ids = listed_job_ids(&page);
+            assert!(
+                ids.len() <= page_size,
+                "page size {page_size}: a page must hold at most that many jobs, got {ids:?}"
+            );
+            assert!(
+                !ids.contains(&sibling),
+                "page size {page_size}: a page must carry only this resource's jobs, got {ids:?}"
+            );
+            for job in &page
+                .get("jobs")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default()
+            {
+                assert!(
+                    DEPLOYMENT_CONFIGURATION_JOB_STATUS_VALUES.contains(&status_of(job).as_str()),
+                    "page size {page_size}: a summary must report a modelled status, got {job:?}"
+                );
+                assert!(
+                    job.get("createdAt").is_some() && job.get("configuration").is_some(),
+                    "page size {page_size}: a summary must report its configuration and \
+                     creation time, got {job:?}"
+                );
+            }
+            walked.extend(ids);
+            pages += 1;
+            token = page
+                .get("nextToken")
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            if token.is_none() {
+                break;
+            }
+            assert!(
+                pages <= newest_first.len(),
+                "page size {page_size}: paging must end, walked {walked:?}"
+            );
+        }
+        assert_eq!(
+            walked, newest_first,
+            "page size {page_size}: expected every job once, newest first, got {walked:?}"
+        );
+    }
+
+    // No `maxResults`: the member's modelled default is the page size, which is more
+    // than the jobs this resource has, so one page carries them all and there is no
+    // token.
+    assert!(
+        newest_first.len() < MAX_RESULTS_DEFAULT,
+        "this case must stay inside the modelled default page size of {MAX_RESULTS_DEFAULT}"
+    );
+    let (status, page) = list_jobs(&router, CATALOG, "prod-paged", DELIVERY_OPTION, "").await;
+    assert_eq!(status, 200, "the default page must succeed, got {page:?}");
+    assert_eq!(
+        listed_job_ids(&page),
+        newest_first,
+        "the default page size must carry every job of this resource, got {page:?}"
+    );
+    assert_eq!(
+        page.get("nextToken"),
+        None,
+        "the last page must carry no token, got {page:?}"
+    );
+
+    // A token of any other provenance names no page in that order.
+    for (case, token) in [
+        ("a job id of another resource", sibling.as_str()),
+        ("a job id nothing minted", "0123456789abcdef"),
+        ("text that is no job id at all", "not-a-token"),
+    ] {
+        let (status, answer) = list_jobs(
+            &router,
+            CATALOG,
+            "prod-paged",
+            DELIVERY_OPTION,
+            &format!("?nextToken={}", pct(token)),
+        )
+        .await;
+        assert_eq!(
+            status, 400,
+            "case {case:?}: an unusable nextToken must be refused, got {status} {answer:?}"
+        );
+        assert_eq!(
+            error_code(&answer),
+            "ValidationException",
+            "case {case:?}: expected the modelled input error, got {answer:?}"
+        );
+        assert_eq!(
+            field_name(&answer),
+            "nextToken",
+            "case {case:?}: the refusal must name the member, got {answer:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn tags_are_applied_by_the_creating_start_and_then_only_by_the_tagging_operations() {
+    let (router, engine) = emulator();
+    provision(&engine, CATALOG, "agmt-tagged", &["prod-tagged"]);
+
+    let created = tag_map(&[("env", "prod"), ("owner", "seller")]);
+    let (status, started) = start_job(
+        &router,
+        CATALOG,
+        "prod-tagged",
+        DELIVERY_OPTION,
+        &json!({
+            "configuration": data_as_a_service("https://tagged.example.com/start"),
+            "tags": created.iter().map(|(k, v)| (k.clone(), json!(v))).collect::<serde_json::Map<String, Value>>(),
+        }),
+    )
+    .await;
+    assert_eq!(status, 200, "the creating start must succeed, got {started:?}");
+    let job_id = job_id_of(&started);
+    let settled = settled_job(&router, "creating start", CATALOG, "prod-tagged", &job_id).await;
+    assert_eq!(
+        status_of(&settled),
+        JOB_STATUS_SUCCEEDED,
+        "the creating start must publish its configuration, got {settled:?}"
+    );
+    let arn = settled
+        .get("configurationArn")
+        .and_then(Value::as_str)
+        .expect("a succeeded job reports the published configuration's ARN")
+        .to_string();
+
+    // The round trip: the configuration the job published is a resource the tagging
+    // operations address, holding the tags the START carried.
+    let (status, listed) = list_tags(&router, &arn).await;
+    assert_eq!(
+        status, 200,
+        "the published configuration's tags must be readable, got {status} {listed:?}"
+    );
+    assert_eq!(
+        tags_of(&listed),
+        created,
+        "expected the creating start's tags, got {listed:?}"
+    );
+
+    // A start for a configuration that already exists may not carry tags at all.
+    let (status, refused) = start_job(
+        &router,
+        CATALOG,
+        "prod-tagged",
+        DELIVERY_OPTION,
+        &json!({
+            "configuration": data_as_a_service("https://tagged.example.com/second"),
+            "tags": { "late": "no" },
+        }),
+    )
+    .await;
+    assert_eq!(
+        status, 400,
+        "tags on a start for an existing configuration must be refused, got {status} {refused:?}"
+    );
+    assert_eq!(
+        error_code(&refused),
+        "ValidationException",
+        "expected the modelled input error, got {refused:?}"
+    );
+    assert_eq!(
+        field_name(&refused),
+        "tags",
+        "the refusal must name the member, got {refused:?}"
+    );
+
+    // …and it wrote nothing: the configuration, and its tags, are as the create left
+    // them.
+    let (_, active) = get_configuration(&router, CATALOG, "prod-tagged", DELIVERY_OPTION).await;
+    assert_eq!(
+        fulfillment_url_of(&active),
+        "https://tagged.example.com/start",
+        "the refused start must not have published its configuration, got {active:?}"
+    );
+
+    // The tagging operations are what changes those tags.
+    let (status, answer) = tag(&router, &arn, &tag_map(&[("env", "staging"), ("cost", "7")])).await;
+    assert_eq!(
+        status, 204,
+        "TagResource on a configuration must answer 204, got {status} {answer:?}"
+    );
+    let (_, listed) = list_tags(&router, &arn).await;
+    assert_eq!(
+        tags_of(&listed),
+        tag_map(&[("env", "staging"), ("owner", "seller"), ("cost", "7")]),
+        "expected the creating start's tags with the tagging write merged on, got {listed:?}"
+    );
+    let (status, answer) = untag(&router, &arn, &["owner".to_string(), "never".to_string()]).await;
+    assert_eq!(
+        status, 204,
+        "UntagResource on a configuration must answer 204, got {status} {answer:?}"
+    );
+    let (_, listed) = list_tags(&router, &arn).await;
+    assert_eq!(
+        tags_of(&listed),
+        tag_map(&[("env", "staging"), ("cost", "7")]),
+        "expected the removed key gone and the rest intact, got {listed:?}"
+    );
+
+    // A second start WITHOUT tags publishes over the configuration: the resource
+    // keeps its ARN and the tags the tagging operations left on it.
+    let (status, second) = start_job(
+        &router,
+        CATALOG,
+        "prod-tagged",
+        DELIVERY_OPTION,
+        &json!({ "configuration": data_as_a_service("https://tagged.example.com/third") }),
+    )
+    .await;
+    assert_eq!(status, 200, "the second start must succeed, got {second:?}");
+    let second_id = job_id_of(&second);
+    let settled = settled_job(&router, "second start", CATALOG, "prod-tagged", &second_id).await;
+    assert_eq!(
+        settled.get("configurationArn").and_then(Value::as_str),
+        Some(arn.as_str()),
+        "publishing over a configuration must keep the resource's ARN, got {settled:?}"
+    );
+    let (_, active) = get_configuration(&router, CATALOG, "prod-tagged", DELIVERY_OPTION).await;
+    assert_eq!(
+        fulfillment_url_of(&active),
+        "https://tagged.example.com/third",
+        "the active configuration must be the newest succeeded job's, got {active:?}"
+    );
+    let (_, listed) = list_tags(&router, &arn).await;
+    assert_eq!(
+        tags_of(&listed),
+        tag_map(&[("env", "staging"), ("cost", "7")]),
+        "a later publish must not change the configuration's tags, got {listed:?}"
+    );
+
+    // A tag set outside what a tag of this service may hold is refused on the
+    // start's own input, and nothing is recorded for it.
+    let (status, refused) = start_job(
+        &router,
+        CATALOG,
+        "prod-tagged",
+        DELIVERY_OPTION,
+        &json!({
+            "configuration": data_as_a_service("https://tagged.example.com/fourth"),
+            "tags": { "aws:created-by": "me" },
+        }),
+    )
+    .await;
+    assert_eq!(
+        status, 400,
+        "a reserved tag key must be refused, got {status} {refused:?}"
+    );
+    assert_eq!(
+        error_code(&refused),
+        "ValidationException",
+        "expected the modelled input error, got {refused:?}"
+    );
+}
+
+#[tokio::test]
+async fn one_client_token_replays_its_start_and_refuses_a_different_one() {
+    let (router, engine) = emulator();
+    provision(&engine, CATALOG, "agmt-token", &["prod-token", "prod-token-2"]);
+
+    // Inside `ClientToken`'s modelled `length 32..64` / `^[a-zA-Z0-9/_+=.:@-]+$`.
+    let token = "cfg-token-0000000000000000000000000001";
+    let configuration = data_as_a_service("https://token.example.com/start");
+    let body = json!({ "configuration": configuration, "clientToken": token });
+
+    let (status, first) = start_job(&router, CATALOG, "prod-token", DELIVERY_OPTION, &body).await;
+    assert_eq!(status, 200, "the first start must succeed, got {first:?}");
+    let job_id = job_id_of(&first);
+
+    // The same request through the same token answers with the job it started, and
+    // starts no second one.
+    for attempt in 1..=2 {
+        let (status, replayed) =
+            start_job(&router, CATALOG, "prod-token", DELIVERY_OPTION, &body).await;
+        assert_eq!(
+            status, 200,
+            "replay {attempt} must succeed, got {status} {replayed:?}"
+        );
+        assert_eq!(
+            job_id_of(&replayed),
+            job_id,
+            "replay {attempt} must answer with the original job, got {replayed:?}"
+        );
+    }
+    let (_, listed) = list_jobs(&router, CATALOG, "prod-token", DELIVERY_OPTION, "").await;
+    assert_eq!(
+        listed_job_ids(&listed),
+        vec![job_id.clone()],
+        "a replayed token must have started exactly one job, got {listed:?}"
+    );
+
+    // A DIFFERENT request through that token is a conflict, and starts nothing.
+    let rows: Vec<(&str, &str, Value)> = vec![
+        (
+            "another configuration",
+            "prod-token",
+            json!({
+                "configuration": data_as_a_service("https://token.example.com/other"),
+                "clientToken": token,
+            }),
+        ),
+        (
+            "another product",
+            "prod-token-2",
+            json!({ "configuration": configuration, "clientToken": token }),
+        ),
+        (
+            "the same configuration with tags",
+            "prod-token",
+            json!({
+                "configuration": configuration,
+                "clientToken": token,
+                "tags": { "env": "prod" },
+            }),
+        ),
+    ];
+    for (case, product_id, body) in rows {
+        let (status, answer) = start_job(&router, CATALOG, product_id, DELIVERY_OPTION, &body).await;
+        assert_eq!(
+            status, 409,
+            "case {case:?}: a token reused for a different request must conflict, \
+             got {status} {answer:?}"
+        );
+        assert_eq!(
+            error_code(&answer),
+            "ConflictException",
+            "case {case:?}: expected the modelled conflict, got {answer:?}"
+        );
+        assert_eq!(
+            answer.get("resourceId").and_then(Value::as_str),
+            Some(job_id.as_str()),
+            "case {case:?}: the conflict must name the job the token is bound to, got {answer:?}"
+        );
+    }
+    let (_, listed) = list_jobs(&router, CATALOG, "prod-token", DELIVERY_OPTION, "").await;
+    assert_eq!(
+        listed_job_ids(&listed),
+        vec![job_id.clone()],
+        "a refused start must record no job, got {listed:?}"
+    );
+
+    // Another token is another start.
+    let (status, fresh) = start_job(
+        &router,
+        CATALOG,
+        "prod-token",
+        DELIVERY_OPTION,
+        &json!({
+            "configuration": configuration,
+            "clientToken": "cfg-token-0000000000000000000000000002",
+        }),
+    )
+    .await;
+    assert_eq!(status, 200, "a fresh token must start a job, got {fresh:?}");
+    assert_ne!(
+        job_id_of(&fresh),
+        job_id,
+        "a fresh token must start its own job, got {fresh:?}"
+    );
+}
+
+#[tokio::test]
+async fn the_statuses_and_error_codes_this_service_reports_are_values_the_model_declares() {
+    // Every value this service reports for a job comes from the model's own enums,
+    // read here off the generated value lists rather than restated.
+    assert!(
+        DELIVERY_OPTION_TYPE_VALUES.contains(&DELIVERY_OPTION),
+        "expected a modelled DeliveryOptionType, got {DELIVERY_OPTION:?} of \
+         {DELIVERY_OPTION_TYPE_VALUES:?}"
+    );
+    for status in [
+        JOB_STATUS_IN_PROGRESS,
+        JOB_STATUS_SUCCEEDED,
+        JOB_STATUS_FAILED,
+    ] {
+        assert!(
+            DEPLOYMENT_CONFIGURATION_JOB_STATUS_VALUES.contains(&status),
+            "expected a modelled DeploymentConfigurationJobStatus, got {status:?} of \
+             {DEPLOYMENT_CONFIGURATION_JOB_STATUS_VALUES:?}"
+        );
+    }
+    assert!(
+        DEPLOYMENT_CONFIGURATION_JOB_ERROR_CODE_VALUES.contains(&JOB_ERROR_ENDPOINT_INVALID),
+        "expected a modelled DeploymentConfigurationJobErrorCode, got \
+         {JOB_ERROR_ENDPOINT_INVALID:?} of {DEPLOYMENT_CONFIGURATION_JOB_ERROR_CODE_VALUES:?}"
     );
 }

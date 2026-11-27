@@ -18,7 +18,7 @@
 //!
 //! Resolving the label is the sequence every operation that addresses a deployment
 //! parameter by a caller-supplied `resourceArn` runs, written once as
-//! `crate::state::write_tagged_parameter` (the writing view of that sequence); what
+//! `crate::state::write_tagged_resource` (the writing view of that sequence); what
 //! follows is what the sequence decides, and this handler adds only the merge onto
 //! the resolved record. Because the merge IS a write to the stored record, the
 //! sequence refreshes the instant the record reports as last written
@@ -40,7 +40,7 @@
 //! cap — is judged at the merge.
 //! An ARN that IS one of this service's and names no stored record is a 404 carrying
 //! this service's own
-//! `NotFoundException` code (`crate::state::parameter_not_found`), which is the code
+//! `NotFoundException` code (`crate::state::tagged_resource_not_found`), which is the code
 //! its recorded responses use rather than the modelled `ResourceNotFoundException`
 //! shape name. A record whose `expirationDate` has passed is "scheduled for
 //! deletion" and is dropped before the ARN is resolved
@@ -214,7 +214,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // guard, so it is carried out here — on both paths, because the deletion is
         // one the clock owed whatever this request is answered with.
         let incoming = input.tags.unwrap_or_default();
-        let answered = crate::state::write_tagged_parameter(
+        let answered = crate::state::write_tagged_resource(
             &*self.engine,
             &input.resource_arn,
             TagResourceErrorModeled::InternalServerException,
@@ -236,12 +236,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 // constrained map another member targets, and applying it here would
                 // refuse ordinary AWS tags.
                 let merged = crate::state::merge_tags(
-                    &record.tags,
+                    record.tags(),
                     &incoming,
                     crate::state::TagConstraints::Unconstrained,
                 )
                 .map_err(|why| why.into_error(TagResourceErrorModeled::ValidationException))?;
-                record.tags = merged;
+                *record.tags_mut() = merged;
                 Ok(TagResourceOutput {})
             },
         );
