@@ -12,11 +12,12 @@
 //! sides of the comparison come from EC2, the owner of the account's subnets.
 //!
 //! The rows span what the rule generalises over: how many subnets a request names, which
-//! VPC each one is in, the ORDER an outside subnet appears in, which cluster (so which VPC)
-//! the group is created under, and which operation — the create or the update — named them.
-//! Existence is the earlier question, so an id EC2 reports no subnet for is still answered
-//! with the absent sentence, which has no VPC to compare. And nothing is assumed from
-//! silence: with no EC2 to ask, no placement is refused.
+//! VPC each one is in, the ORDER an outside subnet appears in, how many subnets the cluster
+//! itself spans, which cluster (so which VPC) the group is created under or updated under,
+//! and which operation — the create or the update — named them. Existence is the earlier
+//! question, so an id EC2 reports no subnet for is still answered with the absent sentence,
+//! which has no VPC to compare, and a subnet that stops existing stops resolving. And
+//! nothing is assumed from silence: with no EC2 to ask, no placement is refused.
 
 use serde_json::{json, Value};
 use smithy_server_runtime::MultiServiceRouter;
@@ -67,6 +68,29 @@ async fn group_count(router: &MultiServiceRouter, cluster: &str) -> usize {
         .as_array()
         .map(Vec::len)
         .unwrap_or_default()
+}
+
+/// One row of [`an_update_is_judged_against_the_whole_vpc_the_cluster_spans`]: a case name,
+/// the subnets the update names (`None` carries no `subnetIds` at all), and the sentence it
+/// is refused with (`None` when it is served).
+type UpdateRow = (&'static str, Option<Vec<String>>, Option<&'static str>);
+
+/// An `UpdateComputeNodeGroup` request about `group` in `cluster`, placing it in `subnets`
+/// when the member is carried at all. `None` omits `subnetIds` and moves another member
+/// instead, so the request is a real change with no placement for the networking gate to
+/// judge.
+fn update_group(cluster: &str, group: &str, subnets: Option<&[String]>) -> Value {
+    let mut request = json!({
+        "clusterIdentifier": cluster,
+        "computeNodeGroupIdentifier": group,
+    });
+    match subnets {
+        Some(subnets) => request["subnetIds"] = json!(subnets),
+        // Any id of the form `AmiId`'s `@pattern` admits serves: what this arm is for is a
+        // request that changes the group without naming a placement at all.
+        None => request["amiId"] = json!("ami-00f1e2d3c4b5a6978"),
+    }
+    request
 }
 
 /// The subnets `GetComputeNodeGroup` reports for a stored group.
@@ -343,11 +367,7 @@ async fn an_update_cannot_move_a_group_out_of_the_clusters_vpc() {
         let (status, body) = call(
             &router,
             "UpdateComputeNodeGroup",
-            &json!({
-                "clusterIdentifier": "update-host",
-                "computeNodeGroupIdentifier": "movers",
-                "subnetIds": subnets,
-            }),
+            &update_group("update-host", "movers", Some(subnets)),
         )
         .await;
         match refusal {
@@ -415,11 +435,11 @@ async fn a_placement_no_ec2_answered_for_is_refused_nothing() {
     let (status, updated) = call(
         &router,
         "UpdateComputeNodeGroup",
-        &json!({
-            "clusterIdentifier": "no-peer-host",
-            "computeNodeGroupIdentifier": "unknowable",
-            "subnetIds": [unresolvable_subnet(43)],
-        }),
+        &update_group(
+            "no-peer-host",
+            "unknowable",
+            Some(&[unresolvable_subnet(43)]),
+        ),
     )
     .await;
     assert_eq!(
@@ -431,4 +451,267 @@ async fn a_placement_no_ec2_answered_for_is_refused_nothing() {
         json!([unresolvable_subnet(43)]),
         "case no EC2 mounted, on the update: expected the new placement stored"
     );
+}
+
+/// The dimensions this case adds to
+/// [`an_update_cannot_move_a_group_out_of_the_clusters_vpc`] above, which already covers an
+/// update into another VPC on a cluster whose control plane sits in ONE subnet: a cluster
+/// that spans TWO subnets of its VPC, a subnet of that VPC the control plane does not sit
+/// in, three subnets at once, an outside subnet FIRST in the list, an unresolvable id beside
+/// a resolvable one, an update that carries no `subnetIds` at all, and a subnet of the
+/// cluster's own VPC that stops existing.
+#[tokio::test]
+async fn an_update_is_judged_against_the_whole_vpc_the_cluster_spans() {
+    let (router, ec2) = emulator_with_ec2();
+    let cluster_vpc = create_vpc(&ec2, VPC_CIDR).await;
+    let control_one = create_subnet(&ec2, &cluster_vpc, "10.42.10.0/24").await;
+    let control_two = create_subnet(&ec2, &cluster_vpc, "10.42.11.0/24").await;
+    // A subnet of the cluster's VPC that its control plane does NOT sit in: the VPC bounds
+    // the placement, not the exact subnet list the cluster was created over.
+    let spare = create_subnet(&ec2, &cluster_vpc, "10.42.12.0/24").await;
+    let other_vpc = create_vpc(&ec2, OTHER_VPC_CIDR).await;
+    let outside = create_subnet(&ec2, &other_vpc, "10.99.10.0/24").await;
+
+    let control_plane = [control_one.clone(), control_two.clone()];
+    let (status, created) = call(
+        &router,
+        "CreateCluster",
+        &create_cluster("span-host", "24.11", &control_plane),
+    )
+    .await;
+    assert_eq!(status, 200, "case create the cluster: got {created}");
+    let (status, created) = call(
+        &router,
+        "CreateComputeNodeGroup",
+        &create_group("span-host", "spanners", std::slice::from_ref(&control_one)),
+    )
+    .await;
+    assert_eq!(status, 200, "case create the group: got {created}");
+
+    // The read that follows the create observes the group settled, so every row below is
+    // decided by its placement rather than by the group's status.
+    let mut placed = json!([control_one.clone()]);
+    assert_eq!(
+        stored_subnets(&router, "span-host", "spanners").await,
+        placed,
+        "case the created placement: expected {placed}"
+    );
+
+    // (case, the subnets the update names — `None` carries no `subnetIds` at all, the
+    // sentence it is refused with or None)
+    let rows: Vec<UpdateRow> = vec![
+        (
+            "a subnet of the cluster's VPC its control plane does not sit in",
+            Some(vec![spare.clone()]),
+            None,
+        ),
+        (
+            "every subnet of the cluster's VPC",
+            Some(vec![
+                control_one.clone(),
+                control_two.clone(),
+                spare.clone(),
+            ]),
+            None,
+        ),
+        (
+            "a subnet of another VPC ahead of one of the cluster's",
+            Some(vec![outside.clone(), spare.clone()]),
+            Some(SUBNETS_OUTSIDE_CLUSTER_VPC),
+        ),
+        (
+            "two of the cluster's VPC and one outside it last",
+            Some(vec![control_two.clone(), spare.clone(), outside.clone()]),
+            Some(SUBNETS_OUTSIDE_CLUSTER_VPC),
+        ),
+        (
+            // Existence is the earlier question: an id that names no subnet has no VPC.
+            "an id EC2 holds no subnet for beside one of the cluster's VPC",
+            Some(vec![unresolvable_subnet(51), control_two.clone()]),
+            Some(SUBNETS_ABSENT),
+        ),
+        (
+            "no subnetIds at all — another member moves instead",
+            None,
+            None,
+        ),
+    ];
+
+    for (case, subnets, refusal) in &rows {
+        let (status, body) = call(
+            &router,
+            "UpdateComputeNodeGroup",
+            &update_group("span-host", "spanners", subnets.as_deref()),
+        )
+        .await;
+        match refusal {
+            None => {
+                assert_eq!(
+                    status, 200,
+                    "case {case}: expected the update to be served, got {body}"
+                );
+                if let Some(subnets) = subnets {
+                    placed = json!(subnets);
+                }
+            }
+            Some(sentence) => {
+                assert_eq!(
+                    status, 400,
+                    "case {case}: expected the update to be refused, got {body}"
+                );
+                assert_eq!(
+                    body["__type"],
+                    json!("ValidationException"),
+                    "case {case}: got {body}"
+                );
+                assert_eq!(
+                    body["message"],
+                    json!(sentence),
+                    "case {case}: got {body}"
+                );
+            }
+        }
+        assert_eq!(
+            stored_subnets(&router, "span-host", "spanners").await,
+            placed,
+            "case {case}: expected the stored placement to be {placed}"
+        );
+    }
+
+    // Nothing is cached, so a subnet of the cluster's own VPC that stops existing stops
+    // resolving: the update naming it is answered with the earlier question's sentence.
+    ec2.delete_subnet()
+        .subnet_id(&spare)
+        .send()
+        .await
+        .unwrap_or_else(|error| panic!("setup: EC2 must delete the subnet: {error:?}"));
+    let (status, refused) = call(
+        &router,
+        "UpdateComputeNodeGroup",
+        &update_group(
+            "span-host",
+            "spanners",
+            Some(std::slice::from_ref(&spare)),
+        ),
+    )
+    .await;
+    assert_eq!(
+        status, 400,
+        "case a deleted subnet of the cluster's VPC: expected it refused, got {refused}"
+    );
+    assert_eq!(
+        refused["message"],
+        json!(SUBNETS_ABSENT),
+        "case a deleted subnet of the cluster's VPC: got {refused}"
+    );
+    assert_eq!(
+        stored_subnets(&router, "span-host", "spanners").await,
+        placed,
+        "case a deleted subnet of the cluster's VPC: expected the stored placement to be \
+         {placed}"
+    );
+}
+
+#[tokio::test]
+async fn each_cluster_bounds_its_groups_updates_to_the_vpc_it_was_created_over() {
+    let (router, ec2) = emulator_with_ec2();
+    let first_vpc = create_vpc(&ec2, VPC_CIDR).await;
+    let in_first = create_subnet(&ec2, &first_vpc, "10.42.14.0/24").await;
+    let also_in_first = create_subnet(&ec2, &first_vpc, "10.42.15.0/24").await;
+    let second_vpc = create_vpc(&ec2, OTHER_VPC_CIDR).await;
+    let in_second = create_subnet(&ec2, &second_vpc, "10.99.14.0/24").await;
+    let also_in_second = create_subnet(&ec2, &second_vpc, "10.99.15.0/24").await;
+
+    // One cluster per VPC, each holding one group placed in its own cluster's subnet.
+    for (cluster, group, subnet) in [
+        ("first-host", "first-nodes", &in_first),
+        ("second-host", "second-nodes", &in_second),
+    ] {
+        let (status, created) = call(
+            &router,
+            "CreateCluster",
+            &create_cluster(cluster, "24.11", std::slice::from_ref(subnet)),
+        )
+        .await;
+        assert_eq!(status, 200, "case create {cluster}: got {created}");
+        let (status, created) = call(
+            &router,
+            "CreateComputeNodeGroup",
+            &create_group(cluster, group, std::slice::from_ref(subnet)),
+        )
+        .await;
+        assert_eq!(status, 200, "case create {group}: got {created}");
+        // Settles the group, so the updates below are decided by their placement.
+        assert_eq!(
+            stored_subnets(&router, cluster, group).await,
+            json!([subnet]),
+            "case create {group}: expected the created placement"
+        );
+    }
+
+    // (case, the cluster the group belongs to, that group, the subnet the update names,
+    // whether it is served)
+    let rows: [(&str, &str, &str, &String, bool); 4] = [
+        (
+            "the first cluster's group to another subnet of its own VPC",
+            "first-host",
+            "first-nodes",
+            &also_in_first,
+            true,
+        ),
+        (
+            "the first cluster's group into the second VPC",
+            "first-host",
+            "first-nodes",
+            &also_in_second,
+            false,
+        ),
+        (
+            "the second cluster's group to another subnet of its own VPC",
+            "second-host",
+            "second-nodes",
+            &also_in_second,
+            true,
+        ),
+        (
+            "the second cluster's group into the first VPC",
+            "second-host",
+            "second-nodes",
+            &in_first,
+            false,
+        ),
+    ];
+
+    for (case, cluster, group, subnet, is_served) in rows {
+        let before = stored_subnets(&router, cluster, group).await;
+        let (status, body) = call(
+            &router,
+            "UpdateComputeNodeGroup",
+            &update_group(cluster, group, Some(std::slice::from_ref(subnet))),
+        )
+        .await;
+        let expected = if is_served {
+            assert_eq!(
+                status, 200,
+                "case {case}: expected the update to be served, got {body}"
+            );
+            json!([subnet])
+        } else {
+            assert_eq!(
+                status, 400,
+                "case {case}: expected the update to be refused, got {body}"
+            );
+            assert_eq!(
+                body["message"],
+                json!(SUBNETS_OUTSIDE_CLUSTER_VPC),
+                "case {case}: got {body}"
+            );
+            before
+        };
+        assert_eq!(
+            stored_subnets(&router, cluster, group).await,
+            expected,
+            "case {case}: expected the stored placement to be {expected}"
+        );
+    }
 }
