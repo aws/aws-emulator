@@ -46,10 +46,10 @@
 //! A sixth seam, `override_protocol`, is one this service DOES take: the codec every
 //! modelled response is rendered through omits a string member whose stored value is
 //! unset instead of reporting it as the empty string — see [`unset_string_members`]
-//! for that rule and why it cannot live in a generated shape. That same seam records
-//! what the input shape each request is read against declares, which is what lets the
-//! refusal below state a requirement the framework's own walk cannot apply and the
-//! constraint set a clause at a collection member lists ([`input_shape`]).
+//! for which members of this model that covers and where the rule itself lives. That
+//! same seam records what the input shape each request is read against declares, which
+//! is what lets the refusal below state a requirement the framework's own walk cannot
+//! apply and the constraint set a clause at a collection member lists ([`input_shape`]).
 //!
 //! The WORDS of a constraint refusal are [`validation`]'s, this service's one home
 //! for them — stated in the dialect of the ENDPOINT hosting the operation the
@@ -155,9 +155,12 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
         // the member that writes it is optional on every create and update. So a
         // resource created without a description has none to report, and this codec
         // leaves the member out of the response instead of filling it with a string
-        // the shape rejects. The rule is stated once, over any member whose own
-        // `@length` forbids the empty string, in [`unset_string_members`]; the codec
-        // is otherwise the model's own `restJson1`.
+        // the shape rejects. `ListActionsResponse$nextToken` is the same shape of
+        // problem on a pagination token the model marks `@required` and documents as
+        // null on the last page. The rule is stated once, over any member whose own
+        // `@length` forbids the empty string, in `service_common` and taken here by
+        // [`unset_string_members`]; the codec is otherwise the model's own
+        // `restJson1`.
         Some(&self.protocol)
     }
 

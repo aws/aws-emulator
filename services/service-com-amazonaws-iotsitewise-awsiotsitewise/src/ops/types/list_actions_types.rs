@@ -22,108 +22,27 @@ pub struct ListActionsInput {
     pub resolve_to_resource_id: Option<String>,
 }
 
-/// `ListActionsResponse`, with its schema written out instead of derived.
+/// `ListActionsResponse`, derived from the model like the input beside it.
 ///
-/// WHY it is not `#[smithy_macros::smithy(shape = ...)]` like the input beside it:
-/// `nextToken` is documented "The token for the next set of results, or null if there
+/// WHY `next_token` is a plain `String` here, where every other listing of this service
+/// has an `Option<String>`: the model marks THIS shape's `nextToken` `@required` — which
+/// the derive reads as "always on the wire", refusing an `Option<T>` field for such a
+/// member — while documenting it "The token for the next set of results, or null if there
 /// are no additional results"
 /// (`smithy_query(query="doc", shape="ListActionsResponse", member="nextToken",
-/// model_path="services/service-com-amazonaws-iotsitewise-awsiotsitewise/smithy-model/com-amazonaws-iotsitewise-awsiotsitewise.json")`),
-/// and the member targets `NextToken`, whose value space is `@length(min 1, max 4096)`
-/// plus `@pattern ^[A-Za-z0-9+/=]+$` — so it holds NO value that stands for "no next
-/// page", and absence is the only form the documented null can take. The model also
-/// marks the member `@required`, which the derive reads as "always on the wire": it
-/// refuses an `Option<T>` field for such a member ("Field 'next_token' is @required or
-/// @default in Smithy, so it must not be Option<T>."), leaving a derived response able
-/// to report only the empty token — outside the member's own value space, and refused
-/// by the boundary when a paginator echoes it back, because the identical shape bounds
-/// the INPUT member.
-///
-/// The two member schemas below are the model's, member for member: same shape ids,
-/// same wire names, same order, same shape types.
-///
-/// Deliberately NOT reproduced, each because nothing reads it here:
-/// * the constraint traits the derive captures (`NextToken`'s length and pattern) — the
-///   framework's validating walk runs against `Operation::INPUT_SCHEMA` only
-///   (`vendor/smithy-server-runtime/src/operation.rs`), so they are inert on an output;
-/// * the XML list layout and the list's element sub-schema — only the XML codec reads
-///   those (`vendor/smithy-schema-server/src/xml.rs`), and this service speaks
-///   `restJson1`;
-/// * the derive's `DeserializableStruct` impl — this shape is an operation OUTPUT, which
-///   the server only ever serializes (`Operation::Output` requires `SerializableStruct`;
-///   only `Input` is deserialized), so a hand-written read path would have no caller.
-///
-/// This is a PER-SHAPE workaround and has to be kept in step with the model by hand. The
-/// generator gap it works around is filed as
-/// `issues/things-that-do-not-work/20261029T040000Z-smithy-macros-cannot-omit-a-required-output-member.md`
-/// — the real fix is in `vendor/smithy-macros` (let an author declare a member the model
-/// marks `@required` but documents as nullable, and emit the `if let Some(..)` write arm
-/// it already emits for an optional one), which is read-only from a service crate. REMOVE
-/// this block and put the derive back once the generator can express an omittable member;
-/// `tests/all/actions.rs` pins the wire form, so it fails if the derive still forces a
-/// token onto the last page.
+/// model_path="services/service-com-amazonaws-iotsitewise-awsiotsitewise/smithy-model/com-amazonaws-iotsitewise-awsiotsitewise.json")`).
+/// The member targets `NextToken`, whose value space is `@length(min 1, max 4096)` plus
+/// `@pattern ^[A-Za-z0-9+/=]+$`, so it holds NO value that could stand for "no next page":
+/// the EMPTY token is how this struct carries that, and the member is left off the wire
+/// altogether by this service's codec, which omits a string member whose own `@length`
+/// forbids the empty string ([`crate::service`]'s `unset_string_members`, over the rule
+/// `service_common` states once for every service of that class). A page with a further
+/// page behind it carries the token it minted, unchanged.
+#[smithy_macros::smithy(shape = "com.amazonaws.iotsitewise#ListActionsResponse")]
 #[derive(Debug, Clone, Default)]
 pub struct ListActionsOutput {
     pub action_summaries: Vec<ActionSummary>,
-    pub next_token: Option<String>,
-}
-
-#[allow(non_upper_case_globals)]
-impl ListActionsOutput {
-    const M_ACTION_SUMMARIES: ::aws_smithy_schema::Schema =
-        ::aws_smithy_schema::Schema::new_member(
-            ::aws_smithy_schema::ShapeId::from_static(
-                "com.amazonaws.iotsitewise#ListActionsResponse$actionSummaries",
-                "com.amazonaws.iotsitewise",
-                "actionSummaries",
-            ),
-            ::aws_smithy_schema::ShapeType::List,
-            "actionSummaries",
-            0,
-        );
-
-    const M_NEXT_TOKEN: ::aws_smithy_schema::Schema = ::aws_smithy_schema::Schema::new_member(
-        ::aws_smithy_schema::ShapeId::from_static(
-            "com.amazonaws.iotsitewise#ListActionsResponse$nextToken",
-            "com.amazonaws.iotsitewise",
-            "nextToken",
-        ),
-        ::aws_smithy_schema::ShapeType::String,
-        "nextToken",
-        1,
-    );
-
-    pub const SCHEMA: ::aws_smithy_schema::Schema = ::aws_smithy_schema::Schema::new_struct(
-        ::aws_smithy_schema::ShapeId::from_static(
-            "com.amazonaws.iotsitewise#ListActionsResponse",
-            "com.amazonaws.iotsitewise",
-            "ListActionsResponse",
-        ),
-        ::aws_smithy_schema::ShapeType::Structure,
-        &[&Self::M_ACTION_SUMMARIES, &Self::M_NEXT_TOKEN],
-    );
-}
-
-pub static LIST_ACTIONS_OUTPUT_SCHEMA: &::aws_smithy_schema::Schema = &ListActionsOutput::SCHEMA;
-
-impl ::aws_smithy_schema::serde::SerializableStruct for ListActionsOutput {
-    fn serialize_members(
-        &self,
-        serializer: &mut dyn ::aws_smithy_schema::serde::ShapeSerializer,
-    ) -> ::std::result::Result<(), ::aws_smithy_schema::serde::SerdeError> {
-        serializer.write_list(&Self::M_ACTION_SUMMARIES, &|elements| {
-            for summary in &self.action_summaries {
-                elements.write_struct(&ActionSummary::SCHEMA, summary)?;
-            }
-            Ok(())
-        })?;
-        // The token is written only when there IS a next set of results; the page
-        // that leaves nothing to resume from reports no token at all.
-        if let Some(token) = self.next_token.as_ref() {
-            serializer.write_string(&Self::M_NEXT_TOKEN, token.as_str())?;
-        }
-        Ok(())
-    }
+    pub next_token: String,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.iotsitewise#ActionSummary")]
@@ -134,4 +53,3 @@ pub struct ActionSummary {
     pub target_resource: Option<TargetResource>,
     pub resolve_to: Option<ResolveTo>,
 }
-

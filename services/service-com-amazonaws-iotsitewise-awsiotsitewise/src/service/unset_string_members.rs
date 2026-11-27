@@ -1,193 +1,48 @@
 // SPDX-License-Identifier: CC0-1.0
 
-//! What this service reports for a string member whose stored value is UNSET: the
-//! member is left out of the response, never filled with the empty string.
+//! This service's `restJson1` codec, with the SHARED rule for an unset string member
+//! applied to every response it renders — and the one place a request's input shape is in
+//! hand, which the refusal path reads.
 //!
 //! # The rule
 //!
-//! A response never carries a value a member's own constraints forbid. A string
-//! member whose `@length` minimum is 1 or more cannot legally hold the empty
-//! string, so "no value" for such a member is expressed by omitting it: a client
-//! can then tell "unset" from "set to something", and what it reads back is a
-//! value it can send straight into the write that sets the member
-//! (`smithy_query(query="shape", shape="Description")` — `@length` min 1, max
-//! 2048, pattern `^[^\u0000-\u001F\u007F]+$`).
+//! A response never carries a value a member's own constraints forbid. A string member
+//! whose `@length` minimum is 1 or more cannot legally hold the empty string, so "no value"
+//! for such a member is expressed by omitting it. The rule itself, and the walk that
+//! applies it at every nesting level, live once for every service of the class in
+//! [`service_common::unset_string_members`]; this module is where THIS service takes them.
 //!
-//! Every description this model declares targets that one `Description` shape and
-//! is modelled `@required` on the read side even though the member that writes it
-//! is optional on every create and update — an asset model's, an asset's, a
-//! dataset's, a composite model's, and the same member on each summary. So a
+//! # Why this service is one of that class
+//!
+//! Every description this model declares targets one `Description` shape
+//! (`smithy_query(query="shape", shape="Description")` — `@length` min 1, max 2048, pattern
+//! `^[^\u0000-\u001F\u007F]+$`) and is modelled `@required` on the read side even though the
+//! member that writes it is optional on every create and update — an asset model's, an
+//! asset's, a dataset's, a composite model's, and the same member on each summary. So a
 //! resource created without one has no description to report.
 //!
-//! # Why the correction lives at the protocol seam
+//! `ListActionsResponse$nextToken` is the same shape of problem on a pagination token:
+//! modelled `@required` while documented "The token for the next set of results, or null if
+//! there are no additional results", and targeting `NextToken`, whose `@length` minimum of 1
+//! and `^[A-Za-z0-9+/=]+$` leave it no value that could stand for "no next page". The
+//! generated response therefore carries the empty token for the last page, and this codec is
+//! what leaves the member out instead — so that shape keeps the derive the model drives
+//! rather than a hand-written copy of it.
 //!
-//! The generated shapes cannot express it. `#[smithy_macros::smithy(shape = ..)]`
-//! requires a `@required` member to be a NON-`Option` field
-//! (`vendor/smithy-macros`: "is @required or @default in Smithy, so it must not be
-//! Option<T>"), and the generated serializer writes every non-`Option` field
-//! unconditionally — so a handler can only hand the struct a string, and the empty
-//! string is the one that stands for "unset". Dropping it on the way out is
-//! therefore done once, here, for every response of this service, rather than by
-//! hand-writing the codec of each shape that holds a description.
-//!
-//! Only a STRUCTURE MEMBER is subject to the rule. A list element and a map value
-//! are written against the COLLECTION member's schema, whose `@length` bounds the
-//! element count rather than the element
-//! (`vendor/smithy-schema-server/src/constraints.rs`), so an empty string inside a
-//! collection is written exactly as the handler produced it and no element is ever
-//! dropped. Nothing else about the walk changes: a member's wire name, its order
-//! and its schema stay the ones the model gave it, and the request side is
-//! untouched.
-//!
-//! The wrapper costs one stack frame per nesting level and nothing else — no
-//! buffer, no copy of the body and no caller-sized allocation. The nesting it
-//! descends is the OUTPUT SHAPE's, which the model fixes, so no request can choose
-//! how deep it goes.
+//! The REQUEST side is the framework's own: a request carrying a value outside a member's
+//! `@length` is refused by the validating walk rather than quietly dropped.
 
 use aws_smithy_runtime_api::http::{Request, Response};
-use aws_smithy_schema::serde::{SerdeError, SerializableStruct, ShapeDeserializer, ShapeSerializer};
+use aws_smithy_schema::serde::{SerializableStruct, ShapeDeserializer};
 use aws_smithy_schema::{Schema, ShapeId};
 use aws_smithy_schema_server::protocol::{ProtocolError, ServerProtocol};
-use aws_smithy_schema_server::{LengthTrait, RestJsonServerProtocol};
-use aws_smithy_types::{BigDecimal, BigInteger, DateTime, Document};
+use aws_smithy_schema_server::RestJsonServerProtocol;
+use service_common::unset_string_members::OmittingUnsetStrings;
 
-/// Whether `schema`'s own `@length` forbids the empty string: a minimum of 1 or
-/// more. A member carrying no `@length` at all, or one whose minimum is 0, admits
-/// the empty string and keeps it.
-fn forbids_the_empty_string(schema: &Schema) -> bool {
-    schema
-        .traits()
-        .and_then(|traits| traits.get(&LengthTrait::TRAIT_ID))
-        .and_then(|length| length.as_any().downcast_ref::<LengthTrait>())
-        .and_then(|length| length.min)
-        .is_some_and(|min| min >= 1)
-}
-
-/// One shape, serialized with every unset string member left out.
-struct Projected<'a>(&'a dyn SerializableStruct);
-
-impl SerializableStruct for Projected<'_> {
-    fn serialize_members(&self, s: &mut dyn ShapeSerializer) -> Result<(), SerdeError> {
-        self.0.serialize_members(&mut MemberWriter {
-            inner: s,
-            of_a_structure: true,
-        })
-    }
-}
-
-/// The serializer a shape's members are written through: every call is the codec's
-/// own, except a structure member holding a string its `@length` forbids, which is
-/// not written at all.
-///
-/// A nested structure re-enters the wrapper, so the rule reaches a description at
-/// any depth. A list or a map re-enters it with `of_a_structure` cleared, because
-/// the values written inside one are elements, not members.
-struct MemberWriter<'a> {
-    inner: &'a mut dyn ShapeSerializer,
-    /// Whether what is being written is a MEMBER of a structure — and so whether
-    /// the schema each call carries is that member's own, constraints and all.
-    of_a_structure: bool,
-}
-
-impl ShapeSerializer for MemberWriter<'_> {
-    fn write_struct(
-        &mut self,
-        schema: &Schema,
-        value: &dyn SerializableStruct,
-    ) -> Result<(), SerdeError> {
-        self.inner.write_struct(schema, &Projected(value))
-    }
-
-    fn write_list(
-        &mut self,
-        schema: &Schema,
-        write_elements: &dyn Fn(&mut dyn ShapeSerializer) -> Result<(), SerdeError>,
-    ) -> Result<(), SerdeError> {
-        self.inner.write_list(schema, &|inner| {
-            write_elements(&mut MemberWriter {
-                inner,
-                of_a_structure: false,
-            })
-        })
-    }
-
-    fn write_map(
-        &mut self,
-        schema: &Schema,
-        write_entries: &dyn Fn(&mut dyn ShapeSerializer) -> Result<(), SerdeError>,
-    ) -> Result<(), SerdeError> {
-        self.inner.write_map(schema, &|inner| {
-            write_entries(&mut MemberWriter {
-                inner,
-                of_a_structure: false,
-            })
-        })
-    }
-
-    fn write_boolean(&mut self, schema: &Schema, value: bool) -> Result<(), SerdeError> {
-        self.inner.write_boolean(schema, value)
-    }
-
-    fn write_byte(&mut self, schema: &Schema, value: i8) -> Result<(), SerdeError> {
-        self.inner.write_byte(schema, value)
-    }
-
-    fn write_short(&mut self, schema: &Schema, value: i16) -> Result<(), SerdeError> {
-        self.inner.write_short(schema, value)
-    }
-
-    fn write_integer(&mut self, schema: &Schema, value: i32) -> Result<(), SerdeError> {
-        self.inner.write_integer(schema, value)
-    }
-
-    fn write_long(&mut self, schema: &Schema, value: i64) -> Result<(), SerdeError> {
-        self.inner.write_long(schema, value)
-    }
-
-    fn write_float(&mut self, schema: &Schema, value: f32) -> Result<(), SerdeError> {
-        self.inner.write_float(schema, value)
-    }
-
-    fn write_double(&mut self, schema: &Schema, value: f64) -> Result<(), SerdeError> {
-        self.inner.write_double(schema, value)
-    }
-
-    fn write_big_integer(&mut self, schema: &Schema, value: &BigInteger) -> Result<(), SerdeError> {
-        self.inner.write_big_integer(schema, value)
-    }
-
-    fn write_big_decimal(&mut self, schema: &Schema, value: &BigDecimal) -> Result<(), SerdeError> {
-        self.inner.write_big_decimal(schema, value)
-    }
-
-    /// The one rewrite on the way out: a structure member whose value is the empty
-    /// string its own `@length` forbids is skipped, so the response carries no
-    /// member rather than a value the shape rejects. Every other string — a value
-    /// the member admits, or one written as a collection element — is the codec's
-    /// own.
-    fn write_string(&mut self, schema: &Schema, value: &str) -> Result<(), SerdeError> {
-        if self.of_a_structure && value.is_empty() && forbids_the_empty_string(schema) {
-            return Ok(());
-        }
-        self.inner.write_string(schema, value)
-    }
-
-    fn write_blob(&mut self, schema: &Schema, value: &[u8]) -> Result<(), SerdeError> {
-        self.inner.write_blob(schema, value)
-    }
-
-    fn write_timestamp(&mut self, schema: &Schema, value: &DateTime) -> Result<(), SerdeError> {
-        self.inner.write_timestamp(schema, value)
-    }
-
-    fn write_document(&mut self, schema: &Schema, value: &Document) -> Result<(), SerdeError> {
-        self.inner.write_document(schema, value)
-    }
-
-    fn write_null(&mut self, schema: &Schema) -> Result<(), SerdeError> {
-        self.inner.write_null(schema)
-    }
-}
+// The shared predicate this service's own cases ask of its model's member schemas; the
+// codec reaches it through `OmittingUnsetStrings` rather than calling it here.
+#[cfg(test)]
+use service_common::unset_string_members::forbids_the_empty_string;
 
 /// This service's `restJson1` codec, with an unset string member omitted from
 /// every response rather than reported as the empty string.
@@ -259,7 +114,7 @@ impl ServerProtocol for UnsetStringMembersRestJson {
         success_status: u16,
     ) -> Result<Self::Response, ProtocolError> {
         self.inner.serialize_output(
-            &Projected(output),
+            &OmittingUnsetStrings(output),
             output_schema,
             operation_name,
             success_status,
@@ -277,8 +132,12 @@ impl ServerProtocol for UnsetStringMembersRestJson {
         // no shape of this model can report a string its own constraints forbid.
         // Every error shape of this service carries a message it always has, so the
         // wrapper is a no-op for them.
-        self.inner
-            .serialize_error(&Projected(error), error_schema, error_code, http_status)
+        self.inner.serialize_error(
+            &OmittingUnsetStrings(error),
+            error_schema,
+            error_code,
+            http_status,
+        )
     }
 
     fn serialize_event_stream_message(
@@ -291,7 +150,7 @@ impl ServerProtocol for UnsetStringMembersRestJson {
         self.inner.serialize_event_stream_message(
             event_type,
             is_exception,
-            &Projected(event),
+            &OmittingUnsetStrings(event),
             event_schema,
         )
     }
@@ -319,6 +178,30 @@ mod tests {
             ("assetModelCreationDate", false),
         ];
         let schema = crate::ops::types::DESCRIBE_ASSET_MODEL_OUTPUT_SCHEMA;
+        for (case, expected) in rows {
+            let member = schema
+                .members()
+                .iter()
+                .find(|member| member.member_name() == Some(case))
+                .unwrap_or_else(|| panic!("case {case:?}: the response declares this member"));
+            let forbids = forbids_the_empty_string(member);
+            assert_eq!(
+                forbids, expected,
+                "case {case:?}: expected forbids_the_empty_string {expected}, got {forbids}"
+            );
+        }
+    }
+
+    /// RULE, over the one member this service's PAGINATION depends on: the token of a
+    /// `@required` output token member is omittable, because `NextToken`'s own `@length`
+    /// minimum of 1 leaves it no value standing for "no next page". Asked of the real
+    /// member schema the derive builds for `ListActionsResponse`, beside the list member
+    /// that always has a value. Source
+    /// `smithy_query(query="operation", operation="ListActions")`.
+    #[test]
+    fn the_required_pagination_token_of_a_listing_is_omittable() {
+        let rows: [(&str, bool); 2] = [("nextToken", true), ("actionSummaries", false)];
+        let schema = crate::ops::types::LIST_ACTIONS_OUTPUT_SCHEMA;
         for (case, expected) in rows {
             let member = schema
                 .members()

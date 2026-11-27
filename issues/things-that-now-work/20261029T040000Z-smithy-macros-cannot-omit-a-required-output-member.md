@@ -76,3 +76,33 @@ of generated code per affected shape — which is why this is filed rather than 
 3. Make the field non-`Option` instead and call the operation on a response where AWS omits
    the member: the body carries the type's zero (`""` for a string) where AWS carries no
    key at all.
+
+## Resolution
+
+Resolved WITHOUT the generator change above, which is still outstanding: `vendor/` is
+read-only from a service crate, so the omission now happens one layer below the derive, at
+the protocol seam a service already owns.
+
+`services/common/src/unset_string_members.rs` states the rule once for every service of the
+class — a response carries no key for a member that holds no value, and a string member
+whose own `@length` minimum is 1 or more has no empty value to report — as the predicate
+`forbids_the_empty_string` plus `OmittingUnsetStrings`, the `SerializableStruct` projection a
+service wraps every output, error and event in at `Service::override_protocol`. The walk
+re-enters nested structures and keeps every collection element as written, since a
+collection member's `@length` bounds the element count rather than the element.
+
+With that available, the two copies of the rule this report named are gone:
+`services/service-com-amazonaws-iotsitewise-awsiotsitewise/src/ops/types/list_actions_types.rs`
+is back on `#[smithy_macros::smithy(shape = ..)]` — the hand-written `Schema` and
+`SerializableStruct` deleted, `nextToken` the plain `String` the `@required` member forces,
+and the empty token dropped by the codec — and that crate's
+`src/service/unset_string_members.rs` keeps only its own protocol and the input-shape hook,
+delegating the rule to the shared module. `core/router/tests/all/iotsitewise_unset_output_member_is_omitted.rs`
+pins the wire form through both operations.
+
+A member whose own shape ADMITS the empty string is NOT covered: whether such a member is
+omitted or reported as `""` is each service's own recorded fact (the WAFv2 crate records
+`""` for a `@length(1..256)` description), so the shared rule keys on the value space rather
+than on a list of member names. `get_account_information_types.rs` is untouched: it works
+around a different gap (`@timestampFormat`), whose own shared remedy is
+`services/common/src/date_time_json.rs`.

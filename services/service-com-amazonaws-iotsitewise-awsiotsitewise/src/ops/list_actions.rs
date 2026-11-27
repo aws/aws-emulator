@@ -275,8 +275,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             // reports NO token, exactly as every other paginated listing of
             // this service does. The token's own shape admits only 1..4096
             // characters matching ^[A-Za-z0-9+/=]+$, so there is no in-range
-            // value standing for "no next page" — absence is the only one.
-            next_token: page.next_token,
+            // value standing for "no next page" — and because the model marks
+            // this response's member `@required`, the empty token is the only
+            // way the generated shape can carry that. This service's codec
+            // leaves such a member out of the body rather than reporting a
+            // value the shape forbids (`crate::service`'s
+            // `unset_string_members`), so the last page carries no token.
+            next_token: page.next_token.unwrap_or_default(),
         })
     }
 }

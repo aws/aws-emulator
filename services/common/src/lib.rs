@@ -529,6 +529,11 @@ pub mod vpc_endpoint_calls;
 /// for every service of that class — which the generated member schemas drop, so without it
 /// such a member goes on the wire as the protocol's default epoch-seconds NUMBER.
 pub mod date_time_json;
+/// The ONE omission of a string member whose stored value is UNSET, for every service whose
+/// model declares such a member `@required` on the read side — the derive then forces it onto
+/// the wire, so without this a response reports the empty string where the member's own
+/// `@length` admits no empty value at all.
+pub mod unset_string_members;
 /// The ONE free-text search over a stored document's text — the terms a query names, which
 /// of them a text carries, the window of that text to report with the matches inside it, and
 /// the match of one whole document — for every service whose API answers a caller's query
