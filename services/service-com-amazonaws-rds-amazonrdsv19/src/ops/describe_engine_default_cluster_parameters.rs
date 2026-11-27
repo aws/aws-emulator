@@ -317,8 +317,10 @@ pub(crate) fn engine_cluster_parameter_vocabulary(
 /// operation documents.
 ///
 /// What this level publishes and the per-instance level does not is the settings that apply to
-/// the cluster as a WHOLE: the `aurora_` settings of its binary-log replication, its parallel
-/// query and its write forwarding, and the `aurora_`/`aws_default_` role ARNs its Amazon S3
+/// the cluster as a WHOLE: the `aurora_` settings of its binary-log replication, the switch of
+/// its ENHANCED binary log and the two settings that apply only while that log is on
+/// (`binlog_backup` and `binlog_replication_globaldb`), its parallel query and its write
+/// forwarding, and the `aurora_`/`aws_default_` role ARNs its Amazon S3
 /// and machine-learning integrations are configured with — the cluster-wide half of the
 /// engine's own settings namespace (`crate::state::engine_has_no_setting_named`, which carries
 /// the names this engine has a setting for at all). A parameter whose value is an IAM role ARN
@@ -441,6 +443,21 @@ pub(crate) const MYSQL_CLUSTER_PARAMETERS: &[crate::state::ClusterParameterSpec]
         true,
         "",
         "Preserves the client connections of a DB instance across a zero-downtime restart.",
+    ),
+    parameter(
+        // The switch of the engine's ENHANCED binary log, published in the 8.0-line release
+        // that introduced that log, so a family of an earlier line does not carry it
+        // ([`crate::state::family_carries_parameter`]). The two parameters below take effect
+        // only while it is on, which is why the three are published as one set: a caller
+        // turning enhanced binlog on sets all three on the cluster parameter group.
+        "aurora_enhanced_binlog",
+        crate::state::APPLY_TYPE_STATIC,
+        "boolean",
+        "0,1",
+        "0",
+        true,
+        "8.0.mysql_aurora.3.03.1",
+        "Turns on the enhanced binary log for the DB cluster.",
     ),
     parameter(
         // Write forwarding from the secondary clusters of a global database: the parameters
@@ -606,6 +623,21 @@ pub(crate) const MYSQL_CLUSTER_PARAMETERS: &[crate::state::ClusterParameterSpec]
         "IAM role that Aurora uses to access Amazon SageMaker.",
     ),
     parameter(
+        // Whether the cluster's backups carry its binary log, one of the pair the enhanced
+        // binary log above publishes: turning it off takes the binary log out of the backup,
+        // which is a prerequisite a zero-ETL integration of this engine requires. Introduced
+        // with the enhanced log it belongs to.
+        "binlog_backup",
+        crate::state::APPLY_TYPE_STATIC,
+        "boolean",
+        "0,1",
+        "1",
+        true,
+        "8.0.mysql_aurora.3.03.1",
+        "Whether the backups of the DB cluster include its binary log. Applies only when \
+         the enhanced binary log is turned on.",
+    ),
+    parameter(
         "binlog_format",
         crate::state::APPLY_TYPE_STATIC,
         "string",
@@ -614,6 +646,19 @@ pub(crate) const MYSQL_CLUSTER_PARAMETERS: &[crate::state::ClusterParameterSpec]
         true,
         "",
         "The format binary log events are written in; OFF disables binary logging.",
+    ),
+    parameter(
+        // The other half of the enhanced binary log's pair: whether the log is replicated to
+        // the secondary clusters of a global database.
+        "binlog_replication_globaldb",
+        crate::state::APPLY_TYPE_STATIC,
+        "boolean",
+        "0,1",
+        "1",
+        true,
+        "8.0.mysql_aurora.3.03.1",
+        "Whether the binary log of the DB cluster is replicated to the secondary Regions of \
+         a global database. Applies only when the enhanced binary log is turned on.",
     ),
     parameter(
         "lower_case_table_names",
