@@ -161,10 +161,66 @@ pub(crate) async fn object(router: &MultiServiceRouter, key: &str) -> Option<Str
         .then(|| String::from_utf8_lossy(&answered).to_string())
 }
 
+/// The keys of every object under `prefix`, from `ListObjectsV2`.
+pub(crate) async fn keys_under(
+    router: &MultiServiceRouter,
+    case: &str,
+    prefix: &str,
+) -> Vec<String> {
+    let (status, listing) = s3(
+        router,
+        "GET",
+        &format!("/{BUCKET}?list-type=2&prefix={prefix}"),
+        &[],
+    )
+    .await;
+    let listing = String::from_utf8_lossy(&listing).to_string();
+    assert_eq!(
+        status, 200,
+        "case {case:?}: listing s3://{BUCKET}/{prefix} must succeed, got {status} with {listing}"
+    );
+    listing
+        .split("<Key>")
+        .skip(1)
+        .filter_map(|rest| rest.split_once("</Key>").map(|(key, _)| key.to_string()))
+        .collect()
+}
+
+/// The one part file a dataset write left under the output directory `prefix`, as its body.
+///
+/// A part file's name carries the UUID the write job was minted with, so it is not a name a
+/// row can spell: the part is the one object under the directory whose name is not a
+/// committer's marker, and its name is asserted to be the `part-` prefixed one a write leaves.
+async fn part_under(router: &MultiServiceRouter, case: &str, prefix: &str) -> Option<String> {
+    let listed = keys_under(router, case, prefix).await;
+    let parts: Vec<String> = listed
+        .iter()
+        .filter(|key| {
+            let basename = key.rsplit('/').next().unwrap_or_default();
+            !basename.starts_with('_') && !basename.starts_with('.')
+        })
+        .cloned()
+        .collect();
+    assert_eq!(
+        parts.len(),
+        1,
+        "case {case:?}: expected one part file under {prefix}, got {listed:?}"
+    );
+    let key = &parts[0];
+    let basename = key.rsplit('/').next().unwrap_or_default();
+    assert!(
+        basename.starts_with("part-"),
+        "case {case:?}: expected a part file under {prefix}, got {basename:?}"
+    );
+    object(router, key).await
+}
+
 /// What a row expects its step to end as.
 enum Ends {
     /// The application exited cleanly: the step completed, and these `(key, content)` pairs
-    /// are the objects it really wrote.
+    /// are the objects it really wrote. A key ending in `/` names the output DIRECTORY of a
+    /// dataset write instead, whose one part file carries that content — such a part is named
+    /// after the write job that produced it, so no row can spell its key.
     Completed(Vec<(String, String)>),
     /// The application failed: the step's `FailureDetails` carry this reason and every one
     /// of these fragments in its message.
@@ -279,7 +335,7 @@ spark.stop()
             ],
             // "alpha\nbeta\ngamma\n" is three lines of 5, 4 and 5 characters.
             ends: Ends::Completed(vec![
-                ("out/counted/part-00000".to_string(), "3,14\n".to_string()),
+                ("out/counted/".to_string(), "3,14\n".to_string()),
                 ("out/counted/_SUCCESS".to_string(), String::new()),
             ]),
         },
@@ -568,7 +624,10 @@ async fn a_submitted_spark_application_runs_and_decides_its_step() {
                     "case {label:?}: a completed step reports no failure, got {step}"
                 );
                 for (key, expected) in objects {
-                    let held = object(&router, key).await;
+                    let held = match key.strip_suffix('/') {
+                        Some(prefix) => part_under(&router, label, prefix).await,
+                        None => object(&router, key).await,
+                    };
                     assert_eq!(
                         held.as_deref(),
                         Some(expected.as_str()),

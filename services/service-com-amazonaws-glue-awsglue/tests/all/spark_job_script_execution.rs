@@ -204,10 +204,35 @@ fn output_prefix(case: &str) -> String {
     format!("s3://{BUCKET}/output/{case}")
 }
 
-/// The key, inside the suite's bucket, of the one part file a write leaves under
-/// `output/<case>`.
-fn part_key(case: &str) -> String {
-    format!("output/{case}/part-00000")
+/// The body of the one object a run left under `output/<case>` that is not a committer's
+/// marker — the part file its write landed — or `None` where the run left none at all.
+///
+/// A part file written through the DATASET writer is named after the write job that produced
+/// it (`part-NNNNN-<uuid>-cNNN` and the suffix of the format), so the key is read out of the
+/// store's own listing rather than spelled here.
+async fn written_part(
+    router: &smithy_server_runtime::MultiServiceRouter,
+    case: &str,
+) -> Option<String> {
+    let found = output_objects(router, case).await;
+    let parts: Vec<&(String, String)> = found
+        .iter()
+        .filter(|(key, _body)| {
+            let basename = key.rsplit('/').next().unwrap_or_default();
+            !basename.starts_with('_') && !basename.starts_with('.')
+        })
+        .collect();
+    assert!(
+        parts.len() <= 1,
+        "case {case:?}: expected at most one part file under output/{case}/, got {found:?}"
+    );
+    let (key, body) = parts.first()?;
+    let basename = key.rsplit('/').next().unwrap_or_default();
+    assert!(
+        basename.starts_with("part-"),
+        "case {case:?}: expected a part file under output/{case}/, got {basename:?}"
+    );
+    Some(body.clone())
 }
 
 /// Every object one case's sink left under its output prefix, as (key, body) pairs — the
@@ -326,7 +351,7 @@ async fn a_spark_job_runs_output_is_computed_from_the_objects_its_source_holds()
             "case {case:?}: expected the run to come to rest in {JOB_RUN_STATE_SUCCEEDED}, \
              got {run}"
         );
-        let written = object_body(&router, &part_key(label)).await;
+        let written = written_part(&router, label).await;
         assert_eq!(
             written.as_deref(),
             Some(row.expected),
@@ -557,7 +582,7 @@ async fn a_run_reports_the_refusal_of_a_source_or_output_its_role_may_not_reach(
             .to_string();
         let run = run_at_rest(&router, &engine, case, &name, &run_id).await;
         let message = run["ErrorMessage"].as_str().unwrap_or_default().to_string();
-        let written = object_body(&router, &part_key(case)).await;
+        let written = written_part(&router, case).await;
 
         if row.succeeds {
             assert_eq!(

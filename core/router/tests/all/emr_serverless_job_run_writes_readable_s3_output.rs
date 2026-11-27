@@ -236,6 +236,43 @@ async fn get_object(router: &MultiServiceRouter, key: &str) -> Read {
     .await
 }
 
+/// The key of the one part file a dataset write left under the output directory `prefix`.
+///
+/// A part file is named after the write job that produced it — `part-NNNNN-<uuid>-cNNN` and
+/// the suffix of the format the write named — so a row names the DIRECTORY and the key is read
+/// out of the store's own listing.
+async fn part_key(router: &MultiServiceRouter, case: &str, prefix: &str) -> String {
+    let answered = s3(
+        router,
+        "GET",
+        &format!("/{BUCKET}?list-type=2&prefix={prefix}"),
+        &[],
+        &[],
+    )
+    .await;
+    let listing = String::from_utf8_lossy(&answered.body).to_string();
+    assert_eq!(
+        answered.status, 200,
+        "case {case:?}: listing s3://{BUCKET}/{prefix} must succeed, got {} with {listing}",
+        answered.status
+    );
+    let parts: Vec<String> = listing
+        .split("<Key>")
+        .skip(1)
+        .filter_map(|rest| rest.split_once("</Key>").map(|(key, _)| key.to_string()))
+        .filter(|key| {
+            let basename = key.rsplit('/').next().unwrap_or_default();
+            basename.starts_with("part-")
+        })
+        .collect();
+    assert_eq!(
+        parts.len(),
+        1,
+        "case {case:?}: expected one part file under {prefix}, got {listing}"
+    );
+    parts[0].clone()
+}
+
 /// A trust policy admitting `principal` and nothing else, in the form an `awsQuery` form body
 /// carries it: its quotes and spaces percent-encoded.
 fn trust_policy(principal: &str) -> String {
@@ -395,7 +432,9 @@ fn expected_squares(count: u32) -> String {
 
 /// What a row expects of its run.
 enum Comes {
-    /// `SUCCESS`, with the object at this key holding these bytes.
+    /// `SUCCESS`, with the object at this key holding these bytes. A key ending in `/` names
+    /// the output DIRECTORY of a dataset write instead, whose one part file is named after
+    /// the write job that produced it ([`part_key`]).
     Success { key: String, body: String },
     /// The modelled failure state, whose `stateDetails` says this, and the key the store must
     /// then hold nothing at.
@@ -463,7 +502,7 @@ fn rows() -> Vec<Row> {
             driver: None,
             arguments: vec!["3".to_string(), format!("s3://{BUCKET}/out/run-4/squares")],
             comes: Comes::Success {
-                key: "out/run-4/squares/part-00000".to_string(),
+                key: "out/run-4/squares/".to_string(),
                 body: expected_squares(3),
             },
         },
@@ -670,6 +709,11 @@ async fn a_job_run_executes_its_application_and_its_output_is_readable() {
                 );
                 // THE RULE's own instant: the read that finds the run rested is already past
                 // its application, so what that application wrote is readable NOW.
+                let key = match key.strip_suffix('/') {
+                    Some(prefix) => part_key(&router, case, prefix).await,
+                    None => key.clone(),
+                };
+                let key = key.as_str();
                 let answered = get_object(&router, key).await;
                 assert_eq!(
                     answered.status,

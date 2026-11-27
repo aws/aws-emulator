@@ -112,6 +112,22 @@ MALFORMED_RECORD = (
 # is what a partition column holding no value is written under and read back from.
 HIVE_NULL_PARTITION = "__HIVE_DEFAULT_PARTITION__"
 
+# How a part file of a write is NAMED: the `part-` prefix, the zero-padded index of the task
+# that wrote it, the UUID the write job was minted with, the `-c` file counter of that task,
+# and the extension of the format the part was written in. That is the template Spark's file
+# output committer lands a part under, and it is what lets a client attribute a file to the
+# write that produced it and select the parts of a format by their suffix.
+PART_NAME = "part-%05d-%s-c%03d%s"
+
+# The counter a part carries: it tells apart the files ONE task of ONE write leaves for the
+# same output directory, and a task that writes its rows as a single file leaves the first.
+FILE_COUNTER = 0
+
+# The extension a part carries for the format that wrote it, where the format is not named by
+# its own extension: the text source writes `.txt` files. Every other format's parts carry the
+# name of the format itself (`.json`, `.csv`, `.parquet`).
+FORMAT_SUFFIXES = {"text": ".txt"}
+
 # The expression surface a projection, a filter and a grouping are given, and the primitives
 # for reading a value as a type and for folding a column's values into one: stated ONCE,
 # where PySpark's own column expressions live, and used by both this engine and the function
@@ -227,6 +243,35 @@ def _partition_values(path, held):
                 None if held_value == HIVE_NULL_PARTITION else _typed(held_value)
             )
     return values
+
+
+def _write_job_uuid():
+    """The UUID of ONE write job, which every part file that write leaves carries.
+
+    Spark mints it per write — not per part and not per application — so the parts of one
+    write share it and the parts of another do not: that is what attributes a file to the
+    write that produced it, and what keeps a later write of the same output from taking the
+    names of an earlier one's files.
+    """
+    import uuid
+
+    return str(uuid.uuid4())
+
+
+def _format_suffix(kind):
+    """The extension a part file written in the format `kind` carries ([`FORMAT_SUFFIXES`])."""
+    return FORMAT_SUFFIXES.get(kind, ".%s" % (kind,))
+
+
+def _part_name(index, job, suffix):
+    """The name one part file of a write takes ([`PART_NAME`]).
+
+    `index` is the task that wrote it — the index of the dataset partition whose rows it
+    holds — `job` the UUID of the write job, and `suffix` the extension of the format it was
+    written in, which for a columnar part carries the codec its pages are stored under ahead
+    of the format itself.
+    """
+    return PART_NAME % (index, job, FILE_COUNTER, suffix)
 
 
 def _partition_text(value):
@@ -544,7 +589,8 @@ class DataFrameWriter(object):
     """Where a dataset of rows is WRITTEN: through the filesystem its path resolves in.
 
     The output is the layout Spark leaves: one part file per non-empty partition of the
-    dataset under the path, the `_SUCCESS` marker beside them, and — where the write names
+    dataset under the path, named as the write job that produced it names one
+    ([`_part_name`]), the `_SUCCESS` marker beside them, and — where the write names
     columns to partition BY — one `name=value` directory level per such column, holding the
     part files of the rows whose values those are. The partition columns are in the
     directories rather than in the files, which is what a read of the output resolves them
@@ -648,13 +694,16 @@ class DataFrameWriter(object):
         held = [
             column for column in self._frame.columns if column not in self._partitions
         ]
+        # ONE write is ONE write job, so its parts all carry the SAME write-job UUID — the
+        # one minted here, before the first of them is written ([`_write_job_uuid`]).
+        job = _write_job_uuid()
         written = []
         for within, rows in self._grouped():
             at = "%s/%s" % (prefix, within) if within else prefix
             if kind == "parquet":
-                self._parquet_parts(at, held, rows, part_offset)
+                self._parquet_parts(at, held, rows, job, part_offset)
             else:
-                self._text_parts(kind, at, held, rows, part_offset)
+                self._text_parts(kind, at, held, rows, job, part_offset)
             written.append((within, at))
         if MARKS_SUCCESSFUL_JOBS:
             filesystem.write_text("%s/_SUCCESS" % (prefix,), "")
@@ -662,7 +711,7 @@ class DataFrameWriter(object):
         # table's partitions are registered from ([`DataFrameWriter.saveAsTable`]).
         return written
 
-    def _text_parts(self, kind, at, held, rows, part_offset=0):
+    def _text_parts(self, kind, at, held, rows, job, part_offset=0):
         """One part file per PARTITION of the dataset, as text.
 
         That is the output layout a write leaves: `coalesce` and `repartition` are what a
@@ -670,22 +719,24 @@ class DataFrameWriter(object):
         leaves one part file, and a write of one repartitioned leaves a part per partition
         the rows were spread over. `part_offset` is where the numbering starts, so a write
         that APPENDS to a path leaves its parts beside the ones already there instead of
-        over them.
+        over them. Each part is named as the format that wrote it names one
+        ([`_part_name`]), so the extension a reader selects by is the format's own.
         """
         lines = self._rendered(kind, [_without(row, held) for row in rows])
+        suffix = _format_suffix(kind)
         for index, part in enumerate(slices(lines, self._frame.partitions())):
             filesystem.write_text(
-                "%s/part-%05d" % (at, index + part_offset),
+                "%s/%s" % (at, _part_name(index + part_offset, job, suffix)),
                 "".join("%s\n" % (line,) for line in part),
             )
 
-    def _parquet_parts(self, at, held, rows, part_offset=0):
+    def _parquet_parts(self, at, held, rows, job, part_offset=0):
         """The same part files, each one an Apache Parquet file of its own rows.
 
         The bytes are the format's own ([`pyspark.parquet`]): the values themselves in the
         file's pages, and the row count, the schema and each column's bounds in its footer.
-        The part carries the suffix of the codec its pages are stored under, which is how
-        Spark names a Parquet part file.
+        The part carries the suffix of the codec its pages are stored under ahead of the
+        format's own, which is how Spark names a Parquet part file.
         """
         declared = dict(self._frame.dtypes)
         compression = self._options.get("compression", "snappy")
@@ -698,7 +749,9 @@ class DataFrameWriter(object):
                 compression,
             )
             filesystem.write_bytes(
-                "%s/part-%05d%s.parquet" % (at, index + part_offset, suffix), body
+                "%s/%s"
+                % (at, _part_name(index + part_offset, job, "%s.parquet" % (suffix,))),
+                body,
             )
 
     def csv(self, path, **named):

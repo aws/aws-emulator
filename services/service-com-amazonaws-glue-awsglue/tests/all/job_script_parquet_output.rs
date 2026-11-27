@@ -265,6 +265,40 @@ pub(crate) async fn keys_under(
         .collect()
 }
 
+/// One listed part key with the per-WRITE parts of its name taken out.
+///
+/// A part file's basename is `part-<index>-<write-job uuid>-c<counter><suffix>`, and the UUID
+/// and the counter belong to the write job that produced it, so a row names a part by its
+/// index and the suffix of the format and codec it was written in. A name that is not that
+/// template at all is answered as it stands, so an assertion over it reports what was really
+/// listed.
+fn named_by_index(within: &str) -> String {
+    let (directory, basename) = match within.rsplit_once('/') {
+        Some((at, name)) => (format!("{at}/"), name),
+        None => (String::new(), within),
+    };
+    let held = (|| {
+        let rest = basename.strip_prefix("part-")?;
+        let index = rest
+            .get(..5)
+            .filter(|index| index.chars().all(|held| held.is_ascii_digit()))?;
+        let rest = rest.get(5..)?.strip_prefix('-')?;
+        let uuid = rest.get(..36)?;
+        if uuid.split('-').map(str::len).collect::<Vec<_>>() != vec![8, 4, 4, 4, 12] {
+            return None;
+        }
+        let rest = rest.get(36..)?.strip_prefix("-c")?;
+        let _counter = rest
+            .get(..3)
+            .filter(|counter| counter.chars().all(|held| held.is_ascii_digit()))?;
+        Some(format!("part-{index}{}", rest.get(3..).unwrap_or_default()))
+    })();
+    match held {
+        Some(name) => format!("{directory}{name}"),
+        None => within.to_string(),
+    }
+}
+
 /// One value of a read row, rendered so a case's expectation can state it as text.
 fn rendered(field: &Field) -> String {
     match field {
@@ -386,7 +420,9 @@ struct Row {
     compression: &'static str,
     /// The codec the written chunks must then report.
     stored: Compression,
-    /// The part files the write must leave under the output prefix, relative to it.
+    /// The part files the write must leave under the output prefix, relative to it — each
+    /// named by its index and its suffix, with the UUID and the counter a write mints per
+    /// write of its own left out ([`named_by_index`]).
     parts: &'static [&'static str],
     /// The rows each of those parts must hold, in part order.
     rows: &'static [&'static [&'static [&'static str]]],
@@ -623,14 +659,14 @@ async fn a_columnar_write_leaves_parquet_objects_laid_out_as_the_write_names() {
             .map(|key| key[prefix.len()..].to_string())
             .collect();
         assert_eq!(
-            parts,
+            parts.iter().map(|part| named_by_index(part)).collect::<Vec<_>>(),
             row.parts.iter().map(ToString::to_string).collect::<Vec<_>>(),
             "case {case:?}: expected the part files {:?} under {prefix} and nothing else, \
              got {listed:?}",
             row.parts
         );
 
-        for (index, part) in row.parts.iter().enumerate() {
+        for (index, part) in parts.iter().enumerate() {
             let key = format!("{prefix}{part}");
             let body = object_bytes(&router, &key)
                 .await
@@ -917,7 +953,19 @@ async fn an_aggregate_computed_through_the_function_catalog_is_what_the_run_writ
         "case {case:?}: expected the catalog's own answers, got {report:?}"
     );
 
-    let key = format!("output/{label}/part-00000.snappy.parquet");
+    let prefix = format!("output/{label}/");
+    let listed = keys_under(&router, case, &prefix).await;
+    // The write left one part file, whose name carries the UUID of the write job that
+    // produced it, so it is read out of the store's own listing.
+    assert_eq!(
+        listed
+            .iter()
+            .map(|key| named_by_index(&key[prefix.len()..]))
+            .collect::<Vec<_>>(),
+        vec!["part-00000.snappy.parquet".to_string()],
+        "case {case:?}: expected one Parquet part file under {prefix}, got {listed:?}"
+    );
+    let key = listed[0].clone();
     let body = object_bytes(&router, &key)
         .await
         .unwrap_or_else(|| panic!("case {case:?}: {key} must be served"));
