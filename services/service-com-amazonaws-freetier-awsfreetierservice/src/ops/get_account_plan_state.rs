@@ -17,9 +17,12 @@
 //! Before any of that, the request is AUTHORIZED
 //! ([`crate::service::authorization`]): this operation's model declares
 //! `AccessDeniedException` (HTTP 403), and AWS takes that decision at the IAM
-//! layer ahead of the service reading any record, so a caller whose
-//! identity-based policies do not allow `freetier:GetAccountPlanState` is
-//! refused without learning whether the account holds plan data at all.
+//! layer ahead of the service reading the request's own input and ahead of it
+//! reading any record, so a caller whose identity-based policies do not allow
+//! `freetier:GetAccountPlanState` is refused without learning whether the
+//! account holds plan data at all. The decision is taken in front of this
+//! handler, by the operation wrapper every modelled operation of this service is
+//! served through ([`crate::service`]).
 //!
 //! ## Shape of an operation
 //!
@@ -164,12 +167,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
     ) -> Result<Self::Output, Self::Error> {
         // The input shape has no members: the plan reported is the caller's own.
         let _ = &input;
-        // IAM first: this operation models `AccessDeniedException`, and AWS decides
-        // authorization ahead of the service looking at any record, so a caller no
-        // identity-based policy allows is refused here and learns nothing about the
-        // account's plan data.
-        crate::service::authorization::authorize(&*self.engine, ctx, Self::NAME)
-            .map_err(GetAccountPlanStateErrorModeled::AccessDeniedException)?;
+        // The IAM decision this operation models `AccessDeniedException` for is
+        // already taken: it is taken in front of this handler, before the
+        // request's own input is read at all (`crate::service`).
+        let _ = ctx;
         let Some(state) = crate::state::service_state(&*self.engine) else {
             return Err(GetAccountPlanStateErrorModeled::InternalServerException(
                 InternalServerException {

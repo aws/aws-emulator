@@ -78,6 +78,17 @@
 //! `definition().refusal_response(..)` before this service is asked anything
 //! (`vendor/smithy-server-runtime/src/multi_service_router.rs`).
 //!
+//! ## The decision taken in front of every operation
+//!
+//! IAM's authorization of the action. AWS judges it at the IAM layer, ahead of the service
+//! reading the request's own input and ahead of it reading or writing any record, so the
+//! decision is taken by the operation wrapper below ([`StatedPerOperation`]) rather than
+//! inside a handler: the input is read in FRONT of every handler — here, to state a
+//! constraint refusal in this service's words, and again by the centralized walk that
+//! builds the handler's input — so a gate inside a handler could not be first. Which
+//! operations are judged is the model's question and is answered in one place
+//! ([`authorization::judges`]): the ones whose model declares `AccessDeniedException`.
+//!
 //! ## This service's other edited seam: how a broken constraint is stated
 //!
 //! The framework refuses a request that breaks a constraint the model declares BEFORE
@@ -111,7 +122,8 @@
 
 pub mod announced_media_type;
 /// The per-request IAM decision the operations whose model declares
-/// `AccessDeniedException` take before they read or write any plan state.
+/// `AccessDeniedException` are served behind: taken in front of the request's own input,
+/// and so in front of the constraint walk and the handler alike (see the module header).
 pub mod authorization;
 /// Reached by [`crate::state`] as well: a bound a HANDLER enforces on top of the model's
 /// is stated in the same words as one the walk found (see that module's rule 7).
@@ -158,6 +170,10 @@ pub struct EmulatedService<Eng: Send + Sync + 'static> {
 /// Wire one `crate::ops::<module>::<Operation>` per line into `table`, each wrapped in
 /// [`StatedPerOperation`] and keyed by its operation shape name — the routing key
 /// `ServerProtocol::routing_key` resolves and the generated table is keyed by.
+///
+/// The wrapper is handed the shared engine as well as the operation built from it, because
+/// the IAM decision it takes in front of the request reads the caller's identity and its
+/// policies through that one store ([`authorization`]).
 macro_rules! wrap_operations {
     ($table:expr, $engine:expr, $($module:ident :: $operation:ident),+ $(,)?) => {
         $(
@@ -165,6 +181,7 @@ macro_rules! wrap_operations {
                 stringify!($operation),
                 ::std::boxed::Box::new(StatedPerOperation::new(
                     crate::ops::$module::$operation::new(::std::sync::Arc::clone(&$engine)),
+                    ::std::sync::Arc::clone(&$engine),
                 )) as ::std::boxed::Box<dyn ErasedOperation>,
             );
         )+
@@ -201,9 +218,21 @@ impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
     }
 }
 
-/// One modelled operation, served so that a refused request is stated the way this
-/// service states it — the value as submitted, and a list-element failure reported at
-/// its list — and so that the answer announces this service's media type.
+/// One modelled operation, served behind the decision AWS takes in front of a handler —
+/// IAM's authorization of the action — and so that a refused request is stated the way this
+/// service states it (the value as submitted, and a list-element failure reported at its
+/// list) and the answer announces this service's media type.
+///
+/// The IAM decision is taken HERE rather than inside each handler because of the order the
+/// two steps happen in: AWS judges the action at the IAM layer before the request's own
+/// input is read, and the input IS read in front of every handler — by this wrapper, to
+/// state a constraint refusal in this service's words, and again by the centralized walk
+/// that builds the handler's input. A gate inside a handler therefore cannot be first,
+/// whatever the handler does, so a caller whose identity-based policies allow nothing would
+/// be told about the request it sent instead of being refused the action. Standing the gate
+/// in front of both readings is what makes the modelled `AccessDeniedException` the answer
+/// to such a caller whatever its input carries; which operations it judges is the model's
+/// own question and is answered in one place ([`authorization::judges`]).
 ///
 /// Nothing else is re-implemented. A request this wrapper does not refuse is handed to
 /// the generated [`ErasedOperation::run`], which owns deserialize -> validate -> handle
@@ -216,14 +245,17 @@ impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
 /// handing a handler, or `override_refusal`, the input it already built — which
 /// `services/common/src/validation.rs` records as the core seam this re-read exists only
 /// until.
-struct StatedPerOperation<O> {
+struct StatedPerOperation<O, Eng> {
     operation: O,
+    /// The shared engine, so the principal's policies are read from the one store every
+    /// service of this emulator shares — the same engine `operation` holds.
+    engine: Arc<Eng>,
 }
 
-impl<O> StatedPerOperation<O> {
-    /// Wrap one operation, already constructed from the shared engine.
-    fn new(operation: O) -> Self {
-        Self { operation }
+impl<O, Eng> StatedPerOperation<O, Eng> {
+    /// Wrap one operation, already constructed from the shared engine, beside that engine.
+    fn new(operation: O, engine: Arc<Eng>) -> Self {
+        Self { operation, engine }
     }
 }
 
@@ -259,9 +291,10 @@ fn stated_refusal<O: Operation>(
     Some((violations, stated))
 }
 
-impl<O> ErasedOperation for StatedPerOperation<O>
+impl<O, Eng> ErasedOperation for StatedPerOperation<O, Eng>
 where
     O: Operation + ErasedOperation,
+    Eng: Send + Sync + 'static,
 {
     fn run<'r>(
         &'r self,
@@ -270,6 +303,16 @@ where
         ctx: &'r OperationContext<'r>,
     ) -> BoxFuture<'r, RtResponse> {
         Box::pin(async move {
+            // IAM FIRST, before a single value of the request's own input is read: the
+            // action is this operation's own name under this service's prefix, and a
+            // caller no identity-based policy allows is refused it and told nothing
+            // about the request it sent — not that it broke a modelled constraint, and
+            // not anything about the account's plan data. An operation whose model
+            // declares no 403 is not judged (`authorization::judges`).
+            if let Some(denial) = authorization::refusal(&*self.engine, ctx, O::NAME) {
+                return RESPONSE_MEDIA_TYPE
+                    .announce(authorization::refusal_response(svc, req, &denial));
+            }
             // The definition is read, used and dropped inside each statement:
             // `&dyn ErasedServiceDefinition` is not `Sync`, so holding it across the
             // await below would make this future non-`Send`.

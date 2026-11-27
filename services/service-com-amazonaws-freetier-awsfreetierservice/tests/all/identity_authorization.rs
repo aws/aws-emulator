@@ -39,6 +39,14 @@
 //! therefore carries. The recovery leg — grant the action and call again over the same
 //! credential — is a test of its own, as is the modelled length bound of the refusal under
 //! the longest principal ARN IAM can spell.
+//!
+//! The last two tests are about WHEN the decision is taken: AWS takes it at the IAM layer
+//! before the request's own input is read, so the answer to an unauthorized caller is that
+//! modelled 403 whatever body it sent — a body breaking a modelled constraint of the input
+//! shape included — and the answer to an authorized one is still whatever the model says
+//! about that body. Their rows span the body side of the rule: well-formed, the `@required`
+//! member absent, a value outside the enum, the empty string, a value of another JSON type,
+//! a member the shape does not declare, and a body that is not a structure at all.
 
 use std::sync::Arc;
 
@@ -1044,6 +1052,185 @@ async fn the_refusal_is_worded_by_the_shared_statement_of_iams_sentence() {
                 ),
                 "case {case:?}: expected the shared statement's own sentence, got {message:?}"
             );
+        }
+    }
+}
+
+/// One request body a gated operation can be asked with, and what the model says about it.
+struct Body {
+    /// What this row varies: how the body relates to the operation's input shape.
+    case: &'static str,
+    /// The body itself.
+    body: Value,
+    /// Whether it breaks a modelled constraint of `UpgradeAccountPlanRequest` — its one
+    /// member `accountPlanType` is `@required` and targets the enum `AccountPlanType`
+    /// (`smithy_query(query="shape",shape="UpgradeAccountPlanRequest")`), so a body
+    /// carrying no value for it, or one outside that enum, is refused the modelled
+    /// `ValidationException` once the caller is authorized to make the call at all.
+    breaks_a_constraint: bool,
+    /// A value of this body no refusal of the IDENTITY may echo, when the row carries a
+    /// distinctive one: a 403 states who was refused, which action and on which resource,
+    /// and nothing about the request's own input.
+    echo: Option<&'static str>,
+}
+
+/// The bodies both legs below are driven over: the rows differ along HOW the body relates
+/// to the operation's input shape — well-formed, the `@required` member absent, a value
+/// outside the enum, the empty string, a value of another JSON type (number, list, object,
+/// null), a member the shape does not declare, and a body that is not a structure at all.
+fn bodies() -> Vec<Body> {
+    vec![
+        Body {
+            case: "a well-formed request",
+            body: json!({ "accountPlanType": PLAN_TYPE_PAID }),
+            breaks_a_constraint: false,
+            echo: None,
+        },
+        Body {
+            case: "the required member absent",
+            body: json!({}),
+            breaks_a_constraint: true,
+            echo: None,
+        },
+        Body {
+            case: "a value outside the enum",
+            body: json!({ "accountPlanType": "GOLD" }),
+            breaks_a_constraint: true,
+            echo: Some("GOLD"),
+        },
+        Body {
+            case: "the empty string",
+            body: json!({ "accountPlanType": "" }),
+            breaks_a_constraint: true,
+            echo: None,
+        },
+        Body {
+            case: "a number where a string is modelled",
+            body: json!({ "accountPlanType": 7 }),
+            breaks_a_constraint: false,
+            echo: None,
+        },
+        Body {
+            case: "a list where a string is modelled",
+            body: json!({ "accountPlanType": [PLAN_TYPE_PAID] }),
+            breaks_a_constraint: false,
+            echo: None,
+        },
+        Body {
+            case: "an object where a string is modelled",
+            body: json!({ "accountPlanType": { "value": PLAN_TYPE_PAID } }),
+            breaks_a_constraint: false,
+            echo: None,
+        },
+        Body {
+            case: "an explicit null",
+            body: json!({ "accountPlanType": Value::Null }),
+            breaks_a_constraint: false,
+            echo: None,
+        },
+        Body {
+            case: "a member the shape does not declare",
+            body: json!({ "accountPlanKind": "GOLDEN" }),
+            breaks_a_constraint: true,
+            echo: Some("GOLDEN"),
+        },
+        Body {
+            case: "a body that is not a structure",
+            body: json!([PLAN_TYPE_PAID]),
+            breaks_a_constraint: false,
+            echo: None,
+        },
+    ]
+}
+
+/// RULE: the authorization decision is taken BEFORE anything of the request's own input is
+/// read, so a caller whose identity-based policies allow it nothing is refused the modelled
+/// 403 — in IAM's own sentence about the identity, the action and the resource, echoing no
+/// value of the request — whatever the body it sent carries, and the call writes nothing.
+///
+/// The rows span the body side of that rule ([`bodies`]): the ordering is the same decision
+/// for a well-formed request, for one that breaks a modelled constraint of the input shape,
+/// and for one the codec cannot even read as that shape. Both gated operations are driven,
+/// because the rule is the gate's and not one operation's.
+#[tokio::test]
+async fn the_decision_is_taken_before_the_requests_own_input_is_read() {
+    let emulator = Emulator::new();
+    let refused_key = emulator.user_key("freetier-ordering-bare", None).await;
+    let principal = emulator.caller_arn(&refused_key).await;
+
+    for operation in GATED_OPERATIONS {
+        let action = action_of(operation);
+        let before = emulator.plan_snapshot().await;
+        for row in bodies() {
+            let case = format!("{} asking {operation}", row.case);
+            let (status, payload) = emulator
+                .call_with_body(&refused_key, operation, &row.body)
+                .await;
+            check(
+                &case,
+                operation,
+                Expect::Refused(Reason::NothingAllows),
+                status,
+                &payload,
+            );
+            let message = message_of(&payload);
+            assert_eq!(
+                message,
+                format!(
+                    "User: {principal} is not authorized to perform: {action} on resource: {} {}",
+                    resource_of(operation),
+                    Reason::NothingAllows.clause(&action)
+                ),
+                "case {case:?}: expected IAM's whole sentence about the identity, got {message:?}"
+            );
+            if let Some(echo) = row.echo {
+                assert!(
+                    !message.contains(echo),
+                    "case {case:?}: a refusal of the identity must echo no value of the \
+                     request, but {message:?} carries {echo:?}"
+                );
+            }
+            let after = emulator.plan_snapshot().await;
+            assert_eq!(
+                after, before,
+                "case {case:?}: a refused call must leave the account's plan record exactly \
+                 as it was, got {after:?} after {before:?}"
+            );
+        }
+    }
+}
+
+/// RULE's other side: the gate decides the ORDER and not the outcome, so the same bodies
+/// sent by a caller whose policies DO allow the action are answered by the operation — and
+/// one that breaks a modelled constraint of the input shape is still refused the modelled
+/// `ValidationException` (HTTP 400) rather than passed through.
+#[tokio::test]
+async fn an_authorized_caller_is_still_answered_by_the_model_about_its_input() {
+    let emulator = Emulator::new();
+    let allowed_key = emulator
+        .user_key("freetier-ordering-allowed", Some(&allow("freetier:*", "*")))
+        .await;
+
+    for operation in GATED_OPERATIONS {
+        for row in bodies() {
+            let case = format!("{} asking {operation}", row.case);
+            let (status, payload) = emulator
+                .call_with_body(&allowed_key, operation, &row.body)
+                .await;
+            assert_ne!(
+                (status, error_code(&payload).as_str()),
+                (403, "AccessDeniedException"),
+                "case {case:?}: a caller the policies allow must not be refused by the gate, \
+                 got {status} with {payload}"
+            );
+            if row.breaks_a_constraint && operation == "UpgradeAccountPlan" {
+                assert_eq!(
+                    (status, error_code(&payload).as_str()),
+                    (400, "ValidationException"),
+                    "case {case:?}: a body that breaks a modelled constraint must still be \
+                     refused the modelled ValidationException, got {status} with {payload}"
+                );
+            }
         }
     }
 }

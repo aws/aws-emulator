@@ -1,12 +1,19 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! Whether IAM lets a request to this service perform the action it asks for — the
-//! authorization step an operation runs BEFORE it reads or writes any plan state.
+//! authorization step taken BEFORE anything of the request's own input is read and before
+//! any plan state is read or written.
 //!
 //! AWS decides authorization at the IAM layer, ahead of the service looking at the
-//! account's own records, so a caller whose identity-based policies do not grant the
-//! action is told it is not authorized rather than told anything about the data it asked
-//! for. The operations that answer such a caller are exactly the ones whose model declares
+//! request's own input and at the account's own records, so a caller whose identity-based
+//! policies do not grant the action is told it is not authorized rather than told anything
+//! about the data it asked for OR about the request it sent. That ordering is structural
+//! here: the decision is taken by the operation wrapper every modelled operation of this
+//! service is served through ([`crate::service`]), in front of the constraint walk and the
+//! handler alike, so no later layer can answer a caller the gate refuses — see
+//! [`refusal`] and [`refusal_response`].
+//!
+//! The operations that answer such a caller are exactly the ones whose model declares
 //! `AccessDeniedException` ("You don't have sufficient access to perform this action", HTTP
 //! 403 — `smithy_query(query="digest")` lists it for `GetAccountPlanState` and
 //! `UpgradeAccountPlan`); an operation whose model declares no 403 is NOT judged here,
@@ -72,11 +79,13 @@
 
 use std::time::SystemTime;
 
+use ::aws_smithy_runtime_api::http::{Request as RtRequest, Response as RtResponse};
 use ::service_com_amazonaws_iam_awsidentitymanagementv20100508::state as iam_store;
 use ::service_com_amazonaws_sts_awssecuritytokenservicev20110615::state as sts_store;
 use ::service_common::iam_authorization::{self as iam, Decision};
+use ::smithy_server_runtime::Service;
 
-use crate::ops::types::AccessDeniedException;
+use crate::ops::types::{AccessDeniedException, SCHEMA_ACCESS_DENIED_EXCEPTION};
 
 /// This service's IAM action prefix: an action is `freetier:<OperationName>` ("Actions
 /// defined by AWS Free Tier", IAM Service Authorization Reference), which is this
@@ -84,6 +93,73 @@ use crate::ops::types::AccessDeniedException;
 /// (`smithy_query(query="service_info")`) — the same string every ARN of this service
 /// spells.
 pub const ACTION_PREFIX: &str = "freetier";
+
+/// The wire error code the modelled refusal carries.
+const ACCESS_DENIED_EXCEPTION: &str = "AccessDeniedException";
+
+/// The status that shape is answered at: `httpError: 403`
+/// (`smithy_query(query="shape",shape="AccessDeniedException")`).
+const ACCESS_DENIED_STATUS: u16 = 403;
+
+/// The operations this gate judges: the ones whose model declares
+/// `AccessDeniedException`, which `smithy_query(query="digest")` lists as
+/// `GetAccountPlanState` and `UpgradeAccountPlan`.
+///
+/// An operation outside this list models no 403, so it is not judged: answering a caller
+/// with an error its operation does not model would be a different divergence. The list is
+/// pinned to the model by this module's own test, so an operation whose model gains the
+/// shape is judged instead of silently staying ungated.
+pub const JUDGED_OPERATIONS: &[&str] = &["GetAccountPlanState", "UpgradeAccountPlan"];
+
+/// Whether `operation`'s model declares the refusal this gate answers with
+/// ([`JUDGED_OPERATIONS`]).
+pub fn judges(operation: &str) -> bool {
+    JUDGED_OPERATIONS.contains(&operation)
+}
+
+/// The modelled refusal this request is answered with, or `None` when there is none to
+/// answer: IAM permits the call, or `operation` is one this gate does not judge.
+///
+/// This is what the operation wrapper asks BEFORE it reads a single value of the request's
+/// own input ([`crate::service`]), because that is the order AWS takes the two steps in: a
+/// caller no identity-based policy allows is refused the action it named, and is told
+/// nothing about the request it sent — not even that it broke a modelled constraint.
+pub fn refusal<Eng: Send + Sync + 'static>(
+    engine: &Eng,
+    ctx: &::smithy_server_runtime::OperationContext<'_>,
+    operation: &str,
+) -> Option<AccessDeniedException> {
+    if !judges(operation) {
+        return None;
+    }
+    authorize(engine, ctx, operation).err()
+}
+
+/// The wire answer to a request this gate refused: the modelled `AccessDeniedException` at
+/// its modelled status, serialized through the SAME protocol an error a handler returns
+/// goes through (`Service::override_protocol`, falling back to the model-derived codec), so
+/// a refusal taken in front of the request's input and one taken inside a handler are
+/// indistinguishable on the wire.
+///
+/// A value the codec cannot render is the one case the serialization can fail; it falls to
+/// the service's own framework renderer rather than to a second hand-built envelope.
+pub fn refusal_response(
+    svc: &dyn Service,
+    req: &RtRequest,
+    denial: &AccessDeniedException,
+) -> RtResponse {
+    let protocol = svc
+        .override_protocol()
+        .unwrap_or_else(|| svc.definition().protocol());
+    protocol
+        .serialize_error(
+            denial,
+            &SCHEMA_ACCESS_DENIED_EXCEPTION,
+            ACCESS_DENIED_EXCEPTION,
+            ACCESS_DENIED_STATUS,
+        )
+        .unwrap_or_else(|error| svc.definition().framework_error_response(error, req))
+}
 
 /// What a refusal names as the principal of a request whose session credential has already
 /// expired: that credential speaks for nobody, and the key it presented is not quoted back.
@@ -114,9 +190,11 @@ pub fn api_resource(operation: &str) -> String {
 /// ([`smithy_server_runtime::Operation::NAME`]).
 ///
 /// `Ok(())` for a request IAM permits (and for every caller this gate does not bound, see
-/// the module docs); the modelled refusal otherwise, which each operation returns as its
-/// own `AccessDeniedException`. Call it BEFORE the store is read or written, so a refused
-/// call reports nothing about the account's plan data and changes nothing.
+/// the module docs); the modelled refusal otherwise, answered as the operation's own
+/// `AccessDeniedException` ([`refusal_response`]). It is taken through [`refusal`], in
+/// front of the request's own input and therefore before the store is read or written, so
+/// a refused call reports nothing about the request it was sent and nothing about the
+/// account's plan data, and changes nothing.
 ///
 /// Resolving the caller goes through STS's own `resolve_caller`, which first materialises
 /// the session expiries the clock has already made due; that write is owed at the same
@@ -386,6 +464,66 @@ mod tests {
                      {resource} {reason}"
                 ),
                 "case {operation:?}: expected IAM's wording, got {message:?}"
+            );
+        }
+    }
+
+    /// This service's Smithy model, as it ships beside this crate: the authority on which
+    /// operations declare the refusal this gate answers with. Read at test time rather
+    /// than embedded; no non-test build needs it.
+    const MODEL_PATH: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/smithy-model/com-amazonaws-freetier-awsfreetierservice.json"
+    );
+
+    /// RULE: this gate judges exactly the operations whose model declares
+    /// `AccessDeniedException`, so an operation that models the refusal is judged and one
+    /// that does not is left alone. The set comes from the MODEL rather than from a second
+    /// hand list, so an operation whose errors change is caught here.
+    #[test]
+    fn the_judged_operations_are_the_ones_whose_model_declares_the_refusal() {
+        let model = std::fs::read_to_string(MODEL_PATH)
+            .expect("the model that generated this crate ships beside it");
+        let model: ::serde_json::Value =
+            ::serde_json::from_str(&model).expect("the model that generated this crate is JSON");
+        let shapes = model["shapes"]
+            .as_object()
+            .expect("a Smithy model declares shapes");
+        let mut declared: Vec<&str> = shapes
+            .iter()
+            .filter(|(_, shape)| shape["type"] == "operation")
+            .filter(|(_, shape)| {
+                shape["errors"]
+                    .as_array()
+                    .is_some_and(|errors| errors.iter().any(|error| error["target"]
+                        .as_str()
+                        .is_some_and(|target| target.ends_with("#AccessDeniedException"))))
+            })
+            .filter_map(|(id, _)| id.rsplit('#').next())
+            .collect();
+        declared.sort_unstable();
+        let mut judged = JUDGED_OPERATIONS.to_vec();
+        judged.sort_unstable();
+        assert_eq!(
+            judged, declared,
+            "case \"this service's surface\": the gate must judge exactly the operations \
+             whose model declares AccessDeniedException, got {judged:?} against {declared:?}"
+        );
+        for operation in &declared {
+            assert!(
+                judges(operation),
+                "case {operation:?}: an operation that models the refusal must be judged"
+            );
+        }
+        for operation in shapes
+            .iter()
+            .filter(|(_, shape)| shape["type"] == "operation")
+            .filter_map(|(id, _)| id.rsplit('#').next())
+            .filter(|operation| !declared.contains(operation))
+        {
+            assert!(
+                !judges(operation),
+                "case {operation:?}: an operation that models no 403 must not be judged"
             );
         }
     }
