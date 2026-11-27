@@ -78,7 +78,8 @@ pub const ADDRESSED_BY_ID: &str = "Id";
 /// identifier it cannot READ ([`id_format_invalid_message`]). Every other value is carried
 /// through to the store — WHICH identifier of this kind was ever issued is a property of the
 /// STORE rather than of the value, and so is a value of the alphabet written narrower than the
-/// issued width — and
+/// issued width, and so is a value written in the UUID form CloudFront issues the identifiers of
+/// its other kinds in, which carries no namespace marker at all — and
 /// the key the store holds none under is the key that is simply ABSENT.
 ///
 /// Only an identifier that ADDRESSES the operation is judged this way: a public key id borne by a

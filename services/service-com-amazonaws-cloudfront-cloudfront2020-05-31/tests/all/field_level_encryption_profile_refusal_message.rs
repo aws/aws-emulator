@@ -351,9 +351,11 @@ async fn every_path_that_reports_a_missing_profile_sends_the_wire_sentence() {
 /// A READ of a profile answers its one not-found code for every `Id` it cannot resolve, and
 /// whether the value could be an identifier issued FOR A PROFILE decides the sentence: a value
 /// written in the alphabet this service writes an identifier in is carried through to the STORE,
-/// so it reports the profile that is ABSENT, while a value written outside that alphabet — and a
+/// so it reports the profile that is ABSENT — as is a value written in the OTHER form CloudFront
+/// issues an identifier in, the UUID its key groups and policy kinds are minted with, which
+/// carries no namespace marker at all — while a value written outside both forms, and a
 /// value written exactly as an identifier is ISSUED under ANOTHER kind's namespace letter, which
-/// makes it that kind's identifier — is the identifier reported UNREADABLE.
+/// makes it that kind's identifier, is the identifier reported UNREADABLE.
 ///
 /// The rows span the shapes an `Id` takes outside a profile id's: the namespaces of this
 /// service a profile id's is disjoint from, taking two of them from ids this emulator really
@@ -394,7 +396,7 @@ async fn a_profile_read_answers_one_sentence_for_every_id_it_cannot_resolve() {
         (
             "a UUID, the namespace the policy kinds are keyed by",
             "00000000-0000-0000-0000-000000000000".to_string(),
-            UNREADABLE_IDENTIFIER,
+            NO_SUCH_PROFILE_MESSAGE,
         ),
         (
             "a profile id never minted",

@@ -49,9 +49,11 @@
 //!   sibling kind's own minted id, a public key id and the `E`-prefixed namespace the other
 //!   CloudFront entity ids are drawn from — each the identifier reported UNREADABLE;
 //! * the value of the alphabet at the issued width under a letter no kind of this service mints
-//!   under, which says nothing about the kind that issued it — carried through to the store;
+//!   under, which says nothing about the kind that issued it — carried through to the store, as
+//!   is a UUID, the OTHER form CloudFront issues an identifier in, which carries no namespace
+//!   marker at all;
 //! * and the values written outside the alphabet: a minted id in lower case, a body outside the
-//!   id alphabet, a UUID, a bare word and the resource's own caller reference — each the
+//!   id alphabet, a bare word and the resource's own caller reference — each the
 //!   identifier reported UNREADABLE, since no identifier of this mint is written that way.
 //!
 //! Each kind's width and alphabet are read off an id this emulator really MINTED rather than
@@ -350,6 +352,23 @@ impl Shape {
         }
     }
 
+    /// A value written in the OTHER form CloudFront issues an identifier in — the UUID its key
+    /// groups and policy kinds are minted with. That form carries no namespace marker at all and
+    /// is shared by every kind identified by one, so it says which kind issued it no more than a
+    /// letter no kind issues under does: every route carries it through to the store.
+    fn other_issued_form(
+        case: impl Into<String>,
+        id: impl Into<String>,
+        absent: &'static str,
+    ) -> Self {
+        Self {
+            case: case.into(),
+            id: id.into(),
+            expected: absent,
+            absent,
+        }
+    }
+
     /// A value written OUTSIDE that alphabet, which claims to be no identifier of this mint at
     /// all: there is nothing in it for the service to resolve, so every route that reads the
     /// form reports the identifier unreadable.
@@ -462,7 +481,7 @@ fn shapes(kind: Kind, stored: &Stored, public_key: &str) -> Vec<Shape> {
             format!("{prefix}{}", body.to_lowercase()),
             absent,
         ),
-        Shape::foreign(
+        Shape::other_issued_form(
             "a UUID, the namespace the policy kinds are keyed by",
             "00000000-0000-0000-0000-000000000000",
             absent,

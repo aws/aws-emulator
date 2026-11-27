@@ -15,16 +15,18 @@
 //!
 //! * a value that could never be an identifier CloudFront issued for the addressed kind is the
 //!   identifier the route reports it cannot READ ("Id format is invalid"). Three things about a
-//!   value say that: it is written outside the alphabet CloudFront writes an identifier in
-//!   (decimal digits and uppercase letters, no separator and no lower case); it is written WIDER
+//!   value say that: it is written outside both forms CloudFront issues an identifier in (the
+//!   alphabet of decimal digits and uppercase letters, and the UUID its key groups and policy
+//!   kinds are minted with); it is written WIDER
 //!   than the width an identifier of this mint is issued at, which overflows every identifier it
 //!   could be; or it is written exactly the way an identifier is ISSUED — that alphabet at that
 //!   width, where the leading character is the namespace — under the namespace letter of ANOTHER
 //!   kind this service issues identifiers under, which makes it that kind's identifier;
 //! * every other value is carried through to the STORE — WHICH identifier of a kind was ever
-//!   issued is a property of the store rather than of the value, and the width this service
+//!   issued is a property of the store rather than of the value, the width this service
 //!   issues at is one width CloudFront writes an identifier in rather than the only one, so a
-//!   NARROWER value could be one too, whatever letter it opens with — and the record the store
+//!   NARROWER value could be one too, whatever letter it opens with, and a UUID marks no kind at
+//!   all — and the record the store
 //!   holds none under is the resource reported ABSENT, under that kind's own fixed sentence.
 //!
 //! HOW MUCH of the value a route reads is each resource kind's own recorded contract, and the
@@ -58,7 +60,7 @@
 use smithy_server_runtime::MultiServiceRouter;
 
 use crate::distribution_lifecycle::{
-    call, config, create_distribution, emulator, Answer, API_VERSION,
+    call, config, create_distribution, emulator, is_minted_uuid, Answer, API_VERSION,
 };
 use crate::field_level_encryption_config_lifecycle::{
     create_config, get_config_document, simple,
@@ -403,10 +405,23 @@ fn rows(kind: Kind, live: &Live) -> Vec<Row> {
 }
 
 /// The sentence `kind`'s read owes `row`: the unreadable identifier where the value is written
-/// outside the alphabet an identifier is written in, and where its width or its leading
+/// outside both forms CloudFront issues an identifier in, and where its width or its leading
 /// character rules it out on a kind whose namespace letter is its own; the absent record
 /// otherwise.
+///
+/// A value written in the OTHER form CloudFront issues an identifier in — the UUID its key
+/// groups and policy kinds are minted with — carries no namespace marker at all and is shared by
+/// every kind identified by one, so a route that reads the NAMESPACE finds nothing in it to
+/// contradict the addressed kind and carries it through to the store, while a route whose
+/// contract reads the ALPHABET alone refuses every value outside that alphabet.
 fn expected(kind: Kind, row: &Row) -> &'static str {
+    if is_minted_uuid(&row.id) {
+        return if kind.has_its_own_namespace() {
+            kind.absent()
+        } else {
+            UNREADABLE_IDENTIFIER
+        };
+    }
     if row.outside_the_alphabet
         || (row.ruled_out_within_the_alphabet && kind.has_its_own_namespace())
     {

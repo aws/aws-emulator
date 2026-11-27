@@ -131,7 +131,11 @@ fn in_the_alphabet(kind: Kind, seeded: &Seeded) -> Vec<(String, String)> {
 }
 
 /// Every value this suite submits where an identifier of `kind` belongs that is written OUTSIDE
-/// the identifier alphabet: the character that is not of it is what each row varies.
+/// the identifier alphabet: the character that is not of it is what each row varies. The UUID
+/// form CloudFront issues the identifiers of its other kinds in is outside the alphabet too but
+/// is no such value — it is a form CloudFront really issues, so it is carried through to the
+/// store, which
+/// `field_level_encryption_identifier_width_and_namespace.rs` drives.
 fn outside_the_alphabet(kind: Kind, seeded: &Seeded) -> Vec<(String, String)> {
     let minted = seeded.minted(kind);
     let issued_width = minted.len() - 1;
@@ -153,10 +157,6 @@ fn outside_the_alphabet(kind: Kind, seeded: &Seeded) -> Vec<(String, String)> {
         (
             "an underscore in a body of the issued width".to_string(),
             format!("{own_letter}{}_", body(issued_width - 1)),
-        ),
-        (
-            "a UUID, the namespace the policy kinds are keyed by".to_string(),
-            "00000000-0000-0000-0000-000000000000".to_string(),
         ),
         ("a hyphenated word".to_string(), "not-an-identifier".to_string()),
     ]

@@ -1197,6 +1197,18 @@ pub fn unreadable_glue_table_message(role_arn: &str) -> String {
     )
 }
 
+/// A call the role a configuration names is not allowed to make on the resource that
+/// configuration names: the role, the call and the resource, stated as the refusal states it.
+///
+/// Beside [`unreadable_glue_table_message`] for the same reason and in the same shape: a
+/// resource a configuration names is resolved before the configuration is written, and the
+/// refusal names the call Firehose makes for it. All three parts are the caller's own values —
+/// the role and the resource came in the request, and the call is the one the retrieval opens
+/// with — so the sentence discloses nothing about what this account otherwise holds.
+pub fn unauthorized_source_read_message(role_arn: &str, action: &str, source_arn: &str) -> String {
+    format!("Role {role_arn} is not authorized to perform: {action} on resource {source_arn}.")
+}
+
 /// The `com-amazonaws-firehose-firehose-20150804` emulated service: the generated [`ServiceDefinition`] plus
 /// the behavioral seams this file owns.
 ///

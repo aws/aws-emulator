@@ -45,10 +45,13 @@
 //!   what makes the value that kind's identifier) as well as at every other;
 //! * the identifiers of the NEIGHBOURING kinds this service really minted — the sibling
 //!   field-level encryption record's and a public key's;
+//! * the OTHER form CloudFront issues an identifier in, the UUID its key groups and policy
+//!   kinds are minted with, at both extremes of its hex alphabet — carried through to the store,
+//!   because that form carries no namespace marker at all and so names no kind;
 //! * both RESOURCE KINDS of this surface, each through every operation that addresses it by a
 //!   path identifier — both readers, the update and the delete;
 //! * and the values that are outside the alphabet altogether: a minted identifier in lower
-//!   case, the kind's own letter over a lower-cased body, a UUID, a caller reference, a
+//!   case, the kind's own letter over a lower-cased body, a caller reference, a
 //!   hyphenated word and an identifier body carrying a separator — the identifier reported
 //!   UNREADABLE on every route that reads the form, since no identifier is written that way.
 //!
@@ -339,16 +342,22 @@ pub(crate) fn of_the_issued_form(id: &str, minted: &str) -> bool {
 }
 
 /// Whether `id` could be an identifier CloudFront issued FOR THE KIND `minted` was issued for:
-/// it is written in the identifier alphabet, is no WIDER than the width an identifier is issued
+/// it is written in the UUID form CloudFront issues the identifiers of its other kinds in, or it
+/// is written in the identifier alphabet, is no WIDER than the width an identifier is issued
 /// at, and — where it is written exactly the way an identifier is ISSUED, at that width — it
 /// opens with the kind's own namespace letter or with a letter no kind of this service issues an
 /// identifier under. A letter in
 /// [`NAMESPACE_LETTERS`] that is not the kind's own says the value was issued for THAT kind, so
 /// no record of this one could answer to it; a value WIDER than the issued width overflows every
-/// identifier CloudFront writes for these kinds, so it could be none of them; and a value of the
+/// identifier CloudFront writes for these kinds, so it could be none of them; a value of the
 /// alphabet NARROWER than that width names no kind of its own, so the store is what answers for
-/// it.
+/// it; and a UUID names no kind of its own either — that form carries no namespace marker at all
+/// and every kind this service identifies by one is minted in it — so the store answers for it
+/// too.
 pub(crate) fn could_be_issued_for_the_kind(id: &str, minted: &str) -> bool {
+    if crate::distribution_lifecycle::is_minted_uuid(id) {
+        return true;
+    }
     if !in_the_identifier_alphabet(id) {
         return false;
     }
@@ -507,7 +516,7 @@ fn neighbouring_minted_identifiers(
 
 /// Every value this suite submits where an identifier of `kind` belongs that is written outside
 /// the identifier alphabet: the minted identifier in lower case, the kind's own letter over a
-/// lower-cased body, a UUID, the resource's caller reference, a hyphenated word and an
+/// lower-cased body, the resource's caller reference, a hyphenated word and an
 /// identifier body carrying a separator.
 fn values_outside_the_identifier_alphabet(kind: Kind, seeded: &Seeded) -> Vec<(String, String)> {
     let minted = seeded.minted(kind);
@@ -527,10 +536,6 @@ fn values_outside_the_identifier_alphabet(kind: Kind, seeded: &Seeded) -> Vec<(S
             format!("{namespace}{}", body.to_lowercase()),
         ),
         (
-            "a UUID, the namespace the policy kinds are keyed by".to_string(),
-            "00000000-0000-0000-0000-000000000000".to_string(),
-        ),
-        (
             "the resource's caller reference rather than its identifier".to_string(),
             reference.to_string(),
         ),
@@ -538,6 +543,25 @@ fn values_outside_the_identifier_alphabet(kind: Kind, seeded: &Seeded) -> Vec<(S
         (
             "an identifier body carrying a separator".to_string(),
             format!("{namespace}{}_{}", &body[..1], &body[1..]),
+        ),
+    ]
+}
+
+/// The values this suite submits that are written in the OTHER form CloudFront issues an
+/// identifier in — the UUID its key groups, policies and key value stores are minted with.
+///
+/// That form carries no namespace marker at all and is shared by every kind identified by one,
+/// so it says which kind issued it no more than a letter no kind issues under does: such a value
+/// is carried through to the store, which reports the record ABSENT.
+fn values_of_the_other_issued_form() -> Vec<(String, String)> {
+    vec![
+        (
+            "a UUID, the namespace the policy kinds are keyed by".to_string(),
+            "00000000-0000-0000-0000-000000000000".to_string(),
+        ),
+        (
+            "another UUID, of the hex alphabet's other extreme".to_string(),
+            "ffffffff-ffff-ffff-ffff-ffffffffffff".to_string(),
         ),
     ]
 }
@@ -579,7 +603,9 @@ async fn an_identifier_of_the_issued_form_the_store_cannot_resolve_reads_as_abse
 
 /// The WIDTH alone keeps no value from being resolved, and the NAMESPACE LETTER decides only
 /// where the value is written exactly as an identifier is ISSUED: a body at any other width
-/// under any letter is carried through to the store, while the identifiers the neighbouring
+/// under any letter is carried through to the store, as is a value written in the OTHER form
+/// CloudFront issues an identifier in (a UUID, which marks no kind), while the identifiers the
+/// neighbouring
 /// kinds were really minted under — the issued width under another kind's letter — are the
 /// identifier the route cannot read. Every row is answered by [`unresolved_answer`], through
 /// every operation addressed by one.
@@ -593,7 +619,8 @@ async fn a_value_of_another_width_or_namespace_is_judged_by_the_form_its_route_r
         let minted = seeded.minted(kind).to_string();
         let rows = values_of_other_widths_and_namespaces(kind, &seeded)
             .into_iter()
-            .chain(neighbouring_minted_identifiers(kind, &seeded, &public_key));
+            .chain(neighbouring_minted_identifiers(kind, &seeded, &public_key))
+            .chain(values_of_the_other_issued_form());
         for (case, id) in rows {
             for (operation, answer) in address(&router, kind, &id, &seeded).await {
                 assert_refusal(

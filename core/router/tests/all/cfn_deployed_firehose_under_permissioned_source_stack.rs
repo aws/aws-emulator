@@ -1,21 +1,19 @@
 // SPDX-License-Identifier: CC0-1.0
 
-//! A CloudFormation stack that declares Kinesis-sourced Firehose streams whose source roles may
-//! NOT make the retrieval: the stack deploys, and the refusal is a condition of the live stream.
+//! A CloudFormation stack of Kinesis-sourced Firehose streams whose source roles are narrowed
+//! once they are live: the stack deploys, and each refusal is a condition of the live stream.
 //!
 //! The rule under test: **a Firehose stream's control-plane create resolves what its
-//! configuration NAMES — the resources it points at and the roles it is assumed under — and not
-//! what those roles are ALLOWED to do, because the permissions that decide a call made under a
-//! role are the ones in force at the ATTEMPT. So `CreateDeliveryStream` is served for a
-//! `KinesisStreamAsSource` stream whose `KinesisStreamSourceConfiguration` names a role whose
-//! policy withholds the Kinesis Data Streams calls the retrieval is made of
-//! (`kinesis:DescribeStream`, `kinesis:GetShardIterator`, `kinesis:GetRecords`), the stream
-//! becomes `ACTIVE`, and the refusal surfaces where a live stream's conditions surface: one
+//! configuration NAMES — the resources it points at, the roles it is assumed under and the
+//! retrieval's own first call on the source it names — while what those roles are allowed to do
+//! LATER is decided at the ATTEMPT. So a `KinesisStreamAsSource` resource whose role may make the
+//! Kinesis Data Streams calls the retrieval is made of
+//! (`kinesis:DescribeStream`, `kinesis:GetShardIterator`, `kinesis:GetRecords`) CREATES and
+//! stabilizes, the stack reaches `CREATE_COMPLETE` with its `Outputs` resolved, and a grant
+//! taken away from one of those roles afterwards stops that stream's retrieval at its next
+//! attempt: the refusal surfaces where a live stream's conditions surface — one
 //! event under the fixed `errorCode` `Kinesis.AccessDenied` in the log group and log stream the
-//! destination's `CloudWatchLoggingOptions` name, naming the first call the role may not make.
-//! A CloudFormation resource therefore CREATES and stabilizes for such a stream, and a stack
-//! declaring one reaches `CREATE_COMPLETE` with its `Outputs` resolved rather than being rolled
-//! back.**
+//! destination's `CloudWatchLoggingOptions` name, naming the first call the role may not make.**
 //!
 //! Only a cross-service suite can ask this: the flow spans CloudFormation (which deploys the
 //! roles, the log destinations and the streams), IAM (which holds those roles and decides each
@@ -24,10 +22,12 @@
 //! the reported events), mounted on ONE engine exactly as `core/router/src/lib.rs` mounts them.
 //!
 //! The rows are legs of ONE stack, declared with the same source, bucket and log group and
-//! differing only in what their role's policy says about the source: one role that may make the
-//! whole read, and — along what the rule generalises over, WHICH of the three calls is withheld
-//! and HOW — a role missing the records read, one missing the shard iterator, one missing the
-//! describe, one carrying no Kinesis grant at all, and one whose grant names another stream.
+//! differing only in what their role's policy says about the source ONCE THE STACK IS LIVE: one
+//! role left able to make the whole read, and — along what the rule generalises over, WHICH of
+//! the three calls is withheld
+//! and HOW — a role narrowed to lose the records read, one to lose the shard iterator, one to
+//! lose the describe, one left with no Kinesis grant at all, and one whose grant is moved to
+//! another stream.
 //! Every leg has to deploy, and the one that may read has to deliver, so no leg can pass by a
 //! stack that creates nothing.
 //!
@@ -130,13 +130,15 @@ struct Leg {
     id: &'static str,
     /// The infix of this leg's resource names and its key prefix.
     key: &'static str,
-    /// Which of the source read calls this leg's role allows; empty for a role carrying no
-    /// Kinesis grant at all.
+    /// Which of the source read calls this leg's role is left allowing once the stack is live;
+    /// empty for a role narrowed to no Kinesis grant at all. Every role is DEPLOYED allowing
+    /// the whole read, because the create resolves the retrieval's first call.
     granted: &'static [&'static str],
-    /// Whether the grant it carries names the stack's own source (`true`) or another stream.
+    /// Whether the grant it is left with names the stack's own source (`true`) or another
+    /// stream.
     scoped_to_the_source: bool,
-    /// The first call of [`EVERY_SOURCE_READ`] the role may not make, which its report names;
-    /// `None` for the leg whose role may make the whole read.
+    /// The first call of [`EVERY_SOURCE_READ`] the narrowed role may not make, which its report
+    /// names; `None` for the leg whose role is left able to make the whole read.
     refused: Option<&'static str>,
 }
 
@@ -173,8 +175,8 @@ impl Leg {
     }
 }
 
-/// The legs: one role that may make the whole read, and one per shape of policy that withholds
-/// part of it.
+/// The legs: one role left able to make the whole read, and one per shape of narrowed policy
+/// that withholds part of it.
 const LEGS: &[Leg] = &[
     Leg {
         case: "a role that may make the whole source read",
@@ -185,7 +187,7 @@ const LEGS: &[Leg] = &[
         refused: None,
     },
     Leg {
-        case: "a role one call short of the source read",
+        case: "a role narrowed to one call short of the source read",
         id: "NoRecords",
         key: "norecords",
         granted: &[DESCRIBE, SHARD_ITERATOR],
@@ -193,7 +195,7 @@ const LEGS: &[Leg] = &[
         refused: Some(RECORDS),
     },
     Leg {
-        case: "a role that may not take a position in the shards",
+        case: "a role that may no longer take a position in the shards",
         id: "NoIterator",
         key: "noiterator",
         granted: &[DESCRIBE, RECORDS],
@@ -201,7 +203,7 @@ const LEGS: &[Leg] = &[
         refused: Some(SHARD_ITERATOR),
     },
     Leg {
-        case: "a role that may not describe the source",
+        case: "a role that may no longer describe the source",
         id: "NoDescribe",
         key: "nodescribe",
         granted: &[SHARD_ITERATOR, RECORDS],
@@ -209,7 +211,7 @@ const LEGS: &[Leg] = &[
         refused: Some(DESCRIBE),
     },
     Leg {
-        case: "a role carrying no Kinesis grant at all",
+        case: "a role left with no Kinesis grant at all",
         id: "NoGrant",
         key: "nogrant",
         granted: &[],
@@ -217,7 +219,7 @@ const LEGS: &[Leg] = &[
         refused: Some(DESCRIBE),
     },
     Leg {
-        case: "a role whose source grant names another stream",
+        case: "a role whose source grant is moved to another stream",
         id: "Elsewhere",
         key: "elsewhere",
         granted: EVERY_SOURCE_READ,
@@ -226,23 +228,50 @@ const LEGS: &[Leg] = &[
     },
 ];
 
-/// The identity policy the template puts on one leg's role: the object write every leg makes,
-/// and this leg's own source grant.
+/// The identity policy the TEMPLATE puts on every leg's role: the object write that leg makes,
+/// and the whole source read on the stack's own stream.
 ///
-/// The source grant is written against the source by `Fn::GetAtt`, so a leg scoped to the
-/// stack's own stream names the very stream its delivery stream reads; a leg scoped elsewhere
-/// names a stream of this account that nothing declares.
+/// Every leg deploys with the whole read because the create resolves the retrieval's own first
+/// call under this role — a stream whose role may not make it is never written at all
+/// (`firehose_create_resolves_its_configuration` tables that) — and the source grant is written
+/// against the source by `Fn::GetAtt`, so it names the very stream the delivery stream reads.
 fn policy_document(leg: &Leg) -> Value {
+    json!({
+        "Version": "2012-10-17",
+        "Statement": [
+            {
+                "Effect": "Allow",
+                "Action": OBJECT_WRITE,
+                "Resource": { "Fn::Sub": format!("${{Bucket.Arn}}/{}*", leg.prefix()) },
+            },
+            {
+                "Effect": "Allow",
+                "Action": EVERY_SOURCE_READ,
+                "Resource": { "Fn::GetAtt": ["Source", "Arn"] },
+            },
+        ],
+    })
+}
+
+/// The identity policy a leg's role is NARROWED to once its stream is live: the object write it
+/// still makes, and only the source read calls its row is left with, on the stream its row names.
+///
+/// Put under the same policy name the template declared, so it REPLACES that policy rather than
+/// adding to it: what is in force on the role at the next retrieval is what this states.
+fn narrowed_policy_document(leg: &Leg, source_arn: &str) -> String {
     let mut statements = vec![json!({
         "Effect": "Allow",
         "Action": OBJECT_WRITE,
-        "Resource": { "Fn::Sub": format!("${{Bucket.Arn}}/{}*", leg.prefix()) },
+        "Resource": format!("arn:aws:s3:::{}/{}*", bucket(), leg.prefix()),
     })];
     if !leg.granted.is_empty() {
         let resource = if leg.scoped_to_the_source {
-            json!({ "Fn::GetAtt": ["Source", "Arn"] })
+            source_arn.to_string()
         } else {
-            json!({ "Fn::Sub": "arn:${AWS::Partition}:kinesis:${AWS::Region}:${AWS::AccountId}:stream/nothing-declares-this" })
+            format!(
+                "arn:aws:kinesis:us-east-1:{}:stream/nothing-declares-this",
+                engine::emulator_account_id()
+            )
         };
         statements.push(json!({
             "Effect": "Allow",
@@ -250,7 +279,7 @@ fn policy_document(leg: &Leg) -> Value {
             "Resource": resource,
         }));
     }
-    json!({ "Version": "2012-10-17", "Statement": statements })
+    json!({ "Version": "2012-10-17", "Statement": statements }).to_string()
 }
 
 /// The stack's template: the one source, the one bucket, the one log group, and — per leg — a
@@ -396,7 +425,7 @@ fn emulator() -> MultiServiceRouter {
 }
 
 #[tokio::test]
-async fn a_stack_whose_firehose_source_roles_may_not_read_deploys_and_reports_the_refusal() {
+async fn a_stack_whose_firehose_source_roles_are_narrowed_deploys_and_reports_the_refusal() {
     let router = emulator();
 
     // ---- The stack: every leg's role, log destination and delivery stream. ----
@@ -451,10 +480,49 @@ async fn a_stack_whose_firehose_source_roles_may_not_read_deploys_and_reports_th
         );
     }
 
-    // Every leg's stream is usable and reports the source it was configured with, whatever its
-    // role's policy withholds.
+    // Every leg's stream is usable and reports the source it was configured with, under the
+    // role the template deployed it with.
     for leg in LEGS {
         await_stream_active(&router, leg).await;
+    }
+
+    // ---- Now each leg's role is NARROWED to what its row is left with, replacing the policy
+    // the template put on it. What is in force on a role is read at the next retrieval, so from
+    // here on every leg retrieves exactly what its own policy allows. ----
+    let source_arn = source_stream_arn(&router).await;
+    for leg in LEGS.iter().filter(|leg| leg.refused.is_some()) {
+        given_role_policy(&router, leg, &narrowed_policy_document(leg, &source_arn)).await;
+    }
+
+    // ---- Every leg whose role may no longer read reports the refusal where its destination's
+    // logging says, under the one error code that condition carries, naming the FIRST call the
+    // role may not make, the source stream and the role. The record goes to the source only once
+    // every such report is there, so every reading below is of a retrieval the narrowed policies
+    // decided. ----
+    for leg in LEGS.iter().filter(|leg| leg.refused.is_some()) {
+        let action = leg.refused.unwrap_or_default();
+        let document = await_reported(&router, leg).await;
+        assert_eq!(
+            document["errorCode"],
+            json!(REFUSED_ERROR_CODE),
+            "case {:?}: expected the reported errorCode {REFUSED_ERROR_CODE:?}, got {document}",
+            leg.case
+        );
+        let stream_arn = document["deliveryStreamARN"].as_str().unwrap_or_default();
+        assert!(
+            stream_arn.starts_with("arn:aws:firehose:")
+                && stream_arn.ends_with(&format!(":deliverystream/{}", leg.stream())),
+            "case {:?}: expected the event to name its own stream, got {document}",
+            leg.case
+        );
+        let message = document["message"].as_str().unwrap_or_default().to_string();
+        for named in [action, &source_stream(), &leg.role()] {
+            assert!(
+                message.contains(named),
+                "case {:?}: expected the message to name {named:?}, got {message:?}",
+                leg.case
+            );
+        }
     }
 
     // ---- One record on the shared source, which each deployed stream retrieves for itself —
@@ -497,35 +565,6 @@ async fn a_stack_whose_firehose_source_roles_may_not_read_deploys_and_reports_th
         String::from_utf8_lossy(&held)
     );
 
-    // ---- And every leg whose role may not read reports the refusal where its destination's
-    // logging says, under the one error code that condition carries, naming the FIRST call the
-    // role may not make, the source stream and the role. ----
-    for leg in LEGS.iter().filter(|leg| leg.refused.is_some()) {
-        let action = leg.refused.unwrap_or_default();
-        let document = await_reported(&router, leg).await;
-        assert_eq!(
-            document["errorCode"],
-            json!(REFUSED_ERROR_CODE),
-            "case {:?}: expected the reported errorCode {REFUSED_ERROR_CODE:?}, got {document}",
-            leg.case
-        );
-        let stream_arn = document["deliveryStreamARN"].as_str().unwrap_or_default();
-        assert!(
-            stream_arn.starts_with("arn:aws:firehose:")
-                && stream_arn.ends_with(&format!(":deliverystream/{}", leg.stream())),
-            "case {:?}: expected the event to name its own stream, got {document}",
-            leg.case
-        );
-        let message = document["message"].as_str().unwrap_or_default().to_string();
-        for named in [action, &source_stream(), &leg.role()] {
-            assert!(
-                message.contains(named),
-                "case {:?}: expected the message to name {named:?}, got {message:?}",
-                leg.case
-            );
-        }
-    }
-
     // ---- A refused retrieval delivers nothing, and the leg that did retrieve reports nothing
     // at all, at every reading over one more window. ----
     let until = Instant::now() + SILENCE_WINDOW;
@@ -548,10 +587,62 @@ async fn a_stack_whose_firehose_source_roles_may_not_read_deploys_and_reports_th
     }
 }
 
+/// The `StreamARN` Amazon Kinesis Data Streams reports for the shared source — the value a
+/// narrowed policy states its source grant against, read from that service rather than written
+/// out here.
+async fn source_stream_arn(router: &MultiServiceRouter) -> String {
+    let (status, body) = json_rpc(
+        router,
+        "kinesis",
+        "Kinesis_20131202.DescribeStreamSummary",
+        &json!({ "StreamName": source_stream() }),
+    )
+    .await;
+    assert_eq!(
+        status, 200,
+        "expected HTTP 200 from DescribeStreamSummary, got {status} with {body}"
+    );
+    body["StreamDescriptionSummary"]["StreamARN"]
+        .as_str()
+        .unwrap_or_else(|| panic!("the source reports its ARN, got {body}"))
+        .to_string()
+}
+
+/// Replace the inline policy the template put on `leg`'s role with `document`, under the same
+/// policy name — IAM's own `PutRolePolicy`, which is how an operator narrows a live role.
+async fn given_role_policy(router: &MultiServiceRouter, leg: &Leg, document: &str) {
+    let mut body = "Action=PutRolePolicy&Version=2010-05-08".to_string();
+    for (key, value) in [
+        ("RoleName", leg.role()),
+        ("PolicyName", POLICY_NAME.to_string()),
+        ("PolicyDocument", document.to_string()),
+    ] {
+        body.push('&');
+        body.push_str(key);
+        body.push('=');
+        body.push_str(&form_encode(&value));
+    }
+    let (status, answered) = send(
+        router,
+        "iam",
+        "POST",
+        "/",
+        &[("content-type", "application/x-www-form-urlencoded")],
+        body.into_bytes(),
+    )
+    .await;
+    assert_eq!(
+        status,
+        200,
+        "case {:?}: the narrowed policy must be put, got {status} with {}",
+        leg.case,
+        String::from_utf8_lossy(&answered)
+    );
+}
+
 /// Poll the stack until it first reports a settled status, and answer the `DescribeStacks`
 /// body that status was read from.
-async fn await_settled(router: &MultiServiceRouter) -> String {
-    let deadline = Instant::now() + DEPLOY_DEADLINE;
+async fn await_settled(router: &MultiServiceRouter) -> String {    let deadline = Instant::now() + DEPLOY_DEADLINE;
     loop {
         let (status, body) =
             cloudformation(router, "DescribeStacks", &[("StackName", STACK)]).await;

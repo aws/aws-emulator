@@ -196,6 +196,39 @@ async fn withheld_source_read(
     None
 }
 
+/// The first of [`SOURCE_READ_ACTIONS`] on `source_arn` that the role `role_arn` names may not
+/// make, worded as a refusal of the call that CONFIGURED the source states it, or `None` when
+/// the retrieval that configuration asks for may be made.
+///
+/// A `KinesisStreamAsSource` create does not take the source configuration on trust: Firehose
+/// makes the retrieval's own discovery call under the role the configuration names while the
+/// create is being served — the same call the retrieval opens with ([`SOURCE_READ_ACTIONS`]) —
+/// so a role whose permissions withhold it names a source this stream could never read, which is
+/// an argument fault of that call. The stream is therefore never created, rather than reported
+/// healthy and permanently silent. The refusal names the call, the role and the stream
+/// (`crate::service::unauthorized_source_read_message`), so the caller reads which permission is
+/// missing from whose policy.
+///
+/// This is a question about the configuration being WRITTEN, and it does not replace the one
+/// every retrieval puts for itself ([`source_read_refusal`]): the permissions that decide a
+/// retrieval are the ones in force when it is made, so a grant withdrawn after the stream exists
+/// still stops it and one restored still resumes it.
+///
+/// `None` as well for every question that could not be ANSWERED — a configuration naming no
+/// role, and anything short of IAM answering that the role does not allow the call — exactly as
+/// the retrieval's own question reads a non-answer.
+pub async fn unauthorized_source_read(
+    ctx: &smithy_server_runtime::OperationContext<'_>,
+    region: &str,
+    role_arn: &str,
+    source_arn: &str,
+) -> Option<String> {
+    let action = withheld_source_read(ctx.callback(), region, role_arn, source_arn).await?;
+    Some(crate::service::unauthorized_source_read_message(
+        role_arn, action, source_arn,
+    ))
+}
+
 /// Report that `action` on `cursor`'s source stream was refused, through the logging each of
 /// the stream's destinations enables.
 ///

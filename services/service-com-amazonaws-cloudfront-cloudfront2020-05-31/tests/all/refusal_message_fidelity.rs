@@ -26,10 +26,11 @@
 //! on both sides, over the create AND the update that submit one, beside the two lists a
 //! configuration has to name something in; for the public key identifier, the kind's own
 //! namespace at a body too short and too long for it, each other namespace this service mints
-//! ids in (a distribution's, a key group's UUID, both field-level encryption namespaces), and
+//! ids in (a distribution's, both field-level encryption namespaces), and
 //! identifiers CloudFront could have issued (one never minted, one character off the stored
 //! one, the stored id in lower case, the caller reference, a bare digit, a word of no id shape
-//! at all) — one sentence for all of them — over every operation that addresses a public
+//! at all, and a key group's UUID, the other form CloudFront issues an identifier in) — the
+//! sentence each one's form decides — over every operation that addresses a public
 //! key by `Id`; and for the listing, the
 //! configuration named by `Name`, by `ARN` and by both.
 //!
@@ -507,9 +508,12 @@ async fn every_id_the_store_holds_no_public_key_for_is_refused_under_the_sentenc
             message: UNREADABLE_PUBLIC_KEY_ID,
         },
         IdRow {
+            // A UUID carries no namespace marker at all and is the form every kind this service
+            // identifies by one is minted in, so it says which kind issued it no more than a
+            // letter no kind issues under does: the store is what answers for it.
             case: "a key group id, which this service draws as a UUID",
             id: group_id,
-            message: UNREADABLE_PUBLIC_KEY_ID,
+            message: NO_SUCH_PUBLIC_KEY,
         },
         IdRow {
             // The prefix is the one this service mints profile ids under

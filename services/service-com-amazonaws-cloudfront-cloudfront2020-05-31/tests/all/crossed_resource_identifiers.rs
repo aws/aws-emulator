@@ -33,7 +33,9 @@
 //!   addressed kind could answer to either and both are unreadable, while a value of the
 //!   alphabet NARROWER than that width, or at that width under a letter no kind of this service
 //!   issues one under, names no kind of
-//!   its own and is carried through to the store. A value outside the alphabet is no identifier
+//!   its own and is carried through to the store — as is a value written in the OTHER form
+//!   CloudFront issues an identifier in, the UUID its key groups and policy kinds are minted
+//!   with, which carries no namespace marker at all. A value outside both forms is no identifier
 //!   of the mint at all, so it too is unreadable.
 //!
 //! The rows are the CROSSOVER: four resource kinds are created through their own APIs, and
@@ -44,7 +46,7 @@
 use smithy_server_runtime::MultiServiceRouter;
 
 use crate::distribution_lifecycle::{
-    call, config, create_distribution, emulator, Answer, API_VERSION,
+    call, config, create_distribution, emulator, is_minted_uuid, Answer, API_VERSION,
 };
 use crate::field_level_encryption_config_lifecycle::{create_config, get_config, simple};
 use crate::field_level_encryption_profile_lifecycle::{
@@ -156,6 +158,17 @@ impl Route {
     /// width under a letter no kind of this service issues one under, is carried through to the
     /// store.
     fn expected(self, id: &str) -> &'static str {
+        // The OTHER form CloudFront issues an identifier in: a UUID carries no namespace marker
+        // at all and every kind identified by one is minted in it, so a route that reads the
+        // NAMESPACE has nothing in it to contradict the addressed kind and the store answers for
+        // it, while a route whose contract reads the ALPHABET alone refuses every value outside
+        // that alphabet.
+        if is_minted_uuid(id) {
+            return match self.own_namespace() {
+                Some(_) => self.absent(),
+                None => UNREADABLE_IDENTIFIER,
+            };
+        }
         if !in_the_identifier_alphabet(id) {
             return UNREADABLE_IDENTIFIER;
         }

@@ -262,10 +262,6 @@ fn values_of_no_identifier_shape() -> Vec<(String, String)> {
             "key.example.com".to_string(),
         ),
         (
-            "a UUID, the shape the policy kinds' ids take".to_string(),
-            "00000000-0000-0000-0000-000000000000".to_string(),
-        ),
-        (
             "a namespace-labelled opaque id".to_string(),
             "dt_3JO1OQa51Jb3BZh7XQh6pbvF3Wa".to_string(),
         ),
@@ -276,10 +272,23 @@ fn values_of_no_identifier_shape() -> Vec<(String, String)> {
     ]
 }
 
-/// Values of the identifier alphabet narrower than the width an identifier is issued at, which
-/// could be one CloudFront wrote at another width: `(case, value)`.
+/// Values the store is left to answer for, because the value alone says nothing that rules a
+/// public key out: one of the identifier alphabet narrower than the width an identifier is issued
+/// at, which could be one CloudFront wrote at another width, and one written in the UUID form
+/// CloudFront issues the identifiers of its other kinds in, which carries no namespace marker at
+/// all: `(case, value)`.
 fn values_narrower_than_the_issued_width() -> Vec<(String, String)> {
-    vec![("a bare digit".to_string(), "7".to_string())]
+    vec![
+        ("a bare digit".to_string(), "7".to_string()),
+        // The OTHER form CloudFront issues an identifier in: a UUID carries no namespace
+        // marker at all and is shared by every kind identified by one, so it says which kind
+        // issued it no more than a letter no kind issues under does, and the store answers for
+        // it.
+        (
+            "a UUID, the shape the policy kinds' ids take".to_string(),
+            "00000000-0000-0000-0000-000000000000".to_string(),
+        ),
+    ]
 }
 
 /// RULE: every id the account really holds is served from its OWN record, by both readers.

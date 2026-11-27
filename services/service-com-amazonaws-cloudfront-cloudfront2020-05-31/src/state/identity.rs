@@ -1376,6 +1376,13 @@ pub const ISSUED_ENTITY_ID_LEN: usize = ID_BODY_LEN + 1;
 ///
 /// Either way the route reports the identifier it cannot READ ([`invalid_id_format`]).
 ///
+/// A value written in the OTHER form CloudFront issues an identifier in — the UUID
+/// ([`is_minted_uuid`]) — is not one of those: that form carries no namespace marker at all and
+/// is SHARED by every kind identified by one (a key group, the policy kinds, a key value
+/// store), so it says which kind issued it no more than a letter no kind issues under does. It
+/// is therefore carried through to the STORE, exactly as the values below are, and the record
+/// the store holds none under is the resource that is ABSENT.
+///
 /// EVERY other value is carried through to the STORE, and the record the store holds none under
 /// is the resource that is ABSENT: a value under the addressed kind's OWN letter, since WHICH
 /// identifier of this kind was ever issued is a property of the store rather than of the value;
@@ -1394,6 +1401,9 @@ pub const ISSUED_ENTITY_ID_LEN: usize = ID_BODY_LEN + 1;
 /// instead ([`super::no_such_origin_access_control`]), since there the letter says nothing about
 /// which of the four kinds issued the identifier.
 pub fn id_format_refused_for(prefix: char, value: &str) -> bool {
+    if is_minted_uuid(value) {
+        return false;
+    }
     if !is_entity_id_form(value) {
         return true;
     }

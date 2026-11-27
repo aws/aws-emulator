@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: CC0-1.0
 
-//! What a delivery the destination's ROLE did not allow writes, and what it reports.
+//! What a delivery the destination's ROLE did not allow writes, what it reports, and what a
+//! create whose SOURCE role may not read the stream it configures answers.
 //!
 //! The rule under test: Firehose makes a delivery under the role the destination
 //! configuration names ("the Amazon Resource Name (ARN) of the Amazon Web Services
@@ -11,17 +12,32 @@
 //! again, the next attempt is authorized and delivers — so the decision is the one in force
 //! at the moment of the flush rather than the one in force when the stream was created.
 //!
-//! The rows span what the rule generalises over: HOW the permission goes away (the inline
+//! The SOURCE of a stream is the other half of that story, and the second table below is it: a
+//! stream fed by a Kinesis data stream RETRIEVES its records under the role its source
+//! configuration names ("the ARN of the role that provides access to the source stream" —
+//! `KinesisStreamSourceConfiguration$RoleARN`), and Firehose makes the retrieval's own discovery
+//! call under that role while `CreateDeliveryStream` is being served. A role whose permissions
+//! withhold one of the calls that retrieval is made of therefore names a source the stream could
+//! never read, which is an argument fault of the CREATE: HTTP 400, `InvalidArgumentException`
+//! and the sentence naming the withheld call, the role and the stream — and no stream is
+//! created, so a client is never handed one that reports healthy and can never deliver.
+//!
+//! The rows of the first table span what the delivery rule generalises over: HOW the permission
+//! goes away (the inline
 //! policy is deleted, replaced by one scoped to another bucket, replaced by one allowing only
 //! a read), how many records are put while it is gone, and which destination member carries
 //! the Amazon S3 location (`S3DestinationConfiguration`, `ExtendedS3DestinationConfiguration`).
+//! The rows of the second span HOW the source role's permissions fall short of the read set — no
+//! policy at all, only the destination's Amazon S3 writes, the whole read set on ANOTHER stream,
+//! and each proper prefix of the read set — beside the two that are allowed it: the read set on
+//! the stream itself and the read set on every resource.
 //!
 //! What becomes of the records a flush could not write is NOT this suite's subject.
 //!
-//! Four services are mounted on ONE shared engine, exactly as the router mounts them: the
+//! Five services are mounted on ONE shared engine, exactly as the router mounts them: the
 //! role is created and changed through IAM's own wire and the decision is IAM's, the bucket
-//! and the delivered objects are Amazon S3's, and the refusals are read back through
-//! CloudWatch Logs' own `GetLogEvents`.
+//! and the delivered objects are Amazon S3's, the source stream is Kinesis Data Streams' own,
+//! and the refusals are read back through CloudWatch Logs' own `GetLogEvents`.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -29,7 +45,7 @@ use std::time::{Duration, Instant};
 use serde_json::{json, Value};
 use smithy_server_runtime::MultiServiceRouter;
 
-use crate::delivery_stream_lifecycle::{PAST_THE_TRANSITION, REGION};
+use crate::delivery_stream_lifecycle::{at, error_code, error_message, PAST_THE_TRANSITION, REGION};
 use crate::destination_delivery_errors::{allow, authorization, form_encode};
 
 /// The endpoint every request here reaches the emulator on.
@@ -117,6 +133,14 @@ impl Aws {
         // this suite reads them back through that service's own reader.
         router.register_service(
             service_com_amazonaws_cloudwatchlogs_logs_20140328::EmulatedService::new(Arc::clone(
+                &engine,
+            )),
+        );
+        // The source of a `KinesisStreamAsSource` stream is a Kinesis data stream, created
+        // through that service's own wire so the ARN the create-time table configures is one
+        // Kinesis Data Streams really issued.
+        router.register_service(
+            service_com_amazonaws_kinesis_kinesis_20131202::EmulatedService::new(Arc::clone(
                 &engine,
             )),
         );
@@ -327,6 +351,73 @@ impl Aws {
         .await;
     }
 
+    /// Create a role NAMED `name`, trusted by the Firehose service principal and carrying
+    /// `policy` as its one inline policy (none at all for `None`), and answer its ARN.
+    ///
+    /// Beside [`Aws::create_role`], which holds the one role the delivery table revokes and
+    /// restores: the create-time table needs a role PER ROW, so each row's grant stands alone.
+    async fn create_named_role(&self, name: &str, policy: Option<&Value>) -> String {
+        let trust = json!({
+            "Version": "2012-10-17",
+            "Statement": [{
+                "Effect": "Allow",
+                "Principal": {"Service": "firehose.amazonaws.com"},
+                "Action": "sts:AssumeRole",
+            }],
+        })
+        .to_string();
+        self.iam(
+            "CreateRole",
+            &[
+                ("RoleName", name.to_string()),
+                ("AssumeRolePolicyDocument", trust),
+            ],
+        )
+        .await;
+        if let Some(policy) = policy {
+            self.iam(
+                "PutRolePolicy",
+                &[
+                    ("RoleName", name.to_string()),
+                    ("PolicyName", POLICY_NAME.to_string()),
+                    ("PolicyDocument", policy.to_string()),
+                ],
+            )
+            .await;
+        }
+        format!(
+            "arn:aws:iam::{}:role/{name}",
+            engine::emulator_account_id()
+        )
+    }
+
+    /// Create the Kinesis data stream `name` and answer the `StreamARN` it reports — the value a
+    /// client binds a `KinesisStreamAsSource` stream to.
+    async fn create_source(&self, name: &str) -> String {
+        let (status, answered) = self
+            .json_rpc(
+                "kinesis",
+                "Kinesis_20131202",
+                "CreateStream",
+                json!({ "StreamName": name, "ShardCount": 1 }),
+            )
+            .await;
+        assert_eq!(status, 200, "create source stream {name}: got {answered}");
+        let (status, answered) = self
+            .json_rpc(
+                "kinesis",
+                "Kinesis_20131202",
+                "DescribeStreamSummary",
+                json!({ "StreamName": name }),
+            )
+            .await;
+        assert_eq!(status, 200, "describe source stream {name}: got {answered}");
+        answered["StreamDescriptionSummary"]["StreamARN"]
+            .as_str()
+            .unwrap_or_else(|| panic!("the source stream reports its ARN, got {answered}"))
+            .to_string()
+    }
+
     /// `DeleteRolePolicy` of that same policy.
     async fn delete_role_policy(&self) {
         self.iam(
@@ -532,6 +623,240 @@ async fn a_record_the_delivery_role_withheld_is_delivered_once_the_role_allows_t
                 lines.contains(&expected),
                 "case {case:?}: the destination holds {expected:?}, got {lines:?}"
             );
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The SOURCE role, resolved by the create
+// ---------------------------------------------------------------------------
+
+/// The `DeliveryStreamType` of a stream fed by a Kinesis data stream: "the Firehose stream uses
+/// a Kinesis data stream as a source" (`CreateDeliveryStreamInput$DeliveryStreamType`).
+const KINESIS_STREAM_AS_SOURCE: &str = "KinesisStreamAsSource";
+
+/// The source Kinesis data stream every row of the create-time table configures.
+const SOURCE: &str = "role-refusal-source";
+
+/// Another Kinesis data stream, so a row can grant the read set on a stream that is NOT the
+/// source it configures.
+const OTHER_SOURCE: &str = "role-refusal-other-source";
+
+/// The calls the retrieval from a Kinesis source is made of, in the order it makes them: the
+/// three read-only access to a Kinesis data stream is stated with — the discovery of the
+/// stream's shards, the position taken in each of them, and the read of the records from that
+/// position. A refusal names the FIRST of them the role's permissions withhold, which is why the
+/// rows below walk that order.
+const SOURCE_READ_ACTIONS: [&str; 3] = [
+    "kinesis:DescribeStream",
+    "kinesis:GetShardIterator",
+    "kinesis:GetRecords",
+];
+
+/// An identity-based policy document allowing `actions` on `resource`.
+///
+/// Beside [`allow`], which states ONE action: a row granting a proper prefix of the read set
+/// states several.
+fn allow_actions(actions: &[&str], resource: &str) -> Value {
+    json!({
+        "Version": "2012-10-17",
+        "Statement": [{"Effect": "Allow", "Action": actions, "Resource": resource}],
+    })
+}
+
+/// The sentence a create refused for its source read carries: the role, the call its permissions
+/// withhold and the stream the call was to be made on — fixed text around three values the
+/// request itself carried, built here rather than taken from the crate under test.
+fn source_read_refusal(role_arn: &str, action: &str, source_arn: &str) -> String {
+    format!("Role {role_arn} is not authorized to perform: {action} on resource {source_arn}.")
+}
+
+/// What a row grants the role it creates, from `(the source ARN, the other source ARN, the
+/// destination bucket's ARN)` — every one of them a value this run really minted.
+type Grant = fn(&str, &str, &str) -> Option<Value>;
+
+/// One row of the create-time table: how the source role's permissions stand, and what the
+/// create owes it.
+struct SourceRow {
+    case: &'static str,
+    /// The role the row creates, so each row's grant stands alone.
+    role: &'static str,
+    /// The Firehose stream the row asks for.
+    stream: &'static str,
+    grant: Grant,
+    /// The call the refusal must name, or `None` where the create must be accepted.
+    refused: Option<&'static str>,
+}
+
+fn source_rows() -> Vec<SourceRow> {
+    vec![
+        SourceRow {
+            case: "a role trusted by Firehose that carries no policy at all",
+            role: "source-read-no-policy",
+            stream: "source-read-no-policy",
+            grant: |_source, _other, _bucket| None,
+            refused: Some(SOURCE_READ_ACTIONS[0]),
+        },
+        SourceRow {
+            case: "a role granting only the destination's Amazon S3 write",
+            role: "source-read-s3-only",
+            stream: "source-read-s3-only",
+            grant: |_source, _other, bucket| {
+                Some(allow_actions(
+                    &["s3:PutObject", "s3:GetBucketLocation"],
+                    &format!("{bucket}/*"),
+                ))
+            },
+            refused: Some(SOURCE_READ_ACTIONS[0]),
+        },
+        SourceRow {
+            case: "a role granting the whole read set on another stream",
+            role: "source-read-other-stream",
+            stream: "source-read-other-stream",
+            grant: |_source, other, _bucket| Some(allow_actions(&SOURCE_READ_ACTIONS, other)),
+            refused: Some(SOURCE_READ_ACTIONS[0]),
+        },
+        SourceRow {
+            case: "a role granting the first call of the read set only",
+            role: "source-read-describe-only",
+            stream: "source-read-describe-only",
+            grant: |source, _other, _bucket| {
+                Some(allow_actions(&SOURCE_READ_ACTIONS[..1], source))
+            },
+            refused: Some(SOURCE_READ_ACTIONS[1]),
+        },
+        SourceRow {
+            case: "a role granting the first two calls of the read set",
+            role: "source-read-iterator-only",
+            stream: "source-read-iterator-only",
+            grant: |source, _other, _bucket| {
+                Some(allow_actions(&SOURCE_READ_ACTIONS[..2], source))
+            },
+            refused: Some(SOURCE_READ_ACTIONS[2]),
+        },
+        SourceRow {
+            case: "a role granting the whole read set on the source stream",
+            role: "source-read-whole-set",
+            stream: "source-read-whole-set",
+            grant: |source, _other, _bucket| Some(allow_actions(&SOURCE_READ_ACTIONS, source)),
+            refused: None,
+        },
+        SourceRow {
+            case: "a role granting the whole read set on every resource",
+            role: "source-read-wildcard",
+            stream: "source-read-wildcard",
+            grant: |_source, _other, _bucket| Some(allow_actions(&SOURCE_READ_ACTIONS, "*")),
+            refused: None,
+        },
+    ]
+}
+
+/// RULE: `CreateDeliveryStream` resolves what the configured SOURCE role may do on the Kinesis
+/// data stream it names before anything is written — so a role withholding one of the
+/// retrieval's calls is refused with the sentence naming the first withheld call and no stream
+/// is created, while a role allowing them all is accepted and the stream is read back at its own
+/// name, carrying the source the create configured.
+#[tokio::test]
+async fn a_create_whose_source_role_may_not_read_the_stream_is_refused_and_creates_nothing() {
+    let aws = Aws::new();
+    aws.create_bucket(BUCKET).await;
+    let source_arn = aws.create_source(SOURCE).await;
+    let other_arn = aws.create_source(OTHER_SOURCE).await;
+    let destination_bucket = bucket_arn(BUCKET);
+
+    for row in source_rows() {
+        let case = row.case;
+        let grant = (row.grant)(&source_arn, &other_arn, &destination_bucket);
+        let role_arn = aws.create_named_role(row.role, grant.as_ref()).await;
+
+        let (status, answered) = aws
+            .json_rpc(
+                "firehose",
+                "Firehose_20150804",
+                "CreateDeliveryStream",
+                json!({
+                    "DeliveryStreamName": row.stream,
+                    "DeliveryStreamType": KINESIS_STREAM_AS_SOURCE,
+                    "KinesisStreamSourceConfiguration": {
+                        "KinesisStreamARN": source_arn,
+                        "RoleARN": role_arn,
+                    },
+                    "S3DestinationConfiguration": {
+                        "RoleARN": role_arn,
+                        "BucketARN": destination_bucket,
+                        "Prefix": PREFIX,
+                        "BufferingHints": { "SizeInMBs": 1, "IntervalInSeconds": 0 },
+                    },
+                }),
+            )
+            .await;
+
+        // Whatever the create answered, what the account HOLDS under that name is read back
+        // through the describe: a refusal may leave nothing behind, and an accepted create owes
+        // the stream it reported.
+        let (described_status, described) = aws
+            .json_rpc(
+                "firehose",
+                "Firehose_20150804",
+                "DescribeDeliveryStream",
+                json!({ "DeliveryStreamName": row.stream }),
+            )
+            .await;
+
+        match row.refused {
+            Some(action) => {
+                assert_eq!(
+                    status, 400,
+                    "case {case:?}: expected HTTP 400, got {status} with {answered}"
+                );
+                let code = error_code(&answered);
+                assert_eq!(
+                    code, "InvalidArgumentException",
+                    "case {case:?}: expected InvalidArgumentException, got {code} with {answered}"
+                );
+                let expected = source_read_refusal(&role_arn, action, &source_arn);
+                let message = error_message(&answered);
+                assert_eq!(
+                    message, expected,
+                    "case {case:?}: expected {expected:?}, got {message:?}"
+                );
+                let code = error_code(&described);
+                assert_eq!(
+                    code, "ResourceNotFoundException",
+                    "case {case:?}: expected no stream under {:?}, got {described_status} with \
+                     {described}",
+                    row.stream
+                );
+            }
+            None => {
+                assert_eq!(
+                    status, 200,
+                    "case {case:?}: expected HTTP 200, got {status} with {answered}"
+                );
+                assert!(
+                    answered["DeliveryStreamARN"].as_str().is_some(),
+                    "case {case:?}: expected a DeliveryStreamARN, got {answered}"
+                );
+                assert_eq!(
+                    described_status, 200,
+                    "case {case:?}: expected the created stream to be described, got \
+                     {described_status} with {described}"
+                );
+                let source = at(
+                    &described,
+                    "DeliveryStreamDescription/Source/KinesisStreamSourceDescription",
+                );
+                assert_eq!(
+                    source["KinesisStreamARN"].as_str(),
+                    Some(source_arn.as_str()),
+                    "case {case:?}: expected the configured source stream, got {source}"
+                );
+                assert_eq!(
+                    source["RoleARN"].as_str(),
+                    Some(role_arn.as_str()),
+                    "case {case:?}: expected the configured source role, got {source}"
+                );
+            }
         }
     }
 }

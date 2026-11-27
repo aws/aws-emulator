@@ -759,7 +759,7 @@ async fn an_id_no_key_holds_is_refused() {
         (
             "a well-formed key group id",
             "4fbc5e5c-1ee4-4f3b-9e9f-4a2a3b3b7c11".to_string(),
-            UNREADABLE_IDENTIFIER_MESSAGE,
+            NO_SUCH_PUBLIC_KEY_MESSAGE,
         ),
     ];
 

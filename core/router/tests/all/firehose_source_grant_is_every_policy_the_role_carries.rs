@@ -14,10 +14,12 @@
 //! moment ANY policy of that role states the missing call the retrieval is made — with nothing
 //! recreated and the records it never took still in the source.**
 //!
-//! The create is no part of the question: a stream whose role may not read is written and
-//! reports itself `ACTIVE` all the same (`firehose_create_resolves_its_configuration` tables
-//! that), which is what makes "the permissions at the attempt" the only thing that decides what
-//! each of these streams delivers.
+//! The create is not the question this suite asks, but it does resolve the source read: a
+//! stream is written only where its role may make the retrieval's calls
+//! (`firehose_create_resolves_its_configuration` tables that), so each row's role is created
+//! allowing the WHOLE read and is narrowed to one call short of it once the stream exists — which
+//! is what makes "the permissions at the attempt" the only thing that decides what each of these
+//! streams delivers.
 //!
 //! The rows differ along what the rule generalises over: WHICH of the three calls the role is
 //! short of — the describe the read begins with, the shard iterator it continues with, and the
@@ -126,7 +128,7 @@ struct Row {
     case: &'static str,
     /// The infix of this row's resource names and key prefix.
     key: &'static str,
-    /// The call this row's role is NOT granted when the stream is created, which is therefore
+    /// The call this row's role is NOT granted once the stream exists, which is therefore
     /// the first call of the retrieval it may not make.
     withheld: &'static str,
 }
@@ -181,8 +183,9 @@ impl Row {
         format!("{}-DestinationDelivery", self.key)
     }
 
-    /// The source read calls this row's role is granted when the stream is created: the whole
-    /// read minus the one it is short of.
+    /// The source read calls this row's role is granted ONCE THE STREAM EXISTS: the whole
+    /// read minus the one it is short of. The role is created allowing all three, because the
+    /// create resolves the retrieval's first call.
     fn granted(self) -> Vec<&'static str> {
         EVERY_SOURCE_READ
             .iter()
@@ -250,7 +253,10 @@ async fn a_grant_in_any_policy_of_the_source_role_restores_the_retrieval() {
     let router = emulator();
 
     // ---- The bucket, the source, the log destinations, and one role and one stream per row.
-    // Each role allows the whole read but the call its row is short of. ----
+    // Each role is created allowing the WHOLE read, because the create resolves that read: a
+    // stream whose source role may not make the retrieval's first call is never written. Once
+    // the streams exist each role is narrowed to one call short of the read, which is the state
+    // every reading below is of. ----
     given_bucket(&router).await;
     let source_arn = given_source(&router).await;
     given_log_group(&router).await;
@@ -260,13 +266,22 @@ async fn a_grant_in_any_policy_of_the_source_role_restores_the_retrieval() {
             &router,
             *row,
             DEPLOYED_POLICY,
-            &policy_document(&row.granted(), &source_arn),
+            &policy_document(EVERY_SOURCE_READ, &source_arn),
         )
         .await;
         given_stream(&router, *row, &source_arn).await;
     }
     for row in ROWS {
         await_stream_active(&router, *row).await;
+    }
+    for row in ROWS {
+        given_role_policy(
+            &router,
+            *row,
+            DEPLOYED_POLICY,
+            &policy_document(&row.granted(), &source_arn),
+        )
+        .await;
     }
 
     // ---- Each row reports the call its role may not make, under the one error code that
@@ -518,8 +533,8 @@ async fn given_records(router: &MultiServiceRouter) {
     );
 }
 
-/// Poll Firehose until it reports `row`'s stream `ACTIVE` — which it becomes whatever its
-/// role's policy withholds, since the create resolves no identity policy.
+/// Poll Firehose until it reports `row`'s stream `ACTIVE` — which it becomes because the role
+/// its create resolved allows the whole source read.
 async fn await_stream_active(router: &MultiServiceRouter, row: Row) {
     let deadline = Instant::now() + ACTIVE_DEADLINE;
     loop {

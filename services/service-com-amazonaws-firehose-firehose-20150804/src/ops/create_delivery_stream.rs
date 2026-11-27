@@ -389,16 +389,39 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             }
         }
 
-        // What a role is ALLOWED to do is not resolved here, and a configuration naming one
+        // A stream fed by a configured Kinesis data stream RETRIEVES its records under the role
+        // that configuration names, and Firehose makes the retrieval's own discovery call while
+        // this create is being served: a role whose permissions withhold it names a source this
+        // stream could never read, so the create is refused and nothing is registered under the
+        // name it asked for ([`crate::state::kinesis_source::unauthorized_source_read`]).
+        if let (ConfiguredSource::KinesisStream, Some(configuration)) =
+            (configured, input.kinesis_stream_source_configuration.as_ref())
+        {
+            if let Some(message) = crate::state::kinesis_source::unauthorized_source_read(
+                ctx,
+                &region,
+                &configuration.role_arn,
+                &configuration.kinesis_stream_arn,
+            )
+            .await
+            {
+                return Err(invalid_argument(message));
+            }
+        }
+
+        // What a DESTINATION role is allowed to do is not resolved here, and a configuration
+        // naming one
         // whose permissions withhold a call this stream would make under it is not refused:
         // a role Firehose can assume is enough for the configuration to be written. The
         // permissions that decide a data-plane call are the ones in force AT THAT ATTEMPT —
         // a grant added or withdrawn while the stream exists changes what the SAME stream
-        // does — so each retrieval from a configured Kinesis source
-        // (`crate::state::kinesis_source`) and each delivery to a destination
-        // (`crate::state::delivery`) asks that question for itself and reports a refusal
+        // does — so each delivery to a destination
+        // (`crate::state::delivery`)
+        // asks that question for itself and reports a refusal
         // through the stream's own logging, rather than this call answering it once for the
-        // life of the stream.
+        // life of the stream. The source read is asked at each retrieval the same way
+        // (`crate::state::kinesis_source`), beside the create-time question above, which is
+        // about the configuration being written rather than about one retrieval.
 
         // Every Amazon S3 location the create names is resolved against Amazon S3 before
         // the stream exists, exactly as the update path resolves the ones an update names: a

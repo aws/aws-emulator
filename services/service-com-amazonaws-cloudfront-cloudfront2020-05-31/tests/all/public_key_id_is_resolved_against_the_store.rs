@@ -8,9 +8,10 @@
 //! — model one 404 error, `NoSuchPublicKey`, so its MESSAGE is what tells two conditions apart:
 //! a value that COULD be an identifier CloudFront issued for a public key — the identifier
 //! alphabet, no wider than the width one is issued at, and at exactly that width under this
-//! kind's own namespace letter — is resolved against the STORE, and the key it holds none under
-//! is the key that is ABSENT; a value that could never be one is the identifier the route
-//! reports it cannot READ. Both sentences echo
+//! kind's own namespace letter, plus the UUID form CloudFront issues the identifiers of its
+//! other kinds in, which carries no namespace marker at all — is resolved against the STORE, and
+//! the key it holds none under is the key that is ABSENT; a value that could never be one is the
+//! identifier the route reports it cannot READ. Both sentences echo
 //! nothing the request submitted.
 //!
 //! The rows span what the rule generalises over — a value's RELATION to this service's
@@ -109,7 +110,7 @@ async fn a_public_key_id_earns_the_sentence_its_own_form_decides() {
         (
             "a key group id that really names a key group",
             group_id,
-            UNREADABLE_IDENTIFIER,
+            NO_SUCH_PUBLIC_KEY,
         ),
         (
             "the public key prefix with a body of no minted id's width",

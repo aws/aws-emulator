@@ -1,26 +1,26 @@
 // SPDX-License-Identifier: CC0-1.0
 
-//! A stack that declares Kinesis-sourced Firehose streams whose source roles differ in what
-//! they may read: the stack deploys, and what each stream retrieves follows its own grant.
+//! A stack that declares Kinesis-sourced Firehose streams whose source roles are then narrowed
+//! to differ in what they may read: the stack deploys, and what each stream retrieves follows
+//! its own grant.
 //!
-//! The rule under test: **`CreateDeliveryStream` resolves the RESOURCES a configuration names
-//! and the roles themselves, not what the identity policies in force on those roles allow: a
-//! `KinesisStreamSourceConfiguration` whose `RoleARN` may not make the Kinesis Data Streams
+//! The rule under test: **`CreateDeliveryStream` resolves the RESOURCES a configuration names,
+//! the roles themselves and the retrieval's own first call on the source — so a
+//! `KinesisStreamSourceConfiguration` whose `RoleARN` may make the Kinesis Data Streams
 //! calls the retrieval is made of (`kinesis:DescribeStream`, `kinesis:GetShardIterator`,
-//! `kinesis:GetRecords`) is written, and the stream it writes reports itself `ACTIVE` — so a
+//! `kinesis:GetRecords`) is written, the stream it writes reports itself `ACTIVE`, and a
 //! CloudFormation template declaring such a stream deploys to `CREATE_COMPLETE`. Which calls
-//! the role may make is read at each RETRIEVAL instead: one it may not make retrieves nothing,
+//! the role may make LATER is read at each RETRIEVAL instead: one it may not make retrieves
+//! nothing,
 //! delivers nothing, and is reported as a log event whose `errorCode` is the fixed
 //! `Kinesis.AccessDenied` in the log group and log stream the destination's
 //! `CloudWatchLoggingOptions` name, naming the FIRST call the role is short of; granting that
 //! call in place delivers the records the stream never took, with nothing recreated.**
 //!
-//! So one stack, one Kinesis data stream and one bucket, with three legs that differ only in
-//! their role's grant: the leg that may make the whole read delivers the record and reports
-//! nothing, and each leg short of one call delivers nothing and reports that call — the
-//! condition stated by the TEMPLATE, as a client deploying an under-permissioned pipeline
-//! states it, rather than narrowed in place afterwards (which is the sibling suite
-//! `cfn_deployed_firehose_source_permission_repair`'s question).
+//! So one stack, one Kinesis data stream and one bucket, with three legs whose roles are
+//! narrowed, once their streams are live, to differ only in their grant: the leg that may make
+//! the whole read delivers the record and reports
+//! nothing, and each leg short of one call delivers nothing and reports that call.
 //!
 //! Nothing the template declares carries a physical name: the bucket, the source stream, the
 //! log group, the log streams, the roles and the delivery streams are all named by
@@ -158,8 +158,9 @@ struct Leg {
     case: &'static str,
     /// The infix of this leg's logical ids and key prefix.
     key: &'static str,
-    /// The call the leg's role is NOT granted, or `None` for the leg that may make the whole
-    /// read.
+    /// The call the leg's role is NOT granted once its stream is live, or `None` for the leg
+    /// that may make the whole read. Every role is DEPLOYED with the whole read, because the
+    /// create resolves the retrieval's first call under it.
     withheld: Option<&'static str>,
     /// How that call is granted once the deployed streams have been observed.
     repair: Repair,
@@ -200,8 +201,8 @@ impl Leg {
         format!("{kind}{}", self.key)
     }
 
-    /// The source read calls this leg's role is granted: the consumer's read minus whatever it
-    /// is short of.
+    /// The source read calls this leg's role is left granted once its stream is live: the
+    /// consumer's read minus whatever it is short of.
     fn granted(self) -> Vec<&'static str> {
         SOURCE_READS
             .iter()
@@ -316,7 +317,7 @@ fn template() -> String {
                         "PolicyName": POLICY_NAME,
                         // The leg's OWN grant, as the template declares it: the condition
                         // under test is deployed, not stated afterwards.
-                        "PolicyDocument": policy_document(&leg.granted()),
+                        "PolicyDocument": policy_document(SOURCE_READS),
                     }],
                 },
             }),
@@ -415,12 +416,12 @@ fn emulator() -> MultiServiceRouter {
 }
 
 #[tokio::test]
-async fn a_stack_declaring_an_under_permissioned_source_role_deploys_and_reports_the_refusal() {
+async fn a_stack_whose_source_roles_are_narrowed_once_live_reports_the_refusal() {
     let router = emulator();
 
-    // ---- The stack: every leg's role, log destination and delivery stream, with the grants
-    // the template states. A role that may not read the source is a stream all the same, so
-    // the deployment settles in CREATE_COMPLETE. ----
+    // ---- The stack: every leg's role, log destination and delivery stream, each role
+    // declaring the whole source read — which is what lets every leg's stream be written at all,
+    // since the create resolves the retrieval's first call under the role it names. ----
     let body = template();
     let (status, answered) = cloudformation(
         &router,
@@ -451,6 +452,27 @@ async fn a_stack_declaring_an_under_permissioned_source_role_deploys_and_reports
     let deployed = deployed_names(&described);
     for leg in LEGS {
         await_stream_active(&router, &deployed, *leg).await;
+    }
+
+    // ---- Now each leg's role is NARROWED to the grant its row states, replacing the policy the
+    // template put on it: what is in force on a role is read at the next retrieval, so from here
+    // on each leg retrieves exactly what its own policy allows. ----
+    for leg in LEGS.iter().filter(|leg| leg.withheld.is_some()) {
+        let (status, answered) = iam(
+            &router,
+            "PutRolePolicy",
+            &[
+                ("RoleName", deployed.role(*leg)),
+                ("PolicyName", POLICY_NAME),
+                ("PolicyDocument", &narrowed_document(&deployed, *leg)),
+            ],
+        )
+        .await;
+        assert_eq!(
+            status, 200,
+            "case {:?}: the narrowed policy must be put, got {status} with {answered}",
+            leg.case
+        );
     }
 
     // ---- Each leg short of a call reports it, under the one error code that condition
@@ -608,6 +630,29 @@ fn granted_call_document(action: &str) -> String {
     json!({
         "Version": "2012-10-17",
         "Statement": [{ "Effect": "Allow", "Action": action, "Resource": "*" }],
+    })
+    .to_string()
+}
+
+/// The policy a leg's role is NARROWED to once its stream is live, in place of the whole read
+/// the template deployed it with: the same destination write and log write, and only the source
+/// read calls its row is left with — written over the names the stack reported, since the
+/// template's references are not available to a client calling IAM directly.
+fn narrowed_document(deployed: &Deployed, leg: Leg) -> String {
+    json!({
+        "Version": "2012-10-17",
+        "Statement": [
+            {
+                "Effect": "Allow",
+                "Action": OBJECT_WRITES,
+                "Resource": [
+                    format!("arn:aws:s3:::{}", deployed.bucket),
+                    format!("arn:aws:s3:::{}/*", deployed.bucket),
+                ],
+            },
+            { "Effect": "Allow", "Action": "logs:PutLogEvents", "Resource": "*" },
+            { "Effect": "Allow", "Action": leg.granted(), "Resource": "*" },
+        ],
     })
     .to_string()
 }

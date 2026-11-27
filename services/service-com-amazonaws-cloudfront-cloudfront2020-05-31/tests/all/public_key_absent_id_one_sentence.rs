@@ -7,12 +7,16 @@
 //! (`smithy_query(query="operation",operation="GetPublicKey,GetPublicKeyConfig,UpdatePublicKey,DeletePublicKey")`
 //! reports it and `AccessDenied` and no argument error) — so the MESSAGE is the whole of what
 //! tells two conditions apart, and what decides it is whether the submitted value could be an
-//! identifier CloudFront ISSUED FOR A PUBLIC KEY at all: a value written outside the identifier
-//! alphabet, one written wider than an identifier of this mint is issued, and one written exactly
-//! as an identifier is ISSUED — that alphabet at the issued width — under another kind's
-//! namespace letter are each the identifier the route reports it cannot READ, while every other
-//! value is carried through to the STORE and the key it holds none under is the key reported
-//! ABSENT. Both sentences are fixed text and echo nothing the request sent.
+//! identifier CloudFront ISSUED FOR A PUBLIC KEY at all: a value written outside either form
+//! CloudFront issues an identifier in, one written wider than an identifier of this mint is
+//! issued, and one written exactly as an identifier is ISSUED — the identifier alphabet at the
+//! issued width — under another kind's namespace letter are each the identifier the route reports
+//! it cannot READ, while every other value is carried through to the STORE and the key it holds
+//! none under is the key reported ABSENT. A value written in the UUID form CloudFront issues the
+//! identifiers of its other kinds in is one of those: that form carries no namespace marker at
+//! all and is shared by every kind identified by one, so it says which kind issued it no more
+//! than a letter no kind issues under does. Both sentences are fixed text and echo nothing the
+//! request sent.
 //!
 //! The rows span what the rule generalises over — the RELATION a value has to the identifier
 //! namespaces this service mints in: a live distribution id, a live key group's UUID, both
@@ -129,7 +133,7 @@ async fn one_code_carries_both_sentences_over_every_public_key_route() {
         (
             "a live key group id, drawn as a UUID",
             group_id,
-            UNREADABLE_IDENTIFIER,
+            NO_SUCH_PUBLIC_KEY,
         ),
         (
             "a field-level encryption profile id",

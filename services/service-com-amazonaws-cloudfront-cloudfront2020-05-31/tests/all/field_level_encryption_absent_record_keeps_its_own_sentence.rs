@@ -38,7 +38,9 @@
 //!   the other CloudFront entity ids are drawn from, which are another kind's identifiers;
 //! * the CHARACTER CLASSES of the body: digits and letters, zeros alone, one letter repeated;
 //! * the values written OUTSIDE that alphabet: a minted identifier in lower case, a hyphenated
-//!   word, a UUID and the record's own caller reference;
+//!   word and the record's own caller reference — each unreadable — beside a UUID, the OTHER
+//!   form CloudFront issues an identifier in, which marks no kind and is resolved against the
+//!   store;
 //! * both RESOURCE KINDS of this surface, each through every operation addressed by one of its
 //!   identifiers — both readers, the update and the delete — so the configuration's and the
 //!   profile's reads and deletes are each driven.
@@ -86,6 +88,13 @@ fn could_be_this_kinds_identifier(kind: Kind, seeded: &Seeded) -> Vec<(String, S
         (
             "a word of the alphabet shorter than any identifier is issued at".to_string(),
             "NOSUCH1".to_string(),
+        ),
+        // The OTHER form CloudFront issues an identifier in: a UUID carries no namespace marker
+        // at all and every kind this service identifies by one is minted in it, so it says which
+        // kind issued it no more than a letter no kind issues under does.
+        (
+            "a UUID, the shape the policy kinds' identifiers take".to_string(),
+            "00000000-0000-0000-0000-000000000000".to_string(),
         ),
         (
             "a letter no kind of this service issues an identifier under, at the issued width"
@@ -171,10 +180,6 @@ fn could_never_be_this_kinds_identifier(
         (
             "a hyphenated lower-case word".to_string(),
             "nonexistent-record-id-000".to_string(),
-        ),
-        (
-            "a UUID, the shape the policy kinds' identifiers take".to_string(),
-            "00000000-0000-0000-0000-000000000000".to_string(),
         ),
         (
             "the record's caller reference rather than its identifier".to_string(),
