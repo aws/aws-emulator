@@ -421,6 +421,15 @@ pub struct IamRole {
     pub aws_integration: Option<String>,
 }
 
+#[smithy_macros::smithy(shape = "com.amazonaws.odb#ExascaleConfiguration")]
+#[derive(Debug, Clone, Default)]
+pub struct ExascaleConfiguration {
+    pub total_storage_size_in_g_bs: Option<i32>,
+    pub available_storage_size_in_g_bs: Option<i32>,
+    pub total_vm_storage_size_in_g_bs: Option<i32>,
+    pub available_vm_storage_size_in_g_bs: Option<i32>,
+}
+
 #[smithy_macros::smithy(shape = "com.amazonaws.odb#DbServerPatchingDetails")]
 #[derive(Debug, Clone, Default)]
 pub struct DbServerPatchingDetails {
@@ -428,6 +437,13 @@ pub struct DbServerPatchingDetails {
     pub patching_status: Option<String>,
     pub time_patching_ended: Option<String>,
     pub time_patching_started: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.odb#FileSystemConfigurationDetails")]
+#[derive(Debug, Clone, Default)]
+pub struct FileSystemConfigurationDetails {
+    pub mount_point: Option<String>,
+    pub file_system_size_in_g_bs: Option<i32>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.odb#DataCollectionOptions")]
@@ -638,6 +654,10 @@ pub const ENCRYPTION_KEY_PROVIDER_VALUES: &[&str] = &["AWS_KMS", "OCI", "OKV", "
 pub const ENCRYPTION_KEY_PROVIDER_INPUT_VALUES: &[&str] = &["AWS_KMS", "ORACLE_MANAGED"];
 
 
+/// The values `ExascaleDbStorageVaultType` accepts on the wire.
+pub const EXASCALE_DB_STORAGE_VAULT_TYPE_VALUES: &[&str] = &["DEDICATED_INFRASTRUCTURE", "EXASCALE_INFRASTRUCTURE"];
+
+
 /// The values `ExternalIdType` accepts on the wire.
 pub const EXTERNAL_ID_TYPE_VALUES: &[&str] = &["compartment_ocid", "database_ocid", "tenant_ocid"];
 
@@ -742,6 +762,10 @@ pub const SOURCE_TYPE_VALUES: &[&str] = &["BACKUP_FROM_ID", "BACKUP_FROM_TIMESTA
 pub const STANDBY_ALLOWLISTED_IPS_SOURCE_VALUES: &[&str] = &["NOT_APPLICABLE", "PRIMARY", "SEPARATE"];
 
 
+/// The values `StorageManagementType` accepts on the wire.
+pub const STORAGE_MANAGEMENT_TYPE_VALUES: &[&str] = &["ASM", "EXASCALE"];
+
+
 /// The values `SupportedAwsIntegration` accepts on the wire.
 pub const SUPPORTED_AWS_INTEGRATION_VALUES: &[&str] = &["KmsTde"];
 
@@ -752,6 +776,10 @@ pub const UPDATE_ACTION_VALUES: &[&str] = &["NON_ROLLING_APPLY", "PRECHECK", "RO
 
 /// The values `ValidationExceptionReason` accepts on the wire.
 pub const VALIDATION_EXCEPTION_REASON_VALUES: &[&str] = &["cannotParse", "fieldValidationFailed", "other", "unknownOperation"];
+
+
+/// The values `VmStorageType` accepts on the wire.
+pub const VM_STORAGE_TYPE_VALUES: &[&str] = &["EXASCALE", "LOCAL"];
 
 
 /// The values `VpcEndpointType` accepts on the wire.

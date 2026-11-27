@@ -66,5 +66,6 @@ pub struct CloudExadataInfrastructureSummary {
     pub database_server_type: Option<String>,
     pub storage_server_type: Option<String>,
     pub compute_model: Option<String>,
+    pub exascale_configuration: Option<ExascaleConfiguration>,
 }
 

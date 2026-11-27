@@ -54,10 +54,16 @@
 //!
 //! ## Input
 //!
-//! * `maxResults` (Integer) — The maximum number of items to return for this request. To get
-//!   the next page of items, make another request with the token returned in the output.
-//! * `nextToken` (String) — The token returned from a previous paginated request. Pagination
-//!   continues from the end of the items returned by the previous request.
+//! * `cloudExadataInfrastructureId` (ResourceIdOrArn, len 6..2048) — The unique identifier or
+//!   Amazon Resource Name (ARN) of the Exadata infrastructure whose Exascale storage vaults
+//!   are listed.
+//! * `maxResults` (Integer, range 1..1000) — The maximum number of items to return for this
+//!   request. To get the next page of items, make another request with the token returned in
+//!   the output.
+//! * `nextToken` (String, len 1..8192) — The token returned from a previous paginated request.
+//!   Pagination continues from the end of the items returned by the previous request.
+//! * `vaultType` (ExascaleDbStorageVaultType) — The type of the Exascale storage vaults to
+//!   list.
 //!
 //! ## Output
 //!
@@ -72,6 +78,8 @@
 //!   action. Make sure you have the required permissions and try again.
 //! * `InternalServerException` (HTTP 500) — Occurs when there is an internal failure in the
 //!   Oracle Database@Amazon Web Services service. Wait and try again.
+//! * `ResourceNotFoundException` (HTTP 404) — The operation tried to access a resource that
+//!   doesn't exist. Make sure you provided the correct resource and try again.
 //! * `ThrottlingException` (HTTP 429) — The request was denied due to request throttling.
 //! * `ValidationException` (HTTP 400) — The request has failed validation because it is
 //!   missing required fields or has invalid inputs.
@@ -95,6 +103,7 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-odb-odb.json");
 pub enum ListExascaleDbStorageVaultsErrorModeled {
     AccessDeniedException(AccessDeniedException),
     InternalServerException(InternalServerException),
+    ResourceNotFoundException(ResourceNotFoundException),
     ThrottlingException(ThrottlingException),
     ValidationException(ValidationException),
 }

@@ -15,7 +15,10 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-odb-odb.json");
 #[derive(Debug, Clone, Default)]
 pub struct UpdateCloudExadataInfrastructureInput {
     pub cloud_exadata_infrastructure_id: String,
+    pub display_name: Option<String>,
+    pub compute_count: Option<i32>,
     pub maintenance_window: Option<MaintenanceWindow>,
+    pub storage_count: Option<i32>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.odb#UpdateCloudExadataInfrastructureOutput")]

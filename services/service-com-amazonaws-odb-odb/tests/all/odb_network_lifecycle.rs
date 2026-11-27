@@ -3,6 +3,12 @@
 //! End-to-end tests for the ODB network lifecycle: CreateOdbNetwork, GetOdbNetwork,
 //! ListOdbNetworks, UpdateOdbNetwork and DeleteOdbNetwork.
 //!
+//! The last three cases cover the rest of this service's modelled surface rather than
+//! the ODB network: every operation the service's model binds is dispatched to its own
+//! handler and its input is checked against the model's constraints, and an operation
+//! nobody has implemented answers the scaffold 501 rather than an unknown-operation
+//! refusal.
+//!
 //! Every case drives the real wire path — an `awsJson1_0` `POST /` with
 //! `X-Amz-Target: Odb.<Operation>`, dispatched through the same [`MultiServiceRouter`]
 //! the emulator binary mounts — so routing, deserialization, modelled-constraint
@@ -1253,4 +1259,259 @@ async fn the_display_name_pattern_accepts_every_form_the_model_allows() {
         "ValidationException",
         "displayName one character past the modelled maximum",
     );
+}
+
+/// One well-formed request per operation whose handler is still a scaffold, including
+/// every operation this service's model binds that no handler implements yet.
+///
+/// The rows differ along what the rule generalises over: the kind of operation (a
+/// create, a paginated list, a read, an associate/disassociate carrying a list member,
+/// four updates and a refresh), which members its input requires, and whether the
+/// addressed resource is named by a bare id or by an id-or-ARN. Each body satisfies
+/// every modelled constraint, so the only thing left to answer is the handler itself.
+fn scaffolded_operation_cases() -> Vec<(&'static str, Value)> {
+    vec![
+        (
+            "AssociateVirtualMachinesToCloudVmCluster",
+            json!({ "cloudVmClusterId": "vmclus-1a", "dbServers": ["dbserver-one"] }),
+        ),
+        (
+            "DisassociateVirtualMachinesFromCloudVmCluster",
+            json!({
+                "cloudVmClusterId": "vmclus-1a",
+                "dbServers": ["dbserver-one", "dbserver-two"],
+            }),
+        ),
+        (
+            "ListAutonomousDatabaseRefreshableClones",
+            json!({ "autonomousDatabaseId": "adb-000001", "maxResults": 10 }),
+        ),
+        (
+            "StartAutonomousDatabaseRefresh",
+            json!({ "autonomousDatabaseId": "adb-000001" }),
+        ),
+        (
+            "UpdateCloudAutonomousVmCluster",
+            json!({
+                "cloudAutonomousVmClusterId": "avmc-000001",
+                "cpuCoreCountPerNode": 4,
+                "displayName": "my_avm_cluster",
+                "licenseModel": "LICENSE_INCLUDED",
+            }),
+        ),
+        (
+            "UpdateCloudExadataInfrastructureStorageCapacity",
+            json!({ "cloudExadataInfrastructureId": "exainfra-000001" }),
+        ),
+        (
+            "UpdateCloudVmCluster",
+            json!({
+                "cloudVmClusterId": "vmclus-1a",
+                "cpuCoreCount": 8,
+                "dataStorageSizeInTBs": 4.0,
+                "sshPublicKeys": ["ssh-rsa AAAA"],
+            }),
+        ),
+        (
+            "UpdateExascaleCloudExadataInfrastructure",
+            json!({
+                "cloudExadataInfrastructureId": "exainfra-000001",
+                "totalStorageSizeInGBs": 1000,
+            }),
+        ),
+        // The two operations whose input the model extended with
+        // `cloudExadataInfrastructureId` (and, for the list, `vaultType`).
+        (
+            "CreateExascaleDbStorageVault",
+            json!({
+                "displayName": "my_vault",
+                "highCapacityDatabaseStorageTotalSizeInGBs": 300,
+                "cloudExadataInfrastructureId": "exainfra-000001",
+            }),
+        ),
+        (
+            "ListExascaleDbStorageVaults",
+            json!({
+                "cloudExadataInfrastructureId": "exainfra-000001",
+                "vaultType": "EXASCALE_INFRASTRUCTURE",
+            }),
+        ),
+        // A read the model has always bound, so the rule is not read off the
+        // operations this change touched.
+        (
+            "GetExascaleDbStorageVault",
+            json!({ "exascaleDbStorageVaultId": "exavault-000001" }),
+        ),
+    ]
+}
+
+#[tokio::test]
+async fn every_modelled_operation_reaches_its_own_handler() {
+    let router = emulator();
+
+    for (operation, request) in scaffolded_operation_cases() {
+        let case = format!("{operation} with a request that satisfies every constraint");
+        let (status, body) = call(&router, operation, &request).await;
+        assert_eq!(
+            status, 501,
+            "case {case:?}: an operation no handler implements must answer HTTP 501, \
+             got {status} and {body}"
+        );
+        assert_eq!(
+            error_code(&body),
+            "NotImplemented",
+            "case {case:?}: expected the scaffold error code NotImplemented, got {body}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_modelled_constraint_is_enforced_before_any_handler_runs() {
+    let router = emulator();
+
+    // Each row breaks exactly one constraint the model declares — a required member
+    // left out, a string below its minimum length or outside its pattern, a number
+    // outside its range, a list below its minimum length, a value outside an enum's
+    // value set — so the request must be refused with the modelled
+    // `ValidationException` (HTTP 400) and never reach the handler's 501.
+    let cases: Vec<(&str, &str, Value)> = vec![
+        (
+            "cloudVmClusterId below the modelled minimum length",
+            "AssociateVirtualMachinesToCloudVmCluster",
+            json!({ "cloudVmClusterId": "vmclu", "dbServers": ["dbserver-one"] }),
+        ),
+        (
+            "dbServers missing altogether",
+            "AssociateVirtualMachinesToCloudVmCluster",
+            json!({ "cloudVmClusterId": "vmclus-1a" }),
+        ),
+        (
+            "dbServers below the modelled minimum list length",
+            "DisassociateVirtualMachinesFromCloudVmCluster",
+            json!({ "cloudVmClusterId": "vmclus-1a", "dbServers": [] }),
+        ),
+        (
+            "maxResults below the modelled minimum",
+            "ListAutonomousDatabaseRefreshableClones",
+            json!({ "autonomousDatabaseId": "adb-000001", "maxResults": 0 }),
+        ),
+        (
+            "autonomousDatabaseId missing altogether",
+            "ListAutonomousDatabaseRefreshableClones",
+            json!({ "maxResults": 10 }),
+        ),
+        (
+            "autonomousDatabaseId below the modelled minimum length",
+            "StartAutonomousDatabaseRefresh",
+            json!({ "autonomousDatabaseId": "adb" }),
+        ),
+        (
+            "displayName one character past the modelled maximum",
+            "UpdateCloudAutonomousVmCluster",
+            json!({ "cloudAutonomousVmClusterId": "avmc-000001", "displayName": "n".repeat(256) }),
+        ),
+        (
+            "cpuCoreCountPerNode below the modelled minimum",
+            "UpdateCloudAutonomousVmCluster",
+            json!({ "cloudAutonomousVmClusterId": "avmc-000001", "cpuCoreCountPerNode": -1 }),
+        ),
+        (
+            "licenseModel outside the modelled value set",
+            "UpdateCloudAutonomousVmCluster",
+            json!({ "cloudAutonomousVmClusterId": "avmc-000001", "licenseModel": "license_included" }),
+        ),
+        (
+            "cloudExadataInfrastructureId missing altogether",
+            "UpdateCloudExadataInfrastructureStorageCapacity",
+            json!({}),
+        ),
+        (
+            "dataStorageSizeInTBs below the modelled minimum",
+            "UpdateCloudVmCluster",
+            json!({ "cloudVmClusterId": "vmclus-1a", "dataStorageSizeInTBs": -1.0 }),
+        ),
+        (
+            "totalStorageSizeInGBs missing altogether",
+            "UpdateExascaleCloudExadataInfrastructure",
+            json!({ "cloudExadataInfrastructureId": "exainfra-000001" }),
+        ),
+        (
+            "cloudExadataInfrastructureId below the modelled minimum length",
+            "CreateExascaleDbStorageVault",
+            json!({
+                "displayName": "my_vault",
+                "highCapacityDatabaseStorageTotalSizeInGBs": 300,
+                "cloudExadataInfrastructureId": "exa-1",
+            }),
+        ),
+        (
+            "cloudExadataInfrastructureId below the modelled minimum length",
+            "ListExascaleDbStorageVaults",
+            json!({ "cloudExadataInfrastructureId": "exa-1" }),
+        ),
+        (
+            "vaultType outside the modelled value set",
+            "ListExascaleDbStorageVaults",
+            json!({ "vaultType": "exascale_infrastructure" }),
+        ),
+        (
+            "exascaleDbStorageVaultId below the modelled minimum length",
+            "GetExascaleDbStorageVault",
+            json!({ "exascaleDbStorageVaultId": "exa-1" }),
+        ),
+    ];
+
+    for (reason, operation, request) in cases {
+        let case = format!("{operation}: {reason}");
+        assert_refused(
+            call(&router, operation, &request).await,
+            400,
+            "ValidationException",
+            &case,
+        );
+    }
+}
+
+#[test]
+fn the_exascale_storage_vault_operations_carry_the_modelled_not_found_error() {
+    use service_com_amazonaws_odb_odb::ops::create_exascale_db_storage_vault::CreateExascaleDbStorageVaultErrorModeled;
+    use service_com_amazonaws_odb_odb::ops::list_exascale_db_storage_vaults::ListExascaleDbStorageVaultsErrorModeled;
+    use service_com_amazonaws_odb_odb::ops::types::ResourceNotFoundException;
+    use smithy_server_runtime::OperationError;
+
+    /// The payload the error channel carries; the wire code and status under test come
+    /// from the model, not from these values.
+    fn not_found() -> ResourceNotFoundException {
+        ResourceNotFoundException {
+            message: "the resource was not found".to_string(),
+            resource_id: "exainfra-000001".to_string(),
+            resource_type: "CLOUD_EXADATA_INFRASTRUCTURE".to_string(),
+        }
+    }
+
+    let create = CreateExascaleDbStorageVaultErrorModeled::ResourceNotFoundException(not_found());
+    let list = ListExascaleDbStorageVaultsErrorModeled::ResourceNotFoundException(not_found());
+
+    for (case, status, code) in [
+        (
+            "CreateExascaleDbStorageVault",
+            create.http_status(),
+            create.shape_name(),
+        ),
+        (
+            "ListExascaleDbStorageVaults",
+            list.http_status(),
+            list.shape_name(),
+        ),
+    ] {
+        assert_eq!(
+            status, 404,
+            "case {case:?}: the modelled not-found error renders with the model's own \
+             status, got {status}"
+        );
+        assert_eq!(
+            code, "ResourceNotFoundException",
+            "case {case:?}: expected the modelled error code, got {code}"
+        );
+    }
 }

@@ -59,12 +59,16 @@
 //!   storage vault.
 //! * `availabilityZone` (String) — The Availability Zone for the Exascale storage vault.
 //! * `availabilityZoneId` (String) — The Availability Zone ID for the Exascale storage vault.
-//! * `clientToken` (GeneralInputString, pattern ^[a-zA-Z0-9_\/.=-]+$, @idempotencyToken) — A
+//! * `clientToken` (GeneralInputString, len 8..64, pattern ^[a-zA-Z0-9_\/.=-]+$,
+//!   @idempotencyToken) — A
 //!   unique, case-sensitive identifier that you provide to ensure that the operation
 //!   completes no more than one time. If you submit the same request twice with the same
 //!   client token, the service ignores the second request and returns the result of the
 //!   first. If you don't specify a client token, the AWS SDK automatically generates one. The
 //!   client token is valid for up to 24 hours after it's first used.
+//! * `cloudExadataInfrastructureId` (ResourceIdOrArn, len 6..2048) — The unique identifier or
+//!   Amazon Resource Name (ARN) of the Exadata infrastructure the Exascale storage vault
+//!   belongs to.
 //! * `description` (String) — A description of the Exascale storage vault.
 //! * `displayName` (ResourceDisplayName, len 1..255, pattern
 //!   ^[a-zA-Z_](?!.*--)[a-zA-Z0-9_-]*$) **required** — A user-friendly name for the Exascale
@@ -96,6 +100,8 @@
 //!   resource. Fix any inconsistencies with your resource and try again.
 //! * `InternalServerException` (HTTP 500) — Occurs when there is an internal failure in the
 //!   Oracle Database@Amazon Web Services service. Wait and try again.
+//! * `ResourceNotFoundException` (HTTP 404) — The operation tried to access a resource that
+//!   doesn't exist. Make sure you provided the correct resource and try again.
 //! * `ServiceQuotaExceededException` (HTTP 402) — You have exceeded the service quota.
 //! * `ThrottlingException` (HTTP 429) — The request was denied due to request throttling.
 //! * `ValidationException` (HTTP 400) — The request has failed validation because it is
@@ -121,6 +127,7 @@ pub enum CreateExascaleDbStorageVaultErrorModeled {
     AccessDeniedException(AccessDeniedException),
     ConflictException(ConflictException),
     InternalServerException(InternalServerException),
+    ResourceNotFoundException(ResourceNotFoundException),
     ServiceQuotaExceededException(ServiceQuotaExceededException),
     ThrottlingException(ThrottlingException),
     ValidationException(ValidationException),

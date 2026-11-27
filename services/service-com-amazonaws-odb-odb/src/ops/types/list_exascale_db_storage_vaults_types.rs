@@ -16,6 +16,8 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-odb-odb.json");
 pub struct ListExascaleDbStorageVaultsInput {
     pub max_results: Option<i32>,
     pub next_token: Option<String>,
+    pub cloud_exadata_infrastructure_id: Option<String>,
+    pub vault_type: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.odb#ListExascaleDbStorageVaultsOutput")]
@@ -34,6 +36,8 @@ pub struct ExascaleDbStorageVaultSummary {
     pub autoscale_limit_in_g_bs: Option<i32>,
     pub availability_zone: Option<String>,
     pub availability_zone_id: Option<String>,
+    pub cloud_exadata_infrastructure_arn: Option<String>,
+    pub cloud_exadata_infrastructure_id: Option<String>,
     pub created_at: Option<::aws_smithy_types::DateTime>,
     pub description: Option<String>,
     pub display_name: Option<String>,
@@ -50,5 +54,6 @@ pub struct ExascaleDbStorageVaultSummary {
     pub status: Option<String>,
     pub status_reason: Option<String>,
     pub time_zone: Option<String>,
+    pub vault_type: Option<String>,
 }
 

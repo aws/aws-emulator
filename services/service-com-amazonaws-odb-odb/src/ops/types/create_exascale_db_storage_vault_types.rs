@@ -18,6 +18,7 @@ pub struct CreateExascaleDbStorageVaultInput {
     pub high_capacity_database_storage_total_size_in_g_bs: i32,
     pub additional_flash_cache_in_percent: Option<i32>,
     pub autoscale_limit_in_g_bs: Option<i32>,
+    pub cloud_exadata_infrastructure_id: Option<String>,
     pub availability_zone_id: Option<String>,
     pub availability_zone: Option<String>,
     pub description: Option<String>,

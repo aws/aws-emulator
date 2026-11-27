@@ -64,6 +64,7 @@ pub struct CloudAutonomousVmCluster {
     pub memory_size_in_g_bs: Option<i32>,
     pub node_count: Option<i32>,
     pub non_provisionable_autonomous_container_databases: Option<i32>,
+    pub ocpus_lowest_scaled_value: Option<i32>,
     pub provisionable_autonomous_container_databases: Option<i32>,
     pub provisioned_autonomous_container_databases: Option<i32>,
     pub provisioned_cpus: Option<f32>,

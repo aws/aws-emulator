@@ -32,6 +32,8 @@ pub struct ExascaleDbStorageVault {
     pub autoscale_limit_in_g_bs: Option<i32>,
     pub availability_zone: Option<String>,
     pub availability_zone_id: Option<String>,
+    pub cloud_exadata_infrastructure_arn: Option<String>,
+    pub cloud_exadata_infrastructure_id: Option<String>,
     pub created_at: Option<::aws_smithy_types::DateTime>,
     pub description: Option<String>,
     pub display_name: Option<String>,
@@ -48,5 +50,6 @@ pub struct ExascaleDbStorageVault {
     pub status: Option<String>,
     pub status_reason: Option<String>,
     pub time_zone: Option<String>,
+    pub vault_type: Option<String>,
 }
 

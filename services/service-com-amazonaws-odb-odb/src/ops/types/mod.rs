@@ -16,6 +16,7 @@
 
 pub mod accept_marketplace_registration_types;
 pub mod associate_iam_role_to_resource_types;
+pub mod associate_virtual_machines_to_cloud_vm_cluster_types;
 pub mod associate_virtual_machines_to_exadb_vm_cluster_types;
 pub mod create_autonomous_database_backup_types;
 pub mod create_autonomous_database_types;
@@ -37,6 +38,7 @@ pub mod delete_exascale_db_storage_vault_types;
 pub mod delete_odb_network_types;
 pub mod delete_odb_peering_connection_types;
 pub mod disassociate_iam_role_from_resource_types;
+pub mod disassociate_virtual_machines_from_cloud_vm_cluster_types;
 pub mod disassociate_virtual_machines_from_exadb_vm_cluster_types;
 pub mod failover_autonomous_database_types;
 pub mod get_autonomous_database_backup_types;
@@ -58,6 +60,7 @@ pub mod list_autonomous_database_backups_types;
 pub mod list_autonomous_database_character_sets_types;
 pub mod list_autonomous_database_clones_types;
 pub mod list_autonomous_database_peers_types;
+pub mod list_autonomous_database_refreshable_clones_types;
 pub mod list_autonomous_database_versions_types;
 pub mod list_autonomous_databases_types;
 pub mod list_autonomous_virtual_machines_types;
@@ -81,6 +84,7 @@ pub mod reboot_db_node_types;
 pub mod restore_autonomous_database_types;
 pub mod shared_types;
 pub mod shrink_autonomous_database_types;
+pub mod start_autonomous_database_refresh_types;
 pub mod start_autonomous_database_types;
 pub mod start_db_node_types;
 pub mod stop_autonomous_database_types;
@@ -90,8 +94,12 @@ pub mod tag_resource_types;
 pub mod untag_resource_types;
 pub mod update_autonomous_database_backup_types;
 pub mod update_autonomous_database_types;
+pub mod update_cloud_autonomous_vm_cluster_types;
+pub mod update_cloud_exadata_infrastructure_storage_capacity_types;
 pub mod update_cloud_exadata_infrastructure_types;
+pub mod update_cloud_vm_cluster_types;
 pub mod update_exadb_vm_cluster_types;
+pub mod update_exascale_cloud_exadata_infrastructure_types;
 pub mod update_exascale_db_storage_vault_types;
 pub mod update_odb_network_types;
 pub mod update_odb_peering_connection_types;
@@ -100,6 +108,8 @@ pub mod update_odb_peering_connection_types;
 pub use accept_marketplace_registration_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use associate_iam_role_to_resource_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use associate_virtual_machines_to_cloud_vm_cluster_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use associate_virtual_machines_to_exadb_vm_cluster_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
@@ -143,6 +153,8 @@ pub use delete_odb_peering_connection_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use disassociate_iam_role_from_resource_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use disassociate_virtual_machines_from_cloud_vm_cluster_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use disassociate_virtual_machines_from_exadb_vm_cluster_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use failover_autonomous_database_types::*;
@@ -184,6 +196,8 @@ pub use list_autonomous_database_character_sets_types::*;
 pub use list_autonomous_database_clones_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use list_autonomous_database_peers_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use list_autonomous_database_refreshable_clones_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use list_autonomous_database_versions_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
@@ -231,6 +245,8 @@ pub use shared_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use shrink_autonomous_database_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use start_autonomous_database_refresh_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use start_autonomous_database_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use start_db_node_types::*;
@@ -249,9 +265,17 @@ pub use update_autonomous_database_backup_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use update_autonomous_database_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use update_cloud_autonomous_vm_cluster_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use update_cloud_exadata_infrastructure_storage_capacity_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use update_cloud_exadata_infrastructure_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use update_cloud_vm_cluster_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use update_exadb_vm_cluster_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use update_exascale_cloud_exadata_infrastructure_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use update_exascale_db_storage_vault_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]

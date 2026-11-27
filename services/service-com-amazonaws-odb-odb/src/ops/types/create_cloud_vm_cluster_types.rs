@@ -15,6 +15,10 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-odb-odb.json");
 #[derive(Debug, Clone, Default)]
 pub struct CreateCloudVmClusterInput {
     pub cloud_exadata_infrastructure_id: String,
+    pub exascale_db_storage_vault_id: Option<String>,
+    pub vm_file_system_storage_type: Option<String>,
+    pub vm_backup_storage_type: Option<String>,
+    pub file_system_configuration_details: Option<Vec<FileSystemConfigurationDetails>>,
     pub cpu_core_count: i32,
     pub display_name: String,
     pub gi_version: String,
