@@ -1,15 +1,11 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op DeleteClientVpnRoute
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `DeleteClientVpnRoute`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
+//! IMPLEMENTED: takes one manually added route out of the route table of a stored Client VPN
+//! endpoint — the route named by that endpoint, the destination range and the target traffic
+//! leaves through — and answers it `deleting`, the state the delete left it in.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`DeleteClientVpnRoute::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! This is the ONLY file to touch for this operation.
 //!
 //! ## Shape of an operation
 //!
@@ -159,24 +155,41 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             }
         }
 
-        // "The IPv4 address range, in CIDR notation, of the route to be deleted. This must
-        // match the CIDR for the route exactly" (`DestinationCidrBlock`): a value that is not
-        // a CIDR block at all matches no route, so it is refused with the code EC2 answers a
-        // parameter value it cannot accept with.
-        if !state::cidr_block_is_well_formed(&input.destination_cidr_block) {
-            return Err(state::invalid_parameter_value(format!(
-                "Value ({destination}) for parameter destinationCidrBlock is invalid. This \
-                 is not a valid CIDR block.",
-                destination = input.destination_cidr_block,
-            )));
-        }
-        // "The ID of the target subnet used by the route" (`TargetVpcSubnetId`): something
-        // that is not a subnet id at all is refused for its form, by the one reader of that
-        // id's form this surface uses, before anything is looked up.
-        if let Some(subnet_id) = input.target_vpc_subnet_id.as_deref() {
-            if !state::prefixed_id_is_well_formed(state::SUBNET_ID_PREFIX, subnet_id) {
-                return Err(state::invalid_subnet_id_malformed(subnet_id));
-            }
+        // "The IPv4 address range, in CIDR notation, of the route to be deleted"
+        // (`DestinationCidrBlock`): the destination is read the ONE way this surface reads a
+        // CIDR member — a value that is not a block at all, and one whose host bits are set so
+        // that it names an address inside a range instead of the range, are both refused — and
+        // then taken in the canonical spelling of its range, so a delete resolves the route an
+        // add wrote however either request spelled the block.
+        let destination_cidr = state::canonical_ipv4_cidr(&input.destination_cidr_block)
+            .ok()
+            .filter(|_| state::cidr_block_names_its_range(&input.destination_cidr_block))
+            .ok_or_else(|| {
+                state::invalid_parameter_value(format!(
+                    "Value ({destination}) for parameter destinationCidrBlock is invalid. This \
+                     is not a valid CIDR block.",
+                    destination = input.destination_cidr_block,
+                ))
+            })?;
+        // "The ID of the target subnet used by the route" (`TargetVpcSubnetId`). An empty
+        // value is no value, the way `CreateClientVpnRoute` reads the same member: a request
+        // that sends it empty is read as one that left it out, and names the route that
+        // leaves through the endpoint's Transit Gateway attachment.
+        let requested_target = input
+            .target_vpc_subnet_id
+            .as_deref()
+            .filter(|subnet_id| !subnet_id.is_empty());
+
+        // Something that is not a subnet id at all is refused for its form, by the one reader
+        // of that id's form this surface uses, before anything is looked up. `local` is the
+        // one target that is not a subnet id ("if you're adding a route for the local network,
+        // specify local" — `CreateClientVpnRouteRequest$TargetVpcSubnetId`), so a route added
+        // for the local network is nameable here and is not read as a subnet id.
+        if let Some(subnet_id) = requested_target.filter(|subnet_id| {
+            *subnet_id != state::CLIENT_VPN_ROUTE_TARGET_LOCAL
+                && !state::prefixed_id_is_well_formed(state::SUBNET_ID_PREFIX, subnet_id)
+        }) {
+            return Err(state::invalid_subnet_id_malformed(subnet_id));
         }
 
         // "Checks whether you have the required permissions for the action, WITHOUT
@@ -199,11 +212,56 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // endpoint for has no route table to delete a route from.
         state::require_known_client_vpn_endpoint(&store, &input.client_vpn_endpoint_id)?;
 
-        // Taking the route out of the endpoint's route table is still unwritten, so the
-        // operation answers the scaffold's 501 rather than a success it cannot back with
-        // state. Every refusal the request earns is minted above, before this point, so a
-        // client learns that its input is wrong from the code the real service answers
-        // rather than from this.
-        Err(crate::scaffolded::Scaffolded::not_implemented(Self::NAME))
+        // What names the route this request would delete: the endpoint whose route table holds
+        // it, the destination it routes and the target traffic for that destination leaves
+        // through — the three members `ClientVpnRouteKey` is keyed by, so an add and a delete
+        // name one route by one identity. A request that named no target names the route that
+        // leaves through a Transit Gateway-based endpoint's attachment, which is the route
+        // stored with no target of its own.
+        let key = state::ClientVpnRouteKey {
+            client_vpn_endpoint_id: input.client_vpn_endpoint_id.clone(),
+            destination_cidr: destination_cidr.clone(),
+            target: requested_target.unwrap_or_default().to_string(),
+        };
+
+        // A route the endpoint's route table does not hold is refused rather than reported as
+        // deleted: a caller that named the wrong destination or the wrong target has to be
+        // told so, and nothing is written for it.
+        let Some(origin) = store
+            .client_vpn_route(&key)
+            .and_then(|record| record.view.origin.clone())
+        else {
+            return Err(state::client_vpn_route_not_found(
+                &destination_cidr,
+                &input.client_vpn_endpoint_id,
+            ));
+        };
+
+        // "You can only delete routes that you manually added using the CreateClientVpnRoute
+        // action. You cannot delete routes that were automatically added when associating a
+        // subnet" (`DeleteClientVpnRoute`): which call added the route is what the route's own
+        // `Origin` records, so the one route table holds both the routes this call may take
+        // out and the routes it may not, and the stored origin decides which a request named.
+        if origin == state::CLIENT_VPN_ROUTE_ORIGIN_ASSOCIATE {
+            return Err(state::client_vpn_route_not_manually_added(
+                &destination_cidr,
+                &input.client_vpn_endpoint_id,
+            ));
+        }
+
+        // The route leaves the route table, and its bytes and any client token that named it
+        // go with it: `ClientVpnRouteStatusCode` declares no state a deleted route could be
+        // reported in, so a deleted route is one the endpoint no longer carries.
+        let Some(deleted) = store.delete_client_vpn_route(&key) else {
+            return Err(state::internal_error(
+                "a Client VPN route this call resolved is not stored",
+            ));
+        };
+
+        // "The current state of the route" (`DeleteClientVpnRouteResult$Status`) is the state
+        // the delete left the route in, read off the record this call took out of the store.
+        Ok(DeleteClientVpnRouteOutput {
+            status: deleted.status,
+        })
     }
 }

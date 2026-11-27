@@ -806,6 +806,11 @@ pub const CLIENT_VPN_ROUTE_STATUS_CREATING: &str = "creating";
 /// through [`ComAmazonawsEc2Amazonec2State::materialize_due_transitions`]).
 pub const CLIENT_VPN_ROUTE_STATUS_ACTIVE: &str = "active";
 
+/// "deleting" — the state `DeleteClientVpnRoute` answers for a route it has taken out of its
+/// endpoint's route table (`ClientVpnRouteStatusCode`, which declares `creating | active |
+/// failed | deleting`).
+pub const CLIENT_VPN_ROUTE_STATUS_DELETING: &str = "deleting";
+
 /// "add-route" — the `Origin` of a route a caller added: "`add-route` indicates that the
 /// route was manually added using the CreateClientVpnRoute action"
 /// (`ClientVpnRoute$Origin`).
@@ -854,6 +859,43 @@ pub fn client_vpn_duplicate_route<E>(destination_cidr: &str, endpoint_id: &str) 
         400,
         format!("Route {destination_cidr} already exists in Client VPN endpoint {endpoint_id}"),
     )
+}
+
+/// `InvalidClientVpnRouteNotFound` (HTTP 400): the endpoint's route table holds no route for
+/// the destination and the target the request named, the catalogue's counterpart code to
+/// [`INVALID_CLIENT_VPN_DUPLICATE_ROUTE`] for a route that cannot be resolved — read the same
+/// way [`INVALID_CLIENT_VPN_ENDPOINT_AUTHORIZATION_RULE_NOT_FOUND`] is for a rule.
+pub const INVALID_CLIENT_VPN_ROUTE_NOT_FOUND: &str = "InvalidClientVpnRouteNotFound";
+
+/// Refuse a request naming a route an endpoint's route table does not hold: HTTP 400
+/// [`INVALID_CLIENT_VPN_ROUTE_NOT_FOUND`], naming the destination and the endpoint in the
+/// sentence shape this surface words a route with — [`client_vpn_duplicate_route`] is that
+/// same sentence for the opposite cause.
+pub fn client_vpn_route_not_found<E>(destination_cidr: &str, endpoint_id: &str) -> Scaffolded<E> {
+    Scaffolded::service_error(
+        INVALID_CLIENT_VPN_ROUTE_NOT_FOUND,
+        400,
+        format!("Route {destination_cidr} does not exist in Client VPN endpoint {endpoint_id}"),
+    )
+}
+
+/// Refuse the deletion of a route that a target network association added rather than a
+/// caller: HTTP 400 `UnsupportedOperation` ([`unsupported_operation`], this crate's one
+/// wording for a request the service does not support for the resource it named).
+///
+/// "You can only delete routes that you manually added using the CreateClientVpnRoute action.
+/// You cannot delete routes that were automatically added when associating a subnet. To
+/// remove routes that have been automatically added, disassociate the target subnet from the
+/// Client VPN endpoint" (`DeleteClientVpnRoute`): the route exists, and the delete is what is
+/// not supported for it.
+pub fn client_vpn_route_not_manually_added<E>(
+    destination_cidr: &str,
+    endpoint_id: &str,
+) -> Scaffolded<E> {
+    unsupported_operation(format!(
+        "Route {destination_cidr} in Client VPN endpoint {endpoint_id} was automatically added \
+         when associating a subnet and cannot be deleted"
+    ))
 }
 
 /// The id prefix EC2 mints a subnet with — `subnet-`, the prefix
@@ -1142,6 +1184,39 @@ impl ComAmazonawsEc2Amazonec2State {
                 )),
             },
         );
+    }
+
+    /// Take the route `key` names out of its endpoint's route table and answer it in the
+    /// `deleting` state the delete left it in — or `None` when that table holds no route
+    /// under that key.
+    ///
+    /// The seam `DeleteClientVpnRoute` calls. The record is DROPPED rather than moved to a
+    /// terminal state, exactly as [`Self::revoke_client_vpn_authorization_rule`] drops a
+    /// revoked rule and for the same reason: `ClientVpnRouteStatusCode` declares no state a
+    /// deleted route could be reported in, so a route that is gone leaves the route table
+    /// rather than sitting in it. Its bytes go back to the budget, so one endpoint's route
+    /// table can be added to and deleted from without the store filling up.
+    ///
+    /// Every `ClientToken` that names the route is dropped with it, the way the removal of
+    /// any other record of this crate forgets its tokens
+    /// ([`Self::revoke_client_vpn_authorization_rule`] again): a token that outlived the route
+    /// it names would both grow the index without bound across an add-and-delete loop and
+    /// replay into a route the store no longer holds.
+    pub fn delete_client_vpn_route(
+        &mut self,
+        key: &ClientVpnRouteKey,
+    ) -> Option<crate::ops::types::ClientVpnRoute> {
+        let record = self.client_vpn_routes.remove(key)?;
+        self.client_vpn_route_client_tokens
+            .retain(|_, named| named != key);
+        self.release_stored_bytes(client_vpn_route_payload_bytes(&record.view));
+        Some(crate::ops::types::ClientVpnRoute {
+            status: Some(crate::ops::types::ClientVpnRouteStatus {
+                code: Some(CLIENT_VPN_ROUTE_STATUS_DELETING.to_string()),
+                message: None,
+            }),
+            ..record.view
+        })
     }
 
     /// Apply the `creating` -> `active` move every route that has reached its due instant by
