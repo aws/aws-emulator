@@ -233,7 +233,10 @@ async fn ended(emulator: &Emulator, job: &str, case: &str) -> Value {
 }
 
 /// Poll `DescribeTransformJob` until the job leaves `InProgress`, answering that read.
-async fn transform_ended(emulator: &Emulator, job: &str, case: &str) -> Value {
+///
+/// `pub(crate)`: every suite of this crate that waits for a transform job's terminal status
+/// waits for it HERE, so the tree holds one reading of that wait.
+pub(crate) async fn transform_ended(emulator: &Emulator, job: &str, case: &str) -> Value {
     let deadline = Instant::now() + SETTLE_BUDGET;
     loop {
         let read = emulator
