@@ -92,7 +92,11 @@ const KEYED: [Keyed; 3] = [
 
 /// One attribute value of the type carried in `wire`, holding `text` — the one place this
 /// suite spells a typed value, so a row's type is written down once.
-fn typed(wire: &str, text: &str) -> Value {
+///
+/// Reachable from the sibling suites of this test binary, so a suite whose rows also span the
+/// TYPE a key is declared with spells a typed value the same way
+/// (`tests/all/scan_unfiltered_walk_order.rs`).
+pub(crate) fn typed(wire: &str, text: &str) -> Value {
     let mut value = json!({});
     value[wire] = json!(text);
     value
@@ -172,7 +176,11 @@ async fn scan_segment(
 /// The partition-key values a response reports, in the order it reported them, read off
 /// the member a key of that type is carried in. A response with no `Items` reports none,
 /// which is what a segment with nothing to read answers.
-fn partition_keys(page: &Value, wire: &str) -> Vec<String> {
+///
+/// Reachable from the sibling suites of this test binary, beside the composite-key reader
+/// `scan_segment_partitions::item_keys`, so the suite that reads the ORDER of a walk off a
+/// page reads it through this one (`tests/all/scan_unfiltered_walk_order.rs`).
+pub(crate) fn partition_keys(page: &Value, wire: &str) -> Vec<String> {
     page.get("Items")
         .and_then(Value::as_array)
         .map(|items| {
