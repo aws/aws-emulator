@@ -1025,9 +1025,8 @@ async fn unknown_resources_are_404_and_ids_outside_the_model_are_400() {
     let absent_domain = "dom-doesnotexist00000";
     let absent_subscription = "sub-000000000000000000000";
     // A domain this service DID allocate and has since deleted: its id names a domain
-    // that is gone, which is the modelled not-found. An id with no allocation history at
-    // all is `DeleteDomain`'s own separate case — see
-    // `domain_account_cap_and_lookup_semantics`.
+    // that is gone, which is the modelled not-found — the same answer an id this service
+    // never allocated earns, since what the Region HOLDS is what decides it.
     let deleted_domain = string_at(
         &emulator
             .create_domain(&json!({ "name": "clinic-deleted" }))

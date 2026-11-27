@@ -14,15 +14,20 @@
 //! this suite adds no second copy of any of them.
 //!
 //! The rule under test: an insight is addressed by the entity that holds it and the
-//! insight's own id TOGETHER, and the two halves of that address are NOT alike. The ENTITY
+//! insight's own id TOGETHER, and a read refuses what that address resolves NOTHING for. The
+//! ENTITY
 //! half has to resolve for either operation: an entity this account holds nothing for is
 //! refused as ONE missing resource, on the status this service answers that shape on and
 //! with a sentence that names neither half of the address, identically from both
 //! operations — that part of the rule belongs to the address, not to the operation. The ID
-//! half is resolved by what the OPERATION does with it: `InsightFeedback` rates "an
+//! half is resolved by what the OPERATION does with it and by what else the address names:
+//! `InsightFeedback` rates "an
 //! EXISTING insight", so an id the entity holds no insight under leaves nothing to rate
-//! and is the same missing resource, while `DescribeInsightDetails` REPORTS on an insight
-//! of a resolvable entity and answers every id inside the modelled `GUID` form with its
+//! and is the same missing resource, and so is an id the ACCOUNT-wide entity selects no
+//! insight under — the account is no resource of this service, so that insight is the only
+//! resource such an address names — while `DescribeInsightDetails` scoped to a DOMAIN this
+//! account holds has resolved what it REPORTS on and answers every id inside the modelled
+//! `GUID` form with its
 //! `@required` `Fields` — the stored fields where an insight was raised under that id, and
 //! the service's own guidance about an insight's details otherwise. Neither operation
 //! reports a success for an ENTITY that does not exist, and neither writes anything on a
@@ -42,7 +47,9 @@ use serde_json::{json, Value};
 
 use super::control_plane_refusal_wording::message;
 use super::domain_lifecycle::{create_baseline, error_code, Answer, Emulator};
-use super::insight_details::{describe_insight, domain_entity, guid, raise_on_domain, record};
+use super::insight_details::{
+    describe_insight, domain_entity, guid, raise_on_domain, record, ACCOUNT_ENTITY_TYPE,
+};
 use super::insight_feedback::{feedback, submission};
 use super::insights::{insights, list};
 use super::missing_resource_status::assert_missing_resource;
@@ -267,18 +274,19 @@ async fn an_id_the_entity_holds_no_insight_under_is_detailed_and_refused_by_the_
 }
 
 #[tokio::test]
-async fn an_account_entity_resolves_the_id_the_same_way() {
+async fn an_account_entity_requires_the_id_half_it_is_the_only_resource_of() {
     let emulator = given_two_domains().await;
 
     // `DescribeInsightDetails` also takes an `Account` entity — "the account's own
     // insights and those of every domain it holds" — named both ways the model allows,
     // since `Value` is optional and the only account served is the one the request was made
-    // for. The id half is resolved there exactly as it is for a domain: the insights of
-    // both domains are reachable, and an id no insight was raised under is detailed with
-    // the service's guidance rather than refused.
+    // for. The account itself is no resource of this service, so the insight the id selects
+    // is the ONLY resource such an address names: the insights of both domains are reached
+    // through it, and an id no insight was raised under resolves nothing at all and is the
+    // same missing resource an unresolvable entity is.
     for entity in [
-        json!({"Type": "Account"}),
-        json!({"Type": "Account", "Value": engine::emulator_account_id()}),
+        json!({"Type": ACCOUNT_ENTITY_TYPE}),
+        json!({"Type": ACCOUNT_ENTITY_TYPE, "Value": engine::emulator_account_id()}),
     ] {
         for insight_id in [held_id(), sibling_id()] {
             let case = format!("DescribeInsightDetails({entity:?}, {insight_id})");
@@ -294,7 +302,18 @@ async fn an_account_entity_resolves_the_id_the_same_way() {
         for unheld in unheld_ids() {
             let case = format!("DescribeInsightDetails({entity:?}, {unheld})");
             let answer = describe_insight(&emulator, entity.clone(), &unheld, json!({})).await;
-            detailed_fields(&answer, &case);
+            assert_missing_resource(&answer, &case);
+            assert_eq!(
+                message(&answer),
+                RESOURCE_NOT_FOUND,
+                "case {case}: expected the fixed missing-resource sentence, got {:?}",
+                answer.body
+            );
+            assert!(
+                answer.body["Fields"].is_null(),
+                "case {case}: a refused read carries no detailed view, got {:?}",
+                answer.body
+            );
         }
     }
 }

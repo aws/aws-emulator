@@ -250,15 +250,17 @@ const DEFAULT_BUFFER_INTERVAL: Duration = Duration::from_secs(300);
 /// data there.
 ///
 /// A CHOSEN span, bounded from both sides by what a client can observe. It sits well above
-/// the batching windows a configuration asks for in seconds or in a minute or two — those are
+/// the batching windows a configuration asks for in seconds or in a minute — those are
 /// honoured to the second, so a producer that asks for one gets exactly the batching and the
 /// latency it asked for, and a reader taking its first look well inside such a window finds
 /// the destination still empty. And it stays short enough to be WAITED OUT: a buffer's records
 /// are observable only once they are AT the destination, so a producer that puts a record and
 /// then polls the destination — and every pipeline whose records pass through a stream on
-/// their way to the consumer that checks them — has to find them there inside one such poll
-/// loop, which is minutes rather than the quarter of an hour the longest interval admits.
-pub const MAX_BUFFER_HOLD: Duration = Duration::from_secs(90);
+/// their way to the consumer that checks them — has to find them there inside ONE such poll
+/// loop, which is the minute below rather than the quarter of an hour the longest interval
+/// admits: a read-back that gives up before the buffer is flushed sees a destination that
+/// stays empty forever, which is the one outcome this span exists to prevent.
+pub const MAX_BUFFER_HOLD: Duration = Duration::from_secs(60);
 
 /// How long after a stream's buffer opens — the instant the oldest record it holds landed
 /// — the delivery comes due once the buffer holds at least `BufferingHints$SizeInMBs` of
@@ -4337,7 +4339,7 @@ fn next_due_or_poll(
 #[cfg(test)]
 mod tests {
     //! Two things decided without a destination to deliver to: WHEN a buffer is flushed
-    //! ([`next_flush_at`]), and the text accounting a client-supplied
+    //! ([`next_flush_at`], [`delivery_window`]), and the text accounting a client-supplied
     //! `MetadataExtractionQuery` has to pass before any engine sees it — what
     //! [`admissible_program`] admits, and what it refuses so that the memory and step bound
     //! that function documents actually holds.
@@ -4345,9 +4347,101 @@ mod tests {
     use std::time::{Duration, SystemTime};
 
     use super::{
-        admissible_program, hadoop_snappy, next_flush_at, snappy, MAX_PROGRAM_CONSTRUCTIONS,
-        MAX_PROGRAM_ITERATIONS, SNAPPY_STREAM_BLOCK_BYTES, SNAPPY_STREAM_MAGIC,
+        admissible_program, delivery_window, hadoop_snappy, next_flush_at, snappy,
+        BufferingHints, BYTES_PER_MIB, DEFAULT_BUFFER_SIZE_IN_MIB, FULL_BUFFER_DELIVERY_SPAN,
+        MAX_BUFFER_HOLD, MAX_PROGRAM_CONSTRUCTIONS, MAX_PROGRAM_ITERATIONS,
+        SNAPPY_STREAM_BLOCK_BYTES, SNAPPY_STREAM_MAGIC,
     };
+
+    /// RULE: the window a buffer is held for is the `IntervalInSeconds` its hints ask for, up
+    /// to the ceiling every buffer of this emulator is held to and down to the span a buffer
+    /// that has reached its size is delivered in — and a buffer holding at least `SizeInMBs`
+    /// is due in that span whatever interval was asked for, because the first of the two
+    /// conditions satisfied is what flushes a buffer.
+    #[test]
+    fn the_window_is_the_asked_for_interval_inside_the_ceiling_this_emulator_holds() {
+        // (case, the interval the hints ask for in seconds, the bytes the buffer holds, the
+        // window the rule gives it). The rows span what the rule generalises over: no hints
+        // at all, an interval at each end of the modelled `@range` 0..900, the ceiling
+        // itself and the values either side of it, and a buffer at and past the size
+        // threshold.
+        let ceiling = MAX_BUFFER_HOLD.as_secs();
+        let full = DEFAULT_BUFFER_SIZE_IN_MIB * BYTES_PER_MIB;
+        let rows: Vec<(&str, Option<i32>, usize, Duration)> = vec![
+            (
+                "no hints at all: the documented default, held to the ceiling",
+                None,
+                1,
+                MAX_BUFFER_HOLD,
+            ),
+            (
+                "the shortest interval the member admits",
+                Some(0),
+                1,
+                FULL_BUFFER_DELIVERY_SPAN,
+            ),
+            ("one second", Some(1), 1, Duration::from_secs(1)),
+            ("a minute", Some(60), 1, Duration::from_secs(60)),
+            (
+                "one second below the ceiling",
+                Some(i32::try_from(ceiling).expect("the ceiling fits the member") - 1),
+                1,
+                MAX_BUFFER_HOLD - Duration::from_secs(1),
+            ),
+            (
+                "the ceiling itself",
+                Some(i32::try_from(ceiling).expect("the ceiling fits the member")),
+                1,
+                MAX_BUFFER_HOLD,
+            ),
+            (
+                "one second past the ceiling",
+                Some(i32::try_from(ceiling).expect("the ceiling fits the member") + 1),
+                1,
+                MAX_BUFFER_HOLD,
+            ),
+            (
+                "the documented default interval",
+                Some(300),
+                1,
+                MAX_BUFFER_HOLD,
+            ),
+            (
+                "the longest interval the member admits",
+                Some(900),
+                1,
+                MAX_BUFFER_HOLD,
+            ),
+            (
+                "a buffer at the size threshold, past the ceiling's interval",
+                Some(900),
+                full,
+                FULL_BUFFER_DELIVERY_SPAN,
+            ),
+            (
+                "a buffer past the size threshold, inside the ceiling",
+                Some(60),
+                full + 1,
+                FULL_BUFFER_DELIVERY_SPAN,
+            ),
+        ];
+
+        for (case, interval, buffered, expected) in rows {
+            let hints = interval.map(|interval_in_seconds| BufferingHints {
+                size_in_m_bs: None,
+                interval_in_seconds: Some(interval_in_seconds),
+            });
+            let window = delivery_window(hints.as_ref(), buffered);
+            assert_eq!(
+                window, expected,
+                "case {case:?}: expected the window {expected:?}, got {window:?}"
+            );
+            assert!(
+                window >= FULL_BUFFER_DELIVERY_SPAN && window <= MAX_BUFFER_HOLD,
+                "case {case:?}: every window lies between the two spans, got {window:?}"
+            );
+        }
+    }
 
     /// RULE: the interval is the STREAM's flush cadence rather than a delay each record is
     /// held for, so a buffer is flushed at the first turn of that cadence after it became

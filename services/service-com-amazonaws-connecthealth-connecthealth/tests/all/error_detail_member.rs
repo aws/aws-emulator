@@ -469,12 +469,11 @@ async fn every_class_is_keyed_by_the_plane_that_answered() {
     let (min, max) = MAX_RESULTS_RANGE;
     let over_long_key = "k".repeat(129);
 
-    // `DeleteDomain`'s modelled 404 is what an id this service ALLOCATED and resolves no
-    // domain for earns; an id with no allocation history at all is refused ahead of this
-    // service instead (the split is pinned over the whole class in
+    // `DeleteDomain`'s modelled 404 is what every `domainId` it resolves no domain for
+    // earns, whatever that id's own history (the class is pinned in
     // `tests/all/domain_account_cap_and_lookup_semantics.rs` and
     // `tests/all/recorded_refusal_and_create_members.rs`). The mutation row below
-    // therefore addresses a domain created and deleted here.
+    // addresses a domain created and deleted here.
     let purged_domain = string_at(
         &emulator
             .create_domain(&json!({ "name": "clinic-purged" }))

@@ -13,11 +13,13 @@
 //! its stored name, type and value, in the order the insight holds them — rendering
 //! each value with the markup the field carries when the request asks for HTML content
 //! and as plain content otherwise; the insight is addressed by the ENTITY and the id
-//! together, and only the ENTITY half refuses — an entity this account does not hold is
-//! the ONE missing resource naming neither half of the address, while an id a resolvable
-//! entity holds no insight under is this INFORMATIONAL read's own 200, carrying the one
-//! field the service states about an insight's details, exactly as an insight the service
-//! has raised no detail field for is detailed; and nothing is written.
+//! together, and the read refuses what that address resolves NOTHING for — an entity this
+//! account does not hold is the ONE missing resource naming neither half of the address,
+//! and so is an id the ACCOUNT-wide entity selects no insight under, that account being no
+//! resource of this service; while an id a resolvable DOMAIN holds no insight under is this
+//! read's own 200, carrying the one field the service states about an insight's details,
+//! exactly as an insight the service has raised no detail field for is detailed; and
+//! nothing is written.
 //!
 //! So the assertions span a SET of inputs rather than one call: a table of fields
 //! covering both values of `InsightFieldType`, a field with a marked-up rendering and
@@ -203,6 +205,51 @@ async fn seeded(emulator: &Emulator, name: &str) -> String {
 /// `super::insight_details::domain_entity`, so the crate holds ONE builder of it.
 pub(crate) fn domain_entity(name: &str) -> Value {
     json!({"Type": "DomainName", "Value": name})
+}
+
+/// The `InsightEntityType` value that names the ACCOUNT-wide set of insights rather than
+/// one domain's, written out as the wire value a request carries. One of
+/// `ops::types`' `INSIGHT_ENTITY_TYPE_VALUES`, which the rows that use it assert.
+pub(crate) const ACCOUNT_ENTITY_TYPE: &str = "Account";
+
+/// Whether `entity` names that account-wide set.
+pub(crate) fn account_wide(entity: &Value) -> bool {
+    entity["Type"].as_str() == Some(ACCOUNT_ENTITY_TYPE)
+}
+
+/// What a detail read whose id selects NO insight of `entity` must answer — the crate's ONE
+/// statement of that rule, so no suite pins its own:
+///
+/// * an entity naming a DOMAIN this account holds has resolved the resource the read reports
+///   on, so the read is answered 200 with the one field the service states about an
+///   insight's details ([`guidance`]);
+/// * the ACCOUNT-wide entity names no resource of this service at all — every request is
+///   made for that account — so the insight its id selects is the only resource such an
+///   address names, and an id selecting none is the missing resource, answered the one way
+///   this service answers those ([`super::missing_resource_status::assert_missing_resource`])
+///   and carrying no detailed view.
+pub(crate) fn assert_unselected_id(answer: &Answer, case: &str, entity: &Value) {
+    if account_wide(entity) {
+        super::missing_resource_status::assert_missing_resource(answer, case);
+        assert_eq!(
+            message_of(answer),
+            RESOURCE_NOT_FOUND,
+            "case {case}: expected the fixed missing-resource sentence, got {:?}",
+            answer.body
+        );
+        assert!(
+            answer.body["Fields"].is_null(),
+            "case {case}: a refused read carries no detailed view, got {:?}",
+            answer.body
+        );
+        return;
+    }
+    guidance(answer, case);
+}
+
+/// The `message` an answer states, or the empty string where it states none.
+fn message_of(answer: &Answer) -> &str {
+    answer.body["message"].as_str().unwrap_or_default()
 }
 
 /// `POST /2021-01-01/opensearch/insight-details` with `body`.
@@ -519,7 +566,7 @@ async fn an_insight_is_addressed_through_the_entity_that_holds_it() {
 }
 
 #[tokio::test]
-async fn an_id_the_entity_holds_no_insight_under_details_with_the_services_guidance() {
+async fn an_id_the_entity_selects_no_insight_under_is_answered_by_what_its_address_resolves() {
     let emulator = Emulator::new();
     let id = seeded(&emulator, "insight-detail-missing").await;
     create_baseline(&emulator, "insight-detail-nothing").await;
@@ -541,8 +588,8 @@ async fn an_id_the_entity_holds_no_insight_under_details_with_the_services_guida
     let entities = [
         domain_entity("insight-detail-missing"),
         domain_entity("insight-detail-nothing"),
-        json!({"Type": "Account"}),
-        json!({"Type": "Account", "Value": engine::emulator_account_id()}),
+        json!({"Type": ACCOUNT_ENTITY_TYPE}),
+        json!({"Type": ACCOUNT_ENTITY_TYPE, "Value": engine::emulator_account_id()}),
     ];
 
     for entity in &entities {
@@ -563,16 +610,11 @@ async fn an_id_the_entity_holds_no_insight_under_details_with_the_services_guida
                 let case = format!("DescribeInsightDetails({entity:?}, {unheld:?}, {extra:?})");
                 let answer =
                     describe_insight(&emulator, entity.clone(), unheld, extra.clone()).await;
-                // The informational 200 of a resolvable entity: the id half selects, so an
-                // id it holds no insight under is detailed with the guidance and never the
-                // missing resource an unresolvable ENTITY is.
-                guidance(&answer, &case);
-                let said = answer.body["message"].as_str().unwrap_or_default();
-                assert_ne!(
-                    said, RESOURCE_NOT_FOUND,
-                    "case {case}: expected no missing-resource refusal, got {:?}",
-                    answer.body
-                );
+                // What the address RESOLVED decides it: a read scoped to a domain this
+                // account holds is detailed with the guidance, while the account-wide
+                // entity names no resource but the insight its id selects, so an id
+                // selecting none is the missing resource.
+                assert_unselected_id(&answer, &case, entity);
             }
         }
         // The reads raised no insight: the entity's listing is exactly what it was.

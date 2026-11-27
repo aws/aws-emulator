@@ -19,15 +19,13 @@
 //!    this service answers (404, 400 from a handler's bound, 400 from the boundary walk,
 //!    401) across the operations that answer them and across both planes, so the rule is
 //!    not keyed to the two operations the corpus exercises.
-//! 2. `DeleteDomain` refuses every `domainId` it resolves no domain for on the id's own
-//!    ALLOCATION HISTORY: an id this service DID allocate — minted and since purged, or
-//!    naming a domain live in another Region — is its ONE modelled error,
-//!    `ResourceNotFoundException` at HTTP 404
+//! 2. `DeleteDomain` refuses every `domainId` it resolves no domain for with its ONE
+//!    modelled error, `ResourceNotFoundException` at HTTP 404
 //!    (`smithy_query(query="operation",operation="DeleteDomain")` lists exactly that one),
-//!    naming the requested id; an id with no allocation history anywhere resolves no ARN
-//!    for the front door to authorize the call against and is refused there, with no detail
-//!    member at all. Never a 5xx either way, which an SDK would retry on the normal
-//!    idempotent-cleanup path. Every way an id can fail to resolve is a row.
+//!    naming the requested id: an id this service minted and has since purged, one naming
+//!    a domain live in another Region, and one it never allocated anywhere are each a
+//!    resource this endpoint does not have. Never a 5xx, which an SDK would retry on the
+//!    normal idempotent-cleanup path. Every way an id can fail to resolve is a row.
 //! 3. `CreateSubscription`'s 201 reports the instants creation ESTABLISHED and no others:
 //!    `createdAt` always, and `lastUpdatedAt` / `activatedAt` / `deactivatedAt` only from
 //!    the transition each one records, so a subscription no call has updated comes back
@@ -380,21 +378,19 @@ async fn every_refusal_reports_its_detail_text_in_the_modelled_member() {
 }
 
 #[tokio::test]
-async fn delete_domain_refuses_every_unresolvable_id_on_the_ids_allocation_history() {
+async fn delete_domain_refuses_every_unresolvable_id_with_the_modelled_not_found() {
     let emulator = Emulator::new("us-east-1");
 
     // Every way a well-formed `domainId` can name no domain this Region holds, spanning what
     // the rule generalises over: ids no account was ever allocated (both modelled prefixes,
     // both ends of the modelled length, digits, repeated letters and a pronounceable id),
     // an id this service minted whose domain it has since purged, and one that is live in
-    // another Region. The refusal splits on the id's own ALLOCATION HISTORY: an id this
-    // service DID allocate names a resource this endpoint does not have, which is the ONE
-    // error this operation models
+    // another Region. Every one of them names a resource this endpoint does not have, which
+    // is the ONE error this operation models
     // (`smithy_query(query="operation",operation="DeleteDomain")` reports
-    // `ResourceNotFoundException` alone), while an id with no history anywhere resolves no
-    // ARN for the front door to authorize the call against and is refused there, with no
-    // detail member at all.
-    let mut rows: Vec<(String, bool, String)> = Vec::new();
+    // `ResourceNotFoundException` alone), stated with the id the request addressed — the
+    // id's own allocation history cannot change the answer.
+    let mut rows: Vec<(String, String)> = Vec::new();
     for (label, id) in [
         (
             "never minted, shortest dom-",
@@ -417,7 +413,7 @@ async fn delete_domain_refuses_every_unresolvable_id_on_the_ids_allocation_histo
             "dom-doesnotexist00000".to_string(),
         ),
     ] {
-        rows.push((label.to_string(), false, id));
+        rows.push((label.to_string(), id));
     }
     // An id this service DID mint, whose domain it has since purged: the delete that
     // follows the delete is the idempotent-cleanup path, and it has to terminate.
@@ -432,7 +428,7 @@ async fn delete_domain_refuses_every_unresolvable_id_on_the_ids_allocation_histo
         .await;
     assert_eq!(status, 200, "the first DeleteDomain got {status} {deleted:?}");
     poll_until_absent(&emulator, &purged).await;
-    rows.push(("minted and since purged".to_string(), true, purged));
+    rows.push(("minted and since purged".to_string(), purged));
     // A LIVE domain of another Region: its id is one this service minted, and this
     // Region's endpoint holds no domain under it.
     let elsewhere = string_at(
@@ -443,36 +439,17 @@ async fn delete_domain_refuses_every_unresolvable_id_on_the_ids_allocation_histo
     );
     rows.push((
         "live in another Region".to_string(),
-        true,
         elsewhere.clone(),
     ));
 
-    for (case, allocated, domain_id) in &rows {
+    for (case, domain_id) in &rows {
         // Twice: a repeat of the refused delete answers the identical refusal, because
         // the model declares the operation `@idempotent` and a miss writes nothing.
         for attempt in 1..=2 {
             let (status, body) = emulator
                 .send("DELETE", &format!("/domain/{domain_id}"), None)
                 .await;
-            let case = format!("{case} ({domain_id}), allocated={allocated}, attempt {attempt}");
-            if !allocated {
-                // No allocation history anywhere: the front door's own refusal, which
-                // carries neither of this service's detail keys.
-                assert_eq!(
-                    (status, error_code(&body).as_str()),
-                    (403, "AuthorizerConfigurationException"),
-                    "case {case:?}: expected the front door's own refusal, got {status} \
-                     with {body}"
-                );
-                for member in [MODEL_MEMBER_DETAIL, SUBSCRIPTION_PLANE_DETAIL] {
-                    assert!(
-                        body.get(member).and_then(serde_json::Value::as_str).is_none(),
-                        "case {case:?}: this refusal carries no detail member, got \
-                         {member} in {body}"
-                    );
-                }
-                continue;
-            }
+            let case = format!("{case} ({domain_id}), attempt {attempt}");
             assert_eq!(
                 (status, error_code(&body).as_str()),
                 (404, "ResourceNotFoundException"),

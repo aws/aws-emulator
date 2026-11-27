@@ -9,9 +9,8 @@
 //!
 //! * an ITEM REQUEST — a keyed read, a table walk, a batched or transactional request — names
 //!   the member by its WIRE spelling and echoes NO value (`Value at 'Limit' failed to satisfy
-//!   constraint: Member must have value greater than or equal to 1`), with ONE recorded
-//!   exception: the table walk's own page size, which takes the form below;
-//! * a CONTROL-PLANE listing — and that one member of the walk — names it by the lowerCamel
+//!   constraint: Member must have value greater than or equal to 1`);
+//! * a CONTROL-PLANE listing names it by the lowerCamel
 //!   path the request validator builds and DOES echo the rejected value (`Value '0' at 'limit'
 //!   failed to satisfy constraint: …`).
 //!
@@ -115,10 +114,10 @@ async fn refusal(
     message(&body)
 }
 
-/// RULE: the KEYED read states the page size it shares with the walk in the wire form that
-/// echoes no value — whatever value was rejected — while the WALK states that same member in
-/// the validator's own form, with the value quoted. Nothing in the model tells them apart, so
-/// each is read back here beside the other.
+/// RULE: BOTH item reads state the page size they share in the wire form that
+/// echoes no value — whatever value was rejected. Nothing in the model tells them apart from
+/// a control-plane listing's page size, which takes the other form, so each is read back here
+/// beside the other.
 #[tokio::test]
 async fn an_item_requests_page_size_is_stated_by_its_wire_name_whatever_the_value() {
     let router = seeded().await;
@@ -126,25 +125,38 @@ async fn an_item_requests_page_size_is_stated_by_its_wire_name_whatever_the_valu
     // The values span the rejected side of the published minimum: zero, one below, a handful
     // below, and the smallest value a 32-bit member carries.
     for rejected in [0_i64, -1, -9, -2_147_483_648] {
-        let stated = refusal(&router, "a keyed read", "Query", keyed(rejected)).await;
         let expected = wire_form("Limit", &at_least(1));
-        assert_eq!(
-            stated, expected,
-            "case \"a keyed read\" (Query, Limit {rejected}): expected the message \
-             {expected:?}, got {stated:?}"
-        );
-        assert!(
-            !stated.contains(&format!("'{rejected}'")),
-            "case \"a keyed read\" (Query, Limit {rejected}): expected the rejected value \
-             absent from the message, got {stated:?}"
-        );
+        for (case, operation, request) in [
+            ("a keyed read", "Query", keyed(rejected)),
+            ("a table walk", "Scan", walk(rejected)),
+        ] {
+            let stated = refusal(&router, case, operation, request).await;
+            assert_eq!(
+                stated, expected,
+                "case {case:?} ({operation}, Limit {rejected}): expected the message \
+                 {expected:?}, got {stated:?}"
+            );
+            assert!(
+                !stated.contains(&format!("'{rejected}'")),
+                "case {case:?} ({operation}, Limit {rejected}): expected the rejected value \
+                 absent from the message, got {stated:?}"
+            );
+        }
 
-        let walked = refusal(&router, "a table walk", "Scan", walk(rejected)).await;
+        // The contrast, in the other form: a control-plane listing's page size of the same
+        // name and the same violation class echoes the value under the validator's path.
+        let listed = refusal(
+            &router,
+            "a control-plane listing",
+            "ListBackups",
+            json!({"Limit": rejected}),
+        )
+        .await;
         let expected = echoing_form("limit", rejected, &at_least(1));
         assert_eq!(
-            walked, expected,
-            "case \"a table walk\" (Scan, Limit {rejected}): expected the message \
-             {expected:?}, got {walked:?}"
+            listed, expected,
+            "case \"a control-plane listing\" (ListBackups, Limit {rejected}): expected the \
+             message {expected:?}, got {listed:?}"
         );
     }
 }

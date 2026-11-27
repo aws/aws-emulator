@@ -100,16 +100,15 @@ pub const MAX_DOMAINS_HELD: usize = MAX_DOMAINS_PER_ACCOUNT * MAX_DOMAIN_REGIONS
 /// currently holds.
 ///
 /// A MINT consults this history, so an id handed out names no domain this service ever
-/// created — not even one already purged — and `DeleteDomain` consults it to tell an id
-/// this account was allocated and has lost from one that was never allocated anywhere
-/// (see [`Self::has_allocated_domain`]). The history is therefore kept past the domain's
+/// created — not even one already purged (see [`Self::has_allocated_domain`]). The history
+/// is therefore kept past the domain's
 /// own purge, and BOUNDED here: a caller looping create/delete would otherwise grow the
 /// store without limit, which is the one thing every ceiling in this module exists to
 /// prevent.
 ///
 /// The bound is the EMULATOR's retention, not a rule of the service: once the history is
-/// full the oldest id is dropped, so that id may be minted again and a delete addressed
-/// at it is answered as one with no allocation history. It is set two orders of magnitude
+/// full the oldest id is dropped, so that id may be minted again. It is set two orders of
+/// magnitude
 /// above [`MAX_DOMAINS_PER_ACCOUNT`], so an account has to create and delete this many
 /// domains before its first id is forgotten.
 pub const MAX_DOMAIN_ALLOCATION_HISTORY: usize = 1024;
@@ -1091,13 +1090,9 @@ impl ComAmazonawsConnecthealthConnecthealthState {
     /// Whether `domain_id` was ever allocated to a domain this service created.
     ///
     /// Read by [`Self::mint_domain_id`], so an id it hands out names no domain this
-    /// service ever created, not even one already purged — and by `DeleteDomain`, the ONE
-    /// answer of this service that depends on the history: an id this account was
-    /// allocated and no longer holds is the modelled not-found, while one with no
-    /// allocation history anywhere resolves no ARN for the front door to authorize the
-    /// call against and is refused there instead. Do not collapse those two arms: every
-    /// other lookup resolves the domain itself and reports the modelled not-found whatever
-    /// the id's history.
+    /// service ever created, not even one already purged. It decides no ANSWER of this
+    /// service: every lookup resolves the domain itself and reports the modelled
+    /// not-found whatever the id's history.
     pub fn has_allocated_domain(&self, domain_id: &str) -> bool {
         self.allocated_domain_ids.contains(domain_id)
     }

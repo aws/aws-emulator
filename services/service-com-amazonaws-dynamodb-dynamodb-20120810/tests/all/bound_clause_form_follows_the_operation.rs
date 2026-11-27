@@ -9,9 +9,9 @@
 //! table walk, a batched or transactional request) names the member by its WIRE spelling and
 //! echoes NO value, while a CONTROL-PLANE listing names it by the lowerCamel path the
 //! request validator builds and DOES echo the rejected value. One member is recorded on BOTH
-//! sides of that line: the page size the keyed read and the table walk SHARE, which the keyed
-//! read states in the wire form and the walk in the validator's — while the walk's own
-//! parallel-scan bounds stay in the wire form.
+//! sides of that line: the page size the item reads SHARE with the listings, which both item
+//! reads state in the wire form and a listing in the validator's — and the walk's own
+//! parallel-scan bounds stay in the wire form with it.
 //!
 //! Nothing in the model distinguishes the two forms: `Query$Limit` and `Scan$Limit` target the
 //! same shape with the same trait, and `ListBackups$Limit`/`ListTables$Limit` declare the same
@@ -123,36 +123,30 @@ async fn refusal(
     message(&body)
 }
 
-/// RULE: the KEYED read states the page size it shares with the walk by its wire spelling,
-/// with none of the rejected value echoed, while the WALK states that same member by the
-/// validator's path with the value quoted — whatever the value is.
+/// RULE: BOTH item reads state the page size they share by its wire spelling, with none of
+/// the rejected value echoed — whatever the value is.
 #[tokio::test]
 async fn both_item_requests_state_one_page_size_bound_the_one_way() {
     let router = seeded().await;
 
     let expected = envelope(&[wire_clause("Limit", &at_least(1))]);
     for rejected in REJECTED_PAGE_SIZES {
-        let case = "a keyed read's page size";
-        let stated = refusal(&router, case, "Query", keyed(rejected)).await;
-        assert_eq!(
-            stated, expected,
-            "case {case:?} (Query, Limit {rejected}): expected the message {expected:?}, got \
-             {stated:?}"
-        );
-        assert!(
-            !stated.contains(&rejected.to_string()),
-            "case {case:?} (Query, Limit {rejected}): this form echoes no part of the \
-             rejected value, got {stated:?}"
-        );
-
-        let case = "a table walk's page size";
-        let walked = refusal(&router, case, "Scan", walk(rejected)).await;
-        let walk_expected = envelope(&[echoing_clause("limit", rejected, &at_least(1))]);
-        assert_eq!(
-            walked, walk_expected,
-            "case {case:?} (Scan, Limit {rejected}): expected the message {walk_expected:?}, \
-             got {walked:?}"
-        );
+        for (case, operation, request) in [
+            ("a keyed read's page size", "Query", keyed(rejected)),
+            ("a table walk's page size", "Scan", walk(rejected)),
+        ] {
+            let stated = refusal(&router, case, operation, request).await;
+            assert_eq!(
+                stated, expected,
+                "case {case:?} ({operation}, Limit {rejected}): expected the message \
+                 {expected:?}, got {stated:?}"
+            );
+            assert!(
+                !stated.contains(&rejected.to_string()),
+                "case {case:?} ({operation}, Limit {rejected}): this form echoes no part of \
+                 the rejected value, got {stated:?}"
+            );
+        }
     }
 }
 
@@ -213,7 +207,7 @@ async fn every_other_bound_of_an_item_request_takes_that_same_form() {
             "Scan",
             json!({"TableName": TABLE, "Limit": 0, "TotalSegments": 0}),
             envelope(&[
-                echoing_clause("limit", 0, &at_least(1)),
+                wire_clause("Limit", &at_least(1)),
                 wire_clause("TotalSegments", &at_least(1)),
             ]),
         ),
@@ -222,7 +216,7 @@ async fn every_other_bound_of_an_item_request_takes_that_same_form() {
             "Scan",
             json!({"TableName": TABLE, "Limit": -3, "Segment": -1}),
             envelope(&[
-                echoing_clause("limit", -3, &at_least(1)),
+                wire_clause("Limit", &at_least(1)),
                 wire_clause("Segment", &at_least(0)),
             ]),
         ),

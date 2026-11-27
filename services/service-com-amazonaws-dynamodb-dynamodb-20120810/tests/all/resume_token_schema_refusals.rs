@@ -12,11 +12,13 @@
 //! That one sentence is what every such token earns, on the BASE table and on an INDEX
 //! cursor alike, since an index cursor carries both schemas' key attributes.
 //!
-//! The one element of an index cursor stated further is an INDEX KEY attribute carrying
-//! another type than the table's `AttributeDefinitions` declare for it: that element names
-//! the index key it is, in a type the index cannot hold, so it earns the typed
-//! parameter-value sentence naming the key, the declared type, the supplied type and the
-//! index ([`index_key_type_mismatch`]).
+//! The one element of an index cursor stated further is an INDEX KEY attribute of a GLOBAL
+//! secondary index carrying another type than the table's `AttributeDefinitions` declare for
+//! it: that element names a key of the index's OWN key space, in a type that space cannot
+//! hold, so it earns the typed parameter-value sentence naming the key, the declared type,
+//! the supplied type and the index ([`index_key_type_mismatch`]). A LOCAL index has no key
+//! space of its own — its partition key is the table's — so a mistyped element of its cursor
+//! is no key of the space being paged and states the invalid-token sentence like the rest.
 //!
 //! The rows differ along HOW the token fails to be that key, along the SCHEMA being paged
 //! (a single-attribute table, a composite one, a global secondary index and a local one),
@@ -255,7 +257,7 @@ fn rows() -> Vec<Row> {
             index: Some(LOCAL_INDEX),
             partition: one,
             token: json!({"pk": {"S": "one"}, "rank": {"S": "2"}, "sk": {"N": "1"}}),
-            stated: index_key_type_mismatch("rank", "N", "S", LOCAL_INDEX),
+            stated: INVALID.to_string(),
         },
     ]
 }

@@ -1110,12 +1110,17 @@ impl Table {
     /// attributes, so one it does not carry in full is not that cursor at all.
     ///
     /// A token that DOES name this cursor's key attributes while carrying one of them in
-    /// another type than the table declares for it is a different defect: the element is
-    /// the index key it names, stated in a type that index cannot hold, so it is refused as
-    /// the invalid parameter value it is — naming the key attribute, the type the table's
-    /// `AttributeDefinitions` declare for it, the type the token supplied and the index
-    /// being read ([`index_key_type_mismatch`]), which is the one wording this service
-    /// states that mismatch in wherever a request carries an index key value.
+    /// another type than the table declares for it is a different defect WHERE the index has
+    /// a key space of its own: the element is the index key it names, stated in a type that
+    /// index cannot hold, so a GLOBAL index's cursor is refused as the invalid parameter
+    /// value it is — naming the key attribute, the type the table's `AttributeDefinitions`
+    /// declare for it, the type the token supplied and the index being read
+    /// ([`index_key_type_mismatch`]), which is the one wording this service states that
+    /// mismatch in wherever a request carries a global index key value. A LOCAL index has no
+    /// key space of its own — its partition key IS the table's, and its cursor is a key of
+    /// the table's space with one more of the table's attributes beside it — so a mistyped
+    /// element of one is no key of the space being paged and earns the invalid-TOKEN
+    /// sentence, exactly as the base table's own cursor does.
     ///
     /// Those sentences are about the token's SHAPE. Each element it does carry is then
     /// held to the rules every key attribute's value is held to — the documented numeric
@@ -1168,6 +1173,17 @@ impl Table {
             let actual = attribute_value_type(value);
             if let Some(declared) = self.declared_type(name).filter(|declared| *declared != actual)
             {
+                // The typed parameter-value sentence is stated for the key space a GLOBAL
+                // secondary index has of its OWN ([`index_key_type_mismatch`]). A LOCAL
+                // index has none — its partition key IS this table's, so its cursor is a
+                // key of the table's own space with one more of the table's attributes
+                // beside it — and a mistyped element of one is therefore no key of the
+                // space being paged, which is the invalid TOKEN the base table's own
+                // cursor states ([`START_KEY_INVALID_MESSAGE`], and
+                // [`Self::key_of_start_key`] states it for the table).
+                if !index.global {
+                    return Err(KeySource::StartKey.mismatch());
+                }
                 return Err(index_key_type_mismatch(name, declared, actual, index.name));
             }
             values.push(self.key_value_worded(name, value, empty_element)?);

@@ -28,8 +28,10 @@
 //! `buffering_hints_destination_members` varies the MEMBER carrying them, and drives its own
 //! rows through [`assert_window_rule`] below, so there is one table-driver and one reading of
 //! "delivered" and "not delivered yet" between the two. The windows these rows wait out are
-//! the ones a case can; that a window of MINUTES is waited out too rather than quietly
-//! shortened is the child suite [`hint_ceiling`].
+//! the ones a case can; what a window of MINUTES gets — the wait it asked for while that
+//! wait is inside the span this emulator holds data for — is the child suite
+//! [`hint_ceiling`], and what the destination's own listing then reports is
+//! [`delivered_listing_entry`].
 
 /// What a destination asking for an interval at the CEILING of the published range gets. The
 /// `#[path]` is what keeps it a child of THIS suite rather than a second suite

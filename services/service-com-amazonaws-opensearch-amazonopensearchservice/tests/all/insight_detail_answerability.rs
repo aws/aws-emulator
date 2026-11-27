@@ -9,16 +9,16 @@
 //! listing from [`super::insights`] and the constraint report from
 //! [`super::constraint_refusal_messages`]; this suite adds no second copy of any of them.
 //!
-//! The rule under test: a detail read is an INFORMATIONAL report about an insight of the
-//! entity its address names, so only the ENTITY half of that address refuses — against a
-//! store that holds no insight at all EVERY detail read of a resolvable entity is answered
-//! 200 with the one field the service states about an insight's details, whichever entity
-//! this service resolves and whichever well-formed id the read names, and the view is the
-//! same either way. Nothing else is changed by that: an entity whose type is outside
-//! `InsightEntityType`, an `Account` entity naming another account and a `DomainName` this
-//! account holds no domain under are refused as the malformed requests and missing
-//! resources they are, and a read writes nothing — it does not raise the insight it found
-//! no stored field for.
+//! The rule under test: a detail read reports on an insight of the address it names, and
+//! refuses what that address resolves NOTHING for — against a store that holds no insight at
+//! all, EVERY detail read scoped to a DOMAIN this account holds is answered 200 with the one
+//! field the service states about an insight's details, whichever well-formed id it names,
+//! while a read of the ACCOUNT-wide entity resolves nothing until an insight does (the
+//! account itself is no resource of this service) and is the missing resource. Nothing else
+//! is changed by that: an entity whose type is outside `InsightEntityType`, an `Account`
+//! entity naming another account and a `DomainName` this account holds no domain under are
+//! refused as the malformed requests and missing resources they are, and a read writes
+//! nothing — it does not raise the insight it found no stored field for.
 //!
 //! No insight is seeded anywhere, which is what tells this suite apart from
 //! [`super::insight_details`]: an insight is RAISED by the service observing a domain, so
@@ -38,7 +38,9 @@ use service_com_amazonaws_opensearch_amazonopensearchservice::ops::types::INSIGH
 use super::constraint_refusal_messages::{clause, message, report, value_set};
 use super::domain_lifecycle::{create_baseline, settled_domain, Answer, Emulator};
 use super::insight_address_resolution::RESOURCE_NOT_FOUND;
-use super::insight_details::{describe_insight, domain_entity, guid, guidance};
+use super::insight_details::{
+    assert_unselected_id, describe_insight, domain_entity, guid, ACCOUNT_ENTITY_TYPE,
+};
 use super::insights::{list, refused};
 
 /// The domain a case reads against once the clock owes it its terminal status — the
@@ -125,7 +127,7 @@ async fn empty_listing(emulator: &Emulator, entity: &Value, case: &str) {
 }
 
 #[tokio::test]
-async fn a_detail_read_against_a_store_holding_no_insight_is_answered() {
+async fn a_detail_read_against_a_store_holding_no_insight_is_answered_by_what_it_resolves() {
     let emulator = Emulator::new();
     create_baseline(&emulator, READY_DOMAIN).await;
     // The precondition a client polls for: the domain has reached the status the clock
@@ -152,8 +154,8 @@ async fn a_detail_read_against_a_store_holding_no_insight_is_answered() {
     // — `Account`'s `Value` is optional, and the only account served is the one the request
     // was made for — and a `DomainName` entity for each of the two domains.
     let entities = [
-        json!({"Type": "Account"}),
-        json!({"Type": "Account", "Value": engine::emulator_account_id()}),
+        json!({"Type": ACCOUNT_ENTITY_TYPE}),
+        json!({"Type": ACCOUNT_ENTITY_TYPE, "Value": engine::emulator_account_id()}),
         domain_entity(READY_DOMAIN),
         domain_entity(PROVISIONING_DOMAIN),
     ];
@@ -179,7 +181,7 @@ async fn a_detail_read_against_a_store_holding_no_insight_is_answered() {
                 let case = format!("DescribeInsightDetails({entity:?}, {unheld:?}, {extra:?})");
                 let answer =
                     describe_insight(&emulator, entity.clone(), &unheld, extra.clone()).await;
-                guidance(&answer, &case);
+                assert_unselected_id(&answer, &case, entity);
 
                 // A report: the same request is answered the same way again.
                 let again = describe_insight(&emulator, entity.clone(), &unheld, extra).await;
@@ -289,7 +291,7 @@ async fn an_entity_this_account_holds_nothing_for_is_refused_the_same_way() {
             engine::emulator_account_id(),
             "case DescribeInsightDetails(Account {foreign:?}): the row must name another account"
         );
-        let entity = json!({"Type": "Account", "Value": foreign});
+        let entity = json!({"Type": ACCOUNT_ENTITY_TYPE, "Value": foreign});
         let answer = describe_insight(&emulator, entity, &insight_id, json!({})).await;
         refused(
             &answer,

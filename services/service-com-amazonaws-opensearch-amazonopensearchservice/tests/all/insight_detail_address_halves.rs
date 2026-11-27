@@ -11,16 +11,18 @@
 //! [`super::missing_resource_status`] and the listing from [`super::insights`]; this suite
 //! adds no second copy of any of them.
 //!
-//! The rule under test: an insight is addressed by an ENTITY and an insight id, and the two
-//! halves are answered differently by an operation that REPORTS. The entity half is a
-//! requirement of every operation that takes one — one this account holds nothing for is
-//! the modelled missing resource. The id half is a requirement only of an operation that
-//! ACTS on the insight it names: `InsightFeedback` rates "an EXISTING insight", so an id
-//! that selects none leaves nothing to rate and is refused, while
-//! `DescribeInsightDetails` reports on an insight of a resolvable entity and answers every
-//! id inside the modelled `GUID` form 200 with its `@required` `Fields` — the insight's
-//! stored fields where one was raised under that id, and the single informational field
-//! the service states about an insight's details otherwise.
+//! The rule under test: an insight is addressed by an ENTITY and an insight id, and a read
+//! refuses what that address resolves NOTHING for. The entity half is a requirement of every
+//! operation that takes one — one this account holds nothing for is the modelled missing
+//! resource. The id half is a requirement of an operation that ACTS on the insight it names
+//! (`InsightFeedback` rates "an EXISTING insight", so an id that selects none leaves nothing
+//! to rate) and of an address whose only resource it is: the ACCOUNT-wide entity names no
+//! resource of this service, so an id selecting no insight of the account is that same
+//! missing resource, while `DescribeInsightDetails` scoped to a DOMAIN this account holds has
+//! resolved what it reports on and answers every id inside the modelled `GUID` form 200 with
+//! its `@required` `Fields` — the insight's stored fields where one was raised under that id,
+//! and the single informational field the service states about an insight's details
+//! otherwise.
 //!
 //! So the assertions span a SET of inputs rather than one call, differing along what the
 //! rule generalises over: the entity half (a domain holding an insight, a domain holding
@@ -44,7 +46,8 @@ use service_com_amazonaws_opensearch_amazonopensearchservice::state::InsightDeta
 
 use super::domain_lifecycle::{create_baseline, Answer, Emulator};
 use super::insight_details::{
-    describe_insight, domain_entity, guid, guidance, raise_on_domain, record,
+    assert_unselected_id, describe_insight, domain_entity, guid, guidance, raise_on_domain,
+    record, ACCOUNT_ENTITY_TYPE,
 };
 use super::insight_feedback::{feedback, submission};
 use super::insights::{insights, list};
@@ -131,10 +134,13 @@ fn resolvable_entities() -> Vec<(String, Value)> {
     vec![
         (format!("DomainName {HELD}"), domain_entity(HELD)),
         (format!("DomainName {BARE}"), domain_entity(BARE)),
-        ("Account, unnamed".to_string(), json!({"Type": "Account"})),
+        (
+            "Account, unnamed".to_string(),
+            json!({"Type": ACCOUNT_ENTITY_TYPE}),
+        ),
         (
             "Account, named".to_string(),
-            json!({"Type": "Account", "Value": engine::emulator_account_id()}),
+            json!({"Type": ACCOUNT_ENTITY_TYPE, "Value": engine::emulator_account_id()}),
         ),
     ]
 }
@@ -146,7 +152,7 @@ async fn rate(emulator: &Emulator, entity: Value, insight_id: &str) -> Answer {
 }
 
 #[tokio::test]
-async fn an_id_that_selects_no_insight_is_reported_on_by_every_resolvable_entity() {
+async fn an_id_that_selects_no_insight_is_answered_by_what_its_address_resolves() {
     let emulator = given_domains().await;
 
     for (entity_case, entity) in resolvable_entities() {
@@ -157,10 +163,11 @@ async fn an_id_that_selects_no_insight_is_reported_on_by_every_resolvable_entity
                 );
                 let answer =
                     describe_insight(&emulator, entity.clone(), &unraised, rendering).await;
-                // The informational view: the ONE field the service states about an
-                // insight's details, which `tests/all/insight_details.rs` pins the wording
-                // of.
-                guidance(&answer, &case);
+                // The informational view where the address resolved a domain — the ONE
+                // field the service states about an insight's details, whose wording
+                // `tests/all/insight_details.rs` pins — and the missing resource where the
+                // insight its id selects was the only resource the address named.
+                assert_unselected_id(&answer, &case, &entity);
             }
         }
     }

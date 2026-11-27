@@ -57,10 +57,11 @@ const TENS_OF_SECONDS: i64 = 25;
 /// How long the row whose interval is [`TENS_OF_SECONDS`] is waited for before the case fails.
 ///
 /// Generous beside that interval, so a loaded machine does not fail a case the clock would
-/// have served, and inside the span this emulator holds data for, so the rows asking for
-/// MINUTES are still holding their records at every reading taken while this one is waited
-/// for; it bounds nothing the case measures.
-const WAITED_OUT_DELIVERY_DEADLINE: Duration = Duration::from_secs(60);
+/// have served, and inside the span this emulator holds data for
+/// (`state::delivery::MAX_BUFFER_HOLD`), so the rows asking for MINUTES are still holding
+/// their records at every reading taken while this one is waited for; it bounds nothing the
+/// case measures.
+const WAITED_OUT_DELIVERY_DEADLINE: Duration = Duration::from_secs(45);
 
 /// How long the control row's delivery — the one asking for the shortest interval its member
 /// admits — is waited for before the case fails.
@@ -76,8 +77,9 @@ enum Due {
     AtOnce,
     /// Once the window it asked for has passed, which this suite waits out.
     AfterItsInterval,
-    /// Not while this case runs: its interval is minutes away and its records are far below
-    /// its size.
+    /// Not while this case runs: its interval is minutes away — past the span this emulator
+    /// holds data for, and far past every reading this case takes — and its records are far
+    /// below its size.
     NotYet,
 }
 
@@ -250,7 +252,7 @@ async fn an_interval_of_minutes_is_not_collapsed_into_the_put_that_opened_the_bu
 
     // The row whose window is tens of seconds is delivered once that window has passed — and
     // all through the wait for it, every row whose interval is MINUTES away still holds
-    // nothing: a window of minutes is not shortened to one of seconds.
+    // nothing: one row's turn of the cadence does not write another row's buffer.
     for leg in legs.iter().filter(|leg| leg.due == Due::AfterItsInterval) {
         await_object(&emulator, leg, WAITED_OUT_DELIVERY_DEADLINE, &legs).await;
     }
@@ -312,7 +314,7 @@ pub(super) async fn change_and_remove_tags(emulator: &Emulator, case: &str, stre
 }
 
 /// Require every leg whose interval is minutes away to hold nothing: its buffer's own
-/// conditions are not met, so its records are still held.
+/// conditions are not met at any reading this case takes, so its records are still held.
 async fn assert_nothing_delivered(emulator: &Emulator, legs: &[Leg]) {
     for leg in legs.iter().filter(|leg| leg.due == Due::NotYet) {
         let keys = emulator.keys_under(BUCKET, &leg.prefix).await;

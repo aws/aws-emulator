@@ -6,13 +6,15 @@
 //! request addresses ([`crate::state::InsightDetailField`]), in the order they are
 //! stored, each rendered with its markup or as plain content according to the
 //! request's `ShowHtmlContent`. The insight is addressed by the entity that holds it
-//! and its own id together, and the ENTITY is the half whose absence refuses: an entity
-//! this service cannot resolve is the modelled missing resource, naming neither half of
-//! the address. The ID half does not refuse — this is an INFORMATIONAL read, so an id
-//! inside the modelled `GUID` form that the entity holds no insight under is answered
-//! with the guidance the service states about an insight's details ([`GUIDANCE`]), as is
-//! an insight raised with no detail field of its own. It only REPORTS: an insight and
-//! its fields are raised by the service observing a domain, never by a read of them.
+//! and its own id together, and the read refuses what that ADDRESS resolves NOTHING for:
+//! an entity this service cannot resolve is the modelled missing resource, naming neither
+//! half of the address, and so is an id the ACCOUNT-wide entity holds no insight under —
+//! the account itself is no resource of this service, so the insight is the only resource
+//! such an address names. An address naming a DOMAIN this account holds resolves the
+//! resource the read is about, so every id inside the modelled `GUID` form is answered with
+//! the fields stored on the insight raised under it, and with the guidance the service
+//! states about an insight's details otherwise ([`GUIDANCE`]). It only REPORTS: an insight
+//! and its fields are raised by the service observing a domain, never by a read of them.
 //!
 //! ## Shape of an operation
 //!
@@ -200,11 +202,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // holds no domain under stays the ONE missing resource naming neither half of the
         // address ([`crate::state::insight_resource_not_found`]).
         //
-        // The ID half only SELECTS. A detail read is an INFORMATIONAL report, so every id
-        // inside the modelled `GUID` form is answered 200 with the `@required` `Fields`: the
-        // stored fields where the service has raised an insight under that id, and the
-        // guidance below otherwise. Nothing in this emulator raises insights, so refusing the
-        // id would leave the surface unreachable for every id a caller can obtain.
+        // The ID half SELECTS, and is a requirement of the address exactly where it is the
+        // only resource that address names ([`account_wide`]): a read scoped to a domain
+        // this account holds has resolved the resource it reports on, so every id inside the
+        // modelled `GUID` form is answered 200 with the `@required` `Fields` — the stored
+        // fields where the service has raised an insight under that id, and the guidance
+        // below otherwise — while a read of the ACCOUNT-wide entity has resolved nothing at
+        // all until an insight does, the account being no resource of this service, so an id
+        // it holds no insight under is that same missing resource.
         let raised = store
             .insight_held_by_entity(&input.entity, &input.insight_id)
             .map_err(|refusal| -> DescribeInsightDetailsError {
@@ -218,6 +223,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     }
                 }
             })?;
+        if raised.is_none() && account_wide(&input.entity) {
+            return Err(DescribeInsightDetailsErrorModeled::ResourceNotFoundException(
+                crate::state::insight_resource_not_found(),
+            )
+            .into());
+        }
 
         // "Specifies whether to show response with HTML content in response or not":
         // it picks the rendering each field's content is reported in, so the fields a
@@ -228,11 +239,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         // "The list of fields that contain detailed information about the insight", in
         // the order they are held. An insight the service has raised detail fields for
-        // details with those fields; one it has raised none for — and an id it has raised no
-        // insight under at all — details with the guidance the service states about an
-        // insight's details, which is the whole of what the recorded wire answer for a detail
-        // read carries — `Fields` is `@required` and a detailed view the service answers is
-        // never the empty set.
+        // details with those fields; one it has raised none for — and, under an address
+        // whose domain resolved, an id it has raised no insight under at all — details with
+        // the guidance the service states about an insight's details, which is the whole of
+        // what the recorded wire answer for a detail read carries — `Fields` is `@required`
+        // and a detailed view the service answers is never the empty set.
         let guidance = guidance_details();
         let detailed: &[crate::state::InsightDetailField] = match raised {
             Some(insight) if !insight.details.is_empty() => &insight.details,
@@ -245,6 +256,17 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         Ok(DescribeInsightDetailsOutput { fields })
     }
+}
+
+/// Whether `entity` names the ACCOUNT-wide set of insights rather than one domain's.
+///
+/// "An entity can be an Amazon OpenSearch Service domain or an Amazon Web Services
+/// account" (`InsightEntity`), and `InsightEntityType` admits exactly those two
+/// (`smithy_query(query="shape", shape="InsightEntityType")`). The account is not a
+/// resource this service holds — every request is made for it — so an address of this kind
+/// names ONE resource, the insight its id selects.
+fn account_wide(entity: &InsightEntity) -> bool {
+    entity.r#type == crate::state::INSIGHT_ENTITY_ACCOUNT
 }
 
 /// The `InsightDetailsField$Name` the service states its own guidance under.
