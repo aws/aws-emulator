@@ -13,7 +13,8 @@
 //!   the endpoint registered but `INACTIVE` with `StatusReason` `INVALID_PINPOINT_ARN`;
 //! * one `ClientRequestToken` registers one endpoint: a repeat replays that endpoint's
 //!   id, concurrent repeats all answer with that one id, and the same token presented
-//!   with different parameters is refused `ConflictException`;
+//!   with different parameters — the `AppInstanceUser` the register is addressed to
+//!   included — is refused `ConflictException`;
 //! * an update writes the name and the opt-in and nothing else, and re-stamps the
 //!   endpoint's last-updated instant;
 //! * a deregister removes the endpoint, and every endpoint-keyed call addressed to an
@@ -29,8 +30,8 @@
 //! value), the `ResourceArn`'s vendor, resource type, partition and application id (each
 //! side of the application-id form), the `Name`, device-token and `AllowMessages` values
 //! and sizes a register may carry, how many times a token is repeated, which member a
-//! reused token differs in, which members an update carries, and how many endpoints a
-//! listing pages over.
+//! reused token differs in (the `AppInstanceUser` it is addressed to among them), which
+//! members an update carries, and how many endpoints a listing pages over.
 
 use std::collections::BTreeSet;
 
@@ -50,6 +51,12 @@ const ENDPOINT_TYPES: [&str; 3] = ["APNS", "APNS_SANDBOX", "GCM"];
 /// caller may not act on, as the modelled `ForbiddenException` ("The client is
 /// permanently forbidden from making the request") carries it.
 const FORBIDDEN_MESSAGE: &str = "You are not allowed to make this request.";
+
+/// The sentence the modelled `ConflictException` carries when the `ClientRequestToken` a
+/// register presents already named an endpoint and the request it comes with is not the
+/// one that token made.
+const TOKEN_ALREADY_ASSOCIATED_MESSAGE: &str =
+    "The provided ClientRequestToken is already associated with an existing resource.";
 
 /// The sentence this service refuses a request with that names an `AppInstanceUser` ARN
 /// it holds no user for, as the modelled `BadRequestException` carrying the `NotFound`
@@ -693,6 +700,106 @@ async fn a_reused_token_carrying_different_parameters_is_refused() {
              unchanged, got {status} {described:?}"
         );
     }
+}
+
+/// RULE: the `AppInstanceUser` a register is addressed to is one of the parameters of the
+/// request its `ClientRequestToken` stands for, so a token already associated with an
+/// endpoint and presented again under ANOTHER user is a mismatched reuse refused
+/// `ConflictException` (HTTP 409) that registers nothing — while a fresh token under that
+/// other user registers as usual, and the reused token is free again once the endpoint it
+/// minted is gone.
+#[tokio::test]
+async fn a_reused_token_addressed_to_another_user_is_refused() {
+    let emulator = Emulator::new();
+    let instance = emulator.app_instance("ep-parents", "tok-ep-parents").await;
+    let other_instance = emulator
+        .app_instance("ep-parents-other", "tok-ep-parents-other")
+        .await;
+    let owner = emulator.user(&instance, "owner", "tok-ep-owner").await;
+    // Rows: the user a reused token is addressed to, spanning how far it is from the one
+    // the token registered under — a sibling under the SAME `AppInstance`, and a user
+    // under a different one.
+    let sibling = emulator.user(&instance, "sibling", "tok-ep-sibling").await;
+    let stranger = emulator
+        .user(&other_instance, "stranger", "tok-ep-stranger")
+        .await;
+
+    let resource_arn = resolvable_pinpoint_arn(31);
+    let token = "tok-ep-shared-parent";
+    let body = || {
+        let mut body = register_body(token, "APNS", &resource_arn, "device-token-parents");
+        body["Name"] = json!("shared-token");
+        body["AllowMessages"] = json!("ALL");
+        body
+    };
+    let first = endpoint_id(&emulator, &owner, body()).await;
+
+    for (case, user_arn) in [
+        ("a sibling user under the same AppInstance", &sibling),
+        ("a user under another AppInstance", &stranger),
+    ] {
+        let (status, answer) = register(&emulator, user_arn, body()).await;
+        assert_eq!(
+            status, 409,
+            "case {case:?}: expected the reused token to be refused 409, got {status} {answer:?}"
+        );
+        assert_eq!(
+            (answer["Code"].as_str(), answer["Message"].as_str()),
+            (Some("Conflict"), Some(TOKEN_ALREADY_ASSOCIATED_MESSAGE)),
+            "case {case:?}: expected the modelled conflict refusal, got {answer:?}"
+        );
+
+        // Nothing was registered under the user the refused call addressed.
+        let (status, listed) = list_endpoints(&emulator, user_arn, "").await;
+        let count = listed["AppInstanceUserEndpoints"]
+            .as_array()
+            .map_or(0, Vec::len);
+        assert_eq!(
+            (status, count),
+            (200, 0),
+            "case {case:?}: expected the refused register to leave {user_arn:?} holding no \
+             endpoint, got {status} {listed:?}"
+        );
+
+        // The endpoint the token did register is untouched by the refusal.
+        let (status, described) = describe_endpoint(&emulator, &owner, &first).await;
+        let endpoint = &described["AppInstanceUserEndpoint"];
+        assert_eq!(
+            (
+                status,
+                endpoint["AppInstanceUserArn"].as_str(),
+                endpoint["Name"].as_str(),
+            ),
+            (200, Some(owner.as_str()), Some("shared-token")),
+            "case {case:?}: expected the registered endpoint to survive the refusal \
+             unchanged, got {status} {described:?}"
+        );
+    }
+
+    // A FRESH token under one of those users registers as usual: what the rule refuses is
+    // a token already spent, not a second endpoint carrying the same parameters.
+    let mut fresh = body();
+    fresh["ClientRequestToken"] = json!("tok-ep-fresh-parent");
+    let minted = endpoint_id(&emulator, &stranger, fresh).await;
+    assert_ne!(
+        minted, first,
+        "case \"a fresh token under another user\": expected an endpoint of its own, got \
+         the replayed {first:?}"
+    );
+
+    // The token is released with the endpoint it minted, wherever the next register is
+    // addressed.
+    let (status, answer) = deregister_endpoint(&emulator, &owner, &first).await;
+    assert_eq!(
+        status, 204,
+        "expected the deregister to answer 204, got {status} {answer:?}"
+    );
+    let after_deregister = endpoint_id(&emulator, &sibling, body()).await;
+    assert_ne!(
+        after_deregister, first,
+        "case \"the token's endpoint was deregistered\": expected a newly registered \
+         endpoint under the sibling user, got the gone {first:?}"
+    );
 }
 
 /// RULE: an update writes the name and the opt-in and nothing else — a member the caller

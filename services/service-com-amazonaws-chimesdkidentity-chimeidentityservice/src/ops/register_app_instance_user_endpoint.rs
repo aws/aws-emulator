@@ -181,7 +181,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // token cannot each find no endpoint and then each mint one.
         let mut state = state.lock();
 
+        // The request this token stands for: every member the register persists, the
+        // `AppInstanceUserArn` the endpoint is registered under included.
         let fingerprint = crate::state::endpoint_request_fingerprint(
+            &input.app_instance_user_arn,
             &input.r#type,
             &input.resource_arn,
             &input.endpoint_attributes,
@@ -194,10 +197,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // no second one. A token stands for one REQUEST, so the same token presented
         // with different parameters is a mismatched reuse rather than a retry, and is
         // refused with the modelled conflict instead of answering about an endpoint the
-        // caller did not ask for.
-        if let Some(registered) = state
-            .endpoint_registered_with(&input.app_instance_user_arn, &input.client_request_token)
-        {
+        // caller did not ask for. The token is therefore looked up across every
+        // register this store has served, like the per-operation token key the create
+        // operations use: the user the register is addressed to is one of those
+        // parameters, so a token presented again under another user is a reuse too.
+        if let Some(registered) = state.endpoint_registered_with(&input.client_request_token) {
             if registered.request_fingerprint == fingerprint {
                 return Ok(RegisterAppInstanceUserEndpointOutput {
                     app_instance_user_arn: Some(registered.app_instance_user_arn.clone()),

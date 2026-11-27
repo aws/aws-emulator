@@ -23,7 +23,12 @@
 //! its user's own `endpoints` map rather than in an index beside the two above, and the
 //! deletion of a user (or of the instance that cascades to it) takes its endpoints with
 //! it. For the same reason the register token that minted an endpoint lives ON the
-//! endpoint record rather than in `idempotency`, which maps a token to an ARN.
+//! endpoint record rather than in `idempotency`, which maps a token to an ARN. Where it
+//! is held does not narrow what it means: like a token in `idempotency`, a register
+//! token is recognised across every register this store has served, not only those
+//! addressed to one user (see
+//! [`endpoint_registered_with`](
+//! ComAmazonawsChimesdkidentityChimeidentityserviceState::endpoint_registered_with)).
 //!
 //! `BTreeMap` (not `HashMap`) everywhere: list operations page in key order, so the
 //! iteration order has to be stable for a `NextToken` to be resumable.
@@ -391,18 +396,35 @@ impl ComAmazonawsChimesdkidentityChimeidentityserviceState {
         self.user(user_arn)?.endpoints.get(endpoint_id)
     }
 
-    /// The endpoint a previous register under `user_arn` already minted for `token`.
+    /// Every endpoint this store holds, across every user of every app instance, in a
+    /// stable key order.
+    fn endpoints(&self) -> impl Iterator<Item = &AppInstanceUserEndpointRecord> {
+        self.app_instances
+            .values()
+            .flat_map(|instance| instance.users.values())
+            .flat_map(|user| user.endpoints.values())
+    }
+
+    /// The endpoint a previous register already minted for `token`, wherever that
+    /// register was addressed.
+    ///
+    /// A `ClientRequestToken` stands for ONE request, so it is recognised across every
+    /// register this store has served and not only those addressed to one
+    /// `AppInstanceUser`: the user ARN a register names is itself a member of the
+    /// request, so a token presented again under another user is a reuse to be compared
+    /// against the request it first carried, not a token nobody has spent. That is the
+    /// per-operation scope [`idempotency_key`] gives a create keyed by ARN; an endpoint
+    /// has no ARN of its own, so its token lives on the record and this scan is how it
+    /// is read back.
     ///
     /// The token lives on the record it minted, so a token whose endpoint has since
-    /// been deregistered resolves to nothing here and is free to mint another.
+    /// been deregistered — or whose user, or that user's app instance, was deleted —
+    /// resolves to nothing here and is free to mint another.
     pub fn endpoint_registered_with(
         &self,
-        user_arn: &str,
         token: &str,
     ) -> Option<&AppInstanceUserEndpointRecord> {
-        self.user(user_arn)?
-            .endpoints
-            .values()
+        self.endpoints()
             .find(|endpoint| endpoint.client_request_token == token)
     }
 
@@ -1022,7 +1044,13 @@ pub fn request_fingerprint(fields: &[Option<&str>]) -> String {
 
 /// The fingerprint of the register request an endpoint was minted by: every member the
 /// register call persists, through [`request_fingerprint`].
+///
+/// The `AppInstanceUserArn` the endpoint is registered under leads the field list, as
+/// the parent ARN does in the create operations' fingerprints: it is persisted on the
+/// record and reported back, so the same token presented under a different user is a
+/// different request rather than a retry of this one.
 pub fn endpoint_request_fingerprint(
+    app_instance_user_arn: &str,
     endpoint_type: &str,
     resource_arn: &str,
     attributes: &EndpointAttributes,
@@ -1030,6 +1058,7 @@ pub fn endpoint_request_fingerprint(
     allow_messages: Option<&str>,
 ) -> String {
     request_fingerprint(&[
+        Some(app_instance_user_arn),
         Some(endpoint_type),
         Some(resource_arn),
         Some(attributes.device_token.as_str()),
