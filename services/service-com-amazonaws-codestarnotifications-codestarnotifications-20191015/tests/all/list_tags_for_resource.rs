@@ -68,7 +68,10 @@ fn encoded(value: &str) -> String {
 }
 
 /// The `UntagResource` request line for `arn` and `keys`.
-fn untag_path(arn: &str, keys: &[&str]) -> String {
+///
+/// `pub(crate)`: every suite of this test target that drives `UntagResource` builds the
+/// request line through this ONE reading of the `@httpLabel` / `@httpQuery` encoding.
+pub(crate) fn untag_path(arn: &str, keys: &[&str]) -> String {
     let query: Vec<String> = keys
         .iter()
         .map(|key| format!("tagKeys={}", encoded(key)))

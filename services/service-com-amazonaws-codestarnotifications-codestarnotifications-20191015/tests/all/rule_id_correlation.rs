@@ -17,6 +17,12 @@
 //! both slots, usable as a key) over a table of rules — never one minted value, which is
 //! per-run by construction.
 //!
+//! The last suite drives that relation across the account changing UNDER a listing: the
+//! mutating paths that take something away (a rule's own subscription, an address of the
+//! whole account, a tag key) and a neighbouring rule arriving and leaving decide what a
+//! rule WATCHES, who it NOTIFIES, how it is LABELLED and which rules are listed beside
+//! it — never the identity a listing reports for a rule that stays.
+//!
 //! The harness (`Emulator`, `string`, ...) is the one `notification_rule_lifecycle`
 //! builds, and the id-form assertion is `rule_id_identity`'s.
 
@@ -24,7 +30,7 @@ use std::collections::BTreeSet;
 
 use serde_json::{json, Value};
 
-use crate::notification_rule_lifecycle::{string, Emulator};
+use crate::notification_rule_lifecycle::{string, tags_of, target_addresses_of, Emulator};
 use crate::rule_id_identity::{assert_canonical_rule_id, id_of_arn};
 
 /// One rule to seed: the rows differ along what the identity relation generalises over —
@@ -465,6 +471,350 @@ async fn an_id_names_a_rule_only_in_its_own_region() {
                         string(&parsed, "Arn"),
                         *arn,
                         "case {case:?}: describe must report the rule the id names, got {parsed}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+// --- the account changing under a listing --------------------------------------------
+//
+// An identifier is drawn for ONE rule when that rule is created and belongs to it for as
+// long as the rule exists. Every later call either changes what the rule watches, who it
+// notifies and how it is labelled, or adds and removes rules beside it — and none of that
+// may re-identify a rule that stays. The rows below are the mutating paths the suites
+// above do not drive: the three that take something AWAY (a rule's own subscription, an
+// address of the whole account, a tag key) and a neighbouring rule arriving and leaving.
+
+/// The tag key the churn below puts on, and later takes off, every seeded rule.
+const CHURN_TAG_KEY: &str = "churn";
+
+/// The address EVERY rule of a region subscribes to, so one account-wide `DeleteTarget`
+/// takes a target off all of them at once.
+fn shared_address(region: &str) -> String {
+    format!("arn:aws:sns:{region}:123456789012:churn-shared")
+}
+
+/// The address ONE rule subscribes to, named after the identity that rule is listed under.
+fn own_address(region: &str, id: &str) -> String {
+    format!("arn:aws:sns:{region}:123456789012:churn-own-{id}")
+}
+
+/// The `CreateNotificationRule` body a neighbour of `region`'s rules arrives with.
+fn neighbour_request(region: &str) -> Value {
+    json!({
+        "Name": format!("churn-neighbour-{region}"),
+        "Resource": format!("arn:aws:codebuild:{region}:123456789012:project/ChurnNeighbour"),
+        "DetailType": "BASIC",
+        // An id out of the catalog `ListEventTypes` publishes
+        // (`crate::state::EVENT_TYPE_CATALOG`).
+        "EventTypeIds": ["codebuild-project-build-state-failed"],
+        "Targets": [],
+    })
+}
+
+/// One later change to the account, applied to every seeded region in turn.
+enum Churn {
+    /// `Subscribe` one more address per rule, so the row after it has a subscription of
+    /// the rule's own to take away.
+    SubscribeOwnTarget,
+    /// `Unsubscribe` that address again: the rule loses a target it alone held.
+    UnsubscribeOwnTarget,
+    /// `DeleteTarget` an address every rule of the region subscribes to, with
+    /// `ForceUnsubscribeAll` — the account-wide removal, which drops that subscription
+    /// from all of them in one call.
+    DeleteSharedTarget,
+    /// `UntagResource` the key every rule carries.
+    UntagEveryRule,
+    /// `CreateNotificationRule`: a neighbour arrives beside the rules already listed.
+    CreateNeighbour,
+    /// `DeleteNotificationRule`: that neighbour leaves again.
+    DeleteNeighbour,
+}
+
+impl Churn {
+    /// How the row is reported in an assertion.
+    fn label(&self) -> &'static str {
+        match self {
+            Churn::SubscribeOwnTarget => "subscribing a target of the rule's own",
+            Churn::UnsubscribeOwnTarget => "unsubscribing that target",
+            Churn::DeleteSharedTarget => "deleting an address of the whole account",
+            Churn::UntagEveryRule => "untagging every rule",
+            Churn::CreateNeighbour => "creating a neighbouring rule",
+            Churn::DeleteNeighbour => "deleting that neighbour",
+        }
+    }
+}
+
+/// Every later change the identity relation is asserted across, in the order they are
+/// applied: the rows differ in WHAT they change (a rule's own subscription, an address of
+/// the account, a label, the population of the listing), in whether they add or remove,
+/// and in whether they touch the listed rule itself or only the account around it.
+const CHURN_ROWS: &[Churn] = &[
+    Churn::SubscribeOwnTarget,
+    Churn::UnsubscribeOwnTarget,
+    Churn::DeleteSharedTarget,
+    Churn::UntagEveryRule,
+    Churn::CreateNeighbour,
+    Churn::DeleteNeighbour,
+];
+
+/// Assert, for every rule of `pairs`, whether the address `address` names for it is among
+/// the targets that rule's describe reports.
+async fn assert_subscribed(
+    emulator: &Emulator,
+    case: &str,
+    region: &str,
+    pairs: &[(String, String)],
+    address: impl Fn(&str) -> String,
+    subscribed: bool,
+) {
+    for (id, arn) in pairs {
+        let described = ok_in(
+            emulator,
+            case,
+            region,
+            "/describeNotificationRule",
+            &json!({ "Arn": arn }),
+        )
+        .await;
+        let addresses = target_addresses_of(&described);
+        let wanted = address(id);
+        assert_eq!(
+            addresses.contains(&wanted),
+            subscribed,
+            "case {case:?}: {wanted:?} must{} be a target of {arn}, got {addresses:?}",
+            if subscribed { "" } else { " no longer" }
+        );
+    }
+}
+
+/// RULE: a notification rule's identifier is drawn for that rule when it is created and
+/// is what every listing reports for it — as `NotificationRuleSummary.Id`, byte-for-byte
+/// the resource segment of that same entry's `Arn` — for as long as the rule exists. A
+/// later call decides what the rule watches, who it notifies, how it is labelled and
+/// WHICH rules a listing names; it never re-identifies a rule the listing still names,
+/// and a rule that leaves the account takes its own identity and no other with it.
+#[tokio::test]
+async fn a_later_change_to_the_account_never_re_identifies_a_listed_rule() {
+    let emulator = Emulator::new();
+    let seeded = seed(&emulator, "churn").await;
+
+    // What each region's listing reports before any change: the pairs the seeding minted,
+    // in creation order.
+    let mut expected: Vec<(&'static str, Vec<(String, String)>)> = Vec::new();
+    for region in seeded_regions() {
+        let case = format!("{region} before any change");
+        let pairs = list_pairs_in(&emulator, &case, region, None).await;
+        assert_eq!(
+            pairs.len(),
+            seeded.iter().filter(|rule| rule.region == region).count(),
+            "case {case:?}: the seeding must leave this region its own rules, got {pairs:?}"
+        );
+        expected.push((region, pairs));
+    }
+
+    // The state the removal rows take away: an address every rule of the region
+    // subscribes to, and a tag key every rule carries.
+    for (region, pairs) in &expected {
+        let case = format!("seeding the removable state of {region}");
+        for (id, arn) in pairs {
+            ok_in(
+                &emulator,
+                &case,
+                region,
+                "/subscribe",
+                &json!({
+                    "Arn": arn,
+                    "Target": {
+                        "TargetType": "SNS",
+                        "TargetAddress": shared_address(region),
+                    },
+                }),
+            )
+            .await;
+            ok_in(
+                &emulator,
+                &case,
+                region,
+                "/tagResource",
+                &json!({
+                    "Arn": arn,
+                    "Tags": Value::Object(
+                        [(CHURN_TAG_KEY.to_string(), json!(id))].into_iter().collect(),
+                    ),
+                }),
+            )
+            .await;
+        }
+    }
+
+    for churn in CHURN_ROWS {
+        for (region, pairs) in expected.iter_mut() {
+            let region = *region;
+            let case = format!("{} in {region}", churn.label());
+            let listed = pairs.clone();
+
+            match churn {
+                Churn::SubscribeOwnTarget => {
+                    for (id, arn) in &listed {
+                        ok_in(
+                            &emulator,
+                            &case,
+                            region,
+                            "/subscribe",
+                            &json!({
+                                "Arn": arn,
+                                "Target": {
+                                    "TargetType": "SNS",
+                                    "TargetAddress": own_address(region, id),
+                                },
+                            }),
+                        )
+                        .await;
+                    }
+                    assert_subscribed(
+                        &emulator,
+                        &case,
+                        region,
+                        &listed,
+                        |id| own_address(region, id),
+                        true,
+                    )
+                    .await;
+                }
+                Churn::UnsubscribeOwnTarget => {
+                    for (id, arn) in &listed {
+                        ok_in(
+                            &emulator,
+                            &case,
+                            region,
+                            "/unsubscribe",
+                            &json!({ "Arn": arn, "TargetAddress": own_address(region, id) }),
+                        )
+                        .await;
+                    }
+                    assert_subscribed(
+                        &emulator,
+                        &case,
+                        region,
+                        &listed,
+                        |id| own_address(region, id),
+                        false,
+                    )
+                    .await;
+                }
+                Churn::DeleteSharedTarget => {
+                    ok_in(
+                        &emulator,
+                        &case,
+                        region,
+                        "/deleteTarget",
+                        &json!({
+                            "TargetAddress": shared_address(region),
+                            "ForceUnsubscribeAll": true,
+                        }),
+                    )
+                    .await;
+                    assert_subscribed(
+                        &emulator,
+                        &case,
+                        region,
+                        &listed,
+                        |_| shared_address(region),
+                        false,
+                    )
+                    .await;
+                }
+                Churn::UntagEveryRule => {
+                    for (_, arn) in &listed {
+                        ok_in(
+                            &emulator,
+                            &case,
+                            region,
+                            &crate::list_tags_for_resource::untag_path(arn, &[CHURN_TAG_KEY]),
+                            &json!({}),
+                        )
+                        .await;
+                        let tags = ok_in(
+                            &emulator,
+                            &case,
+                            region,
+                            "/listTagsForResource",
+                            &json!({ "Arn": arn }),
+                        )
+                        .await;
+                        assert!(
+                            !tags_of(&tags).contains_key(CHURN_TAG_KEY),
+                            "case {case:?}: {CHURN_TAG_KEY:?} must be off {arn}, got {tags}"
+                        );
+                    }
+                }
+                Churn::CreateNeighbour => {
+                    let created = ok_in(
+                        &emulator,
+                        &case,
+                        region,
+                        "/createNotificationRule",
+                        &neighbour_request(region),
+                    )
+                    .await;
+                    let arn = string(&created, "Arn");
+                    let id = id_of_arn(&case, &arn).to_string();
+                    assert_canonical_rule_id(&case, &id);
+                    assert!(
+                        !listed.iter().any(|(held, _)| held == &id),
+                        "case {case:?}: a new rule must be drawn an identity no listed rule \
+                         holds, got {id:?} among {listed:?}"
+                    );
+                    pairs.push((id, arn));
+                }
+                Churn::DeleteNeighbour => {
+                    let (id, arn) = pairs.pop().unwrap_or_else(|| {
+                        panic!("case {case:?}: the row before must have left a neighbour")
+                    });
+                    let deleted = ok_in(
+                        &emulator,
+                        &case,
+                        region,
+                        "/deleteNotificationRule",
+                        &json!({ "Arn": arn }),
+                    )
+                    .await;
+                    assert_eq!(
+                        string(&deleted, "Arn"),
+                        arn,
+                        "case {case:?}: delete must report the rule it removed, got {deleted}"
+                    );
+                    let remaining = list_pairs_in(&emulator, &case, region, None).await;
+                    assert!(
+                        !remaining.iter().any(|(held, _)| held == &id),
+                        "case {case:?}: the deleted rule's identity {id:?} must leave the \
+                         listing, got {remaining:?}"
+                    );
+                }
+            }
+
+            // The identity the listing reports after the change, read unfiltered and then
+            // one entry at a time: the same pairs, in the same order, each `Id` still the
+            // resource segment of its own entry's `Arn`.
+            for max_results in [None, Some(1)] {
+                let paged = format!("{case} at MaxResults={max_results:?}");
+                let after = list_pairs_in(&emulator, &paged, region, max_results).await;
+                assert_eq!(
+                    &after,
+                    &*pairs,
+                    "case {paged:?}: the change may only decide WHICH rules are listed, got \
+                     {after:?}"
+                );
+                for (id, arn) in &after {
+                    assert_canonical_rule_id(&paged, id);
+                    assert_eq!(
+                        id_of_arn(&paged, arn),
+                        id.as_str(),
+                        "case {paged:?}: an entry's Id must be its own Arn's resource segment, \
+                         got {id:?} for {arn:?}"
                     );
                 }
             }
