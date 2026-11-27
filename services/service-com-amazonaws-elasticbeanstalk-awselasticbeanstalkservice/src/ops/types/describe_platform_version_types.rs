@@ -42,6 +42,7 @@ pub struct PlatformDescription {
     pub programming_languages: Option<Vec<PlatformProgrammingLanguage>>,
     pub frameworks: Option<Vec<PlatformFramework>>,
     pub custom_ami_list: Option<Vec<CustomAmi>>,
+    pub default_ami_list: Option<Vec<DefaultAmi>>,
     pub supported_tier_list: Option<Vec<String>>,
     pub supported_addon_list: Option<Vec<String>>,
     pub platform_lifecycle_state: Option<String>,
@@ -67,6 +68,13 @@ pub struct PlatformFramework {
 #[derive(Debug, Clone, Default)]
 pub struct CustomAmi {
     pub virtualization_type: Option<String>,
+    pub image_id: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.elasticbeanstalk#DefaultAmi")]
+#[derive(Debug, Clone, Default)]
+pub struct DefaultAmi {
+    pub architecture: Option<String>,
     pub image_id: Option<String>,
 }
 

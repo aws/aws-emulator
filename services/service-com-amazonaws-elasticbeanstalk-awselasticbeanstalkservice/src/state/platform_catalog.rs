@@ -219,7 +219,8 @@ impl SolutionStack {
     /// platform definition it built the version from, and a version Elastic
     /// Beanstalk itself publishes states none, so it reports no framework at all
     /// rather than an invented one. The machine images the version runs are the
-    /// service's own ([`managed_custom_ami_list`]).
+    /// service's own ([`managed_custom_ami_list`] and
+    /// [`managed_default_ami_list`]).
     pub fn to_description(
         &self,
         region: &str,
@@ -251,6 +252,11 @@ impl SolutionStack {
             programming_languages: Some(self.to_programming_languages()),
             frameworks: Some(managed_frameworks()),
             custom_ami_list: Some(managed_custom_ami_list(
+                region,
+                self.branch_name,
+                platform_version,
+            )),
+            default_ami_list: Some(managed_default_ami_list(
                 region,
                 self.branch_name,
                 platform_version,
@@ -331,6 +337,36 @@ pub fn managed_custom_ami_list(
         .collect()
 }
 
+/// The `DefaultAmiList` a MANAGED platform version reports — "the AMIs that
+/// Elastic Beanstalk uses by default for the platform version, one for each
+/// supported processor architecture": one entry per architecture an AMI of a
+/// platform version can have, naming that architecture and the default machine
+/// image the version runs on it.
+///
+/// Which architectures those are is the model's own `AmiArchitecture`, the shape
+/// `DefaultAmi$Architecture` targets — [`AMI_ARCHITECTURE_VALUES`], not a second
+/// list written out here. A managed version is published for every one of them,
+/// so every entry names an image; the entries are derived per call from the
+/// version itself ([`managed_image_id`]), like [`managed_custom_ami_list`]'s.
+pub fn managed_default_ami_list(
+    region: &str,
+    branch_name: &str,
+    platform_version: &str,
+) -> Vec<DefaultAmi> {
+    AMI_ARCHITECTURE_VALUES
+        .iter()
+        .map(|architecture| DefaultAmi {
+            architecture: Some((*architecture).to_string()),
+            image_id: Some(managed_image_id(
+                region,
+                branch_name,
+                platform_version,
+                architecture,
+            )),
+        })
+        .collect()
+}
+
 /// The `ImageId` of the machine image the version `platform_version` of the
 /// branch `branch_name` runs in `region` under the virtualization type
 /// `virtualization_type` — and `None` where the version ships no image for that
@@ -342,35 +378,51 @@ pub fn managed_custom_ami_list(
 /// precedes those generations, so a published version ships no image for it and
 /// its entry names none, which is what the recorded `DescribePlatformVersion`
 /// responses of a managed version carry.
-///
-/// An image is a REGIONAL EC2 resource of one platform version, so the id is
-/// derived from exactly what identifies it — the region, the version's ARN
-/// components and the virtualization type — in the form EC2 issues an image id
-/// in ([`MANAGED_IMAGE_ID_PREFIX`] and [`MANAGED_IMAGE_ID_DIGITS`] lowercase
-/// hexadecimal digits under a leading `0`, the published `ami-0123456789abcdef0`
-/// shape). Deriving it means every read of one version reports the same image,
-/// no two versions report one image, and nothing has to mint or store an id.
-/// The digest and its hexadecimal rendering are the `sha2` and `hex` crates', as
-/// in [`super::managed_action_schedule`].
 fn managed_platform_image_id(
     region: &str,
     branch_name: &str,
     platform_version: &str,
     virtualization_type: &str,
 ) -> Option<String> {
-    use ::sha2::Digest;
-
     if virtualization_type != PLATFORM_VIRTUALIZATION_TYPE_HVM {
         return None;
     }
+    Some(managed_image_id(
+        region,
+        branch_name,
+        platform_version,
+        virtualization_type,
+    ))
+}
+
+/// The `ImageId` of the machine image the version `platform_version` of the
+/// branch `branch_name` runs in `region` for `qualifier` — the virtualization
+/// type or the processor architecture the image is the version's image FOR.
+///
+/// An image is a REGIONAL EC2 resource of one platform version, so the id is
+/// derived from exactly what identifies it — the region, the version's ARN
+/// components and that qualifier — in the form EC2 issues an image id
+/// in ([`MANAGED_IMAGE_ID_PREFIX`] and [`MANAGED_IMAGE_ID_DIGITS`] lowercase
+/// hexadecimal digits under a leading `0`, the published `ami-0123456789abcdef0`
+/// shape). Deriving it means every read of one version reports the same image,
+/// no two versions report one image, and nothing has to mint or store an id.
+/// The digest and its hexadecimal rendering are the `sha2` and `hex` crates', as
+/// in [`super::managed_action_schedule`].
+fn managed_image_id(
+    region: &str,
+    branch_name: &str,
+    platform_version: &str,
+    qualifier: &str,
+) -> String {
+    use ::sha2::Digest;
+
     let name = format!(
-        "urn:{ARN_NAMESPACE}:{region}:platform/{branch_name}/{platform_version}:\
-         {virtualization_type}"
+        "urn:{ARN_NAMESPACE}:{region}:platform/{branch_name}/{platform_version}:{qualifier}"
     );
     let digest = ::sha2::Sha256::digest(name.as_bytes());
     // A leading `0` and the digits the digest supplies, two per byte.
     let body = ::hex::encode(&digest[..(MANAGED_IMAGE_ID_DIGITS - 1) / 2]);
-    Some(format!("{MANAGED_IMAGE_ID_PREFIX}0{body}"))
+    format!("{MANAGED_IMAGE_ID_PREFIX}0{body}")
 }
 
 /// The prefix EC2 issues an image id under, which is the form an `ImageId`

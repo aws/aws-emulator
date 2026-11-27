@@ -29,6 +29,12 @@ pub mod unmodelled_member_wire;
 #[macro_use]
 pub mod environment_description_wire;
 
+// The shapes reached by more than one operation whose wire carries members the
+// on-disk model does not declare, which is why they are declared by hand here
+// instead of in the model-rendered `shared_types` — see that module's own note.
+// Declared after the two macro modules it builds on.
+pub mod shared_wire_types;
+
 pub mod abort_environment_update_types;
 pub mod apply_environment_managed_action_types;
 pub mod associate_environment_operations_role_types;
@@ -157,6 +163,8 @@ pub use restart_app_server_types::*;
 pub use retrieve_environment_info_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use shared_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use shared_wire_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use swap_environment_cnam_es_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]

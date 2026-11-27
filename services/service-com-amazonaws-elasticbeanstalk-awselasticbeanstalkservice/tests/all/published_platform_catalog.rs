@@ -66,9 +66,9 @@ const VIRTUALIZATION_TYPES: &[(&str, bool)] = &[("pv", false), ("hvm", true)];
 /// SOURCE: EC2's own published AMI id form — `ami-` followed by 17 lowercase
 /// hexadecimal digits under a leading `0`, the shape of the documented
 /// `ami-0123456789abcdef0` examples.
-const IMAGE_ID_PREFIX: &str = "ami-";
+pub(crate) const IMAGE_ID_PREFIX: &str = "ami-";
 /// See [`IMAGE_ID_PREFIX`].
-const IMAGE_ID_DIGITS: usize = 17;
+pub(crate) const IMAGE_ID_DIGITS: usize = 17;
 
 /// One row of the legacy-platform table below: a branch of Elastic Beanstalk's
 /// published platform-branch inventory that belongs to a platform published
@@ -344,7 +344,7 @@ const IMAGE_CASES: &[ImageCase] = &[
 /// Whether `value` is an image id of the form EC2 issues one in (see
 /// [`IMAGE_ID_PREFIX`]): the prefix, then 17 lowercase hexadecimal digits under
 /// a leading `0`, not all of them `0`.
-fn is_issued_image_id(value: &str) -> bool {
+pub(crate) fn is_issued_image_id(value: &str) -> bool {
     let Some(suffix) = value.strip_prefix(IMAGE_ID_PREFIX) else {
         return false;
     };

@@ -35,8 +35,9 @@ use crate::ops::types::{
     ApplicationDescription, ApplicationMetrics, ApplicationResourceLifecycleConfig,
     ApplicationVersionDescription,
     ApplicationVersionLifecycleConfig, ConfigurationOptionDescription, ConfigurationOptionSetting,
-    CustomAmi, Deployment, EnvironmentInfoDescription, EnvironmentLink, EnvironmentTier,
+    CustomAmi, DefaultAmi, Deployment, EnvironmentInfoDescription, EnvironmentLink, EnvironmentTier,
     ACTION_HISTORY_STATUS_VALUES, ACTION_STATUS_VALUES, ACTION_TYPE_VALUES,
+    AMI_ARCHITECTURE_VALUES,
     CONFIGURATION_DEPLOYMENT_STATUS_VALUES, CONFIGURATION_OPTION_VALUE_TYPE_VALUES,
     EventDescription, InstanceHealthSummary, ManagedAction, ManagedActionHistoryItem, MaxAgeRule,
     MaxCountRule,
@@ -1813,6 +1814,11 @@ impl PlatformVersion {
             programming_languages: None,
             frameworks: None,
             custom_ami_list: None,
+            // "This list isn't returned for custom platforms":
+            // `PlatformDescription$DefaultAmiList` names the images Elastic
+            // Beanstalk itself publishes a version for, and this version was
+            // built by an account from its own platform definition.
+            default_ami_list: None,
             supported_tier_list: None,
             supported_addon_list: None,
             platform_lifecycle_state: None,
