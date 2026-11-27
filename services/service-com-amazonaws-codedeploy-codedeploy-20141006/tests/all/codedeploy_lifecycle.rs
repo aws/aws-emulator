@@ -227,6 +227,41 @@ impl Emulator {
         parsed
     }
 
+    /// Call `operation` over this service's OTHER wire format, answering its HTTP
+    /// status and the body bytes exactly as answered.
+    ///
+    /// The model declares `rpcv2Cbor` beside `awsJson1_1`
+    /// (`smithy_query(query="service_info")`), so a client may call every
+    /// operation over `POST /service/CodeDeploy_20141006/operation/<Operation>`
+    /// with `smithy-protocol: rpc-v2-cbor` and a CBOR body. The bytes are passed
+    /// through untouched — encoding and decoding them is the caller's, since only
+    /// the caller knows the shape — and the SigV4 credential scope is what routes
+    /// the request to the `codedeploy` signing name, exactly as it does above; the
+    /// suite verifies no signature.
+    pub(crate) async fn cbor_call(
+        &self,
+        operation: &str,
+        body: bytes::Bytes,
+    ) -> (u16, bytes::Bytes) {
+        let request = ::http::Request::builder()
+            .method("POST")
+            .uri(format!(
+                "/service/CodeDeploy_20141006/operation/{operation}"
+            ))
+            .header("content-type", "application/cbor")
+            .header("accept", "application/cbor")
+            .header("smithy-protocol", "rpc-v2-cbor")
+            .header(
+                "authorization",
+                "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20260101/us-east-1/codedeploy/\
+                 aws4_request, SignedHeaders=host, Signature=0000",
+            )
+            .body(body)
+            .expect("the request is well formed");
+        let response = self.router.dispatch(request).await;
+        (response.status().as_u16(), response.into_body())
+    }
+
     /// Call one CLOUDWATCH `operation` through the same front door and require
     /// success, answering the response body.
     ///

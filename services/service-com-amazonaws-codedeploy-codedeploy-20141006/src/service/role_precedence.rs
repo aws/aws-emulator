@@ -143,8 +143,8 @@ impl OperationError for Answer {
     }
 
     fn query_error_code(&self) -> Option<&'static str> {
-        // This service speaks awsJson1_1, which carries no `awsQueryError` code at
-        // all; both shapes are reported by their own name.
+        // Neither wire format this service declares carries an `awsQueryError`
+        // code at all; both shapes are reported by their own name.
         None
     }
 }
@@ -175,7 +175,11 @@ impl Answer {
             Self::RoleInvalid(exception) => exception.message.clone(),
         }
         .unwrap_or_default();
+        // The codec of the protocol THIS request arrived in, so an answer worded
+        // here travels in the same envelope the framework's error tail would have
+        // used for it, whichever of the service's wire formats the client speaks.
         definition
+            .wire_protocol(req)
             .protocol()
             .serialize_error(
                 self.as_serializable(),
@@ -235,8 +239,8 @@ fn addressed_with<T: DeserializableStruct + SerializableStruct>(
 /// The two operations here are this layer's whole scope: they are the ones that SET
 /// a deployment group's service role and model the refusals of it. `None` for every
 /// other operation, which keeps the generated routing table as its only source. On
-/// this service's awsJson1_1 protocol a routing key is the operation's own shape
-/// name.
+/// every wire format this service declares a routing key is the operation's own
+/// shape name, so one table of keys serves them all.
 fn addressed(key: &str, protocol: &dyn ServerHttpProtocol, req: &RtRequest) -> Option<Addressed> {
     match key {
         CREATE_DEPLOYMENT_GROUP => addressed_with(
@@ -402,7 +406,10 @@ impl<Eng: Send + Sync + 'static> ErasedOperation for RolePrecedence<Eng> {
             // `Send + Sync` — crosses the await below.
             let served = {
                 let definition = svc.definition();
-                let protocol = definition.protocol();
+                // The protocol this request arrived in, not the first the model
+                // declares: the key, the body and the answer all belong to it.
+                let wire = definition.wire_protocol(req);
+                let protocol = wire.protocol();
                 let key = protocol.routing_key(req).ok();
                 // The same decision `override_operation` made, re-derived from the
                 // same request, and then the answer it owes. When the role earns no

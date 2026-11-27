@@ -318,8 +318,6 @@ mod tests {
             ecs_services: Vec::new(),
             ec2_deployment_options: None,
             termination_hook_enabled: false,
-            bake_time: super::super::NO_BAKE_TIME,
-            managed_hook_execution_role_arn: None,
             tags: Vec::new(),
             create_time_ms: 0,
             region: "us-east-1".to_string(),

@@ -416,7 +416,13 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
         // modelled `InvalidRoleException`. See [`role_precedence`], which claims
         // nothing else; every other request keeps the generated routing table as
         // its only source.
-        let protocol = self.entry.protocol();
+        //
+        // The protocol is the one THIS request arrived in: the model declares
+        // more than one wire format for this service, so the codec that names the
+        // operation and reads the body is selected per request and never the
+        // first-declared one.
+        let wire = self.entry.wire_protocol(req);
+        let protocol = wire.protocol();
         let key = protocol.routing_key(req).ok()?;
         if self.role_precedence.has_a_question(key, protocol, req) {
             return Some(&self.role_precedence as &dyn ErasedOperation);

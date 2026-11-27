@@ -1373,16 +1373,6 @@ pub fn effective_outdated_instances_strategy(requested: Option<String>) -> Optio
     Some(requested.unwrap_or_else(|| OUTDATED_INSTANCES_STRATEGY_UPDATE.to_string()))
 }
 
-/// The bake time a deployment group that configured none runs with: no wait at
-/// all. Every group reports a bake time, so a group with nothing configured
-/// reports this rather than leaving the member out.
-pub const NO_BAKE_TIME: i32 = 0;
-
-/// What a deployment group reports as the execution role of its managed hooks
-/// when it carries no such role: the sentinel CodeDeploy answers with, rather
-/// than an absent member or an empty string.
-pub const MANAGED_HOOK_EXECUTION_ROLE_NONE: &str = "NONE";
-
 /// A tag's key and value, or `None` when the tag is not one CodeDeploy accepts.
 ///
 /// The model states the rule for the tags of an on-premises instance: "Keys and
@@ -1559,15 +1549,6 @@ pub struct DeploymentGroup {
     pub ecs_services: Vec<ECSService>,
     pub ec2_deployment_options: Option<EC2DeploymentOptions>,
     pub termination_hook_enabled: bool,
-    /// The bake time the group runs with, in the units the reader reports it in.
-    /// Neither `CreateDeploymentGroup` nor `UpdateDeploymentGroup` takes a
-    /// bake-time member in the model this crate is built from, so a group holds
-    /// [`NO_BAKE_TIME`] until one of them does.
-    pub bake_time: i32,
-    /// The execution role the group's managed hooks run under, or `None` for a
-    /// group that has none — which is every group here, since no operation in
-    /// this model revision takes one.
-    pub managed_hook_execution_role_arn: Option<String>,
     pub tags: Vec<Tag>,
     pub create_time_ms: i64,
     /// The Region the group was created in ([`request_region`]), which is the
@@ -4478,20 +4459,6 @@ pub fn deployment_group_info(
         ecs_services: non_empty(&group.ecs_services),
         ec2_deployment_options: group.ec2_deployment_options.clone(),
         termination_hook_enabled: group.termination_hook_enabled,
-        // The bake time and the managed-hook configuration are reported for
-        // EVERY group, whether or not it configured either: a group that
-        // configured no bake time reports no wait at all, and a group with no
-        // managed-hook execution role reports the sentinel for "none" rather
-        // than leaving the structure out.
-        bake_time: group.bake_time,
-        managed_hook_config: Some(crate::ops::types::ManagedHookConfig {
-            execution_role_arn: Some(
-                group
-                    .managed_hook_execution_role_arn
-                    .clone()
-                    .unwrap_or_else(|| MANAGED_HOOK_EXECUTION_ROLE_NONE.to_string()),
-            ),
-        }),
     }
 }
 
@@ -4746,8 +4713,6 @@ mod tests {
             ecs_services: Vec::new(),
             ec2_deployment_options: None,
             termination_hook_enabled: false,
-            bake_time: NO_BAKE_TIME,
-            managed_hook_execution_role_arn: None,
             tags: Vec::new(),
             create_time_ms: 0,
             region: "us-east-1".to_string(),

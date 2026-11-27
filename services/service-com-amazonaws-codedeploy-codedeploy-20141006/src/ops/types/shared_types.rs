@@ -161,8 +161,6 @@ pub struct ApplicationInfo {
 #[smithy_macros::smithy(shape = "com.amazonaws.codedeploy#DeploymentGroupInfo")]
 #[derive(Debug, Clone, Default)]
 pub struct DeploymentGroupInfo {
-    pub bake_time: i32,
-    pub managed_hook_config: Option<ManagedHookConfig>,
     pub application_name: Option<String>,
     pub deployment_group_id: Option<String>,
     pub deployment_group_name: Option<String>,
@@ -187,12 +185,6 @@ pub struct DeploymentGroupInfo {
     pub ecs_services: Option<Vec<ECSService>>,
     pub ec2_deployment_options: Option<EC2DeploymentOptions>,
     pub termination_hook_enabled: bool,
-}
-
-#[smithy_macros::smithy(shape = "com.amazonaws.codedeploy#ManagedHookConfig")]
-#[derive(Debug, Clone, Default)]
-pub struct ManagedHookConfig {
-    pub execution_role_arn: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.codedeploy#EC2TagFilter")]

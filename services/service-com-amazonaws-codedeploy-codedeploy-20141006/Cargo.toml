@@ -128,6 +128,10 @@ service-com-amazonaws-sqs-amazonsqs = { workspace = true }
 # how the `Server`-platform suite proves the revision a deployment installed is on the
 # instance for the agent in its guest to read.
 service-com-amazonaws-ssm-amazonssm = { workspace = true }
+# Reads an ANSWERED CBOR map back in the suite that drives this service's
+# `rpcv2Cbor` route: the members of a rendered error map are not known from any
+# shape, so the schema-driven reader cannot read one.
+minicbor = { version = "2.3", features = ["alloc"] }
 
 [lints]
 workspace = true

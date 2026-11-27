@@ -705,12 +705,6 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 ecs_services: input.ecs_services.unwrap_or_default(),
                 ec2_deployment_options: input.ec2_deployment_options,
                 termination_hook_enabled: input.termination_hook_enabled.unwrap_or(false),
-                // This operation takes neither a bake time nor a managed-hook
-                // execution role in the model this crate is built from, so a
-                // created group carries no wait and no such role — which is
-                // what a read of it reports.
-                bake_time: crate::state::NO_BAKE_TIME,
-                managed_hook_execution_role_arn: None,
                 tags: input.tags.unwrap_or_default(),
                 create_time_ms: crate::state::now_ms(),
                 region,

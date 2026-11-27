@@ -16,11 +16,8 @@
 //!   report it (`smithy_query(query="shape",shape="DeleteDeploymentGroupOutput")`
 //!   and `...shape="UpdateDeploymentGroupOutput"`) is the EMPTY list when no
 //!   Auto Scaling lifecycle hook was left behind;
-//! * a deployment group reports its bake time and its managed-hook
-//!   configuration (`DeploymentGroupInfo$bakeTime`, `$managedHookConfig`)
-//!   whether or not it configured either: no bake time is reported as no wait
-//!   at all, and a group with no managed-hook execution role reports the
-//!   sentinel CodeDeploy answers with.
+//! * a deployment group a read answers reports only the members its modelled
+//!   shape declares.
 //!
 //! The rows of each table differ along what the rule generalises over — the
 //! SHAPE and SIZE of the batch, which members the group was created with, and
@@ -38,11 +35,6 @@ use crate::list_deployment_targets::{deploy, group_with, register};
 
 /// The service role every deployment group here is created with.
 const ROLE: &str = "arn:aws:iam::123456789012:role/CodeDeployRole";
-
-/// The value a deployment group's managed-hook execution role is reported as
-/// when the group carries none: the sentinel the recorded service answers with,
-/// not an absent member.
-const NO_MANAGED_HOOK_ROLE: &str = "NONE";
 
 /// The batch-level no-error text: the member is present and empty whenever the
 /// batch itself was answered.
@@ -298,12 +290,58 @@ async fn a_group_write_reports_an_empty_left_behind_hook_list() {
     }
 }
 
-/// RULE: every deployment group a read answers reports its bake time and its
-/// managed-hook configuration — a group that configured no bake time reports no
-/// wait at all, and a group with no managed-hook execution role reports the
-/// sentinel for "none" — and it keeps reporting them after an update.
+/// Every member `DeploymentGroupInfo` declares, by the name it travels under.
+///
+/// The catalog is the shape's own member list, from
+/// `smithy_query(query="shape",shape="DeploymentGroupInfo")`.
+const MODELLED_GROUP_MEMBERS: &[&str] = &[
+    "applicationName",
+    "deploymentGroupId",
+    "deploymentGroupName",
+    "deploymentConfigName",
+    "ec2TagFilters",
+    "onPremisesInstanceTagFilters",
+    "autoScalingGroups",
+    "serviceRoleArn",
+    "targetRevision",
+    "triggerConfigurations",
+    "alarmConfiguration",
+    "autoRollbackConfiguration",
+    "deploymentStyle",
+    "outdatedInstancesStrategy",
+    "blueGreenDeploymentConfiguration",
+    "loadBalancerInfo",
+    "lastSuccessfulDeployment",
+    "lastAttemptedDeployment",
+    "ec2TagSet",
+    "onPremisesTagSet",
+    "computePlatform",
+    "ecsServices",
+    "ec2DeploymentOptions",
+    "terminationHookEnabled",
+];
+
+/// The members a group read reports for EVERY group, whatever it was created
+/// with: the ones the create required or defaulted, so the subset check below
+/// cannot pass on an answer that reports nothing at all.
+const ALWAYS_REPORTED_GROUP_MEMBERS: &[&str] = &[
+    "applicationName",
+    "deploymentGroupId",
+    "deploymentGroupName",
+    "deploymentConfigName",
+    "serviceRoleArn",
+    "computePlatform",
+];
+
+/// RULE: a success reports only members the output shape DECLARES — a key no
+/// member of that shape carries is reported by no read, so a client decodes the
+/// answer against the shape it holds and meets nothing else.
+///
+/// The rows are the group table above, which spans the compute platform and the
+/// members a group was created with, and each row is read both as created and
+/// after an update, because an update rewrites the stored group.
 #[tokio::test]
-async fn every_deployment_group_reports_its_bake_time_and_managed_hook_config() {
+async fn a_deployment_group_reports_only_its_modelled_members() {
     let emulator = Emulator::new();
 
     /// The `deploymentGroupInfo` `GetDeploymentGroup` answers.
@@ -317,36 +355,31 @@ async fn every_deployment_group_reports_its_bake_time_and_managed_hook_config() 
             .clone()
     }
 
-    fn assert_reported(info: &Value, case: &str) {
-        assert_eq!(
-            info["bakeTime"],
-            json!(codedeploy::state::NO_BAKE_TIME),
-            "case {case:?}: expected bakeTime {}, got {:?} in {info:?}",
-            codedeploy::state::NO_BAKE_TIME,
-            info["bakeTime"]
-        );
-        assert!(
-            info["bakeTime"].is_number(),
-            "case {case:?}: expected bakeTime to be reported as a number, got {info:?}"
-        );
-        assert_eq!(
-            info["managedHookConfig"],
-            json!({"executionRoleArn": NO_MANAGED_HOOK_ROLE}),
-            "case {case:?}: expected managedHookConfig {{executionRoleArn: \
-             {NO_MANAGED_HOOK_ROLE:?}}}, got {:?} in {info:?}",
-            info["managedHookConfig"]
-        );
+    fn assert_only_modelled(info: &Value, case: &str) {
+        let reported = info
+            .as_object()
+            .unwrap_or_else(|| panic!("case {case:?}: expected a group document, got {info:?}"));
+        for member in reported.keys() {
+            assert!(
+                MODELLED_GROUP_MEMBERS.contains(&member.as_str()),
+                "case {case:?}: {member:?} is no member of DeploymentGroupInfo, got {info:?}"
+            );
+        }
+        for member in ALWAYS_REPORTED_GROUP_MEMBERS {
+            assert!(
+                reported.contains_key(*member),
+                "case {case:?}: expected {member:?} to be reported, got {info:?}"
+            );
+        }
     }
 
     for (index, (case, platform, extras)) in group_cases().into_iter().enumerate() {
-        let application = format!("bake-time-{index:02}");
+        let application = format!("group-members-{index:02}");
         let group = seed_group(&emulator, &application, platform, &extras).await;
 
         let created = read(&emulator, &application, &group).await;
-        assert_reported(&created, case);
+        assert_only_modelled(&created, case);
 
-        // A renaming update rewrites the stored group; the two members survive
-        // it, because they are carried on the group and not minted by the read.
         let renamed = format!("{group}-renamed");
         emulator
             .ok(
@@ -359,6 +392,6 @@ async fn every_deployment_group_reports_its_bake_time_and_managed_hook_config() 
             )
             .await;
         let after_update = read(&emulator, &application, &renamed).await;
-        assert_reported(&after_update, case);
+        assert_only_modelled(&after_update, case);
     }
 }
