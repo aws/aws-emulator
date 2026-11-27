@@ -229,9 +229,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         // Materialise every evaluation pass the clock has already made due. Each one
         // completed at its own instant whether or not anybody asked for the status, so
-        // reporting it does not change what a later caller sees.
+        // reporting it does not change what a later caller sees — and for a rule whose
+        // verdicts are DELIVERED to Config, what the clock makes due is the END of the
+        // pass and nothing else: the invocation and the evaluation such a rule reports are
+        // the ones that actually happened.
         for rule in store.config_rules.values_mut() {
-            rule.evaluation.settle(now);
+            rule.settle_evaluation(now);
         }
 
         // Page over the store's own name ordering, resuming at the name the token

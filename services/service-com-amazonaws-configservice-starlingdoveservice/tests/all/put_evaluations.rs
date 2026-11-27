@@ -10,8 +10,10 @@
 //! data was aggregated from, and the counts
 //! `GetAggregateConfigRuleComplianceSummary` rolls those results up into. A delivery is
 //! associated with its rule by the `ResultToken` Config minted when it invoked that
-//! rule: a token Config did not mint, or one that is not the rule's current one, is
-//! refused, and a token naming a rule the account no longer holds is refused as that.
+//! rule: a token Config did not mint is refused, a token Config minted for ANY invocation
+//! of the rule is accepted — a rule has several invocations outstanding at a time, one per
+//! event that triggered one — and a token naming a rule the account no longer holds is
+//! refused as that.
 //!
 //! Every case drives the emulator the way a client does — an `awsJson1_1` `POST /`
 //! through the same `MultiServiceRouter` the production router builds, using the
@@ -548,8 +550,11 @@ async fn refuses_a_delivery_no_invocation_of_an_existing_rule_asked_for() {
         );
     }
 
-    // Config invoking the rule again replaces the token, so the previous one belongs to
-    // no evaluation Config is waiting for.
+    // Config invoking the rule again mints a NEW token, and the one an earlier invocation
+    // was made with is still a token Config accepts a delivery on: a rule has several
+    // invocations outstanding at a time — a change-triggered rule is invoked once per
+    // configuration item — and each evaluator delivers what it found on the token of the
+    // event it was handed, whichever invocation Config made last.
     emulator
         .ok(
             "StartConfigRulesEvaluation",
@@ -561,16 +566,16 @@ async fn refuses_a_delivery_no_invocation_of_an_existing_rule_asked_for() {
         reinvoked, minted,
         "a new invocation mints a new ResultToken, got {reinvoked:?} twice"
     );
-    let (status, code) = emulator
-        .refused(
+    let delivered = emulator
+        .ok(
             "PutEvaluations",
             &json!({ "ResultToken": minted, "Evaluations": [] }),
         )
         .await;
     assert_eq!(
-        (status, code.as_str()),
-        (400, "InvalidResultTokenException"),
-        "a superseded ResultToken is refused, got {status} {code}"
+        delivered["FailedEvaluations"],
+        json!([]),
+        "a delivery on the token of an earlier invocation is accepted, got {delivered}"
     );
 
     // A token that names a rule the account no longer holds is refused as that rule

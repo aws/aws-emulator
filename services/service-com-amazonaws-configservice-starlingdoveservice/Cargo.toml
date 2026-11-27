@@ -95,6 +95,12 @@ md-5 = "0.10"
 # (`iam_authorization`), which is how `PutDeliveryChannel` decides whether the delivery
 # bucket's own policy allows Config to deliver into it.
 service-common = { path = "../common" }
+# `futures-util`: Config invokes a change-triggered rule's evaluator once per configuration
+# item and those invocations are independent of one another, so a pass makes a bounded
+# number of them AT ONCE with this crate's `join_all` rather than waiting for one
+# function's run before making the next call (`state::custom_lambda_rule`). Only the
+# combinators are needed, so the `futures` facade and its executor are left out.
+futures-util = { version = "0.3", default-features = false, features = ["alloc"] }
 
 [build-dependencies]
 emulator-core-build-support = { workspace = true }

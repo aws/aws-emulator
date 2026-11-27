@@ -2385,6 +2385,12 @@ impl AwsAccess {
         // this runtime supplies, fills one here, before the request is built and signed.
         let filled = super::idempotency_token::filled(api.sdk_token, operation, body);
         let body = filled.as_deref().unwrap_or(body);
+        // And every client puts a TIMESTAMP a caller handed it in the form the called
+        // protocol carries one in, whatever form the caller had it in
+        // (`super::sdk_timestamps`) — the other half of what the client, rather than the
+        // service, does to an input document.
+        let in_form = super::sdk_timestamps::in_protocol_form(api.sdk_token, operation, body);
+        let body = in_form.as_deref().unwrap_or(body);
         match ::tokio::time::timeout(within, self.dispatched(api, region, operation, body)).await
         {
             // WHERE the answer carries an INSTANT: a JSON protocol carries a timestamp as the

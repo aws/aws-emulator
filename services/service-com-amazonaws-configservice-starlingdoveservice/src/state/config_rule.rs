@@ -160,17 +160,43 @@ impl EvaluationResultEntry {
     }
 }
 
+/// WHERE Config has got to in handing a change-triggered rule's evaluator the
+/// configuration items it owes an invocation for: the `(capturedAt, resourceType,
+/// resourceId)` of the last item handed over.
+///
+/// The capture instant comes FIRST because that is the order the items were recorded in,
+/// and so the order Config hands them over: an item recorded later sorts after every item
+/// already handed over, whatever its resource is called, which is what makes the watermark
+/// in [`RuleEvaluationEntry::pushed_through`] move only forward. The resource's type and
+/// id break the tie between the items one recording pass captured at one instant.
+pub type PushedThrough = (SystemTime, String, String);
+
+/// How many of a rule's minted `ResultToken`s Config still accepts a delivery on
+/// ([`RuleEvaluationEntry::accepted_tokens`]).
+///
+/// A HOST bound: a change-triggered rule has one outstanding invocation per configuration
+/// item its evaluator is still running for, and each delivers on its own token, so more
+/// than one token is live at a time; this many covers the invocations one pass makes being
+/// answered out of order while keeping what one rule holds bounded.
+pub const ACCEPTED_RESULT_TOKENS_KEPT: usize = 64;
+
 /// The invocation-and-evaluation history of one Config rule, as
 /// `DescribeConfigRuleEvaluationStatus` reports it.
 ///
 /// An evaluation pass visits the recorded configuration state of the resources in the
 /// rule's scope and records one evaluation result per resource it placed
 /// (`StartConfigRulesEvaluation`: it "re-runs an evaluation against the last known
-/// state of your resources"). This emulator holds no recorded configuration items yet
-/// — `PutResourceConfig` is still scaffolded — so a pass visits nothing, runs no rule
-/// logic at all and records no evaluation result, which is why a rule's compliance
-/// stays `INSUFFICIENT_DATA` ([`ConfigRuleEntry::compliance`]) while its pass
-/// completes successfully.
+/// state of your resources").
+///
+/// For a rule Config evaluates ITSELF, the pass is Config's own work: it is invoked when
+/// the rule is written, completes a span later and is materialised by [`Self::settle`].
+/// For a rule whose verdicts are DELIVERED to Config
+/// ([`ConfigRuleEntry::delivers_own_evaluations`]) the pass is an invocation of the
+/// evaluator the account pointed the rule at and that evaluator's own delivery, so what
+/// this record reports for such a rule is written when those actually happen
+/// ([`Self::note_evaluator_invoked`], [`Self::note_evaluations_delivered`] and the two
+/// failure notes beside them) — never by the clock, because an invocation nothing made is
+/// not an invocation Config can report as successful.
 #[derive(Debug, Clone, Default)]
 pub struct RuleEvaluationEntry {
     /// When set, the instant Config invoked the evaluation pass this rule is owed.
@@ -188,6 +214,21 @@ pub struct RuleEvaluationEntry {
     pub last_successful_invocation_at: Option<SystemTime>,
     /// When the last completed pass finished evaluating the resources in scope.
     pub last_successful_evaluation_at: Option<SystemTime>,
+    /// When Config last FAILED to invoke the rule
+    /// (`ConfigRuleEvaluationStatus$LastFailedInvocationTime`): the call to the rule's
+    /// own evaluator could not be made, so nothing ran.
+    pub last_failed_invocation_at: Option<SystemTime>,
+    /// When the rule's evaluation last FAILED
+    /// (`ConfigRuleEvaluationStatus$LastFailedEvaluationTime`): the evaluator ran and
+    /// reported an error rather than a verdict.
+    pub last_failed_evaluation_at: Option<SystemTime>,
+    /// The error code of the last such failure
+    /// (`ConfigRuleEvaluationStatus$LastErrorCode`: "The error code that Config returned
+    /// when the rule last failed").
+    pub last_error_code: Option<String>,
+    /// The message of the last such failure
+    /// (`ConfigRuleEvaluationStatus$LastErrorMessage`).
+    pub last_error_message: Option<String>,
     /// Whether the pass in flight was asked for ON DEMAND — by a
     /// `StartConfigRulesEvaluation` call — rather than run by Config itself because
     /// the rule was written.
@@ -212,6 +253,18 @@ pub struct RuleEvaluationEntry {
     /// so it is the record of WHICH rule and which invocation a delivery belongs to.
     /// `None` for a rule Config evaluates itself, which delivers nothing back.
     pub result_token: Option<String>,
+    /// Every `ResultToken` Config minted for an invocation of THIS rule that it will
+    /// still accept a delivery on, oldest first.
+    ///
+    /// A token "identifies the rule and the event that triggered the evaluation"
+    /// (`PutEvaluations$ResultToken`), and a change-triggered rule is invoked once per
+    /// configuration item — so a rule has SEVERAL invocations outstanding at a time and
+    /// each evaluator delivers on the token of the event it was handed. A token therefore
+    /// stays acceptable after Config has invoked the rule again: the delivery of an
+    /// earlier invocation is the answer to that invocation, not to the latest one.
+    /// Bounded at [`ACCEPTED_RESULT_TOKENS_KEPT`], past which the oldest is given up, so a
+    /// rule Config keeps invoking cannot grow this process's state without end.
+    pub accepted_tokens: ::std::collections::VecDeque<String>,
     /// The `ResultToken` of the pass whose EVALUATOR Config has already invoked
     /// ([`super::custom_lambda_rule`]).
     ///
@@ -221,18 +274,20 @@ pub struct RuleEvaluationEntry {
     /// pump does not invoke the function again for the same pass. It stays set when the
     /// pass settles, because the invocation it names has happened.
     pub dispatched_token: Option<String>,
-    /// How far through the subjects of the pass [`Self::dispatched_token`] names Config
-    /// has got: the `(resourceType, resourceId)` of the last recorded resource an
-    /// invocation was made for, for a CHANGE-TRIGGERED rule whose scope covers more
-    /// recorded resources than one pass hands its evaluator
-    /// ([`super::MAX_INVOCATIONS_PER_PASS`]).
+    /// How far through the configuration items of a CHANGE-TRIGGERED rule's scope Config
+    /// has got: the [`PushedThrough`] of the last item an invocation was made for.
     ///
-    /// A pass that could not hand every subject over leaves this set and
-    /// [`Self::dispatched_token`] unset, so the rule still OWES its evaluator an
-    /// invocation and the next pass carries on after that resource — which is what keeps a
-    /// recorded configuration item from being silently never pushed. Cleared when Config
-    /// invokes a fresh pass ([`ConfigRuleEntry::mint_evaluation_result_token`]).
-    pub dispatched_through: Option<(String, String)>,
+    /// The items are handed over in the order they were RECORDED, so this watermark only
+    /// ever moves forward: an item recorded after it is one Config still owes an
+    /// invocation for, and an item before it has had its own. A pass that had no room for
+    /// the rest of them ([`super::MAX_INVOCATIONS_PER_PASS`]) leaves
+    /// [`Self::dispatched_token`] unset, so the rule still owes its evaluator an
+    /// invocation and the next pass carries on after this item — which is what keeps a
+    /// recorded configuration item from being silently never pushed, however many
+    /// resources the rule's scope covers. Cleared only where every item in scope is owed
+    /// an invocation again: a WRITE of the rule, and an on-demand evaluation
+    /// ([`Self::invoke`]).
+    pub pushed_through: Option<PushedThrough>,
     /// How many passes have tried and FAILED to make this pass's invocation at all — the
     /// call to the function could not be made, so nothing ran and no verdict was
     /// delivered.
@@ -255,7 +310,27 @@ impl RuleEvaluationEntry {
 
     /// Record that Config owes this rule an evaluation pass, invoked at `at`, because
     /// the rule was written.
+    ///
+    /// Such a pass evaluates the resources in the rule's scope afresh — "when you create a
+    /// rule, Config evaluates your resources against the rule automatically"
+    /// (`PutConfigRule`), and on demand it "re-runs an evaluation against the last known
+    /// state of your resources" (`StartConfigRulesEvaluation`) — so every configuration
+    /// item in that scope is owed an invocation again and the watermark of what has been
+    /// handed over goes back to the beginning ([`Self::pushed_through`]).
     pub fn invoke(&mut self, at: SystemTime) {
+        self.invoke_for_recorded_item(at);
+        self.pushed_through = None;
+    }
+
+    /// Record that Config owes this rule an invocation at `at` because a CONFIGURATION
+    /// ITEM was recorded for a resource in its scope.
+    ///
+    /// A change-triggered rule is evaluated "when Config delivers a configuration item as
+    /// a result of a resource change" (`SourceDetail$MessageType`), so what this owes is
+    /// the invocation for the item just recorded: the items Config has already handed the
+    /// evaluator stay handed over ([`Self::pushed_through`]), rather than every item in
+    /// scope being pushed again for each new one.
+    pub fn invoke_for_recorded_item(&mut self, at: SystemTime) {
         self.invoked_at = Some(at);
         self.completes_at = Some(at + RULE_EVALUATION_SETTLE_AFTER);
         self.on_demand = false;
@@ -309,6 +384,92 @@ impl RuleEvaluationEntry {
             self.on_demand = false;
         }
     }
+
+    /// Materialise the end of the pass of a rule whose verdicts are DELIVERED to Config,
+    /// WITHOUT claiming an invocation or an evaluation.
+    ///
+    /// Such a pass is Config invoking the evaluator the account pointed the rule at and
+    /// that evaluator delivering what it found: both are events, and each is recorded when
+    /// it happens ([`Self::note_evaluator_invoked`],
+    /// [`Self::note_evaluations_delivered`]). What the clock decides is only that the pass
+    /// is no longer in flight, so a further on-demand evaluation may be asked for — never
+    /// that it succeeded. The instant the pass was invoked at is KEPT, because a delivery
+    /// still to come is the answer to that invocation and reports it as the verdict's
+    /// `ConfigRuleInvokedTime`.
+    pub fn settle_delivered_pass(&mut self, now: SystemTime) {
+        if self.in_progress(now) {
+            return;
+        }
+        self.completes_at = None;
+        self.on_demand = false;
+    }
+
+    /// Whether `token` is a `ResultToken` Config minted for an invocation of this rule and
+    /// still accepts a delivery on ([`Self::accepted_tokens`]).
+    pub fn accepts_result_token(&self, token: &str) -> bool {
+        self.accepted_tokens.iter().any(|minted| minted == token)
+    }
+
+    /// Record that this rule's own evaluator WAS INVOKED: the call reached the function at
+    /// `at` and the function answered it, which is what
+    /// `ConfigRuleEvaluationStatus$LastSuccessfulInvocationTime` reports ("the time that
+    /// Config last successfully invoked the Config rule to evaluate your Amazon Web
+    /// Services resources").
+    pub fn note_evaluator_invoked(&mut self, at: SystemTime) {
+        self.last_successful_invocation_at = Some(at);
+    }
+
+    /// Record that Config could NOT invoke this rule's own evaluator at `at`: the call did
+    /// not reach the function, so nothing ran
+    /// (`ConfigRuleEvaluationStatus$LastFailedInvocationTime`, with the error Config met
+    /// under `LastErrorCode`/`LastErrorMessage`).
+    ///
+    /// `code` is the error code the answer carried, and `None` where it carried none: the
+    /// status then reports the message alone rather than a code nothing returned.
+    pub fn note_evaluator_invocation_failed(
+        &mut self,
+        at: SystemTime,
+        code: Option<&str>,
+        message: &str,
+    ) {
+        self.last_failed_invocation_at = Some(at);
+        self.note_error(code, message);
+    }
+
+    /// Record that this rule's EVALUATION failed at `at`: the evaluator ran and reported
+    /// an error instead of a verdict
+    /// (`ConfigRuleEvaluationStatus$LastFailedEvaluationTime`).
+    pub fn note_evaluation_failed(&mut self, at: SystemTime, code: Option<&str>, message: &str) {
+        self.last_failed_evaluation_at = Some(at);
+        self.note_error(code, message);
+    }
+
+    /// Record the error of the failure just noted, as the status reports the LAST one.
+    fn note_error(&mut self, code: Option<&str>, message: &str) {
+        self.last_error_code = code.map(str::to_string);
+        self.last_error_message = Some(truncated(message, MAX_LAST_ERROR_MESSAGE_CHARS));
+    }
+
+    /// Record that the verdicts of an evaluation of this rule were DELIVERED at `at`
+    /// (`PutEvaluations`), which is when Config has evaluated the account's resources
+    /// against the rule: `LastSuccessfulEvaluationTime` and, from the first delivery on,
+    /// `FirstEvaluationStarted`.
+    pub fn note_evaluations_delivered(&mut self, at: SystemTime) {
+        self.first_evaluation_started = true;
+        self.last_successful_evaluation_at = Some(at);
+    }
+}
+
+/// The most characters of a failure's message the evaluation status carries.
+///
+/// A HOST bound: the message comes from whatever answered the invocation — an error
+/// document a function produced is as long as the function made it — so the status keeps
+/// the beginning of it rather than however much was sent.
+const MAX_LAST_ERROR_MESSAGE_CHARS: usize = 1_024;
+
+/// `text` cut to at most `characters` characters, on a character boundary.
+fn truncated(text: &str, characters: usize) -> String {
+    text.chars().take(characters).collect()
 }
 
 /// One persisted Config rule.
@@ -419,18 +580,49 @@ impl ConfigRuleEntry {
     /// verdicts ([`Self::delivers_own_evaluations`] — which a write can change, by
     /// pointing the rule at another source).
     ///
-    /// The token belongs to ONE invocation, so it is replaced every time Config invokes
-    /// the rule again, and the last one stays valid until then: Config has no further
-    /// invocation to associate a delivery with.
+    /// The token belongs to ONE invocation, so a fresh one is minted every time Config
+    /// invokes the rule again — and the ones minted before it stay ACCEPTABLE
+    /// ([`RuleEvaluationEntry::accepted_tokens`]): a change-triggered rule is invoked once
+    /// per configuration item, so an evaluator still running for an earlier item delivers
+    /// what it found on the token of the item it was handed.
     pub fn mint_evaluation_result_token(&mut self, invoked_at: SystemTime) {
-        self.evaluation.result_token = self
+        let minted = self
             .delivers_own_evaluations()
             .then(|| mint_result_token(&self.name, invoked_at));
-        // The new pass has its own subjects to hand over and its own tries to make: how
-        // far the PREVIOUS pass got, and how often it failed to reach the evaluator at
-        // all, say nothing about this one.
-        self.evaluation.dispatched_through = None;
+        self.evaluation.result_token = minted.clone();
+        match minted {
+            Some(token) => {
+                if !self.evaluation.accepts_result_token(&token) {
+                    self.evaluation.accepted_tokens.push_back(token);
+                }
+                while self.evaluation.accepted_tokens.len() > ACCEPTED_RESULT_TOKENS_KEPT {
+                    self.evaluation.accepted_tokens.pop_front();
+                }
+            }
+            // A rule pointed at another source delivers nothing back, so there is no
+            // invocation of it left for a delivery to belong to.
+            None => self.evaluation.accepted_tokens.clear(),
+        }
+        // The new invocation makes its own tries: how often an earlier one failed to reach
+        // the evaluator at all says nothing about this one.
         self.evaluation.failed_dispatches = 0;
+    }
+
+    /// Materialise the end of the evaluation pass the clock has already made due for THIS
+    /// rule.
+    ///
+    /// A rule Config evaluates itself completes its pass by the clock, which is what
+    /// [`RuleEvaluationEntry::settle`] materialises. A rule whose verdicts are DELIVERED to
+    /// Config ([`Self::delivers_own_evaluations`]) is evaluated by invoking the evaluator
+    /// the account pointed it at, so its invocation and its evaluation are reported when
+    /// they actually happen ([`super::custom_lambda_rule`]) and the clock only ends the
+    /// pass ([`RuleEvaluationEntry::settle_delivered_pass`]).
+    pub fn settle_evaluation(&mut self, now: SystemTime) {
+        if self.delivers_own_evaluations() {
+            self.evaluation.settle_delivered_pass(now);
+        } else {
+            self.evaluation.settle(now);
+        }
     }
 
     /// Record `result` as this rule's verdict on the resource it names, keeping the
@@ -483,16 +675,17 @@ impl ConfigRuleEntry {
     /// The modelled `ConfigRuleEvaluationStatus` as a READ reports it.
     ///
     /// `FirstActivatedTime` is when this rule was written, which is when Config
-    /// activated it. The failure members (`LastFailedInvocationTime`,
-    /// `LastFailedEvaluationTime`, `LastErrorCode`, `LastErrorMessage`) are reported
-    /// ABSENT because no evaluation pass of this emulator fails: there is no rule
-    /// logic to fail and no resource to fail on. The debug-log members
-    /// (`LastDebugLogDeliveryStatus`, `LastDebugLogDeliveryStatusReason`,
-    /// `LastDebugLogDeliveryTime`) are absent for the same reason — nothing has
-    /// attempted to deliver a Custom Policy debug log, which is the delivery path
-    /// `DeliverConfigSnapshot` owns and which is still scaffolded. `LastDeactivatedTime`
-    /// is absent because no operation of this service turns a rule off: `DeleteConfigRule`
-    /// removes it outright.
+    /// activated it. The failure members report what actually failed: Config could not
+    /// invoke the rule's own evaluator (`LastFailedInvocationTime`), or that evaluator ran
+    /// and reported an error rather than a verdict (`LastFailedEvaluationTime`), each with
+    /// the error it met under `LastErrorCode`/`LastErrorMessage` — and they stay ABSENT
+    /// for a rule Config evaluates itself, where there is no rule logic to fail and no
+    /// resource to fail on. The debug-log members (`LastDebugLogDeliveryStatus`,
+    /// `LastDebugLogDeliveryStatusReason`, `LastDebugLogDeliveryTime`) are absent because
+    /// nothing has attempted to deliver a Custom Policy debug log, which is the delivery
+    /// path `DeliverConfigSnapshot` owns and which is still scaffolded.
+    /// `LastDeactivatedTime` is absent because no operation of this service turns a rule
+    /// off: `DeleteConfigRule` removes it outright.
     pub fn to_evaluation_status_shape(&self) -> ConfigRuleEvaluationStatus {
         ConfigRuleEvaluationStatus {
             config_rule_name: Some(self.name.clone()),
@@ -509,10 +702,16 @@ impl ConfigRuleEntry {
                 .evaluation
                 .last_successful_evaluation_at
                 .map(timestamp),
-            last_failed_invocation_time: None,
-            last_failed_evaluation_time: None,
-            last_error_code: None,
-            last_error_message: None,
+            last_failed_invocation_time: self
+                .evaluation
+                .last_failed_invocation_at
+                .map(timestamp),
+            last_failed_evaluation_time: self
+                .evaluation
+                .last_failed_evaluation_at
+                .map(timestamp),
+            last_error_code: self.evaluation.last_error_code.clone(),
+            last_error_message: self.evaluation.last_error_message.clone(),
             last_debug_log_delivery_status: None,
             last_debug_log_delivery_status_reason: None,
             last_debug_log_delivery_time: None,

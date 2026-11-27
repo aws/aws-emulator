@@ -231,7 +231,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // anything, so "an evaluation is in progress" is about a pass that is
         // genuinely still running rather than one nobody has read back yet.
         for rule in store.config_rules.values_mut() {
-            rule.evaluation.settle(now);
+            rule.settle_evaluation(now);
         }
 
         // A name that names no rule is a failure for the request as a whole: nothing

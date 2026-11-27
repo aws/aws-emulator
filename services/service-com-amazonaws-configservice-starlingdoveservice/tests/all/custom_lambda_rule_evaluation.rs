@@ -16,6 +16,17 @@
 //! why the rows differ along what the handler answers and along what the event has to
 //! carry for it to answer at all.
 //!
+//! And because the invocation is Config's own work rather than the clock's, what
+//! `DescribeConfigRuleEvaluationStatus` reports about such a rule is read off the
+//! invocations that were MADE: the successful invocation is a call that reached the
+//! function, the successful evaluation is a verdict an evaluator delivered, and a call that
+//! could not be made is reported as the failed invocation it was.
+//!
+//! One row set is about the DELIVERY itself rather than about Config: an evaluator reports what
+//! it found through its own SDK client, and such a client takes a timestamp member in whatever
+//! form its caller has it — the `configurationItemCaptureTime` the configuration item carries
+//! is TEXT — so every form of the same instant delivers the same verdict.
+//!
 //! Config, IAM and Lambda are mounted on ONE engine, as `core/router/src/lib.rs` mounts
 //! them: the function runs in process and the SDK call its handler makes is dispatched back
 //! into this same router, which is how its verdict reaches Config.
@@ -664,6 +675,111 @@ def lambda_handler(event, context):
     return {"delivered": None}
 "#;
 
+/// A handler that delivers its verdict with `OrderingTimestamp` written the way `expression`
+/// writes it — "the time of the event that triggered the evaluation"
+/// (`Evaluation$OrderingTimestamp`), as the kinds of value a client's own SDK sends for a
+/// timestamp member.
+///
+/// Everything else is [`handler_source`]'s delivery: the verdict is `COMPLIANT` and the
+/// annotation names the `messageType` the event carried, so a row that delivered at all is
+/// observable in what Config reports.
+fn timestamp_handler_source(expression: &str) -> String {
+    format!(
+        r#"
+import datetime
+import json
+
+import boto3
+
+CONFIG = boto3.client("config")
+
+
+def lambda_handler(event, context):
+    invoking = json.loads(event["invokingEvent"])
+    item = invoking.get("configurationItem") or {{}}
+    CONFIG.put_evaluations(
+        Evaluations=[
+            {{
+                "ComplianceResourceType": item.get("resourceType", "{ACCOUNT_RESOURCE_TYPE}"),
+                "ComplianceResourceId": item.get("resourceId", event["accountId"]),
+                "ComplianceType": "COMPLIANT",
+                "Annotation": invoking["messageType"],
+                "OrderingTimestamp": {expression},
+            }}
+        ],
+        ResultToken=event["resultToken"],
+    )
+    return {{"delivered": "COMPLIANT"}}
+"#
+    )
+}
+
+#[tokio::test]
+async fn an_evaluator_delivers_its_verdict_whichever_way_its_sdk_writes_the_timestamp() {
+    // `Evaluation$OrderingTimestamp` is a timestamp member, and an SDK client sends one from
+    // whatever its caller handed it: a `datetime`, a number of seconds since the epoch, or
+    // the ISO-8601 text a configuration item carries its own instants as. Each is the same
+    // instant on the wire, so each delivery is one Config records.
+    //
+    // The rows differ along which of those three the evaluator's own call writes.
+    let cases: [(&str, &str); 4] = [
+        ("an aware datetime", "datetime.datetime.now(datetime.timezone.utc)"),
+        ("a naive datetime", "datetime.datetime(2026, 1, 2, 3, 4, 5)"),
+        ("a number of seconds since the epoch", "0"),
+        (
+            "the ISO-8601 instant the configuration item carries",
+            r#"item.get("configurationItemCaptureTime", "2026-01-02T03:04:05.000Z")"#,
+        ),
+    ];
+
+    for (case, expression) in cases {
+        let emulator = Emulator::new();
+        emulator.recording().await;
+        let bucket = "timestamp-delivery-bucket";
+        emulator.given_recorded_bucket(case, bucket).await;
+        let function = given_function(
+            case,
+            &emulator,
+            "timestamp-evaluator",
+            &timestamp_handler_source(expression),
+        )
+        .await;
+
+        let rule = "timestamp-rule";
+        emulator
+            .ok(
+                "PutConfigRule",
+                &json!({
+                    "ConfigRule": {
+                        "ConfigRuleName": rule,
+                        "Scope": { "ComplianceResourceTypes": [BUCKET_RESOURCE_TYPE] },
+                        "Source": {
+                            "Owner": "CUSTOM_LAMBDA",
+                            "SourceIdentifier": function,
+                            "SourceDetails": [{
+                                "EventSource": "aws.config",
+                                "MessageType": "ConfigurationItemChangeNotification",
+                            }],
+                        },
+                    }
+                }),
+            )
+            .await;
+
+        let results = await_reported(case, &emulator, rule).await;
+        assert_eq!(
+            results,
+            vec![(
+                "COMPLIANT".to_string(),
+                "ConfigurationItemChangeNotification".to_string(),
+                BUCKET_RESOURCE_TYPE.to_string(),
+                bucket.to_string(),
+            )],
+            "case {case:?}: expected the evaluator's delivered verdict, got {results:?}"
+        );
+    }
+}
+
 #[tokio::test]
 async fn an_evaluator_that_delivers_nothing_leaves_the_rule_unevaluated() {
     // The counter-case: the verdict of a Custom Lambda rule is the function's own. The
@@ -695,6 +811,228 @@ async fn an_evaluator_that_delivers_nothing_leaves_the_rule_unevaluated() {
         assert!(
             results.is_empty(),
             "case {case:?}: expected no verdict at all, got {results:?}"
+        );
+        tokio::time::sleep(POLL_INTERVAL).await;
+    }
+}
+
+/// The rule `name`'s own `ConfigRuleEvaluationStatus`, as
+/// `DescribeConfigRuleEvaluationStatus` reports it.
+async fn evaluation_status(emulator: &Emulator, name: &str) -> Value {
+    let body = emulator
+        .ok(
+            "DescribeConfigRuleEvaluationStatus",
+            &json!({ "ConfigRuleNames": [name] }),
+        )
+        .await;
+    body["ConfigRulesEvaluationStatus"]
+        .as_array()
+        .and_then(|statuses| statuses.first().cloned())
+        .unwrap_or_else(|| panic!("expected a status for the rule {name:?}, got {body}"))
+}
+
+/// Whether `status` carries the member `member` at all, which is what tells an instant
+/// Config recorded from one it did not.
+fn carries(status: &Value, member: &str) -> bool {
+    !status[member].is_null()
+}
+
+/// Read the rule `name`'s evaluation status until it carries `member`, and answer that
+/// status.
+///
+/// What it waits for is work Config owes by the clock — the pass, the invocation it makes
+/// and the delivery that answers it — so it looks again until the member is there rather
+/// than after a fixed wait.
+async fn await_status_carrying(
+    case: &str,
+    emulator: &Emulator,
+    name: &str,
+    member: &str,
+) -> Value {
+    let deadline = Instant::now() + BUDGET;
+    loop {
+        let status = evaluation_status(emulator, name).await;
+        if carries(&status, member) {
+            return status;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "case {case:?}: expected the status to carry {member}, got {status}"
+        );
+        tokio::time::sleep(POLL_INTERVAL).await;
+    }
+}
+
+#[tokio::test]
+async fn the_evaluation_status_reports_only_the_invocations_that_were_made() {
+    // The status is Config's record of its OWN side of a rule's evaluation: for a rule
+    // whose verdicts are delivered back, the invocation it reports as successful is one it
+    // made and the evaluation it reports as successful is one an evaluator delivered — so a
+    // rule whose evaluator Config never had occasion to invoke reports neither, however
+    // many passes of the clock go by.
+    //
+    // The rows differ along whether anything in the rule's scope was ever there to invoke
+    // it for: a recorded resource of the type the scope names, and a type the account holds
+    // nothing of.
+    let cases: [(&str, Value, bool); 2] = [
+        (
+            "a scope naming the recorded resource's type",
+            json!({ "ComplianceResourceTypes": [BUCKET_RESOURCE_TYPE] }),
+            true,
+        ),
+        (
+            "a scope naming a type the account holds nothing of",
+            json!({ "ComplianceResourceTypes": ["AWS::EC2::Volume"] }),
+            false,
+        ),
+    ];
+
+    for (case, scope, invoked) in cases {
+        let emulator = Emulator::new();
+        emulator.recording().await;
+        let bucket = "status-honesty-bucket";
+        emulator.given_recorded_bucket(case, bucket).await;
+        let function = given_function(
+            case,
+            &emulator,
+            "status-evaluator",
+            &handler_source("COMPLIANT"),
+        )
+        .await;
+
+        let rule = "status-rule";
+        emulator
+            .ok(
+                "PutConfigRule",
+                &json!({
+                    "ConfigRule": {
+                        "ConfigRuleName": rule,
+                        "Scope": scope,
+                        "Source": {
+                            "Owner": "CUSTOM_LAMBDA",
+                            "SourceIdentifier": function,
+                            "SourceDetails": [{
+                                "EventSource": "aws.config",
+                                "MessageType": "ConfigurationItemChangeNotification",
+                            }],
+                        },
+                    }
+                }),
+            )
+            .await;
+
+        if invoked {
+            // The verdict is the evidence the evaluator ran and delivered; the invocation
+            // Config made is recorded when the call it made answers, so the status is read
+            // until it carries that instant rather than after a fixed wait.
+            await_reported(case, &emulator, rule).await;
+            let status =
+                await_status_carrying(case, &emulator, rule, "LastSuccessfulInvocationTime")
+                    .await;
+            assert!(
+                carries(&status, "LastSuccessfulEvaluationTime")
+                    && status["FirstEvaluationStarted"] == json!(true),
+                "case {case:?}: expected the delivery to be reported as the rule's \
+                 evaluation, got {status}"
+            );
+            assert!(
+                !carries(&status, "LastFailedInvocationTime")
+                    && !carries(&status, "LastFailedEvaluationTime")
+                    && !carries(&status, "LastErrorCode"),
+                "case {case:?}: expected nothing to be reported as failed, got {status}"
+            );
+        } else {
+            // Nothing in scope, so nothing invoked the evaluator: watched for a window many
+            // passes long, because what is asserted is that the clock alone never makes the
+            // status claim an invocation.
+            let deadline = Instant::now() + QUIET;
+            while Instant::now() < deadline {
+                let status = evaluation_status(&emulator, rule).await;
+                assert!(
+                    !carries(&status, "LastSuccessfulInvocationTime")
+                        && !carries(&status, "LastSuccessfulEvaluationTime")
+                        && status["FirstEvaluationStarted"] == json!(false),
+                    "case {case:?}: expected no invocation or evaluation to be claimed, got \
+                     {status}"
+                );
+                assert!(
+                    carries(&status, "FirstActivatedTime"),
+                    "case {case:?}: expected the rule's activation to be reported, got {status}"
+                );
+                tokio::time::sleep(POLL_INTERVAL).await;
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn an_invocation_config_could_not_make_is_reported_as_a_failed_invocation() {
+    // The failure arm of the same record: a call that does not reach the function ran
+    // nothing, so what the status reports is a FAILED invocation and the error Config met —
+    // while the successful invocation and evaluation it already reported stand, because they
+    // happened.
+    let case = "an evaluator that is no longer there to invoke";
+    let emulator = Emulator::new();
+    emulator.recording().await;
+    emulator.given_recorded_bucket(case, "failed-push-first").await;
+    let name = "vanishing-evaluator";
+    let function = given_function(case, &emulator, name, &handler_source("COMPLIANT")).await;
+
+    let rule = "failed-invocation-rule";
+    emulator
+        .ok(
+            "PutConfigRule",
+            &json!({
+                "ConfigRule": {
+                    "ConfigRuleName": rule,
+                    "Scope": { "ComplianceResourceTypes": [BUCKET_RESOURCE_TYPE] },
+                    "Source": {
+                        "Owner": "CUSTOM_LAMBDA",
+                        "SourceIdentifier": function,
+                        "SourceDetails": [{
+                            "EventSource": "aws.config",
+                            "MessageType": "ConfigurationItemChangeNotification",
+                        }],
+                    },
+                }
+            }),
+        )
+        .await;
+    await_reported(case, &emulator, rule).await;
+    let succeeded =
+        await_status_carrying(case, &emulator, rule, "LastSuccessfulInvocationTime").await;
+    let last_invocation = succeeded["LastSuccessfulInvocationTime"].clone();
+
+    // The evaluator is taken away, and then a resource in the rule's scope is recorded: the
+    // invocation that item owes is one Config cannot make.
+    let (status, deleted) = emulator
+        .lambda("DELETE", &format!("{FUNCTIONS_URI}/{name}"), None)
+        .await;
+    assert!(
+        (200..300).contains(&status),
+        "case {case:?}: expected DeleteFunction to be accepted, got {status} {deleted}"
+    );
+    emulator
+        .given_recorded_bucket(case, "failed-push-second")
+        .await;
+
+    let deadline = Instant::now() + BUDGET;
+    loop {
+        let status = evaluation_status(&emulator, rule).await;
+        if carries(&status, "LastFailedInvocationTime") {
+            assert!(
+                carries(&status, "LastErrorMessage"),
+                "case {case:?}: expected the error Config met to be reported, got {status}"
+            );
+            assert_eq!(
+                status["LastSuccessfulInvocationTime"], last_invocation,
+                "case {case:?}: expected the invocation that was made to stand, got {status}"
+            );
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "case {case:?}: expected the failed invocation to be reported, got {status}"
         );
         tokio::time::sleep(POLL_INTERVAL).await;
     }

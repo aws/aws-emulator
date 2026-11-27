@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: CC0-1.0
 
-//! WHICH values of one answered call an SDK MATERIALISES rather than hand over as the text or
-//! the number the wire carried, read from the called service's own model.
+//! WHICH values of one call an SDK MATERIALISES or CONVERTS rather than hand over as the text
+//! or the number the wire carries, read from the called service's own model.
 //!
 //! A JSON protocol carries two kinds of value in a form that is not the value itself:
 //!
@@ -14,10 +14,14 @@
 //!   the same reason: the model says which members are timestamps.
 //!
 //! So the runtime has to know the same thing: this module reads it out of the model and
-//! answers WHERE in an answer document those values sit.
+//! answers WHERE in a call's document those values sit. Both directions are one question asked
+//! of one plan: of an ANSWER, for the values an SDK hands its caller in the caller's own form
+//! ([`AnswerPlan::answer_paths`]); of a REQUEST, for the values an SDK puts in the form the
+//! protocol carries before it sends them ([`AnswerPlan::input_paths`],
+//! [`super::sdk_timestamps`]).
 //!
 //! The answer is a list of PATHS — each a list of object keys and array indices from the root
-//! of the output document — rather than a rewritten document, because the seam between the
+//! of the document — rather than a rewritten document, because the seam between the
 //! host and a run's engine carries JSON text ([`super::aws_api::Answer`]): the host says which
 //! values are bytes and which are instants, and the SDK the guest calls materialises them
 //! ([`super::aws_sdk_guest`], [`super::node_sdk_guest`]). Nothing about a value is changed
@@ -55,13 +59,21 @@ const STREAMING: &str = "smithy.api#streaming";
 /// The name a member travels under in a JSON body, when it is not the member's own name.
 const JSON_NAME: &str = "smithy.api#jsonName";
 
-/// The traits that bind a member of an ANSWER somewhere other than its JSON body, so what the
-/// value reads as is that binding's and not the form a JSON body carries.
-const OUTSIDE_THE_BODY: [&str; 4] = [
+/// The traits that bind a member somewhere other than its JSON body, so what the value reads
+/// as is that binding's and not the form a JSON body carries.
+///
+/// The REST bindings of a REQUEST are here beside an ANSWER's: a timestamp a request binds to
+/// a URI label or a query parameter travels in that binding's own form rather than as the
+/// seconds a JSON body carries one as, so it is no part of a plan over a request's document
+/// either. An answer binds nothing to a label or a query, so one list serves both.
+const OUTSIDE_THE_BODY: [&str; 7] = [
     "smithy.api#httpPayload",
     "smithy.api#httpHeader",
     "smithy.api#httpPrefixHeaders",
     "smithy.api#httpResponseCode",
+    "smithy.api#httpLabel",
+    "smithy.api#httpQuery",
+    "smithy.api#httpQueryParams",
 ];
 
 /// One service's Smithy model, and where the plan read out of it is kept.
@@ -141,6 +153,13 @@ pub struct AnswerPlan {
     /// The output shape of each operation whose answer can carry one, by the operation's own
     /// short name — which is the name a client calls it by.
     outputs: BTreeMap<String, String>,
+    /// The INPUT shape of each operation whose request can carry one, by the same name.
+    ///
+    /// What a client sends for such a member is whatever its caller handed it, and the client
+    /// is what puts it in the form the protocol carries — so the seam that builds a request
+    /// asks WHERE those values sit exactly as the one that reads an answer does
+    /// ([`Self::input_paths`]).
+    inputs: BTreeMap<String, String>,
     /// Every shape whose values can carry one, by shape id.
     shapes: BTreeMap<String, Carrier>,
 }
@@ -205,6 +224,17 @@ impl AnswerPlan {
             if shape.get("type").and_then(Value::as_str) != Some("operation") {
                 continue;
             }
+            let Some(name) = id.split('#').next_back().filter(|name| !name.is_empty()) else {
+                continue;
+            };
+            if let Some(input) = shape
+                .get("input")
+                .and_then(|input| input.get("target"))
+                .and_then(Value::as_str)
+                .filter(|input| plan.shapes.contains_key(*input))
+            {
+                plan.inputs.insert(name.to_string(), input.to_string());
+            }
             let Some(output) = shape
                 .get("output")
                 .and_then(|output| output.get("target"))
@@ -215,9 +245,7 @@ impl AnswerPlan {
             if !plan.shapes.contains_key(output) {
                 continue;
             }
-            if let Some(name) = id.split('#').next_back().filter(|name| !name.is_empty()) {
-                plan.outputs.insert(name.to_string(), output.to_string());
-            }
+            plan.outputs.insert(name.to_string(), output.to_string());
         }
         plan
     }
@@ -236,19 +264,54 @@ impl AnswerPlan {
             return Vec::new();
         };
         let mut paths = Vec::new();
-        self.walk(output, document, &mut Vec::new(), &mut paths);
+        self.walk(output, document, &mut Vec::new(), &mut paths, false);
+        paths
+    }
+
+    /// Where the REQUEST of `operation` carries a value of this plan's kind: one path per value
+    /// the plan types as one and the input document really states, WHATEVER form it states it
+    /// in.
+    ///
+    /// Whatever form is the point: a client takes for such a member whatever its caller handed
+    /// it — a native instant, a number, the text of one — and the client is what sends it in
+    /// the form the called protocol carries, so the seam that builds the request has to be told
+    /// where every one of them sits before it can put them in that form
+    /// ([`super::sdk_timestamps`]).
+    #[must_use]
+    pub fn input_paths(&self, operation: &str, document: &Value) -> Vec<Value> {
+        let Some(input) = self.inputs.get(operation) else {
+            return Vec::new();
+        };
+        let mut paths = Vec::new();
+        self.walk(input, document, &mut Vec::new(), &mut paths, true);
         paths
     }
 
     /// Collect the paths of every value of this plan's kind that `document` carries under the
     /// shape `id`.
-    fn walk(&self, id: &str, document: &Value, path: &mut Vec<Value>, paths: &mut Vec<Value>) {
+    ///
+    /// `any_form` is what tells a REQUEST's walk from an ANSWER's: an answer carries each value
+    /// in the one form its protocol states, so a value in another form is not one of this kind
+    /// at all, while a request states one in whatever form its caller handed over.
+    fn walk(
+        &self,
+        id: &str,
+        document: &Value,
+        path: &mut Vec<Value>,
+        paths: &mut Vec<Value>,
+        any_form: bool,
+    ) {
         match self.shapes.get(id) {
             Some(Carrier::Leaf) => {
                 // A blob the document carries as text is the base64 of its bytes, and a
                 // timestamp it carries as a number is the seconds since the epoch; anything
                 // else is not a value this seam materialises.
-                if self.kind.is_some_and(|kind| kind.carried_by(document)) {
+                let carried = if any_form {
+                    !document.is_null()
+                } else {
+                    self.kind.is_some_and(|kind| kind.carried_by(document))
+                };
+                if carried {
                     paths.push(Value::Array(path.clone()));
                 }
             }
@@ -261,7 +324,7 @@ impl AnswerPlan {
                         continue;
                     };
                     path.push(Value::String(key));
-                    self.walk(&member.target, carried, path, paths);
+                    self.walk(&member.target, carried, path, paths, any_form);
                     path.pop();
                 }
             }
@@ -271,7 +334,7 @@ impl AnswerPlan {
                 };
                 for (index, carried) in entries.iter().enumerate() {
                     path.push(Value::from(index));
-                    self.walk(entry, carried, path, paths);
+                    self.walk(entry, carried, path, paths, any_form);
                     path.pop();
                 }
             }
@@ -281,7 +344,7 @@ impl AnswerPlan {
                 };
                 for (key, carried) in entries {
                     path.push(Value::String(key.clone()));
-                    self.walk(value, carried, path, paths);
+                    self.walk(value, carried, path, paths, any_form);
                     path.pop();
                 }
             }

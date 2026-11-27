@@ -134,6 +134,10 @@ pub use aws_api::AwsAccess;
 /// marks as an idempotency token.
 mod idempotency_token;
 
+/// What an SDK client CONVERTS in a call's input itself: a timestamp member, into the form the
+/// called service's protocol carries one in.
+mod sdk_timestamps;
+
 /// The HTTP seam a running handler reaches it through when it signs and sends a request of
 /// its own.
 pub mod guest_http;

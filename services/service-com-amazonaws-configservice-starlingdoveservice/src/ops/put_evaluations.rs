@@ -223,9 +223,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 },
             ))
         })?;
-        // A token that is not the one Config minted for this rule's last invocation
-        // belongs to no evaluation Config is waiting for.
-        if rule.evaluation.result_token.as_deref() != Some(input.result_token.as_str()) {
+        // A token that is not one Config minted for an invocation of this rule belongs to
+        // no evaluation Config is waiting for. A token an EARLIER invocation was made with
+        // is still one of them: a change-triggered rule is invoked once per configuration
+        // item, so the evaluator of an item Config handed over before the last one delivers
+        // what it found on the token of the item it was handed.
+        if !rule.evaluation.accepts_result_token(&input.result_token) {
             return Err(invalid_result_token());
         }
 
@@ -252,6 +255,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             result.config_rule_invoked_time = invoked_at;
             rule.record_evaluation_result(result);
         }
+        // The evaluation this delivery answers has now been made: the evaluator Config
+        // invoked reported what it found, which is what the rule's evaluation status
+        // reports as its last successful evaluation.
+        rule.evaluation.note_evaluations_delivered(recorded_at);
 
         // "Requests that failed because of a client or server error": every evaluation
         // of a delivery that got this far was recorded, and one that cannot be is what

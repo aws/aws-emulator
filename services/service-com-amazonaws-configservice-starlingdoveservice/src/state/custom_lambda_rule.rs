@@ -11,19 +11,20 @@
 //! ([`super::ConfigRuleEntry::mint_evaluation_result_token`]), and the verdict itself is
 //! the function's own — nothing here computes one.
 //!
-//! An invocation is OWED for the evaluation pass Config invoked — the pass a write of the
-//! rule starts ("when you create a rule, Config evaluates your resources against the rule
-//! An invocation is OWED for the evaluation pass Config invoked — the pass a write of the
-//! rule starts ("when you create a rule, Config evaluates your resources against the rule
-//! automatically", `PutConfigRule`) and the pass `StartConfigRulesEvaluation` asks for
-//! ("re-runs an evaluation against the last known state of your resources") — and it is
-//! owed until it is MADE: the pass's own token is the record of whether its evaluator has
-//! been invoked yet ([`super::RuleEvaluationEntry::dispatched_token`]), so a pump that
-//! runs every few hundred milliseconds does not invoke the function again and again for
-//! one pass. What one pass does not manage to hand over — the subjects past its own bound
-//! ([`MAX_INVOCATIONS_PER_PASS`]), and a call that did not reach the function at all —
-//! stays owed, and the next pass carries on at the subject this one stopped at rather than
-//! letting the recorded item never be pushed.
+//! An invocation is OWED for every configuration item Config has to hand the rule's
+//! evaluator: the items in the rule's scope a write of the rule asks for ("when you create
+//! a rule, Config evaluates your resources against the rule automatically",
+//! `PutConfigRule`) and the ones `StartConfigRulesEvaluation` asks for again ("re-runs an
+//! evaluation against the last known state of your resources"), and after that ONE per
+//! configuration item recorded for a resource in that scope. Each stays owed until its
+//! invocation is MADE: the items handed over are the ones before the rule's own watermark
+//! ([`super::RuleEvaluationEntry::pushed_through`]), which moves only forward in the order
+//! the items were RECORDED, so a pump that runs every few hundred milliseconds neither
+//! invokes the function twice for one item nor forgets an item past the bound one pass
+//! hands over ([`MAX_INVOCATIONS_PER_PASS`]). A newly recorded item sorts after everything
+//! already handed over, so it costs ONE invocation rather than a re-push of the whole
+//! scope, and a call that did not reach the function at all leaves its item owed for a
+//! later pass.
 //!
 //! WHICH event the function is handed is the rule's own trigger
 //! (`SourceDetail$MessageType`): a periodic rule is invoked with the scheduled
@@ -36,13 +37,16 @@
 //! cross-service call of this crate is made, so this crate names no other service crate.
 //! It is the function's own run that writes anything: an invocation that could not be made
 //! is logged and leaves the rule unevaluated — and owed again — rather than recording a
-//! verdict nothing produced.
+//! verdict nothing produced. What the evaluation status reports about a rule of this kind
+//! is written HERE and by the delivery itself (`PutEvaluations`), from the invocations that
+//! were actually made: nothing claims a successful invocation or evaluation of a rule whose
+//! evaluator Config never reached.
 
 use std::time::SystemTime;
 
 use super::{
     service_state, ComAmazonawsConfigserviceStarlingdoveserviceState, ConfigRuleEntry,
-    CONFIG_RULE_STATE_ACTIVE,
+    PushedThrough, CONFIG_RULE_STATE_ACTIVE,
 };
 
 /// The `messageType` of the event Config hands a PERIODIC rule's function (the AWS Config
@@ -63,7 +67,7 @@ const SCHEDULED_NOTIFICATION_RECORD_VERSION: &str = "1.0";
 /// and the inventory is bounded, so one owed pass cannot turn into an unbounded number of
 /// in-process invocations. What a pass has no room for is LEFT OWED rather than dropped —
 /// the rule keeps owing its evaluator an invocation and the next pass carries on after the
-/// resource this one stopped at ([`super::RuleEvaluationEntry::dispatched_through`]) —
+/// item this one stopped at ([`super::RuleEvaluationEntry::pushed_through`]) —
 /// exactly as a pass that reaches its budget of recorded verdicts leaves the rest for the
 /// next one.
 pub const MAX_INVOCATIONS_PER_PASS: usize = 50;
@@ -80,6 +84,17 @@ pub const MAX_INVOCATIONS_PER_PASS: usize = 50;
 /// full, many passes over; past them a function that can never be invoked stops costing an
 /// attempt per pass.
 pub const MAX_FAILED_DISPATCHES: u32 = 120;
+
+/// How many of a pass's owed invocations Config makes AT ONCE.
+///
+/// A change-triggered rule is invoked once per configuration item, and those invocations
+/// are independent of one another — each carries one item and the verdict it delivers is
+/// about that item's resource — so a pass makes them concurrently rather than waiting for
+/// one function's run before the next call. A HOST bound: this many at once keeps the
+/// fan-out one pass can cost bounded, so a rule whose scope covers a long backlog of
+/// recorded items does not turn one pass into as many simultaneous in-process runs as it
+/// has items.
+const CONCURRENT_INVOCATIONS: usize = 8;
 
 impl ConfigRuleEntry {
     /// Whether Config still owes the invocation of THIS rule's own evaluator: the rule
@@ -129,12 +144,12 @@ pub struct EvaluatorInvocation {
     /// It names which resource an invocation that could not be made was about, which is
     /// what the log of such a failure carries.
     pub subject: Option<(String, String)>,
-    /// The subject this invocation FOLLOWS in its pass — the one before it, or the subject
-    /// the pass itself resumed after for the first of them.
+    /// The item this invocation FOLLOWS in its pass — the one handed over before it, or
+    /// the item the pass itself resumed after for the first of them.
     ///
-    /// It is the cursor a pass goes back to when THIS invocation could not be made, so a
+    /// It is the watermark a pass goes back to when THIS invocation could not be made, so a
     /// retry resumes at this invocation and keeps what the passes before it handed over.
-    pub follows: Option<(String, String)>,
+    pub follows: Option<PushedThrough>,
     /// The `ResultToken` of the pass this invocation belongs to, which is what says WHICH
     /// pass an invocation that could not be made leaves owed
     /// ([`ComAmazonawsConfigserviceStarlingdoveserviceState::owe_failed_evaluator_dispatch`]).
@@ -143,14 +158,28 @@ pub struct EvaluatorInvocation {
     pub event: ::serde_json::Value,
 }
 
-/// One recorded resource a change-triggered rule may be invoked for: what identifies it,
-/// the tags its item was recorded with (which the rule's scope can narrow by) and the
-/// configuration-item change notification its evaluator is handed.
+/// One recorded configuration item a change-triggered rule may be invoked for: what
+/// identifies the resource, WHEN its item was recorded, the tags it was recorded with
+/// (which the rule's scope can narrow by) and the configuration-item change notification
+/// its evaluator is handed.
 struct RecordedSubject {
     resource_type: String,
     resource_id: String,
+    recorded_at: SystemTime,
     tags: ::std::collections::BTreeMap<String, String>,
     notification: ::serde_json::Value,
+}
+
+impl RecordedSubject {
+    /// Where this item stands in the order Config hands items over
+    /// ([`PushedThrough`]).
+    fn pushed_through(&self) -> PushedThrough {
+        (
+            self.recorded_at,
+            self.resource_type.clone(),
+            self.resource_id.clone(),
+        )
+    }
 }
 
 impl ComAmazonawsConfigserviceStarlingdoveserviceState {
@@ -207,9 +236,11 @@ impl ComAmazonawsConfigserviceStarlingdoveserviceState {
                 super::scope_covers(rule.scope.as_ref(), resource_type, resource_id, tags)
             });
             if triggered {
-                // The same invocation a write of the rule owes: Config has an evaluation
-                // to run, and the token it mints is the one the delivery comes back on.
-                rule.evaluation.invoke(now);
+                // The invocation this recorded item owes: the item itself is what Config
+                // hands the evaluator, and the token it mints is the one that item's
+                // delivery comes back on. The items already handed over STAY handed over —
+                // this owes one invocation, not a re-push of the rule's whole scope.
+                rule.evaluation.invoke_for_recorded_item(now);
                 rule.mint_evaluation_result_token(now);
             }
         }
@@ -223,25 +254,28 @@ impl ComAmazonawsConfigserviceStarlingdoveserviceState {
     /// marking happens HERE rather than after the call: a second pump that takes the
     /// invocations finds nothing left to make.
     ///
-    /// A change-triggered rule is invoked once per recorded resource in its scope, and one
-    /// pass makes at most [`MAX_INVOCATIONS_PER_PASS`] of them. The subjects it had no room
-    /// for are LEFT OWED: the pass is not marked dispatched, how far it got is noted
-    /// ([`super::RuleEvaluationEntry::dispatched_through`]) and the next pass carries on
-    /// after that resource. So every recorded configuration item in the rule's scope is
-    /// handed to the evaluator, rather than the ones past the bound never being pushed at
-    /// all.
+    /// A change-triggered rule is invoked once per recorded configuration item in its
+    /// scope, and one pass makes at most [`MAX_INVOCATIONS_PER_PASS`] of them. The items it
+    /// had no room for are LEFT OWED: the pass is not marked dispatched, how far it got is
+    /// noted ([`super::RuleEvaluationEntry::pushed_through`]) and the next pass carries on
+    /// after that item. The items are ordered by WHEN THEY WERE RECORDED, so that watermark
+    /// only moves forward: an item recorded while a pass is still behind is handed over
+    /// after the ones before it rather than rewinding them, and every recorded item in the
+    /// rule's scope reaches the evaluator exactly once however many resources that scope
+    /// covers.
     pub fn take_due_evaluator_invocations(
         &mut self,
         region: &str,
         now: SystemTime,
     ) -> Vec<EvaluatorInvocation> {
         // The configuration items a change-triggered rule is invoked for, copied out so
-        // the rules below can be walked mutably. A resource whose deletion is recorded is
+        // the rules below can be walked mutably, in the order they were RECORDED — which is
+        // the order Config hands them over. A resource whose deletion is recorded is
         // no longer there to evaluate. Rendering one item's notification is the cost of
         // one invocation, so the inventory is read only when a rule actually owes a
         // change-triggered invocation: a pass that owes none — which is every pass of an
         // account holding no such rule — reads nothing at all.
-        let recorded: Vec<RecordedSubject> = if self.owes_change_triggered_invocation() {
+        let mut recorded: Vec<RecordedSubject> = if self.owes_change_triggered_invocation() {
             self.discovered_resources
                 .values()
                 .filter(|entry| entry.deleted_at.is_none())
@@ -253,6 +287,12 @@ impl ComAmazonawsConfigserviceStarlingdoveserviceState {
                     RecordedSubject {
                         resource_type: entry.resource_type.clone(),
                         resource_id: entry.resource_id.clone(),
+                        // When the item this invocation carries was captured, which is what
+                        // places it in the order the items are handed over.
+                        recorded_at: entry
+                            .last_recorded_at
+                            .or(entry.first_recorded_at)
+                            .unwrap_or(SystemTime::UNIX_EPOCH),
                         tags: entry.tags.clone(),
                         // The event a change-triggered rule is handed IS the notification
                         // the recorded item produced, built through the one place such a
@@ -273,6 +313,7 @@ impl ComAmazonawsConfigserviceStarlingdoveserviceState {
         } else {
             Vec::new()
         };
+        recorded.sort_by_key(RecordedSubject::pushed_through);
 
         let account_id = ::emulator_server::emulator_account_id();
         // The role Config ASSUMED to make this invocation, which is the role the account's
@@ -300,32 +341,32 @@ impl ComAmazonawsConfigserviceStarlingdoveserviceState {
             let Some(result_token) = rule.evaluation.result_token.clone() else {
                 continue;
             };
-            // How far the passes of THIS invocation have already got through the rule's
-            // subjects, and what is left for this one to hand over.
+            // How far Config has already got through the items in the rule's scope, and
+            // what is left for this pass to hand over.
             let reached = rule
                 .is_change_triggered()
-                .then(|| rule.evaluation.dispatched_through.clone())
+                .then(|| rule.evaluation.pushed_through.clone())
                 .flatten();
             let mut handed_through = None;
             let mut left_owed = false;
-            // Each event with the recorded resource it is about and the subject it FOLLOWS
+            // Each event with the recorded resource it is about and the item it FOLLOWS
             // in this pass, so an invocation that could not be made says exactly where the
             // retry resumes: at itself, with everything before it already handed over.
             type Handed = (
                 Option<(String, String)>,
-                Option<(String, String)>,
+                Option<PushedThrough>,
                 ::serde_json::Value,
             );
             let events: Vec<Handed> = if rule.is_change_triggered() {
                 let owed: Vec<&RecordedSubject> = recorded
                     .iter()
                     .filter(|subject| {
-                        // The inventory is walked in its own order, so "after the resource
-                        // the last pass stopped at" is the rest of that order.
-                        reached.as_ref().is_none_or(|(resource_type, resource_id)| {
-                            (&subject.resource_type, &subject.resource_id)
-                                > (resource_type, resource_id)
-                        })
+                        // The items are in the order they were recorded, so "after the item
+                        // the last pass stopped at" is the rest of that order — which is
+                        // where an item recorded since then is, too.
+                        reached
+                            .as_ref()
+                            .is_none_or(|reached| &subject.pushed_through() > reached)
                     })
                     .filter(|subject| {
                         super::scope_covers(
@@ -339,15 +380,16 @@ impl ComAmazonawsConfigserviceStarlingdoveserviceState {
                 left_owed = owed.len() > MAX_INVOCATIONS_PER_PASS;
                 let handing: Vec<&RecordedSubject> =
                     owed.into_iter().take(MAX_INVOCATIONS_PER_PASS).collect();
-                handed_through = handing
-                    .last()
-                    .map(|subject| (subject.resource_type.clone(), subject.resource_id.clone()));
+                handed_through = handing.last().map(|subject| subject.pushed_through());
                 let mut follows = reached.clone();
                 let mut handed = Vec::with_capacity(handing.len());
                 for subject in handing {
-                    let key = (subject.resource_type.clone(), subject.resource_id.clone());
-                    handed.push((Some(key.clone()), follows.clone(), subject.notification.clone()));
-                    follows = Some(key);
+                    handed.push((
+                        Some((subject.resource_type.clone(), subject.resource_id.clone())),
+                        follows.clone(),
+                        subject.notification.clone(),
+                    ));
+                    follows = Some(subject.pushed_through());
                 }
                 handed
             } else {
@@ -370,11 +412,11 @@ impl ComAmazonawsConfigserviceStarlingdoveserviceState {
                 });
             }
             if let Some(handed_through) = handed_through {
-                rule.evaluation.dispatched_through = Some(handed_through);
+                rule.evaluation.pushed_through = Some(handed_through);
             }
             if left_owed {
-                // The pass still owes the subjects this one had no room for, so it is NOT
-                // marked dispatched: the next pass carries on after the resource above
+                // The rule still owes the items this pass had no room for, so it is NOT
+                // marked dispatched: the next pass carries on after the item above
                 // rather than dropping them.
                 continue;
             }
@@ -396,21 +438,22 @@ impl ComAmazonawsConfigserviceStarlingdoveserviceState {
     /// reported an error: the second has answered the invocation, and Config does not
     /// invoke it twice for one pass.
     ///
-    /// The retry RESUMES rather than restarts: `delivered_through` is the subject the
+    /// The retry RESUMES rather than restarts: `delivered_through` is the item the
     /// failing invocation FOLLOWED in its pass ([`EvaluatorInvocation::follows`]), so the
-    /// next pass carries on at the one that failed and neither this pass's earlier subjects
+    /// next pass carries on at the one that failed and neither this pass's earlier items
     /// nor the ones an earlier pass handed over are handed over again. `None` — a periodic
-    /// rule, or a pass whose very first subject failed with none handed over before it —
-    /// starts the rule's subjects from the beginning. Bounded by [`MAX_FAILED_DISPATCHES`]
+    /// rule, or a pass whose very first item failed with none handed over before it —
+    /// starts the rule's items from the beginning. Bounded by [`MAX_FAILED_DISPATCHES`]
     /// tries, after which the pass is marked invoked and the rule left unevaluated rather
-    /// than retried without end. Answers whether the pass was owed again, which is `false`
-    /// for a pass another invocation has since replaced, for a rule the account no longer
-    /// holds, and past that bound.
+    /// than retried without end. The failure itself is what the rule's evaluation status
+    /// reports as its last failed invocation, with the error Config met. Answers whether the
+    /// pass was owed again, which is `false` for a pass another invocation has since
+    /// replaced, for a rule the account no longer holds, and past that bound.
     pub fn owe_failed_evaluator_dispatch(
         &mut self,
         config_rule_name: &str,
         result_token: &str,
-        delivered_through: Option<(String, String)>,
+        delivered_through: Option<PushedThrough>,
     ) -> bool {
         let Some(rule) = self.config_rules.get_mut(config_rule_name) else {
             return false;
@@ -435,7 +478,7 @@ impl ComAmazonawsConfigserviceStarlingdoveserviceState {
         }
         rule.evaluation.failed_dispatches += 1;
         rule.evaluation.dispatched_token = None;
-        rule.evaluation.dispatched_through = delivered_through;
+        rule.evaluation.pushed_through = delivered_through;
         true
     }
 }
@@ -520,13 +563,21 @@ fn invocation_event(
     event
 }
 
-/// Invoke the evaluators this account owes an invocation of, as of now.
+/// Invoke the evaluators this account owes an invocation of, as of now, and record what
+/// each invocation came to.
 ///
 /// Takes the callback rather than an `OperationContext`, because the pump that calls it
 /// outlives the request that started it ([`super::drive_recorder_clock`]). No lock is held
 /// across an await: the invocations are decided under the store's guard and made with it
 /// released, because the function they run calls back into this same emulator — including
 /// into this service, which is how its verdict is delivered.
+///
+/// What the rule's evaluation status reports comes from HERE, because only the invocation
+/// knows: a call the function answered is the successful invocation
+/// (`ConfigRuleEvaluationStatus$LastSuccessfulInvocationTime`), a call that did not reach
+/// it is the failed one, and a function that ran and reported an error is a failed
+/// EVALUATION. The successful evaluation is the function's own delivery, recorded by
+/// `PutEvaluations`.
 pub async fn invoke_due_rule_evaluators<Eng: Send + Sync + 'static>(
     callback: &smithy_server_runtime::EmbeddedEmulator,
     engine: &Eng,
@@ -544,63 +595,118 @@ pub async fn invoke_due_rule_evaluators<Eng: Send + Sync + 'static>(
     let client = lambda_client(callback, region);
     // The rules whose pass this run has already owed again: one pass's failure costs one
     // try, and the invocations of that pass still queued are not made — the retry hands
-    // them over, so making them now would hand a subject over twice.
+    // them over, so making them now would hand an item over twice.
     let mut owed_again: ::std::collections::BTreeSet<String> = ::std::collections::BTreeSet::new();
-    for invocation in invocations {
-        if owed_again.contains(&invocation.config_rule_name) {
-            continue;
-        }
-        // "RequestResponse": Config waits for the function, because the verdict is
-        // delivered by the function's own run.
-        let answered = client
-            .invoke()
-            .function_name(&invocation.function)
-            .invocation_type(::aws_sdk_lambda::types::InvocationType::RequestResponse)
-            .payload(::aws_sdk_lambda::primitives::Blob::new(
-                invocation.event.to_string().into_bytes(),
-            ))
-            .send()
-            .await;
-        match answered {
-            Ok(answer) => {
-                // "FunctionError: if present, indicates that an error occurred during
-                // function execution": the evaluator ran and failed, so it delivered no
-                // verdict and Config records none of its own.
-                if let Some(function_error) = answer.function_error() {
-                    ::tracing::warn!(
-                        config_rule_name = %invocation.config_rule_name,
-                        function_error = %function_error,
-                        "the evaluator of a Config rule failed"
-                    );
-                }
+    // The calls are made CONCURRENTLY, a bounded number at a time
+    // ([`CONCURRENT_INVOCATIONS`]): one item's evaluation does not wait on another's, so a
+    // rule whose scope covers a backlog of recorded items is caught up in passes rather
+    // than one function run at a time. Their outcomes are then read IN ORDER, so a failure
+    // owes the pass again from the earliest item whose call did not reach the function.
+    for chunk in invocations.chunks(CONCURRENT_INVOCATIONS) {
+        let answers = ::futures_util::future::join_all(chunk.iter().map(|invocation| {
+            let client = client.clone();
+            async move {
+                // "RequestResponse": Config waits for the function, because the verdict is
+                // delivered by the function's own run.
+                client
+                    .invoke()
+                    .function_name(&invocation.function)
+                    .invocation_type(::aws_sdk_lambda::types::InvocationType::RequestResponse)
+                    .payload(::aws_sdk_lambda::primitives::Blob::new(
+                        invocation.event.to_string().into_bytes(),
+                    ))
+                    .send()
+                    .await
             }
-            Err(error) => {
-                ::tracing::warn!(
-                    config_rule_name = %invocation.config_rule_name,
-                    subject = ?invocation.subject,
-                    error = %::aws_smithy_types::error::display::DisplayErrorContext(&error),
-                    "the evaluator of a Config rule could not be invoked"
-                );
-                // Nothing ran, so nothing delivered a verdict: the pass goes back to owing
-                // its invocation, resuming at THIS subject, and a later pass makes it. A
-                // pass that is NOT owed again — one another invocation has replaced, or one
-                // past the bound on failed tries — is the end of Config's trying, so it is
-                // logged as such.
-                owed_again.insert(invocation.config_rule_name.clone());
-                let owed = state.lock().owe_failed_evaluator_dispatch(
-                    &invocation.config_rule_name,
-                    &invocation.result_token,
-                    invocation.follows,
-                );
-                if !owed {
+        }))
+        .await;
+        for (invocation, answered) in chunk.iter().zip(answers) {
+            if owed_again.contains(&invocation.config_rule_name) {
+                // The pass is owed again from an earlier item of this very chunk, and that
+                // retry hands this one over too: whatever this call came to, it is the
+                // retry that decides what the rule was told.
+                continue;
+            }
+            let at = SystemTime::now();
+            match answered {
+                Ok(answer) => {
+                    // The call reached the function and it answered, which is the invocation
+                    // Config made: the verdict is the function's own to deliver.
+                    let function_error = answer.function_error().map(str::to_string);
+                    let reported = function_error.as_deref().map(|function_error| {
+                        (function_error.to_string(), answered_payload(&answer))
+                    });
+                    let mut store = state.lock();
+                    let Some(rule) = store.config_rules.get_mut(&invocation.config_rule_name)
+                    else {
+                        continue;
+                    };
+                    rule.evaluation.note_evaluator_invoked(at);
+                    // "FunctionError: if present, indicates that an error occurred during
+                    // function execution": the evaluator ran and failed, so it delivered no
+                    // verdict and Config records none of its own — what failed is the
+                    // EVALUATION, with the function's own answer as the error.
+                    if let Some((code, message)) = reported {
+                        rule.evaluation
+                            .note_evaluation_failed(at, Some(&code), &message);
+                        drop(store);
+                        ::tracing::warn!(
+                            config_rule_name = %invocation.config_rule_name,
+                            function_error = %code,
+                            "the evaluator of a Config rule failed"
+                        );
+                    }
+                }
+                Err(error) => {
+                    let fault =
+                        ::aws_smithy_types::error::display::DisplayErrorContext(&error).to_string();
+                    let code = ::aws_sdk_lambda::error::ProvideErrorMetadata::code(&error)
+                        .map(str::to_string);
                     ::tracing::warn!(
                         config_rule_name = %invocation.config_rule_name,
-                        "Config is no longer owed the invocation of this rule's evaluator"
+                        subject = ?invocation.subject,
+                        error = %fault,
+                        "the evaluator of a Config rule could not be invoked"
                     );
+                    // Nothing ran, so nothing delivered a verdict: the pass goes back to
+                    // owing its invocation, resuming at THIS item, and a later pass makes
+                    // it. A pass that is NOT owed again — one another invocation has
+                    // replaced, or one past the bound on failed tries — is the end of
+                    // Config's trying, so it is logged as such.
+                    owed_again.insert(invocation.config_rule_name.clone());
+                    let mut store = state.lock();
+                    if let Some(rule) = store.config_rules.get_mut(&invocation.config_rule_name) {
+                        rule.evaluation
+                            .note_evaluator_invocation_failed(at, code.as_deref(), &fault);
+                    }
+                    let owed = store.owe_failed_evaluator_dispatch(
+                        &invocation.config_rule_name,
+                        &invocation.result_token,
+                        invocation.follows.clone(),
+                    );
+                    drop(store);
+                    if !owed {
+                        ::tracing::warn!(
+                            config_rule_name = %invocation.config_rule_name,
+                            "Config is no longer owed the invocation of this rule's evaluator"
+                        );
+                    }
                 }
             }
         }
     }
+}
+
+/// What the function ANSWERED, as text: the error document a failed run produced, which is
+/// what says why that run failed.
+///
+/// A payload that is not text is reported as nothing rather than lossily decoded, because
+/// an error message is what a reader of the status needs and bytes are not one.
+fn answered_payload(answer: &::aws_sdk_lambda::operation::invoke::InvokeOutput) -> String {
+    answer
+        .payload()
+        .map(|payload| String::from_utf8_lossy(payload.as_ref()).to_string())
+        .unwrap_or_default()
 }
 
 /// An AWS Lambda client over the in-process callback, built the way this crate's other
@@ -1005,6 +1111,71 @@ mod tests {
                     .take_due_evaluator_invocations(REGION, at)
                     .is_empty(),
                 "case {case:?}: expected no further invocation to be taken"
+            );
+        }
+    }
+
+    /// A configuration item RECORDED while a rule's push is still behind does not rewind
+    /// what Config has already handed over: the items pushed before it are not pushed
+    /// again, the ones a bounded pass had no room for are still pushed, and the new item is
+    /// pushed too — each exactly once.
+    ///
+    /// The rows differ along WHEN the new item is recorded relative to the rule's push: in
+    /// the middle of it, with items still owed; at the point where everything in scope has
+    /// been handed over; and in the middle of it twice over, which is the account whose
+    /// resources keep changing while a rule with more of them than one pass hands over is
+    /// still catching up.
+    #[test]
+    fn an_item_recorded_mid_push_does_not_rewind_what_was_already_pushed() {
+        let at = SystemTime::UNIX_EPOCH + ::std::time::Duration::from_secs(1_700_000_000);
+        // (case, how many items the rule's scope already covers, how many items are
+        // recorded after the FIRST pass of the push)
+        let cases: [(&str, usize, usize); 3] = [
+            ("an item recorded while items are still owed", MAX_INVOCATIONS_PER_PASS + 3, 1),
+            ("an item recorded once every item was pushed", 2, 1),
+            ("items recorded again while catching up", MAX_INVOCATIONS_PER_PASS * 2, 3),
+        ];
+
+        for (case, already, arriving) in cases {
+            let (mut store, mut expected) = store_with(already, at);
+            // The first wake-up of the push, which hands over what it has room for.
+            let mut handed = subjects_of(&store.take_due_evaluator_invocations(REGION, at));
+
+            // Each item recorded after it: a queue of its own, captured later than every
+            // item already in the inventory.
+            for index in 0..arriving {
+                let later = at + ::std::time::Duration::from_secs(1 + index as u64);
+                let entry = recorded_queue(already + index, later);
+                expected.push(entry.resource_id.clone());
+                let change = store
+                    .record_discovered_resource(entry)
+                    .expect("a queue the inventory did not hold records its first item");
+                store.owe_change_triggered_invocations(&[change], later);
+            }
+
+            // Every wake-up after that, until the rule owes nothing further.
+            let at_last = at + ::std::time::Duration::from_secs(1 + arriving as u64);
+            for _ in 0..(already / MAX_INVOCATIONS_PER_PASS + arriving + 2) {
+                if !still_owed(&store) {
+                    break;
+                }
+                handed.extend(subjects_of(
+                    &store.take_due_evaluator_invocations(REGION, at_last),
+                ));
+            }
+
+            assert_eq!(
+                handed, expected,
+                "case {case:?}: expected every recorded item to be pushed exactly once, in \
+                 the order they were recorded, got {} pushes of {} items",
+                handed.len(),
+                expected.len()
+            );
+            assert!(
+                store
+                    .take_due_evaluator_invocations(REGION, at_last)
+                    .is_empty(),
+                "case {case:?}: expected no further invocation once every item was pushed"
             );
         }
     }

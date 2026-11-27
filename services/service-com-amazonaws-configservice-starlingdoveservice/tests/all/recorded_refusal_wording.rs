@@ -132,15 +132,28 @@ async fn a_result_token_config_did_not_mint_is_worded_without_quoting_the_token(
     let expected = "Result Token provided is invalid";
 
     // Rows differ along WHAT the token is: a forged value, one that is only whitespace,
-    // one that decodes to nothing Config issued, and a token Config minted and then
-    // superseded by invoking the rule again. None of them appears in the sentence.
+    // one that decodes to nothing Config issued, and one that is well formed and names a
+    // rule this account holds but no invocation Config ever made of it. None of them
+    // appears in the sentence. The token Config minted for an EARLIER invocation of the
+    // rule is not among them: Config accepts a delivery on it, because the evaluator it
+    // was handed to is answering the invocation that carried it.
     emulator
         .ok(
             "StartConfigRulesEvaluation",
             &json!({ "ConfigRuleNames": [name] }),
         )
         .await;
-    let superseded = minted;
+    let accepted = emulator
+        .ok(
+            "PutEvaluations",
+            &json!({ "ResultToken": minted, "Evaluations": [] }),
+        )
+        .await;
+    assert_eq!(
+        accepted["FailedEvaluations"].as_array().map(Vec::len),
+        Some(0),
+        "a delivery on an earlier invocation's ResultToken is accepted, got {accepted}"
+    );
 
     for (case, token) in [
         ("a forged token", "not-a-token-config-minted".to_string()),
@@ -149,7 +162,10 @@ async fn a_result_token_config_did_not_mint_is_worded_without_quoting_the_token(
             "a token that decodes to nothing Config issued",
             aws_smithy_types::base64::encode("0:"),
         ),
-        ("a superseded token", superseded),
+        (
+            "a well-formed token for no invocation Config made",
+            aws_smithy_types::base64::encode(format!("{}:{name}1", name.len())),
+        ),
     ] {
         let message = refusal(
             case,
