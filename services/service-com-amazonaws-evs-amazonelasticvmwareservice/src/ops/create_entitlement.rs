@@ -10,8 +10,10 @@
 //! The entitlement starts `CREATING` and the clock owes it the move to `CREATED`:
 //! "This is an asynchronous operation. Amazon EVS validates the specified virtual
 //! machines before starting usage tracking." The operation is `@idempotent`, so the
-//! (connector, VM) pair is the identity of an entitlement and a repeat call for a VM
-//! already entitled through the same connector reports the stored record.
+//! (connector, VM, entitlement type) triple is the identity of an entitlement
+//! ([`crate::state::entitlement_key`]) and a repeat call for a VM already entitled of
+//! that type through the same connector reports the stored record, while a type that VM
+//! holds no entitlement of through that connector is a record this call mints.
 //!
 //! `connectorId` names the connector the entitlement is created THROUGH, so it is
 //! resolved against the environment's stored connectors before anything is persisted:
@@ -247,10 +249,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .into());
         }
 
-        // One entitlement per DISTINCT requested virtual machine: the (connector, VM)
-        // pair identifies an entitlement, so a `vmIds` list naming the same VM twice
-        // names one entitlement. The rule is stated once, beside that identity in
-        // `crate::state`, and `DeleteEntitlement` folds its own list through it too.
+        // One entitlement per DISTINCT requested virtual machine: the connector, the
+        // virtual machine and the entitlement type identify an entitlement, and the
+        // first and the last are the same for every entry of one list, so a `vmIds` list
+        // naming the same VM twice names one entitlement. The rule is stated once,
+        // beside that identity in `crate::state`, and `DeleteEntitlement` folds its own
+        // list through it too.
         let wanted = crate::state::distinct_vm_ids(&input.vm_ids);
 
         // The store's own bound on how many entitlements one environment holds. Refused
@@ -261,7 +265,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .filter(|vm_id| {
                 !environment
                     .entitlements
-                    .contains_key(&crate::state::entitlement_key(&input.connector_id, vm_id))
+                    .contains_key(&crate::state::entitlement_key(
+                        &input.connector_id,
+                        vm_id,
+                        &input.entitlement_type,
+                    ))
             })
             .count();
         if environment.entitlements.len() + fresh > crate::state::MAX_ENTITLEMENTS_PER_ENVIRONMENT {
@@ -289,7 +297,16 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let mut minted = false;
         let mut entitlements = Vec::with_capacity(wanted.len());
         for vm_id in wanted {
-            let key = crate::state::entitlement_key(&input.connector_id, vm_id);
+            // The record this call addresses is the one of the type the request names:
+            // `entitlementType` is part of an entitlement's identity, exactly as it
+            // selects the record `DeleteEntitlement` removes and the records
+            // `ListVmEntitlements` reports, so a record of another type on the same
+            // (connector, VM) pair is not the one this call either reports or replaces.
+            let key = crate::state::entitlement_key(
+                &input.connector_id,
+                vm_id,
+                &input.entitlement_type,
+            );
             let entitlement = match environment.entitlements.entry(key) {
                 std::collections::btree_map::Entry::Vacant(slot) => {
                     minted = true;
@@ -301,9 +318,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                         pending.clone(),
                     ))
                 }
-                // The operation is `@idempotent`: a VM already entitled through this
-                // connector keeps the record it has, and the call reports that record
-                // rather than creating a second one.
+                // The operation is `@idempotent`: a VM already entitled of this type
+                // through this connector keeps the record it has, and the call reports
+                // that record rather than creating a second one.
                 std::collections::btree_map::Entry::Occupied(taken) => taken.into_mut(),
             };
             entitlements.push(entitlement.to_wire(&environment_id));

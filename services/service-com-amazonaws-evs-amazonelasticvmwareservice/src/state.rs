@@ -1028,28 +1028,39 @@ impl StoredConnector {
 }
 
 /// The store key of one entitlement inside its environment: the connector it was
-/// created through and the virtual machine it entitles.
+/// created through, the virtual machine it entitles, and the type of entitlement it is.
 ///
-/// That pair is what identifies an entitlement — `CreateEntitlement`,
-/// `ListVmEntitlements` and `DeleteEntitlement` all address entitlements by
-/// `connectorId` plus `vmIds`, and `CreateEntitlement` is `@idempotent`, so a second
-/// create for the same pair must find the same record. `/` separates the two parts
-/// because neither `^(cnctr-[a-zA-Z0-9]{10})$` nor `^vm-[0-9]+$` can contain one, so
-/// no two distinct pairs share a key.
-pub fn entitlement_key(connector_id: &str, vm_id: &str) -> String {
-    format!("{connector_id}/{vm_id}")
+/// Those three are what identifies an entitlement, because they are exactly the three
+/// required members every operation that addresses an entitlement takes:
+/// `CreateEntitlement` and `DeleteEntitlement` take `connectorId`, `vmIds` and
+/// `entitlementType`, and `ListVmEntitlements` takes `connectorId` and
+/// `entitlementType` as the selection it reports. So an entitlement of one type is not
+/// the entitlement of another type on the same (connector, VM) pair: a create for a
+/// type that pair holds no record of mints one, a delete addressed to a type removes
+/// only the record of that type, and a listing of a type reports only records of it
+/// ([`StoredEntitlement::selected_by`]). `CreateEntitlement` is `@idempotent`, so a
+/// second create for the same triple must find the same record.
+///
+/// `/` separates the three parts because none of them can contain one —
+/// `^(cnctr-[a-zA-Z0-9]{10})$`, `^vm-[0-9]+$` and the `EntitlementType` value set
+/// ([`crate::ops::types::ENTITLEMENT_TYPE_VALUES`]) — so no two distinct triples share
+/// a key. The type comes last, so the records of one connector stay ordered by virtual
+/// machine, which is the order a listing pages over.
+pub fn entitlement_key(connector_id: &str, vm_id: &str, entitlement_type: &str) -> String {
+    format!("{connector_id}/{vm_id}/{entitlement_type}")
 }
 
 /// The DISTINCT virtual machines a `vmIds` list names, in the order the request first
 /// named each of them.
 ///
-/// One entitlement per distinct virtual machine: the (connector, VM) pair is what
-/// identifies an entitlement ([`entitlement_key`]), so a `vmIds` list naming the same
-/// virtual machine twice names ONE entitlement. The rule lives here, beside the identity
-/// it derives from, so `CreateEntitlement` and `DeleteEntitlement` cannot disagree about
-/// which machines one request names. First-seen order is kept, because both operations
-/// report the entitlements of a call in the order the request named their virtual
-/// machines.
+/// One entitlement per distinct virtual machine: a `vmIds` list naming the same virtual
+/// machine twice names ONE entitlement, because the request's connector and entitlement
+/// type are the same for every entry of the list, and those two plus the virtual machine
+/// are what identifies an entitlement ([`entitlement_key`]). The rule lives here, beside
+/// the identity it derives from, so `CreateEntitlement` and `DeleteEntitlement` cannot
+/// disagree about which machines one request names. First-seen order is kept, because
+/// both operations report the entitlements of a call in the order the request named their
+/// virtual machines.
 pub fn distinct_vm_ids(vm_ids: &[String]) -> Vec<&str> {
     let mut seen: BTreeSet<&str> = BTreeSet::new();
     let mut distinct = Vec::with_capacity(vm_ids.len());
@@ -1134,6 +1145,18 @@ impl StoredEntitlement {
         self.status = ENTITLEMENT_DELETED.to_string();
         self.stopped_at_ms = Some(stopped_at_ms);
         self.pending = None;
+    }
+
+    /// Whether this record is one of the entitlements a request addressing
+    /// `connector_id` and `entitlement_type` names.
+    ///
+    /// The selection side of the identity [`entitlement_key`] builds: the connector an
+    /// entitlement was created through and the type it is are two of the three parts of
+    /// that identity, so a request naming them addresses the records of that connector
+    /// AND that type and no others. Stated once, so the listing that reports a selection
+    /// cannot disagree with the key the create and the delete resolve one record by.
+    pub fn selected_by(&self, connector_id: &str, entitlement_type: &str) -> bool {
+        self.connector_id == connector_id && self.entitlement_type == entitlement_type
     }
 
     /// Whether this record still TRACKS a virtual machine's Windows Server usage: its

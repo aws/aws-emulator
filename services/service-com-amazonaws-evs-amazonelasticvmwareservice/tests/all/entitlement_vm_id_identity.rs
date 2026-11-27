@@ -3,12 +3,14 @@
 //! The rules an entitlement record is resolved by that this crate single-homes, each
 //! driven through every operation that reaches it, end to end over awsJson1_0.
 //!
-//! The first is the identity of a record. The (connector, VM) pair is what identifies an
-//! entitlement —
+//! The first is the identity of a record. The connector an entitlement was created
+//! through, the virtual machine it entitles and the type it is are what identify it —
 //! `crate::state::entitlement_key`, the key `CreateEntitlement`, `ListVmEntitlements`
-//! and `DeleteEntitlement` all address entitlements by — so a `vmIds` list naming the
-//! same virtual machine twice names ONE entitlement, and each of the two operations
-//! that take a `vmIds` list reports it once, in the order the request first named it.
+//! and `DeleteEntitlement` all address entitlements by, and `tests/all/entitlement_type_identity.rs`
+//! owns the entitlement-type part of it — so, with the connector and the type the same
+//! for every entry of one request, a `vmIds` list naming the same virtual machine twice
+//! names ONE entitlement, and each of the two operations that take a `vmIds` list
+//! reports it once, in the order the request first named it.
 //!
 //! `CreateEntitlement` and `DeleteEntitlement` reach that rule through the single
 //! `crate::state::distinct_vm_ids` it is stated in, so this suite drives ONE table of

@@ -13,9 +13,11 @@
 //!   before starting usage tracking" (`CreateEntitlement` doc). `startedAt` appears
 //!   with `CREATED` and does not move between reads.
 //! * The operation is `@idempotent`
-//!   (`smithy_query(query="operation",operation="CreateEntitlement")`): the
-//!   (connector, VM) pair identifies an entitlement, so a repeat call for a VM already
-//!   entitled through the same connector reports the stored record and creates nothing.
+//!   (`smithy_query(query="operation",operation="CreateEntitlement")`): the connector,
+//!   the virtual machine and the entitlement type identify an entitlement, so a repeat
+//!   call for a VM already entitled of that type through the same connector reports the
+//!   stored record and creates nothing. The entitlement-type part of that identity is
+//!   owned by `tests/all/entitlement_type_identity.rs`.
 //! * An entitlement belongs to the connector it was created through: "Returns existing
 //!   entitlements for virtual machines associated with the specified environment and
 //!   connector" (`ListVmEntitlements` doc). A `connectorId` the addressed environment

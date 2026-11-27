@@ -265,7 +265,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // "Returns existing entitlements for virtual machines associated with the
         // specified environment and connector": with both resources resolved, the
         // connector and the entitlement type the request names select the environment's
-        // records to report.
+        // records to report — the selection side of the identity the create and the
+        // delete resolve ONE record by
+        // ([`crate::state::StoredEntitlement::selected_by`]), so a record of another
+        // connector or another type is not among the ones this listing reports.
         let mut matching = environment
             .entitlements
             .range::<str, _>((
@@ -276,8 +279,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 std::ops::Bound::Unbounded,
             ))
             .filter(|(_, entitlement)| {
-                entitlement.connector_id == input.connector_id
-                    && entitlement.entitlement_type == input.entitlement_type
+                entitlement.selected_by(&input.connector_id, &input.entitlement_type)
             });
         let entitlements: Vec<VmEntitlement> = matching
             .by_ref()

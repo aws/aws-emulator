@@ -16,8 +16,10 @@
 //!   (`smithy_query(query="shape", shape="EntitlementStatus")`), so the stop is immediate
 //!   — whether the entitlement had settled into `CREATED` or was still `CREATING` — and
 //!   no later clock change revives it.
-//! * The (connector, VM) pair identifies an entitlement, so a `vmIds` list naming one VM
-//!   twice names one record, and re-entitling that pair after a delete mints a fresh
+//! * The connector, the virtual machine and the entitlement type identify an entitlement
+//!   (`tests/all/entitlement_type_identity.rs` owns the type part), and the connector and
+//!   the type are the same for every entry of one request, so a `vmIds` list naming one VM
+//!   twice names one record, and re-entitling that triple after a delete mints a fresh
 //!   record rather than finding the deleted one.
 //! * The operation is `@idempotent` (`smithy_query(query="operation",
 //!   operation="DeleteEntitlement")`) and the end state is what the call asks for — the

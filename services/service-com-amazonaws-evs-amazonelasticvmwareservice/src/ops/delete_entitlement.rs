@@ -8,7 +8,7 @@
 //! `DELETED` status with the `stoppedAt` instant the call stopped tracking at.
 //! [`crate::ops::list_vm_entitlements`] no longer reports a record this call removed.
 //!
-//! The (connector, VM) pair is the identity of an entitlement
+//! The (connector, VM, entitlement type) triple is the identity of an entitlement
 //! ([`crate::state::entitlement_key`]), so the records this call addresses are the ones
 //! `CreateEntitlement` stored for `connectorId` and the requested `vmIds`, of the
 //! `entitlementType` the request names.
@@ -247,11 +247,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .into());
         }
 
-        // One entitlement per DISTINCT requested virtual machine: the (connector, VM)
-        // pair identifies an entitlement, so a `vmIds` list naming the same VM twice
-        // names one entitlement and that entitlement is reported once. The rule is
-        // stated once, beside that identity in `crate::state`, and `CreateEntitlement`
-        // folds its own list through it too.
+        // One entitlement per DISTINCT requested virtual machine: the connector, the
+        // virtual machine and the entitlement type identify an entitlement, and the
+        // first and the last are the same for every entry of one list, so a `vmIds` list
+        // naming the same VM twice names one entitlement and that entitlement is
+        // reported once. The rule is stated once, beside that identity in
+        // `crate::state`, and `CreateEntitlement` folds its own list through it too.
         let wanted = crate::state::distinct_vm_ids(&input.vm_ids);
 
         // "A list of the deleted entitlements" (`entitlements` doc): the records this
@@ -260,17 +261,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // connector contributes nothing — the end state it asks for already holds.
         let mut deleted = Vec::with_capacity(wanted.len());
         for vm_id in wanted {
-            let key = crate::state::entitlement_key(&input.connector_id, vm_id);
-            // `entitlementType` selects WHICH entitlement of that pair the request
-            // addresses, exactly as it selects the records `ListVmEntitlements` reports,
-            // so a record of another type is not the one this call names.
-            let addressed = environment
-                .entitlements
-                .get(&key)
-                .is_some_and(|entitlement| entitlement.entitlement_type == input.entitlement_type);
-            if !addressed {
-                continue;
-            }
+            // `entitlementType` is part of an entitlement's identity, exactly as it
+            // selects the records `ListVmEntitlements` reports, so the record this call
+            // removes is the one of the type the request names and a record of another
+            // type on the same (connector, VM) pair is not the one this call names.
+            let key = crate::state::entitlement_key(
+                &input.connector_id,
+                vm_id,
+                &input.entitlement_type,
+            );
             if let Some(entitlement) = environment.entitlements.remove(&key) {
                 deleted.push(entitlement.stopped(stopped_at_ms).to_wire(&environment_id));
             }
