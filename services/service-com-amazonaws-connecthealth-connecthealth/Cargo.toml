@@ -58,6 +58,10 @@ percent-encoding = "2"
 emulator-core-build-support = { workspace = true }
 
 [dev-dependencies]
+# Recomputes the CRC32 of the bytes Amazon S3 served, so the output-delivery suite can
+# assert the checksum a read of the summary object reports really describes those bytes
+# rather than only being present.
+crc32fast = "1"
 # The object store a completed patient insights job writes its summary into, and the FHIR
 # data store its patient is resolved against: both are mounted BESIDE this service on one
 # engine in the patient-insights suite, exactly as the assembled router mounts them, so

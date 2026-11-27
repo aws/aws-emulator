@@ -27,6 +27,12 @@ use sha2::{Digest, Sha256};
 mod insights_run;
 pub use insights_run::*;
 
+/// The SECTIONS of the summary document a completed patient insights job stores: the fixed
+/// vocabulary of insight sections the generator writes, and the narrative each one states
+/// about the patient this service's own record holds.
+mod insights_sections;
+pub use insights_sections::*;
+
 use crate::ops::types::{
     CreateSubscriptionOutput, CreateSubscriptionRecord, CreateWebAppConfiguration,
     EncryptionContext, InputDataConfig, InsightsContext, InsightsOutput,
@@ -1670,6 +1676,17 @@ pub fn to_date_time_text(at: SystemTime) -> String {
     to_timestamp(at)
         .fmt(::aws_smithy_types::date_time::Format::DateTime)
         .unwrap_or_default()
+}
+
+/// A stored instant as the DATE text a document this service WRITES carries: the calendar
+/// day of [`to_date_time_text`], which is the precision a statement about a VISIT is made at
+/// ([`previous_visit_narrative`]).
+pub fn to_date_text(at: SystemTime) -> String {
+    to_date_time_text(at)
+        .split('T')
+        .next()
+        .unwrap_or_default()
+        .to_string()
 }
 
 /// How a page scope spells "no filter was asked for", which is a collection of its own:

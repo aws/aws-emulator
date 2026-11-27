@@ -24,16 +24,22 @@
 //! 2. A job that reaches the modelled terminal SUCCESS status has STORED its output where
 //!    it reports it: the object at `insightsOutput.uri` exists in the configured bucket and
 //!    carries the document this emulator can establish — `TotalCount`, the `PatientId` the
-//!    job was started for and the `SummaryType` its `insightsType` names — whose one
-//!    narrative STATES that no insights were generated. That statement is FIXED: it is the
-//!    same for two jobs started with different patients, encounters and output paths,
-//!    because nothing of a request goes into it, and what the job reports in
-//!    `statusDetails` is the document-processing report of its run.
+//!    job was started for and the `SummaryType` its `insightsType` names — whose sections
+//!    each state their own narrative. For a patient on a first visit whose chief complaint
+//!    recurs nowhere those narratives are FIXED: they are the same for two jobs started with
+//!    different patients, encounters and output paths, because nothing of such a request goes
+//!    into them. What the job reports in `statusDetails` is the document-processing report of
+//!    its run.
 //! 3. Those work products sit at `<s3OutputPath>/<jobId>/<patientId>/summary.json` and
 //!    `.../processing-metadata.json`, so Amazon S3's own `GetObject` serves the summary
 //!    with the modelled 200 and the object's metadata, the summary states which job ran,
 //!    for which patient, when it was generated and that it carries no HCC coding, and
-//!    nothing of the job is left at a bare prefix key.
+//!    nothing of the job is left at a bare prefix key. That summary carries ONE section per
+//!    section of the generator's fixed vocabulary, in its fixed order, each named by its
+//!    markdown heading and carrying narrative elements that each hold BOTH `Text` and
+//!    `Evidence`; what a section's `Text` states is a statement over this service's own
+//!    record of the patient's visits with this provider, and the delivered object carries
+//!    the checksum its write declared.
 //! 4. A job whose output the object store REFUSES does not report success: it reaches the
 //!    modelled `FAILED` status, says so in `statusDetails`, and reports no output location.
 //!
@@ -50,16 +56,18 @@
 //! Every constraint written by hand here is the model's own
 //! (`smithy_query(query="closure",operation="StartPatientInsightsJob",model_path="services/service-com-amazonaws-connecthealth-connecthealth/smithy-model/com-amazonaws-connecthealth-connecthealth.json")`).
 
+use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use bytes::Bytes;
 use serde_json::{json, Value};
 use smithy_server_runtime::MultiServiceRouter;
 
 use service_com_amazonaws_connecthealth_connecthealth::state::{
-    DATASTORE_NOT_FOUND_MESSAGE, INSIGHTS_NOT_GENERATED_NARRATIVE, OUTPUT_NOT_STORED_DETAIL,
-    PATIENT_NOT_IN_DATASTORE_MESSAGE,
+    previous_visit_narrative, recurring_complaint_narrative, SummarySection,
+    DATASTORE_NOT_FOUND_MESSAGE, FIRST_VISIT_NARRATIVE, NO_ACTIVE_TRENDS_NARRATIVE,
+    OUTPUT_NOT_STORED_DETAIL, OVERVIEW_NARRATIVE, PATIENT_NOT_IN_DATASTORE_MESSAGE,
 };
 
 use crate::domain_subscription_lifecycle::{error_code, string_at};
@@ -272,10 +280,21 @@ impl Insights {
 /// A `StartPatientInsightsJob` body for `patient_id` against `endpoint`, writing its
 /// output under `s3_output_path`.
 fn job_body(patient_id: &str, endpoint: &str, s3_output_path: &str) -> Value {
+    job_body_for(patient_id, endpoint, s3_output_path, "Annual checkup")
+}
+
+/// The same body, for an encounter whose chief complaint is `reason` — the one input the
+/// summary document's trends section is a statement over.
+fn job_body_for(
+    patient_id: &str,
+    endpoint: &str,
+    s3_output_path: &str,
+    reason: &str,
+) -> Value {
     json!({
         "patientContext": { "patientId": patient_id },
         "insightsContext": { "insightsType": PRE_VISIT.0 },
-        "encounterContext": { "encounterReason": "Annual checkup" },
+        "encounterContext": { "encounterReason": reason },
         "userContext": { "role": "CLINICIAN", "userId": "clinician-0001" },
         "inputDataConfig": {
             "fhirServer": { "fhirEndpoint": endpoint },
@@ -516,9 +535,9 @@ async fn a_succeeded_job_has_stored_its_output_where_it_reports_it() {
             "case {case:?}: at least one section must carry a non-empty clinical narrative, \
              got {document}"
         );
-        // The narrative STATES the gap rather than carrying a summary nothing produced,
-        // and it carries nothing of the request or of the patient's record — which is
-        // asserted across the rows below.
+        // Each section states its own narrative, and no narrative carries anything of the
+        // request or of the patient's record for a patient on a FIRST visit whose chief
+        // complaint recurs nowhere — which every row of this table is.
         let joined = narratives.join(" ");
         for leaked in [
             Some("Annual checkup"),
@@ -571,18 +590,30 @@ async fn a_succeeded_job_has_stored_its_output_where_it_reports_it() {
         );
     }
 
-    // And the statement is FIXED: every row stored the same narrative, whatever patient,
-    // encounter, demographics and output path it ran with — so nothing a caller supplies
-    // can appear in a document this emulator generated no insights for.
+    // And what each section STATES is the same for every row: each of these patients is on a
+    // first visit whose chief complaint recurs at no other visit, so the since-last-visit and
+    // trends sections state exactly that, whatever patient, encounter, demographics and
+    // output path the row ran with. What they state once the patient's record DOES hold an
+    // earlier visit is the sibling test's
+    // ([`each_insight_section_states_its_own_narrative_over_the_patients_visit_record`]).
     assert!(
         narrated.windows(2).all(|pair| pair[0] == pair[1]),
-        "every job must store the same statement about the insights it did not generate, \
+        "every job must store the same narrative for a patient with no earlier visit, \
          got {narrated:?}"
     );
     assert_eq!(
         narrated.first().map(String::as_str),
-        Some(INSIGHTS_NOT_GENERATED_NARRATIVE),
-        "the stored statement must be the one this service states for it, got {narrated:?}"
+        Some(
+            [
+                OVERVIEW_NARRATIVE,
+                FIRST_VISIT_NARRATIVE,
+                NO_ACTIVE_TRENDS_NARRATIVE
+            ]
+            .join(" ")
+            .as_str()
+        ),
+        "the stored narratives must be the ones this service states per section, \
+         got {narrated:?}"
     );
 }
 
@@ -1012,6 +1043,14 @@ struct ObjectMetadata {
     content_type: Option<String>,
     etag: Option<String>,
     last_modified: bool,
+    /// The CRC32 checksum the store reports for the object, which is the algorithm this
+    /// service's own write of it declares.
+    checksum_crc32: Option<String>,
+    /// The checksum under the algorithm the store applies to a write that declared none, so
+    /// a read can tell the two apart.
+    checksum_crc64_nvme: Option<String>,
+    /// The bytes the read served, so the reported checksum can be recomputed over them.
+    bytes: Vec<u8>,
 }
 
 /// `GetObject` of the object `uri` names, through the service that owns it, asserting the
@@ -1026,17 +1065,25 @@ async fn get_object(emulator: &Insights, case: &str, uri: &str) -> (Value, Objec
         .send()
         .await
         .unwrap_or_else(|error| panic!("case {case:?}: the object at {uri} must exist: {error}"));
-    let metadata = ObjectMetadata {
-        content_type: fetched.content_type().map(str::to_string),
-        etag: fetched.e_tag().map(str::to_string),
-        last_modified: fetched.last_modified().is_some(),
-    };
+    let content_type = fetched.content_type().map(str::to_string);
+    let etag = fetched.e_tag().map(str::to_string);
+    let last_modified = fetched.last_modified().is_some();
+    let checksum_crc32 = fetched.checksum_crc32().map(str::to_string);
+    let checksum_crc64_nvme = fetched.checksum_crc64_nvme().map(str::to_string);
     let body = fetched
         .body
         .collect()
         .await
         .unwrap_or_else(|error| panic!("case {case:?}: the object must be readable: {error}"))
         .into_bytes();
+    let metadata = ObjectMetadata {
+        content_type,
+        etag,
+        last_modified,
+        checksum_crc32,
+        checksum_crc64_nvme,
+        bytes: body.to_vec(),
+    };
     let document: Value = ::serde_json::from_slice(&body)
         .unwrap_or_else(|error| panic!("case {case:?}: the document must be JSON: {error}"));
     (document, metadata)
@@ -1047,4 +1094,260 @@ async fn get_object(emulator: &Insights, case: &str, uri: &str) -> (Value, Objec
 fn is_date_time(text: &str) -> bool {
     ::aws_smithy_types::DateTime::from_str(text, ::aws_smithy_types::date_time::Format::DateTime)
         .is_ok()
+}
+
+/// The bucket and the output path the section table below writes its summaries into.
+const SECTIONS_BUCKET: &str = "clinic-section-insights";
+/// See [`SECTIONS_BUCKET`].
+const SECTIONS_OUTPUT_PATH: &str = "s3://clinic-section-insights/output/";
+
+/// One visit of the section table: whose visit it is, what it was for, and what the patient's
+/// record holds by the time the job for it runs.
+struct Visit {
+    case: &'static str,
+    /// The patient the job is started for.
+    patient_id: &'static str,
+    /// The chief complaint the start carries — the one input the trends section is a
+    /// statement over.
+    reason: &'static str,
+    /// Whether this patient's record already holds an earlier visit with this provider when
+    /// this one is started.
+    follows_a_previous_visit: bool,
+    /// How many of this patient's visits this chief complaint is the reason for, counting
+    /// this one.
+    complaint_visits: usize,
+}
+
+/// The visits the section table runs, in order: the rows differ along what the per-section
+/// rule generalises over — which patient the visit belongs to, whether that patient's record
+/// already holds an earlier visit with this provider, and whether the chief complaint of this
+/// visit recurs across those visits.
+fn section_visits() -> Vec<Visit> {
+    vec![
+        Visit {
+            case: "a patient's first visit",
+            patient_id: "patient-sections-0001",
+            reason: "Annual checkup",
+            follows_a_previous_visit: false,
+            complaint_visits: 1,
+        },
+        Visit {
+            case: "another patient's first visit, while the first patient already has one",
+            patient_id: "patient-sections-0002",
+            reason: "Shortness of breath",
+            follows_a_previous_visit: false,
+            complaint_visits: 1,
+        },
+        Visit {
+            case: "a second visit, for a different chief complaint",
+            patient_id: "patient-sections-0001",
+            reason: "Rash on forearm",
+            follows_a_previous_visit: true,
+            complaint_visits: 1,
+        },
+        Visit {
+            case: "a third visit, for the chief complaint of the first one",
+            patient_id: "patient-sections-0001",
+            reason: "Annual checkup",
+            follows_a_previous_visit: true,
+            complaint_visits: 2,
+        },
+    ]
+}
+
+/// The instant a start's reported `creationTime` names, whichever form the modelled timestamp
+/// travels in: the `date-time` text the member declares, or the epoch-seconds number a JSON
+/// protocol gives a timestamp.
+fn creation_instant(case: &str, started: &Value) -> SystemTime {
+    let reported = &started["creationTime"];
+    if let Some(seconds) = reported.as_f64() {
+        return SystemTime::UNIX_EPOCH + Duration::from_secs_f64(seconds);
+    }
+    let text = reported.as_str().unwrap_or_else(|| {
+        panic!("case {case:?}: the start must report when the job was created, got {started}")
+    });
+    let parsed =
+        ::aws_smithy_types::DateTime::from_str(text, ::aws_smithy_types::date_time::Format::DateTime)
+            .unwrap_or_else(|error| {
+                panic!("case {case:?}: creationTime {text:?} must be a date-time: {error}")
+            });
+    SystemTime::try_from(parsed).unwrap_or_else(|error| {
+        panic!("case {case:?}: creationTime {text:?} must name an instant: {error}")
+    })
+}
+
+/// The RULE: the summary object a completed job stores carries ONE entry per section of the
+/// generator's fixed vocabulary, in its fixed order, each naming its section by the markdown
+/// heading `# <SECTION_TOKEN>\n` and carrying a `ClinicalNarrative` list whose every element
+/// has BOTH `Text` — the narrative that section states over this service's own record of the
+/// patient's visits with this provider — and `Evidence`, present and empty when the narrative
+/// cites no document. And the object the write delivered carries the checksum that write
+/// declared, which a read with the checksum mode enabled reports back.
+///
+/// The table runs one job per visit, so each row is asserted against the record the rows
+/// before it left: a first visit, another patient's first visit, a second visit for a
+/// different chief complaint, and a third whose chief complaint recurs.
+#[tokio::test]
+async fn each_insight_section_states_its_own_narrative_over_the_patients_visit_record() {
+    let emulator = Insights::new();
+    emulator
+        .s3()
+        .create_bucket()
+        .bucket(SECTIONS_BUCKET)
+        .send()
+        .await
+        .expect("the output bucket must be created");
+    let endpoint = emulator.active_datastore("clinic-sections-store").await;
+    let domain_id = emulator.domain("clinic-insights-sections").await;
+    for patient in ["patient-sections-0001", "patient-sections-0002"] {
+        emulator
+            .seed_patient(&endpoint, patient, &patient_resource(patient, None, None))
+            .await;
+    }
+
+    // When each patient's most recent visit was started, learned from the start's own answer
+    // rather than from the clock, so the date a narrative states is the date of the visit the
+    // service recorded.
+    let mut last_visit: HashMap<&str, SystemTime> = HashMap::new();
+    for visit in section_visits() {
+        let case = visit.case;
+        let (status, started) = emulator
+            .call(
+                "POST",
+                &format!("/domain/{domain_id}/patient-insights-job"),
+                Some(&job_body_for(
+                    visit.patient_id,
+                    &endpoint,
+                    SECTIONS_OUTPUT_PATH,
+                    visit.reason,
+                )),
+            )
+            .await;
+        assert_eq!(
+            status, 200,
+            "case {case:?}: a start for a seeded patient must be accepted, got {status} with \
+             {started}"
+        );
+        let job_id = string_at(&started, "jobId");
+        let previous_visit_at = last_visit.insert(visit.patient_id, creation_instant(case, &started));
+        assert_eq!(
+            previous_visit_at.is_some(),
+            visit.follows_a_previous_visit,
+            "case {case:?}: the table must describe the record this visit runs against"
+        );
+
+        let done = poll_until_terminal(&emulator, case, &domain_id, &job_id).await;
+        assert_eq!(
+            string_at(&done, "jobStatus"),
+            "SUCCEEDED",
+            "case {case:?}: a job whose output was stored must report the modelled success \
+             status, got {done}"
+        );
+        let uri = string_at(&done["insightsOutput"], "uri");
+        let (document, object) = get_object(&emulator, case, &uri).await;
+
+        // What each section of this document must state, in the document's own order.
+        let expected: Vec<String> = vec![
+            OVERVIEW_NARRATIVE.to_string(),
+            match previous_visit_at {
+                Some(previous_visit_at) => previous_visit_narrative(previous_visit_at),
+                None => FIRST_VISIT_NARRATIVE.to_string(),
+            },
+            match visit.complaint_visits > 1 {
+                true => recurring_complaint_narrative(visit.reason, visit.complaint_visits),
+                false => NO_ACTIVE_TRENDS_NARRATIVE.to_string(),
+            },
+        ];
+        let sections = document["PatientSummaries"][0]["PatientSummary"]["Sections"]
+            .as_array()
+            .unwrap_or_else(|| {
+                panic!("case {case:?}: the document must carry its Sections, got {document}")
+            });
+        assert_eq!(
+            sections.len(),
+            SummarySection::ALL.len(),
+            "case {case:?}: the document must carry one entry per insight section, got \
+             {document}"
+        );
+        for ((section, entry), expected_text) in
+            SummarySection::ALL.iter().zip(sections).zip(&expected)
+        {
+            let token = section.token();
+            assert_eq!(
+                entry["SectionName"].as_str(),
+                Some(section.heading().as_str()),
+                "case {case:?}: section {token} must be named by its markdown heading, got \
+                 {entry}"
+            );
+            let narratives = entry["ClinicalNarrative"].as_array().unwrap_or_else(|| {
+                panic!(
+                    "case {case:?}: section {token} must carry a ClinicalNarrative list, got \
+                     {entry}"
+                )
+            });
+            assert!(
+                !narratives.is_empty(),
+                "case {case:?}: section {token} must state at least one narrative, got {entry}"
+            );
+            for narrative in narratives {
+                assert!(
+                    narrative["Text"]
+                        .as_str()
+                        .is_some_and(|text| !text.trim().is_empty()),
+                    "case {case:?}: every narrative of section {token} must carry its Text, \
+                     got {entry}"
+                );
+                assert_eq!(
+                    narrative["Evidence"].as_array().map(Vec::len),
+                    Some(0),
+                    "case {case:?}: every narrative of section {token} must carry its \
+                     Evidence list, present and empty while it cites no document, got {entry}"
+                );
+            }
+            assert_eq!(
+                narratives[0]["Text"].as_str(),
+                Some(expected_text.as_str()),
+                "case {case:?}: section {token} must state {expected_text:?}, got {entry}"
+            );
+        }
+
+        // The object the delivery wrote carries the checksum that write DECLARED — the CRC32
+        // of the bytes this read served, not the algorithm the store applies to a write that
+        // declared none — so a client can verify the document it just downloaded.
+        let mut digest = ::crc32fast::Hasher::new();
+        digest.update(&object.bytes);
+        let expected_checksum = ::aws_smithy_types::base64::encode(digest.finalize().to_be_bytes());
+        assert_eq!(
+            object.checksum_crc32.as_deref(),
+            Some(expected_checksum.as_str()),
+            "case {case:?}: the read must report the CRC32 of the {} bytes it served, got {:?}",
+            object.bytes.len(),
+            object.checksum_crc32
+        );
+        assert_eq!(
+            object.checksum_crc64_nvme, None,
+            "case {case:?}: the object must carry the checksum its write declared rather than \
+             the store's default, got {:?}",
+            object.checksum_crc64_nvme
+        );
+        // And the store RETAINED it: a `HeadObject` of the same key reports the same value,
+        // rather than each response computing one of its own.
+        let (bucket, key) = object_address(case, &uri);
+        let head = emulator
+            .s3()
+            .head_object()
+            .bucket(&bucket)
+            .key(&key)
+            .checksum_mode(::aws_sdk_s3::types::ChecksumMode::Enabled)
+            .send()
+            .await
+            .unwrap_or_else(|error| {
+                panic!("case {case:?}: a HEAD of the summary object must answer: {error}")
+            });
+        assert_eq!(
+            head.checksum_crc32().map(str::to_string),
+            object.checksum_crc32,
+            "case {case:?}: a HEAD of the object must report the checksum the read reported"
+        );
+    }
 }

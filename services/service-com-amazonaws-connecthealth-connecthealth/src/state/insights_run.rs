@@ -32,13 +32,15 @@
 //! a job polled to completion therefore finds its objects; two concurrent reads of the
 //! same instant may not.
 //!
-//! What those objects CARRY is bounded by what this emulator can establish. The insights
-//! themselves are the product of a clinical summarisation model, and this emulator runs
-//! none, so the summary document carries the members this service derives — which job ran,
-//! which patient it ran for, when it finished and which kind of summary was asked for —
-//! and its one narrative STATES that no insights were generated
-//! ([`INSIGHTS_NOT_GENERATED_NARRATIVE`]). Nothing here composes prose that would read like
-//! a summary no model wrote. What the job reports in `statusDetails` is the
+//! What those objects CARRY is bounded by what this emulator can establish. The summary
+//! document's STRUCTURE is the generator's: one entry per insight section, each naming its
+//! section by a markdown heading and carrying narrative/evidence pairs — that composition,
+//! and the narrative each section states, live in [`super::insights_sections`]. Its other
+//! members are the ones this service derives: which job ran, which patient it ran for, when
+//! it finished and which kind of summary was asked for. The insights a clinical
+//! summarisation model composes are not here, and nothing composes prose that would read
+//! like a summary no model wrote — each narrative states what this service's own record of
+//! the patient establishes. What the job reports in `statusDetails` is the
 //! document-processing report of the run ([`processing_status_detail`]), which is what the
 //! recorded response carries there.
 //!
@@ -70,7 +72,8 @@ use std::time::{Duration, Instant};
 use smithy_server_runtime::{EmbeddedEmulator, OperationContext};
 
 use super::{
-    service_state, ComAmazonawsConnecthealthConnecthealthState, JobStatus, PatientInsightsJob,
+    service_state, summary_sections, ComAmazonawsConnecthealthConnecthealthState, JobStatus,
+    PatientInsightsJob, PatientVisitRecord,
 };
 
 /// The FHIR resource type a patient is held as, which is the type a patient id is
@@ -449,15 +452,18 @@ fn claim(
     domain_id: &str,
     job_id: &str,
 ) -> Option<ClaimedDelivery> {
-    let job = store
-        .live_domain_mut(region, domain_id)?
-        .patient_insights_jobs
-        .get_mut(job_id)?;
+    let domain = store.live_domain_mut(region, domain_id)?;
+    let job = domain.patient_insights_jobs.get(job_id)?;
     if !job.delivery_is_due() {
         return None;
     }
-    let summary = summary_document(job);
+    // What the patient's VISITS with this provider establish, read off the domain's own jobs
+    // before the claim takes the job itself ([`PatientVisitRecord`]): the narratives of the
+    // summary document are statements over that record.
+    let visits = PatientVisitRecord::of(job, domain.patient_insights_jobs.values());
+    let summary = summary_document(job, &visits);
     let metadata = processing_metadata_document(job);
+    let job = domain.patient_insights_jobs.get_mut(job_id)?;
     let delivery = job.output_delivery.as_mut()?;
     let mut objects = vec![(delivery.key.clone(), summary)];
     if let Some(metadata_key) = delivery.metadata_key.clone() {
@@ -474,6 +480,21 @@ fn claim(
 /// The media type the output documents are stored with: they are JSON documents, and a
 /// client reads the summary straight off the location the job reports.
 const SUMMARY_CONTENT_TYPE: &str = "application/json";
+
+/// The integrity checksum the write of an output document DECLARES, which is the checksum
+/// the object store records for the object and reports back on a read that enables the
+/// checksum mode (`GetObjectOutput$ChecksumCRC32`, under the `FULL_OBJECT` type a one-shot
+/// write stores).
+///
+/// A service writes into a caller's bucket through an AWS SDK, and an SDK computes a CRC32
+/// checksum for every upload it makes unless the caller asks for another algorithm (the
+/// default request checksum calculation of every current SDK), so the objects a finished job
+/// leaves behind carry that checksum and a client that downloads one can verify the bytes it
+/// got. Named here rather than left to the transport: the in-process hop every emulated
+/// service shares computes a checksum only where one is asked for
+/// (`service_common::s3_client`), so this is the SERVICE stating what its write carries.
+const OUTPUT_CHECKSUM_ALGORITHM: ::aws_sdk_s3::types::ChecksumAlgorithm =
+    ::aws_sdk_s3::types::ChecksumAlgorithm::Crc32;
 
 /// Write the objects of one claimed delivery, and report whether the object store took
 /// them.
@@ -493,6 +514,7 @@ async fn write_output(callback: &EmbeddedEmulator, claim: &ClaimedDelivery) -> O
             .bucket(&claim.bucket)
             .key(key)
             .content_type(SUMMARY_CONTENT_TYPE)
+            .checksum_algorithm(OUTPUT_CHECKSUM_ALGORITHM)
             .body(::aws_sdk_s3::primitives::ByteStream::from(document.clone()))
             .send()
             .await;
@@ -542,22 +564,19 @@ fn summary_type(insights_type: &str) -> String {
 
 /// The document a completed job stores at the location it reports.
 ///
-/// What this emulator can establish about a patient insights job is WHICH patient it ran
-/// for, WHICH job ran, WHEN it finished, WHICH kind of summary was asked for, and that its
-/// output object is where the job says it is. The INSIGHTS themselves are the product of a
-/// clinical summarisation model, and this emulator runs none: there is no engine here that
-/// reads a patient's record and writes a clinical narrative about it. So the document
-/// carries only members this service DERIVES — `TotalCount` (this job is about the one
-/// patient it was started for), `GeneratedAt` (the instant the job completed),
-/// `HccIncluded` ([`HCC_INCLUDED`]), `JobId`, `PatientId` (the id the start resolved) and
-/// `SummaryType` (from the modelled `insightsType`) — and its one narrative STATES that no
-/// insights were generated ([`INSIGHTS_NOT_GENERATED_NARRATIVE`]) rather than composing
-/// prose that would read like a summary nothing produced.
+/// Its SECTIONS are the generator's fixed vocabulary, one entry per insight section, each
+/// naming its section by a markdown heading and carrying `Text`/`Evidence` narrative pairs
+/// ([`summary_sections`] composes them over the patient's visit record). The rest of the
+/// document is the members this service DERIVES — `TotalCount` (this job is about the one
+/// patient it was started for), `GeneratedAt` (the instant the job completed), `HccIncluded`
+/// ([`HCC_INCLUDED`]), `JobId`, `PatientId` (the id the start resolved) and `SummaryType`
+/// (from the modelled `insightsType`).
 ///
 /// The member names are RECORDED: `TotalCount`, `GeneratedAt`, `HccIncluded` and
 /// `PatientSummaries[].PatientSummary` with `JobId`, `PatientId`, `SummaryType`,
-/// `GeneratedAt` and `Sections[].ClinicalNarrative[].Text`.
-fn summary_document(job: &PatientInsightsJob) -> Vec<u8> {
+/// `GeneratedAt` and `Sections[]` of `SectionName` and
+/// `ClinicalNarrative[].Text`/`.Evidence`.
+fn summary_document(job: &PatientInsightsJob, visits: &PatientVisitRecord) -> Vec<u8> {
     let spec = &job.spec;
     // The instant the job's completion FELL DUE, read off the record, so the document a
     // job stored states the same instant however late the read that stored it came.
@@ -573,14 +592,7 @@ fn summary_document(job: &PatientInsightsJob) -> Vec<u8> {
                     "PatientId": spec.patient_context.patient_id,
                     "SummaryType": summary_type(&spec.insights_context.insights_type),
                     "GeneratedAt": generated_at,
-                    "Sections": [
-                        {
-                            "SectionName": INSIGHTS_NOT_GENERATED_SECTION,
-                            "ClinicalNarrative": [
-                                { "Text": INSIGHTS_NOT_GENERATED_NARRATIVE }
-                            ],
-                        }
-                    ],
+                    "Sections": summary_sections(job, visits),
                 }
             }
         ],
@@ -616,25 +628,10 @@ const PATIENTS_PER_JOB: u64 = 1;
 
 /// Whether the stored summary document carries hierarchical-condition-category coding.
 ///
-/// RECORDED behaviour is that the document states this of itself. It is FALSE here for the
-/// same reason the narrative states what it does: HCC coding is the product of a
-/// risk-adjustment model, and this emulator runs none, so the document says it carries
-/// none rather than claiming coding nothing produced.
+/// RECORDED behaviour is that the document states this of itself. It is FALSE here because
+/// HCC coding is the product of a risk-adjustment model, and this emulator runs none, so the
+/// document says it carries none rather than claiming coding nothing produced.
 const HCC_INCLUDED: bool = false;
-
-/// The section the stored document carries in place of generated insights.
-pub const INSIGHTS_NOT_GENERATED_SECTION: &str = "InsightsNotGenerated";
-
-/// The one narrative the stored document carries: a statement that the insights a real
-/// summarisation model would have written were not generated here.
-///
-/// FIXED text that names nothing of the request and nothing of the patient's record: a
-/// reader of this document is told there is no summary in it, rather than handed prose
-/// assembled from the job's own inputs, which would read like a summary no model produced.
-pub const INSIGHTS_NOT_GENERATED_NARRATIVE: &str =
-    "No clinical narrative was generated: this emulator runs no clinical summarisation \
-     model, so a patient insights job stores the identity of its summary and no insights \
-     content.";
 
 /// What a job that ran to completion reports about its status: a JSON document stating how
 /// much of its input it processed and where its processing metadata was written.
