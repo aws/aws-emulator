@@ -17,6 +17,7 @@ pub struct ListTemplatesInput {
     pub max_results: Option<i32>,
     pub next_token: Option<String>,
     pub status: Option<String>,
+    pub template_owner: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.networksecuritymanager#ListTemplatesOutput")]

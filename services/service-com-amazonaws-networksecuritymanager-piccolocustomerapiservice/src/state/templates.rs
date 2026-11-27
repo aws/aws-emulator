@@ -35,6 +35,13 @@ pub const MAX_TEMPLATES: usize = 100;
 /// so a larger page could not be serialized at all.
 pub const MAX_TEMPLATE_PAGE: usize = 100;
 
+/// `TemplateOwner` for a template this account holds — the model: "CUSTOMER – The template
+/// is in your account". Every template this store holds was persisted by `CreateTemplate`
+/// in the caller's own account, so it is the owner every stored template reports; the
+/// other value, `AWS`, names an AWS managed template, which no operation of this service
+/// creates and this store therefore never holds.
+pub const TEMPLATE_OWNER_CUSTOMER: &str = "CUSTOMER";
+
 /// One persisted template: every member `GetTemplate` answers with, plus the bookkeeping
 /// the lifecycle needs (`tags`, `created_at`).
 #[derive(Debug, Clone)]
@@ -75,12 +82,18 @@ impl Template {
         to_date_time(self.updated_at)
     }
 
+    /// The `TemplateOwner` this template reports — see [`TEMPLATE_OWNER_CUSTOMER`].
+    pub fn template_owner(&self) -> &'static str {
+        TEMPLATE_OWNER_CUSTOMER
+    }
+
     /// This template as the `TemplateSummary` `ListTemplates` returns.
     pub fn summary(&self) -> TemplateSummary {
         TemplateSummary {
             template_id: self.template_id.clone(),
             template_arn: self.template_arn.clone(),
             template_name: self.template_name.clone(),
+            template_owner: Some(self.template_owner().to_string()),
             status: Some(self.status.clone()),
             version: Some(self.version_string()),
             has_published_version: Some(self.has_published_version),

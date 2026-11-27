@@ -37,8 +37,10 @@ pub mod list_admin_accounts_types;
 pub mod list_aggregate_resource_synchronization_statuses_types;
 pub mod list_deployment_snapshots_types;
 pub mod list_deployments_types;
+pub mod list_entity_coverages_types;
 pub mod list_policies_types;
 pub mod list_policy_snapshots_types;
+pub mod list_protected_resource_coverages_types;
 pub mod list_resource_associations_types;
 pub mod list_resource_synchronization_statuses_types;
 pub mod list_rule_snapshots_types;
@@ -48,8 +50,8 @@ pub mod list_scopes_types;
 pub mod list_tags_for_resource_types;
 pub mod list_template_snapshots_types;
 pub mod list_templates_types;
-/// The scope shapes the scaffold declined (see `src/ops/SKIPPED_STUBS.md`), reached by
-/// every scope operation. HAND-AUTHORED.
+// HAND-AUTHORED, not rendered from the model: the shapes the op-stub generator declined
+// (`src/ops/SKIPPED_STUBS.md`) and the two it cannot type with the ordinary derive.
 pub mod scope_types;
 pub mod shared_types;
 pub mod tag_resource_types;
@@ -58,8 +60,7 @@ pub mod update_deployment_types;
 pub mod update_policy_types;
 pub mod update_rule_types;
 pub mod update_template_types;
-/// `WafConfig`, whose required members the SERVICE refuses rather than the boundary.
-/// HAND-AUTHORED; see that module's docs.
+// HAND-AUTHORED, not rendered from the model: see the module's own docs.
 pub mod waf_config_types;
 
 #[allow(ambiguous_glob_reexports, unused_imports)]
@@ -109,9 +110,13 @@ pub use list_deployment_snapshots_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use list_deployments_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use list_entity_coverages_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use list_policies_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use list_policy_snapshots_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use list_protected_resource_coverages_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use list_resource_associations_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]

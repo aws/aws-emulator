@@ -19064,6 +19064,7 @@ dependencies = [
  "bytes",
  "hex",
  "http",
+ "percent-encoding",
  "serde_json",
  "service-common",
  "sha2 0.10.9",

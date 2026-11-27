@@ -73,6 +73,7 @@ pub enum OutOfSyncReasonsView {
 pub enum FirewallSyncReason {
     missingFirewall(String),
     invalidFirewall(InvalidFirewallReasons),
+    invalidResource(std::collections::HashMap<String, Vec<InvalidResourceIssue>>),
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.networksecuritymanager#InvalidFirewallReasons")]
@@ -90,6 +91,14 @@ pub struct InvalidFirewallReasons {
 #[derive(Debug, Clone, Default)]
 pub struct ConfigurationIssue {
     pub configuration_name: Option<String>,
+    pub expected_value: Option<String>,
+    pub actual_value: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.networksecuritymanager#InvalidResourceIssue")]
+#[derive(Debug, Clone, Default)]
+pub struct InvalidResourceIssue {
+    pub resource_id: Option<String>,
     pub expected_value: Option<String>,
     pub actual_value: Option<String>,
 }
@@ -114,6 +123,20 @@ pub struct RemediationIssueDetails {
     pub issue_type: Option<String>,
     pub message: Option<String>,
     pub corrective_action: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.networksecuritymanager#ResourceCoverageSummary")]
+#[derive(Debug, Clone, Default)]
+pub struct ResourceCoverageSummary {
+    pub resource_arn: Option<String>,
+    pub entity_type: Option<String>,
+    pub entity_arn: Option<String>,
+    pub resource_owner_account_id: Option<String>,
+    pub resource_type: Option<String>,
+    pub firewall_type: Option<String>,
+    pub coverage_status: Option<String>,
+    pub deployment_arns: Option<Vec<String>>,
+    pub updated_at: Option<::aws_smithy_types::DateTime>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.networksecuritymanager#ResourceNotFoundException")]
@@ -227,11 +250,30 @@ pub struct PolicyConfiguration {
     pub remediation_enabled: bool,
     pub resources_clean_up: bool,
     pub waf_config: Option<WafConfig>,
+    pub igw_firewall_config: Option<IgwFirewallConfig>,
 }
 
-// `WafConfig` is declared in `waf_config_types`, not here: its schema and codec are
-// hand-written so an omitted `@required` member reaches the handler, which is what refuses
-// it. See that module's docs.
+// `com.amazonaws.networksecuritymanager#WafConfig` is NOT declared here: the service, not
+// the protocol boundary, refuses an omitted one of its two `@required` members — with a
+// modelled `ValidationException` carrying `reason` and `fieldList`, which only a handler
+// can fill — so the request has to reach the handler with the member absent. That needs
+// both members read as optional, which the derive cannot express, so the shape is declared
+// with a hand-written schema and codec in `waf_config_types.rs`. It is re-exported by
+// `types/mod.rs` like every other shape, so `WafConfig` resolves unchanged.
+
+#[smithy_macros::smithy(shape = "com.amazonaws.networksecuritymanager#IgwFirewallConfig")]
+#[derive(Debug, Clone, Default)]
+pub struct IgwFirewallConfig {
+    pub default_subnet_connectivity: Option<String>,
+    pub subnet_connectivity_overrides: Option<Vec<SubnetConnectivityOverride>>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.networksecuritymanager#SubnetConnectivityOverride")]
+#[derive(Debug, Clone, Default)]
+pub struct SubnetConnectivityOverride {
+    pub connectivity_type: String,
+    pub scopes: Vec<String>,
+}
 
 #[smithy_macros::smithy(union_for = "com.amazonaws.networksecuritymanager#AssociatedTemplateOrRule")]
 #[allow(clippy::large_enum_variant)]
@@ -275,6 +317,7 @@ pub struct ScopeSummary {
     pub scope_id: String,
     pub scope_arn: String,
     pub scope_name: Option<String>,
+    pub specialized_scope_type: Option<String>,
     pub status: Option<String>,
     pub version: Option<String>,
     pub has_published_version: Option<bool>,
@@ -299,12 +342,21 @@ pub struct TemplateSummary {
     pub template_id: String,
     pub template_arn: String,
     pub template_name: String,
+    pub template_owner: Option<String>,
     pub status: Option<String>,
     pub version: Option<String>,
     pub has_published_version: Option<bool>,
     pub firewall_type: Option<String>,
     pub updated_at: Option<::aws_smithy_types::DateTime>,
 }
+
+/// The values `CoverageStatus` accepts on the wire.
+pub const COVERAGE_STATUS_VALUES: &[&str] = &["IN_EFFECT", "SUPERSEDED"];
+
+
+/// The values `DefaultSubnetConnectivity` accepts on the wire.
+pub const DEFAULT_SUBNET_CONNECTIVITY_VALUES: &[&str] = &["bidirectional", "flexible", "outbound-only"];
+
 
 /// The values `EntityStatus` accepts on the wire.
 pub const ENTITY_STATUS_VALUES: &[&str] = &["ACTIVE", "DISABLED", "DRAFT"];
@@ -319,15 +371,15 @@ pub const EXISTING_CUSTOMER_WEB_A_C_L_RESOLUTION_VALUES: &[&str] = &["NO_REMEDIA
 
 
 /// The values `PolicyFirewallType` accepts on the wire.
-pub const POLICY_FIREWALL_TYPE_VALUES: &[&str] = &["SHIELD_ADVANCED", "WAF"];
+pub const POLICY_FIREWALL_TYPE_VALUES: &[&str] = &["IGW_FIREWALL", "SHIELD_ADVANCED", "WAF"];
 
 
 /// The values `ResourceType` accepts on the wire.
-pub const RESOURCE_TYPE_VALUES: &[&str] = &["AWS::ApiGateway::Stage", "AWS::CloudFront::Distribution", "AWS::EC2::EIP", "AWS::ElasticLoadBalancing::LoadBalancer", "AWS::ElasticLoadBalancingV2::LoadBalancer::application", "AWS::Shield::Protection", "AWS::ShieldRegional::Protection", "AWS::WAFv2::WebACL"];
+pub const RESOURCE_TYPE_VALUES: &[&str] = &["AWS::ApiGateway::Stage", "AWS::CloudFront::Distribution", "AWS::EC2::EIP", "AWS::EC2::VPC", "AWS::ElasticLoadBalancing::LoadBalancer", "AWS::ElasticLoadBalancingV2::LoadBalancer::application", "AWS::Shield::Protection", "AWS::ShieldRegional::Protection", "AWS::WAFv2::WebACL"];
 
 
 /// The values `RuleFirewallType` accepts on the wire.
-pub const RULE_FIREWALL_TYPE_VALUES: &[&str] = &["WAF"];
+pub const RULE_FIREWALL_TYPE_VALUES: &[&str] = &["IGW_FIREWALL", "WAF"];
 
 
 /// The values `RuleType` accepts on the wire.
@@ -335,11 +387,19 @@ pub const RULE_TYPE_VALUES: &[&str] = &["CONFIGURATION", "INSPECTION"];
 
 
 /// The values `ScopeResourceType` accepts on the wire.
-pub const SCOPE_RESOURCE_TYPE_VALUES: &[&str] = &["AWS::ApiGateway::Stage", "AWS::CloudFront::Distribution", "AWS::EC2::EIP", "AWS::ElasticLoadBalancing::LoadBalancer", "AWS::ElasticLoadBalancingV2::LoadBalancer::application"];
+pub const SCOPE_RESOURCE_TYPE_VALUES: &[&str] = &["AWS::ApiGateway::Stage", "AWS::CloudFront::Distribution", "AWS::EC2::EIP", "AWS::EC2::Subnet", "AWS::EC2::VPC", "AWS::ElasticLoadBalancing::LoadBalancer", "AWS::ElasticLoadBalancingV2::LoadBalancer::application"];
 
 
 /// The values `ServiceResourceType` accepts on the wire.
 pub const SERVICE_RESOURCE_TYPE_VALUES: &[&str] = &["Deployment", "Policy", "Rule", "Scope", "Template"];
+
+
+/// The values `SpecializedScopeType` accepts on the wire.
+pub const SPECIALIZED_SCOPE_TYPE_VALUES: &[&str] = &["IGW_FIREWALL_SUBNET_CONNECTIVITY_OVERRIDE"];
+
+
+/// The values `SubnetConnectivity` accepts on the wire.
+pub const SUBNET_CONNECTIVITY_VALUES: &[&str] = &["bidirectional", "exclude", "flexible", "outbound-only"];
 
 
 /// The values `SynchronizationStatus` accepts on the wire.
@@ -347,7 +407,11 @@ pub const SYNCHRONIZATION_STATUS_VALUES: &[&str] = &["IN_SYNC", "NOT_APPLICABLE"
 
 
 /// The values `TemplateFirewallType` accepts on the wire.
-pub const TEMPLATE_FIREWALL_TYPE_VALUES: &[&str] = &["WAF"];
+pub const TEMPLATE_FIREWALL_TYPE_VALUES: &[&str] = &["IGW_FIREWALL", "WAF"];
+
+
+/// The values `TemplateOwner` accepts on the wire.
+pub const TEMPLATE_OWNER_VALUES: &[&str] = &["AWS", "CUSTOMER"];
 
 
 /// The values `ValidationExceptionReason` accepts on the wire.

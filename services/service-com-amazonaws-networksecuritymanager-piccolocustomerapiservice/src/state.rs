@@ -15,8 +15,10 @@
 //! every one of them. The references those records hold between one another — the graph a
 //! delete consults before removing anything — live in [`references`], a policy's
 //! published version and the snapshots taken of it in [`policy_snapshots`], and a rule's
-//! in [`rule_snapshots`].
+//! in [`rule_snapshots`]. The coverage those records imply — which protected resource each
+//! entity covers, and through which deployment — is derived in [`coverage`].
 
+mod coverage;
 mod deployments;
 mod policy_snapshots;
 mod references;
@@ -25,6 +27,7 @@ mod rules;
 mod scopes;
 mod templates;
 
+pub use coverage::*;
 pub use deployments::*;
 pub use policy_snapshots::*;
 pub use references::*;

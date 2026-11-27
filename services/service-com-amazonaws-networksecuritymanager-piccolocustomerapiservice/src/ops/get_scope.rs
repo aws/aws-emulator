@@ -35,7 +35,8 @@
 //!
 //! The same member set `CreateScope` answers with: `scopeId`, `scopeArn`, `scopeName`,
 //! `status` and `version` **required**, plus `scopeDescription`, `scopeConfiguration`,
-//! `updateToken`, `isSnapshot`, `hasPublishedVersion` and `updatedAt`.
+//! `specializedScopeType`, `updateToken`, `isSnapshot`, `hasPublishedVersion` and
+//! `updatedAt`.
 //!
 //! ## Errors
 //!
@@ -139,6 +140,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             scope_name: scope.scope_name.clone(),
             scope_description: scope.scope_description.clone(),
             scope_configuration: Some(scope.scope_configuration.clone()),
+            specialized_scope_type: scope.specialized_scope_type.clone(),
             status: scope.status.clone(),
             version: scope.version_string(),
             update_token: Some(scope.update_token.clone()),

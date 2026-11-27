@@ -45,6 +45,9 @@ pub struct Scope {
     /// The accounts-and-resources selection the caller submitted, stored as given so a
     /// later read answers with the same selection the create echoed.
     pub scope_configuration: ScopeConfiguration,
+    /// `SpecializedScopeType`, or `None` for a standard scope — the model: "This value is
+    /// set when the scope is created and can't be changed."
+    pub specialized_scope_type: Option<String>,
     /// `EntityStatus` — [`super::STATUS_ACTIVE`] or [`super::STATUS_DRAFT`], recomputed
     /// from `isPublished` on every create and update.
     pub status: String,
@@ -80,6 +83,7 @@ impl Scope {
             scope_id: self.scope_id.clone(),
             scope_arn: self.scope_arn.clone(),
             scope_name: Some(self.scope_name.clone()),
+            specialized_scope_type: self.specialized_scope_type.clone(),
             status: Some(self.status.clone()),
             version: Some(self.version_string()),
             has_published_version: Some(self.has_published_version),

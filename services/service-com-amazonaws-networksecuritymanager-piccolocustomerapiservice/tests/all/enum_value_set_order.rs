@@ -42,7 +42,7 @@ const SYNCHRONIZATION_STATUS_STATED: &[&str] = &["NOT_APPLICABLE", "OUT_OF_SYNC"
 
 /// `PolicyFirewallType`'s values as the MODEL declares them
 /// (`smithy_query(query="shape",shape="PolicyFirewallType")`).
-const POLICY_FIREWALL_TYPE_DECLARED: &[&str] = &["WAF", "SHIELD_ADVANCED"];
+const POLICY_FIREWALL_TYPE_DECLARED: &[&str] = &["WAF", "SHIELD_ADVANCED", "IGW_FIREWALL"];
 
 /// `ExistingCustomerWebACLResolution`'s values as the MODEL declares them
 /// (`smithy_query(query="shape",shape="ExistingCustomerWebACLResolution")`).

@@ -32,6 +32,9 @@ pub struct CreateScopeInput {
     pub scope_name: String,
     pub scope_description: Option<String>,
     pub scope_configuration: ScopeConfiguration,
+    /// `SpecializedScopeType` — "Omit this value to create a standard scope that you can
+    /// associate with a deployment." Carried as the enum's string value on the wire.
+    pub specialized_scope_type: Option<String>,
     pub is_published: bool,
     pub tags: Option<std::collections::HashMap<String, String>>,
 }
@@ -44,6 +47,9 @@ pub struct CreateScopeOutput {
     pub scope_name: String,
     pub scope_description: Option<String>,
     pub scope_configuration: Option<ScopeConfiguration>,
+    /// `SpecializedScopeType` — "This value is set when the scope is created and can't be
+    /// changed."
+    pub specialized_scope_type: Option<String>,
     pub status: String,
     pub version: String,
     pub update_token: Option<String>,
@@ -66,6 +72,8 @@ pub struct GetScopeOutput {
     pub scope_name: String,
     pub scope_description: Option<String>,
     pub scope_configuration: Option<ScopeConfiguration>,
+    /// `SpecializedScopeType` — see [`CreateScopeOutput::specialized_scope_type`].
+    pub specialized_scope_type: Option<String>,
     pub status: String,
     pub version: String,
     pub update_token: Option<String>,

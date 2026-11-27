@@ -56,6 +56,9 @@
 //!   this value. When there are no more results, this value is null.
 //! * `status` (EntityStatusFilter, one of: ACTIVE | DISABLED | DRAFT) — Filters the results
 //!   by status, either ACTIVE or DRAFT.
+//! * `templateOwner` (TemplateOwner, one of: CUSTOMER | AWS) — Filters the results by
+//!   template owner: CUSTOMER for a template in your account, AWS for an AWS managed
+//!   template.
 //!
 //! ## Output
 //!
@@ -208,6 +211,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     .status
                     .as_deref()
                     .is_none_or(|wanted| template.status == wanted)
+            })
+            // `templateOwner` filters by who owns the template. Every template this store
+            // holds was created in the caller's own account, so a listing asking for the
+            // other owner — an AWS managed template — matches none of them.
+            .filter(|template| {
+                input
+                    .template_owner
+                    .as_deref()
+                    .is_none_or(|wanted| template.template_owner() == wanted)
             });
 
         let templates: Vec<TemplateSummary> = matching

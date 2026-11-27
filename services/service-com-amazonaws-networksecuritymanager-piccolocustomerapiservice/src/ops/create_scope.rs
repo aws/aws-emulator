@@ -50,6 +50,9 @@
 //!   description of the scope.
 //! * `scopeConfiguration` (ScopeConfiguration) **required** — The accounts and resource
 //!   types the scope selects.
+//! * `specializedScopeType` (SpecializedScopeType) — Omit this value to create a standard
+//!   scope that you can associate with a deployment. Set it to create a scope that is built
+//!   for one specific purpose.
 //! * `isPublished` (IsPublished, default true) **required** — When true, the resource is
 //!   saved in published (ACTIVE) state. When false, it is saved as a draft (DRAFT).
 //! * `tags` (TagMap, len ..200) — The tags to add to the resource when it is created.
@@ -61,6 +64,8 @@
 //! * `scopeName` (ScopeName) **required**
 //! * `scopeDescription` (Description)
 //! * `scopeConfiguration` (ScopeConfiguration)
+//! * `specializedScopeType` (SpecializedScopeType) — the scope's specialized type, if it
+//!   has one; set at create and never changed
 //! * `status` (EntityStatus, one of: ACTIVE | DISABLED | DRAFT) **required**
 //! * `version` (EntityVersion, len 1..10, pattern ^[1-9][0-9]*$) **required**
 //! * `updateToken` (UpdateToken, len 36..36, UUID pattern)
@@ -220,6 +225,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             scope_name: input.scope_name,
             scope_description: input.scope_description,
             scope_configuration: input.scope_configuration,
+            // "This value is set when the scope is created and can't be changed": stored
+            // as submitted, and `None` for a standard scope.
+            specialized_scope_type: input.specialized_scope_type,
             status: crate::state::status_for(input.is_published).to_string(),
             // `EntityVersion` starts at 1; `UpdateScope` is what bumps it.
             version: 1,
@@ -252,6 +260,7 @@ fn output_of(scope: &crate::state::Scope) -> CreateScopeOutput {
         scope_name: scope.scope_name.clone(),
         scope_description: scope.scope_description.clone(),
         scope_configuration: Some(scope.scope_configuration.clone()),
+        specialized_scope_type: scope.specialized_scope_type.clone(),
         status: scope.status.clone(),
         version: scope.version_string(),
         update_token: Some(scope.update_token.clone()),

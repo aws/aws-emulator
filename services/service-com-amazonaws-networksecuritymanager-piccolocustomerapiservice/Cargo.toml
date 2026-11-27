@@ -33,6 +33,11 @@ service-common = { path = "../common" }
 [dev-dependencies]
 # Declares one test suite per `tests/all/<name>.rs` from `tests/all/main.rs`.
 automod = { workspace = true }
+# Percent-encodes an ARN into a query-parameter value (the coverage listings take the
+# entity and resource ARNs as query parameters) the way an SDK encodes one. Pinned here
+# rather than referenced from the root `[workspace.dependencies]`, which this project does
+# not allow editing.
+percent-encoding = "2.3"
 
 [build-dependencies]
 emulator-core-build-support = { workspace = true }

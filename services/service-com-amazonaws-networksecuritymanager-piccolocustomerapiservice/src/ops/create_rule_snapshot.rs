@@ -104,6 +104,8 @@
 //!   that the resource identifier is correct and that the resource exists, then try your
 //!   request again.
 //! * `ServiceQuotaExceededException` (HTTP 402) — The request would exceed a service quota.
+//! * `TagPolicyViolationException` (HTTP 400) — The request violates a tag policy that is in
+//!   effect for the account or organization.
 //! * `ThrottlingException` (HTTP 429) — The request was denied because of request throttling.
 //!   Reduce your request rate and try again.
 //! * `ValidationException` (HTTP 400) — The request failed validation. For details, see the
@@ -131,6 +133,7 @@ pub enum CreateRuleSnapshotErrorModeled {
     InternalServerException(InternalServerException),
     ResourceNotFoundException(ResourceNotFoundException),
     ServiceQuotaExceededException(ServiceQuotaExceededException),
+    TagPolicyViolationException(TagPolicyViolationException),
     ThrottlingException(ThrottlingException),
     ValidationException(ValidationException),
 }
