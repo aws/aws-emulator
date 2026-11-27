@@ -19,7 +19,10 @@ use crate::ops::types::{
     AssignedEnvironmentEnterSessionActionDefinition,
     AssignedEnvironmentExitSessionActionDefinition, AssignedSession, AssignedSessionAction,
     AssignedSessionActionDefinition, AssignedSyncInputJobAttachmentsSessionActionDefinition,
-    AssignedTaskRunSessionActionDefinition, LogConfiguration, TaskParameterValue,
+    AssignedTaskRunSessionActionDefinition, EnvironmentEnterSessionActionDefinition,
+    EnvironmentExitSessionActionDefinition, LogConfiguration, SessionActionDefinition,
+    SyncInputJobAttachmentsSessionActionDefinition, TaskParameterValue,
+    TaskRunSessionActionDefinition,
 };
 
 /// `resourceType` this service reports for a session in `ResourceNotFoundException`.
@@ -185,6 +188,43 @@ impl SessionActionKind {
             }),
             Self::EnvironmentExit { environment_id } => AssignedSessionActionDefinition::envExit(
                 AssignedEnvironmentExitSessionActionDefinition {
+                    environment_id: environment_id.clone(),
+                },
+            ),
+        }
+    }
+
+    /// This action as a read of the action itself reports it.
+    ///
+    /// The same four kinds [`Self::assigned`] hands a worker, in the shapes a reader of one
+    /// action carries them (`smithy_query(query="shape",
+    /// shape="SessionActionDefinition")`): what the action was told to do is stored once and
+    /// reported through whichever of the two unions the operation models.
+    pub fn definition(&self) -> SessionActionDefinition {
+        match self {
+            Self::SyncInputJobAttachments { step_id } => {
+                SessionActionDefinition::syncInputJobAttachments(
+                    SyncInputJobAttachmentsSessionActionDefinition {
+                        step_id: step_id.clone(),
+                    },
+                )
+            }
+            Self::EnvironmentEnter { environment_id } => SessionActionDefinition::envEnter(
+                EnvironmentEnterSessionActionDefinition {
+                    environment_id: environment_id.clone(),
+                },
+            ),
+            Self::TaskRun {
+                step_id,
+                task_id,
+                parameters,
+            } => SessionActionDefinition::taskRun(TaskRunSessionActionDefinition {
+                task_id: Some(task_id.clone()),
+                step_id: step_id.clone(),
+                parameters: parameters.clone(),
+            }),
+            Self::EnvironmentExit { environment_id } => SessionActionDefinition::envExit(
+                EnvironmentExitSessionActionDefinition {
                     environment_id: environment_id.clone(),
                 },
             ),
@@ -406,6 +446,34 @@ impl crate::state::ComAmazonawsDeadlineDeadlineState {
             .get(job_id)?
             .sessions
             .get(session_id)
+    }
+
+    /// The session action `session_action_id` names UNDER `farm_id`/`queue_id`/`job_id`,
+    /// with the session that holds it.
+    ///
+    /// An action is reached only through its own job's path, exactly as its session is: the
+    /// model names an action by the three ids above and the action's own id, and an action id
+    /// is unique within the job because it carries the hex of the session that minted it (see
+    /// [`Session::push_action`]).
+    pub fn session_action(
+        &self,
+        farm_id: &str,
+        queue_id: &str,
+        job_id: &str,
+        session_action_id: &str,
+    ) -> Option<(&Session, &SessionAction)> {
+        self.queue(farm_id, queue_id)?
+            .jobs
+            .get(job_id)?
+            .sessions
+            .values()
+            .find_map(|session| {
+                session
+                    .actions
+                    .iter()
+                    .find(|action| action.session_action_id == session_action_id)
+                    .map(|action| (session, action))
+            })
     }
 
     /// Whether the scheduler is holding `worker_id` on work of `queue_id` right now: the

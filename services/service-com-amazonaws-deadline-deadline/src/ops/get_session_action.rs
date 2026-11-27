@@ -1,15 +1,8 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op GetSessionAction
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `GetSessionAction`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
-//!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`GetSessionAction::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! Reports one action of one session: what the scheduler told a worker to do, and what that
+//! worker has reported about doing it.
 //!
 //! ## Shape of an operation
 //!
@@ -175,18 +168,74 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `GetSessionAction` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(GetSessionActionErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("GetSessionAction"))
+        // A read: an action is moved only by the worker holding it reporting on it through
+        // `UpdateWorkerSchedule`, so nothing here is owed by the clock and nothing is
+        // written.
+        let _ = ctx;
+        let Some(state) = crate::state::service_state(&*self.engine) else {
+            return Err(GetSessionActionErrorModeled::InternalServerErrorException(
+                crate::state::state_unavailable(),
+            )
+            .into());
+        };
+        let store = state.lock();
+
+        // Every level the path names is reported as itself, so a caller learns which one
+        // this emulator does not hold.
+        if store.farm(&input.farm_id).is_none() {
+            return Err(GetSessionActionErrorModeled::ResourceNotFoundException(
+                crate::state::not_found(crate::state::RESOURCE_TYPE_FARM, &input.farm_id),
+            )
+            .into());
+        }
+        if store.queue(&input.farm_id, &input.queue_id).is_none() {
+            return Err(GetSessionActionErrorModeled::ResourceNotFoundException(
+                crate::state::not_found(crate::state::RESOURCE_TYPE_QUEUE, &input.queue_id),
+            )
+            .into());
+        }
+        if store
+            .queue(&input.farm_id, &input.queue_id)
+            .is_none_or(|queue| !queue.jobs.contains_key(&input.job_id))
+        {
+            return Err(GetSessionActionErrorModeled::ResourceNotFoundException(
+                crate::state::not_found(crate::state::RESOURCE_TYPE_JOB, &input.job_id),
+            )
+            .into());
+        }
+        let Some((session, action)) = store.session_action(
+            &input.farm_id,
+            &input.queue_id,
+            &input.job_id,
+            &input.session_action_id,
+        ) else {
+            return Err(GetSessionActionErrorModeled::ResourceNotFoundException(
+                crate::state::not_found(
+                    crate::state::RESOURCE_TYPE_SESSION_ACTION,
+                    &input.session_action_id,
+                ),
+            )
+            .into());
+        };
+
+        Ok(GetSessionActionOutput {
+            session_action_id: action.session_action_id.clone(),
+            session_id: session.session_id.clone(),
+            status: action.status.clone(),
+            definition: action.kind.definition(),
+            started_at: action.started_at.map(crate::state::timestamp),
+            ended_at: action.ended_at.map(crate::state::timestamp),
+            worker_updated_at: action.worker_updated_at.map(crate::state::timestamp),
+            process_exit_code: action.process_exit_code,
+            progress_message: action.progress_message.clone(),
+            progress_percent: action.progress_percent,
+            // The manifests of a task run are the ones the worker reported for this action;
+            // an action it reported none for has none to report.
+            manifests: (!action.manifests.is_empty()).then(|| action.manifests.clone()),
+            // The limits this action acquired. This emulator's scheduler acquires no limit
+            // resource for the work it hands out, so no action holds one, and the model
+            // documents the member as absent when none were acquired during the session.
+            acquired_limits: None,
+        })
     }
 }
