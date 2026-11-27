@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "services/service-com-amazonaws-abusesignal-abusereportapi",
     "services/service-com-amazonaws-accessanalyzer-accessanalyzer",
     "services/service-com-amazonaws-account-account",
     "services/service-com-amazonaws-accountaccess-awsaccountaccess",
@@ -471,6 +472,7 @@ unsafe_code = "forbid"
 
 [workspace.dependencies]
 # Workspace-local crates
+service-com-amazonaws-abusesignal-abusereportapi = { path = "services/service-com-amazonaws-abusesignal-abusereportapi" }
 service-com-amazonaws-accessanalyzer-accessanalyzer = { path = "services/service-com-amazonaws-accessanalyzer-accessanalyzer" }
 service-com-amazonaws-account-account = { path = "services/service-com-amazonaws-account-account" }
 service-com-amazonaws-accountaccess-awsaccountaccess = { path = "services/service-com-amazonaws-accountaccess-awsaccountaccess" }

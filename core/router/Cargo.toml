@@ -11,6 +11,7 @@ path = "src/main.rs"
 
 [dependencies]
 engine = { workspace = true }
+service-com-amazonaws-abusesignal-abusereportapi = { workspace = true }
 service-com-amazonaws-accessanalyzer-accessanalyzer = { workspace = true }
 service-com-amazonaws-account-account = { workspace = true }
 service-com-amazonaws-accountaccess-awsaccountaccess = { workspace = true }
