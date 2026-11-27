@@ -1,15 +1,12 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op DeleteTrainingSession
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `DeleteTrainingSession`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
+//! Deletes a training session: the record this account holds for it, and everything this
+//! service published about it for the data plane that serves its operations.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`DeleteTrainingSession::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! "You must stop a running session before deleting it", so a session the caller has not
+//! stopped is refused rather than released — otherwise the operations submitted against it
+//! would be executing for a session no reader can describe.
 //!
 //! ## Shape of an operation
 //!
@@ -135,18 +132,45 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `DeleteTrainingSession` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(DeleteTrainingSessionErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("DeleteTrainingSession"))
+        let state = crate::state::service_state(&*self.engine)
+            .ok_or_else(|| crate::scaffolded::Scaffolded::validation(crate::state::NO_STATE))?;
+
+        let now = ::std::time::SystemTime::now();
+        let mut store = state.lock();
+        // Nothing stored under the name means there is nothing to release: the modelled
+        // not-found failure, worded the way every reader of this resource words it, never a
+        // 200 recording the deletion of nothing.
+        let Some(released) = store.delete_training_session(&input.training_session_name, now)
+        else {
+            return Err(DeleteTrainingSessionErrorModeled::ResourceNotFound(
+                ResourceNotFound {
+                    message: Some(crate::state::training_session_not_found(
+                        &input.training_session_name,
+                    )),
+                },
+            )
+            .into());
+        };
+        // "You must stop a running session before deleting it. Use the StopTrainingSession
+        // operation to stop the session first." The operation models no error for a
+        // precondition the caller can satisfy itself, so that is the 400
+        // `ValidationException`, and the session is left exactly as it was.
+        let session = match released {
+            Ok(session) => session,
+            Err(session) => {
+                return Err(crate::scaffolded::Scaffolded::validation(
+                    crate::state::training_session_must_stop_first(&session.arn, &session.status),
+                ))
+            }
+        };
+        drop(store);
+
+        // The session is gone, so what this service published about it for the data plane
+        // that serves its operations goes with it: the directory that name resolves
+        // through, and the account its billed totals were read from.
+        crate::state::forget_training_session(&*self.engine, &input.training_session_name);
+
+        crate::state::record_state_change(Self::NAME, &session.arn, ctx);
+        Ok(DeleteTrainingSessionOutput {})
     }
 }

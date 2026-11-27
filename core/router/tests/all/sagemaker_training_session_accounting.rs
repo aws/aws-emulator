@@ -181,6 +181,38 @@ async fn describe_session(router: &MultiServiceRouter, name: &str) -> Value {
     answer.json()["TrainingSessionDetail"].clone()
 }
 
+/// Wait until the control plane reports `name` as `Running`, which is when the data plane
+/// accepts work for it (`ConflictException`: "The session must be in Running or Blocked
+/// state to accept requests").
+///
+/// A create "provisions compute resources", so the session is `Created` until that compute
+/// is up. The wait is for the CONDITION: the transition is owed at an instant the control
+/// plane stored, so the loop looks again until it has happened or a generous deadline
+/// passes.
+async fn await_running(router: &MultiServiceRouter, name: &str) {
+    /// Far above the control plane's own transition span, so a loaded host still passes.
+    const DEADLINE: std::time::Duration = std::time::Duration::from_secs(60);
+    /// How long the loop waits before looking again.
+    const LOOK_AGAIN: std::time::Duration = std::time::Duration::from_millis(25);
+
+    let started = std::time::Instant::now();
+    loop {
+        let status = describe_session(router, name).await["TrainingSessionStatus"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+        if status == "Running" {
+            return;
+        }
+        assert!(
+            started.elapsed() < DEADLINE,
+            "case {name}: expected the session to reach Running before the deadline, got \
+             {status:?}"
+        );
+        tokio::time::sleep(LOOK_AGAIN).await;
+    }
+}
+
 /// One data-plane call, in its restJson1 form.
 async fn data_plane(router: &MultiServiceRouter, method: &str, path: &str, body: &Value) -> Answer {
     dispatch(
@@ -303,6 +335,16 @@ async fn the_reported_sequence_number_is_the_one_the_data_plane_last_received() 
         },
     ];
 
+    // Every session is created and brought up BEFORE any traffic: a session accepts
+    // operations only once its compute is running, and the waits overlap when the creates
+    // are made together.
+    for row in &rows {
+        create_session(&router, row.session).await;
+    }
+    for row in &rows {
+        await_running(&router, row.session).await;
+    }
+
     for row in rows {
         let SequenceRow {
             case,
@@ -310,7 +352,6 @@ async fn the_reported_sequence_number_is_the_one_the_data_plane_last_received() 
             submits,
             expected,
         } = row;
-        create_session(&router, session).await;
         // Before any traffic the session reports the zero it has accounted.
         assert_eq!(
             number(
@@ -368,6 +409,7 @@ async fn the_reported_token_usage_is_what_the_data_plane_measured() {
 
     for (case, session, traffic) in rows {
         create_session(&router, session).await;
+        await_running(&router, session).await;
         let mut operations: Vec<(String, String)> = Vec::new();
         if traffic == "training" || traffic == "both" {
             let answer = submit_training(&router, session, 1).await;

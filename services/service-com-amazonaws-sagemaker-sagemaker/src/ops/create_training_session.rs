@@ -235,30 +235,30 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .into());
         }
 
-        store.training_sessions.insert(
-            input.training_session_name.clone(),
-            crate::state::TrainingSession {
-                name: input.training_session_name.clone(),
-                arn: arn.clone(),
-                // The compute the session runs on is still being provisioned: the clock
-                // owes `Running` at `running_due_at`.
-                status: crate::state::TRAINING_SESSION_CREATED.to_string(),
-                model_package_group_arn: input.model_package_group_arn,
-                role_arn: input.role_arn,
-                lora_config: input.lora_config,
-                model_config: input.model_config,
-                output_config: input.output_config,
-                vpc_config: input.vpc_config,
-                tags: input.tags.unwrap_or_default(),
-                creation_time: now,
-                last_modified_time: now,
-                running_due_at: now + crate::state::TRAINING_SESSION_RUNNING_AFTER,
-                // Nobody has asked this session to stop, so the clock owes it no stop and
-                // the session has not ended.
-                stopped_due_at: None,
-                end_time: None,
-            },
-        );
+        let session = crate::state::TrainingSession {
+            name: input.training_session_name.clone(),
+            arn: arn.clone(),
+            // The compute the session runs on is still being provisioned: the clock
+            // owes `Running` at `running_due_at`.
+            status: crate::state::TRAINING_SESSION_CREATED.to_string(),
+            model_package_group_arn: input.model_package_group_arn,
+            role_arn: input.role_arn,
+            lora_config: input.lora_config,
+            model_config: input.model_config,
+            output_config: input.output_config,
+            vpc_config: input.vpc_config,
+            tags: input.tags.unwrap_or_default(),
+            creation_time: now,
+            last_modified_time: now,
+            running_due_at: now + crate::state::TRAINING_SESSION_RUNNING_AFTER,
+            // Nobody has asked this session to stop, so the clock owes it no stop and
+            // the session has not ended.
+            stopped_due_at: None,
+            end_time: None,
+        };
+        store
+            .training_sessions
+            .insert(input.training_session_name.clone(), session.clone());
         drop(store);
 
         // The session starts its accounting from nothing: it has received no training
@@ -273,14 +273,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // that serves its operations is another crate with another store: it resolves the
         // name a request carries through the one directory both read, so a session is
         // registered here and refused there until it is.
-        if let Some(directory) = crate::state::training_session_directory(&*self.engine) {
-            directory
-                .lock()
-                .register(::service_common::training_sessions::TrainingSessionRecord {
-                    name: input.training_session_name.clone(),
-                    arn: arn.clone(),
-                });
-        }
+        crate::state::publish_training_session(&*self.engine, &session);
 
         crate::state::record_state_change(Self::NAME, &arn, ctx);
         Ok(CreateTrainingSessionOutput {

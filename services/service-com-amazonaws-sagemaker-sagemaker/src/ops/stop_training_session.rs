@@ -135,7 +135,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         let now = ::std::time::SystemTime::now();
         let mut store = state.lock();
-        let Some((arn, started)) = store.stop_training_session(&input.training_session_name, now)
+        let Some((session, started)) =
+            store.stop_training_session(&input.training_session_name, now)
         else {
             return Err(StopTrainingSessionErrorModeled::ResourceNotFound(
                 ResourceNotFound {
@@ -147,6 +148,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .into());
         };
         drop(store);
+
+        // The session's lifecycle is what the DATA plane admits new operations on, and it
+        // reads it from the directory both planes share: a session this call moved out of
+        // a state that accepts requests must say so there too, so the stop is a stop for
+        // the operations submitted against it and not only for this service's own reads.
+        crate::state::publish_training_session(&*self.engine, &session);
+        let arn = session.arn;
 
         // A session this call moved into `Stopping` is a state change and leaves the same
         // record a create does. A session that was already stopping or stopped is left as

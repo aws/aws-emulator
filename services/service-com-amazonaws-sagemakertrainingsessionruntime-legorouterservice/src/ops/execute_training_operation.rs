@@ -173,22 +173,37 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .into());
         };
 
+        let now = ::std::time::SystemTime::now();
+        let region = crate::state::request_region(ctx.parts());
         // A training operation is submitted against a session the control plane already
         // created, and this data plane creates none: a name no `CreateTrainingSession`
-        // minted resolves to nothing, which is the modelled 404.
-        if !crate::state::control_plane_holds_session(&*self.engine, &input.training_session_name)
-        {
-            return Err(
-                ExecuteTrainingOperationErrorModeled::ResourceNotFoundException(
-                    ResourceNotFoundException {
-                        message: crate::state::session_not_found(
-                            &input.training_session_name,
-                            &crate::state::request_region(ctx.parts()),
-                        ),
-                    },
+        // minted resolves to nothing, which is the modelled 404 — and a session the
+        // control plane has moved out of a state that accepts requests is the modelled
+        // 409: "The session must be in Running or Blocked state to accept requests."
+        let admission =
+            crate::state::session_admission(&*self.engine, &input.training_session_name, now);
+        match admission.refusal(&input.training_session_name, &region) {
+            Some(crate::state::SampleRefusal::NotFound(message)) => {
+                return Err(
+                    ExecuteTrainingOperationErrorModeled::ResourceNotFoundException(
+                        ResourceNotFoundException { message },
+                    )
+                    .into(),
                 )
-                .into(),
-            );
+            }
+            Some(crate::state::SampleRefusal::Conflict(message)) => {
+                return Err(ExecuteTrainingOperationErrorModeled::ConflictException(
+                    ConflictException { message },
+                )
+                .into())
+            }
+            Some(crate::state::SampleRefusal::Validation(message)) => {
+                return Err(ExecuteTrainingOperationErrorModeled::ValidationException(
+                    ValidationException { message },
+                )
+                .into())
+            }
+            None => {}
         }
 
         // A body that set more than one `operationConfig` member asks for no single
@@ -215,8 +230,6 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .into());
         }
 
-        let now = ::std::time::SystemTime::now();
-        let region = crate::state::request_region(ctx.parts());
         let fingerprint = crate::state::training_request_fingerprint(
             input.sequence_number,
             input.operation_config.config(),
@@ -308,6 +321,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         }
 
         let operation_id = session.mint_operation_id(crate::state::TRAINING_NAMESPACE, now);
+        // What the base model this session adapts can hold is the control plane's record,
+        // so every accepted submit carries it onto the session (see
+        // `crate::state::Session::context_window`).
+        session.context_window = admission.context_window();
         // A save operation's model package ARN is minted here, from the region THIS
         // request was signed for, so the ARN a later poll reports does not depend on who
         // polled; the checkpoint itself is published when the operation completes.

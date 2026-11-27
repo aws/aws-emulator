@@ -100,10 +100,9 @@ impl TrainingSessionUsageDirectory {
     /// Drop the account of the session `name`: the session is gone, so nothing it received
     /// or consumed is accounted any longer.
     ///
-    /// Belongs to the control plane's `DeleteTrainingSession`, which is still a scaffold
-    /// stub answering 501 (its own issue), so nothing in this emulator deletes a session
-    /// yet. Opening an account zeroes it in any case, so a name created again never
-    /// inherits the totals of the session that held it.
+    /// Belongs to the control plane's `DeleteTrainingSession`, which releases the session
+    /// and the account with it. Opening an account zeroes it in any case, so a name created
+    /// again never inherits the totals of the session that held it.
     pub fn forget(&mut self, name: &str) {
         if self.sessions.remove(name).is_some() {
             self.order.retain(|held| held != name);

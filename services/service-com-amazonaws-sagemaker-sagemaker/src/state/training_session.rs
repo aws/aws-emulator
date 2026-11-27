@@ -55,11 +55,11 @@ pub const TRAINING_SESSION_RUNNING_AFTER: Duration = Duration::from_secs(3);
 /// after it; nothing sleeps.
 pub const TRAINING_SESSION_STOPPED_AFTER: Duration = Duration::from_secs(3);
 
-/// The `TrainingSessionStatus` members a created, running and stopped session passes
-/// through, from the model's own enum
+/// The `TrainingSessionStatus` members a created, running, stopped and failed session
+/// carries, from the model's own enum
 /// (`smithy_query(query="shape",shape="TrainingSessionStatus")`). The enum also carries the
-/// blocked, failed, scheduled, expiry and deletion states, which no operation of this
-/// service reaches.
+/// blocked, scheduled and deletion-in-progress states, which no operation of this service
+/// reaches.
 pub const TRAINING_SESSION_CREATED: &str = "Created";
 /// See [`TRAINING_SESSION_CREATED`].
 pub const TRAINING_SESSION_RUNNING: &str = "Running";
@@ -67,6 +67,38 @@ pub const TRAINING_SESSION_RUNNING: &str = "Running";
 pub const TRAINING_SESSION_STOPPING: &str = "Stopping";
 /// See [`TRAINING_SESSION_CREATED`].
 pub const TRAINING_SESSION_STOPPED: &str = "Stopped";
+/// See [`TRAINING_SESSION_CREATED`].
+pub const TRAINING_SESSION_FAILED: &str = "Failed";
+/// See [`TRAINING_SESSION_CREATED`].
+pub const TRAINING_SESSION_EXPIRED: &str = "Expired";
+/// See [`TRAINING_SESSION_CREATED`].
+pub const TRAINING_SESSION_DELETION_FAILED: &str = "DeletionFailed";
+
+/// Whether a session in `status` can be DELETED: "You must stop a running session before
+/// deleting it" (`DeleteTrainingSession`'s doc), so a session is deletable once it is in a
+/// state where nothing of it is still running — a terminal state of the lifecycle — and has
+/// to be stopped first in every other.
+#[must_use]
+pub fn training_session_is_deletable(status: &str) -> bool {
+    matches!(
+        status,
+        TRAINING_SESSION_STOPPED
+            | TRAINING_SESSION_FAILED
+            | TRAINING_SESSION_EXPIRED
+            | TRAINING_SESSION_DELETION_FAILED
+    )
+}
+
+/// Why a delete of a session the caller has not stopped is refused: the sentence
+/// `DeleteTrainingSession` documents, over the session this account holds and the status it
+/// is in.
+#[must_use]
+pub fn training_session_must_stop_first(arn: &str, status: &str) -> String {
+    format!(
+        "Unable to delete training session {arn} because it is in {status} status. You must \
+         stop a running session before deleting it."
+    )
+}
 
 /// The kind label [`could_not_find`] names a training session by.
 pub const TRAINING_SESSION_KIND_LABEL: &str = "training session";
@@ -193,6 +225,76 @@ impl TrainingSession {
     }
 }
 
+/// What the shared directory publishes for `session`: the record the DATA plane resolves a
+/// training session name against.
+///
+/// The data plane models no create, so this record is the only thing that makes a session
+/// exist for it; beside the identity it carries the two facts about the session that are
+/// this plane's to decide and the other plane's to honour — where the session is in its
+/// lifecycle, which decides whether it accepts new operations, and the base model it
+/// adapts, which is the model its operations are served by. A status this service reaches
+/// on a clock-owed instant is published as the status the session is in NOW plus the
+/// transition the clock owes, so neither plane has to be called for the other to observe
+/// the same status at the same instant.
+#[must_use]
+pub fn published_training_session(
+    session: &TrainingSession,
+) -> ::service_common::training_sessions::TrainingSessionRecord {
+    use ::service_common::training_sessions::TrainingSessionLifecycle;
+    let lifecycle = match session.status.as_str() {
+        TRAINING_SESSION_CREATED => TrainingSessionLifecycle::owing(
+            TRAINING_SESSION_CREATED,
+            TRAINING_SESSION_RUNNING,
+            session.running_due_at,
+        ),
+        TRAINING_SESSION_STOPPING => match session.stopped_due_at {
+            Some(due_at) => TrainingSessionLifecycle::owing(
+                TRAINING_SESSION_STOPPING,
+                TRAINING_SESSION_STOPPED,
+                due_at,
+            ),
+            None => TrainingSessionLifecycle::settled(TRAINING_SESSION_STOPPING),
+        },
+        settled => TrainingSessionLifecycle::settled(settled),
+    };
+    ::service_common::training_sessions::TrainingSessionRecord {
+        name: session.name.clone(),
+        arn: session.arn.clone(),
+        lifecycle,
+        base_model_arn: session.model_config.base_model_arn.clone(),
+    }
+}
+
+/// Publish `session` into the directory the data plane resolves a training session name
+/// against ([`published_training_session`]).
+///
+/// Called wherever this service CREATES a session or MOVES its status, which is where what
+/// the directory claims about it changes. The directory is an aid to another service and
+/// never part of this operation's own answer, so an engine holding none leaves it
+/// unwritten rather than failing the call.
+pub fn publish_training_session<Eng: Send + Sync + 'static>(engine: &Eng, session: &TrainingSession) {
+    if let Some(directory) = training_session_directory(engine) {
+        directory.lock().register(published_training_session(session));
+    }
+}
+
+/// Drop the training session `name` from what this service published about it: the shared
+/// directory the data plane resolves a name through, and the account it reads the session's
+/// billed totals from.
+///
+/// Called where this service DELETES a session. A session that no longer exists must stop
+/// resolving for the data plane too, and nothing it received or consumed is accounted any
+/// longer; as with publishing, an engine holding neither store leaves it alone rather than
+/// failing the call.
+pub fn forget_training_session<Eng: Send + Sync + 'static>(engine: &Eng, name: &str) {
+    if let Some(directory) = training_session_directory(engine) {
+        directory.lock().forget(name);
+    }
+    if let Some(account) = training_session_usage(engine) {
+        account.lock().forget(name);
+    }
+}
+
 impl ComAmazonawsSagemakerSagemakerState {
     /// Whether another training session fits, i.e. the store is below
     /// [`TRAINING_SESSION_QUOTA`].
@@ -216,23 +318,44 @@ impl ComAmazonawsSagemakerSagemakerState {
         Some((session, settled))
     }
 
+    /// Release the training session `name` from this account, with the transition the clock
+    /// already made due applied first, or `None` when this account holds no session under
+    /// that name.
+    ///
+    /// Answers the session as it stood when it was released, so the caller can record the
+    /// state change and drop what this service published about it. A session that has not
+    /// been stopped is NOT released: it is answered as `Err` carrying the status it is in,
+    /// which the caller refuses with ([`training_session_must_stop_first`]).
+    pub fn delete_training_session(
+        &mut self,
+        name: &str,
+        now: SystemTime,
+    ) -> Option<Result<TrainingSession, TrainingSession>> {
+        let session = self.training_sessions.get_mut(name)?;
+        session.settle_status(now);
+        if !training_session_is_deletable(&session.status) {
+            return Some(Err(session.clone()));
+        }
+        Some(Ok(self.training_sessions.remove(name)?))
+    }
+
     /// Move the training session `name` into `Stopping`, with the clock owing the terminal
     /// `Stopped`, or `None` when this account holds no session under that name.
     ///
-    /// Answers the session's ARN beside whether this call started the stop, so the caller
-    /// records the state change it made and nothing for a request that changed nothing.
-    /// The transition the clock already owed is materialised first, so a session whose
-    /// compute had come up stops from `Running` rather than from the status a read had not
-    /// caught up with yet.
+    /// Answers the session as it now stands beside whether this call started the stop, so
+    /// the caller records the state change it made, publishes the session's new lifecycle
+    /// and reports nothing for a request that changed nothing. The transition the clock
+    /// already owed is materialised first, so a session whose compute had come up stops
+    /// from `Running` rather than from the status a read had not caught up with yet.
     pub fn stop_training_session(
         &mut self,
         name: &str,
         now: SystemTime,
-    ) -> Option<(String, bool)> {
+    ) -> Option<(TrainingSession, bool)> {
         let session = self.training_sessions.get_mut(name)?;
         session.settle_status(now);
         let started = session.request_stop(now);
-        Some((session.arn.clone(), started))
+        Some((session.clone(), started))
     }
 
     /// Whether `arn` names a model package group of THIS account in `region` that the

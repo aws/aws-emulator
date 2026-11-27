@@ -19,7 +19,8 @@
 //! the way a client makes one: an HTTP `CreateTrainingSession`.
 //!
 //! The rows span what the rule generalises over rather than one recorded call: both submit
-//! surfaces, a session created and a name never created, and the order the two planes are
+//! surfaces, a session created and a name never created, the state the session is in when
+//! the call arrives (still provisioning, then running), and the order the two planes are
 //! called in (a refusal first, then the create, then the same call again).
 
 use std::sync::Arc;
@@ -168,6 +169,38 @@ async fn describe_session(router: &MultiServiceRouter, name: &str) -> Answer {
     .await
 }
 
+/// Wait until the control plane reports `name` as `Running`.
+///
+/// A create "provisions compute resources", so the session passes through `Created` first
+/// and accepts no operation until that compute is up (`ConflictException`: "The session
+/// must be in Running or Blocked state to accept requests"). The wait is for the
+/// CONDITION: the transition is owed at an instant the control plane stored, so the loop
+/// looks again until it has happened or a generous deadline passes.
+async fn await_running(router: &MultiServiceRouter, name: &str) {
+    /// Far above the control plane's own transition span, so a loaded host still passes.
+    const DEADLINE: std::time::Duration = std::time::Duration::from_secs(60);
+    /// How long the loop waits before looking again.
+    const LOOK_AGAIN: std::time::Duration = std::time::Duration::from_millis(25);
+
+    let started = std::time::Instant::now();
+    loop {
+        let answer = describe_session(router, name).await;
+        let status = answer.json()["TrainingSessionDetail"]["TrainingSessionStatus"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+        if status == "Running" {
+            return;
+        }
+        assert!(
+            started.elapsed() < DEADLINE,
+            "case {name}: expected the session to reach Running before the deadline, got \
+             {status:?}"
+        );
+        tokio::time::sleep(LOOK_AGAIN).await;
+    }
+}
+
 /// One data-plane submit surface: where it is addressed and what a valid body carries.
 struct Surface {
     case: &'static str,
@@ -273,6 +306,18 @@ async fn the_data_plane_serves_only_the_sessions_the_control_plane_created() {
             create.status,
             create.text()
         );
+        let provisioning = submit(&router, &surface, &created).await;
+        assert_eq!(
+            provisioning.status,
+            409,
+            "case {}: a session whose compute is still being provisioned exists but accepts \
+             no operation yet, which is the conflict and no longer the not-found, got {} {}",
+            surface.case,
+            provisioning.status,
+            provisioning.text()
+        );
+        // And once its compute is up it accepts the SAME submit.
+        await_running(&router, &created).await;
         let served = submit(&router, &surface, &created).await;
         assert_eq!(
             served.status,

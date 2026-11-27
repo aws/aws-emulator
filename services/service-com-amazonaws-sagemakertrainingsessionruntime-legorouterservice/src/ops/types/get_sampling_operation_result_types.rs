@@ -77,10 +77,94 @@ pub struct TokenLogprob {
     pub logprob: f64,
 }
 
-#[smithy_macros::smithy(shape = "com.amazonaws.sagemakertrainingsessionruntime#ComputeLogprobsResult")]
+/// `ComputeLogprobsResult`, whose schema and codec are written out here rather than
+/// derived.
+///
+/// `logprobs` is "the per-token log-probabilities for the input prompt" and targets
+/// `DoubleList`, a list of plain `Double`: it carries one entry per prompt token, and the
+/// FIRST of those tokens has no preceding token to be conditioned on, so there is no
+/// log-probability for it and the service answers `null` in its place. A list of `Double`
+/// has no absence of its own, so this emulator carries that entry as a NON-FINITE double
+/// (`crate::state::NO_CONTEXT_LOGPROB`) and writes it as the `null` it is; the derive's
+/// generated list writer calls `write_double` for every element, which renders a non-finite
+/// double as the quoted `"NaN"` of the JSON number forms instead. Everything else here
+/// mirrors the derive exactly: the shape ids, the member's wire name, kind and
+/// `member_index`, and the read/write call per member kind.
 #[derive(Debug, Clone, Default)]
 pub struct ComputeLogprobsResult {
     pub logprobs: Vec<f64>,
+}
+
+impl ComputeLogprobsResult {
+    /// `ComputeLogprobsResult$logprobs` — the structure's only member, at index 0.
+    const M_LOGPROBS: ::aws_smithy_schema::Schema = ::aws_smithy_schema::Schema::new_member(
+        ::aws_smithy_schema::ShapeId::from_static(
+            "com.amazonaws.sagemakertrainingsessionruntime#ComputeLogprobsResult$logprobs",
+            "com.amazonaws.sagemakertrainingsessionruntime",
+            "logprobs",
+        ),
+        ::aws_smithy_schema::ShapeType::List,
+        "logprobs",
+        0,
+    );
+
+    pub const SCHEMA: ::aws_smithy_schema::Schema = ::aws_smithy_schema::Schema::new_struct(
+        ::aws_smithy_schema::ShapeId::from_static(
+            "com.amazonaws.sagemakertrainingsessionruntime#ComputeLogprobsResult",
+            "com.amazonaws.sagemakertrainingsessionruntime",
+            "ComputeLogprobsResult",
+        ),
+        ::aws_smithy_schema::ShapeType::Structure,
+        &[&Self::M_LOGPROBS],
+    );
+}
+
+pub static COMPUTE_LOGPROBS_RESULT_SCHEMA: &::aws_smithy_schema::Schema =
+    &ComputeLogprobsResult::SCHEMA;
+
+impl ::aws_smithy_schema::serde::SerializableStruct for ComputeLogprobsResult {
+    fn serialize_members(
+        &self,
+        s: &mut dyn ::aws_smithy_schema::serde::ShapeSerializer,
+    ) -> ::std::result::Result<(), ::aws_smithy_schema::serde::SerdeError> {
+        s.write_list(&Self::M_LOGPROBS, &|sl| {
+            for logprob in &self.logprobs {
+                // A finite score is a number; an entry that has no score at all is the
+                // JSON null the service answers there.
+                if logprob.is_finite() {
+                    sl.write_double(&Self::M_LOGPROBS, *logprob)?;
+                } else {
+                    sl.write_null(&Self::M_LOGPROBS)?;
+                }
+            }
+            Ok(())
+        })
+    }
+}
+
+impl ::aws_smithy_schema_server::DeserializableStruct for ComputeLogprobsResult {
+    fn deserialize(
+        d: &mut dyn ::aws_smithy_schema::serde::ShapeDeserializer,
+    ) -> ::std::result::Result<Self, ::aws_smithy_schema::serde::SerdeError> {
+        let mut out = Self::default();
+        d.read_struct(&Self::SCHEMA, &mut |member, d| {
+            if member.member_index() == Some(0) {
+                d.read_list(member, &mut |dl| {
+                    // The reading mirrors the writing: an entry with no score comes back
+                    // as the non-finite double that carries that absence.
+                    if dl.is_null() {
+                        dl.read_null()?;
+                        out.logprobs.push(f64::NAN);
+                    } else {
+                        out.logprobs.push(dl.read_double(member)?);
+                    }
+                    Ok(())
+                })?;
+            }
+            Ok(())
+        })?;
+        Ok(out)
+    }
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.sagemakertrainingsessionruntime#LoadWeightsForSamplingResult")]

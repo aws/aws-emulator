@@ -162,23 +162,39 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .into());
         };
 
+        let now = ::std::time::SystemTime::now();
         // A sampling operation is submitted against a session the control plane already
         // created, and this data plane creates none: a name no `CreateTrainingSession`
-        // minted resolves to nothing, which is the modelled 404 — reported before the
-        // request body is judged, the way resolution precedes validation on this surface.
-        if !crate::state::control_plane_holds_session(&*self.engine, &input.training_session_name)
-        {
-            return Err(
-                ExecuteSamplingOperationErrorModeled::ResourceNotFoundException(
-                    ResourceNotFoundException {
-                        message: crate::state::session_not_found(
-                            &input.training_session_name,
-                            &crate::state::request_region(ctx.parts()),
-                        ),
-                    },
+        // minted resolves to nothing, which is the modelled 404 — and a session the
+        // control plane has moved out of a state that accepts requests is the modelled
+        // 409: "The session must be in Running or Blocked state to accept requests."
+        // Both are reported before the request body is judged, the way resolution precedes
+        // validation on this surface.
+        let admission =
+            crate::state::session_admission(&*self.engine, &input.training_session_name, now);
+        let region = crate::state::request_region(ctx.parts());
+        match admission.refusal(&input.training_session_name, &region) {
+            Some(crate::state::SampleRefusal::NotFound(message)) => {
+                return Err(
+                    ExecuteSamplingOperationErrorModeled::ResourceNotFoundException(
+                        ResourceNotFoundException { message },
+                    )
+                    .into(),
                 )
-                .into(),
-            );
+            }
+            Some(crate::state::SampleRefusal::Conflict(message)) => {
+                return Err(ExecuteSamplingOperationErrorModeled::ConflictException(
+                    ConflictException { message },
+                )
+                .into())
+            }
+            Some(crate::state::SampleRefusal::Validation(message)) => {
+                return Err(ExecuteSamplingOperationErrorModeled::ValidationException(
+                    ValidationException { message },
+                )
+                .into())
+            }
+            None => {}
         }
 
         // A body that set more than one `operationConfig` member asks for no single
@@ -206,7 +222,6 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .into());
         }
 
-        let now = ::std::time::SystemTime::now();
         let mut store = state.lock();
         let Some(session) = store.session_for_submit(&input.training_session_name, now) else {
             return Err(ExecuteSamplingOperationErrorModeled::ThrottlingException(
@@ -236,6 +251,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         }
 
         let operation_id = session.mint_operation_id(crate::state::SAMPLING_NAMESPACE, now);
+        // What the base model this session adapts can hold is the control plane's record,
+        // so the submit carries it onto the session: it is the ceiling this operation's
+        // input is judged against when it executes, whoever polls it.
+        session.context_window = admission.context_window();
         session.sampling_ops.insert(
             operation_id.clone(),
             crate::state::SamplingOp {

@@ -9,8 +9,10 @@
 //!
 //! * the **session records** (`sessions`), this data plane's own view of a session the
 //!   SageMaker control plane created, materialised on the first call against a name that
-//!   directory holds ([`control_plane_holds_session`]) and refused for one it does not,
-//!   because this runtime service models no create operation of its own;
+//!   directory holds and refused for one it does not ([`session_admission`]), because this
+//!   runtime service models no create operation of its own — and refused as well, with the
+//!   modelled `ConflictException`, for a session whose lifecycle state cannot accept
+//!   requests ([`session_accepts_requests`]);
 //! * each session's **training queue** (`sequence_index` + `next_sequence_number`),
 //!   which is what makes operations execute in sequence-number order;
 //! * each session's **checkpoints**, written by `saveWeights` / `saveState` and read by
@@ -31,12 +33,18 @@
 //!   whose tokens say, in the vocabulary a real byte-pair encoder ships, that no model
 //!   ran (see [`sampled_tokens`]), exactly as the synchronous `SampleTrainingSession`
 //!   says it in its own body ([`sample_response_body`]) and the streaming variant in the
-//!   one chunk it frames ([`sample_response_stream_body`]);
+//!   one chunk it frames ([`sample_response_stream_body`]); a `computeLogprobs` operation
+//!   completes and reports one score per prompt token, each the log-probability the
+//!   maximum-entropy distribution over the served vocabulary gives it, which is the score
+//!   a model that has learned nothing has and claims no forward pass (see
+//!   [`prompt_logprobs`]);
 //! * an operation whose whole result is a number only a model's forward pass has — a
-//!   loss, a gradient, a log-probability — ends in the service's own `Failed` status with
-//!   `errorDetails` that say so ([`no_model_runtime`]), which is the modelled failure
-//!   channel reporting what is unsupported rather than a healthy request reported as
-//!   broken.
+//!   loss or a gradient — ends in the service's own `Failed` status with `errorDetails`
+//!   that say so ([`no_model_runtime`]), which is the modelled failure channel reporting
+//!   what is unsupported rather than a healthy request reported as broken;
+//! * an operation the base model could not process at all — an input longer than its
+//!   context window — ends in that same `Failed` status with the reason the service states
+//!   for it ([`context_length_exceeded`]).
 //!
 //! Everything around that — session and operation records, sequence ordering,
 //! idempotency, checkpoints and their ARNs, token accounting, status progression,
@@ -48,8 +56,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use ::aws_smithy_types::{Document, Number};
 
 use crate::ops::types::{
-    LoadStateResult, LoadWeightsForSamplingResult, ModelInput, OperationConfig, OperationResult,
-    SampleOperationConfig, SampleOperationResult, SaveStateResult, SaveWeightsResult,
+    ComputeLogprobsResult, LoadStateResult, LoadWeightsForSamplingResult, ModelInput,
+    OperationConfig, OperationResult, SampleOperationConfig, SampleOperationResult, SaveStateResult,
+    SaveWeightsResult,
 };
 
 /// The token sequence a completed `sample` operation serves, and the tokenizer that
@@ -57,6 +66,16 @@ use crate::ops::types::{
 /// rather than about the records around it.
 mod sampled_tokens;
 pub use sampled_tokens::*;
+
+/// The scores a completed `computeLogprobs` operation serves — the other half of that
+/// content concern, kept beside it and apart from the records.
+mod prompt_logprobs;
+pub use prompt_logprobs::*;
+
+/// What the base model a session adapts can hold, which is what decides whether an
+/// operation's input could be processed at all.
+mod base_model_context;
+pub use base_model_context::*;
 
 /// The region a checkpoint ARN names when the request carries no SigV4 credential
 /// scope to read one from.
@@ -132,10 +151,10 @@ pub const LOSS_FN_CONFIG_KEYS: &[(&str, f64, f64)] =
 ///
 /// `kind` is the union member that was submitted. No language model or training engine
 /// runs inside this emulator, so there is nothing honest to report as `Completed` for a
-/// loss, a gradient or a log-probability: the operation ends in the service's own modelled
-/// failure status with a reason that says why. An operation this emulator CAN serve never
-/// reaches this — see [`sampled_tokens`] for the sampled sequence a `sample` operation
-/// completes with.
+/// loss or a gradient: the operation ends in the service's own modelled failure status
+/// with a reason that says why. An operation this emulator CAN serve never reaches this —
+/// see [`sampled_tokens`] for the sequence a `sample` operation completes with and
+/// [`prompt_logprobs`] for the scores a `computeLogprobs` operation completes with.
 pub fn no_model_runtime(kind: &str) -> String {
     format!(
         "This SageMaker training-session runtime emulator runs no language model or \
@@ -267,6 +286,15 @@ pub struct Session {
     /// whether or not that operation has executed. It is what the control plane reports as
     /// `TrainingSessionDetail$LastReceivedSequenceNumber` ([`Session::accounted_usage`]).
     pub last_received_sequence_number: i32,
+    /// How many tokens the base model this session adapts can attend over, and `None` for
+    /// a base model this emulator publishes no window for
+    /// ([`base_model_context_window`]).
+    ///
+    /// Read from the shared directory on every accepted submit, because the base model is
+    /// the CONTROL plane's record of the session and this plane holds no create: it is the
+    /// ceiling an operation's input is judged against when it executes, which is why it
+    /// lives on the session rather than being looked up again by whoever polls.
+    pub context_window: Option<i32>,
 }
 
 impl Session {
@@ -287,6 +315,7 @@ impl Session {
             loaded_checkpoint_arn: None,
             sampling_checkpoint_arn: None,
             last_received_sequence_number: 0,
+            context_window: None,
         }
     }
 
@@ -609,16 +638,11 @@ impl Session {
                 continue;
             };
             if op.status == STATUS_PENDING {
-                if let Some(kind) = sampling_needs_model_runtime(&op.config) {
-                    op.status = STATUS_FAILED;
-                    op.error_details = Some(no_model_runtime(kind));
-                } else {
-                    op.status = STATUS_IN_PROGRESS;
-                    // Sampling operations are not queued, so each one's due instant is
-                    // chained from its own submit rather than from whenever this call
-                    // happened to be made.
-                    op.due_at = Some(op.submitted_at + EXECUTION_SPAN);
-                }
+                op.status = STATUS_IN_PROGRESS;
+                // Sampling operations are not queued, so each one's due instant is
+                // chained from its own submit rather than from whenever this call
+                // happened to be made.
+                op.due_at = Some(op.submitted_at + EXECUTION_SPAN);
             }
             if op.status == STATUS_IN_PROGRESS && op.due_at.is_some_and(|due| now >= due) {
                 self.complete_sampling(&mut op);
@@ -627,8 +651,33 @@ impl Session {
         }
     }
 
+    /// The model package a sampling configuration names that this session does not hold,
+    /// and `None` when it names one the session holds or names none at all.
+    ///
+    /// "The ARN of the model package whose checkpoint this operation should run against.
+    /// ... When absent, the operation runs against the session's latest checkpoint." A
+    /// session that has written no checkpoint still has the base model its control-plane
+    /// record was created with, so only a NAMED model package that is not one of this
+    /// session's checkpoints fails the operation.
+    fn unheld_checkpoint(&self, model_package_arn: Option<&str>) -> Option<String> {
+        model_package_arn
+            .filter(|arn| !self.checkpoints.contains_key(*arn))
+            .map(str::to_string)
+    }
+
     /// Apply a due sampling operation's effect to the session and record its result.
     fn complete_sampling(&mut self, op: &mut SamplingOp) {
+        // An input the base model cannot hold is not something the model could process, so
+        // the operation is not executed at all and reports the reason the service states
+        // for that condition. Judged before anything else about the request, because it is
+        // the input itself that does not fit.
+        if let (Some(window), Some(needed)) = (self.context_window, context_tokens(&op.config)) {
+            if needed > window {
+                op.status = STATUS_FAILED;
+                op.error_details = Some(context_length_exceeded());
+                return;
+            }
+        }
         match &op.config {
             SampleOperationConfig::loadWeightsForSampling(config) => {
                 let arn = config.model_package_arn.clone();
@@ -643,20 +692,11 @@ impl Session {
                     op.error_details = Some(checkpoint_not_in_session(&self.name, &arn));
                 }
             }
-            // "The ARN of the model package whose checkpoint this sample should run
-            // against. ... When absent, the sample runs against the session's latest
-            // checkpoint." A session that has written none still has the base model its
-            // control-plane record was created with, so only a NAMED model package that
-            // is not one of this session's checkpoints fails the operation.
             SampleOperationConfig::Sample(config) => {
-                match config
-                    .model_package_arn
-                    .as_deref()
-                    .filter(|arn| !self.checkpoints.contains_key(*arn))
-                {
+                match self.unheld_checkpoint(config.model_package_arn.as_deref()) {
                     Some(arn) => {
                         op.status = STATUS_FAILED;
-                        op.error_details = Some(checkpoint_not_in_session(&self.name, arn));
+                        op.error_details = Some(checkpoint_not_in_session(&self.name, &arn));
                     }
                     None => match sample_response(config) {
                         Some(response) => {
@@ -670,11 +710,23 @@ impl Session {
                     },
                 }
             }
-            // Whatever is left needs a model runtime, and was refused before it reached
-            // `InProgress`.
-            other => {
-                op.status = STATUS_FAILED;
-                op.error_details = Some(no_model_runtime(sampling_config_kind(other)));
+            // "Computing log-probabilities of prompt tokens without generating new text":
+            // one score per prompt token, from the one place those scores are decided.
+            SampleOperationConfig::computeLogprobs(config) => {
+                match self.unheld_checkpoint(config.model_package_arn.as_deref()) {
+                    Some(arn) => {
+                        op.status = STATUS_FAILED;
+                        op.error_details = Some(checkpoint_not_in_session(&self.name, &arn));
+                    }
+                    None => {
+                        op.status = STATUS_COMPLETED;
+                        op.result = Some(SampleOperationResult::computeLogprobs(
+                            ComputeLogprobsResult {
+                                logprobs: prompt_logprobs(&config.prompt),
+                            },
+                        ));
+                    }
+                }
             }
         }
     }
@@ -703,8 +755,8 @@ impl ComAmazonawsSagemakertrainingsessionruntimeLegorouterserviceState {
     ///
     /// This runtime service models no create operation — a session exists only because
     /// `CreateTrainingSession` minted it — so a caller must resolve the name against the
-    /// directory both services read ([`control_plane_holds_session`]) BEFORE asking for
-    /// the record here: a name no session was created for is answered
+    /// directory both services read ([`session_admission`]) BEFORE asking for the record
+    /// here: a name no session was created for is answered
     /// `ResourceNotFoundException` ([`session_not_found`]), never by bringing a record
     /// into existence. What this materialises is the data plane's own view of a session
     /// that does exist: its queue, its operations and its checkpoints, which only traffic
@@ -839,14 +891,102 @@ pub fn training_session_directory<Eng: Send + Sync + 'static>(
         )
 }
 
-/// Whether the SageMaker control plane holds a training session called `name`, which is
-/// what every data-plane call against a session has to resolve before it serves anything.
+/// The `TrainingSessionStatus` values a training session accepts new operations in: "The
+/// session must be in `Running` or `Blocked` state to accept requests" —
+/// `ConflictException`, and the doc of every submit operation of this service.
+pub const SESSION_STATUS_RUNNING: &str = "Running";
+/// See [`SESSION_STATUS_RUNNING`].
+pub const SESSION_STATUS_BLOCKED: &str = "Blocked";
+
+/// Whether a session whose lifecycle state is `status` can accept a call that submits
+/// work. Every other state of the session's lifecycle — still provisioning, stopping,
+/// stopped, failed, deleted — cannot.
+pub fn session_accepts_requests(status: &str) -> bool {
+    matches!(status, SESSION_STATUS_RUNNING | SESSION_STATUS_BLOCKED)
+}
+
+/// How a call against a session whose lifecycle state cannot accept it is worded: the
+/// fixed text around the session's CURRENT `TrainingSessionStatus`, which is the one fact
+/// about the refusal that varies.
+pub fn session_cannot_accept_requests(status: &str) -> String {
+    format!("Session is in {status} state and cannot accept requests")
+}
+
+/// What the shared directory says about the session a data-plane call names.
 ///
-/// A name the directory does not hold is a session that was never created, so the call is
-/// refused with the modelled `ResourceNotFoundException` ([`session_not_found`]) rather
-/// than served against a record this service invented.
-pub fn control_plane_holds_session<Eng: Send + Sync + 'static>(engine: &Eng, name: &str) -> bool {
-    training_session_directory(engine).is_some_and(|directory| directory.lock().holds(name))
+/// A session exists only because the CONTROL plane created it, and it accepts work only in
+/// some of its lifecycle states, so these are the two things every call against a session
+/// resolves before it serves anything — together with the base model's context window,
+/// which is the same record's answer to what that session's model can hold.
+#[derive(Debug, Clone)]
+pub enum SessionAdmission {
+    /// No `CreateTrainingSession` minted a session of that name, so it does not exist.
+    NotCreated,
+    /// The control plane holds it, in this `TrainingSessionStatus`, adapting a base model
+    /// whose context window is `context_window` tokens
+    /// ([`base_model_context_window`]).
+    Created {
+        status: String,
+        context_window: Option<i32>,
+    },
+}
+
+impl SessionAdmission {
+    /// The refusal this session's lifecycle owes a call that submits work, and `None` when
+    /// it accepts one: a name the control plane does not hold is the modelled
+    /// `ResourceNotFoundException`, and a session in a state that cannot accept requests
+    /// the modelled `ConflictException`. The caller maps each onto its own operation's
+    /// error channel.
+    pub fn refusal(&self, training_session_name: &str, region: &str) -> Option<SampleRefusal> {
+        match self {
+            Self::NotCreated => Some(SampleRefusal::NotFound(session_not_found(
+                training_session_name,
+                region,
+            ))),
+            Self::Created { status, .. } if !session_accepts_requests(status) => Some(
+                SampleRefusal::Conflict(session_cannot_accept_requests(status)),
+            ),
+            Self::Created { .. } => None,
+        }
+    }
+
+    /// The context window of the session's base model, and `None` for a session the
+    /// control plane does not hold or one whose base model publishes no window.
+    #[must_use]
+    pub fn context_window(&self) -> Option<i32> {
+        match self {
+            Self::NotCreated => None,
+            Self::Created { context_window, .. } => *context_window,
+        }
+    }
+}
+
+/// What the SageMaker control plane says about the training session `name` at `now`, which
+/// is what every data-plane call against a session has to resolve before it serves
+/// anything.
+///
+/// Read from the directory both services share, so a name no `CreateTrainingSession`
+/// minted answers [`SessionAdmission::NotCreated`] rather than being served against a
+/// record this service invented, and a session the control plane has moved out of a state
+/// that accepts requests is refused here too. A status the control plane reaches on a
+/// clock-owed instant is published with that instant, so the status read here is the one
+/// the control plane would report at `now` — and reading it writes nothing.
+pub fn session_admission<Eng: Send + Sync + 'static>(
+    engine: &Eng,
+    name: &str,
+    now: SystemTime,
+) -> SessionAdmission {
+    let Some(directory) = training_session_directory(engine) else {
+        return SessionAdmission::NotCreated;
+    };
+    let directory = directory.lock();
+    match directory.get(name) {
+        None => SessionAdmission::NotCreated,
+        Some(record) => SessionAdmission::Created {
+            status: record.lifecycle.status_at(now).to_string(),
+            context_window: base_model_context_window(&record.base_model_arn),
+        },
+    }
 }
 
 /// The `ResourceNotFoundException` message `GetTrainingOperationResult` carries for an
@@ -932,17 +1072,22 @@ pub fn training_needs_model_runtime(config: &OperationConfig) -> Option<&'static
     }
 }
 
-/// The sampling counterpart of [`training_needs_model_runtime`]: the member this emulator
-/// cannot serve, and `None` for one it can.
+/// How many tokens of the base model's context window executing `config` would need: the
+/// prompt it submitted plus whatever it asks the model to generate, and `None` for a
+/// configuration that puts no input through the model at all.
 ///
-/// `loadWeightsForSampling` moves a checkpoint around, and a `sample` operation is served
-/// with the sequence [`sampled_tokens`] encodes — so only `computeLogprobs` is left, whose
-/// `ComputeLogprobsResult$logprobs` is `@required` and is a number only a model's forward
-/// pass has.
-pub fn sampling_needs_model_runtime(config: &SampleOperationConfig) -> Option<&'static str> {
+/// `SampleConfig` prefills its prompt and then generates up to `samplingParams.maxTokens`
+/// more, so both ends of it occupy the window; `ComputeLogprobsConfig` scores the prompt
+/// "without generating new text", so only the prompt does; `loadWeightsForSamplingConfig`
+/// carries no input. Saturating, so an enormous request is judged over the window rather
+/// than wrapping below it.
+pub fn context_tokens(config: &SampleOperationConfig) -> Option<i32> {
     match config {
-        SampleOperationConfig::computeLogprobs(_) => Some(sampling_config_kind(config)),
-        SampleOperationConfig::Sample(_) | SampleOperationConfig::loadWeightsForSampling(_) => None,
+        SampleOperationConfig::Sample(inner) => Some(
+            prompt_token_count(&inner.prompt).saturating_add(inner.sampling_params.max_tokens),
+        ),
+        SampleOperationConfig::computeLogprobs(inner) => Some(prompt_token_count(&inner.prompt)),
+        SampleOperationConfig::loadWeightsForSampling(_) => None,
     }
 }
 
@@ -1209,20 +1354,21 @@ pub enum SampleRefusal {
 ///
 /// Both inference operations take the same input members and model the same errors, so
 /// they resolve their target through this one function: a session the CONTROL plane never
-/// created does not exist at all (`created`, read from the directory both services share
-/// through [`control_plane_holds_session`] — this service models no create, so that
-/// record is the only thing that makes a session exist), a session that does exist but
-/// has no runtime record yet holds no checkpoint to sample, a named model package must be
-/// one of the session's own checkpoints, and a caller that names none gets the checkpoint
-/// the session currently resolves to ([`Session::current_checkpoint`]). An inference call
-/// never materialises a session record: only a submit does that.
+/// created does not exist at all and one it has moved out of a state that accepts requests
+/// cannot be sampled (`admission`, read from the directory both services share through
+/// [`session_admission`] — this service models no create, so that record is the only thing
+/// that makes a session exist and the only place its lifecycle state is known), a session
+/// that does exist but has no runtime record yet holds no checkpoint to sample, a named
+/// model package must be one of the session's own checkpoints, and a caller that names none
+/// gets the checkpoint the session currently resolves to ([`Session::current_checkpoint`]).
+/// An inference call never materialises a session record: only a submit does that.
 pub fn resolve_sample_checkpoint(
     store: &mut ComAmazonawsSagemakertrainingsessionruntimeLegorouterserviceState,
     training_session_name: &str,
     region: &str,
     model_package_arn: Option<&str>,
     now: SystemTime,
-    created: bool,
+    admission: &SessionAdmission,
 ) -> Result<String, SampleRefusal> {
     if let Some(arn) = model_package_arn {
         if let Err(reason) = validate_model_package_arn("modelPackageArn", arn) {
@@ -1230,11 +1376,8 @@ pub fn resolve_sample_checkpoint(
         }
     }
 
-    if !created {
-        return Err(SampleRefusal::NotFound(session_not_found(
-            training_session_name,
-            region,
-        )));
+    if let Some(refusal) = admission.refusal(training_session_name, region) {
+        return Err(refusal);
     }
 
     let Some(session) = store.advance_session(training_session_name, now) else {

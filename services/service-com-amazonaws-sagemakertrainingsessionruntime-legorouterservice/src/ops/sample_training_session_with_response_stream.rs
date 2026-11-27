@@ -183,13 +183,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // A session name is scoped to an account and a region, so resolving one needs the
         // region the request signed for.
         let region = crate::state::request_region(ctx.parts());
-        // And a session exists only because the CONTROL plane created it: this data plane
-        // models no create, so what it resolves a name against is the directory both
-        // services read. A name outside the modelled identifier syntax reaches here too
-        // (this surface resolves its label rather than refusing its syntax) and resolves
-        // to nothing like any other name nothing created.
-        let created =
-            crate::state::control_plane_holds_session(&*self.engine, &input.training_session_name);
+        // And a session exists only because the CONTROL plane created it, and accepts
+        // requests only in some of its lifecycle states: this data plane models no create,
+        // so what it resolves a name and a state against is the directory both services
+        // read. A name outside the modelled identifier syntax reaches here too (this
+        // surface resolves its label rather than refusing its syntax) and resolves to
+        // nothing like any other name nothing created.
+        let admission =
+            crate::state::session_admission(&*self.engine, &input.training_session_name, now);
 
         // The same resolution, and the same refusals, as the synchronous call: this
         // operation differs only in how it frames what it serves.
@@ -201,7 +202,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 &region,
                 input.model_package_arn.as_deref(),
                 now,
-                created,
+                &admission,
             )
         };
         let model_package_arn = match resolved {

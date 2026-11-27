@@ -69,6 +69,19 @@ impl Emulator {
             .register(service_common::training_sessions::TrainingSessionRecord {
                 name: name.to_string(),
                 arn: engine::emulator_arn("sagemaker", REGION, &format!("training-session/{name}")),
+                // A session whose compute the control plane has brought up: "The session
+                // must be in Running or Blocked state to accept requests."
+                lifecycle: service_common::training_sessions::TrainingSessionLifecycle::settled(
+                    "Running",
+                ),
+                // The session's base model decides the context window its sampling
+                // operations are served over; this one is of a family this emulator
+                // publishes no window for, so the rows below are about what they say and
+                // not about that ceiling.
+                base_model_arn: format!(
+                    "arn:aws:sagemaker:{REGION}:aws:hub-content/SageMakerPublicHub/Model/\
+                     meta-textgeneration-llama-3-8b/1.0.0"
+                ),
             });
     }
 }
