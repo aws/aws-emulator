@@ -3,19 +3,20 @@
 //! Which Apache Kafka versions a PROVISIONED CREATE may name, and what the
 //! refusal of any other version says.
 //!
-//! RULE: Amazon MSK builds a new provisioned cluster only on a version it still
-//! OFFERS the broker category the request's `InstanceType` names, which is
-//! narrower than the catalog `ListKafkaVersions` publishes — MSK goes on
-//! publishing a version, and on offering it as an upgrade target, after it has
-//! stopped building new clusters on it. So any other `KafkaVersion`, a published
-//! one included, is refused HTTP 400 `BadRequestException` naming `kafkaVersion`,
-//! and the set that refusal advertises as valid is EXACTLY the set the next create
-//! of that category is admitted on.
+//! RULE: Amazon MSK builds a new provisioned cluster only on a version its
+//! catalog still publishes as offered to the broker category the request's
+//! `InstanceType` names, and the refusal of any other `KafkaVersion` is HTTP 400
+//! `BadRequestException` naming `kafkaVersion` and ADVERTISING that category's
+//! new-cluster offering — MSK's own narrower set, which it steers a retry onto and
+//! every member of which a create is admitted on. The advertised set is therefore a
+//! subset of the admitted one, not the same set: the catalog goes on publishing a
+//! version as offered, and the create goes on taking it, after MSK has stopped
+//! naming it to a cluster that does not exist yet.
 //!
-//! The suite asserts that equivalence over a TABLE: both creates (the v1 one and
-//! the v2 provisioned body), both broker categories, and every version
+//! The suite asserts that over a TABLE: both creates (the v1 one and the v2
+//! provisioned body), both broker categories, and every version
 //! `ListKafkaVersions` publishes plus values that are no published version at all.
-//! Nothing here is read from the service's own constants: the admitted set comes
+//! Nothing here is read from the service's own constants: the advertised set comes
 //! off the refusal's own sentence and the catalog off the listing, so the two
 //! halves cannot agree by construction.
 //!
@@ -121,6 +122,40 @@ async fn published_versions(emulator: &Emulator) -> Vec<String> {
     versions
 }
 
+/// Every version `ListKafkaVersions` publishes as OFFERED, each once in published
+/// order, read off the wire: the versions the catalog's own `ACTIVE` status says
+/// MSK still offers.
+async fn offered_versions(emulator: &Emulator) -> Vec<String> {
+    let reply = emulator.call("GET", "/v1/kafka-versions", None).await;
+    assert_eq!(
+        reply.status, 200,
+        "ListKafkaVersions must succeed, got {} {}",
+        reply.status, reply.body
+    );
+    let mut offered: Vec<String> = Vec::new();
+    for entry in reply
+        .at("/kafkaVersions")
+        .as_array()
+        .unwrap_or_else(|| panic!("expected a kafkaVersions list, got {}", reply.body))
+    {
+        let version = entry["version"]
+            .as_str()
+            .unwrap_or_else(|| panic!("a published row without a version: {entry}"))
+            .to_string();
+        // A version the catalog publishes on more than one row is offered whenever
+        // any of its rows says so, which is what the listing's reader does too.
+        if entry["status"].as_str() == Some("ACTIVE") && !offered.contains(&version) {
+            offered.push(version);
+        }
+    }
+    assert!(
+        !offered.is_empty(),
+        "the catalog must publish at least one offered version, got {}",
+        reply.body
+    );
+    offered
+}
+
 /// The versions the service itself advertises as valid for a new cluster of
 /// `instance_type`'s category: the list its refusal of a value no catalog
 /// publishes carries, parsed out of that sentence.
@@ -189,24 +224,37 @@ fn assert_version_refusal(reply: &Reply, case: &str, expected: &str) {
     );
 }
 
-/// RULE: the set a category's refusal advertises is the set a create of that
-/// category is ADMITTED on — a version the list names is accepted and read back,
-/// and every other version is refused in that same sentence, whether or not the
-/// catalog publishes it.
+/// RULE: a create is admitted on every version the catalog publishes as offered to
+/// that broker category, every version its refusal ADVERTISES is one of those, and
+/// every other version is refused in that one sentence, whether or not the catalog
+/// publishes it.
 ///
 /// The table spans every version `ListKafkaVersions` publishes (so the published
-/// versions the list does not name are covered too, not only the ones the report
-/// this rule came from cited), the unpublished forms above, both broker categories
-/// and both provisioned creates.
+/// versions the advertised list does not name are covered too, not only the ones
+/// the report this rule came from cited), the unpublished forms above, both broker
+/// categories and both provisioned creates.
 #[tokio::test]
-async fn a_create_is_admitted_on_exactly_the_versions_its_refusal_advertises() {
+async fn a_create_is_admitted_on_the_offered_versions_and_advertises_msks_own_list() {
     let emulator = Emulator::new();
     let published = published_versions(&emulator).await;
+    let offered = offered_versions(&emulator).await;
+    // Each category's advertised list, read off its own refusal before the walk, so
+    // what one category offers and the other does not is read off the wire too.
+    let standard_advertised = advertised_versions(&emulator, "Standard", "kafka.m5.large").await;
+    let express_advertised = advertised_versions(&emulator, "Express", "express.m7g.large").await;
     let mut candidates: Vec<String> = published.clone();
     candidates.extend(UNPUBLISHED.iter().map(|version| (*version).to_string()));
 
     for (category, instance_type) in CATEGORIES {
         let advertised = advertised_versions(&emulator, category, instance_type).await;
+        // The lines MSK offers the EXPRESS brokers alone, read off the wire: the
+        // versions that category advertises and the STANDARD one does not. They are
+        // the one difference between what the two categories admit.
+        let express_only: Vec<String> = express_advertised
+            .iter()
+            .filter(|version| !standard_advertised.contains(*version))
+            .cloned()
+            .collect();
         assert!(
             !advertised.is_empty(),
             "case {category}: the refusal must name the versions a create may use"
@@ -237,7 +285,17 @@ async fn a_create_is_admitted_on_exactly_the_versions_its_refusal_advertises() {
 
         let mut admitted_names: Vec<String> = Vec::new();
         for version in &candidates {
-            let admitted = advertised.contains(version);
+            // What the catalog publishes decides admission — narrowed, for the
+            // standard brokers, by the lines MSK offers the Express ones alone —
+            // while what the refusal advertises is MSK's narrower steer, so every
+            // advertised version is admitted and no admitted version is refused.
+            let admitted = offered.contains(version)
+                && (*category == "Express" || !express_only.contains(version));
+            assert!(
+                !advertised.contains(version) || admitted,
+                "case {category}/{version}: an advertised version must be one the create \
+                 admits, got the offered set {offered:?}"
+            );
             let sentence = unsupported_broker_version_message(category, version, &advertised);
 
             let name = cluster_name(&["v1", category, version]);
@@ -253,7 +311,7 @@ async fn a_create_is_admitted_on_exactly_the_versions_its_refusal_advertises() {
                 true => {
                     assert_eq!(
                         reply.status, 200,
-                        "case {case}: an advertised version must be admitted, got {} {}",
+                        "case {case}: an offered version must be admitted, got {} {}",
                         reply.status, reply.body
                     );
                     admitted_names.push(name);
@@ -272,7 +330,7 @@ async fn a_create_is_admitted_on_exactly_the_versions_its_refusal_advertises() {
                 true => {
                     assert_eq!(
                         reply.status, 200,
-                        "case {case}: an advertised version must be admitted, got {} {}",
+                        "case {case}: an offered version must be admitted, got {} {}",
                         reply.status, reply.body
                     );
                     // Round trip: the cluster the create minted runs the version it

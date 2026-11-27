@@ -147,15 +147,53 @@ fn offered(catalog: &BTreeMap<String, Vec<String>>, version: &str) -> bool {
         .is_some_and(|statuses| statuses.iter().any(|status| status == ACTIVE))
 }
 
-/// The versions the service still SHIPS to a new cluster, read off the wire: the
-/// valid-value list its own refusal of [`NO_SUCH_VERSION`] advertises, which is
-/// the set a create of that broker category is admitted on and the software an
-/// in-place update installs.
+/// The versions the service still SHIPS to a cluster — the software an in-place
+/// update installs and a create of the standard brokers is admitted on — read off
+/// the wire: the versions the catalog publishes an [`ACTIVE`] row for, less the
+/// lines it advertises to the EXPRESS brokers alone, since a line offered those
+/// brokers only is not software installed on a running cluster.
+///
+/// Read from the published catalog rather than from the valid-value list a create's
+/// refusal carries: that list is MSK's narrower STEER for a new cluster, a subset
+/// of what it still ships, so reading it here would make an upgrade ladder follow
+/// the advertisement instead of the catalog.
 async fn shipped(emulator: &Emulator) -> BTreeSet<String> {
+    let published = catalog(emulator).await;
+    let express_only = express_only_versions(emulator).await;
+    let shipped: BTreeSet<String> = published
+        .iter()
+        .filter(|(version, statuses)| {
+            statuses.iter().any(|status| status == ACTIVE) && !express_only.contains(*version)
+        })
+        .map(|(version, _)| version.clone())
+        .collect();
+    assert!(
+        !shipped.is_empty(),
+        "the catalog must publish a version the service still ships, got {published:?}"
+    );
+    shipped
+}
+
+/// The lines MSK advertises to the EXPRESS brokers alone, read off the wire: the
+/// versions that category's create refusal names as valid and the STANDARD one does
+/// not.
+async fn express_only_versions(emulator: &Emulator) -> BTreeSet<String> {
+    let standard = advertised_for(emulator, "kafka.m5.large").await;
+    advertised_for(emulator, "express.m7g.large")
+        .await
+        .into_iter()
+        .filter(|version| !standard.contains(version))
+        .collect()
+}
+
+/// The valid-value list a create of `instance_type`'s brokers is refused with, read
+/// off that refusal's own sentence.
+async fn advertised_for(emulator: &Emulator, instance_type: &'static str) -> BTreeSet<String> {
     let reply = emulator
         .create(&ClusterRequest {
             kafka_version: NO_SUCH_VERSION,
-            ..ClusterRequest::named("shipped-set")
+            instance_type,
+            ..ClusterRequest::named("advertised-set")
         })
         .await;
     assert_eq!(
@@ -171,12 +209,12 @@ async fn shipped(emulator: &Emulator) -> BTreeSet<String> {
         .and_then(|(_, tail)| tail.strip_suffix(']'))
         .unwrap_or_else(|| panic!("the refusal must advertise a valid-value list, got {message:?}"))
         .to_string();
-    let shipped: BTreeSet<String> = listed.split(", ").map(str::to_string).collect();
+    let advertised: BTreeSet<String> = listed.split(", ").map(str::to_string).collect();
     assert!(
-        !shipped.is_empty(),
+        !advertised.is_empty(),
         "the refusal must name the versions a create may use, got {message:?}"
     );
-    shipped
+    advertised
 }
 
 /// The ladder the published facts imply for `source`, computed here from the

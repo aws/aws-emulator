@@ -279,10 +279,10 @@ async fn a_next_token_a_listing_cannot_read_is_answered_in_that_listings_own_ter
             );
         }
 
-        // The alarm LISTING refuses no token: a value it cannot read a cursor out of belongs to
-        // a walk it cannot place, so the page served is the END of that walk — empty, with no
-        // token (`tests/all/paginated_read_cursor.rs` holds that rule over every listing of
-        // this service that serves such a token).
+        // The alarm LISTING refuses no token: a value it cannot read a cursor out of names no
+        // position of its enumeration, so it is IGNORED and the first page is served
+        // (`tests/all/paginated_read_cursor.rs` holds that rule over every listing of this
+        // service that serves such a token).
         let listed = ok(&router, "DescribeAlarms", &json!({"NextToken": token})).await;
         let named: Vec<String> = listed["MetricAlarms"]
             .as_array()
@@ -294,14 +294,14 @@ async fn a_next_token_a_listing_cannot_read_is_answered_in_that_listings_own_ter
             .collect();
         assert_eq!(
             named,
-            Vec::<String>::new(),
-            "case {case:?}: a token the alarm listing cannot read must be answered the empty \
-             end of its walk, got {listed}"
+            vec!["paged-alarm".to_string()],
+            "case {case:?}: a token the alarm listing cannot read must be ignored and the first \
+             page served, got {listed}"
         );
         assert_eq!(
             listed.get("NextToken"),
             None,
-            "case {case:?}: the end of a walk owes no token, got {listed}"
+            "case {case:?}: a page holding every alarm owes no token, got {listed}"
         );
         // And the alarm itself is still there to be read without a token.
         let whole = ok(&router, "DescribeAlarms", &json!({})).await;

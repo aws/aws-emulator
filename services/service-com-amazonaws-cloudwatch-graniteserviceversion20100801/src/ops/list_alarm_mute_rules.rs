@@ -98,8 +98,9 @@ pub enum ListAlarmMuteRulesErrorModeled {
     // answer with rather than the scaffold's 501.
     InternalServiceFault(InternalServiceFault),
     // Declared because the model declares it, and not answered by the handler below: a
-    // `NextToken` this listing cannot read a cursor out of is the END of the walk it belongs
-    // to, so the empty page there is served rather than the request refused ([`ResumedAt`]).
+    // `NextToken` this listing cannot read a cursor out of names no position in this
+    // enumeration, so it is ignored and the first page is served rather than the request
+    // refused ([`ResumedAt`]).
     InvalidNextToken(InvalidNextToken),
     ResourceNotFoundException(ResourceNotFoundException),
 }
@@ -182,8 +183,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // Where this page resumes from, read off the token the request offered
         // ([`crate::state::ResumedAt`], the one rule every listing of this service that SERVES an
         // unreadable token shares): a value this listing can read a cursor out of names the rule
-        // the page starts at, and one it cannot is the END of the walk it belongs to — so the
-        // page served there holds no rule and owes no token.
+        // the page starts at, and one it cannot names no position at all — so it is ignored and
+        // the page served is the first.
         let resume = crate::state::ResumedAt::of(input.next_token.as_deref());
 
         let now = crate::state::now_secs();

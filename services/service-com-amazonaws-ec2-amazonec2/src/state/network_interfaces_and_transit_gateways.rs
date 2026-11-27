@@ -112,7 +112,7 @@ pub const NETWORK_INTERFACE_TYPE_GATEWAY_LOAD_BALANCER_ENDPOINT: &str =
 /// accepts.
 pub const NETWORK_INTERFACE_STATUS_AVAILABLE: &str = "available";
 
-/// The status of a network interface a create has just minted, before it is up.
+/// The status of a network interface a create has just minted, at the instant of minting.
 ///
 /// RECORDED behaviour: `CreateNetworkInterface` answers the interface in `pending`, and the
 /// modelled `NetworkInterfaceStatus` enum does not carry that member at all
@@ -120,11 +120,10 @@ pub const NETWORK_INTERFACE_STATUS_AVAILABLE: &str = "available";
 /// `associated`, `attaching`, `in-use` and `detaching`), so the recorded answer is the
 /// requirement here rather than the enum.
 ///
-/// NON-TERMINAL: the clock owes the interface [`NETWORK_INTERFACE_STATUS_AVAILABLE`] one
-/// [`TRANSITION_DELAY`] later
-/// ([`ComAmazonawsEc2Amazonec2State::network_interface_available_at`]), whether or not
-/// anybody calls again, so a caller reading the interface straight after the create still
-/// sees the status the create answered.
+/// It belongs to that ONE answer: every READ of a created interface — the describe a client
+/// makes straight after the create, and one made long after — reports
+/// [`NETWORK_INTERFACE_STATUS_AVAILABLE`], which is the status the interface is STORED in, so
+/// no interface this service holds ever sits in this one.
 pub const NETWORK_INTERFACE_STATUS_PENDING: &str = "pending";
 
 /// The status of a network interface something holds: the `NetworkInterfaceStatus` enum's
@@ -490,10 +489,8 @@ impl ComAmazonawsEc2Amazonec2State {
         }
         // And the move the clock owed this interface's attachment, which an interface the
         // store no longer holds cannot be owed: nothing is left pointing at a record that is
-        // gone. The interface's own `pending` -> `available` move goes the same way.
+        // gone.
         self.network_interface_attachment_move_at
-            .remove(network_interface_id);
-        self.network_interface_available_at
             .remove(network_interface_id);
         Some(interface)
     }
@@ -880,6 +877,22 @@ pub fn reported_network_interface(interface: &NetworkInterface) -> NetworkInterf
     NetworkInterface {
         public_ip_dns_name_options: interface_public_ip_dns_name_options(interface),
         ..interface.clone()
+    }
+}
+
+/// One stored network interface as the CREATE that minted it answers with it.
+///
+/// The reported record ([`reported_network_interface`]) with the status of the instant of
+/// minting: `CreateNetworkInterface` is recorded answering the interface in
+/// [`NETWORK_INTERFACE_STATUS_PENDING`], while every READ of it reports the
+/// [`NETWORK_INTERFACE_STATUS_AVAILABLE`] it is stored in. The two are not a drift between
+/// writer and reader: the create reports the interface at the instant it came into being, and
+/// an interface is up by the time any later call can ask about it, so no read of this service
+/// can be answered the minting status.
+pub fn created_network_interface(interface: &NetworkInterface) -> NetworkInterface {
+    NetworkInterface {
+        status: Some(NETWORK_INTERFACE_STATUS_PENDING.to_string()),
+        ..reported_network_interface(interface)
     }
 }
 

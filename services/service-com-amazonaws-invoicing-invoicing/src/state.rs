@@ -584,22 +584,24 @@ impl ComAmazonawsInvoicingInvoicingState {
         }
     }
 
-    /// Every account this service may be answered about: the LINKED accounts of the
-    /// requester's organization, which [`Self::linked_accounts`] derives from stored
-    /// configurations.
+    /// Every account this service may be answered about: the requester's OWN account,
+    /// and the LINKED accounts of its organization, which [`Self::linked_accounts`]
+    /// derives from stored configurations.
     ///
-    /// `BatchGetInvoiceProfile` is documented over "linked accounts under the requester
-    /// management account organization", so what it may be answered for is the LINKED half
-    /// of that organization and nothing else: the requester authenticates as the
-    /// organization's MANAGEMENT account, which is not a linked account of it, so the
-    /// requester's own account is readable exactly when a stored configuration links it —
-    /// as every other account id is. An account id this set does not hold is what such an
-    /// operation refuses ([`not_authorized_for_account`]).
+    /// `BatchGetInvoiceProfile` reads "the invoice profile of a given list of accounts",
+    /// and the account a requester is always entitled to is its own — it is the account
+    /// the request is signed for, so no configuration has to grant it. Beside it stand the
+    /// accounts its organization LINKS ("the accounts must be linked accounts under the
+    /// requester management account organization"), which is what makes a SECOND account
+    /// readable. An account id outside that set is one the requester holds no access to,
+    /// and is what such an operation refuses ([`not_authorized_for_account`]).
     ///
-    /// A read never widens the set: membership is derived from stored configurations alone,
-    /// so nothing but a write changes it.
+    /// A read never widens the set: membership is the requester's own identity plus what
+    /// stored configurations link, so nothing but a write changes it.
     pub fn accounts_the_requester_may_read(&self) -> BTreeSet<String> {
-        self.linked_accounts()
+        let mut readable = self.linked_accounts();
+        readable.insert(::engine::emulator_account_id().to_string());
+        readable
     }
 
     /// Every LINKED account this service's state names under the requester's

@@ -1483,12 +1483,15 @@ impl ComAmazonawsEc2Amazonec2State {
         // has not been taken away holds it, and so does the SERVICE that created it to serve
         // a resource of the account, for as long as that resource exists.
         //
-        // An interface nothing holds is one a caller created for itself, which is handed back
-        // in the NON-TERMINAL [`NETWORK_INTERFACE_STATUS_PENDING`] — it is still being brought
-        // up — and the clock owes it [`NETWORK_INTERFACE_STATUS_AVAILABLE`] one
-        // [`TRANSITION_DELAY`] later, recorded below rather than slept for. Only an attachment
-        // moves it off that resting status afterwards
-        // ([`NETWORK_INTERFACE_STATUS_ATTACHING`] and the rest of the attachment lifecycle).
+        // An interface nothing holds is one a caller created for itself, and it comes to rest
+        // in [`NETWORK_INTERFACE_STATUS_AVAILABLE`] the instant it exists: every READ of a
+        // freshly created interface — by id and through a filter, however long after the create
+        // — reports it `available`, so there is no status a read could report before that one.
+        // Only an attachment moves it off that resting status afterwards
+        // ([`ATTACHMENT_STATUS_ATTACHING`] and the rest of the attachment lifecycle). The
+        // [`NETWORK_INTERFACE_STATUS_PENDING`] the create's OWN answer carries is the status at
+        // the instant of minting and belongs to that answer alone
+        // ([`crate::ops::create_network_interface`]).
         let held = spec
             .attachment
             .as_ref()
@@ -1497,7 +1500,7 @@ impl ComAmazonawsEc2Amazonec2State {
         let status = if held {
             NETWORK_INTERFACE_STATUS_IN_USE
         } else {
-            NETWORK_INTERFACE_STATUS_PENDING
+            NETWORK_INTERFACE_STATUS_AVAILABLE
         };
         let interface = NetworkInterface {
             // No Elastic IP address is associated until something associates one.
@@ -1632,15 +1635,6 @@ impl ComAmazonawsEc2Amazonec2State {
         }
         self.network_interfaces
             .insert(network_interface_id.clone(), interface);
-        // The move the clock now owes an interface a caller created for itself: it was handed
-        // back `pending` above, so it is `available` one [`TRANSITION_DELAY`] later whether or
-        // not anybody calls again ([`Self::materialize_due_transitions`] applies it). An
-        // interface stored HELD owes nothing: `in-use` is where it already is, and only its
-        // attachment moves it.
-        if !held {
-            self.network_interface_available_at
-                .insert(network_interface_id.clone(), Instant::now() + TRANSITION_DELAY);
-        }
         Some(network_interface_id)
     }
 }

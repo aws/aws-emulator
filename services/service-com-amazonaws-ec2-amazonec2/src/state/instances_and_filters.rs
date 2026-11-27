@@ -772,26 +772,6 @@ impl ComAmazonawsEc2Amazonec2State {
                 // The transition is applied once; nothing is owed on this gateway any more.
                 false
             });
-        // The move the clock owes a network interface a create minted: it was handed back
-        // `pending`, so it is `available` once its own due instant has passed, whether or not
-        // anybody called again — the same contract as the `pending` VPC above. An interface
-        // something has since attached is `in-use` and is left where it is: only a record
-        // still sitting in `pending` has this move left to make.
-        let network_interfaces = &mut self.network_interfaces;
-        self.network_interface_available_at
-            .retain(|network_interface_id, due_at| {
-                if now < *due_at {
-                    return true;
-                }
-                if let Some(interface) = network_interfaces.get_mut(network_interface_id) {
-                    if interface.status.as_deref() == Some(NETWORK_INTERFACE_STATUS_PENDING) {
-                        interface.status =
-                            Some(NETWORK_INTERFACE_STATUS_AVAILABLE.to_string());
-                    }
-                }
-                // The transition is applied once; nothing is owed on this interface any more.
-                false
-            });
         // A managed prefix list `CreateManagedPrefixList` answered as `create-in-progress`
         // reaches `create-complete` once its due instant has passed, whether or not anybody
         // called — the same contract as a `create-in-progress` IPAM scope's move below, and

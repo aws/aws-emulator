@@ -230,9 +230,10 @@ async fn the_listing_serves_every_published_row_including_the_variant_lines() {
 /// RULE (second half): being published is not being built on. For each row of the
 /// table, the catalogue publishes the version exactly when the row says so, a
 /// configuration may name it exactly when the catalogue publishes it, and a new
-/// Standard-broker cluster takes it exactly when that category's advertised
-/// offering names it — each refusal naming the version verbatim beside the
-/// versions that operation names as valid, and storing nothing.
+/// Standard-broker cluster takes it exactly when the catalogue publishes it as
+/// offered — each refusal naming the version verbatim beside the versions that
+/// operation ADVERTISES as valid, which for a cluster is MSK's narrower
+/// new-cluster offering, and storing nothing.
 #[tokio::test]
 async fn a_published_row_is_not_a_version_an_operation_admits() {
     let emulator = Emulator::new();
@@ -245,26 +246,48 @@ async fn a_published_row_is_not_a_version_an_operation_admits() {
 
     // Rows: the combinations of published against admitted, plus a second
     // published-and-built-on-by-nothing spelling, so the rule is checked on more
-    // than the one row the catalogue gained.
-    let table: &[(&str, &str, bool)] = &[
+    // than the one row the catalogue gained. The last column is whether a NEW
+    // standard-broker cluster may be built on the version, which is the catalogue's
+    // own `ACTIVE` verdict — a wider set than the one the refusal ADVERTISES, since
+    // MSK goes on offering a version to a cluster that already runs it after it has
+    // stopped steering new clusters onto it.
+    let table: &[(&str, &str, bool, bool)] = &[
         // Published and taken by both operations.
-        ("offered-everywhere", "3.9.x", true),
-        // Published as offered, but retired for new clusters.
-        ("offered-not-for-a-new-cluster", "3.6.0", true),
+        ("offered-everywhere", "3.9.x", true, true),
+        // Published as offered, so a new cluster may still be built on it, though
+        // the refusal's valid-value list no longer advertises it.
+        ("offered-not-advertised-for-a-new-cluster", "3.6.0", true, true),
         // Published deprecated: a configuration may still name it, because
-        // clusters are still running it.
-        ("deprecated-but-named-by-a-configuration", "1.1.1", true),
-        ("deprecated-variant-line", "2.8.2.tiered", true),
+        // clusters are still running it, but no new cluster is built on it.
+        ("deprecated-but-named-by-a-configuration", "1.1.1", true, false),
+        ("deprecated-variant-line", "2.8.2.tiered", true, false),
         // Published, built on by nothing, and named by no advertised list: the
         // `link` line. A configuration may still name it — the catalogue publishes
         // it, so a client can only have learnt it from this service.
-        ("published-only", "3.8.link", true),
+        ("published-only", "3.8.link", true, false),
         // Not published at all.
-        ("never-published", "9.9.9", false),
-        ("never-published-variant", "3.8.x.link", false),
+        ("never-published", "9.9.9", false, false),
+        ("never-published-variant", "3.8.x.link", false, false),
     ];
 
-    for (case, version, is_published) in table {
+    // Everything the refusal advertises is something a create is admitted on: the
+    // retry it invites must be served.
+    for version in &for_clusters {
+        let probe = emulator
+            .create_cluster_v2(v2_provisioned_body(
+                &format!("advertised-{}", version.replace('.', "-")),
+                version,
+                STANDARD_INSTANCE_TYPE,
+            ))
+            .await;
+        assert_eq!(
+            probe.status, 200,
+            "case \"advertised {version}\": an advertised version must build a cluster, got {} {}",
+            probe.status, probe.body
+        );
+    }
+
+    for (case, version, is_published, builds_a_cluster) in table {
         assert_eq!(
             published.iter().any(|name| name == version),
             *is_published,
@@ -341,9 +364,9 @@ async fn a_published_row_is_not_a_version_an_operation_admits() {
             );
         }
 
-        // CreateClusterV2 admits exactly the versions its broker category's
-        // refusal advertises.
-        let takes_cluster = for_clusters.iter().any(|name| name == version);
+        // CreateClusterV2 admits every version the catalogue publishes as offered,
+        // and refuses every other one with its category's advertised list.
+        let takes_cluster = *builds_a_cluster;
         let cluster = emulator
             .create_cluster_v2(v2_provisioned_body(
                 &format!("cluster-{case}"),

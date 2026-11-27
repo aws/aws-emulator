@@ -79,18 +79,43 @@ fn offered(catalog: &BTreeMap<String, Vec<String>>, version: &str) -> bool {
 /// valid-value list of the broker category it asked for.
 const NO_SUCH_VERSION: &str = "0.0.0-no-such-version";
 
-/// The versions the service still SHIPS to a new cluster, read off the wire: the
-/// valid-value list its own refusal of [`NO_SUCH_VERSION`] advertises. That is the
-/// software an in-place update installs, so it is the set a matrix row may offer as
-/// a target — narrower than the versions the catalog publishes as offered.
+/// The versions the service still SHIPS to a cluster, read off the wire: the
+/// versions the catalog publishes as offered, less the lines it advertises to the
+/// EXPRESS brokers alone — a line offered those brokers only is not software
+/// installed on a running cluster. That is the software an in-place update installs,
+/// so it is the set a matrix row may offer as a target.
 ///
-/// Read for the standard broker category; `new_cluster_kafka_version_offering.rs`
-/// pins the per-category lists and that both are offered the same versions.
+/// Read from the published catalog rather than from the valid-value list a create's
+/// refusal carries: that list is MSK's narrower STEER for a cluster that does not
+/// exist yet, a subset of what it still ships and admits.
 async fn shipped_versions(emulator: &Emulator) -> BTreeSet<String> {
+    let catalog = published(&list_versions(emulator).await);
+    let standard = advertised_versions(emulator, "kafka.m5.large").await;
+    let express_only: BTreeSet<String> = advertised_versions(emulator, "express.m7g.large")
+        .await
+        .into_iter()
+        .filter(|version| !standard.contains(version))
+        .collect();
+    catalog
+        .iter()
+        .filter(|(version, statuses)| {
+            statuses.iter().any(|status| status == ACTIVE) && !express_only.contains(*version)
+        })
+        .map(|(version, _)| version.clone())
+        .collect()
+}
+
+/// The valid-value list a create of `instance_type`'s brokers is refused with, read
+/// off that refusal's own sentence.
+async fn advertised_versions(
+    emulator: &Emulator,
+    instance_type: &'static str,
+) -> BTreeSet<String> {
     let reply = emulator
         .create(&ClusterRequest {
             kafka_version: NO_SUCH_VERSION,
-            ..ClusterRequest::named("shipped-versions")
+            instance_type,
+            ..ClusterRequest::named("advertised-versions")
         })
         .await;
     assert_eq!(

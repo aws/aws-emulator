@@ -2693,6 +2693,23 @@ static SYNCHRONOUS_CHILD_TARGET: TargetResource = TargetResource {
     denied: None,
 };
 
+/// Whether `resource` names the integration a nested execution of a state machine is
+/// started through ([`NESTED_EXECUTION_INTEGRATION`]), read from the TEXT alone.
+///
+/// Asked of a definition before any call is resolved, beside [`named_pattern`]: which
+/// INTEGRATION a `Resource` names decides whether the run-a-job pattern on it is a defect
+/// of the submitted document or a failure of each execution
+/// ([`super::asl::diagnose_task_resource`]). The integration is this service's OWN — the
+/// job it starts is another execution of it — which is why it is read here rather than
+/// spelled out at the caller.
+pub fn names_nested_execution(resource: &str) -> bool {
+    let named = match resource.split_once('.') {
+        Some((before, _)) => before,
+        None => resource,
+    };
+    named.ends_with(NESTED_EXECUTION_INTEGRATION)
+}
+
 /// The state machine a nested-execution run-a-job call would start a child of, as its
 /// `request` names it; `None` for every other call.
 ///

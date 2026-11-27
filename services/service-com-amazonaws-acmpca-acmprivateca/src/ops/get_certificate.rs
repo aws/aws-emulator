@@ -83,11 +83,13 @@
 //! ## Which refusal a certificate this CA cannot serve earns
 //!
 //! A certificate the CA HOLDS is served whatever status the authority rests in: serving one
-//! needs no signing key. For an ARN it holds no record of, the answer is about the
-//! CERTIFICATE — that certificate is absent — whatever status the CA has reached, because a
-//! read resolves the certificate the request names ON the CA. The one status that answers
-//! about the AUTHORITY instead is the one that serves none of its certificates at all: a CA a
-//! deletion has withdrawn from service.
+//! needs no signing key, which is how a root CA's own self-signed certificate is read back
+//! while that CA is still waiting to be given one. For an ARN it holds no record of, the
+//! CA's STATE decides: a CA whose status is one it could not have ISSUED certificates in —
+//! one still being created, one waiting for its own certificate, one whose creation failed,
+//! or one a deletion withdrew from service — is answered about the AUTHORITY
+//! (`InvalidStateException`), a state a caller waits out, and a CA that could have issued it
+//! reports that CERTIFICATE absent (`ResourceNotFoundException`), which is terminal.
 
 #[allow(unused_imports)]
 use super::types::*;
@@ -202,8 +204,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // A CA that was deleted is withdrawn from service: until it is restored nothing it
         // holds is reached through it, which is why every operation of this service that
         // reaches into a deleted CA refuses for its state before it touches what the
-        // request named. So that status — and only that one — is judged before the
-        // certificate the request names is resolved on the CA.
+        // request named.
         if record.is_deleted() {
             return Err(invalid_state(
                 crate::state::not_in_state_to_have_issued_message(&ca_arn),
@@ -213,9 +214,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // A CA that still serves its certificates answers ABOUT the certificate the
         // request names, so that certificate is resolved on the CA: a certificate the CA
         // HOLDS is served whatever status the authority rests in, because serving one needs
-        // no signing key, and an ARN it holds no record of is the absence of that
-        // CERTIFICATE whatever status the CA has reached — a CA that could not have issued
-        // it holds no record of it either, which is the same answer.
+        // no signing key — which is how a root CA's own self-signed certificate is read back
+        // while that CA is still waiting to be given one.
         //
         // A certificate ARN carries the ARN of the CA that issued it as its prefix, so one
         // CA's certificate never resolves against another's: under the CA the request
@@ -225,6 +225,18 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .flatten();
 
         let Some(certificate) = held else {
+            // WHICH refusal a miss earns is decided by the CA's STATE, which is the
+            // precondition of the question rather than a property of the answer: a CA whose
+            // status is one it could not have issued certificates in
+            // ([`crate::state::STATUSES_THAT_COULD_HAVE_ISSUED`]) is told so — a state a
+            // caller waits out, as it does for an issuance still in progress below — and
+            // only a CA that COULD have issued the certificate reports it absent, which is
+            // terminal.
+            if !record.could_have_issued() {
+                return Err(invalid_state(
+                    crate::state::not_in_state_to_have_issued_message(&ca_arn),
+                ));
+            }
             return Err(not_found(
                 crate::state::CERTIFICATE_NOT_FOUND_MESSAGE.to_string(),
             ));

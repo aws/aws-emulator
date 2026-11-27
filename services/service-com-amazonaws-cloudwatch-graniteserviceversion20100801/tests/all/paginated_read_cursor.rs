@@ -6,12 +6,13 @@
 //! The rule under test: **a `NextToken` names a POSITION a walk reached, and a listing that
 //! serves such a token rather than refusing it resumes AT that position — never at the
 //! beginning** — so a continuation delivers only the items after the ones already delivered,
-//! and a value this service cannot read a cursor out of is a position of a walk it cannot
-//! place: the page served for it is the END of that walk, which delivers nothing and owes no
-//! token (`DescribeAlarmsInput$NextToken` "The token returned by a previous call to indicate
-//! that there is more data available.", `ListAlarmMuteRulesOutput$NextToken` "If this field is
-//! absent, there are no more results to retrieve."). An EMPTY `NextToken` is no token at all:
-//! the only page it can name is the first.
+//! while a value this service can read NO cursor out of names no position at all and is
+//! IGNORED: the page served for it is the FIRST one, the same page the identical request
+//! without the member is served (`DescribeAlarmsInput$NextToken` "The token returned by a
+//! previous call to indicate that there is more data available.",
+//! `ListAlarmMuteRulesOutput$NextToken` "If this field is absent, there are no more results to
+//! retrieve."). An EMPTY `NextToken` is no token at all: the only page it can name is the
+//! first.
 //!
 //! The rows differ along what the rule generalises over: which listing is walked (the alarm
 //! listing narrowed by a name prefix, the same listing asked for a composite alarm's children,
@@ -38,8 +39,8 @@ const PREFIX: &str = "cursor-alarm-";
 ///
 /// The first is no cursor at all; the second reads as a hexadecimal cursor whose bytes are not
 /// text; the third is the padded base64 blob AWS carries its own tokens in. No position of this
-/// enumeration can be read out of any of them, so a listing that serves such a value answers
-/// the end of the walk it belongs to.
+/// enumeration can be read out of any of them, so a listing that serves such a value ignores it
+/// and answers the first page.
 const FOREIGN_TOKENS: [(&str, &str); 3] = [
     ("a value that is no cursor at all", "not-a-cursor"),
     ("a cursor whose bytes are not text", "fffe"),
@@ -128,7 +129,7 @@ async fn a_continued_alarm_listing_delivers_only_the_alarms_after_the_ones_alrea
 }
 
 #[tokio::test]
-async fn a_token_the_alarm_listing_cannot_read_is_answered_the_end_of_its_walk() {
+async fn a_token_the_alarm_listing_cannot_read_is_ignored_and_the_first_page_served() {
     let router = build_router();
     let names = given_alarms(&router, 2).await;
     let first = ok(
@@ -150,26 +151,25 @@ async fn a_token_the_alarm_listing_cannot_read_is_answered_the_end_of_its_walk()
             &json!({"AlarmNamePrefix": PREFIX, "MaxRecords": 2, "NextToken": token}),
         )
         .await;
-        // A token of a walk this listing cannot place is the end of that walk: the page
-        // delivers nothing and owes no token, so the walk it belongs to terminates there
-        // rather than starting over and delivering every alarm a second time.
+        // No position of this enumeration can be read out of that value, so it names none and
+        // is ignored: the page served is the one this request is served without it.
         assert_eq!(
             listed_alarms(&listed),
-            Vec::<String>::new(),
-            "case {case:?}: expected the empty end of the walk, got {listed}"
+            names,
+            "case {case:?}: expected the first page {names:?}, got {listed}"
         );
         assert_eq!(
             next_token(&listed),
-            None,
-            "case {case:?}: the end of a walk owes no token, got {listed}"
+            next_token(&first),
+            "case {case:?}: expected the first page's own token {:?}, got {listed}",
+            next_token(&first)
         );
-        // The three alarm lists the read reports are PRESENT and empty, which is what makes
-        // the page readable as an exhausted one rather than as a failure.
+        // The three alarm lists the read reports are PRESENT, which is what makes the page
+        // readable at all.
         for member in ["CompositeAlarms", "MetricAlarms", "LogAlarms"] {
-            assert_eq!(
-                listed[member],
-                json!([]),
-                "case {case:?}: expected an empty {member}, got {listed}"
+            assert!(
+                listed.get(member).and_then(Value::as_array).is_some(),
+                "case {case:?}: expected {member} present, got {listed}"
             );
         }
     }
@@ -196,7 +196,7 @@ async fn a_token_the_alarm_listing_cannot_read_is_answered_the_end_of_its_walk()
 }
 
 #[tokio::test]
-async fn a_token_a_relationship_walk_cannot_read_is_answered_the_end_of_its_walk() {
+async fn a_token_a_relationship_walk_cannot_read_is_ignored_and_the_first_page_served() {
     let router = build_router();
     let children = given_alarms(&router, 2).await;
     let parent = "cursor-parent";
@@ -231,13 +231,15 @@ async fn a_token_a_relationship_walk_cannot_read_is_answered_the_end_of_its_walk
         .await;
         assert_eq!(
             listed_alarms(&listed),
-            Vec::<String>::new(),
-            "case {case:?}: expected the empty end of the children walk, got {listed}"
+            children,
+            "case {case:?}: expected the first page of the children walk {children:?}, got \
+             {listed}"
         );
         assert_eq!(
             next_token(&listed),
-            None,
-            "case {case:?}: the end of a walk owes no token, got {listed}"
+            next_token(&first),
+            "case {case:?}: expected the first page's own token {:?}, got {listed}",
+            next_token(&first)
         );
     }
 
@@ -257,7 +259,7 @@ async fn a_token_a_relationship_walk_cannot_read_is_answered_the_end_of_its_walk
 }
 
 #[tokio::test]
-async fn a_token_the_mute_rule_listing_cannot_read_is_answered_the_end_of_its_walk() {
+async fn a_token_the_mute_rule_listing_cannot_read_is_ignored_and_the_first_page_served() {
     let router = build_router();
     // The same rule, read through the OTHER listing of this service that serves a token it
     // cannot read: one rule decides what such a token names for both.
@@ -289,13 +291,14 @@ async fn a_token_the_mute_rule_listing_cannot_read_is_answered_the_end_of_its_wa
         .await;
         assert_eq!(
             listed_arns(&listed),
-            Vec::<String>::new(),
-            "case {case:?}: expected the empty end of the walk, got {listed}"
+            both,
+            "case {case:?}: expected the first page {both:?}, got {listed}"
         );
         assert_eq!(
             next_token(&listed),
-            None,
-            "case {case:?}: the end of a walk owes no token, got {listed}"
+            next_token(&first),
+            "case {case:?}: expected the first page's own token {:?}, got {listed}",
+            next_token(&first)
         );
     }
 

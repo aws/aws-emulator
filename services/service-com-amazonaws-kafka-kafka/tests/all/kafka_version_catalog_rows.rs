@@ -202,11 +202,19 @@ async fn a_version_with_an_active_row_is_the_offered_version_set() {
         );
     }
 
-    // The create refusal's valid-value list is drawn from that same set: the
-    // versions MSK takes for a NEW cluster are the ones it still offers, each named
-    // once — a narrower set than the offered one, since a version stays published,
-    // and stays an upgrade SOURCE, after the service has stopped taking it for a
-    // cluster that does not exist yet.
+    // The create refusal's valid-value list is drawn from that same set, narrowed:
+    // the versions MSK ADVERTISES for a NEW cluster are ones it still offers, each
+    // named once — a narrower set than the offered one, since a version stays
+    // published, stays an upgrade SOURCE and stays admitted after the service has
+    // stopped steering a cluster that does not exist yet onto it.
+    let advertised = |reply: &Reply| -> Vec<String> {
+        let message = reply.error_message().to_string();
+        let listed = message
+            .rsplit_once("Valid values: [")
+            .and_then(|(_, tail)| tail.strip_suffix(']'))
+            .unwrap_or_else(|| panic!("the refusal must carry a valid-value list, got {message:?}"));
+        listed.split(", ").map(str::to_string).collect()
+    };
     let refusal = emulator
         .create(&ClusterRequest {
             kafka_version: "9.9.9",
@@ -220,21 +228,47 @@ async fn a_version_with_an_active_row_is_the_offered_version_set() {
         refusal.status,
         refusal.body
     );
-    let message = refusal.error_message().to_string();
-    let listed = message
-        .rsplit_once("Valid values: [")
-        .and_then(|(_, tail)| tail.strip_suffix(']'))
-        .unwrap_or_else(|| panic!("the refusal must carry a valid-value list, got {message:?}"));
-    let listed: Vec<&str> = listed.split(", ").collect();
+    let listed: Vec<String> = advertised(&refusal);
+    // The lines the EXPRESS brokers alone are offered, read off that category's own
+    // refusal: they are the one part of the offered set the service does not install
+    // on a running cluster.
+    let express_refusal = emulator
+        .create(&ClusterRequest {
+            kafka_version: "9.9.9",
+            instance_type: "express.m7g.large",
+            ..ClusterRequest::named("express-offered-set")
+        })
+        .await;
+    assert_eq!(
+        (express_refusal.status, express_refusal.error_code()),
+        (400, "BadRequestException"),
+        "an Express create naming an uncatalogued version must be refused, got {} {}",
+        express_refusal.status,
+        express_refusal.body
+    );
+    let express_only: Vec<String> = advertised(&express_refusal)
+        .into_iter()
+        .filter(|version| !listed.contains(version))
+        .collect();
 
     // The matrix offers a version as a target exactly when the service still
-    // SHIPS it to a new cluster — an in-place update installs the software the
-    // service ships — and it offers it from every published version an upgrade to
-    // it can start from: an older release of its own build line that the catalog
-    // still publishes as offered. A version with no `ACTIVE` row, and one the
-    // catalog publishes as offered but no longer ships, is no source's target.
+    // SHIPS it to a cluster — every version the catalog publishes as offered,
+    // less the lines offered the Express brokers alone, which is the software an
+    // in-place update installs — and it offers it from every published version an
+    // upgrade to it can start from: an older release of its own build line that the
+    // catalog still publishes as offered. A version with no `ACTIVE` row, and one
+    // offered the Express brokers alone, is no source's target.
     let matrix = matrix(&emulator).await;
     let versions = distinct_versions(&catalog);
+    // Everything a refusal advertises is software the service ships, so the steer it
+    // gives a client can never name a version no upgrade could land.
+    for version in &listed {
+        assert!(
+            offered(&catalog, version) && !express_only.contains(version),
+            "case version={version:?}: an advertised version must be one the service ships, \
+             got the published rows {catalog:?}"
+        );
+    }
     for version in &versions {
         let is_target = matrix
             .iter()
@@ -247,11 +281,11 @@ async fn a_version_with_an_active_row_is_the_offered_version_set() {
             );
             continue;
         }
-        if !listed.contains(&version.as_str()) {
+        if express_only.contains(version) {
             assert!(
                 !is_target,
-                "case version={version:?}: a version the service no longer ships to a new \
-                 cluster must be no source's target, got the matrix {matrix:?}"
+                "case version={version:?}: a line offered the Express brokers alone must be no \
+                 source's target, got the matrix {matrix:?}"
             );
             continue;
         }
@@ -272,17 +306,17 @@ async fn a_version_with_an_active_row_is_the_offered_version_set() {
         .collect();
     assert!(
         !listed.is_empty(),
-        "the refusal must name the versions a create may use, got {message:?}"
+        "the refusal must name the versions a create may use, got {listed:?}"
     );
     for (index, version) in listed.iter().enumerate() {
         assert!(
             offered_versions.iter().any(|offered| offered == version),
             "case version={version:?}: the refusal may only name a version with an ACTIVE row, \
-             got {message:?}"
+             got {listed:?}"
         );
         assert!(
             !listed[..index].contains(version),
-            "case version={version:?}: the refusal must name each version once, got {message:?}"
+            "case version={version:?}: the refusal must name each version once, got {listed:?}"
         );
     }
 }

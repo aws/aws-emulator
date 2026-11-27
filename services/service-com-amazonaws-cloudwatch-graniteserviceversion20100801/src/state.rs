@@ -3011,45 +3011,39 @@ pub fn requested_page(token: Option<&str>) -> Option<&str> {
 /// selection sits at or after and therefore its end.
 ///
 /// Shared by every listing of this service that SERVES a token it cannot read instead of
-/// refusing one, so one rule decides what such a token does: a token is a position a WALK
-/// reached, and a walk this listing cannot place reached the only position it can be answered
-/// about without re-delivering what it already delivered — its END, which holds no item and
-/// owes no token. A listing that refuses such a token instead reads the cursor itself
+/// refusing one, so one rule decides what such a token does: only a value a POSITION can be
+/// read out of names one, so a value this listing can read no cursor out of names nothing and
+/// is IGNORED — the request is the one it would have been without it, and the page served is
+/// the first. A listing that refuses such a token instead reads the cursor itself
 /// ([`decode_page_token`]) and words the refusal its own model declares
 /// ([`invalid_next_token_message`]).
 pub enum ResumedAt {
-    /// The beginning: what a request carrying NO token at all asks for, and what one carrying
-    /// an empty `NextToken` asks for too, since an empty value is no token
-    /// ([`requested_page`]).
+    /// The beginning: what a request carrying NO token at all asks for, what one carrying an
+    /// empty `NextToken` asks for too, since an empty value is no token ([`requested_page`]),
+    /// and what one carrying a value no cursor can be read out of asks for, since such a value
+    /// names no position and is ignored ([`ResumedAt::of`]).
     TheFirstItem,
     /// The item the token's cursor names — the one the page that minted it stopped before, so
     /// the continuation delivers that item and what follows it. A cursor naming a key past every
     /// item of the selection names its end, which holds no item and owes no token
     /// ([`ResumedAt::page_of`]).
     TheItemNamed(String),
-    /// Past every item of the selection: the position a token this listing can read no cursor
-    /// out of names, which is the end of the walk that token belongs to.
-    TheEndOfTheWalk,
 }
 
 impl ResumedAt {
-    /// Which of the three `token` asks for.
+    /// Which of the two `token` asks for.
     ///
     /// An EMPTY `NextToken` is no token at all and asks for the first page, the one rule every
     /// paginated read of this service shares ([`requested_page`]). A value this listing did not
-    /// mint carries no cursor of this enumeration ([`decode_page_token`]) and so names no
-    /// position in it: a listing that serves such a token rather than refusing it is served the
-    /// END of the walk — a page that delivers nothing and owes no token — because a token is a
-    /// position a walk has already reached, so serving its items again would deliver them
-    /// twice.
+    /// mint carries no cursor of this enumeration ([`decode_page_token`]) either, so it names no
+    /// position a page could start at: a listing that serves such a token rather than refusing
+    /// it IGNORES it, and the page it answers is the first — the same page the identical request
+    /// without the member is served — rather than a position the value does not name.
     #[must_use]
     pub fn of(token: Option<&str>) -> Self {
-        match requested_page(token) {
+        match requested_page(token).and_then(decode_page_token) {
+            Some(cursor) => Self::TheItemNamed(cursor),
             None => Self::TheFirstItem,
-            Some(token) => match decode_page_token(token) {
-                Some(cursor) => Self::TheItemNamed(cursor),
-                None => Self::TheEndOfTheWalk,
-            },
         }
     }
 
@@ -3076,7 +3070,6 @@ impl ResumedAt {
             Self::TheItemNamed(cursor) => {
                 selected.partition_point(|item| key(item) < cursor.as_str())
             }
-            Self::TheEndOfTheWalk => selected.len(),
         };
         let remainder = selected.get(from..).unwrap_or_default();
         let items = remainder.get(..page_size).unwrap_or(remainder);
@@ -3109,8 +3102,8 @@ pub struct ListingPage<'a, T> {
 /// sentence its own recordings show (`crate::ops::list_metric_streams`), the Contributor Insights
 /// listings their coded one ([`insight_rule_records::invalid_page_token_message`]), and two reads
 /// refuse such a token not at all because they serve a page instead: the alarm listing and the
-/// alarm mute rule listing both read a token they cannot resume from as the END of the walk it
-/// belongs to and serve the empty page there ([`ResumedAt`]). So this
+/// alarm mute rule listing both IGNORE a token they cannot resume from and serve the first page
+/// ([`ResumedAt`]). So this
 /// is the sentence of the reads recorded quoting
 /// the token — the alarm HISTORY listing and the alarm CONTRIBUTOR read
 /// (`crate::ops::describe_alarm_contributors`) — not a fourth wording of one class.

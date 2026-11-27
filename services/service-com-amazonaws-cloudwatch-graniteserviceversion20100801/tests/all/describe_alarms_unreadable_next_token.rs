@@ -6,14 +6,13 @@
 //! by a previous call to indicate that there is more data available."
 //! (`DescribeAlarmsInput$NextToken`), "The token that marks the start of the next batch of
 //! returned results." (`DescribeAlarmsOutput$NextToken`) — and this listing refuses none: a value
-//! it cannot read a position out of belongs to a walk it cannot place, which reached the only
-//! position it can be answered about without delivering items twice — that walk's END. So the page
-//! is EMPTY and owes no token, whatever selection the request's other filters name, and no alarm
-//! the caller already read comes back a second time.
+//! it cannot read a position out of names no position of this enumeration, so it names nothing
+//! and is IGNORED. The page served is the FIRST one of the selection the request's other filters
+//! name — exactly what the same request without the member is served, token and all.
 //!
 //! What a client gets from it: a paginator resuming with a token it kept from an earlier walk, or
-//! passing one through from another call, is told that walk is finished rather than being handed
-//! the alarms it already processed again.
+//! passing one through from another call, is served the listing it asked for rather than an empty
+//! page that hides every alarm it holds.
 //!
 //! The rows span what the rule generalises over: the FORM the unreadable value takes (a word, text
 //! that is no cursor, a hexadecimal cursor whose bytes are no text, an opaque base64 blob of
@@ -119,7 +118,7 @@ fn unreadable_tokens(minted: &str) -> Vec<(String, String)> {
 }
 
 #[tokio::test]
-async fn a_next_token_this_listing_cannot_read_is_answered_the_end_of_its_walk() {
+async fn a_next_token_this_listing_cannot_read_is_ignored_and_the_first_page_served() {
     let router = build_router();
     for (name, topic) in [
         ("other-quiet", "delta"),
@@ -201,20 +200,22 @@ async fn a_next_token_this_listing_cannot_read_is_answered_the_end_of_its_walk()
             let answered = ok(&router, "DescribeAlarms", &resumed(&request, token)).await;
             assert_eq!(
                 listed(&answered),
-                Vec::<String>::new(),
-                "case {case:?}: expected the empty end of that walk, got {answered}"
+                expected,
+                "case {case:?}: expected the first page of that selection {expected:?}, got \
+                 {answered}"
             );
             assert_eq!(
                 next_token(&answered),
-                None,
-                "case {case:?}: the end of a walk owes no token, got {answered}"
+                next_token(&baseline),
+                "case {case:?}: expected the first page's own token {:?}, got {answered}",
+                next_token(&baseline)
             );
             // Nothing was consumed: the same request answers the same page again, and the
             // selection itself is still there to be read without a token.
             let again = ok(&router, "DescribeAlarms", &resumed(&request, token)).await;
             assert_eq!(
                 listed(&again),
-                Vec::<String>::new(),
+                expected,
                 "case {case:?}: expected the same page twice, got {again}"
             );
             let untouched = ok(&router, "DescribeAlarms", &request).await;
@@ -228,11 +229,11 @@ async fn a_next_token_this_listing_cannot_read_is_answered_the_end_of_its_walk()
 }
 
 #[tokio::test]
-async fn a_next_token_this_listing_cannot_read_ends_a_walk_over_a_filtered_selection() {
+async fn a_next_token_this_listing_cannot_read_is_ignored_over_a_filtered_selection() {
     // The recorded shape of the rule: a name list naming two alarms in DIFFERENT states, narrowed
     // by `StateValue`. "Specify this parameter to receive information only about alarms that are
     // currently in the state that you specify." (`DescribeAlarmsInput$StateValue`) — the selection
-    // the filters name is read without a token, and the token is the END of a walk over it.
+    // the filters name is what the read answers, with the unreadable token ignored.
     //
     // The states are forced rather than evaluated: "Temporarily sets the state of an alarm for
     // testing purposes." (`SetAlarmState`) — a metric alarm returns to its evaluated state
@@ -270,9 +271,8 @@ async fn a_next_token_this_listing_cannot_read_ends_a_walk_over_a_filtered_selec
         let answered = ok(&router, "DescribeAlarms", &resumed(&request, token)).await;
         assert_eq!(
             (listed(&answered), next_token(&answered)),
-            (Vec::<String>::new(), None),
-            "case {form:?}: expected the empty end of that walk over the narrowed selection, \
-             got {answered}"
+            (expected.clone(), None),
+            "case {form:?}: expected the narrowed selection's first page, got {answered}"
         );
     }
     // The narrowed selection is still what the same request without a token reports.

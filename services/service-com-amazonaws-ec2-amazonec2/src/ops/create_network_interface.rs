@@ -452,7 +452,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 return Err(state::dry_run_operation());
             }
             return Ok(CreateNetworkInterfaceOutput {
-                network_interface: Some(state::reported_network_interface(&stored)),
+                network_interface: Some(state::created_network_interface(&stored)),
                 client_token: input.client_token.clone(),
             });
         }
@@ -542,9 +542,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             interface_type,
             private_ip_addresses: addresses,
             groups,
-            // A created interface is attached to nothing, so the store hands it back in the
-            // `pending` status a create answers and owes it `available` a span later: only an
-            // attach moves it off that resting status.
+            // A created interface is attached to nothing, so the store holds it in the
+            // `available` status every read of it reports; the `pending` this create's own
+            // answer carries is the status of the instant of minting
+            // ([`state::created_network_interface`]). Only an attach moves it off that
+            // resting status.
             attachment: None,
             // Nothing but the caller manages an interface the caller created itself.
             requester: None,
@@ -603,14 +605,16 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         }
 
         // The answer is the record as it was stored, so `CreateNetworkInterface` and
-        // `DescribeNetworkInterfaces` cannot drift apart.
+        // `DescribeNetworkInterfaces` cannot drift apart over what the interface HOLDS; its
+        // status is the one of the instant of minting, which belongs to this answer alone
+        // ([`state::created_network_interface`]).
         let Some(interface) = store.network_interfaces.get(&network_interface_id).cloned() else {
             return Err(state::internal_error(
                 "the network interface just created could not be read back",
             ));
         };
         Ok(CreateNetworkInterfaceOutput {
-            network_interface: Some(state::reported_network_interface(&interface)),
+            network_interface: Some(state::created_network_interface(&interface)),
             client_token: input.client_token.clone(),
         })
     }

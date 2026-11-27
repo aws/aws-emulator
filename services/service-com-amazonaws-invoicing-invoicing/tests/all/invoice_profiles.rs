@@ -490,12 +490,13 @@ async fn the_requesters_own_account_is_reported_whatever_the_request_shape() {
     .await;
 }
 
-/// The account the caller authenticates as is readable on exactly the terms every other
-/// account id is: a stored configuration LINKS it into the organization, or it is refused.
+/// The account the caller authenticates as is readable WHATEVER this service's state holds:
+/// it is the account the request is signed for, so no stored configuration has to link it.
 /// Every arrangement that names it answers with its profile, the bare organization that names
-/// it nowhere refuses it, and an account id no configuration names is refused throughout.
+/// it nowhere answers with it too, and an account id no configuration names is refused
+/// throughout.
 #[tokio::test]
-async fn the_own_account_is_reported_when_state_names_it() {
+async fn the_own_account_is_reported_whatever_state_holds() {
     let own = management_account().to_string();
     let other = account(21);
 
@@ -510,24 +511,23 @@ async fn the_own_account_is_reported_when_state_names_it() {
         let router = emulator();
         arrange_own_account(&router, how, &own, &other).await;
 
+        // The caller's own account is answered in every arrangement, the bare one included.
+        let (status, body) = batch_get(&router, std::slice::from_ref(&own)).await;
+        assert_eq!(
+            status, 200,
+            "case {label} ({own}): the caller's own account is readable, got {status} {body}"
+        );
+        assert_eq!(
+            reported_accounts(&body),
+            vec![own.clone()],
+            "case {label} ({own}): expected one profile for that account, got {body}"
+        );
+
         if how == OwnAccountInState::NotNamed {
-            // Nothing names it, so it is refused: the caller's identity makes it the
-            // organization's management account, not a linked account of it.
-            assert_refused(&router, &label, std::slice::from_ref(&own), &own).await;
-            // The other account of this row is named nowhere either: it is refused too.
+            // The other account of this row is named nowhere, so it is refused: being
+            // readable is the caller's own account's alone until a configuration links one.
             assert_refused(&router, &label, std::slice::from_ref(&other), &other).await;
         } else {
-            let (status, body) = batch_get(&router, std::slice::from_ref(&own)).await;
-            assert_eq!(
-                status, 200,
-                "case {label} ({own}): a named linked account is readable, got {status} {body}"
-            );
-            assert_eq!(
-                reported_accounts(&body),
-                vec![own.clone()],
-                "case {label} ({own}): expected one profile for that account, got {body}"
-            );
-
             // Every one of these configurations also names ANOTHER account, which is a
             // linked account and must be reported as well.
             let (status, body) = batch_get(&router, std::slice::from_ref(&other)).await;
@@ -551,8 +551,8 @@ async fn the_own_account_is_reported_when_state_names_it() {
 /// Every way this service's state can name an account, applied to the caller's OWN
 /// account by [`arrange_own_account`]: its `InvoiceReceiver` and `LinkedAccounts` sources
 /// (`smithy_query(query="shape", shape="InvoiceUnitRule")`), current and superseded, plus
-/// the bare organization that names it nowhere — where it is refused, because the
-/// organization's management account is not a linked account of it.
+/// the bare organization that names it nowhere — where it is still readable, because it is
+/// the account the request is signed for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum OwnAccountInState {
     /// No invoice units at all — the organization as a fresh emulator holds it.

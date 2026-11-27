@@ -8,9 +8,10 @@
 //! there is more data available.", `DescribeAlarmsInput$NextToken`; "If this field is absent,
 //! there are no more results to retrieve.", `ListAlarmMuteRulesOutput$NextToken`), so the last
 //! page carrying items ends the walk — even one the listing filled exactly. A cursor naming a
-//! position past every item, and a token this listing can read no cursor out of at all, are
-//! both the END of a walk: the page served holds no item and owes no token. So no page ever
-//! delivers an item the walk already delivered, and every walk terminates.
+//! position past every item is the END of a walk: the page served holds no item and owes no
+//! token. A value this listing can read no cursor out of names no position at all, so it is
+//! ignored and the page served is the first. So no page ever delivers an item the walk already
+//! delivered, and every walk terminates.
 //!
 //! The rows differ along what the rule generalises over: how many items the listing holds (none
 //! through more than one page's worth), the page size the request asks for (each published bound
@@ -209,29 +210,47 @@ async fn a_mute_rule_walk_ends_on_the_last_page_carrying_items() {
     }
 }
 
-/// A token of a walk this service cannot place — one it did not mint, or one whose cursor sits
-/// past every item of the selection — is the END of that walk on both listings: the page
-/// delivers nothing and owes no token, so a client that walks while a token is present stops
-/// there, having seen each item once.
+/// A cursor of this service's own naming a position past every item of the selection is the END
+/// of that walk on both listings: the page delivers nothing and owes no token, so a client that
+/// walks while a token is present stops there, having seen each item once. A value NO cursor can
+/// be read out of names no position at all and is ignored instead, so the page it is served is
+/// the listing's first.
 #[tokio::test]
 async fn a_token_past_the_end_of_a_walk_is_answered_the_empty_page() {
     let router = build_router();
     let names = given_alarms(&router, 2).await;
     let arns = given_rules(&router, 2).await;
 
-    // (case, the token the continuation carries) — a token this service never minted, in the
-    // two forms one can take, and one of its OWN tokens whose cursor is past every item.
+    // (case, the token the continuation carries, the items the page it is served delivers) — a
+    // token this service never minted, in the two forms one can take, which names no position and
+    // is ignored, and one of its OWN tokens whose cursor is past every item, which names the end.
     let past_every_alarm = ::hex::encode("exhausted-alarm-zzz");
     let past_every_rule = ::hex::encode("exhausted-rule-zzz");
-    let alarm_tokens: [(&str, &str); 3] = [
-        ("a value that is no cursor at all", "not-a-cursor"),
-        ("an opaque blob of the form AWS mints a token in", "eyJhIjoxfQ=="),
-        ("a cursor of its own, past every alarm", past_every_alarm.as_str()),
+    let alarm_tokens: [(&str, &str, bool); 3] = [
+        ("a value that is no cursor at all", "not-a-cursor", true),
+        (
+            "an opaque blob of the form AWS mints a token in",
+            "eyJhIjoxfQ==",
+            true,
+        ),
+        (
+            "a cursor of its own, past every alarm",
+            past_every_alarm.as_str(),
+            false,
+        ),
     ];
-    let rule_tokens: [(&str, &str); 3] = [
-        ("a value that is no cursor at all", "not-a-cursor"),
-        ("an opaque blob of the form AWS mints a token in", "eyJhIjoxfQ=="),
-        ("a cursor of its own, past every rule", past_every_rule.as_str()),
+    let rule_tokens: [(&str, &str, bool); 3] = [
+        ("a value that is no cursor at all", "not-a-cursor", true),
+        (
+            "an opaque blob of the form AWS mints a token in",
+            "eyJhIjoxfQ==",
+            true,
+        ),
+        (
+            "a cursor of its own, past every rule",
+            past_every_rule.as_str(),
+            false,
+        ),
     ];
 
     // The listing really does hold the items, so an empty page below is the walk's end rather
@@ -248,11 +267,12 @@ async fn a_token_past_the_end_of_a_walk_is_answered_the_empty_page() {
         first.token
     );
 
-    for (case, token) in alarm_tokens {
+    for (case, token, ignored) in alarm_tokens {
         let page = alarm_page(&router, 2, Some(token)).await;
+        let expected: Vec<String> = if ignored { names.clone() } else { vec![] };
         assert!(
-            page.items.is_empty() && page.token.is_none(),
-            "case {case:?}: expected the empty end of the walk, got {:?} with {:?}",
+            page.items == expected && page.token.is_none(),
+            "case {case:?}: expected {expected:?} with no token, got {:?} with {:?}",
             page.items,
             page.token
         );
@@ -270,11 +290,12 @@ async fn a_token_past_the_end_of_a_walk_is_answered_the_empty_page() {
         first.token
     );
 
-    for (case, token) in rule_tokens {
+    for (case, token, ignored) in rule_tokens {
         let page = rule_page(&router, 2, Some(token)).await;
+        let expected: Vec<String> = if ignored { arns.clone() } else { vec![] };
         assert!(
-            page.items.is_empty() && page.token.is_none(),
-            "case {case:?}: expected the empty end of the walk, got {:?} with {:?}",
+            page.items == expected && page.token.is_none(),
+            "case {case:?}: expected {expected:?} with no token, got {:?} with {:?}",
             page.items,
             page.token
         );

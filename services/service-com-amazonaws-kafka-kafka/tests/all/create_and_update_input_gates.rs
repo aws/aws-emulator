@@ -93,10 +93,9 @@ const VALUE_NOT_VALID_MESSAGE: &str = "The provided value is not valid.";
 const NOT_RUNNING_MESSAGE: &str = "Invalid parameter replicatorArn: This operation is only valid \
      for resources that are in one of the following states: [RUNNING]";
 
-/// The versions MSK takes for a NEW cluster of the STANDARD broker category, in the
-/// order it names them in when it refuses one it does not take: written out here
-/// rather than read from the service's own helper, so the list is pinned by this
-/// suite instead of by the code under test.
+/// The versions MSK ADMITS for a NEW cluster of the STANDARD broker category:
+/// written out here rather than read from the service's own helper, so the set is
+/// pinned by this suite instead of by the code under test.
 ///
 /// It is the set the catalog publishes an `ACTIVE` row for ([`offered_versions`],
 /// which is what this suite checks it against) minus the lines MSK offers the
@@ -138,6 +137,43 @@ fn new_cluster_versions(category: &str) -> &'static [&'static str] {
     }
 }
 
+/// The versions MSK ADVERTISES for a new STANDARD-broker cluster, in the order it
+/// names them in when it refuses a version it does not take: the recorded
+/// valid-value list of that refusal, written out here so the sentence is pinned by
+/// this suite rather than by the code under test.
+///
+/// It is narrower than the set the create ADMITS ([`STANDARD_NEW_CLUSTER_VERSIONS`],
+/// which this suite checks it against): MSK goes on admitting a version it has
+/// stopped steering new clusters onto.
+const STANDARD_ADVERTISED_VERSIONS: &[&str] = &[
+    "3.8.x",
+    "3.8.x.kraft",
+    "3.9.x",
+    "3.9.x.kraft",
+    "4.0.x.kraft",
+    "4.1.x.kraft",
+];
+
+/// The same for the EXPRESS broker category, which is advertised the newest KRaft
+/// line as well — the one version the two advertised lists differ by.
+const EXPRESS_ADVERTISED_VERSIONS: &[&str] = &[
+    "3.8.x",
+    "3.8.x.kraft",
+    "3.9.x",
+    "3.9.x.kraft",
+    "4.0.x.kraft",
+    "4.1.x.kraft",
+    "4.2.x.kraft",
+];
+
+/// The versions a refusal of `category`'s brokers advertises as valid.
+fn advertised_versions(category: &str) -> &'static [&'static str] {
+    match category {
+        "Express" => EXPRESS_ADVERTISED_VERSIONS,
+        _ => STANDARD_ADVERTISED_VERSIONS,
+    }
+}
+
 /// The versions MSK OFFERS: the versions the catalog documented in `src/state.rs`
 /// (the Amazon MSK Developer Guide's "Supported Apache Kafka versions") publishes
 /// an `ACTIVE` row for, each named ONCE at its first published row. Read off the
@@ -158,12 +194,12 @@ fn offered_versions() -> Vec<&'static str> {
 }
 
 /// The sentence MSK refuses `version` for brokers of `category` with: its fixed
-/// text, the version the request named, and the versions a create of that category
-/// may name, which this suite writes out above rather than reading from the service.
-/// The sentence is assembled by the shared harness helper, so this suite and the
-/// offering suite beside it pin ONE wording.
+/// text, the version the request named, and the versions that category's refusal
+/// ADVERTISES, which this suite writes out above rather than reading from the
+/// service. The sentence is assembled by the shared harness helper, so this suite
+/// and the offering suite beside it pin ONE wording.
 fn unsupported_version_message(category: &str, version: &str) -> String {
-    unsupported_broker_version_message(category, version, new_cluster_versions(category))
+    unsupported_broker_version_message(category, version, advertised_versions(category))
 }
 
 // The v2 provisioned body a row submits comes from the shared harness
@@ -211,8 +247,8 @@ async fn a_provisioned_create_refuses_a_version_the_catalog_does_not_publish() {
     let emulator = Emulator::new();
 
     // Every version a refusal recommends is one the catalog really publishes as
-    // offered, so the list can never name a version a later create would be
-    // refused for.
+    // offered AND one a create of that category is admitted on, so the list can
+    // never name a version a later create would be refused for.
     let offered = offered_versions();
     for version in EXPRESS_NEW_CLUSTER_VERSIONS
         .iter()
@@ -223,6 +259,16 @@ async fn a_provisioned_create_refuses_a_version_the_catalog_does_not_publish() {
             "case version={version:?}: a version a create may name must be published as \
              offered, got the offered set {offered:?}"
         );
+    }
+    for category in ["Standard", "Express"] {
+        for version in advertised_versions(category) {
+            assert!(
+                new_cluster_versions(category).contains(version),
+                "case {category}/{version:?}: an advertised version must be one a create of \
+                 that category admits, got {:?}",
+                new_cluster_versions(category)
+            );
+        }
     }
 
     // The rows differ along the FORM of the rejected value — a release newer than
@@ -293,10 +339,10 @@ async fn a_provisioned_create_refuses_a_version_the_catalog_does_not_publish() {
         "a refused create must register no cluster, got {listed:?}"
     );
 
-    // The other side of the rule: every version a category's refusal recommends is
-    // ADMITTED for brokers of that category — the `.x` ZooKeeper-mode ones, their
-    // `.kraft` lines and the newer KRaft-only releases — and the cluster reports the
-    // version it was created with.
+    // The other side of the rule: every version a category ADMITS is accepted for
+    // brokers of that category — the `.x` ZooKeeper-mode ones, their `.kraft` lines
+    // and the newer KRaft-only releases — and the cluster reports the version it was
+    // created with.
     for (category, instance_type) in &categories {
         for (index, version) in new_cluster_versions(category).iter().enumerate() {
             let case = format!("a create on the offered version {version:?} for {category}");

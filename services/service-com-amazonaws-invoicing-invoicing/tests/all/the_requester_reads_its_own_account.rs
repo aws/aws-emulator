@@ -5,13 +5,14 @@
 //! `X-Amz-Target: Invoicing.BatchGetInvoiceProfile` and an awsJson1_0 body, through the
 //! same `MultiServiceRouter` the production router uses).
 //!
-//! The rule under test: the operation answers an invoice profile for every LINKED account of
-//! the requester's organization — "the accounts must be linked accounts under the requester
-//! management account organization" — and refuses the request WHOLE with the modelled 403
-//! `AccessDeniedException`, naming the first account id in request order that is not one.
-//! The requester authenticates as the organization's MANAGEMENT account, which is not a
-//! linked account of it, so the caller's OWN account is readable on exactly the same terms as
-//! every other id: when a stored configuration links it, and not otherwise.
+//! The rule under test: the operation answers an invoice profile for the requester's OWN
+//! account and for every LINKED account of its organization — "the accounts must be linked
+//! accounts under the requester management account organization" — and refuses the request
+//! WHOLE with the modelled 403 `AccessDeniedException`, naming the first account id in
+//! request order that is neither. The caller's own account needs no configuration to grant
+//! it: it is the account the request is signed for, so it is readable against a bare
+//! organization, while every OTHER id is readable exactly when a stored configuration links
+//! it.
 //!
 //! The rows span what the rule generalises over: how (and whether) a configuration names
 //! the account asked about, in each of the ways this service's state can name one (nowhere,
@@ -397,20 +398,19 @@ async fn assert_reported(
     }
 }
 
-/// RULE, the caller's half: the account the caller authenticates as is readable exactly when
-/// a stored configuration LINKS it into the organization — the caller is that organization's
-/// MANAGEMENT account, which is not a linked account of it — whatever shape the batch takes.
+/// RULE, the caller's half: the account the caller authenticates as is ALWAYS readable — it
+/// is the account the request is signed for, so no stored configuration has to link it —
+/// whatever shape the batch takes and whatever else state holds.
 #[tokio::test]
-async fn the_callers_own_account_is_readable_exactly_when_a_configuration_links_it() {
+async fn the_callers_own_account_is_always_readable() {
     let own = own_account();
 
     for arrangement in ARRANGEMENTS {
         let router = emulator();
         let linked = arrange(&router, arrangement, &own).await;
-        let readable = arrangement.links_the_subject();
 
-        // The batch shapes the own account can be asked about in: the answer follows the
-        // arrangement, not the shape.
+        // The batch shapes the own account can be asked about in: the answer follows
+        // neither the arrangement nor the shape.
         let mut shapes: Vec<(String, Vec<String>, Vec<String>)> = vec![
             ("alone".to_string(), vec![own.clone()], vec![own.clone()]),
             (
@@ -427,38 +427,32 @@ async fn the_callers_own_account_is_readable_exactly_when_a_configuration_links_
         ];
         if !linked.is_empty() {
             let mut first = vec![own.clone()];
-            first.extend(linked.iter().cloned());
+            first.extend(linked.iter().filter(|id| **id != own).cloned());
             shapes.push(("first of a batch".to_string(), first.clone(), first));
-            let mut last = linked.clone();
+            let mut last: Vec<String> =
+                linked.iter().filter(|id| **id != own).cloned().collect();
             last.push(own.clone());
             shapes.push(("last of a batch".to_string(), last.clone(), last));
-            let mut between = vec![linked[0].clone(), own.clone()];
-            between.extend(linked.iter().skip(1).cloned());
-            shapes.push((
-                "between linked accounts".to_string(),
-                between.clone(),
-                between,
-            ));
+            let others: Vec<String> =
+                linked.iter().filter(|id| **id != own).cloned().collect();
+            if !others.is_empty() {
+                let mut between = vec![others[0].clone(), own.clone()];
+                between.extend(others.iter().skip(1).cloned());
+                shapes.push((
+                    "between linked accounts".to_string(),
+                    between.clone(),
+                    between,
+                ));
+            }
         }
 
         for (shape, requested, expected) in shapes {
             let label = format!("{arrangement:?}, {shape}");
-            if readable {
-                assert_reported(&router, &label, &requested, &expected).await;
-            } else {
-                // Refused WHOLE, naming the first id in request order that is not a linked
-                // account — which, where the caller's own account comes first, is it.
-                let refused = requested
-                    .iter()
-                    .find(|id| !linked.contains(id))
-                    .cloned()
-                    .unwrap_or_else(|| own.clone());
-                assert_refused(&router, &label, &requested, &refused).await;
-            }
+            assert_reported(&router, &label, &requested, &expected).await;
         }
 
-        // Every account the arrangement linked into the organization is readable, whether
-        // or not the caller's own account is: the answer is per account, not per caller.
+        // Every account the arrangement linked into the organization is readable beside it:
+        // the answer is per account, and the caller's own is one it never has to earn.
         if !linked.is_empty() {
             let label = format!("{arrangement:?}, the accounts state links");
             assert_reported(&router, &label, &linked, &linked).await;
@@ -466,19 +460,19 @@ async fn the_callers_own_account_is_readable_exactly_when_a_configuration_links_
     }
 }
 
-/// RULE, the other accounts' half: an ordinary account id is readable on exactly the terms
-/// the caller's own account is — this service's state linking it into the organization — so
-/// the SAME arrangement decides its answer, and an id no configuration links refuses the
-/// request WHOLE, naming the first such id in request order.
+/// RULE, the other accounts' half: an account id that is NOT the caller's own is readable
+/// exactly when this service's state links it into the organization, so the arrangement
+/// decides its answer, and an id no configuration links refuses the request WHOLE, naming the
+/// first such id in request order.
 #[tokio::test]
 async fn an_account_outside_the_organization_refuses_the_whole_batch_by_name() {
     for arrangement in ARRANGEMENTS {
         let router = emulator();
         let subject = account(11);
         let linked = arrange(&router, arrangement, &subject).await;
-        // A linked account of the row, if it has one, to put beside the subject: the
-        // caller's own account is no longer readable by identity, so the bystander is one
-        // the arrangement really linked.
+        // A linked account of the row, if it has one, to put beside the subject — one the
+        // arrangement really linked, rather than the caller's own account, which is readable
+        // by identity and would rescue nothing about the subject.
         let bystander = linked.first().cloned();
 
         let label = format!("{arrangement:?}, an ordinary account id");
@@ -551,36 +545,42 @@ async fn an_account_outside_the_organization_refuses_the_whole_batch_by_name() {
     }
 }
 
-/// RULE, the state half: what admits an account — the caller's own included — is a stored
+/// RULE, the state half: what admits an account OTHER than the caller's own is a stored
 /// configuration linking it and nothing else, so a create that links it turns the very same
 /// refused request into an answer, while a read (reported or refused) changes nothing a later
 /// caller sees and never teaches the service about an account.
 #[tokio::test]
-async fn only_a_stored_configuration_admits_an_account() {
+async fn only_a_stored_configuration_admits_another_account() {
     let router = emulator();
     let own = own_account();
     let other = account(21);
 
-    // Against a bare organization NOTHING is readable — not even the account the caller
-    // authenticates as, which is the organization's management account rather than a linked
-    // account of it — and repeating either request answers identically: neither read
-    // changed state.
-    for subject in [&own, &other] {
-        let first = batch_get(&router, std::slice::from_ref(subject)).await;
-        let second = batch_get(&router, std::slice::from_ref(subject)).await;
-        assert_eq!(
-            first.0, 403,
-            "case bare organization, {subject}: expected HTTP 403, got {first:?}"
-        );
-        assert_eq!(
-            first, second,
-            "case repeated refusal, {subject}: a refused read must not have admitted the \
-             account, got {first:?} then {second:?}"
-        );
-    }
+    // Against a bare organization the caller's own account is readable and nothing else is,
+    // and repeating either request answers identically: neither read changed state.
+    let own_first = batch_get(&router, std::slice::from_ref(&own)).await;
+    assert_eq!(
+        own_first.0, 200,
+        "case bare organization, the caller's own account: expected HTTP 200, got {own_first:?}"
+    );
+    assert_eq!(
+        own_first,
+        batch_get(&router, std::slice::from_ref(&own)).await,
+        "case repeated read of the own account: the same request must answer identically"
+    );
+    let first = batch_get(&router, std::slice::from_ref(&other)).await;
+    let second = batch_get(&router, std::slice::from_ref(&other)).await;
+    assert_eq!(
+        first.0, 403,
+        "case bare organization, {other}: expected HTTP 403, got {first:?}"
+    );
+    assert_eq!(
+        first, second,
+        "case repeated refusal, {other}: a refused read must not have admitted the \
+         account, got {first:?} then {second:?}"
+    );
 
-    // A create linking them is what admits them — the caller's own account on the same
-    // terms as any other.
+    // A create linking the other account is what admits it; the caller's own needed no
+    // create at all.
     create_unit(
         &router,
         "admits-two-accounts",

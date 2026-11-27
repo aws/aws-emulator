@@ -2601,22 +2601,25 @@ fn diagnose_declared_objects(
 /// waits for a job the call started to reach an end state, and the callback pattern
 /// (`.waitForTaskToken`) waits for an answer from outside the execution. Both are
 /// served for the STANDARD workflow type alone — an EXPRESS execution is a single
-/// at-most-once run with no durable state to suspend.
+/// at-most-once run with no durable state to suspend — and both are stated by the one
+/// sentence this service words an unsupported pattern with
+/// ([`super::EXPRESS_CALLBACK_UNSUPPORTED`], [`super::EXPRESS_RUN_A_JOB_UNSUPPORTED`]),
+/// so the create-time refusal and the data plane's own cannot word one rule two ways.
 ///
-/// Only ONE of the two is a defect of the SUBMITTED DOCUMENT, though, and the two are
-/// decided in different places. RECORDED: a `Resource` asking for the run-a-job pattern
-/// is ACCEPTED here whatever the workflow type, and every execution of the state machine
-/// then fails AT that state ([`super::EXPRESS_RUN_A_JOB_UNSUPPORTED`], raised by the
-/// interpreter, which starts no job for it) — the refusal is the workflow type's at RUN
-/// TIME and not the schema's, so a client that deploys such a definition gets the state
-/// machine and sees the failure per execution. The callback pattern is refused where the
-/// definition is submitted instead.
+/// WHERE each is refused is decided by the INTEGRATION the `Resource` names. RECORDED:
+/// an EXPRESS create naming the run-a-job pattern of an Amazon Web Services service's
+/// integration (`arn:aws:states:::ecs:runTask.sync`) is refused HERE, where the document
+/// is submitted, and so is one naming the callback pattern; the one run-a-job integration
+/// a create is ACCEPTED on is this service's OWN nested execution
+/// (`arn:aws:states:::states:startExecution.sync`,
+/// [`crate::state::integration::names_nested_execution`]), whose state machine is created
+/// and whose every execution then fails AT that state with the same sentence
+/// ([`super::EXPRESS_RUN_A_JOB_UNSUPPORTED`], raised by the interpreter, which starts no
+/// child) — so a client that deploys such a definition gets the state machine and sees
+/// the failure per execution.
 ///
 /// Reported under the code every defect of the language's SCHEMA is reported under
-/// ([`SCHEMA_VALIDATION_FAILED`]), located at the member that asked for the pattern,
-/// and worded by the one sentence this service states each unsupported pattern with
-/// ([`super::EXPRESS_CALLBACK_UNSUPPORTED`]), so the create-time refusal and the data
-/// plane's own cannot word one rule two ways.
+/// ([`SCHEMA_VALIDATION_FAILED`]), located at the member that asked for the pattern.
 fn diagnose_task_resource(
     state: &Map<String, Value>,
     state_type: &str,
@@ -2631,6 +2634,12 @@ fn diagnose_task_resource(
     };
     let unsupported = match crate::state::integration::named_pattern(resource) {
         Some(crate::state::integration::CALLBACK_PATTERN) => super::EXPRESS_CALLBACK_UNSUPPORTED,
+        Some(
+            crate::state::integration::RUN_A_JOB_PATTERN
+            | crate::state::integration::RUN_A_JOB_PATTERN_2,
+        ) if !crate::state::integration::names_nested_execution(resource) => {
+            super::EXPRESS_RUN_A_JOB_UNSUPPORTED
+        }
         _ => return,
     };
     into.push(error(

@@ -39,7 +39,8 @@
 use serde_json::{json, Value};
 
 use service_com_amazonaws_sfn_awsstepfunctions::state::asl::{
-    EXPRESS_CALLBACK_UNSUPPORTED, POSSIBLY_UNDEFINED_VARIABLE, UNDEFINED_VARIABLE,
+    EXPRESS_CALLBACK_UNSUPPORTED, EXPRESS_RUN_A_JOB_UNSUPPORTED, POSSIBLY_UNDEFINED_VARIABLE,
+    UNDEFINED_VARIABLE,
 };
 use service_com_amazonaws_sfn_awsstepfunctions::state::{
     INVALID_STATE_MACHINE_DEFINITION, VALIDATION_RESULT_FAIL, VALIDATION_RESULT_OK,
@@ -362,17 +363,19 @@ fn retrying(members: Value) -> Value {
 // Rule 2: the integration patterns a workflow type can perform
 // ---------------------------------------------------------------------------
 
-/// A definition asking for the integration pattern the EXPRESS workflow type is refused
-/// the DEFINITION of — the callback pattern — is refused as an EXPRESS state machine,
-/// stating the pattern at the `Resource` that asked for it, and is served as a STANDARD
-/// one. RECORDED: a `Resource` asking for the RUN-A-JOB pattern is served as either type,
-/// and every execution of the Express machine then fails at that state — that refusal
+/// A definition asking for an integration pattern the EXPRESS workflow type is refused the
+/// DEFINITION of — the callback pattern, and the run-a-job pattern of another Amazon Web
+/// Services service's integration — is refused as an EXPRESS state machine, stating the
+/// pattern at the `Resource` that asked for it, and is served as a STANDARD one. RECORDED:
+/// the one run-a-job integration an EXPRESS create is SERVED is this service's own nested
+/// execution, and every execution of that machine then fails at the state — that refusal
 /// belongs to the execution and not to the submitted document
-/// (`express_run_a_job_refusal` is the rule for it).
+/// (`express_run_a_job_refusal` is the rule for both halves).
 ///
-/// The rows differ along the INTEGRATION the pattern is asked of (a queue, a function —
-/// including services not mounted beside this one, so nothing the integration itself
-/// answered could decide the refusal) and along the name of the state that asked.
+/// The rows differ along the INTEGRATION the pattern is asked of (a queue, a function, a
+/// container task — including services not mounted beside this one, so nothing the
+/// integration itself answered could decide the refusal) and along the name of the state
+/// that asked.
 #[tokio::test]
 async fn an_express_definition_is_refused_the_patterns_only_standard_performs() {
     // (case, the state name, the Resource, the sentence the refusal states)
@@ -388,6 +391,18 @@ async fn an_express_definition_is_refused_the_patterns_only_standard_performs() 
             "HandOverTheToken",
             "arn:aws:states:::lambda:invoke.waitForTaskToken",
             EXPRESS_CALLBACK_UNSUPPORTED,
+        ),
+        (
+            "a container task through the run-a-job pattern",
+            "RunTask",
+            "arn:aws:states:::ecs:runTask.sync",
+            EXPRESS_RUN_A_JOB_UNSUPPORTED,
+        ),
+        (
+            "a query of an unmounted service through the run-a-job pattern's second revision",
+            "RunQuery",
+            "arn:aws:states:::athena:startQueryExecution.sync:2",
+            EXPRESS_RUN_A_JOB_UNSUPPORTED,
         ),
     ];
 
@@ -453,10 +468,10 @@ async fn an_express_definition_is_refused_the_patterns_only_standard_performs() 
     }
 
     // A `Resource` naming NO pattern is served as either type, which is the control
-    // for the reading of the suffix — and so is one asking for the RUN-A-JOB pattern,
-    // whichever revision of it and whichever integration it is asked of: that pattern is
-    // no defect of the submitted document, so the create stores the state machine and
-    // every execution of it fails at the state instead.
+    // for the reading of the suffix — and so is one asking for the RUN-A-JOB pattern of this
+    // service's OWN nested execution, whichever revision of it: that pattern on that
+    // integration is no defect of the submitted document, so the create stores the state
+    // machine and every execution of it fails at the state instead.
     let served: Vec<(&str, &str, &str)> = vec![
         (
             "a request-response task, which asks for no pattern at all",
@@ -464,9 +479,9 @@ async fn an_express_definition_is_refused_the_patterns_only_standard_performs() 
             "arn:aws:states:::aws-sdk:sts:getCallerIdentity",
         ),
         (
-            "a container task through the run-a-job pattern",
-            "RunTask",
-            "arn:aws:states:::ecs:runTask.sync",
+            "a nested execution through the run-a-job pattern",
+            "CallChild",
+            "arn:aws:states:::states:startExecution.sync",
         ),
         (
             "a nested execution through the pattern's second revision",

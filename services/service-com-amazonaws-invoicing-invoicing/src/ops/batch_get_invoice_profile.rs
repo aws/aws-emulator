@@ -2,20 +2,18 @@
 
 //! @op BatchGetInvoiceProfile
 //!
-//! Reports the invoice profile of each account the request names, for the LINKED accounts
-//! of the requester's organization:
+//! Reports the invoice profile of each account the request names, for the requester's own
+//! account and the LINKED accounts of its organization:
 //! [`crate::state::ComAmazonawsInvoicingInvoicingState::accounts_the_requester_may_read`]
-//! — every account this service's state links into that organization. The operation is
-//! documented "the accounts must be linked accounts under the requester management
-//! account organization", so an account id that organization does not LINK is one the
-//! requester holds no access to, and naming it refuses the request WHOLE with the
-//! modelled `AccessDeniedException` (HTTP 403) — none of the requested profiles is
-//! reported, because the request itself is what the service refuses.
+//! — the account the request is signed for, plus every account this service's state links
+//! into that organization. The operation is documented "the accounts must be linked
+//! accounts under the requester management account organization", so an account id outside
+//! that set is one the requester holds no access to, and naming it refuses the request
+//! WHOLE with the modelled `AccessDeniedException` (HTTP 403) — none of the requested
+//! profiles is reported, because the request itself is what the service refuses.
 //!
-//! The requester authenticates as the organization's MANAGEMENT account, which is not a
-//! linked account of it: a caller reading ITS OWN invoice profile is answered exactly when
-//! a stored configuration links that account, as for every other account id, and refused
-//! when none does.
+//! A caller reading ITS OWN invoice profile is therefore always answered: that account is
+//! the requester, so no configuration has to grant it.
 //!
 //! `@readonly`: this handler only reads state.
 //!
@@ -177,13 +175,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .filter(|account_id| seen.insert(*account_id))
             .collect();
 
-        // "The accounts must be linked accounts under the requester management account
-        // organization": the requester holds no access to an account its own organization
-        // does not LINK, so naming one is refused with the modelled 403, naming the first
-        // such account in request order, and refused WHOLE rather than answered for the
-        // accounts it may read. The requester authenticates as the organization's
-        // MANAGEMENT account, which is not a linked account of it, so an id is readable
-        // exactly when a stored configuration links it — the caller's own included.
+        // The requester may be answered about its OWN account and about the accounts its
+        // organization LINKS ("the accounts must be linked accounts under the requester
+        // management account organization"): it holds no access to any other account, so
+        // naming one is refused with the modelled 403, naming the first such account in
+        // request order, and refused WHOLE rather than answered for the accounts it may
+        // read ([`crate::state::ComAmazonawsInvoicingInvoicingState::accounts_the_requester_may_read`]).
         let readable = store.accounts_the_requester_may_read();
         if let Some(outsider) = requested
             .iter()

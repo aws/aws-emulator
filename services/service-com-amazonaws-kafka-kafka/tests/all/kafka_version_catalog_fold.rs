@@ -83,16 +83,55 @@ fn folded_status(folded: &[(String, String)], version: &str) -> Option<String> {
         .map(|(_, status)| status.clone())
 }
 
-/// The versions the SERVICE names as the ones a CREATE may use: the valid-value list
-/// its refusal of a version it does not publish carries, in the order that message
-/// names them. A narrower set than the versions it still offers — see the fold rule
-/// below.
+/// The versions the SERVICE ADVERTISES to a create of standard brokers: the
+/// valid-value list its refusal of a version it does not publish carries, in the
+/// order that message names them. A narrower set than the versions it still admits
+/// — see the fold rule below.
 async fn offered_versions(emulator: &Emulator) -> Vec<String> {
     let refusal = create_provisioned(emulator, "catalog-fold-refusal", UNCATALOGUED).await;
     assert_eq!(
         (refusal.status, refusal.error_code()),
         (400, "BadRequestException"),
         "a create naming a version the catalog does not publish must be refused, got {} {}",
+        refusal.status,
+        refusal.body
+    );
+    let message = refusal.error_message().to_string();
+    let listed = message
+        .rsplit_once("Valid values: [")
+        .and_then(|(_, tail)| tail.strip_suffix(']'))
+        .unwrap_or_else(|| panic!("the refusal must carry a valid-value list, got {message:?}"));
+    listed.split(", ").map(str::to_string).collect()
+}
+
+/// The versions the service advertises to a create of EXPRESS brokers, read the
+/// same way off that category's own refusal — so what one category is offered and
+/// the other is not comes off the wire rather than out of a constant.
+async fn express_offered_versions(emulator: &Emulator) -> Vec<String> {
+    let refusal = emulator
+        .call(
+            "POST",
+            "/v1/clusters",
+            Some(json!({
+                "clusterName": "catalog-fold-express-refusal",
+                "kafkaVersion": UNCATALOGUED,
+                "numberOfBrokerNodes": 3,
+                "brokerNodeGroupInfo": {
+                    "instanceType": "express.m7g.large",
+                    "clientSubnets": [
+                        "subnet-aaaaaaaaaaaaaaaaa",
+                        "subnet-bbbbbbbbbbbbbbbbb",
+                        "subnet-ccccccccccccccccc",
+                    ],
+                },
+            })),
+        )
+        .await;
+    assert_eq!(
+        (refusal.status, refusal.error_code()),
+        (400, "BadRequestException"),
+        "an Express create naming a version the catalog does not publish must be refused, got \
+         {} {}",
         refusal.status,
         refusal.body
     );
@@ -242,19 +281,24 @@ async fn the_status_a_client_folds_out_of_the_catalog_is_the_status_the_service_
         );
     }
 
-    // And the whole point of the read: a create naming a version the refusal lists
-    // is accepted and the cluster it mints reports that version back, while a
-    // version the fold reads as ACTIVE that the refusal does NOT list is refused in
-    // that same sentence — the set the refusal advertises is the set the gate
-    // admits.
+    // And the whole point of the read: a create of standard brokers naming a version
+    // the fold reads as ACTIVE is accepted — whether or not the refusal's narrower
+    // steer advertises it — and the cluster it mints reports that version back,
+    // while a line the catalog offers the EXPRESS brokers alone is refused on
+    // standard ones.
+    let express_only: Vec<String> = express_offered_versions(&emulator)
+        .await
+        .into_iter()
+        .filter(|version| !offered.contains(version))
+        .collect();
     for version in &active {
         let created = create_provisioned(&emulator, &cluster_name(version), version).await;
-        if !offered.iter().any(|offered| offered == version) {
+        if express_only.contains(version) {
             assert_eq!(
                 (created.status, created.error_code()),
                 (400, "BadRequestException"),
-                "case version={version:?}: a create naming a version the refusal does not list \
-                 must be refused, got {} {}",
+                "case version={version:?}: a line offered the Express brokers alone must be \
+                 refused on standard ones, got {} {}",
                 created.status,
                 created.body
             );
@@ -262,8 +306,8 @@ async fn the_status_a_client_folds_out_of_the_catalog_is_the_status_the_service_
         }
         assert_eq!(
             created.status, 200,
-            "case version={version:?}: a create naming a version the refusal lists must be \
-             accepted, got {} {}",
+            "case version={version:?}: a create naming a version the catalog publishes as \
+             offered must be accepted, got {} {}",
             created.status, created.body
         );
         let arn = created
