@@ -15,14 +15,27 @@
 //! The operation answers in this order, which is the order its sibling write paths answer
 //! in (`crate::ops::amend_benefit_application`, and the resource writes beside it):
 //!
-//! 1. request-shape validation — the centralized walk and the bounds this service puts on
-//!    the members the model leaves unconstrained, before any stored record is read;
-//! 2. the catalog and the partner-entitlement gate;
-//! 3. the `ClientToken` replay check;
-//! 4. the application itself — one that does not exist is `ResourceNotFoundException`;
-//! 5. the application's STATUS, which refuses the write whatever the request carries;
-//! 6. optimistic concurrency — the request's `Revision` must be the current one;
-//! 7. the rules on the CONTENT this write would store, which are the application's own
+//! 1. request-shape validation against the MODELLED constraints — the centralized walk,
+//!    before this handler runs, so a malformed request is a `ValidationException` whatever
+//!    the store holds;
+//! 2. the `Catalog` the request names, and then the partner-entitlement gate — one
+//!    construction of that order for every writing operation
+//!    ([`crate::state::write_request_refusal`]), which READS the stored catalog record: a
+//!    catalog this service does not hold is `ResourceNotFoundException` whatever the
+//!    calling account holds, and a caller holding no active AWS partner benefit whose
+//!    catalog DID resolve is `AccessDeniedException`;
+//! 3. the bounds this service puts on the members the model leaves unconstrained — the
+//!    `BenefitApplicationDetails` document, and the `Phone` of a supplied contact and the
+//!    `BusinessUseCase` of a supplied attachment. The model constrains none of them, so
+//!    AWS refuses such a value on nothing of its own: these bounds exist to keep a stored
+//!    record finite, and are therefore answered only once every refusal the MODELLED
+//!    service owns — the walk above, and the resource and entitlement answers of step 2 —
+//!    has passed, so this service's own bound can never stand in for one of those;
+//! 4. the `ClientToken` replay check;
+//! 5. the application itself — one that does not exist is `ResourceNotFoundException`;
+//! 6. the application's STATUS, which refuses the write whatever the request carries;
+//! 7. optimistic concurrency — the request's `Revision` must be the current one;
+//! 8. the rules on the CONTENT this write would store, which are the application's own
 //!    benefit's.
 //!
 //! The state of the record is therefore answered before anything about the content: a
@@ -245,7 +258,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
     ) -> Result<Self::Output, Self::Error> {
         // The catalog this write would land in is resolved FIRST, and the
         // partner-entitlement gate applies to a request whose catalog resolved — see
-        // [`crate::state::write_request_refusal`].
+        // [`crate::state::write_request_refusal`]. The modelled constraints were refused
+        // earlier still, by the centralized walk; the bounds this service puts on the
+        // members the model leaves unconstrained are answered BELOW, once these two have
+        // passed.
         match crate::state::write_request_refusal(&*self.engine, &input.catalog) {
             Some(crate::state::WriteRequestRefusal::MissingCatalog(missing)) => {
                 return Err(
@@ -275,7 +291,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // supplied contact and the `BusinessUseCase` of a supplied attachment are
         // unconstrained strings this update also persists, so they carry this service's
         // own bound on the same rule, wherever the member is written — see
-        // [`crate::state::unconstrained_members_refusal`].
+        // [`crate::state::unconstrained_members_refusal`]. The model states none of these
+        // bounds, so AWS refuses such a value on nothing of its own: they are enforced
+        // here, after the gate above, so a request the modelled service would answer with
+        // its own refusal still gets that answer.
         if let Some(refusal) = crate::state::details_refusal(
             crate::state::DETAILS_MEMBER,
             input.benefit_application_details.as_ref(),
