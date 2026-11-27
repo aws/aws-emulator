@@ -432,6 +432,7 @@ pub struct RunConfigurationDescription {
 pub struct ApplicationRestoreConfiguration {
     pub application_restore_type: String,
     pub snapshot_name: Option<String>,
+    pub snapshot_arn: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.kinesisanalyticsv2#FlinkRunConfiguration")]
@@ -486,14 +487,6 @@ pub struct EnvironmentPropertyDescriptions {
 #[derive(Debug, Clone, Default)]
 pub struct ApplicationSnapshotConfigurationDescription {
     pub snapshots_enabled: bool,
-    /// The snapshot mode the application's snapshots are taken under
-    /// ([`crate::state::DEFAULT_SNAPSHOT_MODE`] for one whose mode was never moved off the
-    /// one this API started with). A schema-driven serializer can only write a member the
-    /// model declares, so `SnapshotMode` was ADDED to
-    /// `smithy-model/com-amazonaws-kinesisanalyticsv2-kinesisanalytics-20180523.json`
-    /// (target a string shape of the same name): the recorded service reports it beside
-    /// `SnapshotsEnabled` on every description of an application's snapshot configuration,
-    /// while this model revision declares only the boolean.
     pub snapshot_mode: Option<String>,
 }
 
@@ -594,6 +587,20 @@ pub struct SnapshotDetails {
     pub application_encryption_configuration_description: Option<ApplicationEncryptionConfigurationDescription>,
 }
 
+#[smithy_macros::smithy(shape = "com.amazonaws.kinesisanalyticsv2#SnapshotEncryptionConfiguration")]
+#[derive(Debug, Clone, Default)]
+pub struct SnapshotEncryptionConfiguration {
+    pub key_id: Option<String>,
+    pub key_type: String,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.kinesisanalyticsv2#S3PrefixLocation")]
+#[derive(Debug, Clone, Default)]
+pub struct S3PrefixLocation {
+    pub bucket_arn: String,
+    pub key_prefix: String,
+}
+
 /// The values `ApplicationMode` accepts on the wire.
 pub const APPLICATION_MODE_VALUES: &[&str] = &["INTERACTIVE", "STREAMING"];
 
@@ -646,8 +653,36 @@ pub const RECORD_FORMAT_TYPE_VALUES: &[&str] = &["CSV", "JSON"];
 pub const RUNTIME_ENVIRONMENT_VALUES: &[&str] = &["FLINK-1_11", "FLINK-1_13", "FLINK-1_15", "FLINK-1_18", "FLINK-1_19", "FLINK-1_20", "FLINK-1_6", "FLINK-1_8", "FLINK-2_2", "FLINK-2_3", "SQL-1_0", "ZEPPELIN-FLINK-1_0", "ZEPPELIN-FLINK-2_0", "ZEPPELIN-FLINK-3_0"];
 
 
+/// The values `SnapshotFormat` accepts on the wire.
+pub const SNAPSHOT_FORMAT_VALUES: &[&str] = &["CANONICAL"];
+
+
+/// The values `SnapshotInitiator` accepts on the wire.
+pub const SNAPSHOT_INITIATOR_VALUES: &[&str] = &["SYSTEM", "USER"];
+
+
+/// The values `SnapshotInitiatorOperation` accepts on the wire.
+pub const SNAPSHOT_INITIATOR_OPERATION_VALUES: &[&str] = &["CreateSnapshot", "ImportSnapshot", "SystemCreateSnapshot"];
+
+
+/// The values `SnapshotMode` accepts on the wire.
+pub const SNAPSHOT_MODE_VALUES: &[&str] = &["APPLICATION_SNAPSHOTS_LEGACY", "ENHANCED_SNAPSHOTS"];
+
+
+/// The values `SnapshotOperation` accepts on the wire.
+pub const SNAPSHOT_OPERATION_VALUES: &[&str] = &["CreateSnapshot", "DeleteSnapshot", "ExportSnapshot", "ImportSnapshot", "SystemCreateSnapshot"];
+
+
+/// The values `SnapshotOperationStatus` accepts on the wire.
+pub const SNAPSHOT_OPERATION_STATUS_VALUES: &[&str] = &["CANCELLED", "FAILED", "IN_PROGRESS", "SUCCESSFUL"];
+
+
 /// The values `SnapshotStatus` accepts on the wire.
 pub const SNAPSHOT_STATUS_VALUES: &[&str] = &["CREATING", "DELETING", "FAILED", "READY"];
+
+
+/// The values `StorageLocationType` accepts on the wire.
+pub const STORAGE_LOCATION_TYPE_VALUES: &[&str] = &["S3"];
 
 
 /// The values `UrlType` accepts on the wire.

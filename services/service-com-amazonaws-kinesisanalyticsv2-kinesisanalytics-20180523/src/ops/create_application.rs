@@ -291,6 +291,32 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .into());
         }
 
+        // Which snapshot MODE an application takes its snapshots under is bounded by the
+        // runtime it runs: "To use ENHANCED_SNAPSHOTS, the application must use Apache Flink
+        // version 1.20 or later" (`ApplicationSnapshotConfiguration$SnapshotMode`), so a
+        // create that selects that mode on a runtime which does not run it is refused with
+        // the modelled `UnsupportedOperationException` (HTTP 400) rather than storing an
+        // application whose snapshot operations could never be served. A property of the
+        // request alone, so it is judged beside the mode above.
+        if input
+            .application_configuration
+            .as_ref()
+            .and_then(crate::state::configured_snapshot_mode)
+            .is_some_and(|mode| mode == crate::state::ENHANCED_SNAPSHOTS_MODE)
+            && !crate::state::runtime_takes_enhanced_snapshots(&input.runtime_environment)
+        {
+            return Err(
+                CreateApplicationErrorModeled::UnsupportedOperationException(
+                    UnsupportedOperationException {
+                        message: Some(crate::state::enhanced_snapshots_unsupported_message(
+                            &input.runtime_environment,
+                        )),
+                    },
+                )
+                .into(),
+            );
+        }
+
         let tags = input.tags.clone().unwrap_or_default();
         // "the maximum number of user-defined application tags is 50" — the
         // `CreateApplication$Tags` doc; the modelled `Tags` bound (1..200) counts system

@@ -105,6 +105,7 @@ pub struct CodeContent {
 #[derive(Debug, Clone, Default)]
 pub struct ApplicationSnapshotConfiguration {
     pub snapshots_enabled: bool,
+    pub snapshot_mode: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.kinesisanalyticsv2#ApplicationSystemRollbackConfiguration")]

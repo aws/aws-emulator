@@ -102,6 +102,9 @@
 //! * `ResourceInUseException` (HTTP 400) — The application is not available for this
 //!   operation.
 //! * `ResourceNotFoundException` (HTTP 400) — Specified application can't be found.
+//! * `UnsupportedOperationException` (HTTP 400) — The request was rejected because a
+//!   specified parameter is not supported or a specified resource is not valid for this
+//!   operation.
 
 #[allow(unused_imports)]
 use super::types::*;
@@ -128,6 +131,7 @@ pub enum UpdateApplicationErrorModeled {
     LimitExceededException(LimitExceededException),
     ResourceInUseException(ResourceInUseException),
     ResourceNotFoundException(ResourceNotFoundException),
+    UnsupportedOperationException(UnsupportedOperationException),
 }
 
 /// This operation's error channel, as the generated `impl Operation` names it
@@ -205,7 +209,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // What this update has to decide against, read under the store's guard and the
         // guard RELEASED before the Glue Data Catalog is asked anything: no two services'
         // store locks are ever held at once.
-        let (status, version_id, stored_token, stored_catalog_arn, runtime_environment) = {
+        let (
+            status,
+            version_id,
+            stored_token,
+            stored_catalog_arn,
+            runtime_environment,
+            snapshot_mode,
+        ) = {
             let mut store = state.lock();
             store.settle_named(&name);
             let Some(application) = store.applications.get(&name) else {
@@ -222,6 +233,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 application.conditional_token.clone(),
                 application.catalog_database_arn().map(str::to_string),
                 application.runtime_environment.clone(),
+                crate::state::application_snapshot_mode(application),
             )
         };
 
@@ -297,6 +309,54 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 },
             )
             .into());
+        }
+
+        // Which snapshot MODE the application takes its snapshots under once this update
+        // lands moves in ONE direction and only onto a runtime that runs it: "To use
+        // ENHANCED_SNAPSHOTS, the application must use Apache Flink version 1.20 or later"
+        // and "You can't use UpdateApplication to change the snapshot mode back to
+        // APPLICATION_SNAPSHOTS_LEGACY"
+        // (`ApplicationSnapshotConfigurationUpdate$SnapshotModeUpdate`), so an update asking
+        // for either is refused with the modelled `UnsupportedOperationException` (HTTP 400)
+        // — the mode it names is not one this application can be moved to — rather than
+        // storing a mode whose snapshot operations could not be served. The runtime judged is
+        // the one the update moves the application to, else the one it already runs on, which
+        // is the rule the code check below reads the runtime by. Only an update that NAMES a
+        // mode is judged: one that names none leaves the application on the mode it already
+        // takes its snapshots under.
+        if let Some(mode) = input
+            .application_configuration_update
+            .as_ref()
+            .and_then(|update| update.application_snapshot_configuration_update.as_ref())
+            .and_then(|snapshots| snapshots.snapshot_mode_update.as_deref())
+        {
+            let runtime = input
+                .runtime_environment_update
+                .as_deref()
+                .unwrap_or(&runtime_environment);
+            let refusal = if mode == crate::state::ENHANCED_SNAPSHOTS_MODE
+                && !crate::state::runtime_takes_enhanced_snapshots(runtime)
+            {
+                Some(crate::state::enhanced_snapshots_unsupported_message(
+                    runtime,
+                ))
+            } else if mode == crate::state::DEFAULT_SNAPSHOT_MODE
+                && snapshot_mode == crate::state::ENHANCED_SNAPSHOTS_MODE
+            {
+                Some(crate::state::snapshot_mode_not_reversible_message(&name))
+            } else {
+                None
+            };
+            if let Some(message) = refusal {
+                return Err(
+                    UpdateApplicationErrorModeled::UnsupportedOperationException(
+                        UnsupportedOperationException {
+                            message: Some(message),
+                        },
+                    )
+                    .into(),
+                );
+            }
         }
 
         // The inline code the application will run once this update lands has to be code the

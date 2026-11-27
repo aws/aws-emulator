@@ -214,19 +214,17 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // application as it stands — the modelled `InvalidRequestException` (HTTP 400),
         // which is what an SDK dispatches on and never retries. `ResourceInUseException`
         // is the other class: an application already engaged in a lifecycle action of its
-        // own, or a name already taken. The sentence states the status the application is
-        // in and the status this operation requires, both read from the store and the
-        // model's `ApplicationStatus` enum, so it reads the same for every status a
-        // caller can catch the application in.
+        // own, or a name already taken. The sentence is the one every snapshot-taking
+        // operation of this service shares
+        // (`crate::state::snapshot_requires_running_message`), so the two kinds of snapshot
+        // report the same ineligible application identically.
         if application.status != crate::state::STATUS_RUNNING {
             return Err(
                 CreateApplicationSnapshotErrorModeled::InvalidRequestException(
                     InvalidRequestException {
-                        message: Some(format!(
-                            "Application {application_name} is in {} status. Snapshot \
-                             creation is only allowed when application is in {} status",
-                            application.status,
-                            crate::state::STATUS_RUNNING
+                        message: Some(crate::state::snapshot_requires_running_message(
+                            &application_name,
+                            &application.status,
                         )),
                     },
                 )

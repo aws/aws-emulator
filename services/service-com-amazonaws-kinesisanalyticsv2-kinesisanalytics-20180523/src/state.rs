@@ -8,7 +8,9 @@
 //! `DeleteApplication` all read or mutate THIS struct — nothing is echoed from a request
 //! or canned. `CreateApplicationSnapshot` writes a [`Snapshot`] onto the application it
 //! names, `DescribeApplicationSnapshot` and `ListApplicationSnapshots` read it back from
-//! there and `DeleteApplicationSnapshot` removes it.
+//! there and `DeleteApplicationSnapshot` removes it. An ENHANCED snapshot is a resource of
+//! the account rather than of one application, so it lives in [`enhanced_snapshots`] beside
+//! these records and not on an [`Application`].
 //!
 //! `AddApplicationCloudWatchLoggingOption` and `DeleteApplicationCloudWatchLoggingOption`
 //! attach and detach the log streams an application is monitored through
@@ -39,6 +41,9 @@
 
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+mod enhanced_snapshots;
+pub use enhanced_snapshots::*;
 
 mod service_execution_role;
 pub use service_execution_role::*;
@@ -535,13 +540,16 @@ impl Application {
         }
 
         if let Some(snapshots) = update.application_snapshot_configuration_update.as_ref() {
-            // `ApplicationSnapshotConfigurationUpdate` names only whether snapshots are
-            // taken, so the described snapshot MODE is carried over rather than dropped:
-            // the update replaces the one value it names and leaves the rest of the
-            // description as it stands.
-            cfg.application_snapshot_configuration_description
-                .get_or_insert_with(Default::default)
-                .snapshots_enabled = snapshots.snapshots_enabled_update;
+            // The update replaces the values it NAMES and leaves the rest of the description
+            // as it stands, so an update that names only whether snapshots are taken carries
+            // the described snapshot MODE over rather than dropping it.
+            let described = cfg
+                .application_snapshot_configuration_description
+                .get_or_insert_with(Default::default);
+            described.snapshots_enabled = snapshots.snapshots_enabled_update;
+            if let Some(mode) = snapshots.snapshot_mode_update.clone() {
+                described.snapshot_mode = Some(mode);
+            }
         }
 
         if let Some(rollback) = update
@@ -891,6 +899,11 @@ pub const MAX_USER_TAGS: usize = 50;
 #[derive(Debug, Default)]
 pub struct ComAmazonawsKinesisanalyticsv2Kinesisanalytics20180523State {
     pub applications: BTreeMap<String, Application>,
+    /// The account's ENHANCED snapshots, by `SnapshotName`. An enhanced snapshot is not
+    /// scoped to an application (`crate::state::enhanced_snapshots`), so it is held here
+    /// rather than on one — and the name is unique across the account, which is why the map
+    /// is keyed by it. Bounded by [`MAX_ENHANCED_SNAPSHOTS`].
+    pub snapshots_v2: BTreeMap<String, EnhancedSnapshot>,
     /// Bumped for every server-assigned id, so two ids minted in the same instant differ.
     id_sequence: u64,
 }
@@ -1399,10 +1412,11 @@ impl ComAmazonawsKinesisanalyticsv2Kinesisanalytics20180523State {
                 .as_ref()
                 .map(|s| ApplicationSnapshotConfigurationDescription {
                     snapshots_enabled: s.snapshots_enabled,
-                    // `ApplicationSnapshotConfiguration` carries no mode, so the one in
-                    // force is filled in with the rest of the service's own values
+                    // The mode the configuration SELECTED, which is what the application's
+                    // snapshots are then taken under; a configuration that named none is
+                    // completed with the service's own value
                     // ([`complete_with_service_defaults`]).
-                    snapshot_mode: None,
+                    snapshot_mode: s.snapshot_mode.clone(),
                 }),
             application_system_rollback_configuration_description: cfg
                 .application_system_rollback_configuration
@@ -1650,8 +1664,8 @@ const DEFAULT_PARALLELISM_PER_KPU: i32 = 1;
 const DEFAULT_ROLLBACK_ENABLED: bool = false;
 
 /// The snapshot mode an application whose mode was never selected runs under: the legacy
-/// marker, which is what the service reports for every application this API revision can
-/// create, since it models no member for choosing another mode.
+/// marker, which is what the service reports for an application whose create or update
+/// named no other mode.
 ///
 /// It is the mode stored ON the application's configuration description
 /// ([`complete_with_service_defaults`]) rather than a value the serializer writes, so a
@@ -1727,9 +1741,11 @@ fn complete_with_service_defaults(
             snapshots_enabled: defaults.snapshots_enabled,
             snapshot_mode: None,
         });
-    // Every application's snapshots are taken under one snapshot mode, and the API this
-    // revision models has no member for selecting one, so a description that carries no
-    // mode reports the one an application that never selected a mode runs under
+    // Every application's snapshots are taken under one snapshot mode, so a description
+    // that carries no mode — because the configuration selected none — reports the one an
+    // application that never selected a mode runs under
+    // is what `ApplicationSnapshotConfiguration$SnapshotMode` documents: "If you don't
+    // specify this parameter, the application uses APPLICATION_SNAPSHOTS_LEGACY"
     // ([`DEFAULT_SNAPSHOT_MODE`]). Stored on the description, so a later read — of the
     // version in force or of a version this application has left — reports the mode that
     // configuration was described with rather than recomputing it.
@@ -1962,7 +1978,7 @@ pub fn deprecated_runtime_message(runtime: &str) -> String {
 /// (`smithy_query(query="shape",shape="RuntimeEnvironment")`), so the generation is read off
 /// the value rather than matched against a list of spelled-out members: a member the enum
 /// gains later is read the same way.
-fn runtime_generation(runtime: &str) -> Option<(u32, u32)> {
+pub fn runtime_generation(runtime: &str) -> Option<(u32, u32)> {
     let version = runtime.rsplit('-').next()?;
     let (major, minor) = version.split_once('_')?;
     Some((major.parse().ok()?, minor.parse().ok()?))
@@ -2423,6 +2439,21 @@ pub fn missing_snapshot_message(snapshot: &str, application: &str) -> String {
     snapshot_message(snapshot, "does not exist", application)
 }
 
+/// How this service words a snapshot refused because the application is not RUNNING.
+///
+/// A snapshot captures the state a RUNNING application holds, so in any other status there
+/// is no running state to capture. The sentence states the status the application is in and
+/// the status the operation requires, both read from the store and the model's
+/// `ApplicationStatus` enum, so it reads the same for every status a caller can catch the
+/// application in — and one wording serves `CreateApplicationSnapshot` and `CreateSnapshot`,
+/// which take the two kinds of snapshot of the same running application.
+pub fn snapshot_requires_running_message(application: &str, status: &str) -> String {
+    format!(
+        "Application {application} is in {status} status. Snapshot creation is only allowed \
+         when application is in {STATUS_RUNNING} status"
+    )
+}
+
 /// A snapshot name the application already holds a snapshot under, for the operations that
 /// create one.
 pub fn existing_snapshot_message(snapshot: &str, application: &str) -> String {
@@ -2586,6 +2617,14 @@ pub fn configured_parallelism_per_kpu(cfg: &ApplicationConfiguration) -> Option<
         .as_ref()
         .and_then(|flink| flink.parallelism_configuration.as_ref())
         .and_then(|parallelism| parallelism.parallelism_per_kpu)
+}
+
+/// The `SnapshotMode` a configuration supplied to a create selects, or `None` when it
+/// configures no snapshot mode.
+pub fn configured_snapshot_mode(cfg: &ApplicationConfiguration) -> Option<&String> {
+    cfg.application_snapshot_configuration
+        .as_ref()
+        .and_then(|snapshots| snapshots.snapshot_mode.as_ref())
 }
 
 /// The region every ARN this service mints carries: the one the caller signed for.

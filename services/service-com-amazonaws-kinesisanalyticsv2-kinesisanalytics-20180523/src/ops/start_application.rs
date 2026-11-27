@@ -67,6 +67,9 @@
 //! * `ResourceInUseException` (HTTP 400) — The application is not available for this
 //!   operation.
 //! * `ResourceNotFoundException` (HTTP 400) — Specified application can't be found.
+//! * `UnsupportedOperationException` (HTTP 400) — The request was rejected because a
+//!   specified parameter is not supported or a specified resource is not valid for this
+//!   operation.
 
 #[allow(unused_imports)]
 use super::types::*;
@@ -90,6 +93,7 @@ pub enum StartApplicationErrorModeled {
     InvalidRequestException(InvalidRequestException),
     ResourceInUseException(ResourceInUseException),
     ResourceNotFoundException(ResourceNotFoundException),
+    UnsupportedOperationException(UnsupportedOperationException),
 }
 
 /// This operation's error channel, as the generated `impl Operation` names it
@@ -208,6 +212,35 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                              code content.",
                             ::engine::emulator_account_id()
                         )),
+                    },
+                )
+                .into(),
+            );
+        }
+
+        // Restoring from an ENHANCED snapshot is a capability of an application that takes
+        // enhanced snapshots: `ApplicationRestoreConfiguration$SnapshotArn` is the snapshot
+        // "to use to restart an application. The application uses this value if
+        // RESTORE_FROM_CUSTOM_SNAPSHOT is specified for the ApplicationRestoreType and
+        // SnapshotMode is ENHANCED_SNAPSHOTS". A start that names one for an application
+        // taking its snapshots the legacy way therefore names a parameter the application
+        // does not support, which is the modelled `UnsupportedOperationException` (HTTP 400)
+        // — not a correction a caller could make to the value. Judged on the STORED
+        // application's snapshot mode and before the application is moved, so a refused start
+        // leaves it in the status it was in.
+        if input
+            .run_configuration
+            .as_ref()
+            .and_then(|run| run.application_restore_configuration.as_ref())
+            .is_some_and(|restore| restore.snapshot_arn.is_some())
+            && !crate::state::application_takes_enhanced_snapshots(application)
+        {
+            return Err(
+                StartApplicationErrorModeled::UnsupportedOperationException(
+                    UnsupportedOperationException {
+                        message: Some(
+                            crate::state::enhanced_snapshots_not_configured_message(&name),
+                        ),
                     },
                 )
                 .into(),

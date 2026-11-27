@@ -23,6 +23,7 @@ pub mod add_application_vpc_configuration_types;
 pub mod create_application_presigned_url_types;
 pub mod create_application_snapshot_types;
 pub mod create_application_types;
+pub mod create_snapshot_types;
 pub mod delete_application_cloud_watch_logging_option_types;
 pub mod delete_application_input_processing_configuration_types;
 pub mod delete_application_output_types;
@@ -30,15 +31,22 @@ pub mod delete_application_reference_data_source_types;
 pub mod delete_application_snapshot_types;
 pub mod delete_application_types;
 pub mod delete_application_vpc_configuration_types;
+pub mod delete_snapshot_types;
 pub mod describe_application_operation_types;
 pub mod describe_application_snapshot_types;
 pub mod describe_application_types;
 pub mod describe_application_version_types;
+pub mod describe_snapshot_operation_types;
+pub mod describe_snapshot_types;
 pub mod discover_input_schema_types;
+pub mod export_snapshot_types;
+pub mod import_snapshot_types;
 pub mod list_application_operations_types;
 pub mod list_application_snapshots_types;
 pub mod list_application_versions_types;
 pub mod list_applications_types;
+pub mod list_snapshot_operations_types;
+pub mod list_snapshots_types;
 pub mod list_tags_for_resource_types;
 pub mod rollback_application_types;
 pub mod shared_types;
@@ -68,6 +76,8 @@ pub use create_application_snapshot_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use create_application_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use create_snapshot_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use delete_application_cloud_watch_logging_option_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use delete_application_input_processing_configuration_types::*;
@@ -82,6 +92,8 @@ pub use delete_application_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use delete_application_vpc_configuration_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use delete_snapshot_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use describe_application_operation_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use describe_application_snapshot_types::*;
@@ -90,7 +102,15 @@ pub use describe_application_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use describe_application_version_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use describe_snapshot_operation_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use describe_snapshot_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use discover_input_schema_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use export_snapshot_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use import_snapshot_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use list_application_operations_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
@@ -99,6 +119,10 @@ pub use list_application_snapshots_types::*;
 pub use list_application_versions_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use list_applications_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use list_snapshot_operations_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use list_snapshots_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use list_tags_for_resource_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]

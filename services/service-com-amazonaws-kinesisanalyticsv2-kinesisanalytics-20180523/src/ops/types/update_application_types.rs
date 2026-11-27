@@ -208,6 +208,7 @@ pub struct EnvironmentPropertyUpdates {
 #[derive(Debug, Clone, Default)]
 pub struct ApplicationSnapshotConfigurationUpdate {
     pub snapshots_enabled_update: bool,
+    pub snapshot_mode_update: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.kinesisanalyticsv2#ApplicationSystemRollbackConfigurationUpdate")]
