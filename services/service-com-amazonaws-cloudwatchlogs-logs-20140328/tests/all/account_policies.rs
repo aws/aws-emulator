@@ -24,14 +24,21 @@ use crate::harness::{now_ms, Logs};
 /// Every value of the model's `PolicyType` enum, which is what `policyType` targets.
 /// Source: `smithy_query(query="shape", shape="PolicyType")` — `DATA_PROTECTION_POLICY`,
 /// `SUBSCRIPTION_FILTER_POLICY`, `FIELD_INDEX_POLICY`, `TRANSFORMER_POLICY`,
-/// `METRIC_EXTRACTION_POLICY`.
-pub(crate) const POLICY_TYPES: [&str; 5] = [
+/// `METRIC_EXTRACTION_POLICY`, `RETENTION_POLICY`.
+pub(crate) const POLICY_TYPES: [&str; 6] = [
     "DATA_PROTECTION_POLICY",
     "SUBSCRIPTION_FILTER_POLICY",
     "FIELD_INDEX_POLICY",
     "TRANSFORMER_POLICY",
     "METRIC_EXTRACTION_POLICY",
+    "RETENTION_POLICY",
 ];
+
+/// The one type whose quota is a single number rather than the either/or every other
+/// type's is: "Each account can have up to 20 account-level retention policies in each
+/// Region" (`PutAccountPolicy`). What that type's policies DO to a log group's retention,
+/// and the quota itself, are the subject of `tests/all/account_retention_policies.rs`.
+pub(crate) const RETENTION_POLICY_TYPE: &str = "RETENTION_POLICY";
 
 /// The only value of the model's `Scope` enum, and the scope a put that names none
 /// reports. Source: `PutAccountPolicy$scope` — "Currently the only valid value for this
@@ -140,6 +147,13 @@ pub(crate) fn metric_extraction_document() -> String {
     json!({"EmbeddedMetricFormat": {"Status": "Disabled"}}).to_string()
 }
 
+/// A retention policy document: the two attributes `PutAccountPolicy$policyDocument` lists
+/// for one, in the shape of the example it gives — `"{\"retentionInDays\": 90,
+/// \"enforcementMode\": \"RETROACTIVE\"}"`.
+pub(crate) fn retention_document() -> String {
+    json!({"retentionInDays": 90, "enforcementMode": "RETROACTIVE"}).to_string()
+}
+
 /// One row per policy type: a document that type admits, and the `selectionCriteria` it
 /// may be put with — `None` for a data protection policy, the one type
 /// `PutAccountPolicy$selectionCriteria` does not list. The criteria strings are in the
@@ -173,6 +187,12 @@ fn policy_rows() -> Vec<(&'static str, String, Option<&'static str>)> {
             "METRIC_EXTRACTION_POLICY",
             metric_extraction_document(),
             Some(r#"LogGroupNamePrefix NOT IN ["/aws/containerinsights"]"#),
+        ),
+        (
+            RETENTION_POLICY_TYPE,
+            retention_document(),
+            // "Retention policies support log group name prefixes only."
+            Some(r#"LogGroupNamePrefix IN ["/aws/retain"]"#),
         ),
     ]
 }
@@ -373,6 +393,7 @@ async fn describe_filters_by_type_name_and_account() {
         ("DATA_PROTECTION_POLICY", &[]),
         ("SUBSCRIPTION_FILTER_POLICY", &[]),
         ("METRIC_EXTRACTION_POLICY", &[]),
+        (RETENTION_POLICY_TYPE, &[]),
     ];
     for (policy_type, expected) in by_type {
         let names = described_names(&logs, &json!({"policyType": policy_type})).await;
@@ -551,8 +572,14 @@ async fn a_put_under_a_stored_name_updates_that_policy_and_leaves_the_others() {
 #[tokio::test]
 async fn put_enforces_the_documented_per_type_quotas() {
     // One policy of each type applies to all log groups, so a SECOND unscoped policy of
-    // that type under another name is over the quota.
-    for (policy_type, document, _) in policy_rows() {
+    // that type under another name is over the quota. The retention policies are the one
+    // type this does not hold for — their quota is "up to 20 account-level retention
+    // policies in each Region" whether or not they are scoped — so that type's quota is
+    // driven by `tests/all/account_retention_policies.rs` instead.
+    for (policy_type, document, _) in policy_rows()
+        .into_iter()
+        .filter(|(policy_type, _, _)| *policy_type != RETENTION_POLICY_TYPE)
+    {
         let logs = Logs::new();
         for index in 0..=MAX_UNSCOPED_POLICIES {
             let name = format!("unscoped-{index}");

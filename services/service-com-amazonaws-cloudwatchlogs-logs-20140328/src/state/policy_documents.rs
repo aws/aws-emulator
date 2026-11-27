@@ -50,6 +50,11 @@ pub fn is_kms_key_arn(arn: &str) -> bool {
 /// and every policy of that type counts against it. Every number is one
 /// `PutAccountPolicy`'s own documentation states — see the constants it returns.
 pub fn max_account_policies(policy_type: &str, scoped: bool) -> usize {
+    // A retention policy's quota is ONE number for the type rather than the either/or the
+    // other types state, so it is the bound whether or not the policy is scoped.
+    if policy_type == POLICY_TYPE_RETENTION {
+        return MAX_RETENTION_ACCOUNT_POLICIES;
+    }
     if !scoped {
         return MAX_UNSCOPED_ACCOUNT_POLICIES;
     }
@@ -70,6 +75,10 @@ pub struct AccountPolicyShape {
     /// [`DataProtectionPolicyShape::findings_destination_log_groups`] reports them. Empty
     /// for every other policy type, none of which names a destination log group.
     pub findings_destination_log_groups: Vec<String>,
+    /// The retention a retention policy's document states, as
+    /// [`check_retention_policy_document`] reads it. `None` for every other policy type,
+    /// none of which states a retention.
+    pub retention: Option<AccountRetention>,
 }
 
 /// Judge a `PutAccountPolicy$policyDocument` against the rules that member's own
@@ -98,6 +107,7 @@ pub fn check_account_policy_document(
             let shape = check_data_protection_policy_document(document)?;
             Ok(AccountPolicyShape {
                 findings_destination_log_groups: shape.findings_destination_log_groups,
+                ..AccountPolicyShape::default()
             })
         }
         POLICY_TYPE_SUBSCRIPTION_FILTER => {
@@ -109,6 +119,14 @@ pub fn check_account_policy_document(
         }
         POLICY_TYPE_TRANSFORMER => {
             check_transformer_policy_document(document).map(|()| AccountPolicyShape::default())
+        }
+        // "A retention policy must include the following attributes in a JSON block":
+        // the retention to keep log events for, and which log groups it is enforced on.
+        POLICY_TYPE_RETENTION => {
+            check_retention_policy_document(document).map(|retention| AccountPolicyShape {
+                retention: Some(retention),
+                ..AccountPolicyShape::default()
+            })
         }
         // A metric extraction policy "controls whether CloudWatch Metrics can be created
         // through the Embedded Metrics Format (EMF)", and the one thing it can say is that
@@ -637,6 +655,9 @@ impl<'a> CriteriaSelection<'a> {
 /// * `METRIC_EXTRACTION_POLICY` — "The selection criteria supports filtering by
 ///   `LogGroupName` and `LogGroupNamePrefix` using the operators `IN` and `NOT IN`. You can
 ///   specify up to 50 values in each `IN` or `NOT IN` list."
+/// * `RETENTION_POLICY` — "To scope a retention policy to a subset of log groups, use
+///   `LogGroupNamePrefix` in `selectionCriteria`. Retention policies support log group name
+///   prefixes only."
 ///
 /// Which operator a `LogGroupNamePrefix` filter is written with is not documented for a
 /// transformer or a field index policy, so every form of it is accepted there — the set
@@ -658,6 +679,9 @@ pub fn check_selection_criteria(policy_type: &str, criteria: &str) -> Result<Sel
             parsed.is_single(SELECTION_FIELD_LOG_GROUP_NAME, None)
                 || parsed.is_single(SELECTION_FIELD_LOG_GROUP_NAME_PREFIX, None)
         }
+        // "To scope a retention policy to a subset of log groups, use LogGroupNamePrefix in
+        // selectionCriteria. Retention policies support log group name prefixes only."
+        POLICY_TYPE_RETENTION => parsed.is_single(SELECTION_FIELD_LOG_GROUP_NAME_PREFIX, None),
         // A data protection policy admits no criteria at all, and its caller refuses one
         // before it gets here.
         _ => false,
@@ -693,6 +717,7 @@ pub(super) fn selection_criteria_forms(policy_type: &str) -> &'static str {
         POLICY_TYPE_METRIC_EXTRACTION => {
             "a LogGroupName or LogGroupNamePrefix filter with the IN or NOT IN operator"
         }
+        POLICY_TYPE_RETENTION => "a LogGroupNamePrefix filter",
         _ => "omitted: this policy type applies to all log groups in the account",
     }
 }
@@ -843,12 +868,21 @@ pub(super) fn selection_list_end(list: &str) -> Option<usize> {
 ///
 /// A policy is identified by its type and name, so the policy being updated is not
 /// compared with itself.
+///
+/// The RETENTION policies are the one type no rule like this is stated for: "Unlike other
+/// account-level policy types, retention policies can have overlapping selection criteria.
+/// When more than one retention policy applies to a log group, the policy with the longest
+/// retention period is used" — so an overlap between two of them is resolved when a log
+/// group's retention is read ([`effective_retention`]) rather than refused here.
 pub fn check_account_policy_criteria_overlap(
     policies: &BTreeMap<(String, String), AccountPolicyRecord>,
     policy_type: &str,
     policy_name: &str,
     criteria: &SelectionCriteria,
 ) -> Result<(), String> {
+    if policy_type == POLICY_TYPE_RETENTION {
+        return Ok(());
+    }
     let Some(putting) = CriteriaSelection::of(criteria) else {
         return Ok(());
     };

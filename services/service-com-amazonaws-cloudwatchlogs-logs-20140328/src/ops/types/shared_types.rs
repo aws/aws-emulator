@@ -156,6 +156,26 @@ pub struct LookupTableConfiguration {
     pub tags: Option<std::collections::HashMap<String, String>>,
 }
 
+#[smithy_macros::smithy(shape = "com.amazonaws.cloudwatchlogs#DryRunResult")]
+#[derive(Debug, Clone, Default)]
+pub struct DryRunResult {
+    pub total_matched_log_groups: i32,
+    pub increased_retention_log_group_count: i32,
+    pub decreased_retention_log_group_count: i32,
+    pub unchanged_retention_log_group_count: i32,
+    pub failed_analysis_count: i32,
+    pub top_log_groups_impacted: Option<Vec<LogGroupImpact>>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.cloudwatchlogs#LogGroupImpact")]
+#[derive(Debug, Clone, Default)]
+pub struct LogGroupImpact {
+    pub log_group_name: Option<String>,
+    pub current_retention: Option<String>,
+    pub proposed_retention: Option<String>,
+    pub stored_bytes: Option<i64>,
+}
+
 #[smithy_macros::smithy(shape = "com.amazonaws.cloudwatchlogs#AccountPolicy")]
 #[derive(Debug, Clone, Default)]
 pub struct AccountPolicy {
@@ -599,7 +619,7 @@ pub const LIST_AGGREGATE_LOG_GROUP_SUMMARIES_GROUP_BY_VALUES: &[&str] = &["DATA_
 
 
 /// The values `LogGroupClass` accepts on the wire.
-pub const LOG_GROUP_CLASS_VALUES: &[&str] = &["DELIVERY", "INFREQUENT_ACCESS", "STANDARD"];
+pub const LOG_GROUP_CLASS_VALUES: &[&str] = &["DELIVERY", "ESSENTIALS", "INFREQUENT_ACCESS", "STANDARD"];
 
 
 /// The values `OCSFVersion` accepts on the wire.
@@ -623,7 +643,7 @@ pub const POLICY_SCOPE_VALUES: &[&str] = &["ACCOUNT", "RESOURCE"];
 
 
 /// The values `PolicyType` accepts on the wire.
-pub const POLICY_TYPE_VALUES: &[&str] = &["DATA_PROTECTION_POLICY", "FIELD_INDEX_POLICY", "METRIC_EXTRACTION_POLICY", "SUBSCRIPTION_FILTER_POLICY", "TRANSFORMER_POLICY"];
+pub const POLICY_TYPE_VALUES: &[&str] = &["DATA_PROTECTION_POLICY", "FIELD_INDEX_POLICY", "METRIC_EXTRACTION_POLICY", "RETENTION_POLICY", "SUBSCRIPTION_FILTER_POLICY", "TRANSFORMER_POLICY"];
 
 
 /// The values `QueryLanguage` accepts on the wire.

@@ -75,7 +75,8 @@
 //! * `policyName` (PolicyName) — Use this parameter to limit the returned policies to only
 //!   the policy with the name that you specify.
 //! * `policyType` (PolicyType, one of: DATA_PROTECTION_POLICY | FIELD_INDEX_POLICY |
-//!   METRIC_EXTRACTION_POLICY | SUBSCRIPTION_FILTER_POLICY | TRANSFORMER_POLICY) **required**
+//!   METRIC_EXTRACTION_POLICY | RETENTION_POLICY | SUBSCRIPTION_FILTER_POLICY |
+//!   TRANSFORMER_POLICY) **required**
 //!   — Use this parameter to limit the returned policies to only the policies that match the
 //!   policy type that you specify.
 //!

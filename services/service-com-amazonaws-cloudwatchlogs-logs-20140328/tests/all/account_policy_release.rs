@@ -81,8 +81,14 @@ async fn held_names(logs: &Logs, policy_type: &str) -> Vec<String> {
 async fn a_delete_gives_back_the_quota_slot_its_policy_held() {
     // The unscoped half of every type's quota: one policy "applies to all log groups", so
     // while it is held a second one of that type is over the quota — and once it is
-    // deleted the very same put is admitted.
-    for policy_type in POLICY_TYPES {
+    // deleted the very same put is admitted. The retention policies are left out: their
+    // quota is "up to 20 account-level retention policies in each Region", one number
+    // rather than an either/or, so a second unscoped one of that type is admitted
+    // (`tests/all/account_retention_policies.rs` drives that quota and its release).
+    for policy_type in POLICY_TYPES
+        .into_iter()
+        .filter(|policy_type| *policy_type != "RETENTION_POLICY")
+    {
         let logs = Logs::new();
         let document = document_for(policy_type);
         let second = put_body("second", policy_type, &document, None);

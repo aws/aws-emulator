@@ -80,7 +80,8 @@
 //! * `limit` (ListLogGroupsRequestLimit, range 1..50) — The maximum number of aggregated
 //!   summaries to return. If you omit this parameter, the default is up to 50 aggregated
 //!   summaries.
-//! * `logGroupClass` (LogGroupClass, one of: DELIVERY | INFREQUENT_ACCESS | STANDARD) —
+//! * `logGroupClass` (LogGroupClass, one of: DELIVERY | ESSENTIALS | INFREQUENT_ACCESS |
+//!   STANDARD) —
 //!   Filters the results by log group class to include only log groups of the specified
 //!   class.
 //! * `logGroupNamePattern` (LogGroupNameRegexPattern, len 3..129, pattern

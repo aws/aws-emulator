@@ -77,7 +77,8 @@
 //!   log groups are created without deletion protection enabled.
 //! * `kmsKeyId` (KmsKeyId, len 0..256) — The Amazon Resource Name (ARN) of the KMS key to use
 //!   when encrypting log data. For more information, see Amazon Resource Names.
-//! * `logGroupClass` (LogGroupClass, one of: DELIVERY | INFREQUENT_ACCESS | STANDARD) — Use
+//! * `logGroupClass` (LogGroupClass, one of: DELIVERY | ESSENTIALS | INFREQUENT_ACCESS |
+//!   STANDARD) — Use
 //!   this parameter to specify the log group class for this log group. There are three
 //!   classes: The Standard log class supports all CloudWatch Logs features. The Infrequent
 //!   Access log class supports a subset of CloudWatch Logs features and incurs lower costs.

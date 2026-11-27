@@ -11,16 +11,14 @@ use super::*;
 
 smithy_macros::smithy_model!("smithy-model/com-amazonaws-cloudwatchlogs-logs-20140328.json");
 
-// `logGroupNamePattern` is the member whose one modelled constraint this OPERATION judges
-// itself. The value is literal text for a case-sensitive SUBSTRING search over the names the
-// account holds, not an expression, so the character class `LogGroupNamePattern` declares is
-// no bound on what the service takes: a value carrying a character a log group name can never
-// hold matches no log group, which is a success with an empty page.
-// `skip_validation` drops only this member's constraint traits, so
-// `crate::state::check_log_group_name_substring_pattern` can apply the one that IS a bound —
-// the `@length(max: 512)` on the whole value — and refuse with this operation's own modelled
-// `InvalidParameterException`; every other member of this shape is still validated at the
-// boundary.
+// `skip_validation = ["logGroupNamePattern"]`: that member is LITERAL TEXT for a
+// case-sensitive substring search ("the operation returns only log groups that have names
+// that match the string based on a case-sensitive substring search"), so the character class
+// its shape declares is no bound on what the service takes — a value carrying a character no
+// log group name can hold matches nothing, which is an empty page rather than a refusal. Its
+// `@length` still is a bound, and the handler enforces it off the boundary
+// ([`crate::state::check_log_group_name_substring_pattern`]). Re-apply this after a model
+// update: this file is rendered from the model, which declares the class as a `@pattern`.
 #[smithy_macros::smithy(
     shape = "com.amazonaws.cloudwatchlogs#DescribeLogGroupsRequest",
     skip_validation = ["logGroupNamePattern"]
@@ -60,5 +58,6 @@ pub struct LogGroup {
     pub log_group_arn: Option<String>,
     pub deletion_protection_enabled: Option<bool>,
     pub bearer_token_authentication_enabled: Option<bool>,
+    pub retention_policy_name: Option<String>,
 }
 

@@ -21,6 +21,14 @@
 //! ([`crate::state::check_account_policy_criteria_overlap`]). The string itself is still
 //! stored and reported verbatim.
 //!
+//! A `RETENTION_POLICY` is the one type whose document states something this service then
+//! applies to every log group the policy selects: the retention their log events are kept
+//! for, which "overrides the retention setting of the log group". What a log group is left
+//! with once the account's retention policies are resolved against its own setting is
+//! derived on every read ([`crate::state::effective_retention`]), and a `dryRun` put
+//! reports the impact that resolution WOULD have instead of storing the policy
+//! ([`crate::state::retention_dry_run_result`]).
+//!
 //! What a policy DOES to ingested log events is not decided here: the ingestion path reads
 //! the stored policies back out, which is how a metric extraction policy suppresses the EMF
 //! metric creation of the log groups it selects ([`crate::state::emf`]).
@@ -114,7 +122,8 @@
 //! * `policyName` (PolicyName) **required** — A name for the policy. This must be unique
 //!   within the account and cannot start with aws/.
 //! * `policyType` (PolicyType, one of: DATA_PROTECTION_POLICY | FIELD_INDEX_POLICY |
-//!   METRIC_EXTRACTION_POLICY | SUBSCRIPTION_FILTER_POLICY | TRANSFORMER_POLICY) **required**
+//!   METRIC_EXTRACTION_POLICY | RETENTION_POLICY | SUBSCRIPTION_FILTER_POLICY |
+//!   TRANSFORMER_POLICY) **required**
 //!   — The type of policy that you're creating or updating.
 //! * `scope` (Scope, one of: ALL) — Currently the only valid value for this parameter is ALL,
 //!   which specifies that the data protection policy applies to all log groups in the
@@ -128,10 +137,17 @@
 //!   filter is LogGroupNamePrefix If policyType is FIELD_INDEX_POLICY, the supported
 //!   selectionCriteria filters are: LogGroupNamePrefix DataSourceName AND DataSourceType When
 //!   you specify selectionCriteria for a field index policy you can use …
+//! * `dryRun` (DryRun) — Specifies whether to preview the impact of the policy without
+//!   creating or updating it. If you specify true, CloudWatch Logs validates the request, does
+//!   not save the policy, and returns the estimated impact in dryRunResult instead of
+//!   accountPolicy. The default is false. Specifying dryRun is valid only when you specify
+//!   RETENTION_POLICY for policyType.
 //!
 //! ## Output
 //!
 //! * `accountPolicy` (AccountPolicy) — The account policy that you created.
+//! * `dryRunResult` (DryRunResult) — The estimated impact of the policy on log groups in the
+//!   account. This field is returned only when the request specifies dryRun as true.
 //!
 //! ## Errors
 //!
@@ -254,6 +270,16 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             )));
         }
 
+        // "Specifying dryRun is valid only when you specify RETENTION_POLICY for
+        // policyType": a preview is of the retention a policy would put on the account's log
+        // groups, and no other policy type puts one.
+        if input.dry_run && input.policy_type != crate::state::POLICY_TYPE_RETENTION {
+            return Err(invalid(format!(
+                "dryRun is valid only when policyType is {}",
+                crate::state::POLICY_TYPE_RETENTION
+            )));
+        }
+
         // "Specifying selectionCriteria is valid only when you specify
         // SUBSCRIPTION_FILTER_POLICY, FIELD_INDEX_POLICY or TRANSFORMER_POLICY for
         // policyType" — plus the metric extraction policies the operation's own
@@ -356,7 +382,16 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         }
 
         // "The date and time that this policy was most recently updated": an update
-        // restamps the policy, because the put IS the update.
+        // restamps the policy, because the put IS the update. What the put does NOT restamp
+        // is the instant the policy was created, nor the retention it has in effect right
+        // now: a policy the account already holds carries both forward
+        // ([`crate::state::RetentionEffect::put`]).
+        let now = crate::state::now_ms();
+        let held = store.account_policies.get(&key);
+        let created_time_ms = held.map_or(now, |held| held.created_time_ms);
+        let retention = policy.retention.map(|stated| {
+            crate::state::RetentionEffect::put(stated, now, held.and_then(|held| held.retention.as_ref()))
+        });
         let record = crate::state::AccountPolicyRecord {
             policy_name: input.policy_name,
             policy_document: input.policy_document,
@@ -368,8 +403,27 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             // Every member is replaced by what this put names, so a criteria string the
             // request omits is absent afterwards rather than inherited from an earlier put.
             selection_criteria: input.selection_criteria,
-            last_updated_time_ms: crate::state::now_ms(),
+            last_updated_time_ms: now,
+            created_time_ms,
+            retention,
         };
+
+        // "If you specify true, CloudWatch Logs validates the request, does not save the
+        // policy, and returns the estimated impact in dryRunResult instead of
+        // accountPolicy." Everything above has judged the request; nothing below this point
+        // writes, so the account holds exactly what it held before the preview.
+        if input.dry_run {
+            return Ok(PutAccountPolicyOutput {
+                account_policy: None,
+                dry_run_result: Some(crate::state::retention_dry_run_result(
+                    &store.account_policies,
+                    &store.log_groups,
+                    &crate::state::RetentionPolicyChange::Put(&record),
+                    now,
+                )),
+            });
+        }
+
         store.account_policies.insert(key.clone(), record);
 
         Ok(PutAccountPolicyOutput {
@@ -379,6 +433,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 .account_policies
                 .get(&key)
                 .map(crate::state::AccountPolicyRecord::reported),
+            // "This field is returned only when the request specifies dryRun as true."
+            dry_run_result: None,
         })
     }
 }

@@ -399,7 +399,7 @@ async fn every_other_selector_is_still_judged_by_its_own_constraint() {
         (
             "a log group class the enum does not hold",
             json!({"logGroupClass": "ARCHIVE"}),
-            "Member must satisfy enum value set: [DELIVERY, INFREQUENT_ACCESS, STANDARD]",
+            "Member must satisfy enum value set: [DELIVERY, ESSENTIALS, INFREQUENT_ACCESS, STANDARD]",
         ),
         (
             "a name prefix carrying a character a log group name cannot hold",

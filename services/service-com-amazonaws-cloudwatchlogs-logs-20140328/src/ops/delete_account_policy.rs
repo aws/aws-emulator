@@ -2,8 +2,10 @@
 
 //! @op DeleteAccountPolicy
 //! Implemented: removes the account-level policy the request's `(policyName, policyType)`
-//! pair names from the shared store, and refuses a pair the account does not hold. This
-//! is the ONLY file to touch for this operation.
+//! pair names from the shared store, and refuses a pair the account does not hold. A
+//! `dryRun` delete of a retention policy removes nothing and reports the impact removing it
+//! would have instead ([`crate::state::retention_dry_run_result`]). This is the ONLY file to
+//! touch for this operation.
 //!
 //! ## Shape of an operation
 //!
@@ -66,8 +68,18 @@
 //!
 //! * `policyName` (PolicyName) **required** — The name of the policy to delete.
 //! * `policyType` (PolicyType, one of: DATA_PROTECTION_POLICY | FIELD_INDEX_POLICY |
-//!   METRIC_EXTRACTION_POLICY | SUBSCRIPTION_FILTER_POLICY | TRANSFORMER_POLICY) **required**
+//!   METRIC_EXTRACTION_POLICY | RETENTION_POLICY | SUBSCRIPTION_FILTER_POLICY |
+//!   TRANSFORMER_POLICY) **required**
 //!   — The type of policy to delete.
+//! * `dryRun` (DryRun) — Specifies whether to preview the impact of deleting the policy
+//!   without deleting it. If you specify true, CloudWatch Logs does not delete the policy and
+//!   returns the estimated impact in dryRunResult. The default is false. Specifying dryRun is
+//!   valid only when you specify RETENTION_POLICY for policyType.
+//!
+//! ## Output
+//!
+//! * `dryRunResult` (DryRunResult) — The estimated impact of deleting the policy. This field
+//!   is returned only when the request specifies dryRun as true.
 //!
 //! ## Errors
 //!
@@ -85,25 +97,6 @@ use super::types::*;
 // expansion fails with `cannot find macro 'smithy' in this scope` and the
 // `DeleteAccountPolicyError` enum is never produced.
 smithy_macros::smithy_model!("smithy-model/com-amazonaws-cloudwatchlogs-logs-20140328.json");
-
-#[derive(Debug, Clone, Default)]
-pub struct DeleteAccountPolicyOutput;
-
-impl DeleteAccountPolicyOutput {
-    // `with_http` carries this operation's modelled response status. Remove it and
-    // the status falls back to the protocol default, so a modelled 204 answers 200.
-    pub const SCHEMA: ::aws_smithy_schema::Schema = ::aws_smithy_schema::Schema::new_struct(
-        ::aws_smithy_schema::ShapeId::from_static("smithy.api#Unit", "smithy.api", "Unit"),
-        ::aws_smithy_schema::ShapeType::Structure,
-        &[],
-    );
-}
-
-pub static DELETE_ACCOUNT_POLICY_OUTPUT_SCHEMA: &::aws_smithy_schema::Schema = &DeleteAccountPolicyOutput::SCHEMA;
-
-impl ::aws_smithy_schema::serde::SerializableStruct for DeleteAccountPolicyOutput {
-    fn serialize_members(&self, _s: &mut dyn ::aws_smithy_schema::serde::ShapeSerializer) -> Result<(), ::aws_smithy_schema::serde::SerdeError> { Ok(()) }
-}
 
 // The operation's MODELED errors. `#[operation_error]` accepts only variants the
 // model declares for this operation, so the scaffold's `NotImplemented` cannot live
@@ -162,7 +155,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
     const NAME: &'static str = "DeleteAccountPolicy";
     const INPUT_SCHEMA: &'static ::aws_smithy_schema::Schema = super::types::DELETE_ACCOUNT_POLICY_INPUT_SCHEMA;
-    const OUTPUT_SCHEMA: &'static ::aws_smithy_schema::Schema = DELETE_ACCOUNT_POLICY_OUTPUT_SCHEMA;
+    const OUTPUT_SCHEMA: &'static ::aws_smithy_schema::Schema = super::types::DELETE_ACCOUNT_POLICY_OUTPUT_SCHEMA;
     const SUCCESS_STATUS: u16 = 200u16;
 
     async fn handle(
@@ -184,6 +177,23 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         })?;
         let mut store = state.lock();
 
+        // "Specifying dryRun is valid only when you specify RETENTION_POLICY for
+        // policyType": a preview is of the retention the deleted policy would stop putting
+        // on the account's log groups, and no other policy type puts one.
+        if input.dry_run && input.policy_type != crate::state::POLICY_TYPE_RETENTION {
+            return Err(
+                DeleteAccountPolicyErrorModeled::InvalidParameterException(
+                    InvalidParameterException {
+                        message: Some(format!(
+                            "dryRun is valid only when policyType is {}",
+                            crate::state::POLICY_TYPE_RETENTION
+                        )),
+                    },
+                )
+                .into(),
+            );
+        }
+
         // An account-level policy is identified by the two members this request carries:
         // its type and its name, which is how the store is keyed. Deleting one that is not
         // there is refused with the fixed missing-resource sentence of the class: the
@@ -191,7 +201,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // the refusal interpolates neither of them
         // ([`crate::state::account_policy_not_found_message`]).
         let key = (input.policy_type, input.policy_name);
-        if store.account_policies.remove(&key).is_none() {
+        let Some(held) = store.account_policies.get(&key) else {
             return Err(DeleteAccountPolicyErrorModeled::ResourceNotFoundException(
                 ResourceNotFoundException {
                     message: Some(
@@ -200,8 +210,30 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 },
             )
             .into());
+        };
+
+        // "If you specify true, CloudWatch Logs does not delete the policy and returns the
+        // estimated impact in dryRunResult." The impact is what the log groups this policy
+        // applies to would be left with: "the log groups that it applied to use their own
+        // retention setting, unless another retention policy applies to them."
+        if input.dry_run {
+            let now = crate::state::now_ms();
+            let dry_run_result = crate::state::retention_dry_run_result(
+                &store.account_policies,
+                &store.log_groups,
+                &crate::state::RetentionPolicyChange::Delete(held),
+                now,
+            );
+            return Ok(DeleteAccountPolicyOutput {
+                dry_run_result: Some(dry_run_result),
+            });
         }
 
-        Ok(DeleteAccountPolicyOutput)
+        store.account_policies.remove(&key);
+
+        Ok(DeleteAccountPolicyOutput {
+            // "This field is returned only when the request specifies dryRun as true."
+            dry_run_result: None,
+        })
     }
 }

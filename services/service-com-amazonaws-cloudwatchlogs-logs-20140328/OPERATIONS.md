@@ -74,7 +74,7 @@ contents — read that shape in the model above when you need its own members.
 
 ## CreateLogGroup
 
-- **Input:** `logGroupName` (string, len 1..512, pattern ^[\.\-_/#A-Za-z0-9]+$, required), `kmsKeyId` (string, len 0..256), `tags` (map<string,string>, len 1..50), `logGroupClass` (LogGroupClass, one of: DELIVERY | INFREQUENT_ACCESS | STANDARD), `deletionProtectionEnabled` (boolean)
+- **Input:** `logGroupName` (string, len 1..512, pattern ^[\.\-_/#A-Za-z0-9]+$, required), `kmsKeyId` (string, len 0..256), `tags` (map<string,string>, len 1..50), `logGroupClass` (LogGroupClass, one of: DELIVERY | ESSENTIALS | INFREQUENT_ACCESS | STANDARD), `deletionProtectionEnabled` (boolean)
 - **Output:** (no members)
 - **Errors:** `InvalidParameterException (HTTP 400)`, `LimitExceededException (HTTP 400)`, `OperationAbortedException (HTTP 400)`, `ResourceAlreadyExistsException (HTTP 400)`, `ServiceUnavailableException (HTTP 500)`
 
@@ -98,8 +98,8 @@ contents — read that shape in the model above when you need its own members.
 
 ## DeleteAccountPolicy
 
-- **Input:** `policyName` (string, required), `policyType` (PolicyType, one of: DATA_PROTECTION_POLICY | FIELD_INDEX_POLICY | METRIC_EXTRACTION_POLICY | SUBSCRIPTION_FILTER_POLICY | TRANSFORMER_POLICY, required)
-- **Output:** (no members)
+- **Input:** `policyName` (string, required), `policyType` (PolicyType, one of: DATA_PROTECTION_POLICY | FIELD_INDEX_POLICY | METRIC_EXTRACTION_POLICY | RETENTION_POLICY | SUBSCRIPTION_FILTER_POLICY | TRANSFORMER_POLICY, required), `dryRun` (boolean, default false, required)
+- **Output:** `dryRunResult` (DryRunResult)
 - **Errors:** `InvalidParameterException (HTTP 400)`, `OperationAbortedException (HTTP 400)`, `ResourceNotFoundException (HTTP 400)`, `ServiceUnavailableException (HTTP 500)`
 
 ## DeleteDataProtectionPolicy
@@ -224,7 +224,7 @@ contents — read that shape in the model above when you need its own members.
 
 ## DescribeAccountPolicies
 
-- **Input:** `policyType` (PolicyType, one of: DATA_PROTECTION_POLICY | FIELD_INDEX_POLICY | METRIC_EXTRACTION_POLICY | SUBSCRIPTION_FILTER_POLICY | TRANSFORMER_POLICY, required), `policyName` (string), `accountIdentifiers` (list<string>, len 0..20), `nextToken` (string, len 1..)
+- **Input:** `policyType` (PolicyType, one of: DATA_PROTECTION_POLICY | FIELD_INDEX_POLICY | METRIC_EXTRACTION_POLICY | RETENTION_POLICY | SUBSCRIPTION_FILTER_POLICY | TRANSFORMER_POLICY, required), `policyName` (string), `accountIdentifiers` (list<string>, len 0..20), `nextToken` (string, len 1..)
 - **Output:** `accountPolicies` (list<AccountPolicy>), `nextToken` (string, len 1..)
 - **Errors:** `InvalidParameterException (HTTP 400)`, `OperationAbortedException (HTTP 400)`, `ResourceNotFoundException (HTTP 400)`, `ServiceUnavailableException (HTTP 500)`
 
@@ -296,7 +296,7 @@ contents — read that shape in the model above when you need its own members.
 ## DescribeLogGroups
 
 - **Traits:** @paginated(inputToken=nextToken, outputToken=nextToken, items=logGroups)
-- **Input:** `accountIdentifiers` (list<string>, len 0..20), `logGroupNamePrefix` (string, len 1..512, pattern ^[\.\-_/#A-Za-z0-9]+$), `logGroupNamePattern` (string, len 0..512, pattern ^[\.\-_/#A-Za-z0-9]*$), `nextToken` (string, len 1..), `limit` (integer, range 1..50), `includeLinkedAccounts` (boolean), `logGroupClass` (LogGroupClass, one of: DELIVERY | INFREQUENT_ACCESS | STANDARD), `logGroupIdentifiers` (list<string>, len 1..50)
+- **Input:** `accountIdentifiers` (list<string>, len 0..20), `logGroupNamePrefix` (string, len 1..512, pattern ^[\.\-_/#A-Za-z0-9]+$), `logGroupNamePattern` (string, len 0..512, pattern ^[\.\-_/#A-Za-z0-9]*$), `nextToken` (string, len 1..), `limit` (integer, range 1..50), `includeLinkedAccounts` (boolean), `logGroupClass` (LogGroupClass, one of: DELIVERY | ESSENTIALS | INFREQUENT_ACCESS | STANDARD), `logGroupIdentifiers` (list<string>, len 1..50)
 - **Output:** `logGroups` (list<LogGroup>), `nextToken` (string, len 1..)
 - **Errors:** `InvalidParameterException (HTTP 400)`, `ServiceUnavailableException (HTTP 500)`
 
@@ -477,7 +477,7 @@ contents — read that shape in the model above when you need its own members.
 ## ListAggregateLogGroupSummaries
 
 - **Traits:** @paginated(inputToken=nextToken, outputToken=nextToken, items=aggregateLogGroupSummaries)
-- **Input:** `accountIdentifiers` (list<string>, len 0..20), `includeLinkedAccounts` (boolean), `logGroupClass` (LogGroupClass, one of: DELIVERY | INFREQUENT_ACCESS | STANDARD), `logGroupNamePattern` (string, len 3..129, pattern ^(\^?[\.\-_\/#A-Za-z0-9]{3,24})(\|\^?[\.\-_\/#A-Za-z0-9]{3,24}){0,4}$), `dataSources` (list<DataSourceFilter>, len 1..5), `groupBy` (ListAggregateLogGroupSummariesGroupBy, one of: DATA_SOURCE_NAME_AND_TYPE | DATA_SOURCE_NAME_TYPE_AND_FORMAT, required), `nextToken` (string, len 1..), `limit` (integer, range 1..50)
+- **Input:** `accountIdentifiers` (list<string>, len 0..20), `includeLinkedAccounts` (boolean), `logGroupClass` (LogGroupClass, one of: DELIVERY | ESSENTIALS | INFREQUENT_ACCESS | STANDARD), `logGroupNamePattern` (string, len 3..129, pattern ^(\^?[\.\-_\/#A-Za-z0-9]{3,24})(\|\^?[\.\-_\/#A-Za-z0-9]{3,24}){0,4}$), `dataSources` (list<DataSourceFilter>, len 1..5), `groupBy` (ListAggregateLogGroupSummariesGroupBy, one of: DATA_SOURCE_NAME_AND_TYPE | DATA_SOURCE_NAME_TYPE_AND_FORMAT, required), `nextToken` (string, len 1..), `limit` (integer, range 1..50)
 - **Output:** `aggregateLogGroupSummaries` (list<AggregateLogGroupSummary>), `nextToken` (string, len 1..)
 - **Errors:** `InvalidParameterException (HTTP 400)`, `ServiceUnavailableException (HTTP 500)`, `ValidationException (HTTP 400)`
 
@@ -503,7 +503,7 @@ contents — read that shape in the model above when you need its own members.
 
 ## ListLogGroups
 
-- **Input:** `logGroupNamePattern` (string, len 3..129, pattern ^(\^?[\.\-_\/#A-Za-z0-9]{3,24})(\|\^?[\.\-_\/#A-Za-z0-9]{3,24}){0,4}$), `logGroupClass` (LogGroupClass, one of: DELIVERY | INFREQUENT_ACCESS | STANDARD), `includeLinkedAccounts` (boolean), `accountIdentifiers` (list<string>, len 0..20), `nextToken` (string, len 1..), `limit` (integer, range 1..1000), `dataSources` (list<DataSourceFilter>, len 1..5), `fieldIndexNames` (list<string>, len 1..20), `logGroupTags` (list<TagFilter>, len 1..5)
+- **Input:** `logGroupNamePattern` (string, len 3..129, pattern ^(\^?[\.\-_\/#A-Za-z0-9]{3,24})(\|\^?[\.\-_\/#A-Za-z0-9]{3,24}){0,4}$), `logGroupClass` (LogGroupClass, one of: DELIVERY | ESSENTIALS | INFREQUENT_ACCESS | STANDARD), `includeLinkedAccounts` (boolean), `accountIdentifiers` (list<string>, len 0..20), `nextToken` (string, len 1..), `limit` (integer, range 1..1000), `dataSources` (list<DataSourceFilter>, len 1..5), `fieldIndexNames` (list<string>, len 1..20), `logGroupTags` (list<TagFilter>, len 1..5)
 - **Output:** `logGroups` (list<LogGroupSummary>), `nextToken` (string, len 1..)
 - **Errors:** `InvalidParameterException (HTTP 400)`, `ServiceUnavailableException (HTTP 500)`
 
@@ -549,8 +549,8 @@ contents — read that shape in the model above when you need its own members.
 
 ## PutAccountPolicy
 
-- **Input:** `policyName` (string, required), `policyDocument` (string, required), `policyType` (PolicyType, one of: DATA_PROTECTION_POLICY | FIELD_INDEX_POLICY | METRIC_EXTRACTION_POLICY | SUBSCRIPTION_FILTER_POLICY | TRANSFORMER_POLICY, required), `scope` (Scope, one of: ALL), `selectionCriteria` (string)
-- **Output:** `accountPolicy` (AccountPolicy)
+- **Input:** `policyName` (string, required), `policyDocument` (string, required), `policyType` (PolicyType, one of: DATA_PROTECTION_POLICY | FIELD_INDEX_POLICY | METRIC_EXTRACTION_POLICY | RETENTION_POLICY | SUBSCRIPTION_FILTER_POLICY | TRANSFORMER_POLICY, required), `scope` (Scope, one of: ALL), `selectionCriteria` (string), `dryRun` (boolean, default false, required)
+- **Output:** `accountPolicy` (AccountPolicy), `dryRunResult` (DryRunResult)
 - **Errors:** `InvalidParameterException (HTTP 400)`, `LimitExceededException (HTTP 400)`, `OperationAbortedException (HTTP 400)`, `ServiceUnavailableException (HTTP 500)`
 
 ## PutBearerTokenAuthentication

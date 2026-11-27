@@ -223,10 +223,10 @@ pub const MAX_DATA_PROTECTION_POLICY_DOCUMENT_CHARS: usize = 30_720;
 
 /// The account-level policy type that protects sensitive data, from the model's
 /// `PolicyType` enum (`DATA_PROTECTION_POLICY` | `SUBSCRIPTION_FILTER_POLICY` |
-/// `FIELD_INDEX_POLICY` | `TRANSFORMER_POLICY` | `METRIC_EXTRACTION_POLICY`, the same
-/// five listed as [`crate::ops::types::POLICY_TYPE_VALUES`]). `policyType` targets that
-/// enum, so the boundary validator has already held it to those five by the time a
-/// handler runs.
+/// `FIELD_INDEX_POLICY` | `TRANSFORMER_POLICY` | `METRIC_EXTRACTION_POLICY` |
+/// `RETENTION_POLICY`, the same values listed as
+/// [`crate::ops::types::POLICY_TYPE_VALUES`]). `policyType` targets that enum, so the
+/// boundary validator has already held it to them by the time a handler runs.
 pub const POLICY_TYPE_DATA_PROTECTION: &str = "DATA_PROTECTION_POLICY";
 
 /// The account-level policy type that feeds log events to another service. See
@@ -244,6 +244,11 @@ pub const POLICY_TYPE_TRANSFORMER: &str = "TRANSFORMER_POLICY";
 /// The account-level policy type that controls EMF metric creation. See
 /// [`POLICY_TYPE_DATA_PROTECTION`].
 pub const POLICY_TYPE_METRIC_EXTRACTION: &str = "METRIC_EXTRACTION_POLICY";
+
+/// The account-level policy type that sets the retention period of the log groups it
+/// selects — "A retention policy sets the retention period for log groups in your account"
+/// — see [`POLICY_TYPE_DATA_PROTECTION`].
+pub const POLICY_TYPE_RETENTION: &str = "RETENTION_POLICY";
 
 /// The `IndexPolicy$source` of a policy that applies to a subset of the account's log
 /// groups rather than to the one group it is reported for, from the model's `IndexSource`
@@ -330,18 +335,19 @@ pub const MAX_ACCOUNT_POLICY_DOCUMENT_CHARS: usize = MAX_DATA_PROTECTION_POLICY_
 pub const MAX_SELECTION_CRITERIA_BYTES: usize = 25 * 1024;
 
 /// The policy types a `selectionCriteria` may be put with.
-/// `PutAccountPolicy$selectionCriteria` names three — "Specifying selectionCriteria is
-/// valid only when you specify SUBSCRIPTION_FILTER_POLICY, FIELD_INDEX_POLICY or
-/// TRANSFORMER_POLICY for policyType" — and the operation's own documentation adds the
-/// fourth, describing metric extraction policies "that are each scoped to a subset of log
-/// groups with the selectionCriteria parameter", so a put of one is accepted rather than
-/// refused on the member sentence alone. A data protection policy is the one type neither
-/// sentence admits: it "applies to all log groups in the account".
-pub const SELECTION_CRITERIA_POLICY_TYPES: [&str; 4] = [
+/// `PutAccountPolicy$selectionCriteria` names four — "Specifying selectionCriteria is
+/// valid only when you specify SUBSCRIPTION_FILTER_POLICY, FIELD_INDEX_POLICY,
+/// TRANSFORMER_POLICY, or RETENTION_POLICY for policyType" — and the operation's own
+/// documentation adds the fifth, describing metric extraction policies "that are each
+/// scoped to a subset of log groups with the selectionCriteria parameter", so a put of one
+/// is accepted rather than refused on the member sentence alone. A data protection policy
+/// is the one type neither sentence admits: it "applies to all log groups in the account".
+pub const SELECTION_CRITERIA_POLICY_TYPES: [&str; 5] = [
     POLICY_TYPE_SUBSCRIPTION_FILTER,
     POLICY_TYPE_FIELD_INDEX,
     POLICY_TYPE_TRANSFORMER,
     POLICY_TYPE_METRIC_EXTRACTION,
+    POLICY_TYPE_RETENTION,
 ];
 
 /// How many values one `IN` or `NOT IN` list of a `selectionCriteria` may carry, from the
@@ -437,6 +443,15 @@ pub const MAX_SCOPED_ACCOUNT_POLICIES: usize = 20;
 /// selectionCriteria parameter."
 pub const MAX_SCOPED_METRIC_EXTRACTION_ACCOUNT_POLICIES: usize = 5;
 
+/// How many account-level RETENTION policies the account may hold: "Each account can have
+/// up to 20 account-level retention policies in each Region."
+///
+/// That sentence is ONE number for the type rather than the either/or every other type's
+/// quota is stated as, so it bounds the policies of this type whether or not they are
+/// scoped with `selectionCriteria` — which is also why "retention policies can have
+/// overlapping selection criteria" without the account running out of slots.
+pub const MAX_RETENTION_ACCOUNT_POLICIES: usize = 20;
+
 /// How many account-level policies of one type the account may hold when the policy being
 /// put applies to EVERY log group — the "one account-level transformer policy that applies
 /// to all log groups in the account" half of each quota sentence, and the whole quota for
@@ -482,6 +497,84 @@ pub const RETENTION_IN_DAYS_VALUES: [i32; 22] = [
     1, 3, 5, 7, 14, 30, 60, 90, 120, 150, 180, 365, 400, 545, 731, 1096, 1827, 2192, 2557, 2922,
     3288, 3653,
 ];
+
+/// The retentions an ACCOUNT-LEVEL retention policy's document can state, from
+/// `PutAccountPolicy$policyDocument`: "The number of days to retain log events. Valid
+/// values are 30, 60, 90, 120, 150, 180, 365, 400, 545, 731, 1096, 1827, 2192, 2557, 2922,
+/// 3288, and 3653."
+///
+/// Those are the values of [`RETENTION_IN_DAYS_VALUES`] from 30 upwards, which is the same
+/// catalogue narrowed by the note that "account-level retention policies require a minimum
+/// retention period of 30 days" ([`MIN_ACCOUNT_RETENTION_IN_DAYS`]) — so it is DERIVED from
+/// the log group's catalogue rather than typed out a second time. Ascending, so the list
+/// renders in the documented order in a refusal message.
+pub fn account_retention_in_days_values() -> Vec<i32> {
+    RETENTION_IN_DAYS_VALUES
+        .into_iter()
+        .filter(|days| *days >= MIN_ACCOUNT_RETENTION_IN_DAYS)
+        .collect()
+}
+
+/// The shortest retention an account-level retention policy may state, from
+/// `PutAccountPolicy`: "Account-level retention policies require a minimum retention period
+/// of 30 days."
+pub const MIN_ACCOUNT_RETENTION_IN_DAYS: i32 = 30;
+
+/// What a retention policy document's `retentionInDays` states instead of a number of days
+/// when the log events it governs are to be kept for good, from
+/// `PutAccountPolicy$policyDocument`: "To retain log events indefinitely, specify the
+/// string NEVER_EXPIRE." It is also the value `LogGroupImpact$currentRetention` and
+/// `$proposedRetention` report for such a retention ("A value of NEVER_EXPIRE indicates
+/// that log events in the log group never expire").
+pub const ACCOUNT_RETENTION_NEVER_EXPIRE: &str = "NEVER_EXPIRE";
+
+/// The member of a `RETENTION_POLICY` document stating the retention period: "A retention
+/// policy must include the following attributes in a JSON block: retentionInDays [...]
+/// enforcementMode" (`PutAccountPolicy$policyDocument`).
+pub const ACCOUNT_RETENTION_DAYS_MEMBER: &str = "retentionInDays";
+
+/// The member of a `RETENTION_POLICY` document stating which log groups the policy applies
+/// to. See [`ACCOUNT_RETENTION_DAYS_MEMBER`].
+pub const ACCOUNT_RETENTION_ENFORCEMENT_MODE_MEMBER: &str = "enforcementMode";
+
+/// The `enforcementMode` that applies a retention policy "only to log groups that are
+/// created after you create the policy. Log groups that already existed when you created
+/// the policy keep their own retention period."
+pub const ENFORCEMENT_MODE_NEW_ONLY: &str = "NEW_ONLY";
+
+/// The `enforcementMode` that applies a retention policy "to every log group that matches
+/// the selection criteria, including log groups that existed before you created the
+/// policy".
+pub const ENFORCEMENT_MODE_RETROACTIVE: &str = "RETROACTIVE";
+
+/// The `enforcementMode` values a retention policy document may state, from
+/// `PutAccountPolicy$policyDocument`: "Valid values are NEW_ONLY and RETROACTIVE."
+pub const ENFORCEMENT_MODE_VALUES: [&str; 2] =
+    [ENFORCEMENT_MODE_NEW_ONLY, ENFORCEMENT_MODE_RETROACTIVE];
+
+/// How long after a put the retention an account-level retention policy states takes
+/// effect — until then the retention that was in effect before the put stays in effect, as
+/// `PutAccountPolicy` describes ("the previous retention period stays in effect until
+/// then. During this period, DescribeLogGroups and log event expiration use the retention
+/// period that is currently in effect, but a dry run reports the impact as if the policy
+/// were already in effect").
+///
+/// CloudWatch Logs publishes a wait of 24 hours there. This emulator owes that transition
+/// at the span every clock-owed transition here takes
+/// ([`AGGREGATE_SUMMARY_VISIBILITY_DELAY_MS`]), so a caller watching for the policy to come
+/// into effect sees it arrive rather than never settle: the span is never zero, so a caller
+/// reading straight after the put is still answered the retention that was in effect then.
+pub const ACCOUNT_RETENTION_POLICY_EFFECT_DELAY_MS: i64 = AGGREGATE_SUMMARY_VISIBILITY_DELAY_MS;
+
+/// How many log groups a dry run reports the impact on one by one, from
+/// `DryRunResult$topLogGroupsImpacted`: "Up to 20 log groups in the scope of the policy,
+/// sorted by stored bytes in descending order."
+pub const MAX_DRY_RUN_IMPACTED_LOG_GROUPS: usize = 20;
+
+/// The log group class a dry run of a retention policy change leaves out of its analysis,
+/// from `DryRunResult`: "Log groups in the Delivery class are not included." Spelled as the
+/// model's `LogGroupClass` spells it ([`crate::ops::types::LOG_GROUP_CLASS_VALUES`]).
+pub const RETENTION_ANALYSIS_EXCLUDED_LOG_GROUP_CLASS: &str = "DELIVERY";
 
 /// The subscription filters one log group can have ATTACHED at any one time. The
 /// operation's own documentation still says "Each log group can have up to two

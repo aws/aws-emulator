@@ -33,20 +33,22 @@ use crate::account_policy_selection_criteria::document_for;
 use crate::harness::Logs;
 
 /// The policy name every type in the fixture holds a policy under, so a delete that keyed
-/// on the name alone would take four other types' policies with it.
+/// on the name alone would take the other types' policies with it.
 const SHARED: &str = "shared";
 
-/// The names the fixture holds of one type. The three types whose quota has a scoped half
-/// — "as many as 20 account-level transformer policies", "as many as 20 account-level
-/// field index policies" and "up to 5 policies that are each scoped to a subset of log
-/// groups" for a metric extraction policy — hold three policies each, so a delete of one
-/// of them has siblings of its own type to leave alone. The other two have no scoped half
-/// ("Each account can have only one account-level data protection policy", "Each account
-/// can have one account-level subscription filter policy per Region"), so the account
-/// holds exactly one of each. Source: `PutAccountPolicy`'s quota sentences.
+/// The names the fixture holds of one type. The types whose quota admits more than one
+/// policy — "as many as 20 account-level transformer policies", "as many as 20 account-level
+/// field index policies", "up to 5 policies that are each scoped to a subset of log groups"
+/// for a metric extraction policy and "up to 20 account-level retention policies in each
+/// Region" — hold three policies each, so a delete of one of them has siblings of its own
+/// type to leave alone. The other two have no scoped half ("Each account can have only one
+/// account-level data protection policy", "Each account can have one account-level
+/// subscription filter policy per Region"), so the account holds exactly one of each.
+/// Source: `PutAccountPolicy`'s quota sentences.
 fn fixture_names(policy_type: &str) -> Vec<&'static str> {
     match policy_type {
-        "FIELD_INDEX_POLICY" | "TRANSFORMER_POLICY" | "METRIC_EXTRACTION_POLICY" => {
+        "FIELD_INDEX_POLICY" | "TRANSFORMER_POLICY" | "METRIC_EXTRACTION_POLICY"
+        | "RETENTION_POLICY" => {
             vec![SHARED, "keep-1", "keep-2"]
         }
         _ => vec![SHARED],
@@ -101,7 +103,9 @@ async fn a_delete_removes_exactly_the_pair_it_names() {
         let response = logs
             .ok("DeleteAccountPolicy", &delete_body(SHARED, deleted_type))
             .await;
-        // The operation's output shape is `Unit`: the response carries no member.
+        // A delete that is not a dry run reports no `dryRunResult`, which is the only
+        // member this operation's output carries ("This field is returned only when the
+        // request specifies dryRun as true").
         assert!(
             response.is_null() || response.as_object().is_some_and(|body| body.is_empty()),
             "case {case}: DeleteAccountPolicy answers no members, got {response}"

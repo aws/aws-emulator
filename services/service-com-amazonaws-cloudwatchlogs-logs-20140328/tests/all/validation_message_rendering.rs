@@ -265,7 +265,7 @@ fn cases() -> Vec<Case> {
             message: at("logGroupName", LOG_GROUP_NAME_PATTERN),
         },
         // An enum value set. Source: the model's `LogGroupClass` enum — declared STANDARD,
-        // INFREQUENT_ACCESS, DELIVERY — listed in ascending order of its values.
+        // INFREQUENT_ACCESS, DELIVERY, ESSENTIALS — listed in ascending order of its values.
         Case {
             name: "CreateLogGroup logGroupClass outside the enum",
             operation: "CreateLogGroup",
@@ -273,7 +273,7 @@ fn cases() -> Vec<Case> {
             code: INVALID_PARAMETER,
             message: at(
                 "logGroupClass",
-                "Member must satisfy enum value set: [DELIVERY, INFREQUENT_ACCESS, STANDARD]",
+                "Member must satisfy enum value set: [DELIVERY, ESSENTIALS, INFREQUENT_ACCESS, STANDARD]",
             ),
         },
     ]

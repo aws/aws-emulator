@@ -30,8 +30,8 @@ use serde_json::{json, Value};
 
 use crate::account_policies::{
     data_protection_document, described_names, field_index_document, member,
-    metric_extraction_document, put_body, put_policy, subscription_filter_document,
-    transformer_document,
+    metric_extraction_document, put_body, put_policy, retention_document,
+    subscription_filter_document, transformer_document,
 };
 use crate::harness::Logs;
 
@@ -57,6 +57,7 @@ pub(crate) fn document_for(policy_type: &str) -> String {
         "FIELD_INDEX_POLICY" => field_index_document(&["requestId"]),
         "TRANSFORMER_POLICY" => transformer_document(),
         "METRIC_EXTRACTION_POLICY" => metric_extraction_document(),
+        "RETENTION_POLICY" => retention_document(),
         _ => data_protection_document("EmailAddress"),
     }
 }

@@ -19,11 +19,13 @@ pub struct PutAccountPolicyInput {
     pub policy_type: String,
     pub scope: Option<String>,
     pub selection_criteria: Option<String>,
+    pub dry_run: bool,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.cloudwatchlogs#PutAccountPolicyResponse")]
 #[derive(Debug, Clone, Default)]
 pub struct PutAccountPolicyOutput {
     pub account_policy: Option<AccountPolicy>,
+    pub dry_run_result: Option<DryRunResult>,
 }
 

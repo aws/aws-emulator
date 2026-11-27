@@ -430,7 +430,18 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> PutLogEvents<Eng>
                 )
                 .into())
             }
-            Some(group) => group.retention_in_days,
+            Some(group) => {
+                // "An account-level retention policy overrides the retention setting of the
+                // log group", so the period that binds this ingest is the retention the
+                // group ends up with ([`crate::state::effective_retention`]) rather than the
+                // one put on the group itself.
+                crate::state::effective_retention(
+                    &store.account_policies,
+                    group,
+                    crate::state::now_ms(),
+                )
+                .retention_in_days
+            }
         };
         // The customer managed key this group is associated with RIGHT NOW, which is the key
         // the events of this batch are encrypted under: `AssociateKmsKey` binds a key to the

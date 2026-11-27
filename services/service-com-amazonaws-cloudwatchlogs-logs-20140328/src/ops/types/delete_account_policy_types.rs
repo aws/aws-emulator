@@ -16,5 +16,12 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-cloudwatchlogs-logs-201
 pub struct DeleteAccountPolicyInput {
     pub policy_name: String,
     pub policy_type: String,
+    pub dry_run: bool,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.cloudwatchlogs#DeleteAccountPolicyResponse")]
+#[derive(Debug, Clone, Default)]
+pub struct DeleteAccountPolicyOutput {
+    pub dry_run_result: Option<DryRunResult>,
 }
 

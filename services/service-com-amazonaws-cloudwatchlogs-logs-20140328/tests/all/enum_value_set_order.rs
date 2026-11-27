@@ -38,10 +38,10 @@ const DISTRIBUTION_SET: &str = "Random, ByLogStream";
 /// `INTELLIGENT_TIERING`.
 const STORAGE_TIER_SET: &str = "INTELLIGENT_TIERING, STANDARD";
 
-/// `cloudwatchlogs#LogGroupClass`, three values and no published order of its own. Source:
+/// `cloudwatchlogs#LogGroupClass`, four values and no published order of its own. Source:
 /// `smithy_query(query="shape", shape="LogGroupClass")` — declared `STANDARD`,
-/// `INFREQUENT_ACCESS`, `DELIVERY`.
-const LOG_GROUP_CLASS_SET: &str = "DELIVERY, INFREQUENT_ACCESS, STANDARD";
+/// `INFREQUENT_ACCESS`, `DELIVERY`, `ESSENTIALS`.
+const LOG_GROUP_CLASS_SET: &str = "DELIVERY, ESSENTIALS, INFREQUENT_ACCESS, STANDARD";
 
 /// `cloudwatchlogs#ListAggregateLogGroupSummariesGroupBy`, no published order of its own.
 /// Source: `smithy_query(query="shape", shape="ListAggregateLogGroupSummariesGroupBy")` —

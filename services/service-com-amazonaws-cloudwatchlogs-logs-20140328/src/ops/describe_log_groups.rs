@@ -79,7 +79,8 @@
 //!   this parameter is false.
 //! * `limit` (DescribeLimit, range 1..50) — The maximum number of items returned. If you
 //!   don't specify a value, the default is up to 50 items.
-//! * `logGroupClass` (LogGroupClass, one of: DELIVERY | INFREQUENT_ACCESS | STANDARD) — Use
+//! * `logGroupClass` (LogGroupClass, one of: DELIVERY | ESSENTIALS | INFREQUENT_ACCESS |
+//!   STANDARD) — Use
 //!   this parameter to limit the results to only those log groups in the specified log group
 //!   class. If you omit this parameter, log groups of all classes can be returned. Specifies
 //!   the log group class for this log group. There are three classes: The Standard log class
@@ -464,14 +465,34 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // encryption, its data protection and its per-group switches), which only the prefix
         // lookup of the same group carries.
 
+        // The retention of a log group is not a property OF the group alone: "An
+        // account-level retention policy overrides the retention setting of the log group",
+        // so what each group reports is resolved against the retention policies the account
+        // holds at this instant ([`crate::state::effective_retention_of`]). Read once for
+        // the whole page, so every group of one listing is resolved against one reading of
+        // them.
+        let retention_rules = crate::state::retention_rules_in_effect(
+            &store.account_policies,
+            crate::state::now_ms(),
+        );
+
         Ok(DescribeLogGroupsOutput {
             log_groups: Some(
                 page.iter()
-                    .map(|group| LogGroup {
+                    .map(|group| {
+                        let retention =
+                            crate::state::effective_retention_of(&retention_rules, group);
+                        LogGroup {
                         log_group_name: Some(group.name.clone()),
                         creation_time: Some(group.creation_time_ms),
                         arn: Some(group.arn.clone()),
-                        retention_in_days: group.retention_in_days.filter(|_| !pattern_search),
+                        // "When it is returned, retentionInDays shows the retention period
+                        // from that policy instead of the retention period set on the log
+                        // group. If the policy specifies that log events never expire,
+                        // retentionInDays is not returned."
+                        retention_in_days: retention
+                            .retention_in_days
+                            .filter(|_| !pattern_search),
                         metric_filter_count: Some(group.metric_filter_count()),
                         // "The number of bytes stored": the figure the group's metering last
                         // MEASURED, not the volume it holds at this instant — events ingested
@@ -483,6 +504,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                             .filter(|_| !pattern_search)
                             .map(str::to_string),
                         inherited_properties: None,
+                        // "The name of the account-level retention policy that determines the
+                        // retention period of this log group. This field is returned only when
+                        // an account-level retention policy applies to the log group."
+                        retention_policy_name: retention
+                            .policy_name
+                            .filter(|_| !pattern_search),
                         log_group_class: Some(group.log_group_class.clone()),
                         log_group_arn: Some(group.log_group_arn.clone()),
                         deletion_protection_enabled: (!pattern_search)
@@ -494,6 +521,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                         bearer_token_authentication_enabled: (!pattern_search).then_some(
                             group.bearer_token_authentication_enabled.unwrap_or(false),
                         ),
+                        }
                     })
                     .collect(),
             ),

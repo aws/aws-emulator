@@ -81,7 +81,8 @@
 //!   this parameter is false.
 //! * `limit` (ListLimit, range 1..1000) — The maximum number of log groups to return. If you
 //!   omit this parameter, the default is up to 50 log groups.
-//! * `logGroupClass` (LogGroupClass, one of: DELIVERY | INFREQUENT_ACCESS | STANDARD) — Use
+//! * `logGroupClass` (LogGroupClass, one of: DELIVERY | ESSENTIALS | INFREQUENT_ACCESS |
+//!   STANDARD) — Use
 //!   this parameter to limit the results to only those log groups in the specified log group
 //!   class. If you omit this parameter, log groups of all classes can be returned.
 //! * `logGroupNamePattern` (LogGroupNameRegexPattern, len 3..129, pattern

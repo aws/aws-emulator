@@ -296,6 +296,11 @@ pub use integration_records::*;
 mod policy_documents;
 pub use policy_documents::*;
 
+/// The account-level RETENTION policies: what one states, which log groups it applies to,
+/// and the retention a log group is left with once they are resolved against its own.
+mod account_retention;
+pub use account_retention::*;
+
 /// The refusal a data protection policy document that is not JSON at all is answered with,
 /// which reports the service's own JSON parser rather than any rule about the policy.
 mod policy_json;
@@ -1185,6 +1190,22 @@ pub struct AccountPolicyRecord {
     /// `AccountPolicy$lastUpdatedTime` — "The date and time that this policy was most
     /// recently updated."
     pub last_updated_time_ms: i64,
+    /// The instant this policy was CREATED, which a later put under the same type and name
+    /// updates rather than restamps.
+    ///
+    /// No member reports it, and two rules of the retention policies are stated over it:
+    /// which log groups a `NEW_ONLY` enforcement mode reaches ("log groups that are created
+    /// after you create the policy") and which of two policies stating the same retention
+    /// is reported for a log group ("the policy that was created first").
+    pub created_time_ms: i64,
+    /// The retention this policy puts on the log groups it selects, and the instant that
+    /// retention takes effect ([`RetentionEffect`]).
+    ///
+    /// `Some` only for a [`POLICY_TYPE_RETENTION`] policy: it is what that type's
+    /// `policyDocument` states, read when the put accepted the document
+    /// ([`check_retention_policy_document`]), and no other type's document states a
+    /// retention.
+    pub retention: Option<RetentionEffect>,
 }
 
 impl AccountPolicyRecord {
