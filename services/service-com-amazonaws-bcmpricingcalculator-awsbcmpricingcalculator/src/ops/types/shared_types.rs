@@ -17,44 +17,6 @@ pub struct DataUnavailableException {
     pub message: String,
 }
 
-/// The service-wide server fault (`@error("server")`, HTTP 500). The model declares it
-/// on the SERVICE rather than on one operation, so a handler names it through
-/// `extra_errors` on its own `#[operation_error]` enum — which is what the tagging
-/// operations do, so an engine that holds no state has an honest answer.
-#[smithy_macros::smithy(shape = "com.amazonaws.bcmpricingcalculator#InternalServerException")]
-#[derive(Debug, Clone, Default)]
-pub struct InternalServerException {
-    pub message: String,
-    pub retry_after_seconds: Option<i32>,
-}
-
-/// The service-wide client refusal (`@error("client")`, HTTP 400). The model declares it
-/// on the SERVICE rather than on one operation (smithy_query `query="service_info"`:
-/// `common_errors` includes `ValidationException`), so a handler names it through
-/// `extra_errors` on its own `#[operation_error]` enum — the same way
-/// `InternalServerException` is reached.
-///
-/// This is the MODELLED shape, not `crate::scaffolded::ValidationException`: the
-/// synthetic one the scaffold channel renders carries a `message` alone, while this one
-/// carries the `reason` and `fieldList` members a real client reads. Reach for this
-/// whenever the refusal has a reason to report; `reason` is a `ValidationExceptionReason`
-/// value (smithy_query: `shape="ValidationExceptionReason"`).
-#[smithy_macros::smithy(shape = "com.amazonaws.bcmpricingcalculator#ValidationException")]
-#[derive(Debug, Clone, Default)]
-pub struct ValidationException {
-    pub message: String,
-    pub reason: Option<String>,
-    pub field_list: Option<Vec<ValidationExceptionField>>,
-}
-
-/// One field a `ValidationException` names as invalid.
-#[smithy_macros::smithy(shape = "com.amazonaws.bcmpricingcalculator#ValidationExceptionField")]
-#[derive(Debug, Clone, Default)]
-pub struct ValidationExceptionField {
-    pub name: String,
-    pub message: String,
-}
-
 #[smithy_macros::smithy(shape = "com.amazonaws.bcmpricingcalculator#ResourceNotFoundException")]
 #[derive(Debug, Clone, Default)]
 pub struct ResourceNotFoundException {
@@ -294,6 +256,10 @@ pub const BILL_SCENARIO_STATUS_VALUES: &[&str] = &["FAILED", "LOCKED", "READY", 
 pub const CURRENCY_CODE_VALUES: &[&str] = &["USD"];
 
 
+/// The values `GetUsageLinesEstimatedCostErrorCode` accepts on the wire.
+pub const GET_USAGE_LINES_ESTIMATED_COST_ERROR_CODE_VALUES: &[&str] = &["BAD_REQUEST", "CONFLICT", "INTERNAL_SERVER_ERROR", "NOT_FOUND"];
+
+
 /// The values `GroupSharingPreferenceEnum` accepts on the wire.
 pub const GROUP_SHARING_PREFERENCE_ENUM_VALUES: &[&str] = &["OPEN", "PRIORITIZED", "RESTRICTED"];
 
@@ -328,6 +294,10 @@ pub const PURCHASE_AGREEMENT_TYPE_VALUES: &[&str] = &["RESERVED_INSTANCE", "SAVI
 
 /// The values `RateType` accepts on the wire.
 pub const RATE_TYPE_VALUES: &[&str] = &["AFTER_DISCOUNTS", "AFTER_DISCOUNTS_AND_COMMITMENTS", "BEFORE_DISCOUNTS"];
+
+
+/// The values `ValidationExceptionReason` accepts on the wire.
+pub const VALIDATION_EXCEPTION_REASON_VALUES: &[&str] = &["cannotParse", "disallowedRate", "fieldValidationFailed", "invalidRequestFromMember", "other", "unknownOperation"];
 
 
 /// The values `WorkloadEstimateCostStatus` accepts on the wire.

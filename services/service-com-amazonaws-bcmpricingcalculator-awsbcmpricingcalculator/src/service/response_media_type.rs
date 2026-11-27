@@ -213,6 +213,7 @@ mod tests {
             "GetBillEstimate",
             "GetBillScenario",
             "GetPreferences",
+            "GetUsageLinesEstimatedCost",
             "GetWorkloadEstimate",
             "ListBillEstimateCommitments",
             "ListBillEstimateInputCommitmentModifications",

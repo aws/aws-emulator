@@ -32,6 +32,7 @@ pub mod delete_workload_estimate_types;
 pub mod get_bill_estimate_types;
 pub mod get_bill_scenario_types;
 pub mod get_preferences_types;
+pub mod get_usage_lines_estimated_cost_types;
 pub mod get_workload_estimate_types;
 pub mod list_bill_estimate_commitments_types;
 pub mod list_bill_estimate_input_commitment_modifications_types;
@@ -88,6 +89,8 @@ pub use get_bill_estimate_types::*;
 pub use get_bill_scenario_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use get_preferences_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use get_usage_lines_estimated_cost_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use get_workload_estimate_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]

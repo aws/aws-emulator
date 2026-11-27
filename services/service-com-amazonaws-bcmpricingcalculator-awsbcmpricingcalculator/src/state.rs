@@ -1755,6 +1755,21 @@ pub fn resource_not_found(resource_type: &str, resource_id: &str) -> ResourceNot
     }
 }
 
+/// The reason a line of one request whose `key` repeats an earlier line's is reported
+/// with.
+///
+/// INFERRED, not modelled: no shape of this service declares a uniqueness constraint on
+/// a `key`; the requirement is read off the documentation of the member itself — a key is
+/// "a unique identifier" a caller matches one line of a request to its own result by,
+/// which only holds if one key names one line. It is scoped to the request, as that
+/// documentation scopes it: a key may be reused by a later call.
+///
+/// ONE sentence for every operation of this service that answers per line, so a repeated
+/// key is reported the same way whichever of them a caller sent it to.
+pub fn duplicate_key_message(key: &str) -> String {
+    format!("key {key} appears more than once in this request; each entry's key must be unique")
+}
+
 /// [`resource_not_found`] for a workload estimate `identifier` names no live estimate.
 pub fn workload_estimate_not_found(identifier: &str) -> ResourceNotFoundException {
     resource_not_found(WORKLOAD_ESTIMATE_RESOURCE_TYPE, identifier)

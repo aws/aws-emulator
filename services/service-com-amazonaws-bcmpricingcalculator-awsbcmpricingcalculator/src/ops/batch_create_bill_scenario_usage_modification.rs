@@ -276,10 +276,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     // earns, and a clash between two entries of one request is a
                     // conflict rather than any of the other three.
                     error_code: Some("CONFLICT".to_string()),
-                    error_message: Some(format!(
-                        "key {} appears more than once in this request; each entry's key must be unique",
-                        entry.key
-                    )),
+                    // The one sentence every per-line answer of this service reports a
+                    // repeated key with (`crate::state::duplicate_key_message`).
+                    error_message: Some(crate::state::duplicate_key_message(&entry.key)),
                 });
             }
         }

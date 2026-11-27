@@ -1,9 +1,14 @@
 // SPDX-License-Identifier: CC0-1.0
 
-//! What a workload estimate COSTS, and what renaming one does, driven end-to-end over
-//! this service's awsJson1_0 wire (`POST /`, `X-Amz-Target:
-//! AWSBCMPricingCalculator.<Operation>`) through the same `MultiServiceRouter` the
-//! production front door uses.
+//! What this service's price list QUOTES — what a workload estimate costs, what renaming
+//! one does, and what a bare list of usage lines is estimated at
+//! (`GetUsageLinesEstimatedCost`) — driven end-to-end over this service's awsJson1_0 wire
+//! (`POST /`, `X-Amz-Target: AWSBCMPricingCalculator.<Operation>`) through the same
+//! `MultiServiceRouter` the production front door uses.
+//!
+//! The usage lines a caller asks about directly are priced from the same published rates a
+//! stored usage line is, so both are asserted against the one [`PRICE_CASES`] table here
+//! rather than against a second copy of the price list.
 //!
 //! Each suite asserts a RULE over a table of inputs, not one recorded request: the rows
 //! differ along what the rule generalises over (the service code, usage type, operation
@@ -24,6 +29,9 @@ use serde_json::{json, Value};
 use service_com_amazonaws_bcmpricingcalculator_awsbcmpricingcalculator::state;
 
 use crate::bill_scenario_lifecycle::{error_code, Emulator};
+// The `RateType` catalog the preferences suite already reads off the model, rather than a
+// second copy of the same three values.
+use crate::preferences::RATE_TYPES;
 use crate::workload_estimate_lifecycle::create_estimate;
 
 /// A 12-digit `AccountId`, the form `^\d{12}$` requires.
@@ -1074,6 +1082,366 @@ async fn an_expiry_in_the_past_is_refused_and_changes_nothing() {
         assert_eq!(
             after, before,
             "case {case}: expected the refusal to change nothing, got {after}"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// `GetUsageLinesEstimatedCost`: the usage lines a caller asks about directly,
+// priced from the same published rates a stored usage line is.
+// ---------------------------------------------------------------------------
+
+/// The `GetUsageLinesEstimatedCostErrorCode` values this service reports a line it could
+/// not answer under (smithy_query: `shape="GetUsageLinesEstimatedCostErrorCode"` →
+/// `[BAD_REQUEST, NOT_FOUND, CONFLICT, INTERNAL_SERVER_ERROR]`).
+const ERROR_CODE_NOT_FOUND: &str = "NOT_FOUND";
+const ERROR_CODE_CONFLICT: &str = "CONFLICT";
+
+/// One `GetUsageLinesEstimatedCostInput` for `case`, asked under `key`.
+fn usage_line(key: &str, case: &PriceCase) -> Value {
+    json!({
+        "key": key,
+        "serviceCode": case.service_code,
+        "usageType": case.usage_type,
+        "operation": case.operation,
+        "amount": case.amount,
+    })
+}
+
+/// `GetUsageLinesEstimatedCost` for `usage` on `rate_type`, asserting it succeeded and
+/// that it reported the basis it was asked for and the one modelled currency; its body.
+async fn quoted(emulator: &Emulator, label: &str, rate_type: &str, usage: Vec<Value>) -> Value {
+    let (status, body) = emulator
+        .call(
+            "GetUsageLinesEstimatedCost",
+            json!({ "rateType": rate_type, "usage": usage }),
+        )
+        .await;
+    assert_eq!(
+        status, 200,
+        "case {label:?}: expected 200, got {status} with {body}"
+    );
+    assert_eq!(
+        body["rateType"].as_str(),
+        Some(rate_type),
+        "case {label:?}: expected the rate type the request asked for, got {body}"
+    );
+    assert_eq!(
+        body["currency"].as_str(),
+        Some(state::COST_CURRENCY),
+        "case {label:?}: expected the modelled currency of the costs, got {body}"
+    );
+    body
+}
+
+/// Every entry of `body[list]` answered under `key`.
+fn entries_under<'a>(body: &'a Value, list: &str, key: &str) -> Vec<&'a Value> {
+    body[list]
+        .as_array()
+        .map(|entries| {
+            entries
+                .iter()
+                .filter(|entry| entry["key"].as_str() == Some(key))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// How many entries `body[list]` holds.
+fn entry_count(body: &Value, list: &str) -> usize {
+    body[list].as_array().map(Vec::len).unwrap_or_default()
+}
+
+/// `totalCost` as reported, failing the test when it is not a number: the sum over the
+/// lines that were priced is always reported, and is nothing when none were.
+fn reported_total(label: &str, body: &Value) -> f64 {
+    body["totalCost"]
+        .as_f64()
+        .unwrap_or_else(|| panic!("case {label:?}: expected a totalCost, got {body}"))
+}
+
+/// Fail unless `item` is the line item `case` must be quoted as: the dimensions it was
+/// asked for, the amount that was priced, the unit the price list measures that usage type
+/// in, the cost of that amount at the published rate, and the currency it is in.
+fn assert_quoted_as(label: &str, item: &Value, case: &PriceCase) {
+    let want = case
+        .cost
+        .unwrap_or_else(|| panic!("case {label:?}: only a priced row is quoted as a line item"));
+    for (member, expected) in [
+        ("serviceCode", case.service_code),
+        ("usageType", case.usage_type),
+        ("operation", case.operation),
+    ] {
+        assert_eq!(
+            item[member].as_str(),
+            Some(expected),
+            "case {label:?} member {member}: expected {expected}, got {item}"
+        );
+    }
+    let cost = &item["estimatedCost"];
+    assert_eq!(
+        cost["usageAmount"].as_f64(),
+        Some(case.amount),
+        "case {label:?}: expected the amount that was priced, got {item}"
+    );
+    assert_eq!(
+        cost["usageUnit"].as_str(),
+        case.unit,
+        "case {label:?}: expected usageUnit {:?}, got {item}",
+        case.unit
+    );
+    assert_eq!(
+        cost["currency"].as_str(),
+        Some(state::COST_CURRENCY),
+        "case {label:?}: expected the modelled currency beside the cost, got {item}"
+    );
+    let got = cost["cost"]
+        .as_f64()
+        .unwrap_or_else(|| panic!("case {label:?}: expected a cost of {want}, got {item}"));
+    assert_close(label, got, want);
+}
+
+/// Fail unless `error` is the `errors` entry `case` must be reported as: the key and the
+/// dimensions it was asked for, the error code, and a reason naming the usage.
+fn assert_unpriceable(label: &str, error: &Value, case: &PriceCase) {
+    for (member, expected) in [
+        ("serviceCode", case.service_code),
+        ("usageType", case.usage_type),
+        ("operation", case.operation),
+    ] {
+        assert_eq!(
+            error[member].as_str(),
+            Some(expected),
+            "case {label:?} member {member}: expected {expected}, got {error}"
+        );
+    }
+    assert_eq!(
+        error["errorCode"].as_str(),
+        Some(ERROR_CODE_NOT_FOUND),
+        "case {label:?}: expected the error code of a usage no rate is published for, got {error}"
+    );
+    assert!(
+        error["errorMessage"]
+            .as_str()
+            .is_some_and(|message| message.contains(case.usage_type)),
+        "case {label:?}: expected the reason to name the usage that was not priced, got {error}"
+    );
+}
+
+/// RULE: every usage line a request carries is answered exactly once, under the key it was
+/// asked under — as a line item holding the amount that was priced, the unit the price
+/// list measures that usage type in, the cost of that amount at the published rate for
+/// that usage type at the location its region prefix names, and the currency that cost is
+/// in, when a rate is published for it; otherwise as an error naming the same key and
+/// dimensions, the error code and the reason — and `totalCost` is the sum over the lines
+/// that were priced, nothing else.
+///
+/// The table is the whole price list table, sent as ONE request: its rows differ along the
+/// service code, the usage type, the operation (part of a rate's key), the region the usage
+/// type's prefix names — none, an explicit one, the legacy spelling, and one this service
+/// names no region for — the amount (zero, fractional, whole, large) and whether a rate is
+/// published for the usage at all.
+#[tokio::test]
+async fn every_usage_line_is_quoted_from_the_published_rate_or_reported_as_unpriceable() {
+    let emulator = Emulator::new();
+    let keys: Vec<String> = (0..PRICE_CASES.len()).map(|row| format!("k{row}")).collect();
+    let usage: Vec<Value> = PRICE_CASES
+        .iter()
+        .zip(&keys)
+        .map(|(case, key)| usage_line(key, case))
+        .collect();
+
+    let label = "the whole price table in one request";
+    let body = quoted(&emulator, label, RATE_TYPES[0], usage).await;
+
+    let mut want_total = 0.0;
+    for (case, key) in PRICE_CASES.iter().zip(&keys) {
+        let items = entries_under(&body, "lineItems", key);
+        let errors = entries_under(&body, "errors", key);
+        match case.cost {
+            Some(cost) => {
+                want_total += cost;
+                assert_eq!(
+                    (items.len(), errors.len()),
+                    (1, 0),
+                    "case {:?}: a priced line is answered once, as a line item, got {body}",
+                    case.case
+                );
+                assert_quoted_as(case.case, items[0], case);
+            }
+            None => {
+                assert_eq!(
+                    (items.len(), errors.len()),
+                    (0, 1),
+                    "case {:?}: an unpriceable line is answered once, as an error, got {body}",
+                    case.case
+                );
+                assert_unpriceable(case.case, errors[0], case);
+            }
+        }
+    }
+
+    let priced = PRICE_CASES.iter().filter(|case| case.cost.is_some()).count();
+    assert_eq!(
+        (entry_count(&body, "lineItems"), entry_count(&body, "errors")),
+        (priced, PRICE_CASES.len() - priced),
+        "case {label:?}: every line is answered in exactly one of the two lists, got {body}"
+    );
+    assert_close(
+        &format!("case {label:?} (totalCost)"),
+        reported_total(label, &body),
+        want_total,
+    );
+}
+
+/// RULE: the cost of a usage line is a property of the usage alone — the published rate
+/// for its usage type at its location, times the amount — so a request carrying one line
+/// totals that line's cost, and the rate type the request names is reported back as the
+/// basis the quote was made on.
+///
+/// The rows are every row of the price table against every `RateType` the model declares:
+/// this emulator's account holds no discount agreement and no commitment, so there is
+/// nothing for the three bases to differ by, and a line no rate is published for totals
+/// nothing on each of them.
+#[tokio::test]
+async fn one_line_totals_that_line_on_every_rate_type() {
+    let emulator = Emulator::new();
+
+    for case in PRICE_CASES {
+        for rate_type in RATE_TYPES {
+            let label = format!("{} on {rate_type}", case.case);
+            let body = quoted(&emulator, &label, rate_type, vec![usage_line("k0", case)]).await;
+            assert_close(
+                &format!("case {label:?} (totalCost)"),
+                reported_total(&label, &body),
+                case.cost.unwrap_or_default(),
+            );
+            let priced = usize::from(case.cost.is_some());
+            assert_eq!(
+                (entry_count(&body, "lineItems"), entry_count(&body, "errors")),
+                (priced, 1 - priced),
+                "case {label:?}: the single line is answered in exactly one list, got {body}"
+            );
+        }
+    }
+}
+
+/// RULE: a key names ONE line of a request — it is what the caller matches a result
+/// against — so the first line under a key is answered for the usage it describes and a
+/// later line claiming that same key is reported as a conflict against it, contributing
+/// nothing to the total; the lines under other keys are unaffected.
+///
+/// The rows differ along what the repeat carries: the same usage again, another priced
+/// usage, and a usage no rate is published for (which is still the conflict, not the
+/// not-found, because the key is what cannot be answered).
+#[tokio::test]
+async fn a_key_that_repeats_in_one_request_is_reported_as_a_conflict() {
+    let emulator = Emulator::new();
+    let priced: Vec<&PriceCase> = PRICE_CASES.iter().filter(|c| c.cost.is_some()).collect();
+    let unpriced: Vec<&PriceCase> = PRICE_CASES.iter().filter(|c| c.cost.is_none()).collect();
+    let first = priced[0];
+    let other = priced[1];
+
+    for (label, repeat) in [
+        ("the same usage twice", first),
+        ("another priced usage under a key already used", other),
+        ("a usage no rate is published for, under a used key", unpriced[0]),
+    ] {
+        let body = quoted(
+            &emulator,
+            label,
+            RATE_TYPES[0],
+            vec![
+                usage_line("dup", first),
+                usage_line("dup", repeat),
+                usage_line("other", other),
+            ],
+        )
+        .await;
+
+        let items = entries_under(&body, "lineItems", "dup");
+        let errors = entries_under(&body, "errors", "dup");
+        assert_eq!(
+            (items.len(), errors.len()),
+            (1, 1),
+            "case {label:?}: the key is answered once as its first line and once as the \
+             clash, got {body}"
+        );
+        assert_quoted_as(label, items[0], first);
+        assert_eq!(
+            errors[0]["errorCode"].as_str(),
+            Some(ERROR_CODE_CONFLICT),
+            "case {label:?}: expected the error code of a repeated key, got {body}"
+        );
+        assert!(
+            errors[0]["errorMessage"]
+                .as_str()
+                .is_some_and(|message| message.contains("dup")),
+            "case {label:?}: expected the reason to name the repeated key, got {body}"
+        );
+
+        let under_other = entries_under(&body, "lineItems", "other");
+        assert_eq!(
+            under_other.len(),
+            1,
+            "case {label:?}: a line under another key is unaffected, got {body}"
+        );
+        assert_quoted_as(label, under_other[0], other);
+        assert_close(
+            &format!("case {label:?} (totalCost)"),
+            reported_total(label, &body),
+            first.cost.unwrap_or_default() + other.cost.unwrap_or_default(),
+        );
+    }
+}
+
+/// RULE: pricing usage lines REPORTS — it stores nothing, mints nothing, and is open to
+/// every account class, so the same request answers identically however often it is sent
+/// and whoever sends it (the account-class gate covers the bill-planning surface, not this
+/// one).
+///
+/// The rows are every `state::AccountClass`, each sending the same request twice.
+#[tokio::test]
+async fn pricing_usage_lines_stores_nothing_and_is_open_to_every_account_class() {
+    let priced: Vec<&PriceCase> = PRICE_CASES.iter().filter(|c| c.cost.is_some()).collect();
+    let unpriced: Vec<&PriceCase> = PRICE_CASES.iter().filter(|c| c.cost.is_none()).collect();
+    let usage = vec![
+        usage_line("k0", priced[0]),
+        usage_line("k1", priced[1]),
+        usage_line("k2", unpriced[0]),
+    ];
+
+    for class in [
+        state::AccountClass::Member,
+        state::AccountClass::Management,
+        state::AccountClass::Standalone,
+    ] {
+        let emulator = Emulator::with_account_class(class);
+        let label = format!("{class:?}");
+
+        let first = quoted(&emulator, &label, RATE_TYPES[0], usage.clone()).await;
+        let second = quoted(&emulator, &label, RATE_TYPES[0], usage.clone()).await;
+        assert_eq!(
+            first, second,
+            "case {label:?}: a reporting operation answers the same request identically, \
+             got {second} after {first}"
+        );
+        assert_close(
+            &format!("case {label:?} (totalCost)"),
+            reported_total(&label, &first),
+            priced[0].cost.unwrap_or_default() + priced[1].cost.unwrap_or_default(),
+        );
+
+        // Nothing was minted: the quote is not a stored estimate.
+        let (status, listed) = emulator.call("ListWorkloadEstimates", json!({})).await;
+        assert_eq!(
+            status, 200,
+            "case {label:?}: expected 200 from the listing, got {status} with {listed}"
+        );
+        assert_eq!(
+            listed["items"].as_array().map(Vec::len).unwrap_or_default(),
+            0,
+            "case {label:?}: pricing usage lines creates no resource, got {listed}"
         );
     }
 }

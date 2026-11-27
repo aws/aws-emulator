@@ -24,7 +24,10 @@ use crate::bill_scenario_lifecycle::{error_code, Emulator};
 /// Every value of the `RateType` enum, from the model (smithy_query:
 /// `shape="RateType"` → `[BEFORE_DISCOUNTS, AFTER_DISCOUNTS,
 /// AFTER_DISCOUNTS_AND_COMMITMENTS]`).
-const RATE_TYPES: [&str; 3] = [
+///
+/// `pub(crate)`: every suite of this target that names a rate type reads it here, so one
+/// catalog answers for all of them.
+pub(crate) const RATE_TYPES: [&str; 3] = [
     "BEFORE_DISCOUNTS",
     "AFTER_DISCOUNTS",
     "AFTER_DISCOUNTS_AND_COMMITMENTS",
