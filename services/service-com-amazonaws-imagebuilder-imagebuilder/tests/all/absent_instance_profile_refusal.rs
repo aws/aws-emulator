@@ -12,11 +12,11 @@
 //! The rule under test: a request whose `instanceProfileName` names no instance profile of
 //! this account is refused HTTP 400 `InvalidParameterValueException`
 //! (`smithy_query(query="shape",shape="InvalidParameterValueException")`: a client error,
-//! `@httpError` 400) stating `Invalid parameter value for <member>: The provided instance
-//! profile does not exist. Please specify a different instance profile and try again.`, where
-//! `<member>` is the input member the value arrived in and the name the caller submitted is
-//! withheld — the same sentence from every operation that carries that member, with nothing
-//! of the store changed.
+//! `@httpError` 400) stating `The value supplied for parameter '<member>' is not valid. The
+//! provided instance profile does not exist. Please specify a different instance profile and
+//! try again.`, where `<member>` is the input member the value arrived in, quoted, and the
+//! name the caller submitted is withheld — the same sentence from every operation that
+//! carries that member, with nothing of the store changed.
 //!
 //! The rows span what the rule generalises over: which operation carried the value (the
 //! create that mints a configuration and the update that replaces one), and the form of the
@@ -65,9 +65,11 @@ const EC2_TRUST_POLICY: &str = "{\"Version\":\"2012-10-17\",\"Statement\":[{\"Ef
 /// The configuration the update rows replace, created with the profile this account holds.
 const UPDATED_CONFIGURATION: &str = "absent-profile-update-target";
 
-/// The sentence the refusal of `member` has to state.
+/// The sentence the refusal of `member` has to state: the ONE sentence this service refuses
+/// a parameter's value in, naming the member quoted, then the requirement that value had to
+/// satisfy.
 fn expected_message(member: &str) -> String {
-    format!("Invalid parameter value for {member}: {REQUIREMENT}")
+    format!("The value supplied for parameter '{member}' is not valid. {REQUIREMENT}")
 }
 
 /// One emulator: imagebuilder and IAM on a single shared engine behind the production

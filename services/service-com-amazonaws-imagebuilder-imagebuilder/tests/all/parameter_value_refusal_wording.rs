@@ -16,9 +16,8 @@
 //! or the opaqueness of a token this service issues is what established the value is not
 //! admitted. The sentence is ONE sentence — `The value supplied for parameter '<member>' is
 //! not valid. <requirement>` — for every class the recordings show it for, which is a
-//! modelled constraint, a parse and a page token this service did not issue; the one class
-//! the recordings word differently is a name resolved against another service's resource,
-//! stated in the envelope `tests/all/absent_instance_profile_refusal.rs` is about. The
+//! modelled constraint, a name resolved against another service's resource, a parse and a
+//! page token this service did not issue. The
 //! refusal names the request it answers in the body's `requestId`, and nothing of the store
 //! changes.
 //!
@@ -27,6 +26,10 @@
 //! admitted (a model constraint, an IAM lookup, a JSON parse, an opaque page token), which
 //! operation carried it (a create, an update, a policy write, two listings), and which
 //! member it rode in.
+//!
+//! The emulator and the calls this suite drives are the harness
+//! `tests/all/invalid_parameter_sentence_template.rs` reads the same refusals through, which
+//! is why they are `pub(crate)` here: one copy of the wire path, two rules asserted over it.
 
 use std::sync::Arc;
 
@@ -34,23 +37,23 @@ use serde_json::{json, Value};
 use smithy_server_runtime::MultiServiceRouter;
 
 /// The Region every call here is signed for.
-const REGION: &str = "us-west-2";
+pub(crate) const REGION: &str = "us-west-2";
 
 /// The canonical emulator account (`engine::EMULATOR_ACCOUNT_ID`) every ARN carries.
-const ACCOUNT: &str = "000000000000";
+pub(crate) const ACCOUNT: &str = "000000000000";
 
 /// The error this service refuses a parameter value with
 /// (`smithy_query(query="shape",shape="InvalidParameterValueException")`: a client error,
 /// `@httpError` 400).
-const INVALID_PARAMETER_VALUE: &str = "InvalidParameterValueException";
+pub(crate) const INVALID_PARAMETER_VALUE: &str = "InvalidParameterValueException";
 
 /// The instance profile this account holds, so a configuration can be created at all.
-const HELD_PROFILE: &str = "EC2InstanceProfileForImageBuilder";
+pub(crate) const HELD_PROFILE: &str = "EC2InstanceProfileForImageBuilder";
 
 /// A trust policy admitting Amazon EC2, so the staged role is one an instance profile may
 /// carry. Free of `&`, `=`, `+` and `%`, so it travels in an `awsQuery` form body as
 /// written.
-const EC2_TRUST_POLICY: &str = "{\"Version\":\"2012-10-17\",\"Statement\":[{\"Effect\":\"Allow\",\
+pub(crate) const EC2_TRUST_POLICY: &str = "{\"Version\":\"2012-10-17\",\"Statement\":[{\"Effect\":\"Allow\",\
      \"Principal\":{\"Service\":\"ec2.amazonaws.com\"},\"Action\":\"sts:AssumeRole\"}]}";
 
 /// The configuration an update row replaces.
@@ -58,7 +61,7 @@ const UPDATED_CONFIGURATION: &str = "wording-probe-config";
 
 /// A component document with one build phase, so a `CreateComponent` row is refused for the
 /// parameter it is about rather than for its document.
-const BUILD_DOCUMENT: &str = "name: Probe\nschemaVersion: 1.0\nphases:\n  - name: build\n    steps:\n      - name: run\n        action: ExecuteBash\n        inputs:\n          commands:\n            - echo hi\n";
+pub(crate) const BUILD_DOCUMENT: &str = "name: Probe\nschemaVersion: 1.0\nphases:\n  - name: build\n    steps:\n      - name: run\n        action: ExecuteBash\n        inputs:\n          commands:\n            - echo hi\n";
 
 /// One row of the table: what established the value is not admitted, the request, the
 /// parameter the refusal names and the requirement it states for it.
@@ -67,13 +70,13 @@ struct Row {
     method: &'static str,
     uri: &'static str,
     body: Option<Value>,
-    /// The whole sentence the refusal must state, in the envelope its class carries.
+    /// The whole sentence the refusal must state.
     message: String,
 }
 
 /// One emulator: imagebuilder and IAM on a single shared engine behind the production
 /// router — what `build_router` assembles, narrowed to the two services under test.
-fn emulator() -> MultiServiceRouter {
+pub(crate) fn emulator() -> MultiServiceRouter {
     let engine: Arc<engine::InMemoryEngine> = Arc::new(engine::InMemoryEngine::new());
     let mut router = MultiServiceRouter::new();
     router.set_request_authentication(false);
@@ -88,7 +91,7 @@ fn emulator() -> MultiServiceRouter {
 
 /// Status and parsed body of one imagebuilder call, with the error shape the header names
 /// folded into the body as `$.__type` when the body carries none.
-async fn call(
+pub(crate) async fn call(
     router: &MultiServiceRouter,
     method: &str,
     uri: &str,
@@ -132,7 +135,7 @@ async fn call(
 }
 
 /// The shape name a discriminator value names, without its namespace or locator.
-fn shape_name(raw: &str) -> String {
+pub(crate) fn shape_name(raw: &str) -> String {
     raw.rsplit(['#', '/'])
         .next()
         .unwrap_or_default()
@@ -168,7 +171,7 @@ async fn iam(router: &MultiServiceRouter, action: &str, parameters: &[(&str, &st
 
 /// Create the one instance profile the accepted calls below resolve against, the way AWS
 /// builds one.
-async fn stage_iam(router: &MultiServiceRouter) {
+pub(crate) async fn stage_iam(router: &MultiServiceRouter) {
     for (action, parameters) in [
         (
             "CreateRole",
@@ -198,22 +201,16 @@ async fn stage_iam(router: &MultiServiceRouter) {
 }
 
 /// The ARN a configuration named `name` carries in [`REGION`].
-fn configuration_arn(name: &str) -> String {
+pub(crate) fn configuration_arn(name: &str) -> String {
     format!("arn:aws:imagebuilder:{REGION}:{ACCOUNT}:infrastructure-configuration/{name}")
 }
 
-/// The sentence this service states for `parameter` when a MODELLED constraint, a parse or a
-/// token it did not issue established the value is not admitted
+/// The sentence this service states for `parameter`, whatever established the value is not
+/// admitted — a modelled constraint, a lookup against the service that owns the resource the
+/// value names, a parse, or a token this service did not issue
 /// (`service_common::validation_message::parameter_value_mismatch`).
 fn constraint_message(parameter: &str, requirement: &str) -> String {
     format!("The value supplied for parameter '{parameter}' is not valid. {requirement}")
-}
-
-/// The sentence this service states for `parameter` when a lookup of the resource the value
-/// names against the service that owns it established the value is not admitted
-/// (`crate::state::missing_instance_profile_message`).
-fn lookup_message(parameter: &str, requirement: &str) -> String {
-    format!("Invalid parameter value for {parameter}: {requirement}")
 }
 
 /// Whether `id` has the 8-4-4-4-12 lowercase-hex form an AWS request id carries.
@@ -236,10 +233,10 @@ fn is_request_id(id: &str) -> bool {
 
 /// A name no instance profile was ever created under: well-formed for the member's
 /// `@pattern ^[\w+=,.@-]+$`, so the model admits it and the IAM lookup is what places it.
-const ABSENT_PROFILE: &str = "ImageBuilderProfileThatWasNeverCreated";
+pub(crate) const ABSENT_PROFILE: &str = "ImageBuilderProfileThatWasNeverCreated";
 
 /// The requirement clause stated for an instance profile this account holds none of.
-fn absent_profile_requirement() -> String {
+pub(crate) fn absent_profile_requirement() -> String {
     "The provided instance profile does not exist. Please specify a different instance \
      profile and try again."
         .to_string()
@@ -277,7 +274,7 @@ fn rows() -> Vec<Row> {
                 "instanceProfileName": ABSENT_PROFILE,
                 "clientToken": "wtok-0002",
             })),
-            message: lookup_message("instanceProfileName", &absent_profile_requirement()),
+            message: constraint_message("instanceProfileName", &absent_profile_requirement()),
         },
         Row {
             // The SAME refusal from a second operation: one sentence, not one per handler.
@@ -289,7 +286,7 @@ fn rows() -> Vec<Row> {
                 "instanceProfileName": ABSENT_PROFILE,
                 "clientToken": "wtok-0003",
             })),
-            message: lookup_message("instanceProfileName", &absent_profile_requirement()),
+            message: constraint_message("instanceProfileName", &absent_profile_requirement()),
         },
         Row {
             // A parse: a resource policy is a JSON document, and this one is not.
