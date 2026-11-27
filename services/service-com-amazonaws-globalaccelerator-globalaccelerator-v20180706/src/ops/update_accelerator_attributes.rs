@@ -188,24 +188,19 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             );
         }
 
-        // An update carries only the members it changes: every one but the ARN is
-        // optional, so an absent member leaves the stored value alone rather than
-        // resetting it. The mutation is applied to a COPY, so the refusal below cannot
-        // leave half an update in the store.
+        // An update carries only the members it changes, the rule
+        // `StoredAcceleratorAttributes::apply_update` states. The mutation is applied to
+        // a COPY, so the refusal below cannot leave half an update in the store.
         let mut attributes = store
             .accelerator_attributes
             .get(&input.accelerator_arn)
             .cloned()
             .unwrap_or_default();
-        if let Some(enabled) = input.flow_logs_enabled {
-            attributes.flow_logs_enabled = enabled;
-        }
-        if let Some(bucket) = input.flow_logs_s3_bucket {
-            attributes.flow_logs_s3_bucket = Some(bucket);
-        }
-        if let Some(prefix) = input.flow_logs_s3_prefix {
-            attributes.flow_logs_s3_prefix = Some(prefix);
-        }
+        attributes.apply_update(
+            input.flow_logs_enabled,
+            input.flow_logs_s3_bucket,
+            input.flow_logs_s3_prefix,
+        );
         crate::state::validate_flow_logs(&attributes).map_err(|message| {
             UpdateAcceleratorAttributesErrorModeled::InvalidArgumentException(
                 InvalidArgumentException {

@@ -25,7 +25,8 @@ use std::time::{Duration, SystemTime};
 
 use crate::ops::types::{
     Accelerator, AcceleratorAttributes, CustomRoutingAccelerator,
-    CustomRoutingDestinationConfiguration, CustomRoutingDestinationDescription,
+    CustomRoutingAcceleratorAttributes, CustomRoutingDestinationConfiguration,
+    CustomRoutingDestinationDescription,
     CustomRoutingEndpointDescription, CustomRoutingEndpointGroup, CustomRoutingListener,
     EndpointConfiguration, EndpointDescription, EndpointGroup, IpAddressDetail, IpSet, Listener,
     PortOverride, PortRange, Tag,
@@ -665,6 +666,41 @@ impl StoredAcceleratorAttributes {
             flow_logs_s3_prefix: self.flow_logs_s3_prefix.clone(),
         }
     }
+
+    /// This record as the modelled `CustomRoutingAcceleratorAttributes`, which carries
+    /// the same three flow-log members as `AcceleratorAttributes` and reports each of
+    /// them for the reasons [`Self::to_wire`] gives: one record per accelerator, named
+    /// by whichever API family that accelerator belongs to.
+    pub fn to_custom_routing_wire(&self) -> CustomRoutingAcceleratorAttributes {
+        CustomRoutingAcceleratorAttributes {
+            flow_logs_enabled: Some(self.flow_logs_enabled),
+            flow_logs_s3_bucket: self.flow_logs_s3_bucket.clone(),
+            flow_logs_s3_prefix: self.flow_logs_s3_prefix.clone(),
+        }
+    }
+
+    /// Apply the members an attributes update carries to this record.
+    ///
+    /// Every member but the accelerator's ARN is optional on an attributes update, so an
+    /// absent member leaves the stored value alone rather than resetting it: the update
+    /// changes what it names and nothing else. Callers apply it to a COPY, so a
+    /// configuration [`validate_flow_logs`] refuses never reaches the store.
+    pub fn apply_update(
+        &mut self,
+        flow_logs_enabled: Option<bool>,
+        flow_logs_s3_bucket: Option<String>,
+        flow_logs_s3_prefix: Option<String>,
+    ) {
+        if let Some(enabled) = flow_logs_enabled {
+            self.flow_logs_enabled = enabled;
+        }
+        if let Some(bucket) = flow_logs_s3_bucket {
+            self.flow_logs_s3_bucket = Some(bucket);
+        }
+        if let Some(prefix) = flow_logs_s3_prefix {
+            self.flow_logs_s3_prefix = Some(prefix);
+        }
+    }
 }
 
 /// A flow-log configuration, validated as a whole.
@@ -842,6 +878,18 @@ impl ComAmazonawsGlobalacceleratorGlobalacceleratorV20180706State {
         self.accelerators
             .contains_key(accelerator_arn)
             .then(|| standard_resource_not_supported_message(accelerator_arn))
+    }
+
+    /// What a CUSTOM ROUTING accelerator lookup that found nothing states: the family
+    /// crossing when the standard family holds that ARN
+    /// ([`Self::standard_accelerator_crossing`]), else this service's absent-resource
+    /// wording ([`accelerator_not_found_message`]).
+    ///
+    /// One place for the pair so every custom routing operation that resolves an
+    /// `AcceleratorArn` tells a caller that used the wrong API family the same thing.
+    pub fn custom_routing_accelerator_not_found_message(&self, accelerator_arn: &str) -> String {
+        self.standard_accelerator_crossing(accelerator_arn)
+            .unwrap_or_else(|| accelerator_not_found_message(accelerator_arn))
     }
 
     /// The cross-family refusal a STANDARD listener lookup of `listener_arn` owes — the
