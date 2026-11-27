@@ -44,12 +44,12 @@
 //! * Which of the values the definition DECLARES each instance reports: a value read out
 //!   of the caller's definition is reported only when it is one the modelled member that
 //!   carries it can hold, so an operator name outside that member is not reported at all
-//!   and an unreportable task identifier makes the graph unbuildable, because an instance
-//!   is reported BY its identifier.
+//!   and an undeclarable task identifier makes the graph unbuildable, because an instance
+//!   names the task it executes.
 //! * A graph that CANNOT be ordered is a workflow definition no run of it can execute: a
 //!   task that depends on a task the definition does not declare, a dependency cycle, two
-//!   tasks declaring one identifier, a task identifier outside what the modelled
-//!   `TaskInstanceId`/`TaskId` can carry, or more tasks than
+//!   tasks declaring one identifier, a task identifier outside what the modelled `TaskId`
+//!   can carry, or more tasks than
 //!   [`workflow_definition::MAX_DECLARED_TASKS`]. Such a run reaches the modelled `FAILED`
 //!   status with an `ErrorMessage` naming the condition and the task it was found on, and
 //!   holds no task instance: nothing of it ran.
@@ -73,14 +73,16 @@ use super::{declared_runtime, ConstrainedValue, M_OPERATOR_NAME, M_TASK_INSTANCE
 /// declares `ErrorMessage` 1..255).
 const MAX_ERROR_MESSAGE_CHARS: usize = 255;
 
-/// ONE task of a run's plan: the instance the run records for it, and the dependency
-/// LEVEL that instance runs at.
+/// ONE task of a run's plan: the task the definition declared, and the dependency LEVEL
+/// the run's instance of it runs at.
+///
+/// The plan names the DECLARED task only. The identifier the run's instance of it is
+/// stored and reported under is not in the definition at all: it is minted per (run, task,
+/// attempt) by the run that records the instance
+/// ([`super::mint_task_instance_id`]), so a plan built from one definition serves every
+/// run of it without two runs sharing an instance identifier.
 #[derive(Debug, Clone)]
 pub struct PlannedTask {
-    /// `TaskInstanceId`: the identifier the run's instance of this task is stored and
-    /// reported under. It is the task's own identifier, because a run executes a declared
-    /// task once.
-    pub task_instance_id: String,
     /// `TaskId`: the task in the workflow definition this instance executes.
     pub task_id: String,
     /// `OperatorName`: the operator the definition declared for the task, by the NAME that
@@ -270,7 +272,6 @@ fn plan_tasks(declared: &[TaskDeclaration]) -> Result<Vec<PlannedTask>, String> 
                 .map(declared_runtime::declared_program)
                 .unwrap_or_default();
             PlannedTask {
-                task_instance_id: (*task_id).to_string(),
                 task_id: (*task_id).to_string(),
                 operator_name: task
                     .operator_name
@@ -296,9 +297,9 @@ fn task_failure_reason(task_id: &str) -> String {
     ))
 }
 
-/// Whether a declared task identifier is one this service can REPORT: `TaskInstanceId`
-/// and `TaskId` both target the modelled `IdString`, so one check covers the identifier a
-/// run's instance is stored under and the task it names.
+/// Whether a declared task identifier is one this service can REPORT: an instance names
+/// the task it executes in `TaskId`, and `TaskId` and `TaskInstanceId` both target the
+/// modelled `IdString`, so the walk over either member's schema is the same check.
 ///
 /// The check is the framework's own constraint walk over that member's schema
 /// ([`super::validate_members`]), so the pattern and length are the model's rather than

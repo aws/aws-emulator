@@ -768,17 +768,19 @@ impl WorkflowRun {
         // borrowed and queued once it is not.
         let mut lines: Vec<(String, String)> = Vec::new();
         for task in &self.execution.tasks {
-            if self.task_instances.contains_key(&task.task_instance_id) {
+            // The run executes a declared task once, so its instance is the first
+            // attempt at it, and the identifier that attempt is recorded under is the
+            // one minted for it (`planned_instance_id`).
+            let attempt_number = FIRST_ATTEMPT_NUMBER;
+            let task_instance_id = planned_instance_id(&run_id, task);
+            if self.task_instances.contains_key(&task_instance_id) {
                 continue;
             }
             let running = task.level == 0;
-            // The run executes a declared task once, so its instance is the first
-            // attempt at it.
-            let attempt_number = FIRST_ATTEMPT_NUMBER;
             let log_stream = (running && exporting)
-                .then(|| run_logs::task_log_stream(&run_id, &task.task_instance_id, attempt_number));
+                .then(|| run_logs::task_log_stream(&run_id, &task_instance_id, attempt_number));
             let instance = TaskInstance {
-                task_instance_id: task.task_instance_id.clone(),
+                task_instance_id: task_instance_id.clone(),
                 task_id: Some(task.task_id.clone()),
                 status: if running {
                     TASK_INSTANCE_STATUS_RUNNING.to_string()
@@ -800,8 +802,7 @@ impl WorkflowRun {
             if let Some(stream) = log_stream {
                 lines.push((stream, task_started_message(&instance)));
             }
-            self.task_instances
-                .insert(task.task_instance_id.clone(), instance);
+            self.task_instances.insert(task_instance_id, instance);
         }
         for (stream, message) in lines {
             self.queue_log_line(stream, at, message);
@@ -840,13 +841,14 @@ impl WorkflowRun {
                 break;
             }
         }
-        for id in self.task_instance_ids_at(level) {
-            let failure = self
-                .execution
-                .tasks
-                .iter()
-                .find(|task| task.task_instance_id == id)
-                .and_then(|task| task.failure.clone());
+        // The instances of this level, each with the outcome its own task declared,
+        // collected while the plan is borrowed and applied once it is not.
+        let ending: Vec<(String, Option<String>)> = self
+            .execution
+            .tasks_at(level)
+            .map(|task| (planned_instance_id(&run_id, task), task.failure.clone()))
+            .collect();
+        for (id, failure) in ending {
             if let Some(instance) = self.task_instances.get_mut(&id) {
                 instance.status = match &failure {
                     Some(_) => TASK_INSTANCE_STATUS_FAILED.to_string(),
@@ -918,7 +920,7 @@ impl WorkflowRun {
             .iter()
             .filter(|task| {
                 self.task_instances
-                    .get(&task.task_instance_id)
+                    .get(&planned_instance_id(&self.run_id, task))
                     .is_some_and(|instance| instance.status == TASK_INSTANCE_STATUS_RUNNING)
             })
             .map(|task| task.level)
@@ -929,7 +931,7 @@ impl WorkflowRun {
     fn task_instance_ids_at(&self, level: usize) -> Vec<String> {
         self.execution
             .tasks_at(level)
-            .map(|task| task.task_instance_id.clone())
+            .map(|task| planned_instance_id(&self.run_id, task))
             .collect()
     }
 
@@ -987,6 +989,18 @@ impl WorkflowRun {
         self.log_status_reached(now);
         true
     }
+}
+
+/// The `TaskInstanceId` the run `run_id` records its instance of the planned task `task`
+/// under: the identifier minted for the FIRST attempt at that task in that run
+/// ([`mint_task_instance_id`]).
+///
+/// The single place this service turns a planned task into the identifier of the instance
+/// executing it, so the execution that records an instance, the walk that advances it and
+/// every reader that reports it address the same record. A run executes a declared task
+/// once, which is why the attempt it names is [`FIRST_ATTEMPT_NUMBER`].
+fn planned_instance_id(run_id: &str, task: &workflow_execution::PlannedTask) -> String {
+    mint_task_instance_id(run_id, &task.task_id, FIRST_ATTEMPT_NUMBER)
 }
 
 /// The line a task instance's own stream owes for the attempt that has just STARTED: the
@@ -2327,6 +2341,72 @@ pub fn mint_run_id(workflow_arn: &str, nonce: &str) -> String {
         .take(16)
         .collect();
     format!("run-{suffix}")
+}
+
+/// Mint the `TaskInstanceId` of the instance ONE run records for one attempt at one
+/// declared task: the run the instance belongs to, the task it executes and the attempt it
+/// is, composed into one identifier the modelled `IdString`
+/// (`^[a-zA-Z0-9]+[a-zA-Z0-9\.\-_]*$`, 1..255) carries.
+///
+/// An instance identifier is the service's own, not the definition's: `TaskInstanceId` is
+/// "The unique identifier of this task instance" while the task the instance executes is
+/// reported separately as `TaskId`, "The unique identifier of the task definition within
+/// the workflow" (`smithy_query(query="shape",
+/// shape="TaskInstanceSummary,GetTaskInstanceResponse")`). So the identifier is minted for
+/// the INSTANCE — one per (run, task, attempt) — and two runs of one definition never
+/// report the same instance identifier, which is what makes the identifier a per-run handle
+/// a client can key a store by.
+///
+/// What an instance IS is exactly that triple: the execution of one declared task, inside
+/// one run, on one attempt. The identifier names it by naming all three, which is the form
+/// the recorded service answers this member with, and is also why the modelled `IdString`
+/// admits the `.` that separates them. Three values already inside that member's character
+/// class compose into one that is inside it too, so only the LENGTH of the composition can
+/// take it outside what the member reports — a definition may declare a task identifier as
+/// long as the member itself — and the composition is held to the modelled length
+/// ([`id_within_modelled_length`]).
+///
+/// Composed rather than drawn at random, so recomputing it for the same instance always
+/// lands on the same value: a run materialises its execution whenever a reader advances the
+/// clock ([`WorkflowRun::settle`]), and an identifier that changed between two of those
+/// passes would record one instance twice.
+pub fn mint_task_instance_id(run_id: &str, task_id: &str, attempt: i32) -> String {
+    id_within_modelled_length(format!("{run_id}.{task_id}.{attempt}"))
+}
+
+/// The most characters a modelled `IdString` member carries: `@length(min: 1, max: 255)`
+/// (`smithy_query(query="shape", shape="IdString")`), the shape `TaskInstanceId`, `TaskId`,
+/// `RunId` and `LogStream` all target.
+pub const MAX_ID_STRING_CHARS: usize = 255;
+
+/// How many characters of digest a composed identifier carries once it had to be cut
+/// ([`id_within_modelled_length`]).
+const ID_DIGEST_CHARS: usize = 16;
+
+/// `name`, held inside what a modelled `IdString` member can carry: the name as it stands
+/// when it already fits, and otherwise its leading characters with a digest of the WHOLE
+/// name appended, cut on a character boundary.
+///
+/// What it is for: this service names a thing a run produced by naming the things it
+/// belongs to — the instance of a task in a run ([`mint_task_instance_id`]), the stream
+/// that instance's attempt wrote to ([`run_logs::task_log_stream`]) — and part of such a
+/// composition is caller-supplied definition content that may be as long as the member
+/// reporting the whole. A name past the modelled length is therefore CUT rather than
+/// reported unreportably, and the digest is what keeps a cut name naming ONE thing: two
+/// compositions agreeing on their leading characters still differ in it.
+pub fn id_within_modelled_length(name: String) -> String {
+    if name.chars().count() <= MAX_ID_STRING_CHARS {
+        return name;
+    }
+    let digested: String = digest(&["composed-identifier", &name])
+        .chars()
+        .take(ID_DIGEST_CHARS)
+        .collect();
+    let head: String = name
+        .chars()
+        .take(MAX_ID_STRING_CHARS - ID_DIGEST_CHARS - 1)
+        .collect();
+    format!("{head}.{digested}")
 }
 
 /// The marker every pagination cursor this service issues carries, so a token it

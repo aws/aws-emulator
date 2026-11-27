@@ -37,7 +37,7 @@ use service_com_amazonaws_mwaaserverless_amazonmwaaserverless::state::{
     service_log_group_name, RUN_STATUS_FAILED, RUN_STATUS_SUCCESS,
 };
 
-use crate::run_execution_outcome::{read_task_instance, run_to_completion};
+use crate::run_execution_outcome::{instances_by_task, read_task_instance, run_to_completion};
 use crate::workflow_definition_snapshot::{call, create_bucket, stage, BUCKET, REGION};
 use crate::workflow_lifecycle::role_arn;
 
@@ -327,12 +327,17 @@ async fn a_runs_output_reaches_the_configured_log_group_and_its_task_instances_n
             report["RunDetail"]["RunState"]
         );
 
-        // Every instance the run executed names the stream it wrote to.
+        // Every instance the run executed names the stream it wrote to, under the
+        // identifier the run minted for it.
+        let instances = instances_by_task(&router, &arn, &run_id, case).await;
         for task in row.expected_tasks {
-            let read = read_task_instance(&router, &arn, &run_id, task, case).await;
+            let instance_id = instances
+                .get(*task)
+                .unwrap_or_else(|| panic!("case {case:?}: the run executed task {task:?}"));
+            let read = read_task_instance(&router, &arn, &run_id, instance_id, case).await;
             assert_eq!(
                 read["LogStream"].as_str(),
-                Some(task_stream(&run_id, task).as_str()),
+                Some(task_stream(&run_id, instance_id).as_str()),
                 "case {case:?}: expected task {task:?} to name the stream its attempt \
                  wrote to, got {:?}",
                 read["LogStream"]
@@ -341,10 +346,9 @@ async fn a_runs_output_reaches_the_configured_log_group_and_its_task_instances_n
 
         // The streams the group holds for this run are exactly the run's own and one per
         // task instance it executed.
-        let mut expected_streams: BTreeSet<String> = row
-            .expected_tasks
-            .iter()
-            .map(|task| task_stream(&run_id, task))
+        let mut expected_streams: BTreeSet<String> = instances
+            .values()
+            .map(|instance_id| task_stream(&run_id, instance_id))
             .collect();
         expected_streams.insert(run_id.clone());
         let held: BTreeSet<String> = log_stream_names(&router, log_group)
@@ -372,7 +376,10 @@ async fn a_runs_output_reaches_the_configured_log_group_and_its_task_instances_n
         // Each task's stream carries that task's own execution: the attempt starting and
         // the outcome it ended with.
         for task in row.expected_tasks {
-            let stream = task_stream(&run_id, task);
+            let instance_id = instances
+                .get(*task)
+                .unwrap_or_else(|| panic!("case {case:?}: the run executed task {task:?}"));
+            let stream = task_stream(&run_id, instance_id);
             let lines = log_messages(&router, log_group, &stream).await;
             assert!(
                 lines.len() >= 2,

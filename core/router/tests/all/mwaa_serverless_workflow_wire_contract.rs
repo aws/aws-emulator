@@ -28,9 +28,12 @@
 //!    definition writes its DAG-level `tasks` collection — at the document root, under a
 //!    `dag` wrapper, or under the key naming the DAG itself — and both readers
 //!    (`GetWorkflowRun`'s `RunDetail.TaskInstances` and `ListTaskInstances`) report the
-//!    same instances, each with the operator its declaration names and the status its
-//!    execution reached.
+//!    same instances, each under the identifier the RUN minted for it (not the identifier
+//!    its definition declared for the task, which the instance reports separately as
+//!    `TaskId`), with the operator its declaration names and the status its execution
+//!    reached.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -294,6 +297,76 @@ fn is_workflow_version(text: &str) -> bool {
 /// workflow that runs.
 const ONE_TASK_DEFINITION: &str = "tasks:\n  - id: extract\n    operator: EmptyOperator\n";
 
+/// The `TaskInstanceId`s a `GetWorkflowRun` answer reports as `RunDetail.TaskInstances`,
+/// in the order it reported them.
+fn reported_instance_ids(report: &Value) -> Vec<String> {
+    report["RunDetail"]["TaskInstances"]
+        .as_array()
+        .map(|ids| {
+            ids.iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Which instance of this run executes which DECLARED task: the `TaskInstanceId` the run
+/// reports for each task, keyed by the `TaskId` that instance names.
+///
+/// A task instance's identifier is the service's own, minted for the instance the run
+/// created, so a client DISCOVERS it from the run (`RunDetail.TaskInstances`) and learns
+/// which declared task it executes by READING the instance — `GetTaskInstance` is the only
+/// reader that reports `TaskInstanceId` and `TaskId` together, because `TaskInstanceSummary`
+/// carries no `TaskId`.
+async fn instances_by_task(
+    router: &MultiServiceRouter,
+    workflow_arn: &str,
+    run_id: &str,
+    report: &Value,
+    case: &str,
+) -> BTreeMap<String, String> {
+    let mut by_task: BTreeMap<String, String> = BTreeMap::new();
+    for id in reported_instance_ids(report) {
+        let (status, read) = call(
+            router,
+            "GetTaskInstance",
+            json!({"WorkflowArn": workflow_arn, "RunId": run_id, "TaskInstanceId": id}),
+        )
+        .await;
+        assert_eq!(
+            status, 200,
+            "case {case:?}: an instance the run reports must be readable by that identifier, \
+             got {status} {read:?}"
+        );
+        assert_eq!(
+            read["TaskInstanceId"].as_str(),
+            Some(id.as_str()),
+            "case {case:?}: expected the instance to report the identifier it is addressed \
+             by, got {:?}",
+            read["TaskInstanceId"]
+        );
+        let task_id = read["TaskId"]
+            .as_str()
+            .unwrap_or_else(|| {
+                panic!("case {case:?}: instance {id:?} must name the task it executes, got {read:?}")
+            })
+            .to_string();
+        assert_ne!(
+            task_id, id,
+            "case {case:?}: an identifier is minted for the INSTANCE, so it is not the \
+             identifier the definition declared for the task it executes"
+        );
+        let already = by_task.insert(task_id.clone(), id.clone());
+        assert!(
+            already.is_none(),
+            "case {case:?}: task {task_id:?} runs once in this run, so one instance may name \
+             it, got {already:?} and {id:?}"
+        );
+    }
+    by_task
+}
+
 #[tokio::test]
 async fn every_reported_instant_is_an_iso_8601_date_time_string() {
     let router = emulator();
@@ -325,10 +398,19 @@ async fn every_reported_instant_is_an_iso_8601_date_time_string() {
     .await;
     let settled = settled_run(&router, &arn, &run_id, "timestamps").await;
     let (_, runs) = call(&router, "ListWorkflowRuns", json!({"WorkflowArn": arn})).await;
+    // The instance is addressed by the identifier the RUN minted for it, discovered from
+    // the run itself: a task-instance identifier is the service's own, not the name the
+    // definition declared for the task.
+    let instance_id = reported_instance_ids(&settled)
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| {
+            panic!("case timestamps: the settled run must report its task instance, got {settled:?}")
+        });
     let (_, instance) = call(
         &router,
         "GetTaskInstance",
-        json!({"WorkflowArn": arn, "RunId": run_id, "TaskInstanceId": "extract"}),
+        json!({"WorkflowArn": arn, "RunId": run_id, "TaskInstanceId": instance_id}),
     )
     .await;
 
@@ -670,8 +752,9 @@ async fn a_run_reports_the_parameter_set_it_executes_with() {
 }
 
 /// One row of the fan-out table: a definition, and the task instances a run of it must
-/// materialise — each `(TaskInstanceId, OperatorName)`, in the order both readers report
-/// them.
+/// materialise — each `(TaskId, OperatorName)`, in the order both readers report them. The
+/// identifier each instance is reported UNDER is not in the definition: the run mints it,
+/// and the test resolves it through [`instances_by_task`].
 struct FanOutRow {
     case: &'static str,
     definition: &'static str,
@@ -760,17 +843,25 @@ async fn a_run_materialises_one_task_instance_per_declared_task() {
             detail["RunState"]
         );
 
-        let expected_ids: Vec<&str> = row.expected.iter().map(|(id, _)| *id).collect();
+        let expected_tasks: Vec<&str> = row.expected.iter().map(|(id, _)| *id).collect();
         // `RunDetail.TaskInstances` is "a list of task instance IDs that are part of this
-        // workflow run", so a run with declared work reports one id per declared task and
-        // one with none reports no member at all.
-        let reported_ids: Vec<&str> = detail["TaskInstances"]
-            .as_array()
-            .map(|ids| ids.iter().filter_map(Value::as_str).collect())
-            .unwrap_or_default();
+        // workflow run", so a run with declared work reports one MINTED id per declared
+        // task and one with none reports no member at all.
+        let reported_ids: Vec<String> = reported_instance_ids(&settled);
+        let instances = instances_by_task(&router, &arn, &run_id, &settled, case).await;
+        let executed: Vec<&str> = instances.keys().map(String::as_str).collect();
         assert_eq!(
-            reported_ids, expected_ids,
-            "case {case:?}: expected RunDetail.TaskInstances {expected_ids:?}, got {:?}",
+            executed, expected_tasks,
+            "case {case:?}: expected the run to execute the declared tasks \
+             {expected_tasks:?}, got {executed:?}"
+        );
+        let mut minted: Vec<&str> = instances.values().map(String::as_str).collect();
+        minted.sort_unstable();
+        assert_eq!(
+            reported_ids.iter().map(String::as_str).collect::<Vec<&str>>(),
+            minted,
+            "case {case:?}: expected RunDetail.TaskInstances to name the minted identifiers \
+             {minted:?}, got {:?}",
             detail["TaskInstances"]
         );
 
@@ -792,21 +883,24 @@ async fn a_run_materialises_one_task_instance_per_declared_task() {
             .filter_map(|summary| summary["TaskInstanceId"].as_str())
             .collect();
         assert_eq!(
-            listed_ids, expected_ids,
-            "case {case:?}: expected ListTaskInstances to report {expected_ids:?}, got \
+            listed_ids, minted,
+            "case {case:?}: expected ListTaskInstances to report {minted:?}, got \
              {listed_ids:?}"
         );
-        for (id, operator) in row.expected {
+        for (task_id, operator) in row.expected {
+            let id = instances.get(*task_id).unwrap_or_else(|| {
+                panic!("case {case:?}: expected the run to execute task {task_id:?}")
+            });
             let summary = summaries
                 .iter()
-                .find(|summary| summary["TaskInstanceId"].as_str() == Some(id))
+                .find(|summary| summary["TaskInstanceId"].as_str() == Some(id.as_str()))
                 .unwrap_or_else(|| {
                     panic!("case {case:?}: expected a summary for {id:?}, got {summaries:?}")
                 });
             assert_eq!(
                 summary["Status"].as_str(),
                 Some(TASK_SUCCESS),
-                "case {case:?}: expected task {id:?} to report {TASK_SUCCESS}, got {:?}",
+                "case {case:?}: expected task {task_id:?} to report {TASK_SUCCESS}, got {:?}",
                 summary["Status"]
             );
             // The operator a summary reports is the NAME the declaration names, which for
@@ -814,27 +908,27 @@ async fn a_run_materialises_one_task_instance_per_declared_task() {
             assert_eq!(
                 summary["OperatorName"].as_str(),
                 *operator,
-                "case {case:?}: expected task {id:?} to report OperatorName {operator:?}, \
-                 got {:?}",
+                "case {case:?}: expected task {task_id:?} to report OperatorName \
+                 {operator:?}, got {:?}",
                 summary["OperatorName"]
             );
             assert_eq!(
                 summary["RunId"].as_str(),
                 Some(run_id.as_str()),
-                "case {case:?}: expected task {id:?} to name its run, got {:?}",
+                "case {case:?}: expected task {task_id:?} to name its run, got {:?}",
                 summary["RunId"]
             );
             assert_eq!(
                 summary["WorkflowArn"].as_str(),
                 Some(arn.as_str()),
-                "case {case:?}: expected task {id:?} to name its workflow, got {:?}",
+                "case {case:?}: expected task {task_id:?} to name its workflow, got {:?}",
                 summary["WorkflowArn"]
             );
             assert_eq!(
                 summary["WorkflowVersion"].as_str(),
                 detail["WorkflowVersion"].as_str(),
-                "case {case:?}: expected task {id:?} to name the version the run executed, \
-                 got {:?}",
+                "case {case:?}: expected task {task_id:?} to name the version the run \
+                 executed, got {:?}",
                 summary["WorkflowVersion"]
             );
             assert!(

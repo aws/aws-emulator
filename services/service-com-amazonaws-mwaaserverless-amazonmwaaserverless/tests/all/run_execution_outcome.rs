@@ -23,6 +23,7 @@
 //! (a dependency naming no declared task, a cycle, a duplicate identifier, an identifier
 //! the modelled `TaskInstanceId` cannot carry).
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, SystemTime};
 
 use serde_json::{json, Value};
@@ -60,8 +61,9 @@ const TIMESTAMP_TOLERANCE: f64 = 0.002;
 
 /// One task a row's definition declares, and what the run must therefore report for it.
 struct ExpectedTask {
-    /// `TaskId`, which is also the `TaskInstanceId` the run's instance of it is reported
-    /// under: a run executes a declared task once.
+    /// `TaskId`: the task of the definition the run's instance executes. The identifier
+    /// that instance is reported UNDER is not this value — it is minted per run, and the
+    /// test discovers it through [`instances_by_task`].
     task_id: &'static str,
     /// `OperatorName`, when the definition declares one for the task.
     operator_name: Option<&'static str>,
@@ -368,6 +370,67 @@ pub(crate) async fn read_task_instance(
     read
 }
 
+/// Which instance of this run executes which DECLARED task: the `TaskInstanceId` the run
+/// reports for each task, keyed by the `TaskId` that instance names.
+///
+/// A run's instance identifiers are the service's own, minted per run, so a client
+/// discovers them from the run itself (`RunDetail.TaskInstances`) and learns which declared
+/// task each one executes by READING the instance — `GetTaskInstance` is the only reader
+/// that reports `TaskInstanceId` and `TaskId` together, because `TaskInstanceSummary`
+/// carries no `TaskId`.
+///
+/// `pub(crate)` beside the two helpers above, so every suite that has to address a run's
+/// instances resolves them the same way.
+pub(crate) async fn instances_by_task(
+    router: &smithy_server_runtime::MultiServiceRouter,
+    workflow_arn: &str,
+    run_id: &str,
+    case: &str,
+) -> BTreeMap<String, String> {
+    let (status, report) = call(
+        router,
+        "GetWorkflowRun",
+        json!({"WorkflowArn": workflow_arn, "RunId": run_id}),
+    )
+    .await;
+    assert_eq!(
+        status, 200,
+        "case {case:?}: expected GetWorkflowRun to succeed, got {status} {report:?}"
+    );
+    let mut by_task: BTreeMap<String, String> = BTreeMap::new();
+    for id in reported_instance_ids(&report) {
+        let read = read_task_instance(router, workflow_arn, run_id, &id, case).await;
+        let task_id = read["TaskId"]
+            .as_str()
+            .unwrap_or_else(|| {
+                panic!("case {case:?}: instance {id:?} must name the task it executes, got {read:?}")
+            })
+            .to_string();
+        let already = by_task.insert(task_id.clone(), id.clone());
+        assert!(
+            already.is_none(),
+            "case {case:?}: task {task_id:?} runs once in this run, so one instance may name \
+             it, got {already:?} and {id:?}"
+        );
+    }
+    by_task
+}
+
+/// The `TaskInstanceId`s a `GetWorkflowRun` answer reports as `RunDetail.TaskInstances`,
+/// in the order it reported them.
+pub(crate) fn reported_instance_ids(report: &Value) -> Vec<String> {
+    report["RunDetail"]["TaskInstances"]
+        .as_array()
+        .map(|entries| {
+            entries
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 #[tokio::test]
 async fn a_run_executes_the_tasks_its_definition_declares_and_reports_their_outcome() {
     let router = definition_router();
@@ -439,28 +502,48 @@ async fn a_run_executes_the_tasks_its_definition_declares_and_reports_their_outc
             detail["Duration"]
         );
 
-        // The instances the run reports are exactly the tasks the definition declared.
-        let mut expected_ids: Vec<&str> = row
-            .expected_tasks
-            .iter()
-            .map(|task| task.task_id)
-            .collect();
-        expected_ids.sort_unstable();
-        let reported_ids: Vec<&str> = detail["TaskInstances"]
-            .as_array()
-            .map(|entries| entries.iter().filter_map(Value::as_str).collect())
-            .unwrap_or_default();
+        // The instances the run reports are one per task the definition declared, each
+        // under an identifier the run minted for the instance rather than the name the
+        // definition declared for the task.
+        let instances = instances_by_task(&router, &arn, &run_id, case).await;
+        let declared: BTreeSet<&str> = row.expected_tasks.iter().map(|task| task.task_id).collect();
+        let executed: BTreeSet<&str> = instances.keys().map(String::as_str).collect();
         assert_eq!(
-            reported_ids, expected_ids,
-            "case {case:?}: expected the run to hold task instances {expected_ids:?}, got {:?}",
+            executed, declared,
+            "case {case:?}: expected the run to execute the declared tasks {declared:?}, got \
+             {executed:?}"
+        );
+        let mut minted: Vec<&str> = instances.values().map(String::as_str).collect();
+        minted.sort_unstable();
+        let reported_ids: Vec<String> = reported_instance_ids(&report);
+        assert_eq!(
+            reported_ids, minted,
+            "case {case:?}: expected the run to hold task instances {minted:?}, got {:?}",
             detail["TaskInstances"]
         );
+        for id in &reported_ids {
+            assert!(
+                !declared.contains(id.as_str()),
+                "case {case:?}: an instance identifier is minted for the instance, so it may \
+                 not be a task name the definition declared ({declared:?}), got {id:?}"
+            );
+        }
 
         // Each instance, read back through the operation that owns it.
         let mut ended_at: Vec<(&str, f64)> = Vec::with_capacity(row.expected_tasks.len());
         let mut started_at: Vec<(&str, f64)> = Vec::with_capacity(row.expected_tasks.len());
         for task in row.expected_tasks {
-            let read = read_task_instance(&router, &arn, &run_id, task.task_id, case).await;
+            let instance_id = instances
+                .get(task.task_id)
+                .unwrap_or_else(|| panic!("case {case:?}: task {:?} ran in this run", task.task_id));
+            let read = read_task_instance(&router, &arn, &run_id, instance_id, case).await;
+            assert_eq!(
+                read["TaskInstanceId"].as_str(),
+                Some(instance_id.as_str()),
+                "case {case:?}: the instance must report the identifier it is addressed by, \
+                 got {:?}",
+                read["TaskInstanceId"]
+            );
             assert_eq!(
                 read["Status"].as_str(),
                 Some(TASK_SUCCESS),
@@ -641,6 +724,19 @@ async fn the_instances_a_run_executed_are_the_ones_its_listing_pages_over() {
         report["RunDetail"]["RunState"]
     );
 
+    // The identifiers the run minted for the three tasks it executed, in the order a
+    // listing walks them.
+    let instances = instances_by_task(&router, &arn, &run_id, "listing").await;
+    let declared: Vec<&str> = instances.keys().map(String::as_str).collect();
+    assert_eq!(
+        declared,
+        vec!["alpha", "beta", "gamma"],
+        "case listing: the run must execute the tasks the definition declared, got \
+         {declared:?}"
+    );
+    let mut expected_ids: Vec<&str> = instances.values().map(String::as_str).collect();
+    expected_ids.sort_unstable();
+
     let (status, listed) = call(
         &router,
         "ListTaskInstances",
@@ -660,8 +756,7 @@ async fn the_instances_a_run_executed_are_the_ones_its_listing_pages_over() {
         .filter_map(|summary| summary["TaskInstanceId"].as_str())
         .collect();
     assert_eq!(
-        listed_ids,
-        vec!["alpha", "beta", "gamma"],
+        listed_ids, expected_ids,
         "case listing: the listing must report the instances the run executed, got {listed:?}"
     );
     for summary in &summaries {
@@ -673,10 +768,10 @@ async fn the_instances_a_run_executed_are_the_ones_its_listing_pages_over() {
     }
     assert_eq!(
         listed_ids,
-        report["RunDetail"]["TaskInstances"]
-            .as_array()
-            .map(|entries| entries.iter().filter_map(Value::as_str).collect::<Vec<&str>>())
-            .unwrap_or_default(),
+        reported_instance_ids(&report)
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<&str>>(),
         "case listing: the listing and the run's own report must name the same instances"
     );
 }
@@ -791,7 +886,8 @@ async fn stopping_a_run_ends_the_tasks_it_was_executing() {
 
 /// What a row's run must report for one task instance.
 struct ExpectedOutcome {
-    /// `TaskId`, which is also the `TaskInstanceId`.
+    /// `TaskId`: the declared task the instance executes, which is not the identifier the
+    /// instance itself is reported under ([`instances_by_task`]).
     task_id: &'static str,
     /// The `TaskInstanceStatus` the instance must report.
     status: &'static str,
@@ -1008,22 +1104,30 @@ async fn a_task_whose_declared_program_cannot_succeed_fails_the_run_it_belongs_t
             }
         }
 
-        // The instances the run reports are exactly the tasks the definition declared,
-        // whatever each of them ended as.
-        let mut expected_ids: Vec<&str> = row.expected.iter().map(|task| task.task_id).collect();
-        expected_ids.sort_unstable();
-        let reported_ids: Vec<&str> = detail["TaskInstances"]
-            .as_array()
-            .map(|entries| entries.iter().filter_map(Value::as_str).collect())
-            .unwrap_or_default();
+        // The instances the run reports are one per task the definition declared,
+        // whatever each of them ended as, each under the identifier the run minted for it.
+        let instances = instances_by_task(&router, &arn, &run_id, case).await;
+        let declared: BTreeSet<&str> = row.expected.iter().map(|task| task.task_id).collect();
+        let executed: BTreeSet<&str> = instances.keys().map(String::as_str).collect();
         assert_eq!(
-            reported_ids, expected_ids,
-            "case {case:?}: expected the run to hold task instances {expected_ids:?}, got {:?}",
+            executed, declared,
+            "case {case:?}: expected the run to execute the declared tasks {declared:?}, got \
+             {executed:?}"
+        );
+        let mut minted: Vec<&str> = instances.values().map(String::as_str).collect();
+        minted.sort_unstable();
+        let reported_ids: Vec<String> = reported_instance_ids(&report);
+        assert_eq!(
+            reported_ids, minted,
+            "case {case:?}: expected the run to hold task instances {minted:?}, got {:?}",
             detail["TaskInstances"]
         );
 
         for task in row.expected {
-            let read = read_task_instance(&router, &arn, &run_id, task.task_id, case).await;
+            let instance_id = instances
+                .get(task.task_id)
+                .unwrap_or_else(|| panic!("case {case:?}: task {:?} ran in this run", task.task_id));
+            let read = read_task_instance(&router, &arn, &run_id, instance_id, case).await;
             assert_eq!(
                 read["Status"].as_str(),
                 Some(task.status),
@@ -1082,12 +1186,15 @@ async fn a_task_whose_declared_program_cannot_succeed_fails_the_run_it_belongs_t
             "case {case:?}: expected ListTaskInstances to succeed, got {status} {listed:?}"
         );
         for task in row.expected.iter().filter(|task| task.status == TASK_FAILED) {
+            let instance_id = instances
+                .get(task.task_id)
+                .unwrap_or_else(|| panic!("case {case:?}: task {:?} ran in this run", task.task_id));
             let listed_status = listed["TaskInstances"]
                 .as_array()
                 .and_then(|entries| {
-                    entries
-                        .iter()
-                        .find(|summary| summary["TaskInstanceId"].as_str() == Some(task.task_id))
+                    entries.iter().find(|summary| {
+                        summary["TaskInstanceId"].as_str() == Some(instance_id.as_str())
+                    })
                 })
                 .and_then(|summary| summary["Status"].as_str())
                 .unwrap_or_default();

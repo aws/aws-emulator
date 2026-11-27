@@ -35,7 +35,9 @@ use service_com_amazonaws_mwaaserverless_amazonmwaaserverless::state::{
 };
 use smithy_server_runtime::MultiServiceRouter;
 
-use crate::run_execution_outcome::{read_task_instance, run_to_completion};
+use crate::run_execution_outcome::{
+    instances_by_task, read_task_instance, reported_instance_ids, run_to_completion,
+};
 use crate::run_task_instances::current_version;
 use crate::workflow_definition_snapshot::{
     call, create_bucket, create_workflow, definition_router, stage, BUCKET,
@@ -158,7 +160,9 @@ async fn update_workflow(
 }
 
 /// Assert `GetTaskInstance` resolves to NOTHING for `task_instance_id` in this run: a task
-/// another version of the workflow declares is not one this run executed.
+/// another version of the workflow declares is not one this run executed, and a task
+/// IDENTIFIER the definition declares is not an instance identifier at all — a run mints
+/// those itself.
 async fn assert_no_such_instance(
     router: &MultiServiceRouter,
     workflow_arn: &str,
@@ -216,31 +220,43 @@ async fn assert_run_executed(
         report["WorkflowVersion"]
     );
 
-    // The identifiers a client DISCOVERS for the run are the ones its version declared.
-    let discovered: BTreeSet<String> = report["RunDetail"]["TaskInstances"]
-        .as_array()
-        .map(|ids| {
-            ids.iter()
-                .filter_map(|id| id.as_str().map(str::to_string))
-                .collect()
-        })
-        .unwrap_or_default();
-    let expected: BTreeSet<String> = declared.iter().map(|id| (*id).to_string()).collect();
+    // The instances a client DISCOVERS for the run are one per task its version declared,
+    // each under an identifier the run minted and each naming the task it executes.
+    let instances = instances_by_task(router, workflow_arn, run_id, case).await;
+    let executed: BTreeSet<&str> = instances.keys().map(String::as_str).collect();
+    let expected: BTreeSet<&str> = declared.iter().copied().collect();
     assert_eq!(
-        discovered, expected,
+        executed, expected,
         "case {case:?}: expected the run to hold the instances of {expected:?}, got \
-         {discovered:?}"
+         {executed:?}"
+    );
+    let discovered: BTreeSet<String> = reported_instance_ids(&report).into_iter().collect();
+    let minted: BTreeSet<String> = instances.values().cloned().collect();
+    assert_eq!(
+        discovered, minted,
+        "case {case:?}: expected the run to report the instance identifiers it minted \
+         {minted:?}, got {discovered:?}"
     );
 
     // …and each one reads back as an instance of that task, in that version of the
     // workflow.
     for id in declared {
-        let read = read_task_instance(router, workflow_arn, run_id, id, case).await;
+        let instance_id = instances
+            .get(*id)
+            .unwrap_or_else(|| panic!("case {case:?}/{id}: this run executed task {id:?}"));
+        let read = read_task_instance(router, workflow_arn, run_id, instance_id, case).await;
         assert_eq!(
             read["TaskId"].as_str(),
             Some(*id),
             "case {case:?}/{id}: expected the instance to name its task, got {:?}",
             read["TaskId"]
+        );
+        assert_eq!(
+            read["TaskInstanceId"].as_str(),
+            Some(instance_id.as_str()),
+            "case {case:?}/{id}: expected the instance to report the identifier it is \
+             addressed by, got {:?}",
+            read["TaskInstanceId"]
         );
         assert_eq!(
             read["WorkflowVersion"].as_str(),

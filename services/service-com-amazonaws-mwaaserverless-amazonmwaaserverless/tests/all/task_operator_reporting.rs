@@ -31,7 +31,7 @@
 //! every form a definition may write that entry in, each with a value the member carries
 //! and one past its maximum.
 
-use crate::run_execution_outcome::{read_task_instance, run_to_completion};
+use crate::run_execution_outcome::{instances_by_task, read_task_instance, run_to_completion};
 use crate::workflow_definition_snapshot::{
     call, create_bucket, create_workflow, definition_router, stage,
 };
@@ -307,9 +307,15 @@ async fn assert_both_readers_report(
 ) {
     run_to_completion(router, arn, run_id, case).await;
 
+    // The instance of the one declared task, under the identifier the run minted for it.
+    let instances = instances_by_task(router, arn, run_id, case).await;
+    let instance_id = instances
+        .get(TASK_ID)
+        .unwrap_or_else(|| panic!("case {case:?}: expected the run to execute {TASK_ID:?}"));
+
     // The task ran whatever its declaration carried: an unreportable operator name
     // refuses nothing.
-    let read = read_task_instance(router, arn, run_id, TASK_ID, case).await;
+    let read = read_task_instance(router, arn, run_id, instance_id, case).await;
     assert_eq!(
         read["Status"].as_str(),
         Some(TASK_SUCCESS),
@@ -347,9 +353,9 @@ async fn assert_both_readers_report(
         .clone();
     let summary = summaries
         .iter()
-        .find(|summary| summary["TaskInstanceId"].as_str() == Some(TASK_ID))
+        .find(|summary| summary["TaskInstanceId"].as_str() == Some(instance_id.as_str()))
         .unwrap_or_else(|| {
-            panic!("case {case:?}: expected a summary for {TASK_ID:?}, got {summaries:?}")
+            panic!("case {case:?}: expected a summary for {instance_id:?}, got {summaries:?}")
         });
     assert_eq!(
         reported(&summary["OperatorName"]),

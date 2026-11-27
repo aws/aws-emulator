@@ -61,16 +61,6 @@ use super::workflow_definition::MAX_DECLARED_TASKS;
 pub type LogsState =
     ::service_com_amazonaws_cloudwatchlogs_logs_20140328::ComAmazonawsCloudwatchlogsLogs20140328State;
 
-/// The most characters a reported stream name may carry: `GetTaskInstanceResponse$LogStream`
-/// and `TaskInstanceSummary$LogStream` both target the modelled `IdString`, declared
-/// `@length(min: 1, max: 255)` (`smithy_query(query="shape",
-/// shape="GetTaskInstanceResponse")`), so a name longer than this is one the member that
-/// reports it cannot carry.
-const MAX_LOG_STREAM_CHARS: usize = 255;
-
-/// How many characters of digest a cut stream name carries ([`task_log_stream`]).
-const STREAM_DIGEST_CHARS: usize = 16;
-
 /// How many lines ONE run keeps queued for delivery.
 ///
 /// A run's whole execution produces at most two lines per task instance its definition
@@ -111,26 +101,16 @@ pub fn run_log_stream(run_id: &str) -> String {
 /// interleave in a stream and the stream name alone says which execution it holds.
 ///
 /// The composed name is built from values that already satisfy the modelled `IdString`
-/// character class (the run id this service minted and an instance identifier the execution
-/// plan only reports when that member can carry it), so only its LENGTH can take it outside
-/// what `LogStream` reports. A name past [`MAX_LOG_STREAM_CHARS`] is therefore CUT to fit,
-/// with a digest of the whole name appended: the reported name stays inside the modelled
-/// length and still names one task instance of one run uniquely.
+/// character class (the run id this service minted and the identifier the run minted for the
+/// instance), so only its LENGTH can take it outside what `LogStream` reports — that member
+/// targets the same modelled `IdString` (`smithy_query(query="shape",
+/// shape="GetTaskInstanceResponse")`). A name past it is therefore CUT to fit, through the
+/// one helper that holds a composed identifier of this service to the modelled length
+/// ([`crate::state::id_within_modelled_length`]): the reported name stays inside the
+/// modelled length and still names one task instance of one run uniquely.
 #[must_use]
 pub fn task_log_stream(run_id: &str, task_instance_id: &str, attempt: i32) -> String {
-    let name = format!("{run_id}.{task_instance_id}.attempt-{attempt}");
-    if name.chars().count() <= MAX_LOG_STREAM_CHARS {
-        return name;
-    }
-    let digest: String = super::digest(&["task-log-stream", &name])
-        .chars()
-        .take(STREAM_DIGEST_CHARS)
-        .collect();
-    let head: String = name
-        .chars()
-        .take(MAX_LOG_STREAM_CHARS - STREAM_DIGEST_CHARS - 1)
-        .collect();
-    format!("{head}.{digest}")
+    super::id_within_modelled_length(format!("{run_id}.{task_instance_id}.attempt-{attempt}"))
 }
 
 /// `at` in milliseconds since the Unix epoch, which is what every CloudWatch Logs timestamp
@@ -273,7 +253,11 @@ mod tests {
         let rows = [
             ("short", "extract", 1),
             ("punctuated", "extract.data_task-01", 3),
-            ("longest the member admits", &"t".repeat(255)[..], 1),
+            (
+                "longest the member admits",
+                &"t".repeat(crate::state::MAX_ID_STRING_CHARS)[..],
+                1,
+            ),
             ("every attempt digit", "load", i32::MAX),
         ];
         let run_id = "run-0123456789abcdef";
@@ -282,9 +266,9 @@ mod tests {
             let name = task_log_stream(run_id, task_instance_id, attempt);
             let length = name.chars().count();
             assert!(
-                (1..=MAX_LOG_STREAM_CHARS).contains(&length),
-                "case {case:?}: expected a name of 1..={MAX_LOG_STREAM_CHARS} characters, got \
-                 {length} in {name:?}"
+                (1..=crate::state::MAX_ID_STRING_CHARS).contains(&length),
+                "case {case:?}: expected a name of 1..={} characters, got {length} in {name:?}",
+                crate::state::MAX_ID_STRING_CHARS
             );
             assert!(
                 name.starts_with(run_id),

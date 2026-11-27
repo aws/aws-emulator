@@ -13,7 +13,10 @@
 //!
 //! What a run EXECUTES, and the outcome each instance therefore reports, is the subject of
 //! `run_execution_outcome`; this suite is about the three readers of those records never
-//! disagreeing, which is what a client inspecting a run's tasks depends on.
+//! disagreeing, which is what a client inspecting a run's tasks depends on. The second rule
+//! it covers is WHAT those identifiers are: an instance identifier is the service's own,
+//! minted per (run, task, attempt), and never the identifier the definition declared for
+//! the task — the last test.
 //!
 //! Every test drives the real wire path through the same router the emulator boots, with
 //! the Amazon S3 service mounted beside this one on ONE shared engine, because a run's
@@ -24,11 +27,13 @@ use std::time::{Duration, SystemTime};
 
 use serde_json::{json, Value};
 use service_com_amazonaws_mwaaserverless_amazonmwaaserverless::state::{
-    RUN_TYPE_SCHEDULED, SCHEDULED_RUN_EVERY,
+    LOOKUP_MISS_STATUS, RUN_TYPE_SCHEDULED, SCHEDULED_RUN_EVERY,
 };
 use smithy_server_runtime::MultiServiceRouter;
 
-use crate::run_execution_outcome::{read_task_instance, run_to_completion};
+use crate::run_execution_outcome::{
+    instances_by_task, read_task_instance, reported_instance_ids, run_to_completion,
+};
 use crate::workflow_definition_snapshot::{
     call, create_bucket, create_workflow, definition_router, stage,
 };
@@ -289,4 +294,266 @@ async fn every_reader_of_a_triggered_run_s_task_instances_reports_the_same_recor
     });
 
     assert_readers_agree(&router, &arn, &run_id, &version, case).await;
+}
+
+// === WHAT a task-instance identifier IS ===
+//
+// `TaskInstanceId` is "The unique identifier of this task instance" while the task the
+// instance executes is reported separately as `TaskId`, "The unique identifier of the task
+// definition within the workflow" (`smithy_query(query="shape",
+// shape="TaskInstanceSummary,GetTaskInstanceResponse")`), so the identifier of an instance
+// is the service's own, minted when the run creates the instance, and not a name the
+// caller's definition authored: two runs of one workflow execute the same declared tasks
+// and must still report instance identifiers that tell their instances apart.
+
+/// The published bounds of the modelled `IdString` every reader of a task-instance
+/// identifier targets. Source: `smithy_query(query="shape", shape="IdString")` —
+/// `@length(1..255)` and `@pattern ^[a-zA-Z0-9]+[a-zA-Z0-9\.\-_]*$`.
+const MIN_ID_STRING_CHARS: usize = 1;
+const MAX_ID_STRING_CHARS: usize = 255;
+
+/// Whether `value` is one that modelled `IdString` can carry.
+fn is_id_string(value: &str) -> bool {
+    let length = value.chars().count();
+    (MIN_ID_STRING_CHARS..=MAX_ID_STRING_CHARS).contains(&length)
+        && value
+            .chars()
+            .next()
+            .is_some_and(|first| first.is_ascii_alphanumeric())
+        && value
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || ".-_".contains(character))
+}
+
+/// One row: a definition, and the `TaskId`s it declares.
+struct MintedIdRow {
+    case: String,
+    definition: String,
+    declared: Vec<String>,
+}
+
+/// The table. Rows differ along how many tasks the definition declares, the shape of the
+/// dependencies between them and the FORM of the identifiers it declares for them — never
+/// merely along the workflow's name.
+fn minted_id_rows() -> Vec<MintedIdRow> {
+    let row = |case: &str, definition: String, declared: &[&str]| MintedIdRow {
+        case: case.to_string(),
+        definition,
+        declared: declared.iter().map(|id| (*id).to_string()).collect(),
+    };
+    // The longest identifier the modelled member can carry, so a definition at that bound
+    // is covered too.
+    let longest = format!("t{}", "x".repeat(MAX_ID_STRING_CHARS - 1));
+    vec![
+        row(
+            "one task",
+            "tasks:\n  - id: solo\n    operator: EmptyOperator\n".to_string(),
+            &["solo"],
+        ),
+        row(
+            "two tasks, the second waiting for the first",
+            "tasks:\n  - id: first_task\n  - id: second_task\n    dependencies: \
+             [first_task]\n"
+                .to_string(),
+            &["first_task", "second_task"],
+        ),
+        row(
+            "three tasks fanning out from one",
+            "tasks:\n  - id: root\n  - id: left\n    dependencies: [root]\n  - id: right\n    \
+             dependencies: [root]\n"
+                .to_string(),
+            &["root", "left", "right"],
+        ),
+        row(
+            "task identifiers carrying each punctuation character the member admits",
+            "tasks:\n  - id: a.b\n  - id: c-d\n    dependencies: [a.b]\n  - id: e_f\n    \
+             dependencies: [c-d]\n"
+                .to_string(),
+            &["a.b", "c-d", "e_f"],
+        ),
+        row(
+            "a task identifier at the longest the member can carry",
+            format!("tasks:\n  - id: {longest}\n"),
+            &[longest.as_str()],
+        ),
+    ]
+}
+
+/// Assert `GetTaskInstance` resolves to NOTHING for `task_instance_id` in this run.
+async fn assert_no_such_instance(
+    router: &MultiServiceRouter,
+    workflow_arn: &str,
+    run_id: &str,
+    task_instance_id: &str,
+    case: &str,
+) {
+    let (status, answered) = call(
+        router,
+        "GetTaskInstance",
+        json!({
+            "WorkflowArn": workflow_arn,
+            "RunId": run_id,
+            "TaskInstanceId": task_instance_id,
+        }),
+    )
+    .await;
+    assert_eq!(
+        status, LOOKUP_MISS_STATUS,
+        "case {case:?}: {task_instance_id:?} names no instance of this run, so the read must \
+         be HTTP {LOOKUP_MISS_STATUS}, got {status} {answered:?}"
+    );
+    assert!(
+        answered["__type"]
+            .as_str()
+            .is_some_and(|kind| kind.contains("ResourceNotFoundException")),
+        "case {case:?}: expected a ResourceNotFoundException for {task_instance_id:?}, got {:?}",
+        answered["__type"]
+    );
+}
+
+/// Start a run of `workflow_arn` and answer its `RunId`.
+async fn start_run(router: &MultiServiceRouter, workflow_arn: &str, case: &str) -> String {
+    let (status, started) = call(
+        router,
+        "StartWorkflowRun",
+        json!({"WorkflowArn": workflow_arn}),
+    )
+    .await;
+    assert_eq!(
+        status, 200,
+        "case {case:?}: expected StartWorkflowRun to succeed, got {status} {started:?}"
+    );
+    started["RunId"]
+        .as_str()
+        .unwrap_or_else(|| panic!("case {case:?}: a started run has a RunId, got {started:?}"))
+        .to_string()
+}
+
+#[tokio::test]
+async fn a_run_mints_an_instance_identifier_per_task_instead_of_reporting_the_declared_task_id() {
+    let router = definition_router();
+    create_bucket(&router).await;
+    let rows = minted_id_rows();
+
+    // Every run is started FIRST and polled afterwards, so the rows' executions overlap on
+    // the one clock they all run on rather than being waited for one after another. TWO
+    // runs per row, of ONE workflow: the same definition declares the same tasks for both,
+    // which is the case an instance identifier has to tell apart.
+    let mut started = Vec::with_capacity(rows.len());
+    for (index, row) in rows.iter().enumerate() {
+        let case = row.case.as_str();
+        let key = format!("dags/minted-instance-ids-{index}.yaml");
+        stage(&router, &key, row.definition.as_bytes()).await;
+        let arn = create_workflow(&router, &format!("mintedInstanceIds{index}"), &key).await;
+        let first = start_run(&router, &arn, case).await;
+        let second = start_run(&router, &arn, case).await;
+        started.push((row, arn, first, second));
+    }
+
+    for (row, arn, first, second) in started {
+        let declared: BTreeSet<&str> = row.declared.iter().map(String::as_str).collect();
+        let mut minted_per_run: Vec<BTreeSet<String>> = Vec::with_capacity(2);
+        for (leg, run_id) in [("first run", &first), ("second run", &second)] {
+            let case = format!("{} / the {leg}", row.case);
+            let case = case.as_str();
+            let report = run_to_completion(&router, &arn, run_id, case).await;
+
+            // One instance per declared task, each naming the task it executes.
+            let instances = instances_by_task(&router, &arn, run_id, case).await;
+            let executed: BTreeSet<&str> = instances.keys().map(String::as_str).collect();
+            assert_eq!(
+                executed, declared,
+                "case {case:?}: expected an instance of each declared task {declared:?}, got \
+                 {executed:?}"
+            );
+
+            // Both readers of those instances report the identifiers the run minted, and
+            // nothing else.
+            let minted: BTreeSet<String> = instances.values().cloned().collect();
+            let reported: BTreeSet<String> = reported_instance_ids(&report).into_iter().collect();
+            assert_eq!(
+                reported, minted,
+                "case {case:?}: expected RunDetail.TaskInstances to name the minted \
+                 identifiers {minted:?}, got {reported:?}"
+            );
+            let listed: BTreeSet<String> = listed_instances(&router, &arn, run_id, case)
+                .await
+                .into_keys()
+                .collect();
+            assert_eq!(
+                listed, minted,
+                "case {case:?}: expected the listing to report the minted identifiers \
+                 {minted:?}, got {listed:?}"
+            );
+
+            for (task_id, instance_id) in &instances {
+                assert!(
+                    is_id_string(instance_id),
+                    "case {case:?}: a minted identifier must be one the modelled IdString \
+                     carries, got {instance_id:?}"
+                );
+                assert_ne!(
+                    instance_id, task_id,
+                    "case {case:?}: the identifier of an instance is not the identifier of \
+                     the task it executes, got {instance_id:?} for both"
+                );
+                assert!(
+                    !declared.contains(instance_id.as_str()),
+                    "case {case:?}: a minted identifier may not be any name the definition \
+                     declared ({declared:?}), got {instance_id:?}"
+                );
+                // The declared task name is not a handle to the instance: only the minted
+                // identifier addresses it.
+                assert_no_such_instance(&router, &arn, run_id, task_id, case).await;
+                let read = read_task_instance(&router, &arn, run_id, instance_id, case).await;
+                assert_eq!(
+                    read["TaskInstanceId"].as_str(),
+                    Some(instance_id.as_str()),
+                    "case {case:?}: expected the instance to report the identifier it is \
+                     addressed by, got {:?}",
+                    read["TaskInstanceId"]
+                );
+                assert_eq!(
+                    read["TaskId"].as_str(),
+                    Some(task_id.as_str()),
+                    "case {case:?}: expected the instance to name the declared task \
+                     {task_id:?}, got {:?}",
+                    read["TaskId"]
+                );
+            }
+
+            // The identifiers are the run's own and do not move between reads.
+            let again: BTreeSet<String> =
+                reported_instance_ids(&run_to_completion(&router, &arn, run_id, case).await)
+                    .into_iter()
+                    .collect();
+            assert_eq!(
+                again, minted,
+                "case {case:?}: a settled run must report the same instance identifiers on \
+                 every read, got {again:?} after {minted:?}"
+            );
+            minted_per_run.push(minted);
+        }
+
+        // Two runs of ONE definition: the same tasks, and no instance identifier in common,
+        // so a client can tell this run's instance of a task from the other run's.
+        let shared: Vec<&String> = minted_per_run[0].intersection(&minted_per_run[1]).collect();
+        assert!(
+            shared.is_empty(),
+            "case {:?}: two runs of one workflow mint their own instance identifiers, got \
+             {shared:?} in both",
+            row.case
+        );
+
+        // …and an identifier is a handle on an instance of ITS OWN run: the other run of
+        // the same workflow resolves none of them.
+        for (reader, minted_elsewhere) in [
+            (&second, &minted_per_run[0]),
+            (&first, &minted_per_run[1]),
+        ] {
+            for id in minted_elsewhere {
+                assert_no_such_instance(&router, &arn, reader, id, &row.case).await;
+            }
+        }
+    }
 }
