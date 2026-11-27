@@ -4350,33 +4350,40 @@ pub fn collection_constraint_envelope(
 /// The envelope WAF's request validator answers for MAP KEYS that fail the key
 /// shape's own constraints — or `None` when none of them do.
 ///
-/// The map-key counterpart of [`collection_constraint_envelope`]: a map's keys carry
-/// the key shape's constraints, and WAF reports a key that breaks one against the
-/// MAP member's path, with the KEY as the value and every constraint of the key
-/// shape listed in one bracketed set. One clause per offending key, since each key
-/// is its own value.
+/// The map-key counterpart of [`collection_constraint_envelope`], and it echoes the
+/// same thing that one does: a clause about a member reports the MEMBER's value,
+/// which for a map is the whole map ([`rendered_map`]), not the one key at fault.
+/// A map's keys carry the key shape's constraints, so WAF reports a key that breaks
+/// one against the MAP member's path, with every constraint of the key shape listed
+/// in one bracketed set — one clause per offending key, since each key breaks the
+/// key shape on its own.
 ///
 /// `member_path` is the map member's path as the envelope names it (use
-/// [`member_path`]), `keys` are the keys the request sent, `key_constraints` is the
-/// key shape's constraint set (e.g. [`VERSION_KEY_CONSTRAINTS`]) and `key_schema` is
-/// the shadow member schema carrying those constraints, over which the framework's
-/// own walk decides which keys are at fault.
+/// [`member_path`]), `rendered_map` is the member's value as the validator renders
+/// it (use [`rendered_map`]), `keys` are the keys the request sent,
+/// `key_constraints` is the key shape's constraint set (e.g.
+/// [`VERSION_KEY_CONSTRAINTS`]) and `key_schema` is the shadow member schema
+/// carrying those constraints, over which the framework's own walk decides which
+/// keys are at fault.
 pub fn map_key_constraint_envelope(
     member_path: &str,
+    rendered_map: &str,
     keys: &[String],
     key_constraints: &[&str],
     key_schema: &'static Schema,
 ) -> Option<String> {
+    // The value every clause about this member echoes: the map, the way WAF renders
+    // one.
+    let rendered = echoed(rendered_map);
     let clauses: Vec<String> = keys
         .iter()
         .filter(|key| {
             !validate_members(&[(key_schema, ConstrainedValue::Text(key.as_str()))]).is_empty()
         })
-        .map(|key| {
+        .map(|_key| {
             format!(
-                "Value '{}' at '{member_path}' failed to satisfy constraint: \
+                "Value '{rendered}' at '{member_path}' failed to satisfy constraint: \
                  Map keys must satisfy constraint: [{}]",
-                echoed(key),
                 key_constraints.join(", ")
             )
         })
@@ -4389,6 +4396,45 @@ pub fn map_key_constraint_envelope(
             clauses.join("; ")
         )),
     }
+}
+
+/// A MAP member's value as a validation clause renders one: `{<key>=<value>, …}`,
+/// and `{}` for a map with no entries.
+///
+/// A clause reports the value of the MEMBER it names, so a violation about a map —
+/// about one of its keys or about the map itself — echoes the whole map. The entries
+/// are rendered in KEY order, so a map that came off the wire unordered renders the
+/// same way on every call and a caller can act on what the clause quotes.
+pub fn rendered_map(entries: &[(String, String)]) -> String {
+    let mut entries: Vec<&(String, String)> = entries.iter().collect();
+    entries.sort_by(|left, right| left.0.cmp(&right.0));
+    let rendered: Vec<String> = entries
+        .iter()
+        .map(|(key, value)| format!("{key}={value}"))
+        .collect();
+    format!("{{{}}}", rendered.join(", "))
+}
+
+/// A STRUCTURE as a validation clause renders one:
+/// `<ShapeName>(<member>=<value>, …)`, where a member the request left out renders
+/// as `null`.
+///
+/// `shape_name` is the structure shape's own name and `members` are its members in
+/// the order the MODEL declares them, each named as a clause names a member (see
+/// [`member_path`]) and each carrying the value the request sent, if any. Used to
+/// render the values of a map a clause echoes ([`rendered_map`]).
+pub fn rendered_structure(shape_name: &str, members: &[(&str, Option<String>)]) -> String {
+    let rendered: Vec<String> = members
+        .iter()
+        .map(|(name, value)| {
+            format!(
+                "{}={}",
+                member_path(name),
+                value.as_deref().unwrap_or("null")
+            )
+        })
+        .collect();
+    format!("{shape_name}({})", rendered.join(", "))
 }
 
 /// A member's path as a validation clause names it: the Smithy member name in

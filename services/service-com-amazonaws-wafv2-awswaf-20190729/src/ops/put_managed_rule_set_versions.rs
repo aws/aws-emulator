@@ -8,17 +8,22 @@
 //! `WAFInvalidParameterException` (all HTTP 400). This is the ONLY file to touch for
 //! this operation.
 //!
-//! The RESOURCE THE PUT ADDRESSES is resolved before anything the BODY carries is judged:
-//! the managed rule set `(Scope, Name, Id)` names comes first, so an identity no managed
-//! rule set of this account carries is `WAFNonexistentItemException` whatever the body
-//! holds — a publisher cannot be told about the versions of a set that is not there, nor
-//! about the rule groups those versions would be defined by. Only the `Scope` is judged
-//! ahead of it, because it says which endpoint's namespace the set would be resolved in at
-//! all. The body is then judged in the order WAF reads it: the version keys the request
-//! publishes under, then a reference that is no rule-group ARN at all, then whether a
-//! well-formed reference resolves to a rule group of this scope, and last the
-//! optimistic-lock token's own modelled constraint — which is why `LockToken` carries
-//! `skip_validation` on the input struct (see
+//! REQUEST VALIDATION comes before any state is read, and the RESOURCE THE PUT ADDRESSES
+//! before anything else the BODY carries is judged. A value the model constrains is
+//! judged against those constraints before the service resolves anything in its store,
+//! because the request boundary runs that walk ahead of every handler: the `Scope` says
+//! which endpoint's namespace anything would be resolved in at all, and then the
+//! `VersionsToPublish` KEYS, which are `VersionKeyString`s the boundary walk cannot reach
+//! (it visits a map's values), are refused in the validator's own envelope whatever the
+//! request targets — exactly as `Name` or `Id` outside their own form already are. Only
+//! then is the managed rule set `(Scope, Name, Id)` names resolved, so an identity no
+//! managed rule set of this account carries is `WAFNonexistentItemException` whatever
+//! references the body holds — a publisher cannot be told about the versions of a set that
+//! is not there, nor about the rule groups those versions would be defined by. The rest of
+//! the body is then judged in the order WAF reads it: a reference that is no rule-group ARN
+//! at all, then whether a well-formed reference resolves to a rule group of this scope, and
+//! last the optimistic-lock token's own modelled constraint — which is why `LockToken`
+//! carries `skip_validation` on the input struct (see
 //! `super::types::put_managed_rule_set_versions_types`): the request boundary runs every
 //! modelled constraint BEFORE any handler, so a token left there would be reported instead
 //! of the missing set. Every other update in this crate resolves its target the same way
@@ -224,6 +229,25 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             );
         }
 
+        // Then the version keys the request publishes under, which are `VersionKeyString`s:
+        // a map's KEYS do not reach the request boundary's walk (it visits a map's
+        // values), so a key that violates that shape's own constraints is checked
+        // here against the same constraints, in the framework's own envelope — WAF
+        // reports it against the map member's path, with that member's whole value as
+        // the value a clause echoes and the key shape's constraint set in one bracketed
+        // clause. It is a judgement on the REQUEST, so it is answered before anything is
+        // resolved in the store, just as every member constraint the boundary itself
+        // walks is.
+        if let Some(envelope) = crate::state::map_key_constraint_envelope(
+            &crate::state::member_path("VersionsToPublish"),
+            &rendered_versions_to_publish(&input),
+            &published_version_keys(&input),
+            crate::state::VERSION_KEY_CONSTRAINTS,
+            &crate::state::M_VERSIONS_TO_PUBLISH,
+        ) {
+            return Err(crate::scaffolded::Scaffolded::validation(envelope));
+        }
+
         let Some(store) = crate::state::service_state(&*self.engine) else {
             return Err(PutManagedRuleSetVersionsErrorModeled::WAFInternalErrorException(
                 WAFInternalErrorException {
@@ -235,10 +259,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let mut state = store.lock();
 
         // The TARGET of the put is the managed rule set `(Scope, Name, Id)` names, and it is
-        // resolved FIRST: an identity no managed rule set of this account carries names a
-        // resource that doesn't exist, so that is what the put is told about whatever else it
-        // carries — a publisher cannot be told about the versions of a set that is not there,
-        // nor about the rule groups those versions would be defined by. Nothing is published.
+        // the FIRST thing resolved in the store: an identity no managed rule set of this
+        // account carries names a resource that doesn't exist, so that is what a request that
+        // validates is told about whatever else it carries — a publisher cannot be told about
+        // the versions of a set that is not there, nor about the rule groups those versions
+        // would be defined by. Nothing is published.
         if state
             .managed_rule_set(&input.scope, &input.name, &input.id)
             .is_none()
@@ -256,21 +281,6 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 )
                 .into(),
             );
-        }
-
-        // Then the version keys the request publishes under, which are `VersionKeyString`s:
-        // a map's KEYS do not reach the request boundary's walk (it visits a map's
-        // values), so a key that violates that shape's own constraints is checked
-        // here against the same constraints, in the framework's own envelope — WAF
-        // reports it against the map member's path, with the key as the value and the
-        // key shape's whole constraint set in one bracketed clause.
-        if let Some(envelope) = crate::state::map_key_constraint_envelope(
-            &crate::state::member_path("VersionsToPublish"),
-            &published_version_keys(&input),
-            crate::state::VERSION_KEY_CONSTRAINTS,
-            &crate::state::M_VERSIONS_TO_PUBLISH,
-        ) {
-            return Err(crate::scaffolded::Scaffolded::validation(envelope));
         }
 
         // A value the request carries that WAF cannot even READ as a reference is
@@ -468,6 +478,43 @@ fn published_version_keys(input: &PutManagedRuleSetVersionsInput) -> Vec<String>
     let mut keys: Vec<String> = versions.keys().cloned().collect();
     keys.sort();
     keys
+}
+
+/// The `VersionsToPublish` map as the request validator renders that member's value:
+/// the map ([`crate::state::rendered_map`]) whose entries are the `VersionToPublish`
+/// structures the request sent ([`crate::state::rendered_structure`]), their members
+/// in the order the model declares them (`AssociatedRuleGroupArn` then
+/// `ForecastedLifetime`, from
+/// `smithy_query(query="shape",shape="VersionToPublish")`), each absent member
+/// rendered as null.
+///
+/// A validation clause about this member echoes the member's whole value, so this is
+/// what a clause about one of its KEYS quotes.
+fn rendered_versions_to_publish(input: &PutManagedRuleSetVersionsInput) -> String {
+    let entries: Vec<(String, String)> = input
+        .versions_to_publish
+        .iter()
+        .flatten()
+        .map(|(version, to_publish)| {
+            (
+                version.clone(),
+                crate::state::rendered_structure(
+                    "VersionToPublish",
+                    &[
+                        (
+                            "AssociatedRuleGroupArn",
+                            to_publish.associated_rule_group_arn.clone(),
+                        ),
+                        (
+                            "ForecastedLifetime",
+                            to_publish.forecasted_lifetime.map(|days| days.to_string()),
+                        ),
+                    ],
+                ),
+            )
+        })
+        .collect();
+    crate::state::rendered_map(&entries)
 }
 
 /// Every `AssociatedRuleGroupArn` the request publishes a version by, in version-key

@@ -88,7 +88,9 @@ pub(crate) fn provision_managed_rule_set(
 }
 
 /// `GetManagedRuleSet` for `(scope, name, id)`, as a 200.
-async fn get_managed_rule_set(waf: &Waf, scope: &str, name: &str, id: &str) -> Value {
+///
+/// Shared with the sibling suites rather than copied into each one.
+pub(crate) async fn get_managed_rule_set(waf: &Waf, scope: &str, name: &str, id: &str) -> Value {
     waf.ok(
         "GetManagedRuleSet",
         json!({ "Name": name, "Scope": scope, "Id": id }),
@@ -97,12 +99,16 @@ async fn get_managed_rule_set(waf: &Waf, scope: &str, name: &str, id: &str) -> V
 }
 
 /// A `VersionsToPublish` entry.
-fn version_to_publish(arn: &str, forecasted_lifetime: i64) -> Value {
+///
+/// Shared with the sibling suites rather than copied into each one.
+pub(crate) fn version_to_publish(arn: &str, forecasted_lifetime: i64) -> Value {
     json!({ "AssociatedRuleGroupArn": arn, "ForecastedLifetime": forecasted_lifetime })
 }
 
 /// Create the rule groups a put publishes its versions by, and answer their ARNs.
-async fn vendor_rule_groups(waf: &Waf, scope: &str) -> Vec<String> {
+///
+/// Shared with the sibling suites rather than copied into each one.
+pub(crate) async fn vendor_rule_groups(waf: &Waf, scope: &str) -> Vec<String> {
     let mut arns = Vec::new();
     for (index, capacity) in RULE_GROUP_CAPACITIES.into_iter().enumerate() {
         let name = format!("vendor-group-{index}");
@@ -644,12 +650,13 @@ async fn a_put_whose_rule_group_does_not_exist_is_refused() {
 }
 
 /// A `VersionsToPublish` KEY that breaks `VersionKeyString`'s own constraints is
-/// refused as a bad request — once the set itself has been resolved, because the resource the
-/// put addresses is what a request about a set that is not there is told about.
+/// refused as a bad request — before anything is resolved in the store, because a value
+/// the model constrains is judged against those constraints ahead of every state read.
 ///
 /// The rows differ in WHICH constraint the key breaks (the pattern, the length
 /// ceiling) and are each tried against a set that exists and one that does not, so
-/// the ordering is pinned as well as the refusal. A key that satisfies every
+/// the ordering is pinned as well as the refusal (the whole table of targets, bodies and
+/// tokens is `crate::request_shape_precedence`). A key that satisfies every
 /// constraint reaches the operation, which is the row that keeps this from refusing
 /// legal keys.
 #[tokio::test]
@@ -669,21 +676,11 @@ async fn a_version_key_outside_the_modelled_form_is_refused() {
     ];
 
     for (case, version) in illegal {
-        for (target, name, id, expected) in [
-            (
-                "a set that exists",
-                set_name,
-                set_id.as_str(),
-                "ValidationException",
-            ),
-            // The resource the put addresses is resolved first, so a request about a set that
-            // is not there is told about the set rather than about its version keys.
-            (
-                "a set that does not",
-                "never-provisioned",
-                FOREIGN_ID,
-                "WAFNonexistentItemException",
-            ),
+        // The key is a judgement on the REQUEST, so the same refusal is answered whether
+        // or not the account holds the set the put addresses.
+        for (target, name, id) in [
+            ("a set that exists", set_name, set_id.as_str()),
+            ("a set that does not", "never-provisioned", FOREIGN_ID),
         ] {
             let case = format!("{case}, against {target}");
             let body = waf
@@ -698,13 +695,10 @@ async fn a_version_key_outside_the_modelled_form_is_refused() {
                             *version: version_to_publish(&rule_groups[0], 90),
                         },
                     }),
-                    expected,
+                    "ValidationException",
                     &case,
                 )
                 .await;
-            if expected != "ValidationException" {
-                continue;
-            }
             let message = body["message"]
                 .as_str()
                 .or_else(|| body["Message"].as_str())
