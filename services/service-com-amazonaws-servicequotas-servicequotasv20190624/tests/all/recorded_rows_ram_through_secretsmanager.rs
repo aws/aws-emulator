@@ -163,15 +163,14 @@ const PUBLISHED_ROWS: &[Row] = &[
         period: None,
         metric: None,
     },
-    // A row whose published sentence and adjustability the recording states and whose
-    // VALUE is the allowance this catalog reads off the service's published limits (see
-    // the row's comment in `quota_rows.rs`): pinned here so it cannot drift either.
+    // The account's custom-permission plane, whose published sentence, adjustability and
+    // VALUE are all the recording's: pinned here so it cannot drift.
     Row {
         service_code: "ram",
         quota_code: "L-9EBA15DD",
         quota_name: "Number of custom permissions",
         description: "The maximum number of custom permissions.",
-        value: 100.0,
+        value: 1500.0,
         unit: "None",
         adjustable: true,
         period: None,
@@ -183,7 +182,8 @@ const PUBLISHED_ROWS: &[Row] = &[
         service_code: "rds",
         quota_code: "L-5BC124EF",
         quota_name: "Read replicas per primary",
-        description: "The maximum number of read replicas per primary DB instance",
+        description: "The maximum number of read replicas per primary DB instance. This quota \
+                      can't be adjusted for Amazon Aurora.",
         value: 15.0,
         unit: "None",
         adjustable: true,
@@ -348,14 +348,13 @@ const PUBLISHED_ROWS: &[Row] = &[
         period: None,
         metric: None,
     },
-    // The Route 53 Profiles plane, whose value is this catalog's reading of the
-    // service's published allowance.
+    // The Route 53 Profiles plane, whose value is the recording's.
     Row {
         service_code: "route53resolver",
         quota_code: "L-8B4B9B75",
         quota_name: "Resolver rule associations to a Route 53 Profile.",
         description: "The maximum number of Resolver rule associations per Route 53 Profile.",
-        value: 200.0,
+        value: 1000.0,
         unit: "None",
         adjustable: true,
         period: None,
@@ -422,13 +421,13 @@ const PUBLISHED_ROWS: &[Row] = &[
         period: None,
         metric: None,
     },
-    // The S3 Glacier retrieval plane, whose sentence is written in the form this
-    // catalog words a measured plane with rather than cited.
+    // The retrieval-request plane, whose published sentence counts the requests of the
+    // whole ACCOUNT rather than of one storage class.
     Row {
         service_code: "s3",
         quota_code: "L-1923B91D",
         quota_name: "S3 Glacier: Retrieval request rate per second.",
-        description: "The maximum number of S3 Glacier retrieval requests per second",
+        description: "The maximum number of retrieval requests per second allowed per account.",
         value: 1000.0,
         unit: "None",
         adjustable: false,
@@ -453,12 +452,12 @@ const PUBLISHED_ROWS: &[Row] = &[
     Row {
         service_code: "scheduler",
         quota_code: "L-B7845AAE",
-        quota_name: "Maximum UpdateSchedule requests per second",
+        quota_name: "UpdateSchedule request rate",
         description: "Maximum UpdateSchedule requests per second. When you reach this quota, \
                       EventBridge Scheduler rejects requests for this operation for the \
                       remainder of the interval. This is adjustable to tens of thousands of \
                       requests per second.",
-        value: 5000.0,
+        value: 1000.0,
         unit: "None",
         adjustable: true,
         period: Some((1, "SECOND")),

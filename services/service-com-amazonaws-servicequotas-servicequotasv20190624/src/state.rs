@@ -2875,19 +2875,6 @@ impl QuotaRow {
         self
     }
 
-    /// The `QuotaName` AWS publishes this quota under, where it is NOT the name the
-    /// row's class builds.
-    ///
-    /// A row built by a class constructor carries the name that class publishes
-    /// (`<Api> request rate` and the like). Where a service publishes one row of such a
-    /// class under a name of its own, this is how that row states it: the rest of the
-    /// class's published members still come from the one constructor, so only the name
-    /// differs.
-    fn named(mut self, name: &str) -> Self {
-        self.name = name.to_string();
-        self
-    }
-
     /// AWS publishes this quota as NOT adjustable.
     fn fixed(mut self) -> Self {
         self.adjustable = false;
