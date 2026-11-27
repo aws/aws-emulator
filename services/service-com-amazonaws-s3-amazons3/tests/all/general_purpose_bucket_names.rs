@@ -7,15 +7,21 @@
 //! bucket under a name it could never address. WHICH refusal depends on which kind of
 //! sentence the name broke:
 //!
-//! * a name in the namespace AWS keeps for its OWN buckets — the `sthree-` prefix, Amazon
-//!   S3's internal one — is spelled the way a bucket name is spelled and what the caller may
-//!   not do is hold it, so the refusal is the authorization one: HTTP 403 `AccessDenied` with
-//!   the sentence that code publishes;
-//! * every other sentence is about how the name is SPELLED — including the prefixes and
-//!   suffixes reserved to OTHER S3 resource kinds, which no general purpose bucket exists
-//!   under at all — which is HTTP 400 `InvalidBucketName` with the sentence S3's published
-//!   error list states for that code and the rejected name in the `<BucketName>` member of the
-//!   error document.
+//! * a name whose START or END is in a namespace the rules RESERVE — the `sthree-` and
+//!   `amzn-s3-demo-` prefixes, which are AWS's own bucket namespaces, and the suffixes reserved
+//!   to other S3 resource kinds — is spelled the
+//!   way a bucket name is spelled and what the caller may not do is hold it, so the refusal is
+//!   the authorization one: HTTP 403 `AccessDenied` with the sentence naming which end of the
+//!   name is reserved, which is the only thing that tells a caller to rename the bucket rather
+//!   than to retry with other credentials;
+//! * a name ending in the DIRECTORY bucket suffix is a directory bucket's, and such a bucket is
+//!   created by this same call from a request carrying the `CreateBucketConfiguration` that
+//!   places it in its zone — so a create that carries no such document is refused for the BODY:
+//!   HTTP 400 `MalformedXML`;
+//! * every other sentence is about how the name is SPELLED — the `xn--` prefix, which is the
+//!   ASCII form of a punycode-encoded label, included — which is HTTP 400 `InvalidBucketName`
+//!   with the sentence S3's published error list states for that code and the rejected name in
+//!   the `<BucketName>` member of the error document.
 //!
 //! A client branching on "the name is malformed, fix it" against "the name is not yours to
 //! have" reads the two apart from the code, and retry logic keyed on one does not fire for the
@@ -52,12 +58,24 @@ const INVALID_BUCKET_NAME: &str = "InvalidBucketName";
 /// See [`INVALID_BUCKET_NAME`] — the fixed text of that error class.
 const INVALID_BUCKET_NAME_MESSAGE: &str = "The specified bucket is not valid.";
 
-/// The code S3 refuses a name in AWS's OWN bucket namespace with, and the sentence that code
-/// publishes: the name is AWS's, not the caller's.
+/// The code S3 answers a request whose BODY does not validate against the schema it publishes
+/// for the call, and the sentence that code publishes.
+const MALFORMED_XML: &str = "MalformedXML";
+
+/// See [`MALFORMED_XML`].
+const MALFORMED_XML_MESSAGE: &str =
+    "The XML you provided was not well-formed or did not validate against our published \
+     schema";
+
+/// The code S3 refuses a name in a namespace the rules reserve with: the name is not the
+/// caller's to have.
 const ACCESS_DENIED: &str = "AccessDenied";
 
-/// See [`ACCESS_DENIED`].
-const ACCESS_DENIED_MESSAGE: &str = "Access Denied";
+/// See [`ACCESS_DENIED`] — the sentence S3 states for a name whose START is reserved.
+const RESERVED_PREFIX_MESSAGE: &str = "The requested bucket name starts with a reserved prefix";
+
+/// See [`ACCESS_DENIED`] — and for one whose END is.
+const RESERVED_SUFFIX_MESSAGE: &str = "The requested bucket name ends with a reserved suffix";
 
 /// One row: the case, the name the create carries, whether S3 holds a bucket under it, the
 /// refusal the create earns (`None` for a name the rules admit), and the status a `HeadBucket`
@@ -93,12 +111,33 @@ const MALFORMED: Refusal = Refusal {
     names_the_bucket: true,
 };
 
-/// The refusal a name in AWS's OWN bucket namespace earns: the sentence states that the caller
-/// may not have the name, and names nothing of the request.
-const RESERVED: Refusal = Refusal {
+/// The refusal a name whose START is in a namespace AWS reserves earns: the sentence states
+/// that the caller may not have the name and at which end it is reserved, and names nothing of
+/// the request.
+const RESERVED_PREFIX: Refusal = Refusal {
     status: 403,
     code: ACCESS_DENIED,
-    message: ACCESS_DENIED_MESSAGE,
+    message: RESERVED_PREFIX_MESSAGE,
+    names_the_bucket: false,
+};
+
+/// The same for a name whose END is reserved — to an access point alias, an Object Lambda
+/// Access Point alias, a Multi-Region Access Point, a directory bucket or a table bucket.
+const RESERVED_SUFFIX: Refusal = Refusal {
+    status: 403,
+    code: ACCESS_DENIED,
+    message: RESERVED_SUFFIX_MESSAGE,
+    names_the_bucket: false,
+};
+
+/// The refusal a name ending in the DIRECTORY bucket suffix earns: such a name is a directory
+/// bucket's, and S3 creates one only from a request carrying the `CreateBucketConfiguration`
+/// that places it in its zone — so a create that carries no such document is refused for the
+/// BODY rather than for the name.
+const NOT_A_DIRECTORY_CREATE: Refusal = Refusal {
+    status: 400,
+    code: MALFORMED_XML,
+    message: MALFORMED_XML_MESSAGE,
     names_the_bucket: false,
 };
 
@@ -126,13 +165,14 @@ impl Row {
         }
     }
 
-    /// A row whose name is in the namespace AWS keeps for its own buckets.
-    fn reserved(case: &str, bucket: impl Into<String>) -> Self {
+    /// A row whose name is in a namespace the published rules reserve, at the end `refusal`
+    /// names.
+    fn reserved(case: &str, bucket: impl Into<String>, refusal: Refusal) -> Self {
         Self {
             case: case.to_string(),
             bucket: bucket.into(),
             held: false,
-            refusal: Some(RESERVED),
+            refusal: Some(refusal),
             head_status: 404,
         }
     }
@@ -184,21 +224,28 @@ fn rows() -> Vec<Row> {
         Row::refused("a name formatted as an IP address of long octets", "255.255.255.255"),
     ];
     for prefix in RESERVED_PREFIXES {
-        // `sthree-` is Amazon S3's OWN internal namespace, so a name in it is refused the
-        // authorization refusal; the other published prefixes belong to another spelling or
-        // another S3 resource kind, under which no general purpose bucket exists at all.
+        // `sthree-` is Amazon S3's OWN internal namespace and `amzn-s3-demo-` the one AWS's
+        // documentation is written in, so a name under either is refused the authorization
+        // refusal; `xn--` is the ASCII form of a punycode-encoded label, which is a statement
+        // about how a name may be SPELLED and so earns the malformed-name refusal.
         let name = format!("{prefix}quarterly-logs");
         let case = format!("the reserved prefix {prefix:?}");
         rows.push(match prefix {
-            "sthree-" => Row::reserved(&case, name),
-            _ => Row::refused(&case, name),
+            "xn--" => Row::refused(&case, name),
+            _ => Row::reserved(&case, name, RESERVED_PREFIX),
         });
     }
     for suffix in RESERVED_SUFFIXES {
-        rows.push(Row::refused(
-            &format!("the reserved suffix {suffix:?}"),
-            format!("quarterly-logs{suffix}"),
-        ));
+        let case = format!("the reserved suffix {suffix:?}");
+        let name = format!("quarterly-logs{suffix}");
+        // The DIRECTORY bucket's suffix is not a name the caller may not hold: it is the name
+        // of a bucket this same call creates, from a request that carries the document placing
+        // it — so a create without that document is refused for the body. Every other published
+        // suffix belongs to a resource kind `CreateBucket` creates none of.
+        rows.push(match suffix {
+            "--x-s3" => Row::reserved(&case, name, NOT_A_DIRECTORY_CREATE),
+            _ => Row::reserved(&case, name, RESERVED_SUFFIX),
+        });
     }
     rows
 }

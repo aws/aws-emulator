@@ -2318,18 +2318,19 @@ impl NotificationDestination {
     /// The ARN PATTERN this destination's member publishes, or `None` for a member S3
     /// publishes none for.
     ///
-    /// The `CloudFunction` of a Lambda destination is the one: a value that is an ARN and does
-    /// not satisfy [`CLOUD_FUNCTION_ARN_PATTERN`] is refused by QUOTING that pattern
-    /// ([`NotificationConfigurationRejection::DestinationArnPattern`]), which is recorded
-    /// behaviour — the S3 model puts no `@pattern` on any of the three ARN members
-    /// (`smithy_query(query="shape",shape="LambdaFunctionArn,QueueArn,TopicArn")` reports a
-    /// plain string for each). The other two answer `None` rather than a pattern of this
+    /// The `CloudFunction` of a Lambda destination and the `Topic` of an SNS one are the two: a
+    /// value that is an ARN and does not satisfy the pattern its member publishes is refused by
+    /// QUOTING that pattern ([`NotificationConfigurationRejection::DestinationArnPattern`]),
+    /// which is recorded behaviour for each — the S3 model puts no `@pattern` on any of the
+    /// three ARN members (`smithy_query(query="shape",shape="LambdaFunctionArn,QueueArn,TopicArn")`
+    /// reports a plain string for each). `Queue` answers `None` rather than a pattern of this
     /// crate's own invention: a refusal quoting a constraint has to quote the constraint the
     /// service really publishes, and a value that is no ARN of the member's service is already
     /// refused for that ([`NotificationConfigurationRejection::InvalidDestinationArn`]).
     pub fn arn_pattern(self) -> Option<&'static str> {
         match self {
-            Self::Topic | Self::Queue => None,
+            Self::Queue => None,
+            Self::Topic => Some(TOPIC_ARN_PATTERN),
             Self::LambdaFunction => Some(CLOUD_FUNCTION_ARN_PATTERN),
         }
     }
@@ -2363,15 +2364,19 @@ pub fn names_a_fifo_resource(arn: &str) -> bool {
         .is_some_and(|resource| resource.ends_with(FIFO_QUEUE_SUFFIX))
 }
 
-/// The member a FIFO destination of `destination`'s kind arrives on, or `None` for a kind that
-/// has no FIFO form at all — a Lambda function, whose name the `.fifo` suffix says nothing
-/// about.
+/// The member a FIFO destination of `destination`'s kind is refused for its KIND on, or `None`
+/// for a kind that earns no such refusal.
+///
+/// The `Queue` is the one. A FIFO TOPIC never reaches this refusal, and the reason is the
+/// pattern its member publishes ([`TOPIC_ARN_PATTERN`]): a topic name carrying the `.` of
+/// [`FIFO_QUEUE_SUFFIX`] does not satisfy it, so such a value is refused for the CONSTRAINT it
+/// failed, which is both what S3 answers and the wider statement — no ARN outside that pattern
+/// is a topic S3 publishes to, whatever its name ends in. A Lambda function has no FIFO form at
+/// all, the `.fifo` suffix saying nothing about a function's name.
 fn fifo_capable_member(destination: NotificationDestination) -> Option<&'static str> {
     match destination {
-        NotificationDestination::Queue | NotificationDestination::Topic => {
-            Some(destination.arn_member())
-        }
-        NotificationDestination::LambdaFunction => None,
+        NotificationDestination::Queue => Some(destination.arn_member()),
+        NotificationDestination::Topic | NotificationDestination::LambdaFunction => None,
     }
 }
 
@@ -2384,12 +2389,13 @@ fn fifo_capable_member(destination: NotificationDestination) -> Option<&'static 
 /// which is what makes the fix (use a standard queue or topic) readable from the refusal.
 pub fn fifo_destination_unsupported_message(destination: NotificationDestination) -> &'static str {
     match destination {
-        NotificationDestination::Topic => "FIFO SNS topics are not supported.",
         NotificationDestination::Queue => "FIFO SQS queues are not supported.",
-        // A Lambda function has no FIFO form at all, so nothing reaches this arm
-        // ([`fifo_capable_member`] answers `None` for one) — stated per variant rather than
-        // through a catch-all, so a destination kind added later has to be worded deliberately.
-        NotificationDestination::LambdaFunction => "FIFO destinations are not supported.",
+        // Neither of the other kinds reaches this refusal ([`fifo_capable_member`] answers
+        // `None` for both) — stated per variant rather than through a catch-all, so a
+        // destination kind added later has to be worded deliberately.
+        NotificationDestination::Topic | NotificationDestination::LambdaFunction => {
+            "FIFO destinations are not supported."
+        }
     }
 }
 
@@ -2715,15 +2721,16 @@ pub enum NotificationConfigurationRejection {
         /// The value that does not satisfy it, as the request spelled it.
         arn: String,
     },
-    /// A destination reference naming a FIFO resource: a queue or a topic whose name ends in
+    /// A destination reference naming a FIFO resource: a QUEUE whose name ends in
     /// [`FIFO_QUEUE_SUFFIX`] is a first-in-first-out one, and Amazon S3 publishes event
-    /// notifications to neither — so the destination names a resource of a KIND S3 cannot
+    /// notifications to none — so the destination names a resource of a KIND S3 cannot
     /// publish to, which S3 says in a sentence of its own
     /// ([`fifo_destination_unsupported_message`]) rather than in the generic
-    /// destination-validation text: the fix is to use a standard queue or topic, which no
-    /// "validation failed" sentence tells the caller.
+    /// destination-validation text: the fix is to use a standard queue, which no
+    /// "validation failed" sentence tells the caller. A FIFO TOPIC is refused for the ARN
+    /// pattern its member publishes instead ([`fifo_capable_member`] says why).
     FifoDestination {
-        /// The member the ARN arrived on (`Queue` or `Topic`).
+        /// The member the ARN arrived on (`Queue`).
         member: &'static str,
         /// Which destination kind it names, which is what the sentence states.
         destination: NotificationDestination,
@@ -2962,6 +2969,23 @@ pub const CLOUD_FUNCTION_ARN_PATTERN: &str = "^arn:aws[\\p{Alpha}\\-]*:lambda:[\
                                               [\\p{Digit}]{12}:function:[\\p{Alnum}\\-_]{1,64}\
                                               (:[\\p{Alnum}\\-_]+)?$";
 
+/// The ARN form a `Topic` notification destination has to be in, as the refusal of a value
+/// that is not QUOTES it (recorded behaviour: S3 answers such a value "The ARN failed to
+/// satisfy constraint: Member must satisfy regular expression pattern: <this>").
+///
+/// It says more than "an ARN of Amazon SNS" does: the account field is exactly twelve digits,
+/// and the resource is a topic NAME of at most 256 characters from the name alphabet — letters,
+/// digits, hyphens and underscores and nothing else. A `.` is outside that alphabet, so the
+/// name of a FIFO topic ("the name of a FIFO topic must end with the `.fifo` suffix",
+/// `CreateTopic`, Amazon SNS API reference) fails this constraint along with every other ARN
+/// shape outside it, which is what the refusal states.
+///
+/// Published as the pattern itself rather than as a reading of it, so the sentence a caller is
+/// told to satisfy and the judgement made on the value are the same text
+/// ([`matches_arn_pattern`] applies it).
+pub const TOPIC_ARN_PATTERN: &str = "^arn:aws[\\p{Alpha}\\-]*:sns:[\\p{Alnum}\\-]+:\
+                                     [\\p{Digit}]{12}:[\\p{Alnum}\\-_]{1,256}$";
+
 /// Every ARN pattern a destination member publishes, compiled once.
 ///
 /// A pattern is compiled on first use and kept for the process: a request path must not build
@@ -2970,7 +2994,7 @@ pub const CLOUD_FUNCTION_ARN_PATTERN: &str = "^arn:aws[\\p{Alpha}\\-]*:lambda:[\
 /// down — `tests` pins that every published pattern does compile, so that arm is unreachable.
 static COMPILED_ARN_PATTERNS: LazyLock<Vec<(&'static str, Option<::regex::Regex>)>> =
     LazyLock::new(|| {
-        [CLOUD_FUNCTION_ARN_PATTERN]
+        [CLOUD_FUNCTION_ARN_PATTERN, TOPIC_ARN_PATTERN]
             .into_iter()
             .map(|pattern| {
                 (
@@ -3169,12 +3193,13 @@ pub fn validate_notification_configuration(
             }
         }
 
-        // And a destination that is a FIFO queue or a FIFO topic, which S3 publishes to at
-        // all: the ARN is one of the right service and of the right form, and the KIND of
+        // And a destination that is a FIFO QUEUE, which S3 publishes to at all: the ARN is
+        // one of the right service and of the right form, and the KIND of
         // resource it names is one no notification can be delivered to, which is a different
         // thing from a destination that could not be validated — so it is reported here, with
         // its own sentence, before the destinations are resolved against the services that own
-        // them.
+        // them. A FIFO TOPIC never gets this far: its name fails the pattern its own member
+        // publishes, which the step above refuses it for.
         if names_a_fifo_resource(&target.arn) {
             if let Some(member) = fifo_capable_member(destination) {
                 return Err(NotificationConfigurationRejection::FifoDestination {

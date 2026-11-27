@@ -601,14 +601,6 @@ const PERMISSION_SOURCE: &str = "permission-role-source";
 /// See [`PERMISSION_SOURCE`].
 const PERMISSION_DESTINATION: &str = "permission-role-destination";
 
-/// How long a poll waits for a replication to settle before the suite calls it stuck, and how
-/// often it looks. The deadline is far longer than the span this emulator gives AWS's
-/// asynchronous replication, so a loaded host cannot fail a row; what is asserted is the
-/// CONDITION (a terminal status), never the time it took.
-const SETTLE_DEADLINE: Duration = Duration::from_secs(30);
-/// See [`SETTLE_DEADLINE`].
-const POLL_INTERVAL: Duration = Duration::from_millis(50);
-
 /// The statements a role whose policy GRANTS the replication is written with: the actions the
 /// Amazon S3 User Guide (*Setting up permissions for replication*) names, on the source's
 /// versions and on the destination's objects.
@@ -651,24 +643,21 @@ fn objects_of(bucket: &str) -> String {
     format!("\"arn:aws:s3:::{bucket}/*\"")
 }
 
-/// Poll the source version until its replication reports a TERMINAL status — `COMPLETED` or
-/// `FAILED` — and report which. The wait is for the condition, bounded by
-/// [`SETTLE_DEADLINE`].
+/// Look again at the source version until its replication reports a TERMINAL status, and
+/// report which — through the crate's one reading of that wait
+/// ([`crate::replication_settling`]), so this suite waits for the CONDITION and keeps no
+/// polling loop of its own.
 async fn settled_replication_status(emulator: &Emulator, key: &str, case: &str) -> String {
-    let deadline = ::std::time::Instant::now() + SETTLE_DEADLINE;
-    loop {
-        let read = emulator.head_object(PERMISSION_SOURCE, key).await;
-        let status = read.header("x-amz-replication-status").unwrap_or_default();
-        if status == "COMPLETED" || status == "FAILED" {
-            return status;
-        }
-        assert!(
-            ::std::time::Instant::now() < deadline,
-            "case {case:?}: the replication never reached a terminal status; the last one read \
-             was {status:?}"
-        );
-        tokio::time::sleep(POLL_INTERVAL).await;
-    }
+    crate::replication_settling::settled_replication_status(
+        || async {
+            emulator
+                .head_object(PERMISSION_SOURCE, key)
+                .await
+                .header("x-amz-replication-status")
+        },
+        case,
+    )
+    .await
 }
 
 /// One row of the permissions table: what the role's own policy says, and what the

@@ -333,7 +333,7 @@ fn a_caller_write_into_a_published_bucket_counts_against_the_whole_store_budgets
 
 #[test]
 fn every_published_destination_arn_pattern_judges_the_forms_it_admits() {
-    // Every destination kind, with the pattern its member publishes — `None` for the two S3
+    // Every destination kind, with the pattern its member publishes — `None` for the one S3
     // publishes none for, which is what keeps a refusal from quoting a constraint this crate
     // invented.
     for destination in [
@@ -444,6 +444,82 @@ fn every_published_destination_arn_pattern_judges_the_forms_it_admits() {
         assert_eq!(
             actual, admitted,
             "case {case:?} ({value}): expected the published pattern to admit it == \
+             {admitted}, got {actual}"
+        );
+    }
+
+    // (case, the value, whether the Topic pattern admits it). The rows differ along what THAT
+    // pattern constrains: the partition, the Region field, the width of the account id, and
+    // the alphabet and length of the topic name — the `.` of a FIFO topic's name being one
+    // character outside that alphabet rather than a case of its own.
+    let topic_at_the_bound = format!(
+        "arn:aws:sns:us-east-1:123456789012:{}",
+        "t".repeat(256)
+    );
+    let topic_past_the_bound = format!(
+        "arn:aws:sns:us-east-1:123456789012:{}",
+        "t".repeat(257)
+    );
+    let topic_rows: Vec<(&str, &str, bool)> = vec![
+        (
+            "a topic ARN",
+            "arn:aws:sns:us-east-1:123456789012:object-events",
+            true,
+        ),
+        (
+            "a topic ARN in another partition",
+            "arn:aws-us-gov:sns:us-gov-west-1:123456789012:object-events",
+            true,
+        ),
+        (
+            "a topic name with an underscore",
+            "arn:aws:sns:eu-west-1:123456789012:object_events-1",
+            true,
+        ),
+        ("a topic name of 256 characters", &topic_at_the_bound, true),
+        (
+            "a topic name one character past the bound",
+            &topic_past_the_bound,
+            false,
+        ),
+        (
+            "a FIFO topic, whose name carries a period",
+            "arn:aws:sns:us-east-1:123456789012:object-events.fifo",
+            false,
+        ),
+        (
+            "a topic name carrying a period anywhere",
+            "arn:aws:sns:us-east-1:123456789012:object.events",
+            false,
+        ),
+        (
+            "an account id narrower than twelve digits",
+            "arn:aws:sns:us-east-1:12345678901:object-events",
+            false,
+        ),
+        (
+            "an empty Region field",
+            "arn:aws:sns::123456789012:object-events",
+            false,
+        ),
+        (
+            "a resource of two segments",
+            "arn:aws:sns:us-east-1:123456789012:object-events:subscription",
+            false,
+        ),
+        (
+            "a function ARN",
+            "arn:aws:lambda:us-east-1:123456789012:function:object-events",
+            false,
+        ),
+        ("no ARN at all", "object-events", false),
+    ];
+
+    for (case, value, admitted) in topic_rows {
+        let actual = matches_arn_pattern(TOPIC_ARN_PATTERN, value);
+        assert_eq!(
+            actual, admitted,
+            "case {case:?} ({value}): expected the published Topic pattern to admit it == \
              {admitted}, got {actual}"
         );
     }

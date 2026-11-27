@@ -7,18 +7,22 @@
 //! message. This suite pins four refusals of the configuration planes whose wording and
 //! classification a caller acts on, and the one envelope member a consumer parses:
 //!
-//! * `CreateBucket` for a name in AWS's OWN bucket namespace — the `sthree-` prefix, Amazon
-//!   S3's internal one — is refused 403 `AccessDenied`: the name is spelled the way a bucket
-//!   name is spelled and what the caller may not do is HOLD it, which is a different branch
-//!   from "the name is malformed, fix it" (`InvalidBucketName`, 400) — the refusal every other
-//!   published reserved prefix and suffix earns, each belonging to another spelling or another
-//!   S3 resource kind;
+//! * `CreateBucket` for a name whose START or END is in a namespace the published naming rules
+//!   RESERVE — AWS's own `sthree-` and `amzn-s3-demo-` prefixes, and the suffixes reserved to
+//!   other S3 resource kinds — is refused 403 `AccessDenied` with the sentence naming which end
+//!   is reserved: the name is spelled the way a bucket name is spelled and what the caller may
+//!   not do is HOLD it, which is a different branch from "the name is malformed, fix it"
+//!   (`InvalidBucketName`, 400) — the refusal the `xn--` punycode prefix and the spelling rules
+//!   earn — and from "the body is missing the document this create needs" (`MalformedXML`, 400),
+//!   which the directory bucket's own suffix earns;
 //! * `PutBucketReplication` validates the rule's DESTINATION before the configuration is
 //!   stored: a destination bucket that does not exist, or that exists without versioning
 //!   enabled, could never receive a replica, so the configuration is refused rather than
 //!   stored as valid;
 //! * `PutBucketNotificationConfiguration` naming a FIFO queue as a destination is refused for
-//!   that restriction by name, so the fix (use a standard queue) is readable from the error;
+//!   that restriction by name, so the fix (use a standard queue) is readable from the error,
+//!   while a destination reference that fails the ARN pattern its member publishes is refused by
+//!   quoting that pattern;
 //! * `PutBucketLifecycleConfiguration` whose filter inverts the object-size range is refused
 //!   with AWS's own sentence naming the two members to reconcile;
 //! * and the `s3:TestEvent` a validated queue destination receives states its `Time` as an
@@ -50,6 +54,12 @@ const ROLE_ARN: &str = "arn:aws:iam::000000000000:role/s3-replication-role";
 const INVALID_ARGUMENT: &str = "InvalidArgument";
 const INVALID_REQUEST: &str = "InvalidRequest";
 const BAD_REQUEST: u16 = 400;
+
+/// The ARN pattern S3 publishes for a notification destination's `Topic` member, as the refusal
+/// of a value that does not satisfy it quotes it. Written out here, like the naming catalogs
+/// above, because this test target does not depend on the Amazon S3 crate that applies it.
+const TOPIC_ARN_PATTERN: &str = "^arn:aws[\\p{Alpha}\\-]*:sns:[\\p{Alnum}\\-]+:\
+                                 [\\p{Digit}]{12}:[\\p{Alnum}\\-_]{1,256}$";
 
 /// What one call answered.
 struct Answer {
@@ -209,11 +219,11 @@ async fn enable_versioning(router: &MultiServiceRouter, name: &str) {
     );
 }
 
-/// One row of the naming table: the case, the name the create carries, and the status and code
-/// it earns — `None` for a name the published rules admit.
-type NameRow = (String, String, Option<(u16, &'static str)>);
+/// One row of the naming table: the case, the name the create carries, and the status, code and
+/// message it earns — `None` for a name the published rules admit.
+type NameRow = (String, String, Option<(u16, &'static str, &'static str)>);
 
-/// The prefix AWS keeps for its OWN buckets, and the other prefixes and suffixes a
+/// The prefixes AWS keeps for ITS OWN buckets, and the other prefixes and suffixes a
 /// general-purpose bucket name may not carry: one entry per sentence of the Amazon S3 User
 /// Guide's *General purpose bucket naming rules* ("bucket names must not start with the prefix
 /// `xn--`. … must not start with the prefix `sthree-`. … must not start with the prefix
@@ -223,26 +233,61 @@ type NameRow = (String, String, Option<(u16, &'static str)>);
 /// `service_common::s3_bucket_name`, whose own suite pins them against those sentences; they
 /// are written out here because this test target does not depend on that crate.
 ///
-/// `sthree-` is Amazon S3's own internal namespace, which is the one that earns the
-/// authorization refusal; the rest are spellings or other S3 resource kinds.
-const AWS_RESERVED_PREFIX: &str = "sthree-";
-const OTHER_RESERVED_PREFIXES: [&str; 2] = ["xn--", "amzn-s3-demo-"];
+/// `sthree-` is Amazon S3's own internal namespace and `amzn-s3-demo-` the one AWS's
+/// documentation is written in, and every reserved SUFFIX belongs to another S3 resource kind
+/// or alias form: a name at either end of those is not the caller's to hold, which is the
+/// authorization refusal. `xn--` is the ASCII form of a punycode-encoded label, which is a
+/// statement about SPELLING and earns the malformed-name refusal.
+const AWS_RESERVED_PREFIXES: [&str; 2] = ["sthree-", "amzn-s3-demo-"];
+const SPELLING_RESERVED_PREFIXES: [&str; 1] = ["xn--"];
 const RESERVED_SUFFIXES: [&str; 5] = ["-s3alias", "--ol-s3", ".mrap", "--x-s3", "--table-s3"];
 
-/// RULE: a `CreateBucket` whose name is in AWS's OWN bucket namespace is refused 403
-/// `AccessDenied` — the name is AWS's, not the caller's — while a name the rules refuse for its
-/// SPELLING, the prefixes and suffixes reserved to other S3 resource kinds included, is the 400
+/// The refusal a name whose START or END is in a reserved namespace earns, and the sentence S3
+/// states for each end: `AccessDenied` says the name is not the caller's, and the message is the
+/// only thing that says the NAME and not the principal was refused.
+const RESERVED_PREFIX_REFUSAL: (u16, &str, &str) = (
+    403,
+    "AccessDenied",
+    "The requested bucket name starts with a reserved prefix",
+);
+
+/// See [`RESERVED_PREFIX_REFUSAL`].
+const RESERVED_SUFFIX_REFUSAL: (u16, &str, &str) = (
+    403,
+    "AccessDenied",
+    "The requested bucket name ends with a reserved suffix",
+);
+
+/// The refusal a name ending in the DIRECTORY bucket suffix earns: such a name is a directory
+/// bucket's, and S3 creates one only from a request carrying the `CreateBucketConfiguration`
+/// that places it in its zone — so a create without that document is refused for the BODY.
+const NOT_A_DIRECTORY_CREATE: (u16, &str, &str) = (
+    400,
+    "MalformedXML",
+    "The XML you provided was not well-formed or did not validate against our published \
+     schema",
+);
+
+/// The refusal a name the rules refuse for its SPELLING earns, with the sentence S3's published
+/// error list states for that code.
+const MISSPELLED_NAME_REFUSAL: (u16, &str, &str) =
+    (400, "InvalidBucketName", "The specified bucket is not valid.");
+
+/// RULE: a `CreateBucket` whose name starts or ends in a namespace the published naming rules
+/// RESERVE is refused 403 `AccessDenied` with the sentence naming which end is reserved — the
+/// name is not the caller's to hold — while a name the rules refuse for its SPELLING is the 400
 /// `InvalidBucketName` a caller fixes by respelling it.
 ///
-/// The rows span what the rule generalises over: AWS's own prefix, every other published
-/// reserved prefix and suffix, names carrying that same text somewhere other than the end it is
-/// reserved at, and the spelling rules the second refusal belongs to.
+/// The rows span what the rule generalises over: both of AWS's own prefixes, every published
+/// reserved suffix, the one published prefix that is a spelling rule, names carrying that same
+/// text somewhere other than the end it is reserved at, and the spelling rules the second
+/// refusal belongs to.
 #[tokio::test]
 async fn a_reserved_bucket_namespace_is_denied_and_a_misspelled_name_is_invalid() {
     let router = emulator();
 
-    // (case, the name the create carries, the status and code it earns — `None` for a name the
-    // rules admit)
+    // (case, the name the create carries, the status, code and message it earns — `None` for a
+    // name the rules admit)
     let mut rows: Vec<NameRow> = vec![
         (
             "a name the rules admit".to_string(),
@@ -262,36 +307,43 @@ async fn a_reserved_bucket_namespace_is_denied_and_a_misspelled_name_is_invalid(
         (
             "an upper-case letter".to_string(),
             "Reserved-Namespace".to_string(),
-            Some((400, "InvalidBucketName")),
+            Some(MISSPELLED_NAME_REFUSAL),
         ),
         (
             "an underscore".to_string(),
             "reserved_namespace".to_string(),
-            Some((400, "InvalidBucketName")),
+            Some(MISSPELLED_NAME_REFUSAL),
         ),
         (
             "two adjacent periods".to_string(),
             "reserved..namespace".to_string(),
-            Some((400, "InvalidBucketName")),
+            Some(MISSPELLED_NAME_REFUSAL),
         ),
     ];
-    for prefix in OTHER_RESERVED_PREFIXES {
+    for prefix in SPELLING_RESERVED_PREFIXES {
         rows.push((
             format!("the reserved prefix {prefix:?}"),
             format!("{prefix}namespace-probe"),
-            Some((400, "InvalidBucketName")),
+            Some(MISSPELLED_NAME_REFUSAL),
         ));
     }
-    rows.push((
-        format!("AWS's own prefix {AWS_RESERVED_PREFIX:?}"),
-        format!("{AWS_RESERVED_PREFIX}namespace-probe"),
-        Some((403, "AccessDenied")),
-    ));
+    for prefix in AWS_RESERVED_PREFIXES {
+        rows.push((
+            format!("AWS's own prefix {prefix:?}"),
+            format!("{prefix}namespace-probe"),
+            Some(RESERVED_PREFIX_REFUSAL),
+        ));
+    }
     for suffix in RESERVED_SUFFIXES {
         rows.push((
             format!("the reserved suffix {suffix:?}"),
             format!("namespace-probe{suffix}"),
-            Some((400, "InvalidBucketName")),
+            match suffix {
+                // The directory bucket's own suffix: the name is one this call creates a bucket
+                // under, from a request carrying the document that places it.
+                "--x-s3" => Some(NOT_A_DIRECTORY_CREATE),
+                _ => Some(RESERVED_SUFFIX_REFUSAL),
+            },
         ));
     }
 
@@ -303,7 +355,7 @@ async fn a_reserved_bucket_namespace_is_denied_and_a_misspelled_name_is_invalid(
                 "case {case:?}: S3 holds a bucket under {name:?}, got {} with {:?}",
                 created.status, created.body
             ),
-            Some((status, code)) => {
+            Some((status, code, message)) => {
                 assert_eq!(
                     (created.status, created.code().as_str()),
                     (status, code),
@@ -311,6 +363,12 @@ async fn a_reserved_bucket_namespace_is_denied_and_a_misspelled_name_is_invalid(
                     created.status,
                     created.code(),
                     created.body
+                );
+                assert_eq!(
+                    created.message(),
+                    message,
+                    "case {case:?}: expected the message {message:?}, got {:?}",
+                    created.message()
                 );
                 // Refused BEFORE anything was written, so the account holds no bucket under a
                 // name it may not have: the listing never names it.
@@ -329,9 +387,19 @@ async fn a_reserved_bucket_namespace_is_denied_and_a_misspelled_name_is_invalid(
 /// whose `Destination` carries the `extra` elements the row names and whose rule carries
 /// `rule_extra`.
 fn replication_payload_with(destination: &str, extra: &str, rule_extra: &str) -> String {
+    // A rule carrying a `Filter` is written in the V2 schema, which requires a
+    // `DeleteMarkerReplication` element of it ("if you specify a `Filter` in your replication
+    // configuration, you must also include a `DeleteMarkerReplication` element", the model's
+    // own `DeleteMarkerReplication` documentation), so one stands here unless the row names
+    // its own.
+    let delete_markers = match rule_extra.contains("DeleteMarkerReplication") {
+        true => "",
+        false => "<DeleteMarkerReplication><Status>Disabled</Status></DeleteMarkerReplication>",
+    };
     format!(
         "<ReplicationConfiguration xmlns=\"{XMLNS}\"><Role>{ROLE_ARN}</Role>\
          <Rule><Priority>1</Priority><Filter></Filter><Status>Enabled</Status>{rule_extra}\
+         {delete_markers}\
          <Destination><Bucket>arn:aws:s3:::{destination}</Bucket>{extra}</Destination></Rule>\
          </ReplicationConfiguration>"
     )
@@ -596,11 +664,13 @@ fn destination_notification(element: &str, arn: &str) -> String {
     )
 }
 
-/// RULE: a notification destination that names a FIFO resource — a queue or a topic, both of
-/// which end in the `.fifo` suffix — is refused for that restriction by name: Amazon S3
-/// publishes to neither, which it states in a sentence of its own rather than in the generic
-/// destination-validation text. A STANDARD queue that grants S3 the publication is accepted and
-/// receives the `s3:TestEvent` probe.
+/// RULE: a notification destination reference S3 cannot publish to is refused for WHAT is
+/// wrong with it: a FIFO QUEUE is refused for that restriction by name — Amazon S3 publishes to
+/// no FIFO queue, which it states in a sentence of its own rather than in the generic
+/// destination-validation text — while a reference that fails the ARN PATTERN its member
+/// publishes is refused by QUOTING that pattern, which is what a FIFO topic's `.fifo` name earns
+/// along with every other ARN shape outside it. A STANDARD queue that grants S3 the publication
+/// is accepted and receives the `s3:TestEvent` probe.
 ///
 /// And that probe's `Time` is an ISO-8601 UTC instant with exactly three fractional-second
 /// digits: S3 publishes the instant to the millisecond, so a consumer parsing the envelope with
@@ -648,17 +718,19 @@ async fn a_fifo_queue_destination_is_refused_and_the_test_event_states_milliseco
         urls.push(url);
     }
 
-    // The FIFO destinations, one per destination kind that has a FIFO form: the refusal names
-    // that kind's own restriction and echoes the ARN beside the member it arrived on, and
-    // nothing is recorded.
+    // The FIFO destinations, one per destination kind that spells a FIFO resource: each refusal
+    // states what is wrong with the reference — the queue's own restriction for the queue, the
+    // pattern the member publishes for the topic, whose `.fifo` name carries a `.` that pattern
+    // does not admit — and echoes the ARN beside the member it arrived on, and nothing is
+    // recorded.
     //
     // (case, the member the ARN arrives on, the ARN, the sentence S3 states)
-    let fifo: [(&str, &str, String, &str); 2] = [
+    let fifo: [(&str, &str, String, String); 2] = [
         (
             "a FIFO queue destination",
             "Queue",
             queue_arn("ordered-queue.fifo"),
-            "FIFO SQS queues are not supported.",
+            "FIFO SQS queues are not supported.".to_string(),
         ),
         (
             "a FIFO topic destination",
@@ -667,7 +739,10 @@ async fn a_fifo_queue_destination_is_refused_and_the_test_event_states_milliseco
                 "arn:aws:sns:{REGION}:{}:ordered-topic.fifo",
                 ::engine::emulator_account_id()
             ),
-            "FIFO SNS topics are not supported.",
+            format!(
+                "The ARN failed to satisfy constraint: Member must satisfy regular expression \
+                 pattern: {TOPIC_ARN_PATTERN}"
+            ),
         ),
     ];
     for (case, element, arn, sentence) in fifo {
@@ -689,7 +764,7 @@ async fn a_fifo_queue_destination_is_refused_and_the_test_event_states_milliseco
         assert_eq!(
             refused.message(),
             sentence,
-            "case {case:?}: the refusal must state the restriction itself, got {:?}",
+            "case {case:?}: the refusal must state what is wrong with the reference, got {:?}",
             refused.message()
         );
         assert_eq!(

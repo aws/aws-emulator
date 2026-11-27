@@ -87,19 +87,22 @@ async fn put_replication(router: &MultiServiceRouter, name: &str, rules: &str) -
 /// element, or nothing at all) and `extra` (a `DeleteMarkerReplication` element, say).
 ///
 /// A rule carrying a `Filter` is written in the configuration's V2 schema, which requires a
-/// `Priority` of every rule ("when you add the Filter element in the configuration, you must
-/// also add the following elements: DeleteMarkerReplication, Status, and Priority",
-/// `PutBucketReplication`'s own documentation), so one is named for exactly those rules —
-/// these rows are about which objects a rule COVERS, and a configuration S3 would refuse
-/// covers nothing.
+/// `Priority` and a `DeleteMarkerReplication` of every rule ("when you add the Filter element
+/// in the configuration, you must also add the following elements: DeleteMarkerReplication,
+/// Status, and Priority", `PutBucketReplication`'s own documentation), so both are named for
+/// exactly those rules — these rows are about which objects a rule COVERS, and a configuration
+/// S3 would refuse covers nothing. A `DeleteMarkerReplication` the case names itself stands
+/// instead, which is what the delete-marker rows vary.
 fn rule(destination: &str, status: &str, scope: &str, extra: &str) -> String {
-    let priority = if scope.contains("<Filter>") {
-        "<Priority>1</Priority>"
-    } else {
-        ""
+    let v2 = scope.contains("<Filter>");
+    let priority = if v2 { "<Priority>1</Priority>" } else { "" };
+    let delete_markers = match v2 && !extra.contains("DeleteMarkerReplication") {
+        true => "<DeleteMarkerReplication><Status>Disabled</Status></DeleteMarkerReplication>",
+        false => "",
     };
     format!(
         "<Rule><ID>only-rule</ID>{priority}<Status>{status}</Status>{scope}{extra}\
+         {delete_markers}\
          <Destination><Bucket>arn:aws:s3:::{destination}</Bucket></Destination></Rule>"
     )
 }
@@ -722,6 +725,7 @@ async fn one_write_replicates_to_no_more_destinations_than_the_ceiling() {
         rules.push_str(&format!(
             "<Rule><ID>rule-{index}</ID><Status>Enabled</Status><Priority>{index}</Priority>\
              <Filter><Prefix></Prefix></Filter>\
+             <DeleteMarkerReplication><Status>Disabled</Status></DeleteMarkerReplication>\
              <Destination><Bucket>arn:aws:s3:::{destination}</Bucket></Destination></Rule>"
         ));
     }
@@ -764,14 +768,21 @@ async fn one_write_replicates_to_no_more_destinations_than_the_ceiling() {
     );
 
     // And the source version says so: the copies past the ceiling were not made, so the
-    // replication did not complete.
-    tokio::time::sleep(SETTLES_AFTER).await;
-    let settled = get_object(&router, source, key, None).await;
+    // replication did not complete. Waited for by looking at the version again until its
+    // replication settles, never for a span — through the crate's one reading of that wait
+    // ([`super::replication_settling`]).
+    let settled = super::replication_settling::settled_replication_status(
+        || async {
+            get_object(&router, source, key, None)
+                .await
+                .header("x-amz-replication-status")
+        },
+        &format!("the write fanned out over the ceiling ({source}/{key})"),
+    )
+    .await;
     assert_eq!(
-        settled.header("x-amz-replication-status").as_deref(),
-        Some("FAILED"),
-        "expected the source version to settle on FAILED past the ceiling, got {:?}",
-        settled.header("x-amz-replication-status")
+        settled, "FAILED",
+        "expected the source version to settle on FAILED past the ceiling, got {settled:?}"
     );
 }
 
@@ -859,14 +870,17 @@ async fn two_rules_naming_one_destination_are_settled_by_priority() {
     let rules = format!(
         "<Rule><ID>low</ID><Status>Enabled</Status><Priority>1</Priority>\
          <Filter><Prefix>shared/</Prefix></Filter>\
+         <DeleteMarkerReplication><Status>Disabled</Status></DeleteMarkerReplication>\
          <Destination><Bucket>arn:aws:s3:::{destination}</Bucket>\
          <StorageClass>STANDARD_IA</StorageClass></Destination></Rule>\
          <Rule><ID>high</ID><Status>Enabled</Status><Priority>2</Priority>\
          <Filter><Prefix>shared/</Prefix></Filter>\
+         <DeleteMarkerReplication><Status>Disabled</Status></DeleteMarkerReplication>\
          <Destination><Bucket>arn:aws:s3:::{destination}</Bucket>\
          <StorageClass>GLACIER_IR</StorageClass></Destination></Rule>\
          <Rule><ID>elsewhere</ID><Status>Enabled</Status><Priority>3</Priority>\
          <Filter><Prefix>shared/</Prefix></Filter>\
+         <DeleteMarkerReplication><Status>Disabled</Status></DeleteMarkerReplication>\
          <Destination><Bucket>arn:aws:s3:::{other}</Bucket></Destination></Rule>"
     );
     let configured = put_replication(&router, source, &rules).await;

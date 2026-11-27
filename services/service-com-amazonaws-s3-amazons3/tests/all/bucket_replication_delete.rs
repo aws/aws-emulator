@@ -232,17 +232,23 @@ fn removal_rows() -> Vec<(&'static str, Vec<String>)> {
             "three rules at descending priorities, two destinations",
             vec![
                 rule_xml(
-                    "<ID>third</ID><Priority>3</Priority><Filter><Prefix>c/</Prefix></Filter>",
+                    "<ID>third</ID><Priority>3</Priority><Filter><Prefix>c/</Prefix></Filter>\
+                     <DeleteMarkerReplication><Status>Disabled</Status>\
+                     </DeleteMarkerReplication>",
                     "Enabled",
                     DESTINATION_ARN,
                 ),
                 rule_xml(
-                    "<ID>second</ID><Priority>2</Priority><Filter><Prefix>b/</Prefix></Filter>",
+                    "<ID>second</ID><Priority>2</Priority><Filter><Prefix>b/</Prefix></Filter>\
+                     <DeleteMarkerReplication><Status>Disabled</Status>\
+                     </DeleteMarkerReplication>",
                     "Enabled",
                     ANOTHER_DESTINATION_ARN,
                 ),
                 rule_xml(
-                    "<ID>first</ID><Priority>1</Priority><Filter><Prefix>a/</Prefix></Filter>",
+                    "<ID>first</ID><Priority>1</Priority><Filter><Prefix>a/</Prefix></Filter>\
+                     <DeleteMarkerReplication><Status>Disabled</Status>\
+                     </DeleteMarkerReplication>",
                     "Disabled",
                     DESTINATION_ARN,
                 ),

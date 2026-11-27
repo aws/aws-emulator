@@ -30,8 +30,11 @@
 //! * "When you add the Filter element in the configuration, you must also add the following
 //!   elements: DeleteMarkerReplication, Status, and Priority" (same documentation): a rule
 //!   carrying a `Filter` is written in the configuration's V2 schema, so a rule of that
-//!   schema that names no `Priority` is refused with `InvalidRequest` (HTTP 400) — while a
-//!   rule of the earlier schema, which carries the deprecated bare `Prefix`, needs none.
+//!   schema that names no `DeleteMarkerReplication` or no `Priority` is refused with
+//!   `InvalidRequest` (HTTP 400) — while a
+//!   rule of the earlier schema, which carries the deprecated bare `Prefix`, needs neither.
+//!   The uniqueness of the priorities a container names is pinned by
+//!   [`super::replication_rule_priorities`].
 //! * A call naming a bucket this emulator does not hold answers `NoSuchBucket` (HTTP 404);
 //!   one naming an `ExpectedBucketOwner` that is not the account's answers HTTP 403
 //!   `AccessDenied`. Every refused payload leaves the stored configuration exactly as it
@@ -379,16 +382,19 @@ fn round_trip_rows() -> Vec<(&'static str, Vec<Rule>)> {
                 Rule::enabled()
                     .with_id("third")
                     .with_priority(3)
-                    .with_filter_prefix("c/"),
+                    .with_filter_prefix("c/")
+                    .with_delete_markers("Disabled"),
                 Rule::enabled()
                     .with_id("second")
                     .with_priority(2)
                     .with_filter_prefix("b/")
+                    .with_delete_markers("Disabled")
                     .with_destination(ANOTHER_DESTINATION_ARN),
                 Rule::enabled()
                     .with_id("first")
                     .with_priority(1)
                     .with_filter_prefix("a/")
+                    .with_delete_markers("Disabled")
                     .with_status("Disabled"),
             ],
         ),
@@ -701,6 +707,14 @@ async fn replication_needs_a_versioning_enabled_bucket_that_exists() {
 /// field expresses — the three child elements `ReplicationRuleFilter` admits ("a `Filter`
 /// must specify exactly one `Prefix`, `Tag`, or an `And` child element",
 /// `smithy_query(query="shape",shape="ReplicationRuleFilter")`) and the empty container.
+///
+/// A rule carrying a `Filter` is written in the V2 schema, which requires a
+/// `DeleteMarkerReplication` element of it ("if you specify a `Filter` in your replication
+/// configuration, you must also include a `DeleteMarkerReplication` element",
+/// `smithy_query(query="doc",shape="DeleteMarkerReplication")`), so every rule here names one
+/// — these rows are about the `Priority`, and a rule leaving the other element out would be
+/// refused for THAT instead. The element the V2 schema requires is itself pinned by
+/// [`super::replication_rule_priorities`].
 fn rule_with_filter(filter: &str, priority: Option<i32>) -> String {
     let priority = match priority {
         Some(priority) => format!("<Priority>{priority}</Priority>"),
@@ -708,7 +722,8 @@ fn rule_with_filter(filter: &str, priority: Option<i32>) -> String {
     };
     format!(
         "<Rule>{priority}{filter}<Status>Enabled</Status>\
-         <Destination><Bucket>{DESTINATION_ARN}</Bucket></Destination></Rule>"
+         <Destination><Bucket>{DESTINATION_ARN}</Bucket></Destination>\
+         <DeleteMarkerReplication><Status>Disabled</Status></DeleteMarkerReplication></Rule>"
     )
 }
 

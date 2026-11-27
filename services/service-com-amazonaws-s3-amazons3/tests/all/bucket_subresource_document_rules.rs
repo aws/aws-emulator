@@ -1103,6 +1103,7 @@ async fn put_replication_filter(
         "<ReplicationConfiguration xmlns=\"{XMLNS}\">\
          <Role>{REPLICATION_ROLE_ARN}</Role>\
          <Rule><ID>{id}</ID><Priority>1</Priority>{filter}<Status>Enabled</Status>\
+         <DeleteMarkerReplication><Status>Disabled</Status></DeleteMarkerReplication>\
          <Destination><Bucket>{REPLICATION_DESTINATION_ARN}</Bucket></Destination></Rule>\
          </ReplicationConfiguration>"
     );
