@@ -6,8 +6,9 @@
 //! document, a message filter policy — and refuse one they cannot parse with their JSON
 //! parser's own diagnostic rather than with a restatement of the member's type. Those
 //! diagnostics all say the same things: what the parse stopped ON, what a value could have
-//! been there instead, the line and column it stopped at, and — for a document that ran out
-//! of input inside a collection — where that collection opened. The SENTENCE each service
+//! been there instead, the line and column it stopped at, the container whose entries a
+//! document that stopped on an entry separator ran out between, and — for a document that
+//! ran out of input inside a collection — where that collection opened. The SENTENCE each service
 //! frames them in is its own (the services differ in what they prefix and in which fault
 //! classes they report), but the readings are the same question about the same document, so
 //! they are stated once here: two services handed the same document cannot disagree about
@@ -229,6 +230,12 @@ fn position_of(document: &str, offset: usize) -> (usize, usize) {
 #[must_use]
 pub fn unexpected_input(document: &str, error: &serde_json::Error) -> String {
     let cause = cause(error);
+    // A document that ran out BETWEEN a container's entries is read by the state the parse
+    // was in rather than by what could have stood there: nothing could, the entry the
+    // separator promised was simply never written.
+    if let Some(container) = exhausted_between_entries(document, error) {
+        return format!("Unexpected end-of-input within/between {container} entries");
+    }
     // A document that ends mid-value has no offending character to name: the position is
     // the end of what was submitted.
     let offender = if cause.starts_with("EOF while parsing") {
@@ -336,6 +343,45 @@ fn ran_out_of_input(cause: &str) -> bool {
     cause.starts_with("EOF while parsing")
 }
 
+/// The mark that separates one entry of a container from the next.
+const ENTRY_SEPARATOR: u8 = b',';
+
+/// The two containers a diagnostic names, as it names them.
+const OBJECT: &str = "Object";
+const ARRAY: &str = "Array";
+
+/// The container the parse stood BETWEEN the entries of when `document` ran out of input —
+/// `"Object"` or `"Array"`, as a diagnostic names it — and `None` for every other fault.
+///
+/// A document whose last mark outside a string is an entry separator has promised its
+/// container a further entry and then stopped, so the parse did not run out where something could have
+/// stood and was named: it ran out while reading ON between the container's entries, which is
+/// the state a diagnostic reports instead. Every other way of running out — mid-value,
+/// inside a string, or where the container could have closed — is still read by what the
+/// parse was waiting for, so this answers `None` for all of them.
+///
+/// Read by [`unexpected_input`], which is how every service states this state and so
+/// never reports it differently; the classification itself is not exported, so a service
+/// cannot word this state in one of its own.
+fn exhausted_between_entries(
+    document: &str,
+    error: &serde_json::Error,
+) -> Option<&'static str> {
+    if !ran_out_of_input(&cause(error)) {
+        return None;
+    }
+    let tail = structural_tail(document)?;
+    // A mark inside a string is text: a document ending inside one separates nothing.
+    if tail.inside_string || tail.last_non_space != Some(ENTRY_SEPARATOR) {
+        return None;
+    }
+    match tail.open.last()?.0 {
+        b'{' => Some(OBJECT),
+        b'[' => Some(ARRAY),
+        _ => None,
+    }
+}
+
 /// The most still-open containers the reading below tracks.
 ///
 /// A parse nesting deeper than the parser's own recursion limit (128 for `serde_json`) fails
@@ -367,15 +413,32 @@ pub fn unclosed_container_start(
         "EOF while parsing a list" => b'[',
         _ => return None,
     };
-    let (mark, line, column) = *unclosed_containers(document)?.last()?;
+    let (mark, line, column) = *structural_tail(document)?.open.last()?;
     (mark == opening).then_some((line, column))
 }
 
-/// Every container mark of `document` that is still open at its end, outermost first, each
-/// with the one-based line and the one-based column in BYTES it sits at — or `None` when
-/// there are more of them than [`MAX_UNCLOSED_CONTAINERS`].
-fn unclosed_containers(document: &str) -> Option<Vec<(u8, usize, usize)>> {
+/// What a walk of a document's structure holds where the document ends.
+struct StructuralTail {
+    /// Every container mark still open there, outermost first, each with the one-based line
+    /// and the one-based column in BYTES it sits at.
+    open: Vec<(u8, usize, usize)>,
+    /// The last byte read outside a string that is not whitespace — what the document ends
+    /// ON, the entry separator this reading consults among them — and `None` for a document
+    /// that carries nothing but whitespace.
+    last_non_space: Option<u8>,
+    /// Whether the document ends INSIDE a string, whose contents carry no structure.
+    inside_string: bool,
+}
+
+/// The structure of `document` where it ends, or `None` when it leaves more containers open
+/// than [`MAX_UNCLOSED_CONTAINERS`].
+///
+/// The document is walked once: a string carries no structure, so what it contains, escapes
+/// included, is skipped, and every container mark that is closed again is matched off — so
+/// what is left is the context the parse was in where the document stopped.
+fn structural_tail(document: &str) -> Option<StructuralTail> {
     let mut open: Vec<(u8, usize, usize)> = Vec::new();
+    let mut last_non_space = None;
     let mut line = 1;
     let mut column = 1;
     let mut inside_string = false;
@@ -388,6 +451,7 @@ fn unclosed_containers(document: &str) -> Option<Vec<(u8, usize, usize)>> {
                 escaped = true;
             } else if byte == b'"' {
                 inside_string = false;
+                last_non_space = Some(byte);
             }
         } else {
             match byte {
@@ -403,6 +467,9 @@ fn unclosed_containers(document: &str) -> Option<Vec<(u8, usize, usize)>> {
                 }
                 _ => {}
             }
+            if !byte.is_ascii_whitespace() {
+                last_non_space = Some(byte);
+            }
         }
         if byte == b'\n' {
             line += 1;
@@ -411,7 +478,11 @@ fn unclosed_containers(document: &str) -> Option<Vec<(u8, usize, usize)>> {
             column += 1;
         }
     }
-    Some(open)
+    Some(StructuralTail {
+        open,
+        last_non_space,
+        inside_string,
+    })
 }
 
 #[cfg(test)]
@@ -538,11 +609,16 @@ mod tests {
     }
 
     /// A fault that names no word still describes itself: the character it stopped on, its
-    /// code, and what was expected there.
+    /// code, and what was expected there — or, for a document that ran out of input on an
+    /// entry separator, the container whose entries it ran out between.
+    ///
+    /// The rows differ along the fault class, which container the parse was inside, how
+    /// deeply it nests, whether whitespace follows the separator, and whether a separator
+    /// that could be mistaken for one sits inside a string.
     #[test]
     fn a_fault_that_names_no_word_names_the_character_it_stopped_on() {
         // (case, the document, what the diagnostic must say)
-        let rows: [(&str, &str, &str); 3] = [
+        let rows: [(&str, &str, &str); 10] = [
             (
                 "a missing comma between members",
                 r#"{"a": 1 "b": 2}"#,
@@ -559,6 +635,45 @@ mod tests {
                 "a document that ends early",
                 r#"{"a": 1"#,
                 "Unexpected end-of-input: expected close marker for Object",
+            ),
+            // A document that stops on an entry separator stopped BETWEEN its container's
+            // entries, whichever container that is and however deep it sits.
+            (
+                "an object that ends on its member separator",
+                r#"{"a": 1,"#,
+                "Unexpected end-of-input within/between Object entries",
+            ),
+            (
+                "an array that ends on its element separator",
+                "[1, 2,",
+                "Unexpected end-of-input within/between Array entries",
+            ),
+            (
+                "an inner array that ends on its separator",
+                r#"{"a": [1,"#,
+                "Unexpected end-of-input within/between Array entries",
+            ),
+            (
+                "an outer object that ends on its separator past a closed inner one",
+                r#"{"a": {"b": 1},"#,
+                "Unexpected end-of-input within/between Object entries",
+            ),
+            (
+                "a separator followed by whitespace and a newline",
+                "{\n  \"a\": 1,\n  ",
+                "Unexpected end-of-input within/between Object entries",
+            ),
+            // A separator INSIDE a string separates nothing: that document ran out of input
+            // while still reading the string.
+            (
+                "a string left open on a comma",
+                r#"{"a": "one,"#,
+                "Unexpected end-of-input: expected close marker for String",
+            ),
+            (
+                "a member whose value never came",
+                r#"{"a":"#,
+                "Unexpected end-of-input: expected a value",
             ),
         ];
 

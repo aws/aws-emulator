@@ -50,7 +50,11 @@ const JSON_SCHEMA: &str = r#"{"type":"object","properties":{"id":{"type":"string
 /// The source clause a diagnostic carries where the parse's own source is WITHHELD: the
 /// registry does not echo a submitted definition back, so it reports the source as redacted
 /// and names the parser feature that would have put it there.
-const REDACTED: &str = "REDACTED (`StreamReadFeature.INCLUDE_SOURCE_IN_LOCATION` disabled)";
+///
+/// One copy, shared with [`crate::schema_definition_between_entries`], so the two suites
+/// that pin a parser diagnostic cannot drift about this clause.
+pub(crate) const REDACTED: &str =
+    "REDACTED (`StreamReadFeature.INCLUDE_SOURCE_IN_LOCATION` disabled)";
 
 /// The classes a JSON value may be written as, as the parser's diagnostic lists them.
 const CLASSES: &str = "JSON String, Number, Array, Object or token 'null', 'true' or 'false'";
@@ -62,12 +66,16 @@ const JSON_FORMAT_SCHEMA: &str = "parse-refusal-json";
 /// The whole `Message` a definition that is not JSON is refused with: the frame the schema
 /// registry states the fault in, and the parser's `diagnostic` of where the definition
 /// stopped being JSON.
-fn refusal(data_format: &str, diagnostic: &str) -> String {
+///
+/// One copy, shared with [`crate::schema_definition_between_entries`].
+pub(crate) fn refusal(data_format: &str, diagnostic: &str) -> String {
     format!("Schema definition of {data_format} data format is invalid: {diagnostic}")
 }
 
 /// The location clause a diagnostic ends with, for a parse that stopped at `line`:`column`.
-fn at(line: usize, column: usize) -> String {
+///
+/// One copy, shared with [`crate::schema_definition_between_entries`].
+pub(crate) fn at(line: usize, column: usize) -> String {
     format!("\n at [Source: {REDACTED}; line: {line}, column: {column}]")
 }
 
