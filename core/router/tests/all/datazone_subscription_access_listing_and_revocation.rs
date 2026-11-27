@@ -3,8 +3,9 @@
 //! The whole Amazon DataZone subscription approval flow, driven over the wire on the
 //! ASSEMBLED router: ask, approve, find the access, read it, give it up.
 //!
-//! RULE: a subscription request is an ASK, so it is created `PENDING` and awaits a
-//! decision; accepting it moves the request to `ACCEPTED` and materialises the access as a
+//! RULE: a subscription request a principal that does NOT own the producing project makes
+//! is an ASK, so it is created `PENDING` and awaits a decision; accepting it moves the
+//! request to `ACCEPTED` and materialises the access as a
 //! subscription that `ListSubscriptions` reports for that request and `GetSubscription`
 //! reads as `APPROVED`; revoking that subscription moves it to `REVOKED`, which both
 //! readers then report. The statuses are the modelled enums
@@ -13,9 +14,13 @@
 //! operation="CreateSubscriptionRequest,ListSubscriptions,RevokeSubscription")`).
 //!
 //! The service's own suites table the filters, the pages and the refusals each of those
-//! operations owes; what this one adds is that the flow a client runs end to end is served
-//! by the emulator as ASSEMBLED — every call routed by the same `MultiServiceRouter` the
-//! emulator boots with, with nothing read from the store.
+//! operations owes — and which asks the service resolves when they are MADE, the asks of a
+//! principal that already owns the data. What this one adds is that the flow a client runs
+//! end to end is served by the emulator as ASSEMBLED — every call routed by the same
+//! `MultiServiceRouter` the emulator boots with. Nothing is read from the store; the one
+//! thing written to it is the DataZone user the producing project belongs to, because a
+//! project is attributed to the user that created it and this emulator authenticates every
+//! caller as one user, so no wire call records a project somebody else owns.
 
 use serde_json::{json, Value};
 use smithy_server_runtime::MultiServiceRouter;
@@ -49,9 +54,17 @@ impl Answer {
     }
 }
 
+/// A `UserProfileId`-shaped id of some OTHER DataZone user (hex groups 8-4-4-4-12,
+/// `smithy_query(query="shape", shape="UserProfileId")`): who the producing project belongs
+/// to, so the ask this flow makes is one that awaits a decision.
+const ANOTHER_USER: &str = "c3d4e5f6-7a8b-4c9d-8e1f-2a3b4c5d6e7f";
+
 /// The assembled emulator, with DataZone reached through the router that mounts it.
 struct Emulator {
     router: MultiServiceRouter,
+    /// The engine the router's services share, for the ONE fixture write this flow needs
+    /// ([`Emulator::attribute_project_to`]).
+    engine: Arc<engine::InMemoryEngine>,
 }
 
 impl Emulator {
@@ -59,9 +72,28 @@ impl Emulator {
         let engine: Arc<engine::InMemoryEngine> = Arc::new(engine::InMemoryEngine::new());
         let mut router = MultiServiceRouter::new();
         router.register_service(
-            service_com_amazonaws_datazone_datazone::EmulatedService::new(engine),
+            service_com_amazonaws_datazone_datazone::EmulatedService::new(Arc::clone(&engine)),
         );
-        Self { router }
+        Self { router, engine }
+    }
+
+    /// Attribute the stored project `project` of `domain` to the DataZone user
+    /// `user_profile_id`, as though that user had created it.
+    ///
+    /// The one fixture write this flow makes, for the reason the module doc states: the
+    /// service resolves an ask made by an OWNER of the producing project when it is made, so
+    /// a flow about the DECISION needs a producing project the calling identity does not
+    /// own. Nothing is asserted from the store.
+    fn attribute_project_to(&self, domain: &str, project: &str, user_profile_id: &str) {
+        let state = service_com_amazonaws_datazone_datazone::state::service_state(&*self.engine)
+            .expect("the DataZone store is reachable");
+        let mut store = state.lock();
+        let stored = store
+            .domains
+            .get_mut(domain)
+            .and_then(|domain| domain.projects.get_mut(project))
+            .expect("the flow's project is stored");
+        stored.created_by = user_profile_id.to_string();
     }
 
     /// Send one request. The `Authorization` header carries a SigV4 credential scope,
@@ -210,7 +242,9 @@ async fn datazone_subscription_is_asked_approved_listed_and_revoked() {
         .await
         .s("listingId");
 
-    // The ASK: a request for the consuming project, which awaits a decision.
+    // The ASK: a request for the consuming project, made by an identity that does not own
+    // the producing project, which awaits a decision.
+    dz.attribute_project_to(&domain, &producer, ANOTHER_USER);
     let asked = dz
         .served(
             "asking for access",

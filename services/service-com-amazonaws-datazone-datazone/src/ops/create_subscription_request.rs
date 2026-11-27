@@ -2,9 +2,9 @@
 
 //! @op CreateSubscriptionRequest
 //! A subscription request is a principal's ask for access to a catalog listing: this
-//! operation records it in the domain's store — awaiting a decision when the subscribed
-//! listings resolve to a subscription target, already resolved when they do not — and
-//! `GetSubscriptionRequestDetails` reads it back.
+//! operation records it in the domain's store — already resolved when the caller making it
+//! owns the project that published every subscribed listing, awaiting a reviewer's decision
+//! otherwise — and `GetSubscriptionRequestDetails` reads it back.
 //!
 //! ## Shape of an operation
 //!
@@ -182,13 +182,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
     async fn handle(
         &self,
         input: Self::Input,
-        _ctx: &smithy_server_runtime::OperationContext<'_>,
+        ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
         use crate::state::{
-            caller_user_id, check_asset_references, now_ms, stored_forms,
+            caller_principal_arn, caller_user_id, check_asset_references,
+            created_subscription_request_status, now_ms, requester, stored_forms,
             AssetReferenceRefusal, IdempotencyKey, ResourceKind, SubscribedListingRef,
             SubscriptionRequest, DOMAIN_STATUS_AVAILABLE, ENTITY_TYPE_ASSET,
-            MAX_SUBSCRIPTION_REQUESTS_PER_DOMAIN, SUBSCRIPTION_REQUEST_STATUS_PENDING,
+            MAX_SUBSCRIPTION_REQUESTS_PER_DOMAIN,
         };
 
         // The metadata forms the request carries, read by the rule
@@ -209,6 +210,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 },
             )
         })?;
+        // WHICH principal is asking, resolved from the credential the request presented
+        // before this service's store is locked: the lookup takes the locks of the stores
+        // that own the answer (the token service's sessions and the account's IAM records).
+        let principal_arn = caller_principal_arn(&*self.engine, ctx);
         let mut store = state.lock();
         let now = now_ms();
         store.settle_clock(now);
@@ -358,15 +363,18 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             );
         }
 
+        // WHO the ask is made by, and so whether it is already resolved: an ask for access
+        // to data the asker already owns has nobody left to review it, by the rule
+        // `crate::state::created_subscription_request_status` states. Read off the domain
+        // before the mint below takes the store mutably.
+        let asked_by = requester(domain, &principal_arn);
+        let status = created_subscription_request_status(domain, &asked_by, &listings);
+
         let id = store.mint_id(now);
         let request = SubscriptionRequest {
             id: id.clone(),
             domain_id: input.domain_identifier.clone(),
-            // A created request is an ASK, so it is recorded AWAITING a decision: this
-            // operation takes none, and only `AcceptSubscriptionRequest` /
-            // `RejectSubscriptionRequest` move it to a terminal member of
-            // `SubscriptionRequestStatus`.
-            status: SUBSCRIPTION_REQUEST_STATUS_PENDING.to_string(),
+            status: status.to_string(),
             request_reason: input.request_reason,
             principals,
             listings,
@@ -376,17 +384,20 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             created_by: caller_user_id(),
             created_at_ms: now,
             // Nothing has updated the request yet, so `updatedAt` — a REQUIRED output
-            // member — is the instant it was made, and `updatedBy` is absent.
+            // member — is the instant it was made, and `updatedBy` is absent. True of a
+            // request resolved at create time as well: the ask itself resolved it, so
+            // nothing has happened to the record since.
             updated_by: None,
             updated_at_ms: now,
-            // No REVIEWER has decided the request: the ask awaits a decision, so
-            // neither the reviewer nor a decision comment is reported yet.
+            // No REVIEWER decided the request: either the ask awaits a decision, or it was
+            // resolved by WHO made it rather than by anybody taking one — so neither the
+            // reviewer nor a decision comment is reported in either case.
             reviewer_id: None,
             decision_comment: None,
             // `existingSubscriptionId` names the subscription the asked-for access
-            // already exists under. A subscription is materialised by a decision that
-            // ACCEPTS a request, which this ask is still awaiting, so there is none to
-            // report.
+            // already exists under. A subscription is materialised by a DECISION that
+            // accepts a request, and no decision has been taken on this one, so there is
+            // none to report.
             existing_subscription_id: None,
         };
 

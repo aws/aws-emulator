@@ -10,9 +10,11 @@
 //! The rules under test, each asserted over a TABLE of inputs rather than one request:
 //!
 //! 1. A subscription request is RECORDED in its domain: the create answers the stored
-//!    record — the `PENDING` status every ask awaits a decision in (the decision side is
-//!    [`crate::subscription_request_decisions`]), the calling principal as `createdBy`,
-//!    the reason asked for, the
+//!    record — the status the ask resolves to (here `ACCEPTED`, because the calling identity
+//!    owns the project that published the listing; the asks that await a decision, and the
+//!    decisions taken on them, are [`crate::subscription_request_decisions`], and the
+//!    create-time rule itself is [`crate::subscription_request_owner_asks`]), the calling
+//!    principal as `createdBy`, the reason asked for, the
 //!    subscribed principal resolved against the domain, and the subscribed listing at the
 //!    revision the catalog held — and `GetSubscriptionRequestDetails` reads back exactly
 //!    that record, as often as it is asked.
@@ -31,7 +33,7 @@ use serde_json::{json, Value};
 // The enum members as the service stores them, so a drift between these constants and
 // the values on the wire fails here.
 use service_com_amazonaws_datazone_datazone::state::{
-    FILTER_STATUS_INVALID, FILTER_STATUS_VALID, SUBSCRIPTION_REQUEST_STATUS_PENDING,
+    FILTER_STATUS_INVALID, FILTER_STATUS_VALID, SUBSCRIPTION_REQUEST_STATUS_ACCEPTED,
 };
 
 /// The DataZone user every call here is attributed to: the user this emulator
@@ -377,8 +379,9 @@ async fn a_subscription_request_is_recorded_and_read_back() {
 
         assert_eq!(
             created.s("status"),
-            SUBSCRIPTION_REQUEST_STATUS_PENDING,
-            "case {:?}: a created request is an ask, so it awaits a decision, got {:?}",
+            SUBSCRIPTION_REQUEST_STATUS_ACCEPTED,
+            "case {:?}: the asker owns the project that published the listing, so its own \
+             ask is resolved when it is made, got {:?}",
             case.label,
             created.body
         );

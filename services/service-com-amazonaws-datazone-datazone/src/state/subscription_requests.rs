@@ -14,7 +14,7 @@
 //! and the reader cannot drift apart.
 
 use super::{
-    asset_schema_columns, date_time, evaluate_asset_filter, Domain, StoredForm,
+    asset_schema_columns, date_time, evaluate_asset_filter, Domain, Requester, StoredForm,
     FILTER_STATUS_INVALID, FILTER_STATUS_VALID,
 };
 use crate::ops::types::{
@@ -26,14 +26,59 @@ use crate::ops::types::{
 /// The `SubscriptionRequestStatus` members (model enum
 /// `com.amazonaws.datazone#SubscriptionRequestStatus`: PENDING | ACCEPTED | REJECTED).
 ///
-/// A request is an ASK, so it is created awaiting a decision
-/// ([`SUBSCRIPTION_REQUEST_STATUS_PENDING`]) and only a decision operation —
-/// `AcceptSubscriptionRequest` or `RejectSubscriptionRequest` — moves it to one of the
-/// two terminal members. None of the three is in-progress, so a stored request owes the
-/// clock no transition.
+/// A request is an ASK, so it is created either awaiting a decision
+/// ([`SUBSCRIPTION_REQUEST_STATUS_PENDING`]) or already resolved by the ask itself
+/// ([`created_subscription_request_status`]); from then on only a decision operation —
+/// `AcceptSubscriptionRequest` or `RejectSubscriptionRequest` — moves it to one of the two
+/// terminal members. None of the three is in-progress, so a stored request owes the clock
+/// no transition.
 pub const SUBSCRIPTION_REQUEST_STATUS_PENDING: &str = "PENDING";
 pub const SUBSCRIPTION_REQUEST_STATUS_ACCEPTED: &str = "ACCEPTED";
 pub const SUBSCRIPTION_REQUEST_STATUS_REJECTED: &str = "REJECTED";
+
+/// The `SubscriptionRequestStatus` a request made BY `requester` against `listings` is
+/// recorded with.
+///
+/// An ask for access to data the asker already owns has nobody left to review it, so
+/// DataZone resolves it when it is made: a request whose requester owns the project that
+/// published EVERY subscribed listing ([`super::Project::is_owned_by`]) is recorded
+/// [`SUBSCRIPTION_REQUEST_STATUS_ACCEPTED`], and every other request is recorded
+/// [`SUBSCRIPTION_REQUEST_STATUS_PENDING`], awaiting a reviewer's decision. A request
+/// resolved this way was decided by nobody, so it carries no `reviewerId` and no
+/// `decisionComment`, nothing has updated it since it was made, and no `Subscription` is
+/// materialised for it — only a DECISION grants access
+/// ([`super::approved_subscription`]).
+///
+/// RECORDED behaviour: the model declares `status` required and names its three members but
+/// does not state when a created request is already decided (smithy_query
+/// operation="CreateSubscriptionRequest").
+///
+/// Whether the subscribed listing has a subscription target behind it does NOT enter into
+/// it: a target is the path a GRANT is fulfilled through, not a decision
+/// ([`super::SubscriptionTarget`]).
+#[must_use]
+pub fn created_subscription_request_status(
+    domain: &Domain,
+    requester: &Requester,
+    listings: &[SubscribedListingRef],
+) -> &'static str {
+    let publisher_is_the_requesters = |reference: &SubscribedListingRef| {
+        domain
+            .listings
+            .get(&reference.listing_id)
+            .and_then(|listing| listing.revisions.get(&reference.revision))
+            .and_then(|revision| domain.projects.get(&revision.owning_project_id))
+            .is_some_and(|project| project.is_owned_by(requester))
+    };
+    // `subscribedListings` is 1..1 (smithy_query operation="CreateSubscriptionRequest"), so
+    // the empty case cannot be reached from the wire; it is PENDING rather than vacuously
+    // resolved, because an ask that names no listing names no data the requester owns.
+    if !listings.is_empty() && listings.iter().all(publisher_is_the_requesters) {
+        SUBSCRIPTION_REQUEST_STATUS_ACCEPTED
+    } else {
+        SUBSCRIPTION_REQUEST_STATUS_PENDING
+    }
+}
 
 /// The `ValidationException` message `AcceptSubscriptionRequest` refuses a request that
 /// is no longer PENDING with: a decision has already been taken on it, so there is none

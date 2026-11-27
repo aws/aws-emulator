@@ -26,6 +26,11 @@ hex = { workspace = true }
 # `data_plane_addressing`: the shared reading of how a client addresses a plane this
 # emulator serves at its own endpoint, which a domain's published portal URL is built from.
 service-common = { path = "../common" }
+# Which principal the request's access key id speaks for — the session the token service
+# minted it for, or the IAM user the account holds it for, the same record
+# `sts:GetCallerIdentity` answers from — so what a caller OWNS in a domain is decided for the
+# identity the caller reads as itself (`state::requesters`).
+service-com-amazonaws-sts-awssecuritytokenservicev20110615 = { workspace = true }
 # Escapes the stored strings written into the data portal page this service serves.
 html-escape = "0.2"
 

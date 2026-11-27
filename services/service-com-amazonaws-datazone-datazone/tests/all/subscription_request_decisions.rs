@@ -6,18 +6,23 @@
 //!
 //! Every assertion is made on the HTTP answer only — a handler that answered from a
 //! hardcoded value instead of from the store fails here. A FIXTURE reaches into the store
-//! for exactly two things: a subscription target, because the operation that would record
+//! for exactly three things: a subscription target, because the operation that would record
 //! one on the wire is still a scaffold (`CreateSubscriptionTarget` is addressed by an
-//! `environmentIdentifier`, and no environment resource exists yet), and the ids of the
-//! subscriptions a domain holds, which keeps the cases here about the DECISION alone.
-//! Nothing is ASSERTED from the store.
+//! `environmentIdentifier`, and no environment resource exists yet); the DataZone user its
+//! PRODUCING projects belong to, because a project is attributed to the user that created
+//! it and this emulator authenticates every caller as one user, so no wire call creates a
+//! project somebody else owns ([`hand_to_another_owner`]); and the ids of the subscriptions
+//! a domain holds, which keeps the cases here about the DECISION alone. Nothing is ASSERTED
+//! from the store.
 //!
 //! The rules under test, each asserted over a TABLE of inputs:
 //!
-//! 1. A created subscription request is an ASK, so it is `PENDING`: it awaits a decision,
-//!    with no reviewer, no decision comment and no existing subscription. Whether the
-//!    domain holds a subscription target for the listing does not enter into it — a
-//!    target is what a GRANT is fulfilled through, not a decision.
+//! 1. A subscription request an asker that does NOT own the producing project makes is an
+//!    ASK, so it is `PENDING`: it awaits a decision, with no reviewer, no decision comment
+//!    and no existing subscription. Whether the domain holds a subscription target for the
+//!    listing does not enter into it — a target is what a GRANT is fulfilled through, not a
+//!    decision. (The other side of that rule, an OWNER's own ask resolved when it is made,
+//!    is [`crate::subscription_request_owner_asks`].)
 //! 2. A decision may be taken only on a request still awaiting one: `Accept` moves it to
 //!    `ACCEPTED` and `Reject` to `REJECTED`, each recording the caller as `reviewerId` and
 //!    `updatedBy`, the comment it carried, and a later `updatedAt` —
@@ -88,13 +93,27 @@ struct Catalog {
     producer: String,
 }
 
+/// The DataZone user the fixture's PRODUCING projects are handed to: a `UserProfileId` of
+/// the form the model admits (hex groups 8-4-4-4-12, smithy_query shape="UserProfileId")
+/// and not the one this emulator authenticates the caller as, so the caller owns no project
+/// that published a listing here.
+const ANOTHER_OWNER: &str = "b17c5a90-3d4e-4f21-9ab8-0c1d2e3f4a5b";
+
 /// Build the fixture: a settled domain, two projects, a custom asset type with the empty
-/// `formsInput` the docs allow, an asset of that type and the listing publishing it.
-async fn catalog(dz: &Emulator, name: &str, asset_type: &str) -> Catalog {
+/// `formsInput` the docs allow, an asset of that type and the listing publishing it. The
+/// producing project is owned by somebody else ([`hand_to_another_owner`]), so every ask
+/// made here is one that awaits a decision.
+async fn catalog(
+    dz: &Emulator,
+    engine: &Arc<engine::InMemoryEngine>,
+    name: &str,
+    asset_type: &str,
+) -> Catalog {
     let domain = dz.available_domain(name).await;
     let producer = dz.project(&domain, "producer").await;
     let consumer = dz.project(&domain, "consumer").await;
     let (asset, listing) = publish_asset_listing(dz, &domain, &producer, asset_type).await;
+    hand_to_another_owner(engine, &domain, &producer);
 
     Catalog {
         domain,
@@ -110,8 +129,9 @@ async fn catalog(dz: &Emulator, name: &str, asset_type: &str) -> Catalog {
 /// the asset and the listing that records it.
 ///
 /// One helper rather than one copy per fixture, so every case here subscribes to a listing
-/// built the same way — and a second PRODUCING project gets its own listing through it.
-async fn publish_asset_listing(
+/// built the same way — and a second PRODUCING project, here or in
+/// [`crate::subscription_request_owner_asks`], gets its own listing through it.
+pub(crate) async fn publish_asset_listing(
     dz: &Emulator,
     domain: &str,
     producer: &str,
@@ -171,6 +191,17 @@ async fn publish_asset_listing(
     (created_asset.s("id"), published.s("listingId"))
 }
 
+/// Attribute `project` of `domain` to [`ANOTHER_OWNER`], so the calling identity does not
+/// own it.
+///
+/// The second fixture seam this suite documents at the top, through the shared helper every
+/// suite that needs a project the caller does not own uses
+/// ([`crate::harness::attribute_project_to`]). What the cases here need from it is only
+/// that the asker is not the producing project's owner.
+fn hand_to_another_owner(engine: &Arc<engine::InMemoryEngine>, domain: &str, project: &str) {
+    crate::harness::attribute_project_to(engine, domain, project, ANOTHER_OWNER);
+}
+
 /// Put a subscription target into `catalog`'s domain, applicable to the asset types
 /// `applicable_asset_types`.
 ///
@@ -206,7 +237,7 @@ fn put_subscription_target(
 
 /// The ids of the subscriptions `domain` holds.
 ///
-/// The second fixture seam: a case has to learn the id to address `GetSubscription` with,
+/// The third fixture seam: a case has to learn the id to address `GetSubscription` with,
 /// and reading it from the store keeps these cases about the DECISION rather than about
 /// how a listing filters and pages (which `ListSubscriptions` has its own suite for). Only
 /// the IDS come from here — every assertion about a subscription below is made on the HTTP
@@ -301,7 +332,13 @@ async fn a_created_request_awaits_a_decision_whatever_targets_the_domain_holds()
 
     for (index, (label, targets)) in rows.into_iter().enumerate() {
         let (dz, engine) = Emulator::with_engine();
-        let catalog = catalog(&dz, &format!("awaits-decision-{index}"), "PlainCustomType").await;
+        let catalog = catalog(
+            &dz,
+            &engine,
+            &format!("awaits-decision-{index}"),
+            "PlainCustomType",
+        )
+        .await;
         for (slot, applicable) in targets.iter().enumerate() {
             put_subscription_target(&engine, &catalog, &format!("target-{slot}"), applicable);
         }
@@ -399,8 +436,8 @@ async fn a_decision_on_a_request_that_awaits_one_is_recorded() {
     ];
 
     for (index, (label, decision, expect_status, comment)) in rows.into_iter().enumerate() {
-        let (dz, _engine) = Emulator::with_engine();
-        let catalog = catalog(&dz, &format!("decision-{index}"), "Fulfillable").await;
+        let (dz, engine) = Emulator::with_engine();
+        let catalog = catalog(&dz, &engine, &format!("decision-{index}"), "Fulfillable").await;
         let created = ask(&dz, &catalog, "please grant access").await;
         let id = member(&created, "id");
         assert_eq!(
@@ -513,7 +550,7 @@ async fn a_decision_materialises_a_subscription_only_when_it_accepts() {
 
     for (index, (label, decision, principal, narrow)) in rows.into_iter().enumerate() {
         let (dz, engine) = Emulator::with_engine();
-        let catalog = catalog(&dz, &format!("materialise-{index}"), "Fulfillable").await;
+        let catalog = catalog(&dz, &engine, &format!("materialise-{index}"), "Fulfillable").await;
         let asked_for = match principal {
             Principal::Project => json!({ "project": { "identifier": catalog.consumer } }),
             Principal::Iam => json!({ "iam": { "identifier": CONSUMER_ROLE } }),
@@ -747,7 +784,13 @@ async fn a_decision_on_a_request_that_is_already_decided_is_refused() {
         already.into_iter().enumerate()
     {
         let (dz, engine) = Emulator::with_engine();
-        let catalog = catalog(&dz, &format!("already-decided-{index}"), "Fulfillable").await;
+        let catalog = catalog(
+            &dz,
+            &engine,
+            &format!("already-decided-{index}"),
+            "Fulfillable",
+        )
+        .await;
         let created = ask(&dz, &catalog, "the original ask").await;
         let id = member(&created, "id");
         let decided = dz
@@ -826,7 +869,7 @@ async fn a_decision_on_a_request_that_is_already_decided_is_refused() {
 #[tokio::test]
 async fn a_decision_addressing_nothing_this_store_holds_is_refused() {
     let (dz, engine) = Emulator::with_engine();
-    let catalog = catalog(&dz, "decision-refusals", "Fulfillable").await;
+    let catalog = catalog(&dz, &engine, "decision-refusals", "Fulfillable").await;
     let pending = member(&ask(&dz, &catalog, "a pending ask").await, "id");
 
     // (label, domain, request id, expected status, expected error code)
@@ -1059,11 +1102,14 @@ struct Granted {
     user_on_b: String,
 }
 
-async fn granted(dz: &Emulator, name: &str) -> Granted {
-    let catalog = catalog(dz, name, "AccessTypeA").await;
+async fn granted(dz: &Emulator, engine: &Arc<engine::InMemoryEngine>, name: &str) -> Granted {
+    let catalog = catalog(dz, engine, name, "AccessTypeA").await;
     let producer_b = dz.project(&catalog.domain, "producer-b").await;
     let (_, listing_b) =
         publish_asset_listing(dz, &catalog.domain, &producer_b, "AccessTypeB").await;
+    // Both producing projects belong to somebody else, so every ask below awaits the
+    // decision these cases then take on it.
+    hand_to_another_owner(engine, &catalog.domain, &producer_b);
 
     let as_project = json!({ "project": { "identifier": catalog.consumer } });
     let as_iam = json!({ "iam": { "identifier": CONSUMER_ROLE } });
@@ -1157,8 +1203,8 @@ async fn granted(dz: &Emulator, name: &str) -> Granted {
 
 #[tokio::test]
 async fn a_listing_reports_the_subscriptions_every_named_filter_keeps() {
-    let (dz, _engine) = Emulator::with_engine();
-    let held = granted(&dz, "access-listing-filters").await;
+    let (dz, engine) = Emulator::with_engine();
+    let held = granted(&dz, &engine, "access-listing-filters").await;
     let every = vec![
         held.project_on_a.clone(),
         held.iam_on_a.clone(),
@@ -1302,8 +1348,8 @@ async fn a_listing_reports_the_subscriptions_every_named_filter_keeps() {
 /// that did not write it answers the same.
 #[tokio::test]
 async fn a_reported_summary_is_the_stored_subscription() {
-    let (dz, _engine) = Emulator::with_engine();
-    let held = granted(&dz, "access-listing-members").await;
+    let (dz, engine) = Emulator::with_engine();
+    let held = granted(&dz, &engine, "access-listing-members").await;
     let listed = list_subscriptions(&dz, &held.domain, "").await;
 
     let rows: Vec<(&str, String, String, Value)> = vec![
@@ -1405,8 +1451,8 @@ async fn a_revocation_takes_the_access_away_and_is_idempotent() {
     ];
 
     for (index, (label, retain)) in rows.into_iter().enumerate() {
-        let (dz, _engine) = Emulator::with_engine();
-        let held = granted(&dz, &format!("access-revocation-{index}")).await;
+        let (dz, engine) = Emulator::with_engine();
+        let held = granted(&dz, &engine, &format!("access-revocation-{index}")).await;
         let id = held.project_on_b.clone();
         let before = read_subscription(&dz, &held.domain, &id).await;
         assert_eq!(
@@ -1517,7 +1563,7 @@ async fn a_revocation_takes_the_access_away_and_is_idempotent() {
 #[tokio::test]
 async fn a_revoke_of_an_access_given_up_another_way_is_refused() {
     let (dz, engine) = Emulator::with_engine();
-    let held = granted(&dz, "access-revoke-conflict").await;
+    let held = granted(&dz, &engine, "access-revoke-conflict").await;
     let id = held.project_on_b.clone();
 
     // A third fixture seam, for the same reason as the other two: `CancelSubscription` is
@@ -1583,8 +1629,8 @@ async fn a_revoke_of_an_access_given_up_another_way_is_refused() {
 /// The order a listing reports, and the pages `maxResults` / `nextToken` cut it into.
 #[tokio::test]
 async fn a_listing_pages_over_one_order() {
-    let (dz, _engine) = Emulator::with_engine();
-    let catalog = catalog(&dz, "access-listing-pages", "PagedType").await;
+    let (dz, engine) = Emulator::with_engine();
+    let catalog = catalog(&dz, &engine, "access-listing-pages", "PagedType").await;
 
     // Five accesses on the one listing, so the order and the pages have something to cut.
     let mut granted_ids = Vec::new();
@@ -1672,8 +1718,8 @@ async fn a_listing_pages_over_one_order() {
 /// this service never issued is invalid input.
 #[tokio::test]
 async fn an_access_call_addressing_nothing_this_store_holds_is_refused() {
-    let (dz, _engine) = Emulator::with_engine();
-    let held = granted(&dz, "access-refusals").await;
+    let (dz, engine) = Emulator::with_engine();
+    let held = granted(&dz, &engine, "access-refusals").await;
 
     // (label, method, uri, expected status, expected error code)
     let rows: Vec<(&str, &str, String, u16, &str)> = vec![
@@ -1797,8 +1843,8 @@ async fn accesses_in_reported_order(
 /// no page reported at all.
 #[tokio::test]
 async fn a_listing_admits_exactly_the_modelled_page_sizes() {
-    let (dz, _engine) = Emulator::with_engine();
-    let catalog = catalog(&dz, "access-page-size-bounds", "BoundedType").await;
+    let (dz, engine) = Emulator::with_engine();
+    let catalog = catalog(&dz, &engine, "access-page-size-bounds", "BoundedType").await;
     // Three accesses, so the bottom of the range leaves something over while the top of it
     // holds every one of them.
     let order = accesses_in_reported_order(&dz, &catalog, 3).await;
@@ -1868,8 +1914,8 @@ async fn a_listing_admits_exactly_the_modelled_page_sizes() {
 /// every member of it answers the one order, and only `sortOrder` turns that order round.
 #[tokio::test]
 async fn a_listing_reports_one_order_whatever_sort_by_names() {
-    let (dz, _engine) = Emulator::with_engine();
-    let catalog = catalog(&dz, "access-listing-sort-key", "SortedType").await;
+    let (dz, engine) = Emulator::with_engine();
+    let catalog = catalog(&dz, &engine, "access-listing-sort-key", "SortedType").await;
     // Three accesses, so an order has two steps to get wrong.
     let ascending = accesses_in_reported_order(&dz, &catalog, 3).await;
     let descending: Vec<String> = ascending.iter().rev().cloned().collect();
@@ -1940,8 +1986,8 @@ async fn a_listing_reports_one_order_whatever_sort_by_names() {
 /// a different one.
 #[tokio::test]
 async fn a_later_page_resumes_after_the_access_the_page_before_it_ended_on() {
-    let (dz, _engine) = Emulator::with_engine();
-    let catalog = catalog(&dz, "access-page-resume", "ResumedType").await;
+    let (dz, engine) = Emulator::with_engine();
+    let catalog = catalog(&dz, &engine, "access-page-resume", "ResumedType").await;
     // Five accesses, so a page of two leaves three over and the resume has somewhere to go
     // wrong.
     let order = accesses_in_reported_order(&dz, &catalog, 5).await;

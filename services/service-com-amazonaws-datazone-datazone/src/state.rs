@@ -52,6 +52,13 @@ pub use data_portal::*;
 mod domain_admission;
 pub use domain_admission::*;
 
+/// WHO is asking: the principal a request's credential speaks for, the DataZone user the
+/// domain holds for it, and which projects that user owns. A concern of its own, so it lives
+/// in its own module beside this one; everything it declares is re-exported here, so a
+/// handler reaches it as `crate::state::…` like the rest of the store.
+mod requesters;
+pub use requesters::*;
+
 /// The span the emulator takes to finish a domain lifecycle step AWS reports as
 /// in-progress (`CREATING` -> `AVAILABLE`, `DELETING` -> gone).
 ///
@@ -76,6 +83,11 @@ pub const PROJECT_STATUS_ACTIVE: &str = "ACTIVE";
 /// PROJECT_CATALOG_VIEWER | PROJECT_CATALOG_CONSUMER | PROJECT_CATALOG_STEWARD |
 /// USER_CREATED_DESIGNATION).
 pub const DESIGNATION_USER_CREATED: &str = "USER_CREATED_DESIGNATION";
+
+/// The `UserDesignation` member that makes a project member an OWNER of the project (same
+/// model enum), as opposed to one of the designations that only let a member contribute to
+/// it or read its catalog. What [`Project::is_owned_by`] reads.
+pub const DESIGNATION_PROJECT_OWNER: &str = "PROJECT_OWNER";
 
 /// The `SortOrder` that reverses a listing (model enum
 /// `com.amazonaws.datazone#SortOrder`: ASCENDING | DESCENDING).

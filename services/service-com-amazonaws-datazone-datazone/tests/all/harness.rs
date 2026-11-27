@@ -25,6 +25,11 @@ const LIFECYCLE_DEADLINE: Duration = Duration::from_secs(30);
 /// How long to wait between two looks at a condition the clock owes.
 const POLL_INTERVAL: Duration = Duration::from_millis(25);
 
+/// The access key id the calls in these suites present unless a case names another: a
+/// well-formed key id no IAM record names, so a request carrying it speaks for the one
+/// principal this emulator publishes.
+pub(crate) const DEFAULT_ACCESS_KEY_ID: &str = "AKIAEXAMPLETESTKEY";
+
 /// One emulator: a single shared engine behind the DataZone service, driven over HTTP.
 pub(crate) struct Emulator {
     router: MultiServiceRouter,
@@ -203,6 +208,22 @@ impl Emulator {
     /// which is both how the router picks this service and where the handlers read the
     /// caller's region and principal from.
     pub(crate) async fn call(&self, method: &str, uri: &str, body: Option<Value>) -> Answer {
+        self.call_as(DEFAULT_ACCESS_KEY_ID, method, uri, body).await
+    }
+
+    /// Send one request whose credential scope names `access_key_id`.
+    ///
+    /// The key id is what every service resolves the CALLING PRINCIPAL from, so this is how
+    /// a suite calls as an identity other than the account's own: a key id the account's
+    /// IAM holds for one of its users speaks for that user, and one no store holds a record
+    /// of speaks for the principal this emulator publishes ([`DEFAULT_ACCESS_KEY_ID`]).
+    pub(crate) async fn call_as(
+        &self,
+        access_key_id: &str,
+        method: &str,
+        uri: &str,
+        body: Option<Value>,
+    ) -> Answer {
         let payload = body.map(|b| serde_json::to_vec(&b).expect("a JSON body serializes"));
         let mut request = http::Request::builder()
             .method(method)
@@ -210,7 +231,9 @@ impl Emulator {
             .header("host", "datazone.us-west-2.amazonaws.com")
             .header(
                 "authorization",
-                "AWS4-HMAC-SHA256 Credential=AKIAEXAMPLETESTKEY/20261021/us-west-2/datazone/aws4_request, SignedHeaders=host, Signature=0",
+                format!(
+                    "AWS4-HMAC-SHA256 Credential={access_key_id}/20261021/us-west-2/datazone/aws4_request, SignedHeaders=host, Signature=0"
+                ),
             );
         if payload.is_some() {
             request = request.header("content-type", "application/json");
@@ -352,4 +375,28 @@ impl Emulator {
         );
         created.s("id")
     }
+}
+
+/// Attribute the stored project `project` of `domain` to the DataZone user
+/// `user_profile_id`, as though that user had created it.
+///
+/// A FIXTURE seam, shared by every suite that needs a project the CALLER does not own: a
+/// project is attributed to the DataZone user that created it, and this emulator
+/// authenticates every caller as one user, so no wire call records a project another user
+/// owns. Nothing is asserted from the store.
+pub(crate) fn attribute_project_to(
+    engine: &Arc<engine::InMemoryEngine>,
+    domain: &str,
+    project: &str,
+    user_profile_id: &str,
+) {
+    let state = service_com_amazonaws_datazone_datazone::state::service_state(&**engine)
+        .expect("the DataZone store is reachable");
+    let mut store = state.lock();
+    let stored = store
+        .domains
+        .get_mut(domain)
+        .and_then(|domain| domain.projects.get_mut(project))
+        .expect("the fixture's project is stored");
+    stored.created_by = user_profile_id.to_string();
 }
