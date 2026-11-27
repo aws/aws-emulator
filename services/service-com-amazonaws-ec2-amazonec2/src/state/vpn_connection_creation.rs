@@ -1309,54 +1309,18 @@ fn ipsec_tunnel_element(
         .unwrap_or_default();
     let phase1_lifetime = tunnel.phase1_lifetime_seconds.unwrap_or_default();
     let phase2_lifetime = tunnel.phase2_lifetime_seconds.unwrap_or_default();
-    let first = |values: Option<&String>| xml_text(values.map(String::as_str).unwrap_or_default());
-    let phase1_encryption = first(
-        tunnel
-            .phase1_encryption_algorithms
-            .as_deref()
-            .and_then(|values| values.first())
-            .and_then(|value| value.value.as_ref()),
-    );
-    let phase2_encryption = first(
-        tunnel
-            .phase2_encryption_algorithms
-            .as_deref()
-            .and_then(|values| values.first())
-            .and_then(|value| value.value.as_ref()),
-    );
-    let phase1_integrity = first(
-        tunnel
-            .phase1_integrity_algorithms
-            .as_deref()
-            .and_then(|values| values.first())
-            .and_then(|value| value.value.as_ref()),
-    );
-    let phase2_integrity = first(
-        tunnel
-            .phase2_integrity_algorithms
-            .as_deref()
-            .and_then(|values| values.first())
-            .and_then(|value| value.value.as_ref()),
-    );
-    let phase1_dh_group = tunnel
-        .phase1_dh_group_numbers
-        .as_deref()
-        .and_then(|values| values.first())
-        .and_then(|value| value.value)
-        .unwrap_or_default();
-    let phase2_dh_group = tunnel
-        .phase2_dh_group_numbers
-        .as_deref()
-        .and_then(|values| values.first())
-        .and_then(|value| value.value)
-        .unwrap_or_default();
-    let ike_version = first(
-        tunnel
-            .ike_versions
-            .as_deref()
-            .and_then(|values| values.first())
-            .and_then(|value| value.value.as_ref()),
-    );
+    // What this tunnel has negotiated, read off the lists it was brought up with by the one
+    // place this crate decides that ([`negotiated_tunnel_parameters`]), so the document and
+    // `GetActiveVpnTunnelStatus` report the same negotiation for one tunnel.
+    let negotiated = negotiated_tunnel_parameters(tunnel);
+    let text = |value: Option<String>| xml_text(value.as_deref().unwrap_or_default());
+    let phase1_encryption = text(negotiated.phase1_encryption_algorithm);
+    let phase2_encryption = text(negotiated.phase2_encryption_algorithm);
+    let phase1_integrity = text(negotiated.phase1_integrity_algorithm);
+    let phase2_integrity = text(negotiated.phase2_integrity_algorithm);
+    let phase1_dh_group = negotiated.phase1_dh_group.unwrap_or_default();
+    let phase2_dh_group = negotiated.phase2_dh_group.unwrap_or_default();
+    let ike_version = text(negotiated.ike_version);
     let customer_outside = xml_text(customer_gateway_address);
     let amazon_outside = xml_text(tunnel.outside_ip_address.as_deref().unwrap_or_default());
     let customer_gateway_asn = xml_text(customer_gateway_asn);

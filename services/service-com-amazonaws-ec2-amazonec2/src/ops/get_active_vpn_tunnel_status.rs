@@ -1,15 +1,23 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op GetActiveVpnTunnelStatus
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `GetActiveVpnTunnelStatus`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`GetActiveVpnTunnelStatus::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! Reports the security parameters ONE tunnel of a Site-to-Site VPN connection has
+//! negotiated, and the provisioning status that tunnel is in.
+//!
+//! A request names the tunnel the way every tunnel-scoped operation of this service does: the
+//! connection it belongs to, and the outside IP address of the tunnel itself. Both are read
+//! off this service's own state (the tunnels a connection was brought up with, and the lists
+//! of values each tunnel may negotiate with), so narrowing a tunnel's permitted algorithms,
+//! groups or IKE versions at `CreateVpnConnection` is what this reports back, and a value
+//! naming no tunnel of the connection is refused rather than answered with a tunnel.
+//!
+//! A REPORTING operation: it writes nothing of its own. The one state change it may
+//! materialise is a move the clock already owed the connection, a connection answered
+//! `pending` being `available` once its due instant has passed whether or not anybody called.
+//! A tunnel's endpoints are provisioned with the connection itself, so that move leaves the
+//! provisioning status this reports alone; a connection whose tunnels are being torn down has
+//! no active tunnel to report at all.
 //!
 //! ## Shape of an operation
 //!
@@ -136,18 +144,78 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `GetActiveVpnTunnelStatus` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(GetActiveVpnTunnelStatusErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("GetActiveVpnTunnelStatus"))
+        // The engine is reachable from `&self` (constructor-injected); `ctx` carries request
+        // metadata, which this operation reads nothing from.
+        let _ = ctx;
+        use crate::state;
+
+        // Both members are modelled `@required` AND `@clientOptional`, so an EMPTY value
+        // reaches this handler rather than being refused at the boundary. A parameter with no
+        // value is a parameter the request did not give, which is EC2's `MissingParameter` — a
+        // different claim from "no such connection" or "no tunnel at that address".
+        for (parameter, value) in [
+            ("vpnConnectionId", input.vpn_connection_id.as_str()),
+            (
+                "vpnTunnelOutsideIpAddress",
+                input.vpn_tunnel_outside_ip_address.as_str(),
+            ),
+        ] {
+            if value.is_empty() {
+                return Err(state::missing_parameter(format!(
+                    "The request must contain the parameter {parameter}"
+                )));
+            }
+        }
+
+        // "Checks whether you have the required permissions for the action, without actually
+        // making the request" (`DryRun`): a question about the CALLER, answered once the
+        // request's own form has been read and before anything is resolved; every caller of
+        // this emulator is permitted.
+        if input.dry_run.unwrap_or(false) {
+            return Err(state::dry_run_operation());
+        }
+
+        let state_handle = state::require_service_state(&*self.engine)?;
+        let mut store = state_handle.lock();
+        // The clock-owed moves this read is allowed to apply: a connection
+        // `CreateVpnConnection` answered as `pending` is `available` once its due instant has
+        // passed, whether or not anybody called, so applying it here changes nothing a later
+        // caller would not have seen anyway.
+        store.materialize_due_transitions();
+
+        // "The ID of the VPN connection for which to retrieve the active tunnel status"
+        // (`VpnConnectionId`): an id this account holds no connection for names no tunnel.
+        let Some(record) = store.vpn_connection(&input.vpn_connection_id) else {
+            return Err(state::invalid_vpn_connection_id_on_tunnel_surface(
+                &input.vpn_connection_id,
+            ));
+        };
+
+        // "The external IP address of the VPN tunnel for which to retrieve the active status"
+        // (`VpnTunnelOutsideIpAddress`): the address identifies one tunnel of that connection,
+        // and a value naming none of its tunnels is refused rather than answered with one.
+        let Some(tunnel) = record.tunnel(&input.vpn_tunnel_outside_ip_address) else {
+            return Err(state::invalid_vpn_tunnel_outside_ip_address(
+                &input.vpn_connection_id,
+                &input.vpn_tunnel_outside_ip_address,
+            ));
+        };
+
+        // The status itself, derived from the connection's own state and the lists the tunnel
+        // was brought up with. A connection whose tunnels are being, or have been, torn down
+        // holds no ACTIVE tunnel for this operation to report the negotiation of, which is
+        // what EC2's `IncorrectState` says.
+        let Some(active_vpn_tunnel_status) = state::active_vpn_tunnel_status(record, tunnel)
+        else {
+            return Err(state::incorrect_state(format!(
+                "The VPN connection '{vpn_connection_id}' is in state '{connection_state}', \
+                 which is not a state in which a tunnel is active",
+                vpn_connection_id = input.vpn_connection_id,
+                connection_state = record.state(),
+            )));
+        };
+        Ok(GetActiveVpnTunnelStatusOutput {
+            active_vpn_tunnel_status: Some(active_vpn_tunnel_status),
+        })
     }
 }

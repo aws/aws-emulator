@@ -3107,6 +3107,13 @@ mod nat_gateway_metrics;
 /// beside the connection record. Everything it declares is re-exported below, so a handler
 /// reaches it as `crate::state::VpnConnectionSpec` like any primitive of this module.
 mod vpn_connection_creation;
+/// What ONE tunnel of a Site-to-Site VPN connection reports about itself — the tunnel a
+/// request names by its outside IP address, the security parameters that tunnel has
+/// negotiated out of the lists it was brought up with, and the provisioning status it is in —
+/// in a file of its own rather than as more lines beside the connection record. Everything it
+/// declares is re-exported below, so a handler reaches it as
+/// `crate::state::active_vpn_tunnel_status` like any helper of this module.
+mod vpn_tunnel_status;
 mod spot_fleets;
 /// The EVENT HISTORY one Spot Fleet request has been through: the stored event, the modelled
 /// `HistoryRecord` it is reported as, and the position a report of it pages over — in a file of
@@ -3411,6 +3418,7 @@ pub use spot_fleet_pools::*;
 pub use nat_gateways_and_vpn_connections::*;
 pub use nat_gateway_metrics::*;
 pub use vpn_connection_creation::*;
+pub use vpn_tunnel_status::*;
 pub use network_insights::*;
 pub use fleets::*;
 pub use fleet_placements::*;
