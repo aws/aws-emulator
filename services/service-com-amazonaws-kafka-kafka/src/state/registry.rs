@@ -1073,7 +1073,18 @@ impl ComAmazonawsKafkaKafkaState {
         if self.topic_count_in(&topic.cluster_arn, now) >= MAX_TOPICS_PER_CLUSTER {
             return Err(TopicRejected::ClusterCeiling);
         }
+        // What the BROKER holding this topic's partitions writes about having
+        // created each partition's log, which the cluster's own `LoggingInfo`
+        // decides the destination of ([`broker_logs`]). Written here, the one
+        // insertion path, so a topic created over the Apache Kafka wire protocol
+        // and one created through this API are logged by the same broker the same
+        // way.
+        let (name, partitions) = (topic.name.clone(), topic.partition_count);
+        let cluster_arn = topic.cluster_arn.clone();
         self.topics.insert(key, topic);
+        if let Some(cluster) = self.clusters.get_mut(&cluster_arn) {
+            cluster.write_topic_broker_logs(&name, partitions, now);
+        }
         Ok(())
     }
 

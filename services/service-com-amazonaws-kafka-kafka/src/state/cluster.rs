@@ -111,6 +111,11 @@ impl Cluster {
             // A cluster is created holding no SASL/SCRAM secrets; only
             // `BatchAssociateScramSecret` associates one.
             scram_secret_arns: BTreeSet::new(),
+            // The brokers of a cluster the create is still provisioning have not
+            // come up yet, so nothing of their own log is written.
+            brokers_started: false,
+            held_broker_logs: VecDeque::new(),
+            broker_log_deliveries: 0,
         }
     }
 
@@ -206,6 +211,12 @@ impl Cluster {
             // And holding no SASL/SCRAM secrets, exactly as a provisioned
             // cluster is.
             scram_secret_arns: BTreeSet::new(),
+            // MSK Serverless publishes no broker nodes and this API models no
+            // `LoggingInfo` for the kind, so a serverless record writes no broker
+            // log at all.
+            brokers_started: false,
+            held_broker_logs: VecDeque::new(),
+            broker_log_deliveries: 0,
         }
     }
 
@@ -349,6 +360,10 @@ impl Cluster {
     pub fn settle(&mut self, now: SystemTime) {
         if self.state == CLUSTER_STATE_CREATING && now >= self.active_due {
             self.state = CLUSTER_STATE_ACTIVE.to_string();
+            // The brokers came up when the clock owed the transition, not when this
+            // caller happened to look, so the lines they write as they come up
+            // report that instant ([`Cluster::write_startup_broker_logs`]).
+            self.write_startup_broker_logs(self.active_due);
         }
         match self.pending_update.take() {
             // An operation completes only for a cluster that is still in the state

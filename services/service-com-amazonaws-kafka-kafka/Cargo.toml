@@ -46,6 +46,11 @@ kafka-protocol = { version = "0.18", default-features = false, features = ["brok
 # The CRC-32C a record batch states over itself, which a broker checks before it appends
 # a batch and states over the batch it answers a fetch with (Apache Kafka record batch).
 crc32c = "0.6"
+# Renders the instant a BROKER LOG LINE carries in Apache Kafka's own log4j layout
+# (`%d` — `yyyy-MM-dd HH:mm:ss,SSS` in UTC) and the day segments the delivered log
+# object's key sits under (`src/state/broker_logs.rs`): the calendar conversion comes
+# from the maintained library rather than from arithmetic of this crate's own.
+chrono = { version = "0.4", default-features = false, features = ["std"] }
 # The four codecs a Kafka record batch may travel in, which a producer names in the batch
 # it sends (`src/state/broker_plane/codecs.rs`). Capability class: LIBRARIES computing over
 # a buffer in process — each is PURE RUST, so this endpoint links no native compression

@@ -61,6 +61,23 @@ pub async fn delivered_object(
     key: &str,
     records: &[String],
 ) -> bool {
+    delivered_object_over(ctx.callback(), region, bucket, key, records).await
+}
+
+/// [`delivered_object`] for a deliverer that holds the in-process transport ITSELF rather
+/// than a request's context — a data plane served on a core-owned socket, which has no
+/// `OperationContext` at all — as [`crate::cloudwatch_logs::delivered_over`] is for
+/// [`crate::cloudwatch_logs::delivered`].
+///
+/// The same write, so a record delivered from a socket and one delivered from an operation
+/// cannot land differently.
+pub async fn delivered_object_over(
+    callback: &::smithy_server_runtime::EmbeddedEmulator,
+    region: &str,
+    bucket: &str,
+    key: &str,
+    records: &[String],
+) -> bool {
     let Some(body) = gzipped(records) else {
         ::tracing::warn!(
             bucket = %bucket,
@@ -69,7 +86,7 @@ pub async fn delivered_object(
         );
         return false;
     };
-    let client = crate::s3_client::s3_client(ctx.callback(), region);
+    let client = crate::s3_client::s3_client(callback, region);
     if let Err(error) = client
         .put_object()
         .bucket(bucket)
@@ -121,6 +138,17 @@ pub async fn delivered_to_stream(
     delivery_stream: &str,
     records: &[String],
 ) -> bool {
+    delivered_to_stream_over(ctx.callback(), region, delivery_stream, records).await
+}
+
+/// [`delivered_to_stream`] for a deliverer that holds the in-process transport ITSELF rather
+/// than a request's context, as [`delivered_object_over`] is for [`delivered_object`].
+pub async fn delivered_to_stream_over(
+    callback: &::smithy_server_runtime::EmbeddedEmulator,
+    region: &str,
+    delivery_stream: &str,
+    records: &[String],
+) -> bool {
     let mut data = String::new();
     for record in records {
         data.push_str(record);
@@ -140,7 +168,7 @@ pub async fn delivered_to_stream(
             return false;
         }
     };
-    let client = crate::firehose_client::firehose_client(ctx.callback(), region);
+    let client = crate::firehose_client::firehose_client(callback, region);
     if let Err(error) = client
         .put_record()
         .delivery_stream_name(delivery_stream)

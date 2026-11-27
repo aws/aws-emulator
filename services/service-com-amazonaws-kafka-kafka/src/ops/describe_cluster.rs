@@ -181,50 +181,67 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             )
             .into());
         }
-        let mut state = state.lock();
-        // Reporting only: the one write this makes materialises the
-        // CREATING -> ACTIVE transition the clock already owed THIS cluster,
-        // which was due at the same instant whether or not anybody called.
-        let Some(cluster) = state.settled_cluster_in(
-            &region,
-            &input.cluster_arn,
-            std::time::SystemTime::now(),
-        ) else {
-            return Err(
-                DescribeClusterErrorModeled::NotFoundException(NotFoundException {
-                    invalid_parameter: Some(crate::state::CLUSTER_ARN_MEMBER.to_string()),
-                    message: Some(crate::state::RESOURCE_NOT_FOUND_MESSAGE.to_string()),
-                })
-                .into(),
-            );
+        // Everything read off the cluster record is read under ONE guard, in a scope of
+        // its own: the hand-over below awaits, and a lock held across an await would make
+        // this future non-`Send`.
+        let reported = {
+            let mut state = state.lock();
+            // Reporting only: the one write this makes materialises the
+            // CREATING -> ACTIVE transition the clock already owed THIS cluster,
+            // which was due at the same instant whether or not anybody called.
+            let Some(cluster) = state.settled_cluster_in(
+                &region,
+                &input.cluster_arn,
+                std::time::SystemTime::now(),
+            ) else {
+                return Err(
+                    DescribeClusterErrorModeled::NotFoundException(NotFoundException {
+                        invalid_parameter: Some(crate::state::CLUSTER_ARN_MEMBER.to_string()),
+                        message: Some(crate::state::RESOURCE_NOT_FOUND_MESSAGE.to_string()),
+                    })
+                    .into(),
+                );
+            };
+            // The cluster's own resource-based policy is in force on this action too
+            // — it is one of the actions an MSK cluster policy governs — and the
+            // combined decision over it and the caller's own identity policies is taken
+            // before anything about the cluster is reported: an explicit deny in either
+            // refuses the read, and a request neither allows reaches no grant. See
+            // [`crate::state::authorization::CLUSTER_POLICY_ACTIONS`].
+            crate::state::authorization::authorize_cluster_policy(
+                &*self.engine,
+                ctx,
+                Self::NAME,
+                cluster,
+            )?;
+            // `ClusterInfo` describes a provisioned cluster's broker nodes, ZooKeeper
+            // ensemble and Apache Kafka version, so it cannot describe a cluster that
+            // has none: a serverless cluster is reported by `DescribeClusterV2`,
+            // whose `Cluster` shape models a member for each kind.
+            if cluster.is_serverless() {
+                return Err(
+                    DescribeClusterErrorModeled::BadRequestException(BadRequestException {
+                        invalid_parameter: Some(crate::state::CLUSTER_ARN_MEMBER.to_string()),
+                        message: Some(crate::state::PROVISIONED_ONLY_MESSAGE.to_string()),
+                    })
+                    .into(),
+                );
+            }
+            cluster.to_cluster_info()
         };
-        // The cluster's own resource-based policy is in force on this action too
-        // — it is one of the actions an MSK cluster policy governs — and the
-        // combined decision over it and the caller's own identity policies is taken
-        // before anything about the cluster is reported: an explicit deny in either
-        // refuses the read, and a request neither allows reaches no grant. See
-        // [`crate::state::authorization::CLUSTER_POLICY_ACTIONS`].
-        crate::state::authorization::authorize_cluster_policy(
+        // The broker log lines the cluster is holding go to the destinations its own
+        // `LoggingInfo` names: the lookup above materialised the `CREATING` -> `ACTIVE`
+        // transition the clock owed it, which is when its brokers came up and wrote them
+        // ([`crate::state::broker_logs`]).
+        crate::state::broker_logs::deliver_broker_logs(
             &*self.engine,
             ctx,
-            Self::NAME,
-            cluster,
-        )?;
-        // `ClusterInfo` describes a provisioned cluster's broker nodes, ZooKeeper
-        // ensemble and Apache Kafka version, so it cannot describe a cluster that
-        // has none: a serverless cluster is reported by `DescribeClusterV2`,
-        // whose `Cluster` shape models a member for each kind.
-        if cluster.is_serverless() {
-            return Err(
-                DescribeClusterErrorModeled::BadRequestException(BadRequestException {
-                    invalid_parameter: Some(crate::state::CLUSTER_ARN_MEMBER.to_string()),
-                    message: Some(crate::state::PROVISIONED_ONLY_MESSAGE.to_string()),
-                })
-                .into(),
-            );
-        }
+            &region,
+            &input.cluster_arn,
+        )
+        .await;
         Ok(DescribeClusterOutput {
-            cluster_info: Some(cluster.to_cluster_info()),
+            cluster_info: Some(reported),
         })
     }
 }

@@ -420,6 +420,18 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 .and_then(|(_, authority)| authority.clone())
         };
 
+        // And the broker log lines this cluster is holding go to the destinations its own
+        // `LoggingInfo` names, with no state guard held: the lookup above materialised the
+        // `CREATING` -> `ACTIVE` transition the clock owed the cluster, which is when its
+        // brokers came up and wrote them ([`crate::state::broker_logs`]).
+        crate::state::broker_logs::deliver_broker_logs(
+            &*self.engine,
+            ctx,
+            &region,
+            &input.cluster_arn,
+        )
+        .await;
+
         // MSK Serverless has exactly one bootstrap string: the SASL/IAM one.
         if serverless {
             return Ok(GetBootstrapBrokersOutput {

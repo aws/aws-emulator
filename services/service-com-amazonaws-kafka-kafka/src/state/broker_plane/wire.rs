@@ -551,6 +551,18 @@ impl Broker {
             if conn.write_all(&frame).await.is_err() || conn.flush().await.is_err() {
                 return;
             }
+            // And what the broker WROTE about serving it goes to the destinations the
+            // cluster's own `LoggingInfo` names, now that no state guard is held: a line
+            // written by the data plane reaches its destination without a control-plane
+            // call ([`crate::state::broker_logs`]). A cluster holding no line, and one
+            // whose `BrokerLogs` names no destination, hand over nothing.
+            crate::state::broker_logs::deliver_broker_logs_from(
+                &self.state,
+                &self.emulator,
+                &self.region,
+                &self.cluster_arn,
+            )
+            .await;
         }
     }
 

@@ -249,136 +249,158 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         }
 
         let now = std::time::SystemTime::now();
-        let mut state = state.lock();
+        // Everything this create reads and writes happens under ONE guard, in a scope of
+        // its own: the broker-log hand-over below awaits, and a lock held across an await
+        // would make this future non-`Send`.
+        let output = {
+            let mut state = state.lock();
 
-        // A topic is created ON a cluster, so a `ClusterArn` this endpoint's region
-        // holds no cluster for names a resource that is not there: reported as the
-        // 404 every other topic operation answers for it, with the service's own
-        // not-found wording. Resolved BEFORE the values the body carries are
-        // judged, because this call acts on that one cluster and a reference that
-        // resolves to nothing could not have been served whatever the body said.
-        //
-        // Resolved through the SETTLING lookup because the broker count below comes
-        // off that record: the count an accepted broker-count update installs is
-        // owed at the instant that operation was due, whether or not anybody read
-        // the cluster since, so the replication factor is bounded by the brokers the
-        // cluster holds AT `now` rather than by the ones it held before the update
-        // landed.
-        let Some(cluster) = state.settled_cluster_in(&region, &input.cluster_arn, now) else {
-            return Err(
-                CreateTopicErrorModeled::NotFoundException(NotFoundException {
-                    invalid_parameter: Some("ClusterArn".to_string()),
-                    message: Some(crate::state::RESOURCE_NOT_FOUND_MESSAGE.to_string()),
-                })
-                .into(),
-            );
-        };
-
-        // `TopicName` is a BODY member of this operation, so the name it carries
-        // is judged once the cluster has resolved.
-        if let Some(reason) = crate::state::topic_name_error(&input.topic_name) {
-            return Err(
-                CreateTopicErrorModeled::BadRequestException(BadRequestException {
-                    invalid_parameter: Some("TopicName".to_string()),
-                    message: Some(reason),
-                })
-                .into(),
-            );
-        }
-
-        // The Topic Management surface applies to a cluster whose brokers this
-        // service manages for the caller, so a serverless one is refused on its
-        // KIND -- before the broker-count bound below, which would otherwise read a
-        // kind-of-cluster refusal as a parameter the caller could lower, and before
-        // any topic is registered on a cluster that could never hold one.
-        if cluster.is_serverless() {
-            return Err(crate::state::serverless_topic_apis_unsupported());
-        }
-
-        // Apache Kafka cannot place more replicas of a partition than it has
-        // brokers AVAILABLE to place them on, so the replication factor is bounded
-        // by the brokers THIS cluster has up at this instant — its own nodes, less
-        // the ones an in-flight operation has down — rather than by any fixed
-        // number.
-        if let Some(message) = crate::state::replication_factor_shortfall(
-            input.replication_factor,
-            cluster.available_broker_count(),
-        ) {
-            return Err(
-                CreateTopicErrorModeled::BadRequestException(BadRequestException {
-                    invalid_parameter: Some("ReplicationFactor".to_string()),
-                    message: Some(message),
-                })
-                .into(),
-            );
-        }
-
-        let topic = crate::state::Topic::created(
-            cluster,
-            input.topic_name,
-            input.partition_count,
-            input.replication_factor,
-            input.configs,
-            now,
-        );
-        let output = CreateTopicOutput {
-            topic_arn: Some(topic.arn.clone()),
-            topic_name: Some(topic.name.clone()),
-            status: Some(topic.state.clone()),
-        };
-        // The registry enforces its own ceiling and its own uniqueness on the one
-        // insertion path, so a refused create registers nothing. It is also what
-        // materialises a removal the clock already owed this name, so a name whose
-        // topic every reader reports gone is free here too.
-        if let Err(rejected) = state.register_topic(topic, now) {
-            return Err(match rejected {
-                crate::state::TopicRejected::DuplicateName => {
-                    CreateTopicErrorModeled::TopicExistsException(TopicExistsException {
-                        invalid_parameter: Some("TopicName".to_string()),
-                        // The service's one fixed sentence for this condition:
-                        // the name the request submitted and the cluster it
-                        // addressed are the caller's own, so neither is echoed
-                        // back in the message.
-                        message: Some(crate::state::TOPIC_ALREADY_EXISTS_MESSAGE.to_string()),
-                    })
-                    .into()
-                }
-                crate::state::TopicRejected::ClusterCeiling => {
-                    CreateTopicErrorModeled::TooManyRequestsException(TooManyRequestsException {
-                        invalid_parameter: None,
-                        message: Some(format!(
-                            "The cluster {} holds its maximum of {} topics.",
-                            input.cluster_arn,
-                            crate::state::MAX_TOPICS_PER_CLUSTER
-                        )),
-                    })
-                    .into()
-                }
-                // The registry's own backstop, across every cluster it holds:
-                // refused as the per-cluster ceiling is, since from the caller's
-                // side both are "this service will not hold another topic".
-                crate::state::TopicRejected::RegistryCeiling => {
-                    CreateTopicErrorModeled::TooManyRequestsException(TooManyRequestsException {
-                        invalid_parameter: None,
-                        message: Some(format!(
-                            "This emulator holds its maximum of {} topics.",
-                            crate::state::MAX_TOPICS_IN_REGISTRY
-                        )),
-                    })
-                    .into()
-                }
-                // Unreachable: the cluster was resolved above under the lock this
-                // call still holds. Reported as the same absence that lookup
-                // reports rather than as a topic filed on nothing.
-                crate::state::TopicRejected::NoSuchCluster => {
+            // A topic is created ON a cluster, so a `ClusterArn` this endpoint's region
+            // holds no cluster for names a resource that is not there: reported as the
+            // 404 every other topic operation answers for it, with the service's own
+            // not-found wording. Resolved BEFORE the values the body carries are
+            // judged, because this call acts on that one cluster and a reference that
+            // resolves to nothing could not have been served whatever the body said.
+            //
+            // Resolved through the SETTLING lookup because the broker count below comes
+            // off that record: the count an accepted broker-count update installs is
+            // owed at the instant that operation was due, whether or not anybody read
+            // the cluster since, so the replication factor is bounded by the brokers the
+            // cluster holds AT `now` rather than by the ones it held before the update
+            // landed.
+            let Some(cluster) = state.settled_cluster_in(&region, &input.cluster_arn, now) else {
+                return Err(
                     CreateTopicErrorModeled::NotFoundException(NotFoundException {
                         invalid_parameter: Some("ClusterArn".to_string()),
                         message: Some(crate::state::RESOURCE_NOT_FOUND_MESSAGE.to_string()),
                     })
-                    .into()
-                }
-            });
-        }
+                    .into(),
+                );
+            };
+
+            // `TopicName` is a BODY member of this operation, so the name it carries
+            // is judged once the cluster has resolved.
+            if let Some(reason) = crate::state::topic_name_error(&input.topic_name) {
+                return Err(
+                    CreateTopicErrorModeled::BadRequestException(BadRequestException {
+                        invalid_parameter: Some("TopicName".to_string()),
+                        message: Some(reason),
+                    })
+                    .into(),
+                );
+            }
+
+            // The Topic Management surface applies to a cluster whose brokers this
+            // service manages for the caller, so a serverless one is refused on its
+            // KIND -- before the broker-count bound below, which would otherwise read a
+            // kind-of-cluster refusal as a parameter the caller could lower, and before
+            // any topic is registered on a cluster that could never hold one.
+            if cluster.is_serverless() {
+                return Err(crate::state::serverless_topic_apis_unsupported());
+            }
+
+            // Apache Kafka cannot place more replicas of a partition than it has
+            // brokers AVAILABLE to place them on, so the replication factor is bounded
+            // by the brokers THIS cluster has up at this instant — its own nodes, less
+            // the ones an in-flight operation has down — rather than by any fixed
+            // number.
+            if let Some(message) = crate::state::replication_factor_shortfall(
+                input.replication_factor,
+                cluster.available_broker_count(),
+            ) {
+                return Err(
+                    CreateTopicErrorModeled::BadRequestException(BadRequestException {
+                        invalid_parameter: Some("ReplicationFactor".to_string()),
+                        message: Some(message),
+                    })
+                    .into(),
+                );
+            }
+
+            let topic = crate::state::Topic::created(
+                cluster,
+                input.topic_name,
+                input.partition_count,
+                input.replication_factor,
+                input.configs,
+                now,
+            );
+            let output = CreateTopicOutput {
+                topic_arn: Some(topic.arn.clone()),
+                topic_name: Some(topic.name.clone()),
+                status: Some(topic.state.clone()),
+            };
+            // The registry enforces its own ceiling and its own uniqueness on the one
+            // insertion path, so a refused create registers nothing. It is also what
+            // materialises a removal the clock already owed this name, so a name whose
+            // topic every reader reports gone is free here too.
+            if let Err(rejected) = state.register_topic(topic, now) {
+                return Err(match rejected {
+                    crate::state::TopicRejected::DuplicateName => {
+                        CreateTopicErrorModeled::TopicExistsException(TopicExistsException {
+                            invalid_parameter: Some("TopicName".to_string()),
+                            // The service's one fixed sentence for this condition:
+                            // the name the request submitted and the cluster it
+                            // addressed are the caller's own, so neither is echoed
+                            // back in the message.
+                            message: Some(
+                                crate::state::TOPIC_ALREADY_EXISTS_MESSAGE.to_string(),
+                            ),
+                        })
+                        .into()
+                    }
+                    crate::state::TopicRejected::ClusterCeiling => {
+                        CreateTopicErrorModeled::TooManyRequestsException(
+                            TooManyRequestsException {
+                                invalid_parameter: None,
+                                message: Some(format!(
+                                    "The cluster {} holds its maximum of {} topics.",
+                                    input.cluster_arn,
+                                    crate::state::MAX_TOPICS_PER_CLUSTER
+                                )),
+                            },
+                        )
+                        .into()
+                    }
+                    // The registry's own backstop, across every cluster it holds:
+                    // refused as the per-cluster ceiling is, since from the caller's
+                    // side both are "this service will not hold another topic".
+                    crate::state::TopicRejected::RegistryCeiling => {
+                        CreateTopicErrorModeled::TooManyRequestsException(
+                            TooManyRequestsException {
+                                invalid_parameter: None,
+                                message: Some(format!(
+                                    "This emulator holds its maximum of {} topics.",
+                                    crate::state::MAX_TOPICS_IN_REGISTRY
+                                )),
+                            },
+                        )
+                        .into()
+                    }
+                    // Unreachable: the cluster was resolved above under the lock this
+                    // call still holds. Reported as the same absence that lookup
+                    // reports rather than as a topic filed on nothing.
+                    crate::state::TopicRejected::NoSuchCluster => {
+                        CreateTopicErrorModeled::NotFoundException(NotFoundException {
+                            invalid_parameter: Some("ClusterArn".to_string()),
+                            message: Some(crate::state::RESOURCE_NOT_FOUND_MESSAGE.to_string()),
+                        })
+                        .into()
+                    }
+                });
+            }
+            output
+        };
+        // Registering the topic is what its cluster's BROKER wrote about creating each of
+        // the topic's partition logs; the lines go to the destinations the cluster's own
+        // `LoggingInfo` names, with no state guard held ([`crate::state::broker_logs`]).
+        crate::state::broker_logs::deliver_broker_logs(
+            &*self.engine,
+            ctx,
+            &region,
+            &input.cluster_arn,
+        )
+        .await;
         Ok(output)
     }
 }

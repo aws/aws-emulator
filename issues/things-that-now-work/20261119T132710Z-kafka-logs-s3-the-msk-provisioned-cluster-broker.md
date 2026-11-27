@@ -34,3 +34,31 @@ actual:   Error: Check timed out after 60.0s — no milestone reached, no assert
 5. From the in-VPC executor, open TCP to each bootstrap endpoint and send a hand-framed ApiVersions request; then CreateTopics and Produce records.
 6. Poll the wired log group for events and the S3 prefix for a non-empty object, checking the content holds a log4j level token and a kafka logger name; hold the unwired log group empty throughout.
 Against the emulator none of steps 4-6 produce an observation and the run ends at the suite's 60 s cap.
+
+## Resolution
+
+The missing capability was the BrokerLogs DELIVERY path: `LoggingInfo` was stored and reported and
+nothing else — no broker log line was ever written, and the kafka crate reached no destination
+service. A cluster's brokers now write Apache Kafka log lines (each node coming up when the clock
+brings the cluster to `ACTIVE`, and each partition log of a topic registered on it) and those lines
+are delivered to exactly the destinations the cluster's own `BrokerLogs` enables and names — the
+CloudWatch Logs group through that service's own ingest, the Amazon S3 bucket as a gzipped log file
+under the declared prefix, the Firehose delivery stream as a put record — and to nothing else:
+`services/service-com-amazonaws-kafka-kafka/src/state/broker_logs.rs`, with
+`core/router/tests/all/msk_broker_logs_reach_the_declared_destinations.rs` asserting the rule over a
+table of `BrokerLogs` shapes and walking the whole chain of step 4-6 (create with `LoggingInfo` ->
+`ACTIVE` with the `LoggingInfo` echoed -> `GetBootstrapBrokers` -> every published PLAINTEXT pair
+accepting a connection and answering a hand-framed `ApiVersions` with `error_code` 0 and api keys
+{0, 3, 19, 32} -> the lines in the wired group and under the S3 prefix, the unwired group empty),
+in about six seconds in process.
+
+What is NOT this issue's and remains open: the recorded check is still killed on the suite's 60 s cap
+inside its own `_await_data_plane` loop, which invokes the harness's in-VPC Lambda executor
+repeatedly. That barrier is not the kafka service — the suite above serves the identical chain, and
+`core/router/tests/all/msk_bootstrap_reached_from_an_in_vpc_function.rs` pins the same published
+addresses being reached from a python Lambda attached to the cluster's VPC. It is the budget that
+shared executor loop spends, reported for other checks of the same family by
+20261120T141649Z-kafka-logs-s3-the-msk-broker-log-delivery-3d9d0a.md,
+20261118T131546Z-kafka-logs-s3-the-msk-broker-log-delivery--r2.md,
+20261125T225220Z-kafka-msk-bring-up-never-completes-inside-a-client.md and
+20261126T135217Z-kafka-msk-native-data-plane-reaches-no-verdict-on.md.

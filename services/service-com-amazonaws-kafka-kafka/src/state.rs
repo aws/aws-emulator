@@ -201,6 +201,13 @@ pub mod state_gate;
 /// keep, which is what `GetBootstrapBrokers` announces an address for.
 pub mod broker_plane;
 
+/// What the cluster's BROKERS write about themselves, and the destinations its own
+/// `LoggingInfo.BrokerLogs` sends those lines to. The lines are held on the cluster
+/// record and handed over by a call that can await, so the write and the delivery sit
+/// beside this module rather than in it.
+pub mod broker_logs;
+pub use broker_logs::*;
+
 /// What the service admits as a provisioned cluster's CAPACITY: the broker types
 /// it offers, how a broker count relates to the Availability Zones the client
 /// subnets span, and which direction that count may move in. Each is a function of
@@ -1304,6 +1311,22 @@ pub struct Cluster {
     /// `/v1/clusters/{ClusterArn}/scram-secrets`, hence stored on the cluster
     /// record: the secrets leave with the cluster they authenticate clients to.
     pub scram_secret_arns: BTreeSet<String>,
+    /// Whether this cluster's brokers have already written the lines they write as
+    /// they COME UP ([`Cluster::write_startup_broker_logs`]): a cluster that is up
+    /// is not starting again, so the lines are written once.
+    pub brokers_started: bool,
+    /// The broker log lines this cluster's brokers have written and nothing has
+    /// handed to their destinations yet ([`deliver_broker_logs`]), oldest first.
+    ///
+    /// Held on the cluster record because they belong to it: the destinations are
+    /// its own `LoggingInfo`'s, and a cluster that leaves the registry stops
+    /// writing. Nothing is held at all for a cluster whose `BrokerLogs` names no
+    /// destination.
+    pub held_broker_logs: VecDeque<BrokerLogLine>,
+    /// How many hand-overs of this cluster's broker log lines have been made
+    /// ([`ComAmazonawsKafkaKafkaState::take_broker_logs`]), which is what names the
+    /// object each delivery writes apart from the next's.
+    pub broker_log_deliveries: u64,
 }
 
 /// The resource-based policy a cluster carries: the document a caller attached
