@@ -305,8 +305,9 @@ pub fn device_profile_settings(requested: &LoRaWANDeviceProfile) -> LoRaWANDevic
     }
 }
 
-/// The sentence this service's 409 carries when a create claims a `DevEui` another
-/// device in the account already holds.
+/// The sentence this service's 409 carries when a create presents a `DevEui` another
+/// device in the account already holds together with join key material that DIFFERS from
+/// that device's: a second, distinct device colliding on one identifier.
 ///
 /// FIXED text, with no variable part at all: it states that a device with the submitted
 /// `DevEui` is already registered, and so names neither the identifier the request sent (which
@@ -315,15 +316,81 @@ pub fn device_profile_settings(requested: &LoRaWANDeviceProfile) -> LoRaWANDevic
 /// raises with the same error code by matching the text.
 pub const DUPLICATE_DEV_EUI_MESSAGE: &str = "Device with given DevEui already exists";
 
-/// The `ConflictException` body for a `DevEui` already registered in the account.
+/// The sentence the same 409 carries when the create presents the SAME join key material as
+/// the device that already holds the `DevEui`: the registration the request asks for has
+/// already been made, so the refusal reports the identifier it was claimed under rather than
+/// describing a collision between two devices.
 ///
-/// One function, so every operation that claims a `DevEui` refuses a duplicate with the
-/// same body: [`DUPLICATE_DEV_EUI_MESSAGE`], and the two optional members the model merely
-/// permits (`ResourceId`, `ResourceType`) left unset, which keeps the owning device's identity
-/// out of a refusal served to a caller that cannot read it.
-pub fn duplicate_dev_eui() -> ConflictException {
+/// The only variable part is the `DevEui` the request submitted — a value the caller sent, so
+/// reporting it discloses nothing. Everything else is fixed text, the two-space gap before
+/// `with` included: that is how the service words this sentence.
+pub fn claimed_dev_eui_message(dev_eui: &str) -> String {
+    format!("DevEui {dev_eui}  with same key has been claimed")
+}
+
+/// The LoRaWAN join key material a device configuration presents, as one comparable value.
+///
+/// It is the key and address members of every provisioning block the configuration carries —
+/// `OtaaV1_1` (AppKey/NwkKey/JoinEui), `OtaaV1_0_x` (AppKey/AppEui/JoinEui/GenAppKey),
+/// `AbpV1_1` and `AbpV1_0_x` (DevAddr and their session keys) — and nothing else: the frame
+/// counter an ABP session resumes from moves over a device's life and is not key material, and
+/// neither are the profile references, the `FPorts` assignment or the `DevEui` the material is
+/// claimed under. Source: `smithy_query(query="shape",
+/// shape="LoRaWANDevice,OtaaV1_1,OtaaV1_0_x,AbpV1_1,AbpV1_0_x,SessionKeysAbpV1_1,SessionKeysAbpV1_0_x")`.
+///
+/// Every member is hexadecimal (the model's patterns are `^[a-fA-F0-9]{n}$`), and hexadecimal
+/// is case-insensitive, so the same key written in either case is the same key. A
+/// configuration carrying no provisioning block presents no key material, and two such
+/// configurations present the same (empty) material.
+pub fn lorawan_key_material(lorawan: Option<&LoRaWANDevice>) -> String {
+    let otaa_v1_1 = lorawan.and_then(|lorawan| lorawan.otaa_v1_1.as_ref());
+    let otaa_v1_0_x = lorawan.and_then(|lorawan| lorawan.otaa_v1_0_x.as_ref());
+    let abp_v1_1 = lorawan.and_then(|lorawan| lorawan.abp_v1_1.as_ref());
+    let abp_v1_0_x = lorawan.and_then(|lorawan| lorawan.abp_v1_0_x.as_ref());
+    format!(
+        "{:?}|{:?}|{:?}|{:?}|{:?}|{:?}",
+        otaa_v1_1.map(|otaa| (&otaa.app_key, &otaa.nwk_key, &otaa.join_eui)),
+        otaa_v1_0_x
+            .map(|otaa| (&otaa.app_key, &otaa.app_eui, &otaa.join_eui, &otaa.gen_app_key)),
+        abp_v1_1.map(|abp| &abp.dev_addr),
+        abp_v1_1
+            .and_then(|abp| abp.session_keys.as_ref())
+            .map(|keys| (
+                &keys.f_nwk_s_int_key,
+                &keys.s_nwk_s_int_key,
+                &keys.nwk_s_enc_key,
+                &keys.app_s_key
+            )),
+        abp_v1_0_x.map(|abp| &abp.dev_addr),
+        abp_v1_0_x
+            .and_then(|abp| abp.session_keys.as_ref())
+            .map(|keys| (&keys.nwk_s_key, &keys.app_s_key)),
+    )
+    .to_ascii_lowercase()
+}
+
+/// The `ConflictException` body for a `DevEui` already registered in the account, for the
+/// collision the request actually is: a re-presentation of the registered device, when the
+/// request's join key material is the material the holder was registered with
+/// ([`claimed_dev_eui_message`]), and a different device claiming a taken identifier when the
+/// two differ ([`DUPLICATE_DEV_EUI_MESSAGE`]).
+///
+/// One function, so every operation that claims a `DevEui` refuses a duplicate with the same
+/// body. Both sentences leave the two optional members the model merely permits (`ResourceId`,
+/// `ResourceType`) unset, which keeps the owning device's identity out of a refusal served to
+/// a caller that cannot read it.
+pub fn dev_eui_conflict(
+    dev_eui: &str,
+    requested: Option<&LoRaWANDevice>,
+    holder: Option<&LoRaWANDevice>,
+) -> ConflictException {
+    let message = if lorawan_key_material(requested) == lorawan_key_material(holder) {
+        claimed_dev_eui_message(dev_eui)
+    } else {
+        DUPLICATE_DEV_EUI_MESSAGE.to_string()
+    };
     ConflictException {
-        message: Some(DUPLICATE_DEV_EUI_MESSAGE.to_string()),
+        message: Some(message),
         resource_id: None,
         resource_type: None,
     }

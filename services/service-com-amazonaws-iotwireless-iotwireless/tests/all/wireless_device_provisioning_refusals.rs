@@ -15,11 +15,13 @@
 //!   not is refused `ValidationException` and persists nothing, while every create
 //!   whose two versions agree — and every create that constrains neither side — is
 //!   accepted and reads back against that profile;
-//! * a refusal carries the fixed sentence of its error class, so a duplicate `DevEui`
-//!   answers one `ConflictException` message whatever the request and the store hold —
-//!   no part of it taken from the request or the store, so it names neither the
-//!   submitted identifier nor the device that holds it, and it is distinct from the
-//!   sentence the other `ConflictException` of the same operation carries.
+//! * a refusal carries the sentence of the collision it reports, so a create that collides
+//!   on a `DevEui` answers the already-claimed sentence when it re-presents the join key
+//!   material the registered device was registered with, and the duplicate-identifier
+//!   sentence when that material differs — each the same across every other difference
+//!   between the two requests, neither disclosing anything about the device that holds the
+//!   identifier, and both distinct from the sentence the other `ConflictException` of the
+//!   same operation carries.
 //!
 //! The wire harness is the one the destination/device suite already has: `tests/all/*.rs`
 //! are modules of ONE test target, so `router`, `call` and `error_code` are shared from
@@ -31,10 +33,17 @@ use smithy_server_runtime::MultiServiceRouter;
 
 use super::destination_and_wireless_device_lifecycle::{call, error_code, router};
 
-/// The sentence a duplicate `DevEui` conflict carries: FIXED text, with no variable part —
-/// neither the identifier the request submitted nor the device that holds it — spelled out here
-/// so the suite pins the wording rather than whatever the service happens to emit.
+/// The sentence a create gets when it claims a `DevEui` a DIFFERENT device holds: FIXED text,
+/// with no variable part — neither the identifier the request submitted nor the device that
+/// holds it — spelled out here so the suite pins the wording rather than whatever the service
+/// happens to emit.
 const DUPLICATE_DEV_EUI_MESSAGE: &str = "Device with given DevEui already exists";
+
+/// The sentence a create gets when it re-presents the `DevEui` AND the join key material of a
+/// device already registered: the identifier it was claimed under is its only variable part.
+fn claimed_dev_eui_message(dev_eui: &str) -> String {
+    format!("DevEui {dev_eui}  with same key has been claimed")
+}
 
 /// AWS's sentence for key material the referenced device profile's `MacVersion` cannot
 /// provision. The only variable part is that stored `MacVersion`.
@@ -364,46 +373,171 @@ async fn provisioning_version_must_agree_with_the_referenced_profiles_mac_versio
     }
 }
 
-/// A duplicate `DevEui` is one conflict class, so its refusal carries one sentence about the
-/// identifier the request submitted whatever the rest of the request holds — and nothing
-/// about the device that already holds it.
+/// One pair of creates that collide on a `DevEui`: the key material the registered device
+/// carries, the material the second create presents, the members that second request carries
+/// beside its `LoRaWAN` block, and whether the two present the SAME join key material.
+struct ConflictCase {
+    case: &'static str,
+    dev_eui: &'static str,
+    holder_material: Value,
+    claimant_material: Value,
+    other_members: Value,
+    same_key: bool,
+}
+
+/// The rows span what the refusal's sentence turns on — whether the claimant re-presents the
+/// registered device's own join key material — across every provisioning block the model
+/// declares, the hex case the material is written in, and what else the second request
+/// carries.
+/// Source for the blocks and their members: `smithy_query(query="shape",
+/// shape="LoRaWANDevice,OtaaV1_1,OtaaV1_0_x,AbpV1_1,AbpV1_0_x")`.
+fn conflict_cases() -> Vec<ConflictCase> {
+    vec![
+        ConflictCase {
+            case: "neither create presents key material",
+            dev_eui: "00000000000000a1",
+            holder_material: json!({}),
+            claimant_material: json!({}),
+            other_members: json!({}),
+            same_key: true,
+        },
+        ConflictCase {
+            case: "the same OTAA 1.0.x material, under a different name and destination",
+            dev_eui: "ABCDEF0123456789",
+            holder_material: json!({ "OtaaV1_0_x": provisioning_member("OtaaV1_0_x") }),
+            claimant_material: json!({ "OtaaV1_0_x": provisioning_member("OtaaV1_0_x") }),
+            other_members: json!({ "Name": "second", "DestinationName": "ConflictDestB" }),
+            same_key: true,
+        },
+        ConflictCase {
+            // Every key member is hexadecimal (`^[a-fA-F0-9]{32}$`), and hexadecimal is
+            // case-insensitive, so the same key written in the other case is the same key.
+            case: "the same OTAA 1.1 material written in the other hex case, described and \
+                   tagged",
+            dev_eui: "00000000000000a2",
+            holder_material: json!({ "OtaaV1_1": {
+                "AppKey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaab1",
+                "NwkKey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaab2",
+                "JoinEui": "aaaaaaaaaaaaaab3",
+            } }),
+            claimant_material: json!({ "OtaaV1_1": {
+                "AppKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAB1",
+                "NwkKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAB2",
+                "JoinEui": "AAAAAAAAAAAAAAB3",
+            } }),
+            other_members: json!({
+                "Description": "a second claimant",
+                "Tags": [{ "Key": "owner", "Value": "second" }],
+            }),
+            same_key: true,
+        },
+        ConflictCase {
+            // `FCntStart` is the frame counter a session resumes from, not key material: it
+            // moves over a device's life, so it does not decide which conflict this is.
+            case: "ABP 1.1 material differing only in the frame counter a session resumes from",
+            dev_eui: "ffffffffffffffff",
+            holder_material: json!({ "AbpV1_1": { "DevAddr": "000000b1", "FCntStart": 0,
+                "SessionKeys": provisioning_member("AbpV1_1")["SessionKeys"] } }),
+            claimant_material: json!({ "AbpV1_1": { "DevAddr": "000000b1", "FCntStart": 7,
+                "SessionKeys": provisioning_member("AbpV1_1")["SessionKeys"] } }),
+            other_members: json!({}),
+            same_key: true,
+        },
+        ConflictCase {
+            case: "OTAA 1.0.x material whose AppKey differs",
+            dev_eui: "00000000000000a3",
+            holder_material: json!({ "OtaaV1_0_x": {
+                "AppKey": "000000000000000000000000000000c1",
+                "AppEui": "00000000000000c2",
+            } }),
+            claimant_material: json!({ "OtaaV1_0_x": {
+                "AppKey": "000000000000000000000000000000c9",
+                "AppEui": "00000000000000c2",
+            } }),
+            other_members: json!({ "Name": "second" }),
+            same_key: false,
+        },
+        ConflictCase {
+            case: "ABP 1.0.x material whose session keys differ",
+            dev_eui: "00000000000000a4",
+            holder_material: json!({ "AbpV1_0_x": { "DevAddr": "000000d1", "SessionKeys": {
+                "NwkSKey": "000000000000000000000000000000d2",
+                "AppSKey": "000000000000000000000000000000d3",
+            } } }),
+            claimant_material: json!({ "AbpV1_0_x": { "DevAddr": "000000d1", "SessionKeys": {
+                "NwkSKey": "000000000000000000000000000000d2",
+                "AppSKey": "000000000000000000000000000000d9",
+            } } }),
+            other_members: json!({}),
+            same_key: false,
+        },
+        ConflictCase {
+            case: "a claimant presenting no material where the registered device presents \
+                   OTAA 1.1",
+            dev_eui: "00000000000000a5",
+            holder_material: json!({ "OtaaV1_1": provisioning_member("OtaaV1_1") }),
+            claimant_material: json!({}),
+            other_members: json!({}),
+            same_key: false,
+        },
+        ConflictCase {
+            case: "a claimant presenting ABP 1.0.x material where the registered device \
+                   presents none",
+            dev_eui: "00000000000000a6",
+            holder_material: json!({}),
+            claimant_material: json!({ "AbpV1_0_x": provisioning_member("AbpV1_0_x") }),
+            other_members: json!({}),
+            same_key: false,
+        },
+        ConflictCase {
+            case: "the same OTAA 1.0.x material beside a different ABP block",
+            dev_eui: "00000000000000a7",
+            holder_material: json!({ "OtaaV1_0_x": provisioning_member("OtaaV1_0_x") }),
+            claimant_material: json!({
+                "OtaaV1_0_x": provisioning_member("OtaaV1_0_x"),
+                "AbpV1_0_x": provisioning_member("AbpV1_0_x"),
+            }),
+            other_members: json!({}),
+            same_key: false,
+        },
+    ]
+}
+
+/// A create that collides on a `DevEui` is refused with the sentence of the collision it is —
+/// the already-claimed sentence when it re-presents the join key material the registered
+/// device was registered with, the duplicate-identifier sentence when that material differs —
+/// and neither sentence nor the body around it discloses anything about the device that holds
+/// the identifier.
 #[tokio::test]
-async fn a_duplicate_dev_eui_conflict_carries_one_sentence_for_every_input() {
+async fn a_dev_eui_conflict_carries_the_sentence_of_the_collision_it_is() {
     let router = router();
     seed_destination(&router, "ConflictDestA").await;
     seed_destination(&router, "ConflictDestB").await;
 
-    // The rows differ along the identifier's case and along what the SECOND create
-    // carries beside it: a conflict class has one sentence across all of them.
-    let cases: Vec<(&str, &str, Value)> = vec![
-        (
-            "lowercase hex, an otherwise identical retry",
-            "00000000000000a1",
-            json!({}),
-        ),
-        (
-            "uppercase hex, a different name and destination",
-            "ABCDEF0123456789",
-            json!({ "Name": "second", "DestinationName": "ConflictDestB" }),
-        ),
-        (
-            "mixed-case hex, a described second create",
-            "aBcDeF0123456789",
-            json!({ "Description": "a second claimant" }),
-        ),
-        ("all-f hex, a tagged second create", "ffffffffffffffff", {
-            json!({ "Tags": [{ "Key": "owner", "Value": "second" }] })
-        }),
-    ];
+    for case in conflict_cases() {
+        let ConflictCase {
+            case,
+            dev_eui,
+            holder_material,
+            claimant_material,
+            other_members,
+            same_key,
+        } = case;
 
-    for (case, dev_eui, extra) in cases {
+        let mut holder_lorawan = json!({ "DevEui": dev_eui });
+        for (key, value) in holder_material
+            .as_object()
+            .expect("the holder's key material is an object")
+        {
+            holder_lorawan[key.as_str()] = value.clone();
+        }
         let (status, first) = create_device(
             &router,
             json!({
                 "Type": "LoRaWAN",
                 "Name": "first",
                 "DestinationName": "ConflictDestA",
-                "LoRaWAN": { "DevEui": dev_eui },
+                "LoRaWAN": holder_lorawan,
             }),
         )
         .await;
@@ -417,12 +551,22 @@ async fn a_duplicate_dev_eui_conflict_carries_one_sentence_for_every_input() {
             .unwrap_or_else(|| panic!("case {case:?}: expected an Id, got {first}"))
             .to_string();
 
+        let mut claimant_lorawan = json!({ "DevEui": dev_eui });
+        for (key, value) in claimant_material
+            .as_object()
+            .expect("the claimant's key material is an object")
+        {
+            claimant_lorawan[key.as_str()] = value.clone();
+        }
         let mut body = json!({
             "Type": "LoRaWAN",
             "DestinationName": "ConflictDestA",
-            "LoRaWAN": { "DevEui": dev_eui },
+            "LoRaWAN": claimant_lorawan,
         });
-        for (key, value) in extra.as_object().expect("the extra members are an object") {
+        for (key, value) in other_members
+            .as_object()
+            .expect("the other members are an object")
+        {
             body[key.as_str()] = value.clone();
         }
         let (status, response) = create_device(&router, body).await;
@@ -437,19 +581,29 @@ async fn a_duplicate_dev_eui_conflict_carries_one_sentence_for_every_input() {
             "ConflictException",
             "case {case:?}: expected ConflictException, got {response}"
         );
-        let expected_conflict = DUPLICATE_DEV_EUI_MESSAGE;
+        let expected_conflict = if same_key {
+            claimed_dev_eui_message(dev_eui)
+        } else {
+            DUPLICATE_DEV_EUI_MESSAGE.to_string()
+        };
         assert_eq!(
             response["Message"],
             json!(expected_conflict),
             "case {case:?}: expected Message {expected_conflict:?}, got {response}"
         );
         let message = response["Message"].as_str().unwrap_or_default().to_string();
-        // The sentence is fixed text: neither the identifier the request submitted nor
-        // anything about the device that holds it is disclosed.
-        assert!(
-            !message.contains(dev_eui),
-            "case {case:?}: the refusal must not name the submitted identifier, got {message:?}"
-        );
+        if !same_key {
+            // Two distinct devices collided, so the sentence is fixed text that names
+            // neither of them.
+            assert!(
+                !message.contains(dev_eui),
+                "case {case:?}: the refusal must not name the submitted identifier, got \
+                 {message:?}"
+            );
+        }
+        // Whichever sentence it is, nothing about the device that holds the identifier is
+        // disclosed: not its id in the text, and not in `ResourceId`/`ResourceType`, which
+        // this refusal leaves unset.
         assert!(
             !message.contains(&owner),
             "case {case:?}: the refusal must not name the identifier's owner, got {message:?}"
@@ -458,6 +612,16 @@ async fn a_duplicate_dev_eui_conflict_carries_one_sentence_for_every_input() {
             !response.to_string().contains(&owner),
             "case {case:?}: the refusal must disclose nothing about the owning device, got \
              {response}"
+        );
+        assert_eq!(
+            response["ResourceId"],
+            Value::Null,
+            "case {case:?}: ResourceId must be unset, got {response}"
+        );
+        assert_eq!(
+            response["ResourceType"],
+            Value::Null,
+            "case {case:?}: ResourceType must be unset, got {response}"
         );
 
         // The identifier still resolves to the device that claimed it first.
@@ -476,18 +640,19 @@ async fn a_duplicate_dev_eui_conflict_carries_one_sentence_for_every_input() {
     }
 }
 
-/// `CreateWirelessDevice` raises `ConflictException` for two distinct classes — a
-/// `DevEui` already claimed in the account, and a replayed `ClientRequestToken` used with
-/// different parameters — so each carries its own class's sentence and a client reading
-/// the text can tell them apart.
+/// `CreateWirelessDevice` raises `ConflictException` for three distinct cases — a `DevEui`
+/// another device holds, the same `DevEui` re-presented with that device's own key material,
+/// and a replayed `ClientRequestToken` used with different parameters — so each carries its own
+/// sentence and a client reading the text can tell them apart.
 #[tokio::test]
-async fn the_two_conflict_classes_of_a_device_create_carry_their_own_sentences() {
+async fn the_conflict_classes_of_a_device_create_carry_their_own_sentences() {
     let router = router();
     seed_destination(&router, "TwoConflictsDest").await;
 
-    // Row 1 seeds the DevEui conflict, row 2 the idempotency-token conflict: the two
-    // differ only in which precondition the second create breaks.
+    // One registered device, then one create per case: the cases differ only in which
+    // precondition the following create breaks.
     let dev_eui = "00000000000000b7";
+    let material = provisioning_member("OtaaV1_0_x");
     let (status, first) = create_device(
         &router,
         json!({
@@ -495,7 +660,7 @@ async fn the_two_conflict_classes_of_a_device_create_carry_their_own_sentences()
             "Name": "token-holder",
             "DestinationName": "TwoConflictsDest",
             "ClientRequestToken": "conflict-class-token",
-            "LoRaWAN": { "DevEui": dev_eui },
+            "LoRaWAN": { "DevEui": dev_eui, "OtaaV1_0_x": material },
         }),
     )
     .await;
@@ -527,6 +692,28 @@ async fn the_two_conflict_classes_of_a_device_create_carry_their_own_sentences()
         "expected Message {expected_conflict:?}, got {duplicate}"
     );
 
+    let (status, reclaimed) = create_device(
+        &router,
+        json!({
+            "Type": "LoRaWAN",
+            "Name": "same-key-claimant",
+            "DestinationName": "TwoConflictsDest",
+            "LoRaWAN": { "DevEui": dev_eui, "OtaaV1_0_x": provisioning_member("OtaaV1_0_x") },
+        }),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CONFLICT,
+        "re-presenting the registered key material must be 409, got {status} {reclaimed}"
+    );
+    let expected_claimed = claimed_dev_eui_message(dev_eui);
+    assert_eq!(
+        reclaimed["Message"],
+        json!(expected_claimed),
+        "expected Message {expected_claimed:?}, got {reclaimed}"
+    );
+
     let (status, replayed) = create_device(
         &router,
         json!({
@@ -553,5 +740,10 @@ async fn the_two_conflict_classes_of_a_device_create_carry_their_own_sentences()
         token_message, expected_conflict,
         "the token conflict must not carry the duplicate-DevEui sentence, got \
          {token_message:?}"
+    );
+    assert_ne!(
+        token_message,
+        expected_claimed.as_str(),
+        "the token conflict must not carry the already-claimed sentence, got {token_message:?}"
     );
 }

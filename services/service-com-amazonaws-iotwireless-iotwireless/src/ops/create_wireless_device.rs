@@ -266,15 +266,25 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // A `DevEui` identifies exactly one device on the network, and
         // `GetWirelessDevice?identifierType=DevEui` resolves by it, so a second device
         // claiming one already registered is the inconsistent state `ConflictException`
-        // names rather than a silent re-point of the existing identifier.
+        // names rather than a silent re-point of the existing identifier. Which sentence
+        // the refusal carries is the collision it is: a re-presentation of the registered
+        // device's own key material, or a different device claiming a taken identifier.
         let dev_eui = input
             .lo_ra_wan
             .as_ref()
             .and_then(|lorawan| lorawan.dev_eui.clone());
         if let Some(dev_eui) = dev_eui.as_deref() {
-            if store.dev_eui_index.contains_key(dev_eui) {
+            if let Some(holder) = store.dev_eui_index.get(dev_eui) {
+                let holder_lorawan = store
+                    .wireless_devices
+                    .get(holder)
+                    .and_then(|device| device.lorawan.as_ref());
                 return Err(CreateWirelessDeviceErrorModeled::ConflictException(
-                    crate::state::duplicate_dev_eui(),
+                    crate::state::dev_eui_conflict(
+                        dev_eui,
+                        input.lo_ra_wan.as_ref(),
+                        holder_lorawan,
+                    ),
                 )
                 .into());
             }
