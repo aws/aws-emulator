@@ -12,6 +12,7 @@
 
 use serde_json::{json, Value};
 
+use crate::call_preconditions::{Cloud, DATABASE as CLOUD_DATABASE, MASTER_USER};
 use crate::sql_data_api::{error_code, list, number, DataApi};
 
 /// Words PostgreSQL admits as a name.
@@ -487,3 +488,291 @@ async fn a_catalog_relation_is_read_out_of_the_databases_own_schema() {
          declared at, with whether it admits a null, got {declared}"
     );
 }
+
+/// RULE: `pg_catalog` is a schema every PostgreSQL database has — and the one PostgreSQL
+/// searches implicitly, ahead of the search path's own schemas, so its relations are named
+/// bare as well as qualified — so a statement reading one of its views this data plane
+/// serves is answered with the result set computed from the objects that database holds,
+/// never as a relation the database does not have. `pg_catalog.pg_tables` carries one row
+/// per TABLE of the named schema, and the values in a row are the schema's own: the schema
+/// the table is in, its name, the role that owns it, the tablespace it is stored in and
+/// whether it carries indexes, rules, triggers or row security.
+///
+/// The rows differ along the SPELLING the view is read with (qualified, bare, upper case,
+/// the relation delimited, through an alias, with the column qualified by schema and
+/// relation), the clause the read restricts rows by, and whether the database holds the
+/// object being asked about — which is what a client testing for a table branches on.
+#[tokio::test]
+async fn a_pg_catalog_relation_is_read_out_of_the_databases_own_schema() {
+    // (case, the statement, the count before the table is created, the count after)
+    //
+    // The counts come from the view's own definition: `pg_tables` "provides access to
+    // useful information about each table in the database", one row per table — so the
+    // table created below is one row and the VIEW created beside it is none, a view being
+    // what `pg_views` carries.
+    let cases: [(&str, &str, i64, i64); 9] = [
+        (
+            "the read a client tests for a table with",
+            "SELECT COUNT(*) FROM pg_catalog.pg_tables WHERE tablename = 'pets'",
+            0,
+            1,
+        ),
+        (
+            "the same read with the catalog schema left implicit",
+            "SELECT COUNT(*) FROM pg_tables WHERE tablename = 'pets'",
+            0,
+            1,
+        ),
+        (
+            "the same read spelled in upper case",
+            "SELECT COUNT(*) FROM PG_CATALOG.PG_TABLES WHERE TABLENAME = 'pets'",
+            0,
+            1,
+        ),
+        (
+            "the same read with the catalog relation delimited",
+            "SELECT COUNT(*) FROM pg_catalog.\"pg_tables\" WHERE tablename = 'pets'",
+            0,
+            1,
+        ),
+        (
+            "the same read through an alias",
+            "SELECT COUNT(*) FROM pg_catalog.pg_tables AS held \
+             WHERE held.tablename = 'pets'",
+            0,
+            1,
+        ),
+        (
+            "the same read with the column qualified by schema and relation",
+            "SELECT COUNT(*) FROM pg_catalog.pg_tables \
+             WHERE pg_catalog.pg_tables.tablename = 'pets'",
+            0,
+            1,
+        ),
+        (
+            "the reflection query a migration tool issues",
+            "SELECT COUNT(*) FROM pg_catalog.pg_tables WHERE schemaname = 'public' \
+             AND tablename IN ('pets', 'absent')",
+            0,
+            1,
+        ),
+        (
+            "a table the database does not hold",
+            "SELECT COUNT(*) FROM pg_catalog.pg_tables WHERE tablename = 'absent'",
+            0,
+            0,
+        ),
+        (
+            "a view, which this catalog relation carries no row for",
+            "SELECT COUNT(*) FROM pg_catalog.pg_tables WHERE tablename = 'grown'",
+            0,
+            0,
+        ),
+    ];
+
+    let api = DataApi::new();
+    for phase in ["before the table exists", "after it exists"] {
+        if phase == "after it exists" {
+            api.run(json!({
+                "database": CATALOG_DATABASE,
+                "sql": "CREATE TABLE pets (id INT NOT NULL, name VARCHAR(32))",
+            }))
+            .await;
+            api.run(json!({
+                "database": CATALOG_DATABASE,
+                "sql": "CREATE VIEW grown AS SELECT id FROM pets",
+            }))
+            .await;
+        }
+        for (case, sql, before, after) in cases {
+            let wanted = if phase == "before the table exists" {
+                before
+            } else {
+                after
+            };
+            let (status, body) = api
+                .execute(json!({"database": CATALOG_DATABASE, "sql": sql}))
+                .await;
+            assert_eq!(
+                status, 200,
+                "case {case:?} {phase}: a read of the database's own catalog is served, got \
+                 {status} {body}"
+            );
+            assert_eq!(
+                body["records"][0][0]["longValue"].as_i64(),
+                Some(wanted),
+                "case {case:?} {phase}: expected one record holding a longValue of {wanted}, \
+                 got {body}"
+            );
+        }
+    }
+
+    // The read the issue's own client makes: the tables of the named schema it asked
+    // about, in the order it asked for them, each delivered in the member the catalog's
+    // own type for the column has — `pg_tables.tablename` is a `name`, so a string.
+    let reflected = api
+        .run(json!({
+            "database": CATALOG_DATABASE,
+            "sql": "SELECT tablename FROM pg_catalog.pg_tables WHERE schemaname = 'public' \
+                    AND tablename IN ('pets', 'absent', 'grown') ORDER BY tablename",
+            "includeResultMetadata": true,
+        }))
+        .await;
+    assert_eq!(
+        reflected["records"],
+        json!([[{"stringValue": "pets"}]]),
+        "case \"the tables a client reflects on\": expected the one table the database \
+         holds, got {reflected}"
+    );
+    assert_eq!(
+        list(&reflected, "columnMetadata")
+            .first()
+            .and_then(|column| column["typeName"].as_str()),
+        Some("name"),
+        "case \"the type of a catalog column\": expected the catalog's own type for an \
+         identifier, got {reflected}"
+    );
+
+    // A read that matches nothing is still a read: an empty result set, not a refusal.
+    let unmatched = api
+        .run(json!({
+            "database": CATALOG_DATABASE,
+            "sql": "SELECT tablename FROM pg_tables WHERE tablename = 'absent'",
+        }))
+        .await;
+    assert_eq!(
+        unmatched["records"],
+        json!([]),
+        "case \"a read nothing matches\": expected an empty records list, got {unmatched}"
+    );
+
+    // What each row CARRIES, over the one property of a table this view reports that the
+    // database can differ in: whether an index is held on it. Both are read out of the
+    // schema, so the same table answers differently once an index is created on it.
+    for (case, expected_indexes) in [
+        ("a table with no index on it", false),
+        ("the same table with one created on it", true),
+    ] {
+        if expected_indexes {
+            api.run(json!({
+                "database": CATALOG_DATABASE,
+                "sql": "CREATE INDEX pets_by_name ON pets (name)",
+            }))
+            .await;
+        }
+        let described = api
+            .run(json!({
+                "database": CATALOG_DATABASE,
+                "sql": "SELECT schemaname, tablename, tablespace, hasindexes, hasrules, \
+                        hastriggers, rowsecurity FROM pg_catalog.pg_tables \
+                        WHERE tablename = 'pets'",
+                "includeResultMetadata": true,
+            }))
+            .await;
+        assert_eq!(
+            described["records"],
+            json!([[
+                {"stringValue": "public"},
+                {"stringValue": "pets"},
+                {"isNull": true},
+                {"booleanValue": expected_indexes},
+                {"booleanValue": false},
+                {"booleanValue": false},
+                {"booleanValue": false},
+            ]]),
+            "case {case:?}: expected the schema's own answer for every column of the row, \
+             got {described}"
+        );
+        assert_eq!(
+            list(&described, "columnMetadata")
+                .get(3)
+                .and_then(|column| column["typeName"].as_str()),
+            Some("bool"),
+            "case {case:?}: expected the catalog's own type for a flag of the view, got \
+             {described}"
+        );
+    }
+
+    // And every column of the view at once, which names none of them: the row carries the
+    // relation's own columns, in the order the catalog declares them, each in the member its
+    // declared type has.
+    let whole_row = api
+        .run(json!({
+            "database": CATALOG_DATABASE,
+            "sql": "SELECT * FROM pg_catalog.pg_tables WHERE tablename = 'pets'",
+        }))
+        .await;
+    assert_eq!(
+        whole_row["records"],
+        json!([[
+            {"stringValue": "public"},
+            {"stringValue": "pets"},
+            {"isNull": true},
+            {"isNull": true},
+            {"booleanValue": true},
+            {"booleanValue": false},
+            {"booleanValue": false},
+            {"booleanValue": false},
+        ]]),
+        "case \"every column of the view\": expected the whole row of the table, got \
+         {whole_row}"
+    );
+
+    // And the engine's own bookkeeping is in no answer: PostgreSQL's catalog has no row
+    // for the objects the engine behind this data plane keeps for itself.
+    let engine_objects = api
+        .run(json!({
+            "database": CATALOG_DATABASE,
+            "sql": "SELECT COUNT(*) FROM pg_catalog.pg_tables WHERE tablename LIKE 'sqlite_%'",
+        }))
+        .await;
+    assert_eq!(
+        engine_objects["records"],
+        json!([[{"longValue": 0}]]),
+        "case \"the engine's own objects\": expected no row for them, got {engine_objects}"
+    );
+}
+
+/// RULE: the owner `pg_catalog.pg_tables` reports for a table is the role that owns the
+/// objects of that database, which is the database user the calls on the cluster
+/// authenticate as — the master user the cluster was created with, resolved from the secret
+/// the call names.
+///
+/// Driven against the cluster's real owner — the Amazon RDS control plane's own fact — and
+/// through the sequence the catalog read follows a definition in: a `CREATE TABLE`, then the
+/// reflection on it through `pg_catalog`, on one `resourceArn`, `secretArn` and `database`.
+#[tokio::test]
+async fn the_owner_a_catalog_read_reports_is_the_user_the_call_authenticated_as() {
+    let cloud = Cloud::new();
+    let (resource_arn, secret_arn) = cloud
+        .create_cluster_running("emu-catalog-owner", "aurora-postgresql", true)
+        .await;
+    let call = |members: Value| {
+        let mut members = members;
+        members["resourceArn"] = json!(resource_arn);
+        members["secretArn"] = json!(secret_arn);
+        members["database"] = json!(CLOUD_DATABASE);
+        members
+    };
+
+    cloud
+        .run(call(json!({"sql": "CREATE TABLE cat_control (id INT)"})))
+        .await;
+    let reflected = cloud
+        .run(call(json!({
+            "sql": "SELECT tablename, tableowner FROM pg_catalog.pg_tables \
+                    WHERE schemaname = 'public' AND tablename IN ('cat_control') \
+                    ORDER BY tablename",
+        })))
+        .await;
+    assert_eq!(
+        reflected["records"],
+        json!([[
+            {"stringValue": "cat_control"},
+            {"stringValue": MASTER_USER},
+        ]]),
+        "case \"the table a definition just created\": expected it reflected through the \
+         catalog, owned by the cluster's master user, got {reflected}"
+    );
+}
+

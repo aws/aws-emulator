@@ -49,7 +49,7 @@ use crate::sql_data_api::a_sibling_id;
 const REGION: &str = "us-east-1";
 
 /// The master user every cluster here is created with.
-const MASTER_USER: &str = "pgadmin";
+pub(crate) const MASTER_USER: &str = "pgadmin";
 
 /// The database every cluster here is created with (`DBName`), which is the one a
 /// statement may name.

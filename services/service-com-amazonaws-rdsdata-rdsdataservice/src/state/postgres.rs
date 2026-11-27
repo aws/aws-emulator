@@ -936,14 +936,19 @@ pub fn plan(sql: &str, catalog: &Catalog<'_>) -> Result<Plan, SqlError> {
     let mut statement = statements.remove(0);
     // The SCHEMA every name in the statement is qualified by is resolved FIRST, against the
     // one schema of stored objects this data plane has: a `public.` qualification selects
-    // what the bare name does, and a relation of the catalog schema becomes the query over
+    // what the bare name does, and a relation of a catalog schema becomes the query over
     // the engine's own schema that answers it, so everything below reads the statement the
     // engine will run (`catalog`).
-    catalog::resolve_schemas(&mut statement, catalog.database);
+    let catalog_relations =
+        catalog::resolve_schemas(&mut statement, catalog.database, catalog.user);
     // The types the statement's own text gives its result columns are read from
     // the parse BEFORE it is rewritten, because the rewrite replaces a cast's
     // PostgreSQL target type with the engine type that holds its values.
-    let result_types = result_types(&statement, catalog);
+    let mut result_types = result_types(&statement, catalog);
+    // And a result column read out of a catalog relation has the type that CATALOG declares
+    // it with, which is the one thing about such a column the engine cannot report: the
+    // relation it is read from is a derived table of this statement.
+    catalog::catalog_column_types(&statement, &catalog_relations, &mut result_types);
     let result_origins = result_origins(&statement);
     // And the clause the statement writes each of its column names in, which is what a
     // diagnostic about one of those names reports.
