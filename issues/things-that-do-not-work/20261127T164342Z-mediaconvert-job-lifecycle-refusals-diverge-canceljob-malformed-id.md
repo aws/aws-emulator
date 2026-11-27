@@ -1,0 +1,60 @@
+Issue-Severity: HIGH
+Issue-Corpus: simparity-behavioral-aws-v1
+Issue-Corpus-Kind: behavioral
+Issue-Trace-Ids: mediaconvert.cancel-job-malformed-id-rejected mediaconvert.cancel-on-errored-job-leaves-it-in-error mediaconvert.create-job-from-template-with-deleted-preset-rejected
+Issue-Shape-Id: com.amazonaws.mediaconvert#MediaConvert
+Issue-Key: mediaconvert.cancel-job-malformed-id-rejected|run#7|AssertionError|assert got == refused, f"CancelJob with a 5-character suffix answered {got!r}"
+Issue-Key: mediaconvert|CancelJob|ConflictException
+Issue-Key: mediaconvert.create-job-from-template-with-deleted-preset-rejected|run#18|AssertionError|assert (code, message) == ("NotFoundException", missing), (
+Issue-Commit: 5bf95535a88c836b855c8cd193d84d7babf276ba
+
+# MediaConvert job lifecycle refusals diverge: CancelJob malformed id, CancelJob on an ERROR job, and CreateJob from a template whose preset was deleted
+
+> _Note: this issue was identified against the code base at commit `5bf95535a88c836b855c8cd193d84d7babf276ba`. If you are an issue fixer working on this, the code base you are currently working in can have drifted, so you might need to trace the issue back to the current code base._
+
+## Operation
+CancelJob
+
+## Description
+Three distinct root causes in the emulator's MediaConvert job surface (CancelJob and CreateJob). They share a family — the emulator picks the wrong exception class / wrong message for a job-level refusal, and refuses one call AWS accepts — but each is an independent defect and ALL THREE must be closed before this issue is submitted.
+
+Cause 1 of 3: CancelJob with an id that cannot be a job id answers NotFoundException/404 instead of BadRequestException/400 naming the required id format.
+AWS: Smithy (services/service-com-amazonaws-mediaconvert-mediaconvert): CancelJob DELETE /2017-08-29/jobs/{Id}, success code 202; input member Id is an @httpLabel @required __string with no pattern in the model; modelled errors include BadRequestException (httpError 400, doc "The service can't process your request because of a problem in the request. Please check your request form and syntax.") and NotFoundException (httpError 404, doc "The resource you requested doesn't exist"). The id syntax rule itself is recorded behavior only: MediaConvert mints job ids in the shape '\d{13}-\w{6}' and, when the supplied id cannot match that shape at all, rejects the REQUEST before any state lookup — HTTP 400, error code BadRequestException, message "You specified an invalid value for id. The resource ID must match the format '\d{13}-\w{6}'." In that message the fixed text is "You specified an invalid value for ", then ". The resource ID must match the format '\d{13}-\w{6}'."; the only variable part is the member name taken from the request binding (here id). The quoted format literal is fixed text, not a recorded value.
+Emulator: skips the syntax check and goes straight to the job lookup, answering 404 with code NotFoundException and message 'The resource you specified in id was not found.' for an id built by truncating a real job id to a 5-character suffix.
+Why: a client cannot distinguish a client-side malformed-identifier bug (400, not retryable, fix the call) from a job that never existed or has aged out (404, routinely ignored). SDK handling keyed on BadRequestException never fires and the real programming error is swallowed by not-found tolerance.
+Fix: CancelJob's input validation in its handler — validate the {Id} label's syntax and raise BadRequestException before reading job state; share the check with the other {Id}-bound job operations.
+Relation to open issues: open issue 20261127T134532Z-mediaconvert-jobs-query-and-search-request-validation-diverges describes the same CancelJob id-syntax gap as its Cause 1 from the WIRE corpus; it does not carry this behavioral check's replay key, so this cause is filed here with that check id. Closing it closes both.
+Traces: mediaconvert.cancel-job-malformed-id-rejected.
+
+Cause 2 of 3: CancelJob on a job that has already ended in ERROR is refused with ConflictException/409 instead of being accepted as a no-op.
+AWS: Smithy: CancelJob success code 202 with an empty CancelJobResponse; ConflictException is modelled (httpError 409, doc "The service couldn't complete your request because there is a conflict with the current state of the resource."). Which states conflict is recorded behavior only: a CancelJob targeting a job already in the terminal ERROR state is ACCEPTED — HTTP 202, empty body — and changes nothing: GetJob still reports Status ERROR with the same numeric ErrorCode and the same ErrorMessage, ListJobs on the job's queue with Status=ERROR still lists it, and Status=CANCELED never does.
+Emulator: answers 409 ConflictException with message 'Job <job id> has status ERROR and can no longer be canceled.' (fixed text 'Job ', ' has status ', ' and can no longer be canceled.' with the job id and status taken from the request and state — AWS emits no such message for this case at all), so the call fails and the client never gets the 202.
+Why: cancel is the idiomatic idempotent cleanup every client and test harness runs over a job it no longer wants, without first racing GetJob for the job's status. Against the emulator that cleanup raises, so client code that treats CancelJob as safe-on-terminal breaks, and a harness cannot tell a genuine state conflict from a job that simply already finished.
+Fix: CancelJob's handler state transition — treat ERROR (and the other terminal statuses) as an accepted no-op returning 202 and leaving Status/ErrorCode/ErrorMessage and the queue's status listings untouched, instead of raising ConflictException.
+Relation to open issues: 20261024T051247Z (every job terminates in ERROR shortly after CreateJob) is a different cause — this check reaches ERROR legitimately (its input object does not exist) and asserts only what cancelling an ERROR job does.
+Traces: mediaconvert.cancel-on-errored-job-leaves-it-in-error.
+
+Cause 3 of 3: CreateJob from a job template whose preset has been deleted answers BadRequestException/400 with the emulator's own wording instead of NotFoundException/404 naming the unresolved settings path.
+AWS: Smithy: CreateJob POST /2017-08-29/jobs (success 201), input members JobTemplate (jsonName jobTemplate) and Settings (jsonName settings, target JobSettings); modelled errors include NotFoundException (httpError 404) and BadRequestException (httpError 400). The resolution rule is recorded behavior only: MediaConvert resolves every preset named by the expanded job template before creating the job and, when a named preset no longer exists, fails the call as a missing RESOURCE — HTTP 404, error code NotFoundException, message 'The resource you specified in settings.outputGroups[0].outputs[0].preset was not found.' Fixed text: 'The resource you specified in ' and ' was not found.'; the single variable part is the wire path of the member that failed to resolve, in the model's lowerCamel jsonName spelling with the request's own list indices (settings.outputGroups[<i>].outputs[<j>].preset). No preset name, account or count appears in it.
+Emulator: answers 400 with code BadRequestException and message 'The resource you specified in OutputGroups[0].Outputs[0].Preset was not found. Provide the system or custom preset name: this account holds no preset named <preset name>.' — wrong exception class and status, the member path rendered in PascalCase shape-member spelling rather than the wire jsonName path, and an extra sentence naming the preset that AWS does not emit.
+Why: the 400/404 split drives client behaviour — a 404 says the referenced resource is gone (recreate the preset, or stop referencing it), a 400 says the request itself is malformed. Error handling and dashboards keyed on NotFoundException never fire, and a client that parses the member path out of the message to point a user at the offending output cannot match the PascalCase path production never returns.
+Fix: CreateJob's template/preset resolution in its handler — raise NotFoundException (404) with the lowerCamel settings path template when a referenced preset does not resolve, instead of BadRequestException with custom prose.
+Traces: mediaconvert.create-job-from-template-with-deleted-preset-rejected.
+
+## Evidence
+Behavioral suite simparity-behavioral-aws-v1 replayed against this checkout: 30/43 passed; mediaconvert 26/39. Expected -> actual per cause:
+
+Cause 1 — mediaconvert.cancel-job-malformed-id-rejected: the check created a job on a PAUSED queue, confirmed its id matches '\d{13}-\w{6}', then called CancelJob with that id truncated by one character (a 5-character suffix). Expected ('BadRequestException', "You specified an invalid value for id. The resource ID must match the format '\\d{13}-\\w{6}'."); actual ('NotFoundException', 'The resource you specified in id was not found.'). AssertionError: "CancelJob with a 5-character suffix answered ('NotFoundException', 'The resource you specified in id was not found.')".
+
+Cause 2 — mediaconvert.cancel-on-errored-job-leaves-it-in-error: the job reached Status ERROR with a numeric ErrorCode and a non-empty ErrorMessage (those asserts passed), then CancelJob on it raised instead of returning HTTP 202. Actual: botocore.errorfactory.ConflictException: An error occurred (ConflictException) when calling the CancelJob operation: Job <job id> has status ERROR and can no longer be canceled. Expected: HTTP 202, then GetJob Status still ERROR with the same ErrorCode/ErrorMessage, ListJobs Status=ERROR listing the job and Status=CANCELED not listing it.
+
+Cause 3 — mediaconvert.create-job-from-template-with-deleted-preset-rejected: a preset, a job template referencing it and one control job were created; the preset was then deleted and the identical CreateJob-from-template repeated. Expected ('NotFoundException', 'The resource you specified in settings.outputGroups[0].outputs[0].preset was not found.'); actual ('BadRequestException', 'The resource you specified in OutputGroups[0].Outputs[0].Preset was not found. Provide the system or custom preset name: this account holds no preset named <preset name>.').
+
+Model grounding (services/service-com-amazonaws-mediaconvert-mediaconvert/smithy-model/com-amazonaws-mediaconvert-mediaconvert.json): CancelJob DELETE /2017-08-29/jobs/{Id} success 202, Id @httpLabel @required __string, errors BadRequestException 400 / ConflictException 409 / NotFoundException 404; CreateJob POST /2017-08-29/jobs success 201 with the same error set, Settings -> JobSettings (jsonName settings), JobTemplate (jsonName jobTemplate).
+
+## Steps to Reproduce
+Boot the emulator from this checkout and replay the behavioral suite (simparity-behavioral-aws-v1), then per cause:
+
+1. Cause 1: create a PAUSED queue and submit a job to it, then DELETE /2017-08-29/jobs/<the job id with its last character removed> (CancelJob with a 5-character suffix). Observe 404 NotFoundException 'The resource you specified in id was not found.' instead of 400 BadRequestException naming the required '\d{13}-\w{6}' format. Check: mediaconvert.cancel-job-malformed-id-rejected.
+2. Cause 2: submit a job whose FileInput object does not exist, wait for Status ERROR, then call CancelJob on it. Observe 409 ConflictException ('... has status ERROR and can no longer be canceled.') instead of HTTP 202 with the job left in ERROR, its ErrorCode/ErrorMessage unchanged, listed by ListJobs Status=ERROR and not by Status=CANCELED. Check: mediaconvert.cancel-on-errored-job-leaves-it-in-error.
+3. Cause 3: CreatePreset P, CreateJobTemplate T whose OutputGroups[0].Outputs[0].Preset is P, CreateJob with JobTemplate=T (succeeds), then DeletePreset P and repeat the identical CreateJob. Observe 400 BadRequestException with the PascalCase path and the extra 'Provide the system or custom preset name...' sentence instead of 404 NotFoundException 'The resource you specified in settings.outputGroups[0].outputs[0].preset was not found.' Check: mediaconvert.create-job-from-template-with-deleted-preset-rejected.
