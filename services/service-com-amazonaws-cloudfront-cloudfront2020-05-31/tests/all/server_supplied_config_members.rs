@@ -22,11 +22,11 @@
 //!   `FieldLevelEncryptionProfileConfig$Comment`, `PublicKeyConfig$Comment`), and
 //!   `FieldLevelEncryptionConfig$QueryArgProfileConfig`, the mapping every stored
 //!   configuration carries (an update of one cannot leave it out), is the mapping that maps
-//!   nothing: a `QueryArgProfiles` wrapper stating `Quantity` 0, which forwards a request
-//!   naming a profile it cannot resolve since it designates none;
-//! * one the service DECIDES from the rest of the configuration takes that value whatever
-//!   the request stated — `QueryArgProfileConfig$ForwardWhenQueryArgProfileIsUnknown` says of
-//!   the stored configuration whether its mapping maps NO query argument to a profile
+//!   nothing: a `QueryArgProfiles` wrapper stating `Quantity` 0 beside the flag that forwards
+//!   a request naming a profile it cannot resolve, since such a mapping designates none. A
+//!   member the request DOES state is never resolved: a stated
+//!   `QueryArgProfileConfig` keeps its own required
+//!   `ForwardWhenQueryArgProfileIsUnknown`
 //!   (`field_level_encryption_query_arg_forwarding.rs` states that rule over its own table).
 //!
 //! Each table spans what the rule generalises over: which members the request states at all,
@@ -458,17 +458,12 @@ impl FleRow {
         self.comment.unwrap_or_default().to_string()
     }
 
-    /// The `ForwardWhenQueryArgProfileIsUnknown` the stored configuration carries: whether
-    /// its mapping maps NO query argument to a profile — the value the stored configuration
-    /// answers from its own mapping rather than from the request
-    /// (`field_level_encryption_query_arg_forwarding.rs` states that rule), which for a
-    /// configuration that states no section at all is the mapping that maps nothing.
+    /// The `ForwardWhenQueryArgProfileIsUnknown` the stored configuration carries: the one
+    /// this request submitted, since the member is required and the model gives it no
+    /// default — or, for a configuration that states no section at all, the flag of the
+    /// mapping the service supplies, which maps nothing.
     fn expected_flag(&self) -> bool {
-        match (self.query_arg_flag, self.query_arg_mappings) {
-            (None, _) => true,
-            (Some(_), Some(mapped)) => mapped == 0,
-            (Some(_), None) => true,
-        }
+        self.query_arg_flag.unwrap_or(true)
     }
 
     /// How many mappings the stored `QueryArgProfiles` wrapper carries, or `None` when the

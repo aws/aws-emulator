@@ -135,8 +135,8 @@ pub(crate) async fn get_config_document(router: &MultiServiceRouter, id: &str) -
 /// One `QueryArgProfile`, as a client submits it.
 #[derive(Debug, Clone)]
 pub(crate) struct QueryArgMapping {
-    query_arg: String,
-    profile_id: String,
+    pub(crate) query_arg: String,
+    pub(crate) profile_id: String,
 }
 
 impl QueryArgMapping {
@@ -431,19 +431,13 @@ impl Config {
     }
 
     /// The `QueryArgProfileConfig` the stored configuration carries: the section this request
-    /// submits, with the forwarding flag the stored configuration answers from its own
-    /// mapping — whether it maps NO query argument to a profile — or, for a request that
+    /// submits, verbatim — its required forwarding flag included — or, for a request that
     /// states no section at all, the mapping that maps nothing.
     pub(crate) fn effective_query_arg(&self) -> Section<QueryArgMapping> {
-        let mut section = match &self.query_arg {
+        match &self.query_arg {
             Some(section) => section.clone(),
             None => Section::new(true, Some(Vec::new())),
-        };
-        section.forward_when_unknown = section
-            .mappings
-            .as_ref()
-            .is_none_or(|mappings| mappings.is_empty());
-        section
+        }
     }
 
     /// The `ContentTypeProfileConfig` the stored configuration carries: the section this

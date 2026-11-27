@@ -30,8 +30,8 @@
 //!   forwards the body as the viewer sent it, and false means "an error is returned" — `400`
 //!   from CloudFront itself, with `X-Cache: Error from cloudfront` and no origin request, so the
 //!   origin never sees the fields at all. Each flag is read as the control plane STORED it,
-//!   which for a query arg-profile mapping is whether that mapping maps NO query argument to a
-//!   profile (`field_level_encryption_query_arg_forwarding.rs` states that rule).
+//!   which is the setting the configuration's own request submitted for it
+//!   (`field_level_encryption_query_arg_forwarding.rs` states that rule).
 //!
 //! The rows differ along what those rules generalise over: the form of the pattern that
 //! designates a field (the whole name, a prefix wildcard, a name no pattern covers, a name that
@@ -921,9 +921,9 @@ async fn the_profile_selected_for_a_request_decides_which_of_its_fields_are_encr
     )
     .await;
     // The default behaviour's configuration: the content type selects one profile by default,
-    // the query argument the other, and an unknown content type is forwarded. Its mapping maps
-    // a query argument to a profile, so the flag it is STORED with refuses a request naming
-    // any other profile, and the rows below read that flag as stored.
+    // the query argument the other, and an unknown content type is forwarded. Its query
+    // argument section submits the flag's off position, so the flag it is STORED with refuses
+    // a request naming any other profile, and the rows below read that flag as stored.
     let forwarding = created_config(
         &topology,
         case,
@@ -931,7 +931,7 @@ async fn the_profile_selected_for_a_request_decides_which_of_its_fields_are_encr
             reference: "fle-selection-forwarding",
             content_types: &[(FORM_MEDIA_TYPE, &content_type_profile)],
             forward_unknown_content_type: true,
-            query_args: Some((&[(NAMED_PROFILE, &named_profile)], true)),
+            query_args: Some((&[(NAMED_PROFILE, &named_profile)], false)),
         },
     )
     .await;
@@ -948,8 +948,8 @@ async fn the_profile_selected_for_a_request_decides_which_of_its_fields_are_encr
     )
     .await;
     // And a third: it states a query argument section that maps NO query argument to a
-    // profile, so it designates nothing by query argument and a request naming one travels on
-    // to the origin — which is what separates a request refused for the profile it named from
+    // profile, under the flag's on position, so a request naming a profile is forwarded to
+    // the origin — which is what separates a request refused for the profile it named from
     // one refused for its content type.
     let named_strict = created_config(
         &topology,
@@ -958,7 +958,7 @@ async fn the_profile_selected_for_a_request_decides_which_of_its_fields_are_encr
             reference: "fle-selection-named-strict",
             content_types: &[(FORM_MEDIA_TYPE, &content_type_profile)],
             forward_unknown_content_type: true,
-            query_args: Some((&[], false)),
+            query_args: Some((&[], true)),
         },
     )
     .await;
@@ -1035,10 +1035,10 @@ async fn the_profile_selected_for_a_request_decides_which_of_its_fields_are_encr
     );
     assert_verbatim(&received, case, "secret_field", "4111111111111111");
 
-    // A profile the mapping does not carry, on a configuration whose mapping maps a query
-    // argument at all: such a request asks for encryption the configuration cannot give, so
-    // the flag the configuration is STORED with does not forward it — CloudFront's own
-    // refusal, and the origin never sees the body.
+    // A profile the mapping does not carry, on a configuration whose query argument section
+    // submitted the flag's off position: such a request asks for encryption the configuration
+    // cannot give, so the flag the configuration is STORED with does not forward it —
+    // CloudFront's own refusal, and the origin never sees the body.
     let case = "a query argument naming a profile the mapping does not carry";
     let answered = post_form(
         &topology,
@@ -1050,10 +1050,10 @@ async fn the_profile_selected_for_a_request_decides_which_of_its_fields_are_encr
     .await;
     assert_refused(&answered, case, "4111111111111111");
 
-    // The same request on the behaviour whose mapping maps NO query argument to a profile: it
-    // designates nothing by query argument, so a request naming one is nothing to do with it
-    // and the body reaches the origin as the viewer sent it — the content type's default
-    // profile does not step in for a request that named one either.
+    // The same request on the behaviour whose section submitted the flag's on position: a
+    // request naming a profile that section does not carry travels on, so the body reaches the
+    // origin as the viewer sent it — the content type's default profile does not step in for a
+    // request that named one either.
     let case = "a query argument naming a profile on a mapping that maps none";
     let answered = post_form(
         &topology,

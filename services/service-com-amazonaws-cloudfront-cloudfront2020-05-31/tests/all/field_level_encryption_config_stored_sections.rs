@@ -21,11 +21,9 @@
 //!   the empty text) and does not forward a body whose content type it does not cover.
 //! * `QueryArgProfileConfig$ForwardWhenQueryArgProfileIsUnknown` — "Flag to set if you want a
 //!   request to be forwarded to the origin even if the profile specified by the field-level
-//!   encryption query argument, fle-profile, is unknown" — says of the STORED configuration
-//!   whether its own mapping maps NO query argument to a profile: a configuration that maps
-//!   none designates nothing to encrypt by query argument, so a request naming a profile is
-//!   nothing to do with it and travels on, while one that DOES map query arguments does not
-//!   forward a request naming a profile it does not carry.
+//!   encryption query argument, fle-profile, is unknown" — is a REQUIRED member the model
+//!   gives no default, so a configuration that states a query argument section is stored with
+//!   the flag that section submitted, whatever its mappings map.
 //!
 //! Neither rule is a property of one request document's form, so the table below spans what
 //! they generalise over: whether the configuration states a content type section at all,
@@ -115,7 +113,7 @@ fn rows(profile: &str) -> Vec<Row> {
     let mapped = |query_arg: &str| QueryArgMapping::new(query_arg, profile);
     vec![
         // A configuration that states no content type section at all, under either setting of
-        // the flag it does state: the supplied mapping, and a flag its own mapping decides.
+        // the flag it does state: the supplied mapping, and the flag it submitted.
         Row {
             config: Config::new(
                 "no content type section, one query argument mapping, submitted forwarding",
@@ -124,7 +122,7 @@ fn rows(profile: &str) -> Vec<Row> {
                 Some(Section::new(true, Some(vec![mapped("fle-profile")]))),
                 None,
             ),
-            forwards_unknown_profile: false,
+            forwards_unknown_profile: true,
             content_type: supplied(),
         },
         Row {
@@ -179,7 +177,7 @@ fn rows(profile: &str) -> Vec<Row> {
                     )]),
                 )),
             ),
-            forwards_unknown_profile: true,
+            forwards_unknown_profile: false,
             content_type: ExpectedContentType {
                 forward_when_unknown: false,
                 mappings: Some(vec![ExpectedMapping::new("application/json", Some(profile))]),
@@ -223,7 +221,7 @@ fn rows(profile: &str) -> Vec<Row> {
                 Some(Section::new(true, Some(vec![mapped("fle-profile")]))),
                 Some(Section::new(false, None)),
             ),
-            forwards_unknown_profile: false,
+            forwards_unknown_profile: true,
             content_type: ExpectedContentType {
                 forward_when_unknown: false,
                 mappings: None,
@@ -241,7 +239,7 @@ fn rows(profile: &str) -> Vec<Row> {
                     Some(vec![ContentTypeMapping::new("text/plain", Some(profile))]),
                 )),
             ),
-            forwards_unknown_profile: true,
+            forwards_unknown_profile: false,
             content_type: ExpectedContentType {
                 forward_when_unknown: true,
                 mappings: Some(vec![ExpectedMapping::new("text/plain", Some(profile))]),
@@ -479,8 +477,8 @@ async fn an_update_stores_the_same_sections_and_the_readback_is_a_fixed_point() 
 }
 
 /// The `QueryArgProfileConfig` section a client reads back for `row`, as a document it can
-/// submit again: the one the request stated, under the flag the stored configuration reports,
-/// or the mapping that maps nothing for a request that stated none.
+/// submit again: the one the request stated, or the mapping that maps nothing for a request
+/// that stated none.
 fn stored_query_arg(row: &Row) -> Section<QueryArgMapping> {
     let mut section = row
         .config

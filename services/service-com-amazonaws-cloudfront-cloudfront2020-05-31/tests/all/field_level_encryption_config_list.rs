@@ -273,7 +273,7 @@ impl Row {
 
         // `QueryArgProfileConfig` is the mapping every stored configuration carries, so a
         // configuration created without one is summarised with the mapping that maps
-        // nothing, under its flag's own unset position.
+        // nothing; one that states a section is summarised with it as submitted.
         let query_arg = self.effective_query_arg();
         self.assert_section(
             summary,
@@ -298,16 +298,12 @@ impl Row {
     }
 
     /// The `QueryArgProfileConfig` the stored configuration carries: the section this row
-    /// submits, with the forwarding flag the stored configuration answers from its own
-    /// mapping — whether it maps NO query argument to a profile — or, for a row that states
+    /// submits, verbatim — its required forwarding flag included — or, for a row that states
     /// no section, the mapping that maps nothing.
     fn effective_query_arg(&self) -> Section {
-        let mut section = self
-            .query_arg
+        self.query_arg
             .clone()
-            .unwrap_or_else(|| Section::new(true, &[], false));
-        section.forward_when_unknown = section.selectors.is_empty();
-        section
+            .unwrap_or_else(|| Section::new(true, &[], false))
     }
 
     /// The `ContentTypeProfileConfig` the stored configuration carries: the section this row

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: CC0-1.0
 
-//! What a stored field-level encryption configuration FORWARDS when a request names a query
-//! argument profile it cannot resolve, end to end over HTTP.
+//! What a stored field-level encryption configuration reports for the flag that decides a
+//! request naming a query argument profile it cannot resolve, end to end over HTTP.
 //!
 //! Every assertion goes through the router, so each case exercises routing, restXml
 //! (de)serialization, the handler, the persisted state and serialization — the same path a
@@ -10,15 +10,13 @@
 //! RULE: `QueryArgProfileConfig$ForwardWhenQueryArgProfileIsUnknown` is "Flag to set if you
 //! want a request to be forwarded to the origin even if the profile specified by the
 //! field-level encryption query argument, fle-profile, is unknown"
-//! (`smithy_query(query="shape",shape="QueryArgProfileConfig")`), and the STORED configuration
-//! answers it from its own mapping rather than from the request: a configuration whose
-//! `QueryArgProfiles` maps NO query argument to a profile designates nothing to encrypt by
-//! query argument, so a request naming a profile is nothing to do with it and is forwarded,
-//! while one that DOES map query arguments does not forward a request naming a profile it does
-//! not carry — such a request asks for encryption the configuration cannot give.
+//! (`smithy_query(query="shape",shape="QueryArgProfileConfig")`), a REQUIRED boolean the model
+//! gives no default and no server-side override: the configuration is stored with the setting
+//! its request submitted for it, whatever its `QueryArgProfiles` map, so a request submitting
+//! the off position reads back off.
 //! `ContentTypeProfileConfig$ForwardWhenContentTypeIsUnknown` is the other section's own
-//! member and is stored exactly as submitted, and a configuration that states no content type
-//! section at all carries the mapping the service supplies for it.
+//! member and is stored exactly as submitted too, and a configuration that states no content
+//! type section at all carries the mapping the service supplies for it.
 //!
 //! The rule holds of the STORED configuration, so every reader reports it: the create's own
 //! answer, `GetFieldLevelEncryption`, `GetFieldLevelEncryptionConfig`, the listing's summary,
@@ -67,7 +65,7 @@ fn rows(profile: &str) -> Vec<Row> {
                 Some(Section::new(true, Some(vec![mapped("fle-profile")]))),
                 None,
             ),
-            forwards: false,
+            forwards: true,
         },
         Row {
             config: Config::new(
@@ -119,7 +117,7 @@ fn rows(profile: &str) -> Vec<Row> {
                     Some(vec![ContentTypeMapping::new("text/html", Some(profile))]),
                 )),
             ),
-            forwards: true,
+            forwards: false,
         },
         Row {
             config: Config::new(
@@ -150,7 +148,7 @@ fn rows(profile: &str) -> Vec<Row> {
                     Some(vec![ContentTypeMapping::new("text/plain", Some(profile))]),
                 )),
             ),
-            forwards: true,
+            forwards: false,
         },
     ]
 }
@@ -227,10 +225,10 @@ async fn created(router: &MultiServiceRouter, row: &Row) -> (String, String, Ans
     (id, etag, answer)
 }
 
-/// A configuration reports the forwarding flag its own mapping decides, and every reader of
+/// A configuration reports the forwarding flag its request submitted, and every reader of
 /// the stored configuration reports that value.
 #[tokio::test]
-async fn a_configuration_is_stored_with_the_forwarding_flag_its_mapping_decides() {
+async fn a_configuration_is_stored_with_the_forwarding_flag_its_request_submitted() {
     let router = emulator();
     let profile = store_profile(&router, "fle-forwarding-suite-profile").await;
 
@@ -277,7 +275,7 @@ async fn an_update_stores_the_same_flag_and_the_readback_is_a_fixed_point() {
         let (id, etag, _) = created(&router, &row).await;
 
         // The same document again, through the update: the flag the update stores is the one
-        // the stored mapping decides, as on the create.
+        // the request submitted, as on the create.
         let updated = update_config(&router, &id, &row.config.xml(), Some(&etag)).await;
         assert_eq!(
             updated.status, 200,

@@ -319,9 +319,8 @@ async fn a_profile_reports_its_field_patterns_in_the_order_submitted() {
 
 /// `QueryArgProfileConfig$ForwardWhenQueryArgProfileIsUnknown` and
 /// `ContentTypeProfileConfig$ForwardWhenContentTypeIsUnknown` are REQUIRED booleans, and both
-/// sections are OPTIONAL on `FieldLevelEncryptionConfig`: so the content type section's flag
-/// and its mappings are reported with the values the request submitted for them, the query
-/// argument section's flag with the value that section's own mapping decides, and a section
+/// sections are OPTIONAL on `FieldLevelEncryptionConfig`: so each stated section's flag and
+/// its mappings are reported with the values the request submitted for them, and a section
 /// the request left out is reported as the mapping the service supplies for it — on the
 /// create, on both reads, and in the summary a listing carries.
 #[tokio::test]
@@ -440,7 +439,7 @@ async fn a_configuration_reports_the_values_submitted() {
 /// carries it: `QueryArgProfileConfig` always — a configuration that submits none carries
 /// the mapping that maps nothing — `ContentTypeProfileConfig` always too, the section the
 /// request carried or the mapping the service supplies for a request that carried none, each
-/// required flag at the value the stored configuration carries, and each content type
+/// required flag at the value the request submitted for it, and each content type
 /// mapping's members as submitted.
 fn assert_sections(row: &Config, node: &Node, case: &str, context: &str, raw: &str) {
     let query_arg = row.effective_query_arg();
