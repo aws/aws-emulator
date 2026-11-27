@@ -102,11 +102,11 @@ pub struct PlaneContext {
     /// this plane has no context of its own and what the API LOGS about one is written into
     /// this emulator's CloudWatch Logs ([`field_logs`]).
     pub callback: EmbeddedEmulator,
-    /// The sites besides this machine a PAGE may drive this API's GraphQL endpoint from, as
-    /// the operator asked for them ([`query::REMOTE_ORIGINS_ENV`]): resolved ONCE here, when
-    /// the sockets are opened, so no request-path code reads the environment. Empty unless
-    /// the operator asked for any, which admits only a page served from this machine.
-    pub remote_origins: Arc<::emulator_server::RemoteOrigins>,
+    /// WHO may drive this API's GraphQL endpoint from a page a BROWSER serves, as the operator
+    /// asked for it ([`query::REMOTE_ORIGINS_ENV`]): resolved ONCE here, when the sockets are
+    /// opened, so no request-path code reads the environment. A page served from this machine
+    /// unless the operator named other sites, which is announced where they do.
+    pub admitted_origins: Arc<query::AdmittedOrigins>,
 }
 
 // By hand, because a store handle has no rendering of its own: what is diagnosable about a
@@ -170,7 +170,7 @@ pub async fn open_for_api<Eng: Send + Sync + 'static>(
         engine: Arc::clone(&shared),
         region: region.to_string(),
         callback,
-        remote_origins: Arc::new(query::configured_remote_origins()),
+        admitted_origins: Arc::new(query::configured_admitted_origins()),
     };
     // The core's own TLS server, for a client that dialled `https://` or `wss://`. A core
     // that cannot prepare it leaves this `None`, and such a client is then dropped at the

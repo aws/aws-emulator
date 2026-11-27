@@ -190,7 +190,7 @@ pub struct PresentedAuth {
 }
 
 /// The field an API key is presented in.
-const API_KEY_FIELD: &str = "x-api-key";
+pub const API_KEY_FIELD: &str = "x-api-key";
 
 /// The field every other authorization material is presented in.
 const AUTHORIZATION_FIELD: &str = "authorization";
@@ -355,8 +355,7 @@ pub fn host_allowed(host: &str) -> bool {
 /// other site: these sockets are bound on this machine, so that origin is the one the
 /// endpoint itself is addressed by, and both the client that states it about the address it
 /// dialled and the page served from this machine are served — which is what an AppSync API's
-/// data plane exists to be called from, and what its HTTPS endpoint already serves
-/// (`super::graphql_api::query`'s reading of the same question).
+/// data plane exists to be called from.
 ///
 /// Every other origin is read by the CORE'S OWN reading of the browser-set fields
 /// (`emulator_server::classify_browser_request`, which the core applies to every request on

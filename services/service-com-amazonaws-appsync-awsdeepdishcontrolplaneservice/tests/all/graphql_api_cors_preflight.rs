@@ -3,38 +3,47 @@
 //! The CORS preflight on a GraphQL API's `GRAPHQL` endpoint, and what a page may READ of
 //! what that endpoint answers — driven over the API's own published socket.
 //!
-//! The rule these rows assert, one level above the recorded case (one OPTIONS carrying an
-//! `Origin` and the method and fields a browser was about to send):
+//! The rule these rows assert, one level above the recorded case (one keyed POST carrying an
+//! `Origin`, and the OPTIONS preflight before it):
 //!
 //! > A GraphQL API's `GRAPHQL` endpoint is an address a PAGE calls, so it answers the CORS
 //! > preflight itself: an `OPTIONS` carrying `Access-Control-Request-Method` is answered
 //! > `2xx` with no body and with no authorization material of any kind, since a browser sends
 //! > none on a preflight, and it states what the real request may carry — the method and the
 //! > fields the browser asked about, how long the answer may be reused, the permitted origin
-//! > and the response fields a script may read. The REAL request of a page served from THIS
-//! > MACHINE reaches the API and is decided by the material it presents like any other call;
-//! > a page of any other site is refused `403` before anything of the API is reached, unless
-//! > the operator asked for that site. Every answer the endpoint's own route produced — the
-//! > result and each refusal — states the origin it permits and the fields a script may read,
-//! > which is what lets the page read the GraphQL error envelope at all, and an answer to a
-//! > request that reached no operation of the API states neither.
+//! > and the response fields a script may read. The `Origin` a request declares is NO input to
+//! > admission: the REAL request is decided by the authorization material it presents and by
+//! > nothing else, so the same request is answered alike whether it carries an `Origin` or
+//! > not, and whatever site that origin names. Every answer the endpoint's own route produced
+//! > — the result and each refusal — permits ANY origin to read it and names the fields a
+//! > script may read, which is what lets a page read the GraphQL error envelope at all, and an
+//! > answer to a request that reached no operation of the API states neither.
+//!
+//! Two things bound what that admits, and neither is the `Origin`. Material this emulator
+//! cannot CHECK — everything but a key it minted itself, since a signature or a token is taken
+//! as presented on a data-plane socket — is not decided on for a request declaring an origin of
+//! another site, so no such client authors a principal of the developer's account for itself;
+//! the call is then refused `401` exactly as one presenting nothing is. And a request a BROWSER
+//! ITSELF stamped as made from another site (`Sec-Fetch-Site`, which a script cannot write) is
+//! refused `403` before anything of the API is reached unless the operator named that site,
+//! because that is the request a site the developer happens to be visiting makes. The last two
+//! tests below assert both, over the origins a request declares and the material it presents.
 //!
 //! The rows span what the rule generalises over: the method the browser asks about, the
 //! fields it asks for (several, one, none at all), the origin it declares (an ordinary site, a
 //! page served from a loopback port, another loopback address, the opaque `null` of a
-//! sandboxed frame), whether the preflight presents an API key, and — for the real request —
-//! the site the page was served from and whether the material it presents authorizes it, since
-//! both answers have to be readable from script.
-//!
-//! The real request of a page from a site the operator has NOT asked for is refused here,
-//! which is why the preflight's own answer states only what this endpoint permits to carry
-//! rather than that any page will be served: `APPSYNC_GRAPHQL_REMOTE_ORIGINS` is what admits
-//! such a site.
+//! sandboxed frame, none at all), whether the preflight presents an API key, and — for the
+//! real request — the material it presents (the API's own key, a key of the API's own shape it
+//! never minted, none at all), since both the result and the refusal have to be readable from
+//! script.
 
 use serde_json::{json, Value};
+use smithy_server_runtime::MultiServiceRouter;
 
+use crate::event_api::LOOPBACK_HOST;
+use crate::event_api_data_plane::appsync;
 use crate::graphql_api_mapping_template_resolvers::{
-    create_api, emulator, try_post_answer, GraphqlApi, GRAPHQL_PATH,
+    create_api, emulator, install_schema, try_post_answer, GraphqlApi, GRAPHQL_PATH, REGION,
 };
 
 /// The fields a browser asks a preflight with, and the ones the answer states the permission
@@ -57,15 +66,16 @@ const EXPOSED_FIELDS: [&str; 2] = ["x-amzn-requestid", "x-amzn-errortype"];
 /// `service::graphql_api::query::PREFLIGHT_MAX_AGE_SECONDS`.
 const PREFLIGHT_MAX_AGE: &str = "172800";
 
-/// The origin the endpoint permits where it names no single one; the service's own copy is
-/// `service::graphql_api::query::ALLOWED_ORIGIN`.
+/// The origin every answer of this endpoint's own route permits a page to read it from; the
+/// service's own copy is `service::graphql_api::query::ALLOWED_ORIGIN`.
 const ALLOWED_ORIGIN: &str = "*";
 
 /// What a preflight permits when the browser asked about no field in particular; the service's
 /// own copy is `service::graphql_api::query::EVERY_FIELD`.
 const EVERY_FIELD: &str = "*";
 
-/// The field an answer names what its own value depends on in.
+/// The field an answer names the request fields its own value depends on in; the service's own
+/// copy is `service::graphql_api::query::VARY_FIELD`.
 const VARY_FIELD: &str = "vary";
 
 /// The field an API key travels in.
@@ -80,75 +90,75 @@ async fn the_graphql_endpoint_answers_the_cors_preflight_unauthenticated() {
     let router = emulator();
     let api = create_api(&router, "preflight", None).await;
 
-    /// One row: what the browser asks the preflight with, whether it presents a key, and the
-    /// origin the answer must permit — the page's own where it was served from this machine,
-    /// and any origin for a site the answer grants nothing else to.
+    /// One row: what the browser asks the preflight with, and whether it presents a key.
     struct Row {
         case: &'static str,
-        origin: &'static str,
+        origin: Option<&'static str>,
         method: &'static str,
         asked_headers: Option<&'static str>,
         with_key: bool,
-        permitted: &'static str,
     }
     let rows: &[Row] = &[
         Row {
             case: "the fields a GraphQL client sends, from an ordinary site",
-            origin: "https://example.com",
+            origin: Some("https://example.com"),
             method: "POST",
             asked_headers: Some("content-type,x-api-key"),
             with_key: false,
-            permitted: ALLOWED_ORIGIN,
         },
         Row {
             case: "one field asked about, from a page on a loopback port",
-            origin: "http://localhost:5173",
+            origin: Some("http://localhost:5173"),
             method: "POST",
             asked_headers: Some("authorization"),
             with_key: false,
-            permitted: "http://localhost:5173",
         },
         Row {
             case: "no fields asked about at all",
-            origin: "https://example.com",
+            origin: Some("https://example.com"),
             method: "POST",
             asked_headers: None,
             with_key: false,
-            permitted: ALLOWED_ORIGIN,
         },
         Row {
             case: "another method asked about, from another loopback address",
-            origin: "http://127.0.0.1:3000",
+            origin: Some("http://127.0.0.1:3000"),
             method: "GET",
             asked_headers: Some("content-type"),
             with_key: false,
-            permitted: "http://127.0.0.1:3000",
         },
         Row {
             case: "the opaque origin of a sandboxed frame",
-            origin: "null",
+            origin: Some("null"),
             method: "POST",
             asked_headers: Some("content-type,x-api-key"),
             with_key: false,
-            permitted: ALLOWED_ORIGIN,
         },
         Row {
             case: "a preflight that does present the api's key",
-            origin: "https://example.com",
+            origin: Some("https://example.com"),
             method: "POST",
             asked_headers: Some("content-type,x-api-key"),
             with_key: true,
-            permitted: ALLOWED_ORIGIN,
+        },
+        Row {
+            case: "a preflight that declares no origin at all",
+            origin: None,
+            method: "POST",
+            asked_headers: Some("content-type,x-api-key"),
+            with_key: false,
         },
     ];
 
     for row in rows {
         let case = row.case;
         let mut fields: Vec<(&str, &str)> = vec![
-            ("origin", row.origin),
             ("sec-fetch-mode", "cors"),
             (REQUEST_METHOD_FIELD, row.method),
         ];
+        if let Some(origin) = row.origin {
+            fields.push(("origin", origin));
+        }
         if let Some(asked) = row.asked_headers {
             fields.push((REQUEST_HEADERS_FIELD, asked));
         }
@@ -167,9 +177,8 @@ async fn the_graphql_endpoint_answers_the_cors_preflight_unauthenticated() {
         );
         assert_eq!(
             field(&answered, ALLOW_ORIGIN_FIELD).as_deref(),
-            Some(row.permitted),
-            "case {case:?}: expected the preflight to permit {:?}, got {answered:?}",
-            row.permitted
+            Some(ALLOWED_ORIGIN),
+            "case {case:?}: expected the preflight to permit any origin, got {answered:?}"
         );
         assert_eq!(
             field(&answered, ALLOW_METHODS_FIELD).as_deref(),
@@ -198,103 +207,155 @@ async fn the_graphql_endpoint_answers_the_cors_preflight_unauthenticated() {
         assert_eq!(
             field(&answered, VARY_FIELD).as_deref().map(str::to_ascii_lowercase),
             Some("origin".to_string()),
-            "case {case:?}: an answer whose permitted origin depends on the request's own must \
-             say so, got {answered:?}"
+            "case {case:?}: an answer a cache must not hand to a page of another origin says \
+             so, got {answered:?}"
         );
     }
 
     // An `OPTIONS` that asks about no method is no preflight, and the preflight is the only
-    // `OPTIONS` this endpoint routes, so it addresses nothing this endpoint serves.
-    let case = "an OPTIONS that is not a preflight";
-    let (status, answered, body) = answer(
-        case,
-        &api,
-        "OPTIONS",
-        &json!({}),
-        &[("origin", "http://localhost:5173")],
-    )
-    .await;
-    assert_eq!(
-        (status, body.pointer("/errors/0/errorType").and_then(Value::as_str)),
-        (404, Some("UnknownOperationException")),
-        "case {case:?}: expected the refusal of a request that reaches no operation of the \
-         API, got {status} and {body}"
-    );
-    assert_eq!(
-        field(&answered, ALLOW_ORIGIN_FIELD),
-        None,
-        "case {case:?}: a request that reaches no operation of the API is granted no \
-         cross-origin access, got {answered:?}"
-    );
+    // `OPTIONS` this endpoint routes, so it addresses nothing this endpoint serves — with an
+    // `Origin` on it and with none.
+    for (case, fields) in [
+        (
+            "an OPTIONS that is not a preflight",
+            vec![("origin", "http://localhost:5173")],
+        ),
+        ("a bare OPTIONS with no fields at all", vec![]),
+    ] {
+        let (status, answered, body) = answer(case, &api, "OPTIONS", &json!({}), &fields).await;
+        assert_eq!(
+            (status, body.pointer("/errors/0/errorType").and_then(Value::as_str)),
+            (404, Some("UnknownOperationException")),
+            "case {case:?}: expected the refusal of a request that reaches no operation of the \
+             API, got {status} and {body}"
+        );
+        assert_eq!(
+            field(&answered, ALLOW_ORIGIN_FIELD),
+            None,
+            "case {case:?}: a request that reaches no operation of the API is granted no \
+             cross-origin access, got {answered:?}"
+        );
+    }
 }
 
 #[tokio::test]
-async fn a_browser_request_is_decided_by_the_site_it_came_from_and_its_answer_is_readable() {
+async fn a_browser_request_is_decided_by_its_material_alone_and_its_answer_is_readable() {
     let router = emulator();
     let api = create_api(&router, "readable", None).await;
     let live = api.api_key.clone();
 
-    /// One row: the site the page was served from and the material it presents, and the
-    /// answer it must get — a page served from THIS MACHINE reaches the API and is decided by
-    /// its material, and a page of any other site reaches nothing of it.
+    /// One row: the origin the request declares, whether a BROWSER stamped it as made from
+    /// another site, the material it presents, and the answer it must get — the `Origin` is no
+    /// input to admission, so for every request no browser stamped the status follows from the
+    /// material alone, and a stamped one is refused unless its origin is this machine.
     struct Row {
         case: &'static str,
-        origin: &'static str,
+        origin: Option<&'static str>,
+        stamped_cross_site: bool,
         api_key: Option<&'static str>,
         status: u16,
         /// The `errorType` the answer must carry, `None` for a request that is served.
         error_type: Option<&'static str>,
-        /// The origin the answer must permit the page to read it from.
-        permitted: &'static str,
     }
     let rows: &[Row] = &[
         Row {
             case: "a page on this machine presenting the api's own key",
-            origin: "http://localhost:5173",
+            origin: Some("http://localhost:5173"),
+            stamped_cross_site: false,
             api_key: Some(LIVE_KEY),
             status: 200,
             error_type: None,
-            permitted: "http://localhost:5173",
+        },
+        Row {
+            case: "a client declaring an origin of another site, with the api's own key",
+            origin: Some("https://sim2real.example"),
+            stamped_cross_site: false,
+            api_key: Some(LIVE_KEY),
+            status: 200,
+            error_type: None,
+        },
+        Row {
+            case: "a client declaring the opaque origin of a sandboxed frame, with that key",
+            origin: Some("null"),
+            stamped_cross_site: false,
+            api_key: Some(LIVE_KEY),
+            status: 200,
+            error_type: None,
+        },
+        Row {
+            case: "a client that declares no origin at all, with that key",
+            origin: None,
+            stamped_cross_site: false,
+            api_key: Some(LIVE_KEY),
+            status: 200,
+            error_type: None,
+        },
+        Row {
+            case: "a page on this machine the browser stamped cross-site, with that key",
+            origin: Some("http://127.0.0.1:3000"),
+            stamped_cross_site: true,
+            api_key: Some(LIVE_KEY),
+            status: 200,
+            error_type: None,
         },
         Row {
             case: "a page on this machine presenting no key at all",
-            origin: "http://localhost:5173",
+            origin: Some("http://localhost:5173"),
+            stamped_cross_site: false,
             api_key: None,
             status: 401,
             error_type: Some(UNAUTHORIZED_ERROR_TYPE),
-            permitted: "http://localhost:5173",
         },
         Row {
-            case: "a page on this machine presenting a key this API never minted",
-            origin: "http://127.0.0.1:3000",
-            api_key: Some("da2-neverminted000000000000"),
+            case: "a client of another origin presenting no key at all",
+            origin: Some("https://sim2real.example"),
+            stamped_cross_site: false,
+            api_key: None,
             status: 401,
             error_type: Some(UNAUTHORIZED_ERROR_TYPE),
-            permitted: "http://127.0.0.1:3000",
         },
         Row {
-            case: "a page of another site, presenting the api's own key",
-            origin: "https://attacker.example",
+            case: "a client of another origin presenting a key this API never minted",
+            origin: Some("https://sim2real.example"),
+            stamped_cross_site: false,
+            api_key: Some(FORGED_KEY),
+            status: 401,
+            error_type: Some(UNAUTHORIZED_ERROR_TYPE),
+        },
+        Row {
+            case: "a page on another loopback address presenting a key never minted",
+            origin: Some("http://127.0.0.1:3000"),
+            stamped_cross_site: false,
+            api_key: Some(FORGED_KEY),
+            status: 401,
+            error_type: Some(UNAUTHORIZED_ERROR_TYPE),
+        },
+        Row {
+            case: "a client that declares no origin presenting a key never minted",
+            origin: None,
+            stamped_cross_site: false,
+            api_key: Some(FORGED_KEY),
+            status: 401,
+            error_type: Some(UNAUTHORIZED_ERROR_TYPE),
+        },
+        // And the one request the endpoint refuses before anything of the API is reached: the
+        // page a BROWSER ITSELF says it serves from a site this emulator was not asked to
+        // serve a GraphQL API to, whatever material it carries.
+        Row {
+            case: "a page a browser stamped as another site's, with the api's own key",
+            origin: Some("https://sim2real.example"),
+            stamped_cross_site: true,
             api_key: Some(LIVE_KEY),
             status: 403,
             error_type: Some(UNAUTHORIZED_ERROR_TYPE),
-            permitted: ALLOWED_ORIGIN,
         },
         Row {
-            case: "a page of another site, presenting no key",
-            origin: "https://attacker.example",
+            case: "a page a browser stamped as another site's, with no key",
+            origin: Some("https://sim2real.example"),
+            stamped_cross_site: true,
             api_key: None,
             status: 403,
             error_type: Some(UNAUTHORIZED_ERROR_TYPE),
-            permitted: ALLOWED_ORIGIN,
-        },
-        Row {
-            case: "the opaque origin of a sandboxed frame",
-            origin: "null",
-            api_key: Some(LIVE_KEY),
-            status: 403,
-            error_type: Some(UNAUTHORIZED_ERROR_TYPE),
-            permitted: ALLOWED_ORIGIN,
         },
     ];
 
@@ -305,11 +366,14 @@ async fn a_browser_request_is_decided_by_the_site_it_came_from_and_its_answer_is
             Some(other) => other.to_string(),
             None => String::new(),
         };
-        let mut fields: Vec<(&str, &str)> = vec![
-            ("origin", row.origin),
-            ("sec-fetch-site", "cross-site"),
-            ("sec-fetch-mode", "cors"),
-        ];
+        let mut fields: Vec<(&str, &str)> = Vec::new();
+        if let Some(origin) = row.origin {
+            fields.push(("origin", origin));
+            fields.push(("sec-fetch-mode", "cors"));
+        }
+        if row.stamped_cross_site {
+            fields.push(("sec-fetch-site", "cross-site"));
+        }
         if row.api_key.is_some() {
             fields.push((API_KEY_FIELD, key.as_str()));
         }
@@ -346,9 +410,9 @@ async fn a_browser_request_is_decided_by_the_site_it_came_from_and_its_answer_is
         // Whichever it is, the page that made the request may read the answer.
         assert_eq!(
             field(&answered, ALLOW_ORIGIN_FIELD).as_deref(),
-            Some(row.permitted),
-            "case {case:?}: expected the answer to permit {:?}, got {answered:?} and {body}",
-            row.permitted
+            Some(ALLOWED_ORIGIN),
+            "case {case:?}: expected the answer to permit any origin to read it, got \
+             {answered:?} and {body}"
         );
         assert!(
             exposes(&answered),
@@ -358,36 +422,265 @@ async fn a_browser_request_is_decided_by_the_site_it_came_from_and_its_answer_is
         assert_eq!(
             field(&answered, VARY_FIELD).as_deref().map(str::to_ascii_lowercase),
             Some("origin".to_string()),
-            "case {case:?}: an answer whose permitted origin depends on the request's own must \
-             say so, got {answered:?} and {body}"
+            "case {case:?}: an answer a cache must not hand to a page of another origin says \
+             so, got {answered:?} and {body}"
         );
     }
 
-    // And a client that is no page at all — no `Origin`, no `Sec-Fetch-*` — is served as it
-    // always was, with the answer readable by any page that is handed it.
-    let case = "a client that is no page at all";
-    let (status, answered, body) = answer(
-        case,
-        &api,
-        "POST",
-        &json!({"query": "query { probe(msg: \"cors\") }"}),
-        &[(API_KEY_FIELD, live.as_str())],
-    )
-    .await;
-    assert_eq!(
-        (status, body["data"]["probe"].as_str()),
-        (200, Some("cors")),
-        "case {case:?}: expected the resolver's own answer, got {status} and {body}"
-    );
-    assert_eq!(
-        field(&answered, ALLOW_ORIGIN_FIELD).as_deref(),
-        Some(ALLOWED_ORIGIN),
-        "case {case:?}: expected the answer to permit any origin, got {answered:?}"
-    );
+    // The same document, presented with the same key, is answered ALIKE whether the request
+    // declares an `Origin` or not: the header is no input to admission.
+    let document = json!({"query": "query { probe(msg: \"cors\") }"});
+    let (bare_status, _, bare_body) =
+        answer("with no origin", &api, "POST", &document, &[(API_KEY_FIELD, live.as_str())]).await;
+    for origin in ["https://sim2real.example", "http://localhost:5173", "null"] {
+        let case = origin;
+        let (status, _, body) = answer(
+            case,
+            &api,
+            "POST",
+            &document,
+            &[("origin", origin), (API_KEY_FIELD, live.as_str())],
+        )
+        .await;
+        assert_eq!(
+            (status, body["data"].clone()),
+            (bare_status, bare_body["data"].clone()),
+            "case {case:?}: the same request must be answered as it is without an Origin \
+             ({bare_status} and {bare_body}), got {status} and {body}"
+        );
+    }
 }
 
 /// The stand-in a row uses for "the API's own live key", which is minted per run.
 const LIVE_KEY: &str = "<the api's own key>";
+
+/// A key stating the version this service mints its API keys under
+/// (`crate::state::CURRENT_API_KEY_VERSION`) that this API never minted, so the material
+/// names no key of it.
+const FORGED_KEY: &str = "da2-xxxxxxxxxxxxxxxxxxxxxxxxxx";
+
+/// The two authorization modes the API below sets up. Source: `AuthenticationType`'s own
+/// values (`smithy_query(query="shape",shape="AuthenticationType")`).
+const API_KEY_MODE: &str = "API_KEY";
+const IAM_MODE: &str = "AWS_IAM";
+
+/// The `runtime` the resolver below is defined under. Source: `AppSyncRuntime`'s own values
+/// (`smithy_query(query="shape",shape="AppSyncRuntime,RuntimeName")`).
+const RUNTIME: (&str, &str) = ("APPSYNC_JS", "1.0.0");
+
+/// The schema the API below is created with, and the value its one field resolves to, which is
+/// what proves the answer came from the stored resolver. The field names BOTH modes the API
+/// sets up, so neither a call of one nor of the other is refused by the schema itself.
+const PROBE_SCHEMA: &str =
+    "schema { query: Query }\ntype Query {\n  probe: String @aws_api_key @aws_iam\n}\n";
+const PROBE_VALUE: &str = "probe-value";
+
+/// The field every provider but `API_KEY` presents its material in.
+const AUTHORIZATION_FIELD: &str = "authorization";
+
+/// Material of a provider whose secret this service does not hold, which it therefore cannot
+/// check: a SigV4 signature of the shape an `AWS_IAM` call presents.
+fn unverifiable_material() -> String {
+    format!(
+        "AWS4-HMAC-SHA256 Credential=AKIAEMULATOR/20260101/{REGION}/appsync/aws4_request, \
+         SignedHeaders=host, Signature=0000"
+    )
+}
+
+/// The `Origin` decides no request's admission — but material this service cannot CHECK
+/// authorizes no client of another origin, because such a client could author it for itself:
+/// this endpoint takes a signature as presented rather than verifying it, so admitting one
+/// from any origin would let a site the developer merely visited name a principal of their
+/// account. And a page a BROWSER stamped as another site's reaches nothing of the API at all
+/// unless the operator asked for that site.
+#[tokio::test]
+async fn material_this_service_cannot_check_authorizes_no_client_of_another_origin() {
+    let router = emulator();
+    let api = create_multi_mode_api(&router, "unverifiable").await;
+    let live = api.api_key.clone();
+
+    /// One row: the origin the request declares, whether a browser stamped it as made from
+    /// another site, whether it also presents a key of the API, and the status it must earn.
+    struct Row {
+        case: &'static str,
+        origin: Option<&'static str>,
+        stamped_cross_site: bool,
+        with_key: bool,
+        status: u16,
+    }
+    let rows: &[Row] = &[
+        Row {
+            case: "a client that declares no origin at all",
+            origin: None,
+            stamped_cross_site: false,
+            with_key: false,
+            status: 200,
+        },
+        Row {
+            case: "a page served from this machine",
+            origin: Some("http://localhost:5173"),
+            stamped_cross_site: false,
+            with_key: false,
+            status: 200,
+        },
+        Row {
+            case: "a page served from another loopback address, stamped cross-site",
+            origin: Some("http://127.0.0.1:3000"),
+            stamped_cross_site: true,
+            with_key: false,
+            status: 200,
+        },
+        Row {
+            case: "a client declaring an origin of another site",
+            origin: Some("https://sim2real.example"),
+            stamped_cross_site: false,
+            with_key: false,
+            status: 401,
+        },
+        Row {
+            case: "a client declaring the opaque origin of a sandboxed frame",
+            origin: Some("null"),
+            stamped_cross_site: false,
+            with_key: false,
+            status: 401,
+        },
+        // The fidelity half: a client of another origin IS served when it presents material
+        // this service minted, so the Origin refuses nothing on its own.
+        Row {
+            case: "a client of another origin presenting the api's own key as well",
+            origin: Some("https://sim2real.example"),
+            stamped_cross_site: false,
+            with_key: true,
+            status: 200,
+        },
+        // And the page a browser says is another site's reaches nothing of the API, whatever
+        // material it carries.
+        Row {
+            case: "a page a browser stamped as another site's, with the api's own key",
+            origin: Some("https://sim2real.example"),
+            stamped_cross_site: true,
+            with_key: true,
+            status: 403,
+        },
+    ];
+
+    let material = unverifiable_material();
+    for row in rows {
+        let case = row.case;
+        let mut fields: Vec<(&str, &str)> = vec![(AUTHORIZATION_FIELD, material.as_str())];
+        if let Some(origin) = row.origin {
+            fields.push(("origin", origin));
+        }
+        if row.stamped_cross_site {
+            fields.push(("sec-fetch-site", "cross-site"));
+        }
+        if row.with_key {
+            fields.push((API_KEY_FIELD, live.as_str()));
+        }
+        let (status, answered, body) = answer(
+            case,
+            &api,
+            "POST",
+            &json!({"query": "query { probe }"}),
+            &fields,
+        )
+        .await;
+        assert_eq!(
+            status, row.status,
+            "case {case:?}: expected the status {}, got {status} and {body}",
+            row.status
+        );
+        if row.status == 200 {
+            assert_eq!(
+                body["data"]["probe"].as_str(),
+                Some(PROBE_VALUE),
+                "case {case:?}: a request this endpoint serves reaches the resolver, got {body}"
+            );
+        } else {
+            assert_eq!(
+                body.pointer("/errors/0/errorType").and_then(Value::as_str),
+                Some(UNAUTHORIZED_ERROR_TYPE),
+                "case {case:?}: expected the refusal of an unauthorized call, got {body}"
+            );
+        }
+        // Readable from the page either way, as every answer of this endpoint's route is.
+        assert_eq!(
+            field(&answered, ALLOW_ORIGIN_FIELD).as_deref(),
+            Some(ALLOWED_ORIGIN),
+            "case {case:?}: expected the answer to permit any origin to read it, got \
+             {answered:?} and {body}"
+        );
+    }
+}
+
+/// Create one API with `API_KEY` as its `authenticationType` and `AWS_IAM` as an additional
+/// provider — so material of a provider this service cannot check is material a mode of the
+/// API claims — with [`PROBE_SCHEMA`], a `NONE` data source and one resolver on its field.
+async fn create_multi_mode_api(router: &MultiServiceRouter, name: &str) -> GraphqlApi {
+    let (status, created) = appsync(
+        router,
+        "POST",
+        "/v1/apis",
+        Some(json!({
+            "name": format!("cors-{name}"),
+            "authenticationType": API_KEY_MODE,
+            "additionalAuthenticationProviders": [{"authenticationType": IAM_MODE}],
+        })),
+    )
+    .await;
+    assert_eq!(status, 200, "CreateGraphqlApi must answer 200, got {created}");
+    let api_id = created["graphqlApi"]["apiId"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    let graphql = created["graphqlApi"]["dns"]["GRAPHQL"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    assert!(
+        graphql.starts_with(&format!("{LOOPBACK_HOST}:")),
+        "dns.GRAPHQL must be an address this emulator serves, got {graphql:?}"
+    );
+    let (status, key) = appsync(
+        router,
+        "POST",
+        &format!("/v1/apis/{api_id}/apikeys"),
+        Some(json!({"description": "the suite's key"})),
+    )
+    .await;
+    assert_eq!(status, 200, "CreateApiKey must answer 200, got {key}");
+    install_schema(router, &api_id, PROBE_SCHEMA).await;
+    let (status, source) = appsync(
+        router,
+        "POST",
+        &format!("/v1/apis/{api_id}/datasources"),
+        Some(json!({"name": "local", "type": "NONE"})),
+    )
+    .await;
+    assert_eq!(status, 200, "CreateDataSource must answer 200, got {source}");
+    let (status, resolver) = appsync(
+        router,
+        "POST",
+        &format!("/v1/apis/{api_id}/types/Query/resolvers"),
+        Some(json!({
+            "typeName": "Query",
+            "fieldName": "probe",
+            "dataSourceName": "local",
+            "runtime": {"name": RUNTIME.0, "runtimeVersion": RUNTIME.1},
+            "code": format!(
+                "export function request(ctx) {{ return {{payload: \"{PROBE_VALUE}\"}}; }}\n\
+                 export function response(ctx) {{ return ctx.result; }}"
+            ),
+        })),
+    )
+    .await;
+    assert_eq!(status, 200, "CreateResolver must answer 200, got {resolver}");
+    GraphqlApi {
+        api_id,
+        graphql,
+        api_key: key["apiKey"]["id"].as_str().unwrap_or_default().to_string(),
+    }
+}
 
 /// Address the API's published endpoint with `method` and the request `fields`, answering the
 /// status, the response fields and the document.
