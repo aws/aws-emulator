@@ -134,7 +134,7 @@ contents — read that shape in the model above when you need its own members.
 
 - **Input:** `arn` (string, pattern ^arn:aws[a-zA-Z-]*:arc-region-switch::[0-9]{12}:plan/([a-zA-Z0-9](?:[a-zA-Z0-9-]{0,30}[a-zA-Z0-9])?):([a-z0-9]{6})$, required), `description` (string), `workflows` (list<Workflow>, required), `executionRole` (string, pattern ^arn:aws[a-zA-Z0-9-]*:iam::[0-9]{12}:role/.+$, required), `recoveryTimeObjectiveMinutes` (integer), `associatedAlarms` (map<string,AssociatedAlarm>), `triggers` (list<Trigger>), `reportConfiguration` (ReportConfiguration), `serviceQuotaChecksEnabled` (boolean)
 - **Output:** `plan` (Plan)
-- **Errors:** `ResourceNotFoundException (HTTP 404)`
+- **Errors:** `ResourceNotFoundException (HTTP 404)`, `RetryableConflictException (HTTP 409)`
 
 ## DeletePlan
 

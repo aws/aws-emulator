@@ -18,6 +18,18 @@
 //! from the record's revision (`crate::state::StoredPlan::version`), which this handler
 //! bumps once per accepted update, and `updatedAt` becomes the instant of the write.
 //!
+//! ## The modelled conflict
+//!
+//! The model also declares `RetryableConflictException` (HTTP 409) for this operation —
+//! "the request conflicted with a concurrent modification of the same resource and did
+//! not take effect" — so the error channel below carries it. It is the refusal a write
+//! gets when another modification of the same plan is applied between the point this one
+//! read the record and the point it would have written it. This handler leaves no such
+//! window: the whole read-modify-write runs under ONE store guard, so each accepted
+//! update becomes exactly one revision of the record, and a plan can never end up
+//! carrying one caller's workflows beside another caller's execution role. Nothing is
+//! refused for a conflict it cannot have had.
+//!
 //! ## Reaching this service's state
 //!
 //! The engine is held on `self` (constructor-injected), NOT passed per request. Reach
@@ -72,6 +84,8 @@
 //!
 //! * `ResourceNotFoundException` (HTTP 404) — The specified resource was not found. HTTP
 //!   Status Code: 404
+//! * `RetryableConflictException` (HTTP 409) — The request conflicted with a concurrent
+//!   modification of the same resource and did not take effect.
 
 #[allow(unused_imports)]
 use super::types::*;
@@ -97,6 +111,10 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-arcregionswitch-arcregi
 #[derive(Debug)]
 pub enum UpdatePlanErrorModeled {
     ResourceNotFoundException(ResourceNotFoundException),
+    // The write-conflict refusal the model declares for this operation; see "The modelled
+    // conflict" above for the window it reports and why an update applied under one store
+    // guard has none.
+    RetryableConflictException(RetryableConflictException),
     InternalServerException(InternalServerException),
 }
 

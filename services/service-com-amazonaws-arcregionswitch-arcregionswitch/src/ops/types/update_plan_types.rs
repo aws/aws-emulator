@@ -31,3 +31,11 @@ pub struct UpdatePlanOutput {
     pub plan: Option<Plan>,
 }
 
+#[smithy_macros::smithy(shape = "com.amazonaws.arcregionswitch#RetryableConflictException")]
+#[derive(Debug, Clone, Default)]
+pub struct RetryableConflictException {
+    pub message: String,
+    pub resource_id: Option<String>,
+    pub resource_type: Option<String>,
+}
+
