@@ -7,8 +7,9 @@
 //! submitted trace point, at the same index, with the submitted position echoed as
 //! `OriginalPosition`, the point on the road as `SnappedPosition` and a `Confidence` read
 //! off the match itself ([`match_confidence`]): how far the point had to move to reach its
-//! road, so a point already on a road matches with the range's own maximum and one as far
-//! from every road as a position can be scores near its minimum.
+//! road, weighed against how far the nearest road it was NOT matched onto lies — so a point
+//! already on a road matches with the range's own maximum, and a point that could as well
+//! have been on the road beside it scores near the minimum however little it moved.
 //!
 //! A trace is matched as a WHOLE, not as independent points. A point with no road of its
 //! own inside `SnapRadius` — one whose nearest usable road is further away than that, and
@@ -327,13 +328,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 Placement::OnRoad {
                     position: on_road,
                     offset_m,
+                    runner_up_m,
                 }
                 | Placement::Moved {
                     position: on_road,
                     offset_m,
+                    runner_up_m,
                 } => (
                     state::position_to_vec(on_road),
-                    match_confidence(*position, offset_m),
+                    match_confidence(*position, offset_m, runner_up_m),
                 ),
                 // A point the answer reports no road position for is reported where it was
                 // submitted — the request's own coordinate, carried as received — and
@@ -413,11 +416,20 @@ const NOT_MATCHED: &str = "TracePointsNotMatched";
 /// for it and the notice, if any, that names its index.
 enum Placement {
     /// On a road no further from the submitted position than the radius the request
-    /// allowed: the match itself, which is worth no notice.
-    OnRoad { position: Position, offset_m: f64 },
+    /// allowed: the match itself, which is worth no notice. `runner_up_m` is how far the
+    /// nearest road the match was chosen OVER lies, where the network offered one.
+    OnRoad {
+        position: Position,
+        offset_m: f64,
+        runner_up_m: Option<f64>,
+    },
     /// On a road further away than that radius — the point had none of its own inside it,
     /// so it was placed on the stretch of matched path its neighbours establish.
-    Moved { position: Position, offset_m: f64 },
+    Moved {
+        position: Position,
+        offset_m: f64,
+        runner_up_m: Option<f64>,
+    },
     /// On no road at all: the point had none inside the radius and the trace matched none
     /// to place it on, so the answer reports it where it was submitted.
     Unplaced,
@@ -443,8 +455,8 @@ fn place(
     after: Option<&state::SnappedPosition>,
     radius_m: f64,
 ) -> Placement {
-    let (on_road, offset_m) = match matched {
-        Some(matched) => (matched.position, matched.offset_m),
+    let (on_road, offset_m, runner_up_m) = match matched {
+        Some(matched) => (matched.position, matched.offset_m, matched.runner_up_m),
         None => {
             let stretch: Vec<Position> = match (before, after) {
                 (Some(before), Some(after)) => state::road_path_between(before, after),
@@ -452,18 +464,22 @@ fn place(
                 (None, None) => return Placement::Unplaced,
             };
             let (on_path, offset_m) = state::nearest_point_on_polyline(position, &stretch);
-            (state::at_api_precision(on_path), offset_m)
+            // The point was placed on the ONE stretch its neighbours establish rather than
+            // chosen among the roads near it, so there is no runner-up to weigh it against.
+            (state::at_api_precision(on_path), offset_m, None)
         }
     };
     if offset_m <= radius_m {
         Placement::OnRoad {
             position: on_road,
             offset_m,
+            runner_up_m,
         }
     } else {
         Placement::Moved {
             position: on_road,
             offset_m,
+            runner_up_m,
         }
     }
 }
@@ -504,30 +520,53 @@ fn bracketing_matches(
     nearest_before.into_iter().zip(nearest_after).collect()
 }
 
-/// How certain the placement of `position` on a road `offset_m` metres away is, as
-/// `Confidence` ("Confidence value for the correctness of this point match", a
-/// `@range 0..1` double) reports it.
+/// How certain the placement of `position` on a road `offset_m` metres away is, with the
+/// nearest road that placement was chosen OVER `runner_up_m` metres away, as `Confidence`
+/// ("Confidence value for the correctness of this point match", a `@range 0..1` double)
+/// reports it.
 ///
-/// It is read off ONE thing: how far the point had to move to reach the road it was matched
-/// onto. A point already on a road was observed where the road is, so its match is certain
-/// and scores the range's own maximum; a point as far from every road as a position inside
-/// this network's coverage can be ([`state::snap_ambiguity_m`]) was not observed on the
-/// road it was matched onto, so its match is barely an explanation of it at all and scores
-/// near the range's minimum. In between the score falls off smoothly with the offset, which
-/// is what lets a client threshold on it: two points with the same offset score the same,
-/// and of two points the one further from its road always scores less.
+/// A match names a ROAD, so how correct it is turns on TWO things, and both are read off
+/// the match itself:
+///
+/// * its RESIDUAL — how far the point had to move to reach the road. A point already on a
+///   road was observed where the road is, so its match is certain and scores the range's
+///   own maximum, and the further off a point lay the less of an explanation its road is.
+/// * how much better that road explains the point than the next road does. The residual
+///   alone cannot say: a point 7 m from its road and 70 m from any other can only have
+///   been on the first, while the same point with a second road 8 m away could have been
+///   on either, and the two are not matches of equal correctness. So the residual is
+///   weighed on the scale the CANDIDATES set — half the distance to the runner-up — which
+///   is why one answer's points differ in confidence by more than their residuals differ:
+///   a point on an isolated carriageway is a sure match and one in a dense crossing is a
+///   guess between roads.
+///
+/// The score therefore falls off smoothly as the point sits further from its own road and
+/// as the roads it was not matched onto close in, reaching the range's minimum where the
+/// point lies as near the runner-up as its own road. That is what lets a client threshold
+/// on it: two points whose candidates lie alike score alike, and of two points with the
+/// same residual the one with a nearer rival always scores less.
+///
+/// Where the network offered NO second road the choice was not between roads at all, so
+/// the residual is weighed on the widest a match inside this coverage can be out by
+/// ([`state::snap_ambiguity_m`]).
 ///
 /// The radius the request allowed is deliberately NOT part of it: `SnapRadius` says which
 /// roads are considered for a point, so scoring against it would report the same match as
 /// confident or not depending on how much slack the caller left, and would never signal a
 /// poor match at a generous radius.
-fn match_confidence(position: Position, offset_m: f64) -> f64 {
+fn match_confidence(position: Position, offset_m: f64, runner_up_m: Option<f64>) -> f64 {
+    if offset_m <= 0.0 {
+        // The point lies ON the carriageway: it was observed where the road is, whatever
+        // else runs nearby.
+        return 1.0;
+    }
     // A Gaussian error model on the distance from the observed point to the road: the
-    // likelihood that a point this far off was travelling on it. Its scale is half the
-    // farthest a position in this network can lie from a road, so a match at that farthest
-    // offset is two scales out — an explanation the model has all but ruled out — while a
-    // point on the road scores 1.
-    let scale = (state::snap_ambiguity_m(position[1]) / 2.0).max(f64::MIN_POSITIVE);
+    // likelihood that a point this far off was travelling on it rather than on the road it
+    // was not matched onto. Its scale is half the distance to that runner-up, so a point
+    // lying as near the runner-up as its own road is two scales out — a choice the model
+    // has all but ruled out either way — while a point on its road scores 1.
+    let ambiguity_m = runner_up_m.unwrap_or_else(|| state::snap_ambiguity_m(position[1]));
+    let scale = (ambiguity_m / 2.0).max(f64::MIN_POSITIVE);
     (-(offset_m / scale).powi(2)).exp().clamp(0.0, 1.0)
 }
 

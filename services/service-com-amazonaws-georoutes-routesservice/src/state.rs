@@ -845,10 +845,20 @@ pub struct SnappedPosition {
     /// The point on the road nearest the submitted position, at the coordinate precision
     /// this API expresses a position in ([`at_api_precision`]).
     pub position: Position,
-    /// Distance from the submitted position to [`SnappedPosition::position`], in metres.
-    /// It is the whole of what makes the match a good one or a poor one: a position on the
-    /// road was observed where the road is, one far from every road was not.
+    /// Distance from the submitted position to [`SnappedPosition::position`], in metres:
+    /// the residual of the match. A position on the road was observed where the road is,
+    /// one far from every road was not.
     pub offset_m: f64,
+    /// Distance from the submitted position to the nearest OTHER road the travel mode may
+    /// use, in metres — the runner-up this match was chosen over. `None` where the network
+    /// offered no second road at all, which leaves the choice unambiguous.
+    ///
+    /// It is the second half of what makes a match a good one or a poor one: a residual
+    /// says how well the chosen road explains the observation, and this says how much
+    /// better it explains it than the next road does. A point 7 m from one road and 70 m
+    /// from any other can only have been on the first; the same point with a second road
+    /// 8 m away could have been on either.
+    pub runner_up_m: Option<f64>,
     /// The road snapped to.
     pub road: TravelledRoad,
 }
@@ -992,7 +1002,8 @@ impl ComAmazonawsGeoroutesRoutesserviceState {
         self.road_cells.insert(cell, indices);
     }
 
-    /// Snap `pos` onto the nearest road of the network that `mode` may travel on.
+    /// Snap `pos` onto the nearest road of the network that `mode` may travel on, with the
+    /// nearest OTHER road the match was chosen over beside it.
     ///
     /// `None` where the network holds no road `mode` may use near `pos`: the position lies
     /// outside every mapped territory, so there is no road network there at all. A caller
@@ -1001,7 +1012,11 @@ impl ComAmazonawsGeoroutesRoutesserviceState {
         self.materialise_cell(pos);
         let cell = cell_of(pos);
         let candidates = self.road_cells.get(&cell)?;
-        let mut best: Option<SnappedPosition> = None;
+        // Every road of the cell `mode` may travel, as the distance from `pos` to it: the
+        // nearest is the match and the nearest of the rest is what the match was chosen
+        // over. A cell carries a bounded number of roads ([`CELL_DEG`]), so weighing them
+        // all is bounded work.
+        let mut best: Option<(Position, f64, TravelledRoad)> = None;
         for &index in candidates {
             let Some(segment) = self.road_network.get(index) else {
                 continue;
@@ -1010,21 +1025,38 @@ impl ComAmazonawsGeoroutesRoutesserviceState {
                 continue;
             }
             let (position, offset_m) = nearest_point_on_polyline(pos, &segment.polyline);
-            if best.as_ref().is_none_or(|current| offset_m < current.offset_m) {
-                best = Some(SnappedPosition {
-                    // The point is read off the network, so it is carried at the precision
-                    // this API expresses a position in rather than with the artefacts of
-                    // the projection that located it. That precision is the API's own and
-                    // not the coarser one the polyline FORMAT encodes a vertex at: a
-                    // matched point is reported in a `Position` member, which carries every
-                    // digit of it ([`at_api_precision`]).
-                    position: at_api_precision(position),
-                    offset_m,
-                    road: segment.travelled(),
-                });
+            if best.as_ref().is_none_or(|(_, nearest, _)| offset_m < *nearest) {
+                best = Some((position, offset_m, segment.travelled()));
             }
         }
-        best
+        let (position, offset_m, road) = best?;
+        let mut runner_up_m: Option<f64> = None;
+        for &index in candidates {
+            let Some(segment) = self.road_network.get(index) else {
+                continue;
+            };
+            // A road runs across every cell it spans, so the road is identified by its
+            // place in the grid and not by the per-cell segment weighed here.
+            if !segment.allows(mode) || segment.travelled().is_same_road(&road) {
+                continue;
+            }
+            let (_, other_m) = nearest_point_on_polyline(pos, &segment.polyline);
+            if runner_up_m.is_none_or(|nearest| other_m < nearest) {
+                runner_up_m = Some(other_m);
+            }
+        }
+        Some(SnappedPosition {
+            // The point is read off the network, so it is carried at the precision
+            // this API expresses a position in rather than with the artefacts of
+            // the projection that located it. That precision is the API's own and
+            // not the coarser one the polyline FORMAT encodes a vertex at: a
+            // matched point is reported in a `Position` member, which carries every
+            // digit of it ([`at_api_precision`]).
+            position: at_api_precision(position),
+            offset_m,
+            runner_up_m,
+            road,
+        })
     }
 
     /// The route from `positions[0]` through every following position, costed by this

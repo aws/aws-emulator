@@ -24,10 +24,12 @@
 //!   its coordinates is a carriageway's own, it lies no further off than the nearest road,
 //!   and it is never the submitted coordinate, which no carriageway of this network runs at;
 //! * `RoadSnapSnappedTracePoint.Confidence` ("Confidence value for the correctness of this
-//!   point match") is read off how far the point had to move to reach its road: a point
-//!   already on one is a certain match, and one as far off as this network allows is a poor
-//!   one — within one answer as much as across answers, so ordering a trace's points by
-//!   confidence orders them by how far each lay from its road;
+//!   point match") is read off that match and off nothing else — how far the point had to
+//!   move to reach its road, weighed against how far the nearest road it was NOT matched
+//!   onto lies: a point already on a road is a certain match, a point further off its road
+//!   is less of one, and of two points the same distance off, the one with another road
+//!   closer by is the less certain of the two, because a match names a ROAD and that one is
+//!   the more of a guess between roads;
 //! * `SnappedGeometry` is "interpolated geometry for the snapped route": it runs along the
 //!   roads between consecutive snapped points, so it carries a vertex wherever the road
 //!   changes and is never a shortcut through the blocks between them;
@@ -621,6 +623,138 @@ async fn within_one_trace_the_point_nearer_its_road_is_the_more_certain_match() 
                      (offsets and scores {scored:?})"
                 );
             }
+        }
+    }
+}
+
+/// Of two points the SAME distance from the road they matched onto, the one with another
+/// road closer by is the less certain match: a match names a road, so its correctness turns
+/// on how much better that road explains the point than the next road does, not on the
+/// residual alone. A score read off the residual alone reports two matches of different
+/// quality as equally good — and reports the same value for every point whose distance to
+/// its own road happens to come out the same, however the roads around it lie.
+///
+/// Each row's trace holds one point per rival distance, all at ONE residual from the same
+/// carriageway: the confidences must therefore fall as the rival road closes in, and must
+/// span a range within the single answer rather than repeating one value. Rows span the
+/// place — three cities of two hemispheres, where the grid's blocks are of different sizes —
+/// and the travel mode.
+#[tokio::test]
+async fn of_two_matches_at_one_residual_the_one_with_a_nearer_rival_road_is_less_certain() {
+    let router = routes_service();
+    // name, a seed longitude and a seed latitude. The point of each row sits at this
+    // latitude's carriageway plus a fixed fraction of the grid spacing — the residual, the
+    // same in every row of the trace — and at a longitude a chosen distance from the
+    // meridian carriageway nearest the seed.
+    let places: [(&str, f64, f64); 3] = [
+        ("Seattle", -122.332_25, 47.606),
+        ("Vancouver", -123.101_75, 49.2825),
+        ("Sydney", 151.209_25, -33.869),
+    ];
+    // How far the point sits off the parallel carriageway it matches onto, as a fraction of
+    // the grid spacing: the residual, held equal across the rows.
+    let residual_steps = 0.1;
+    // How far the point sits from the nearest MERIDIAN carriageway, as a fraction of the
+    // grid spacing, widest first. Half a spacing is as far from both neighbouring meridians
+    // as a position gets; every fraction here is wider than the residual above, so the
+    // parallel road stays the nearest road and only the rival moves.
+    let rival_steps = [0.5, 0.4, 0.3, 0.2];
+
+    for (place, lon_seed, lat_seed) in places {
+        for mode in ["Car", "Truck"] {
+            let case = &format!("{place}, {mode}");
+            let carriageway = [on_a_road(lon_seed), on_a_road(lat_seed)];
+            let trace: Vec<[f64; 2]> = rival_steps
+                .iter()
+                .map(|steps| {
+                    [
+                        carriageway[0] + steps * ROAD_SPACING_DEG,
+                        carriageway[1] + residual_steps * ROAD_SPACING_DEG,
+                    ]
+                })
+                .collect();
+            let (status, answer, _) = post(
+                &router,
+                SNAP,
+                &json!({
+                    "TracePoints": trace.iter().map(|point| json!({ "Position": point })).collect::<Vec<Value>>(),
+                    "TravelMode": mode,
+                }),
+            )
+            .await;
+            assert_eq!(status, 200, "case {case:?}: expected 200, got {status} with {answer:?}");
+            let points = answer["SnappedTracePoints"]
+                .as_array()
+                .unwrap_or_else(|| panic!("case {case:?}: SnappedTracePoints is required, got {answer:?}"))
+                .clone();
+            assert_eq!(
+                points.len(),
+                trace.len(),
+                "case {case:?}: one snapped point per trace point, got {points:?}"
+            );
+
+            // (the distance to the rival meridian carriageway, the residual, the score).
+            let mut scored: Vec<(f64, f64, f64)> = Vec::new();
+            for (index, point) in points.iter().enumerate() {
+                let case = &format!("{case} / rival at {} of the spacing", rival_steps[index]);
+                let snapped = position(&point["SnappedPosition"], case);
+                // The row matched the PARALLEL carriageway, which is what makes its
+                // residual the same as every other row's: the longitude is the one
+                // submitted and the latitude is the carriageway's.
+                assert!(
+                    (snapped[0] - trace[index][0]).abs() < 1e-6,
+                    "case {case:?}: the match ran across the parallel carriageway, so the \
+                     longitude is the submitted one {:?}, got {snapped:?}",
+                    trace[index][0]
+                );
+                assert!(
+                    on_a_road_line(snapped[1]),
+                    "case {case:?}: the matched latitude is a carriageway of the network, got \
+                     {snapped:?}"
+                );
+                let confidence = point["Confidence"]
+                    .as_f64()
+                    .unwrap_or_else(|| panic!("case {case:?}: Confidence is required, got {point:?}"));
+                assert!(
+                    (0.0..=1.0).contains(&confidence),
+                    "case {case:?}: Confidence is in 0..1, got {confidence}"
+                );
+                let residual = great_circle_m(trace[index], snapped);
+                let rival = great_circle_m(trace[index], [carriageway[0], trace[index][1]]);
+                assert!(
+                    rival > residual,
+                    "case {case:?}: the row is built with the parallel carriageway nearest, so \
+                     the rival {rival:.1} m away lies further than the residual {residual:.1} m"
+                );
+                scored.push((rival, residual, confidence));
+            }
+
+            let residuals: Vec<f64> = scored.iter().map(|(_, residual, _)| *residual).collect();
+            for residual in &residuals {
+                assert!(
+                    (residual - residuals[0]).abs() < 0.05,
+                    "case {case:?}: every row is one residual from the same carriageway, got \
+                     {residuals:?}"
+                );
+            }
+            for pair in scored.windows(2) {
+                let ((further_rival, _, higher), (nearer_rival, _, lower)) = (pair[0], pair[1]);
+                assert!(
+                    nearer_rival < further_rival && lower < higher,
+                    "case {case:?}: at one residual, the match whose rival road is \
+                     {nearer_rival:.1} m away is less certain than the one whose rival is \
+                     {further_rival:.1} m away, got {lower} against {higher} (rivals, residuals \
+                     and scores {scored:?})"
+                );
+            }
+            // The scores of one answer are not one value repeated: the rows differ only in
+            // how the roads around them lie, and that is enough to tell their matches apart.
+            let (best, worst) = (scored[0].2, scored[scored.len() - 1].2);
+            assert!(
+                best > worst * 2.0,
+                "case {case:?}: the surest row must score well clear of the least sure, got \
+                 {best} against {worst} ({scored:?})"
+            );
         }
     }
 }
