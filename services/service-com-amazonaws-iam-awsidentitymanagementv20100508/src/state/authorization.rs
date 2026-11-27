@@ -1079,13 +1079,17 @@ fn authorize_request(
             session_policies: scope.documents.len(),
             session_credential,
             identity_grant_absent: !granted,
-            // Read only where it can decide the wording: the question costs a parse of every
-            // document in force, and only a session's refusal for want of an identity-based
-            // grant is worded by it.
-            grant_names_the_action: session_credential
+            // Read only where it can decide the wording: each question costs a parse of the
+            // documents in force, and only a session's refusal for want of an identity-based
+            // grant is worded by them.
+            identity_grant_names_the_action: session_credential
                 && !granted
                 && !explicit_deny
-                && a_grant_names_the_action(action, &policies, &scope),
+                && identity_grant_names_the_action(action, &policies),
+            scope_allows_the_action_unnamed: session_credential
+                && !granted
+                && !explicit_deny
+                && scope_allows_the_action_unnamed(action, &scope),
         },
         named_as,
         &reason,
@@ -1133,28 +1137,30 @@ fn denying_managed_policy(
     })
 }
 
-/// Whether a document in force on the principal states an `Allow` NAMING `action`: one of the
-/// identity's own documents, or a session policy the mint of the presented credential scoped
-/// it with.
+/// Whether one of the IDENTITY's own documents states an `Allow` covering `action`.
 ///
 /// The tree's weaker reading of a grant
 /// ([`::service_common::iam_authorization::identity_may_allow_action`]), which answers the
-/// question about the ACTION alone: an `Allow` naming it counts whichever resource it is
+/// question about the ACTION alone: an `Allow` covering it counts whichever resource it is
 /// scoped to and whether or not its `Condition` holds at the instant of the call. So it
 /// separates a decision that read a grant about the action and did not apply it from one no
 /// readable `Allow` was about at all — which is what the refusal's wording turns on
-/// ([`details::DeniedRequest::points_at_its_detail`]). The session policies are read as
-/// WRITTEN here, so a credential no mint scoped names nothing, unlike
-/// [`ScopingPolicies::decision`], which reads an absent scope as capping nothing.
-fn a_grant_names_the_action(
-    action: &str,
-    policies: &PrincipalPolicies,
-    scope: &ScopingPolicies,
-) -> bool {
-    let names = |documents: &[String]| {
-        iam::identity_may_allow_action(&iam::prepare_documents(documents), action)
-    };
-    names(&policies.documents) || names(&scope.documents)
+/// ([`details::DeniedRequest::points_at_its_detail`]).
+fn identity_grant_names_the_action(action: &str, policies: &PrincipalPolicies) -> bool {
+    iam::identity_may_allow_action(&iam::prepare_documents(&policies.documents), action)
+}
+
+/// Whether the session policies the credential was scoped with allow `action` while none of
+/// them SPELLS it ([`::service_common::iam_authorization::identity_names_action_exactly`]):
+/// a scope written about everything the session may do rather than about this action.
+///
+/// The scope is read as WRITTEN here, so a credential no mint scoped allows nothing, unlike
+/// [`ScopingPolicies::decision`], which reads an absent scope as capping nothing — the
+/// question is which document the decision READ, not what it capped.
+fn scope_allows_the_action_unnamed(action: &str, scope: &ScopingPolicies) -> bool {
+    let documents = iam::prepare_documents(&scope.documents);
+    iam::identity_may_allow_action(&documents, action)
+        && !iam::identity_names_action_exactly(&documents, action)
 }
 
 /// The `AccessDenied` text AWS words a call it will not perform for its caller with:

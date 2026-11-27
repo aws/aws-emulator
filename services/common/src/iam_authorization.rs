@@ -636,6 +636,31 @@ pub fn identity_may_allow_action(documents: &[PreparedDocument], action: &str) -
     })
 }
 
+/// Whether these documents state an `Allow` whose action element SPELLS `action` itself, as
+/// against one that reaches it through a wildcard over a namespace or over every action there
+/// is.
+///
+/// The question a caller asks when a grant's SPECIFICITY is what it has to tell apart: a
+/// document written about this very action, as against one written about everything the
+/// holder may do, of which this action happens to be one. Read in the same weaker direction
+/// as [`identity_may_allow_action`]: the resource the statement is scoped to and whether its
+/// `Condition` holds are not asked about, so `true` says only that a statement spells the
+/// action. A `NotAction` element never spells it — it puts its values OUTSIDE the statement —
+/// and case is ignored, which is how IAM compares an action name everywhere else here.
+#[must_use]
+pub fn identity_names_action_exactly(documents: &[PreparedDocument], action: &str) -> bool {
+    documents.iter().any(|document| {
+        statements(document).into_iter().any(|statement| {
+            statement["Effect"]
+                .as_str()
+                .unwrap_or_default()
+                .eq_ignore_ascii_case("Allow")
+                && matches!(element(statement, "Action", "NotAction"), Some((values, false))
+                    if values.iter().any(|value| value.eq_ignore_ascii_case(action)))
+        })
+    })
+}
+
 /// Whether these identity-based documents could allow SOME action of `namespace` at all — any
 /// action of that service, on any resource.
 ///
@@ -3235,6 +3260,79 @@ mod tests {
             assert_eq!(
                 could, expected,
                 "case {case:?}: expected identity_may_allow_action {expected}, got {could}"
+            );
+        }
+    }
+
+    /// RULE: documents SPELL an action exactly when one of them holds an `Allow` whose
+    /// `Action` element carries that action as one of its values, compared without regard to
+    /// case — a value that reaches it through a wildcard spells no action, a `NotAction`
+    /// element spells none, and a `Deny` spells none, whichever resource or condition the
+    /// statement carries.
+    #[test]
+    fn documents_spell_an_action_only_an_allow_names_value_for_value() {
+        // (case, the statements of the one document, whether they SPELL `rum:PutRumEvents`)
+        let rows: [(&str, &str, bool); 11] = [
+            ("no statement at all", "", false),
+            (
+                "an allow of the action over every resource",
+                "{\"Effect\":\"Allow\",\"Action\":\"rum:PutRumEvents\",\"Resource\":\"*\"}",
+                true,
+            ),
+            (
+                "an allow of the action in another case",
+                "{\"Effect\":\"Allow\",\"Action\":\"RUM:putrumevents\",\"Resource\":\"*\"}",
+                true,
+            ),
+            (
+                "an allow of the action scoped to one resource ARN",
+                "{\"Effect\":\"Allow\",\"Action\":\"rum:PutRumEvents\",\"Resource\":\"arn:aws:rum:us-east-1:000000000000:appmonitor/shop\"}",
+                true,
+            ),
+            (
+                "an allow of the action under a condition",
+                "{\"Effect\":\"Allow\",\"Action\":\"rum:PutRumEvents\",\"Resource\":\"*\",\
+                 \"Condition\":{\"StringEquals\":{\"rum:alias\":\"shop\"}}}",
+                true,
+            ),
+            (
+                "an allow listing the action among several",
+                "{\"Effect\":\"Allow\",\"Action\":[\"s3:GetObject\",\"rum:PutRumEvents\"],\
+                 \"Resource\":\"*\"}",
+                true,
+            ),
+            (
+                "an allow under a wildcard over the service",
+                "{\"Effect\":\"Allow\",\"Action\":\"rum:*\",\"Resource\":\"*\"}",
+                false,
+            ),
+            (
+                "an allow under a wildcard over every action there is",
+                "{\"Effect\":\"Allow\",\"Action\":\"*\",\"Resource\":\"*\"}",
+                false,
+            ),
+            (
+                "an allow under a prefix run covering the action",
+                "{\"Effect\":\"Allow\",\"Action\":\"rum:Put*\",\"Resource\":\"*\"}",
+                false,
+            ),
+            (
+                "an allow of everything but this action",
+                "{\"Effect\":\"Allow\",\"NotAction\":\"rum:PutRumEvents\",\"Resource\":\"*\"}",
+                false,
+            ),
+            (
+                "a DENY naming the action",
+                "{\"Effect\":\"Deny\",\"Action\":\"rum:PutRumEvents\",\"Resource\":\"*\"}",
+                false,
+            ),
+        ];
+        for (case, text, expected) in rows {
+            let documents = prepare_documents(&[identity(text)]);
+            let spelled = identity_names_action_exactly(&documents, "rum:PutRumEvents");
+            assert_eq!(
+                spelled, expected,
+                "case {case:?}: expected identity_names_action_exactly {expected}, got {spelled}"
             );
         }
     }

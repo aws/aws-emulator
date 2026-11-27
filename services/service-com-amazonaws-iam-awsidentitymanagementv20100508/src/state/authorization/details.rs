@@ -210,10 +210,15 @@ pub struct DeniedRequest<'a> {
     /// force allowed the call at all, as against a call the identity's own documents DID
     /// allow and the session policies or the boundary withheld.
     pub identity_grant_absent: bool,
-    /// Whether a document in force on the principal — one of the identity's own, or a session
-    /// policy its credential was scoped with — states an `Allow` NAMING the action asked for,
-    /// so the decision was reached although a grant about that action was read.
-    pub grant_names_the_action: bool,
+    /// Whether one of the IDENTITY's own documents states an `Allow` covering the action
+    /// asked for, so the decision was reached although a grant about that action was read —
+    /// its `Condition` not holding at the instant of the call, or its `Resource` not covering
+    /// the one addressed.
+    pub identity_grant_names_the_action: bool,
+    /// Whether the session policies the credential was scoped with allow the action WITHOUT
+    /// any of them spelling it: a grant written about everything the session may do, of which
+    /// the action asked for happens to be one, as against one written about that action.
+    pub scope_allows_the_action_unnamed: bool,
 }
 
 impl DeniedRequest<'_> {
@@ -221,21 +226,24 @@ impl DeniedRequest<'_> {
     /// ([`pointer_clause`]), as against stating the decision in its sentence alone.
     ///
     /// No trait of any model governs the text of an `AccessDenied`, so which refusals carry
-    /// the pointer is recorded behaviour, and the recordings draw ONE line through it: a
-    /// refusal of a request signed with a role SESSION, reached although a document in force
-    /// on that session states an `Allow` naming the action — so the grant was read and did not
-    /// apply, the session-policy intersection or a condition the session does not satisfy
-    /// having withheld it — is the sentence and nothing else. The pointer closes every other
-    /// refusal this gate words: one of a long-term credential whichever document decided it,
-    /// one no `Allow` about the action was in force for, one a statement about the request
-    /// explicitly denied, and one withheld by the session policies or by the boundary rather
-    /// than by the identity's own documents.
+    /// the pointer is recorded behaviour, and the recordings draw the line through the
+    /// refusal of a request signed with a role SESSION that no identity-based grant allowed:
+    /// it is the sentence and nothing else when the decision was already explained by a grant
+    /// that is not about this very action — one of the ROLE's own documents stating an
+    /// `Allow` covering it, which was read and did not apply (its condition, its resource),
+    /// or a session policy allowing it without spelling it, a scope written about everything
+    /// the session may do. The pointer closes every other refusal this gate words: one of a
+    /// long-term credential whichever document decided it, one no `Allow` about the action was
+    /// in force for, one a statement about the request explicitly denied, one withheld by the
+    /// boundary or by the session policies rather than by the identity's own documents, and
+    /// one withheld by the identity's documents although a session policy SPELLS the action —
+    /// a scope written about that action, which grants nothing of its own.
     #[must_use]
     pub fn points_at_its_detail(&self) -> bool {
         !(self.session_credential
             && self.identity_grant_absent
             && !self.explicit_deny
-            && self.grant_names_the_action)
+            && (self.identity_grant_names_the_action || self.scope_allows_the_action_unnamed))
     }
 }
 

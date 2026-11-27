@@ -13,9 +13,11 @@
 //! not by the Region the request addressed, not by which documents the caller held, not by
 //! the resource form, not by whether the call reads or writes, and not by how often it is
 //! made. The ONE refusal whose recordings close at the sentence instead is a SESSION
-//! credential's refusal for want of an identity-based grant where a document in force does
-//! name the action; `tests/all/session_refusal_authorization_detail_pointer.rs` is the table
-//! for that line, and the row below that reaches it asserts the sentence alone.
+//! credential's refusal for want of an identity-based grant where the decision read a grant
+//! that is not about that very action — the identity's own `Allow` covering it, or a scope
+//! allowing it without spelling it; `tests/all/session_refusal_authorization_detail_pointer.rs`
+//! and `tests/all/scope_specificity_refusal_detail_pointer.rs` are the tables for that line,
+//! and the row below that reaches it asserts the sentence alone.
 //!
 //! Each suite is a TABLE whose rows differ along what the rule generalises over: which
 //! operation is refused, whether the resource is an ARN, a path-scoped collection, the
@@ -893,11 +895,13 @@ impl Withheld {
 
     /// Whether the refusal CLOSES with the pointer at the detail of its decision.
     ///
-    /// A session's refusal for want of an identity-based grant, where a document in force
-    /// DOES name the action — which is how the row below reaches this clause, its scope
-    /// allowing every IAM action — is the one refusal of this gate whose recordings carry no
-    /// pointer (`tests/all/session_refusal_authorization_detail_pointer.rs` is the table for
-    /// that rule). The session-policy clauses are the other family and carry it.
+    /// A session's refusal for want of an identity-based grant, where the decision read a
+    /// grant that is not about that very action — which is how the row below reaches this
+    /// clause, its scope allowing every IAM action without spelling one — is the refusal
+    /// family of this gate whose recordings carry no pointer
+    /// (`tests/all/session_refusal_authorization_detail_pointer.rs` and
+    /// `tests/all/scope_specificity_refusal_detail_pointer.rs` are the tables for that rule).
+    /// The session-policy clauses are the other family and carry it.
     fn points_at_its_detail(self) -> bool {
         self != Self::NoIdentityAllow
     }

@@ -505,11 +505,13 @@ async fn a_session_policy_cannot_grant_past_the_roles_own_policies() {
                 "case {case:?}: a scope cannot grant past the role, got {status}: {body}"
             );
             let message = message_of(&body);
-            // The sentence is the whole refusal here: the scope NAMES the action (it allows
-            // every one), so the grant was read and the identity's own documents withheld
-            // it — the one refusal family this service words without the pointer at the
-            // detail of the decision (the identity service's own
-            // `tests/all/session_refusal_authorization_detail_pointer.rs` is the table for
+            // The sentence is the whole refusal here: the scope allows the action WITHOUT
+            // spelling it (it allows every one), so the grant the decision read is not about
+            // this action and the identity's own documents withheld it — the refusal family
+            // this service words without the pointer at the detail of the decision (the
+            // identity service's own
+            // `tests/all/session_refusal_authorization_detail_pointer.rs` and
+            // `tests/all/scope_specificity_refusal_detail_pointer.rs` are the tables for
             // that line).
             crate::iam_authorization_details_pointer::assert_refusal_sentence(
                 &case,

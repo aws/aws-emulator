@@ -4,15 +4,17 @@
 //! decision, and which are the sentence alone.
 //!
 //! The rule under test: a refusal of a request signed with a role SESSION's temporary
-//! credential, reached although a document in force on that session — the role's own
-//! identity-based documents, or a session policy the mint of the credential passed — states
-//! an `Allow` NAMING the action asked for, is answered as the decision's sentence and nothing
-//! else. The grant was read and did not apply (the session-policy intersection withheld it,
-//! a condition the session does not satisfy, or a resource it does not cover), and those are
-//! the refusals whose recordings carry no pointer. Every OTHER refusal this gate words closes
-//! with it: one no readable `Allow` about the action was in force for, one a statement about
-//! the request explicitly denied, one withheld by the session policies rather than by the
-//! identity's own documents, and every refusal of a LONG-TERM credential — including the
+//! credential, reached although a grant the decision read is not about the very action asked
+//! for — the role's own identity-based documents stating an `Allow` covering it, or a session
+//! policy the mint passed allowing it WITHOUT spelling it — is answered as the decision's
+//! sentence and nothing else. The grant was read and did not apply (the session-policy
+//! intersection withheld it, a condition the session does not satisfy, or a resource it does
+//! not cover), and those are the refusals whose recordings carry no pointer. Every OTHER
+//! refusal this gate words closes with it: one no readable `Allow` about the action was in
+//! force for, one a statement about the request explicitly denied, one withheld by the session
+//! policies rather than by the identity's own documents, one whose only grant about the action
+//! is a session policy SPELLING it (`tests/all/scope_specificity_refusal_detail_pointer.rs` is
+//! the table for that line), and every refusal of a LONG-TERM credential — including the
 //! long-term caller whose own grant names the action and does not apply, which is the shape
 //! the session rows here are answered WITHOUT a pointer, and so is why the line is drawn at
 //! the credential and not at the clause alone.
@@ -21,7 +23,8 @@
 //! `ServiceFailureException` (`smithy_query(query="operation",operation="ListUsers")`) — so
 //! this is recorded behaviour throughout: the sentence itself is the table in
 //! `tests/all/access_denied_message_wording.rs`, and this suite is the table for which family
-//! a refusal belongs to.
+//! a refusal of a session belongs to when the grant the decision read was the identity's own
+//! or a wholesale scope.
 //!
 //! The rows differ along what the rule generalises over: which operation is refused and the
 //! resource form its request addresses (a collection, a path-scoped collection, one named
@@ -137,8 +140,9 @@ fn rows() -> Vec<Row> {
     let every_iam_action = statement("Allow", "iam:*", "*");
     vec![
         // A session policy allowing every IAM action over a role that allows another one: the
-        // grant naming the action sits in the SCOPE, which grants nothing of its own, so the
-        // call is withheld by the identity's documents although a grant about it was read.
+        // grant covering the call sits in the SCOPE, spelling no action and granting nothing
+        // of its own, so the call is withheld by the identity's documents although a grant
+        // covering it was read.
         Row {
             case: "a session policy naming every IAM action, the role naming another",
             role_policy: statement("Allow", "iam:ListRoleTags", "*"),
@@ -310,9 +314,10 @@ fn rows() -> Vec<Row> {
     ]
 }
 
-/// RULE: a session's refusal reached although a document in force names the action is the
-/// sentence alone; every other refusal of a session closes with the pointer at the detail of
-/// its decision.
+/// RULE: a session's refusal reached although the decision read a grant that is not about the
+/// very action asked for — the identity's own `Allow` covering it, or a scope allowing it
+/// without spelling it — is the sentence alone; every other refusal of a session closes with
+/// the pointer at the detail of its decision.
 #[tokio::test]
 async fn which_session_refusals_point_at_the_detail_of_their_decision() {
     let (router, engine) = router_with_engine();
