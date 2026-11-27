@@ -9,8 +9,10 @@
 //! therefore neither lists nor resolves it: the listing omits it, and every operation that
 //! identifies it by ARN answers as though it did not exist — a read with
 //! `ResourceNotFoundException` (HTTP 404) carrying that ARN as `ResourceId` and the kind of
-//! resource it names as `ResourceType`, a tagging call with the tagging layer's own not-found
-//! refusal, a delete with the accepted no-op its 202 output is — and writes nothing.
+//! resource it names as `ResourceType`, a create with that same 404 naming the input member
+//! that carried the reference it could not resolve, a tagging call with the tagging layer's
+//! own not-found refusal, a delete with the accepted no-op its 202 output is — and writes
+//! nothing.
 //!
 //! Every case drives the service the way a client does, one HTTP request per call through the
 //! same `MultiServiceRouter` the emulator boots, with the Region in the request's own SigV4
@@ -33,6 +35,14 @@ const ACCOUNT: &str = "000000000000";
 /// own vocabulary rather than respelled here.
 const RESOURCE_TYPE_CONNECTOR: &str = state::RESOURCE_TYPE_CONNECTOR;
 const RESOURCE_TYPE_CHALLENGE: &str = state::RESOURCE_TYPE_CHALLENGE;
+
+/// The name of `CreateChallenge`'s input member that references the connector a challenge is
+/// minted under (smithy_query operation=CreateChallenge).
+///
+/// A create does not identify a resource of its own, so what it could not resolve is this
+/// parameter, and that is what its 404 reports — where a read or a delete handed the same ARN
+/// reports the resource KIND above.
+const MEMBER_CONNECTOR_ARN: &str = "ConnectorArn";
 
 /// The status a settled connector reports.
 const STATUS_ACTIVE: &str = state::STATUS_ACTIVE;
@@ -402,7 +412,7 @@ async fn every_operation_refuses_an_arn_of_another_region() {
             case,
             "CreateChallenge",
             &connector_arn,
-            RESOURCE_TYPE_CONNECTOR,
+            MEMBER_CONNECTOR_ARN,
         );
         harness::assert_tagging_not_found(
             &list_tags(&router, foreign, &connector_arn).await,

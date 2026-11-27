@@ -71,10 +71,11 @@ pub const TYPE_INTUNE: &str = "INTUNE";
 
 /// `ResourceId`/`ResourceType` vocabulary of this service's errors: the `ResourceType`
 /// member's doc says it "can be either `Connector` or `Challenge`", which are the two kinds
-/// of resource this service owns. Those two words are the WHOLE domain of that member, so
-/// every `ResourceNotFoundException` this service answers about one of its own resources
-/// carries one of them — whichever operation answers it, and whether the ARN was the resource
-/// the call is addressed at or a resource it only references (see [`resource_not_found`]).
+/// of resource this service owns. Those two words are what a call ADDRESSED AT one of those
+/// resources — every read and delete of this service — reports when it cannot find it
+/// (see [`resource_not_found`]). A create reports the input member that carried the reference
+/// it could not resolve instead ([`reference_not_found`]), because the resource that call is
+/// about does not exist yet.
 pub const RESOURCE_TYPE_CONNECTOR: &str = "Connector";
 /// The other value `ResourceType` carries.
 pub const RESOURCE_TYPE_CHALLENGE: &str = "Challenge";
@@ -879,24 +880,40 @@ pub fn resource_type_of(resource_arn: &str) -> &'static str {
 /// two variable parts are the error's other two members, so a caller reads the same two
 /// facts out of the sentence and out of the fields.
 ///
-/// `resource_type` is the KIND of the resource `resource_id` names and this service could not
-/// find, in the two words the member's own doc states its domain as — "either `Connector` or
-/// `Challenge`" — as [`resource_type_of`] reads them off the ARN. That holds for every
-/// operation that answers this error about one of this service's resources, a create that
-/// only REFERENCES one included (`CreateChallenge`'s `ConnectorArn`): the member is the
-/// machine-readable discriminator a client branches on, so a value outside that domain
-/// matches neither documented case.
+/// `resource_type` is what this call DISCRIMINATES the failed resolution on, and the word its
+/// sentence opens with. Which word that is follows from what the call does:
 ///
-/// The one reference this service cannot spell that way is a resource it does not own:
-/// `CreateConnector`'s `CertificateAuthorityArn` names a private CA that Amazon Web Services
-/// Private CA owns, a kind the two-word domain has no word for, so that call reports the
-/// input member that carried the reference (see its own handler).
+/// * a call addressed AT a resource — every read and delete of this service — could not find
+///   the resource it was asked about, so it reports that resource's KIND, in the two words the
+///   member's own doc states its domain as ("either `Connector` or `Challenge`"), as
+///   [`resource_type_of`] reads them off the ARN;
+/// * a CREATE could not resolve a resource its input only REFERENCES — the resource the call
+///   is about does not exist yet — so it reports the INPUT MEMBER that carried that reference
+///   ([`reference_not_found`], which is the one place this service words that case).
 pub fn resource_not_found(resource_type: &str, resource_id: &str) -> ResourceNotFoundException {
     ResourceNotFoundException {
         message: format!("{resource_type} was not found: {resource_id}."),
         resource_id: resource_id.to_string(),
         resource_type: resource_type.to_string(),
     }
+}
+
+/// The `ResourceNotFoundException` a CREATE of this service answers a reference it cannot
+/// resolve with: `input_member` is the NAME of the input member that carried the unresolvable
+/// ARN, and it is both what the error discriminates on (`ResourceType`) and the word its
+/// `Message` opens with, over the ARN the request supplied (`ResourceId`).
+///
+/// The one place this service words that case, for every operation that creates a resource
+/// from a reference to another — `CreateConnector`'s `CertificateAuthorityArn` and
+/// `CreateChallenge`'s `ConnectorArn` — so two creates cannot report one failed resolution two
+/// ways. What a create could not resolve is the parameter it was handed rather than the
+/// resource the call is addressed at: the resource it would create does not exist yet, so the
+/// caller's next move is to fix that input, and that is what the error names.
+///
+/// A read or a delete of the SAME reference is addressed at the resource itself and reports
+/// its kind instead ([`resource_not_found`]).
+pub fn reference_not_found(input_member: &str, resource_arn: &str) -> ResourceNotFoundException {
+    resource_not_found(input_member, resource_arn)
 }
 
 /// The opening of every sentence this service refuses a PRECONDITION with: a request whose

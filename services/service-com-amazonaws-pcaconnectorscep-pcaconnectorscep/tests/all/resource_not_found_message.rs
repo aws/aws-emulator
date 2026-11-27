@@ -7,11 +7,19 @@
 //! and a terminating `.` (smithy_query: shape ResourceNotFoundException, whose three members
 //! are all required). The two variable parts come from the request and from state, and they
 //! are exactly the error's other two members, so the sentence and the fields report the same
-//! two facts. `ResourceType` is the KIND of the resource `ResourceId` names and this service
-//! could not find, in the two words that member's own doc states its domain as ("can be
-//! either `Connector` or `Challenge`") — whichever operation answers the error, and whether
-//! the ARN named the resource the call is addressed AT or one it only references, as
-//! `CreateChallenge`'s `ConnectorArn` does.
+//! two facts.
+//!
+//! What the error discriminates on — `ResourceType`, and so the word the sentence opens with —
+//! follows from what the call DOES:
+//!
+//! * a call addressed AT a resource (every read and delete of this service) could not find the
+//!   resource it was asked about, so it reports that resource's KIND, in the two words that
+//!   member's own doc states its domain as ("can be either `Connector` or `Challenge`"),
+//!   whichever operation answers it and however the ARN came to name nothing;
+//! * a CREATE could not resolve a resource its input only REFERENCES — the resource that call
+//!   is about does not exist yet — so it reports the NAME of the input member that carried the
+//!   reference. `CreateChallenge`'s `ConnectorArn` is such a member, and the reads handed the
+//!   very same ARN still report the kind.
 //!
 //! Every case drives the service the way a client does, one HTTP request per call through the
 //! same `MultiServiceRouter` the emulator boots. The rows differ along what the rule
@@ -38,11 +46,17 @@ const ACCOUNT: &str = "000000000000";
 const RESOURCE_TYPE_CONNECTOR: &str = state::RESOURCE_TYPE_CONNECTOR;
 const RESOURCE_TYPE_CHALLENGE: &str = state::RESOURCE_TYPE_CHALLENGE;
 
-/// The WHOLE domain of `ResourceType`, as its own doc states it (smithy_query: doc shape
+/// The WHOLE domain of `ResourceType` for a call addressed AT one of this service's
+/// resources, as that member's own doc states it (smithy_query: doc shape
 /// ResourceNotFoundException member ResourceType — "can be either `Connector` or
-/// `Challenge`"). No 404 this service answers about one of its own resources may carry
-/// anything else.
+/// `Challenge`"). No 404 such a call answers may carry anything else.
 const RESOURCE_TYPE_DOMAIN: &[&str] = &[RESOURCE_TYPE_CONNECTOR, RESOURCE_TYPE_CHALLENGE];
+
+/// The name of `CreateChallenge`'s input member that references the connector a challenge is
+/// minted under (smithy_query: operation CreateChallenge), which is what that create's 404
+/// discriminates on and the word its sentence opens with — the create having no resource of
+/// its own to be addressed at.
+const MEMBER_CONNECTOR_ARN: &str = "ConnectorArn";
 
 /// Private-CA ARNs matching `CertificateAuthorityArn`'s own pattern. Rows name different CAs,
 /// so no assertion can pass by echoing one recorded value.
@@ -156,8 +170,8 @@ impl Op {
     }
 }
 
-/// Every operation a connector ARN can be handed to that ANSWERS this error, with the
-/// `ResourceType` its 404 carries.
+/// Every operation a connector ARN can be handed to that ANSWERS this error, with what its
+/// 404 reports as `ResourceType`.
 ///
 /// `DeleteConnector` is not among them: its whole output is the modelled 202 "accepted", so
 /// an ARN that holds no connector is the end state it accepts rather than this error (see
@@ -167,9 +181,9 @@ impl Op {
 const CONNECTOR_OPS: &[(Op, &str)] = &[
     (Op::GetConnector, RESOURCE_TYPE_CONNECTOR),
     (Op::ListChallengeMetadata, RESOURCE_TYPE_CONNECTOR),
-    // The create reports the KIND of the resource it could not resolve too: the connector it
-    // was handed, not the name of the member that carried the ARN.
-    (Op::CreateChallenge, RESOURCE_TYPE_CONNECTOR),
+    // The create is addressed at no connector of its own, so it reports the input member that
+    // carried the ARN it could not resolve rather than the kind of resource that ARN names.
+    (Op::CreateChallenge, MEMBER_CONNECTOR_ARN),
 ];
 
 /// Every operation a challenge ARN can be handed to that answers this error, likewise.
@@ -646,10 +660,11 @@ const DOMAIN_ROWS: &[ArnRow] = &[
     },
 ];
 
-/// Whichever operation answers this error, the `ResourceType` it carries is one of the two
-/// words the member's documented domain holds, and it is the kind the `ResourceId` ARN names
-/// — never the name of the input member that carried the ARN, which is in that domain for no
-/// request.
+/// Whichever operation ADDRESSED AT a resource answers this error, the `ResourceType` it
+/// carries is one of the two words the member's documented domain holds, and it is the kind
+/// the `ResourceId` ARN names — never the name of the input member that carried the ARN. The
+/// create handed that very same ARN reports that member name instead, so the two cases a
+/// client branches on stay distinguishable.
 #[tokio::test]
 async fn resource_type_stays_inside_its_documented_domain() {
     for row in DOMAIN_ROWS {
@@ -657,7 +672,7 @@ async fn resource_type_stays_inside_its_documented_domain() {
         let arn = row.arn();
         let expected = row.expected_resource_type();
 
-        for (op, resource_type) in row.operations() {
+        for (op, reported_type) in row.operations() {
             let (router, engine) = new_router();
             // A live connector with a live challenge is stored when the call arrives, so no
             // refusal below can come from an empty store.
@@ -666,19 +681,129 @@ async fn resource_type_stays_inside_its_documented_domain() {
 
             let answer = op.call(&router, &arn).await;
             let operation = format!("{op:?}");
-            assert_not_found(&answer, case, &operation, &arn, resource_type);
+            assert_not_found(&answer, case, &operation, &arn, reported_type);
 
             let answered = answer.body["ResourceType"].as_str().unwrap_or_default();
-            assert!(
-                RESOURCE_TYPE_DOMAIN.contains(&answered),
-                "case {case:?} on {operation}: ResourceType must be one of \
-                 {RESOURCE_TYPE_DOMAIN:?}, got {answered:?}"
-            );
-            assert_eq!(
-                answered, expected,
-                "case {case:?} on {operation}: expected the kind the ARN names, got {answered:?}"
-            );
+            if *op == Op::CreateChallenge {
+                assert_eq!(
+                    answered, MEMBER_CONNECTOR_ARN,
+                    "case {case:?} on {operation}: expected the input member that carried the \
+                     reference, got {answered:?}"
+                );
+                assert!(
+                    !RESOURCE_TYPE_DOMAIN.contains(&answered),
+                    "case {case:?} on {operation}: a create must not report a resource kind \
+                     ({RESOURCE_TYPE_DOMAIN:?}), got {answered:?}"
+                );
+            } else {
+                assert!(
+                    RESOURCE_TYPE_DOMAIN.contains(&answered),
+                    "case {case:?} on {operation}: ResourceType must be one of \
+                     {RESOURCE_TYPE_DOMAIN:?}, got {answered:?}"
+                );
+                assert_eq!(
+                    answered, expected,
+                    "case {case:?} on {operation}: expected the kind the ARN names, got \
+                     {answered:?}"
+                );
+            }
         }
     }
 }
+
+/// The create's half of the rule, independent of everything else the request carries and of
+/// what the store holds: `CreateChallenge` handed a `ConnectorArn` that resolves to no
+/// connector reports that INPUT MEMBER as `ResourceType`, words its sentence with it, and
+/// carries the supplied ARN as `ResourceId` — while the reads and the delete handed the very
+/// same ARN in the very same store report the connector KIND.
+///
+/// The rows differ along what the rule generalises over: the other input members the create
+/// models (a `ClientToken`, which makes the call retryable, and `Tags`), the partition, Region
+/// and id segments of the unresolvable ARN, and how many connectors and challenges are stored
+/// when the call arrives. None of them may change the member name the refusal reports.
+#[tokio::test]
+async fn a_create_reports_the_input_member_its_unresolvable_reference_came_in_on() {
+    let rows: &[(&str, &str, &str, usize, serde_json::Value)] = &[
+        (
+            "the reference alone, empty store",
+            "aws",
+            "fa9ce23c-aedb-47ef-94d6-505cf953adba",
+            0,
+            json!({}),
+        ),
+        (
+            "a client token, which makes the call retryable",
+            "aws",
+            "0123456f-89ab-cdef-0123-456789abcdef",
+            1,
+            json!({ "ClientToken": "create-challenge-retry-1" }),
+        ),
+        (
+            "tags, with other records stored",
+            "aws",
+            "ffffffff-eeee-dddd-cccc-bbbbbbbbbbbb",
+            2,
+            json!({ "Tags": { "owner": "platform", "env": "test" } }),
+        ),
+        (
+            "every other input at once, on an ARN of another partition and Region",
+            "aws-us-gov",
+            "deadbeef-0000-1111-2222-333344445555",
+            3,
+            json!({
+                "ClientToken": "create-challenge-everything-1",
+                "Tags": { "owner": "platform" },
+            }),
+        ),
+    ];
+
+    for (case, partition, connector_id, siblings, extra) in rows {
+        let (router, engine) = new_router();
+        seed_siblings(&router, &engine, case, *siblings).await;
+
+        let region = if *partition == "aws" {
+            REGION
+        } else {
+            "us-gov-west-1"
+        };
+        let arn = connector_arn(partition, region, connector_id);
+
+        let mut request = json!({ "ConnectorArn": arn });
+        for (member, value) in extra.as_object().expect("the row's other input members") {
+            request[member.as_str()] = value.clone();
+        }
+        let refused = harness::call(&router, REGION, "POST", "/challenges", Some(request)).await;
+        assert_not_found(
+            &refused,
+            case,
+            "CreateChallenge",
+            &arn,
+            MEMBER_CONNECTOR_ARN,
+        );
+
+        // The same ARN, in the same store, handed to the calls that ARE addressed at that
+        // connector: those report the resource kind.
+        for op in [Op::GetConnector, Op::ListChallengeMetadata] {
+            let answer = op.call(&router, &arn).await;
+            assert_not_found(
+                &answer,
+                case,
+                &format!("{op:?}"),
+                &arn,
+                RESOURCE_TYPE_CONNECTOR,
+            );
+        }
+
+        // The refused create minted nothing: the store still holds exactly the connectors the
+        // seeding gave it.
+        let listed = harness::call(&router, REGION, "GET", "/connectors", None).await;
+        assert_eq!(
+            listed.count("Connectors"),
+            *siblings,
+            "case {case:?}: the refused create must register nothing, got {:?}",
+            listed.body
+        );
+    }
+}
+
 

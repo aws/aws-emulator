@@ -361,18 +361,28 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
     }
 }
 
+/// The name of this operation's input member that references the connector the challenge is
+/// minted under (smithy_query: operation CreateChallenge).
+///
+/// It is what this call's `ResourceNotFoundException` carries as its `ResourceType`, and the
+/// word its `Message` opens with: this call creates a challenge, so what it could not resolve
+/// is not the resource it is addressed at but the parameter that referenced one, and that is
+/// what the error discriminates on — the same answer the service's other create gives a
+/// reference it cannot resolve.
+const MISSING_MEMBER_CONNECTOR_ARN: &str = "ConnectorArn";
+
 /// No connector is stored under this ARN in the Region the request was signed for — HTTP 404
 /// `ResourceNotFoundException`, which is also what a well-formed ARN that was never created
 /// answers.
 ///
-/// The error reports the KIND of resource that was not found, as the `ResourceType` member's
-/// own doc spells its two values ("either `Connector` or `Challenge`"), read off the ARN the
-/// request supplied ([`crate::state::resource_type_of`]) — the same discriminator every other
-/// operation of this service answers this error with, so a client branching on `ResourceType`
-/// reads one vocabulary whichever call could not resolve the connector.
+/// The error reports the input member that carried the unresolvable reference
+/// ([`crate::state::reference_not_found`]), carrying the supplied ARN as `ResourceId`: a
+/// client branching on `ResourceType` is steered at the input it must re-resolve. A read or a
+/// delete handed the SAME ARN is addressed at that connector itself, so it reports the
+/// resource KIND instead ([`crate::state::resource_not_found`]).
 fn not_found(connector_arn: &str) -> CreateChallengeError {
-    CreateChallengeErrorModeled::ResourceNotFoundException(crate::state::resource_not_found(
-        crate::state::resource_type_of(connector_arn),
+    CreateChallengeErrorModeled::ResourceNotFoundException(crate::state::reference_not_found(
+        MISSING_MEMBER_CONNECTOR_ARN,
         connector_arn,
     ))
     .into()
