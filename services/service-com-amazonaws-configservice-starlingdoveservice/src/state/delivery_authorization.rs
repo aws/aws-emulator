@@ -3,40 +3,33 @@
 //! Whether Config MAY deliver into the Amazon S3 bucket a delivery channel names.
 //!
 //! A delivery channel is only usable if Config itself can reach the bucket behind it, and
-//! `PutDeliveryChannel` models the refusal of a delivery nothing permits —
+//! `PutDeliveryChannel` models the refusal of a delivery the bucket does not permit —
 //! `InsufficientDeliveryPolicyException` ("Your Amazon S3 bucket policy does not allow
-//! Config to write to it"). Config makes the S3 calls that delivery needs UNDER THE
-//! CONFIGURATION RECORDER'S OWN IAM ROLE, which it assumes as its own service principal, so
-//! the permission has TWO sources: the policy in force on the named bucket, which names that
-//! principal, and the identity-based policies in force on that role. Within one account the
-//! two are weighed the way IAM weighs them — an explicit deny from either refuses, an allow
-//! from EITHER grants, and only a call neither of them allows falls to the implicit deny
-//! (`service_common::iam_authorization::is_allowed`) — so a bucket of this account carrying
-//! no policy at all is no denial by itself, while a call no source allows is refused, named
-//! after the first check that was denied the way the service words it
-//! ([`DELIVERY_CHECKS`]).
+//! Config to write to it"). Config makes the S3 calls a delivery needs AS ITS OWN SERVICE
+//! PRINCIPAL, and a service principal holds no identity-based policies, so the ONLY source
+//! of that permission is the policy in force on the named bucket, which is the document that
+//! names that principal: a call that policy does not allow is refused, named after the first
+//! check that was denied the way the service words it ([`DELIVERY_CHECKS`]) — a bucket
+//! carrying no policy at all withholds the first of them, and no permission held elsewhere
+//! supplies what that document does not state.
 //!
-//! Config makes those S3 calls UNDER THE CONFIGURATION RECORDER'S OWN IAM ROLE, which it
-//! assumes as that same service principal — so a role it cannot assume withholds the whole
-//! delivery before anything of the bucket is read, and is the check a refusal then names
-//! ([`DeliveryCheck::AssumeRole`]). Whether a role can be assumed is the workspace's ONE
-//! reading of that question (`service_common::iam_role`), put to IAM itself over the same
-//! in-process callback: a role nothing can be shown about withholds nothing, so an emulator
-//! with no IAM to ask refuses no channel.
+//! Config assumes THE CONFIGURATION RECORDER'S OWN IAM ROLE to make a delivery at all — so a
+//! role it cannot assume withholds the whole delivery before anything of the bucket is read,
+//! and is the check a refusal then names ([`DeliveryCheck::AssumeRole`]). Whether a role can
+//! be assumed is the workspace's ONE reading of that question (`service_common::iam_role`),
+//! put to IAM itself over the same in-process callback: a role nothing can be shown about
+//! withholds nothing, so an emulator with no IAM to ask refuses no channel. What that role is
+//! ALLOWED is a different question, and not this one: the S3 calls below are not made under
+//! the role's identity, so a grant it states permits none of them.
 //!
 //! What the bucket holds is read from S3 ITSELF, over the same in-process callback the
 //! recorder observes resources through ([`super::s3_client`]), so this crate names no
 //! other service crate; and the decision the policy gives is the workspace's ONE
 //! evaluation of an IAM policy document (`service_common::iam_authorization`) rather than
-//! a second reading of that grammar here. What the RECORDER'S ROLE states is put to IAM
-//! itself over that same callback (`service_common::iam_role::role_action_decision_through`),
-//! so the documents in force on it — the managed policies attached to it, the policies
-//! embedded in it and the ceiling a permissions boundary sets — are collected by the service
-//! that holds them and decided through that same one evaluation; a role nothing can be shown
-//! about states nothing, so it neither grants a call nor withholds one. A read that
+//! a second reading of that grammar here. A read that
 //! establishes no policy — S3 answering nothing, or answering about a bucket it does not
 //! hold — grounds no refusal ([`DeliveryAuthorization::Unanswered`]): this decides what the
-//! POLICIES say and nothing else, a bucket's EXISTENCE being the separate requirement
+//! POLICY says and nothing else, a bucket's EXISTENCE being the separate requirement
 //! `NoSuchBucketException` carries.
 //!
 //! The condition context a delivery carries is the context this evaluation passes: the
@@ -46,7 +39,7 @@
 //! cannot be decided, and the shared evaluation reads an undecided statement as granting
 //! nothing.
 
-use ::service_common::iam_authorization::{is_allowed, resource_decision, Decision, Request};
+use ::service_common::iam_authorization::{resource_decision, Decision, Request};
 
 use super::{recorded_resource_arn, s3_client, S3_BUCKET_RESOURCE_TYPE};
 
@@ -55,15 +48,15 @@ use super::{recorded_resource_arn, s3_client, S3_BUCKET_RESOURCE_TYPE};
 pub const CONFIG_SERVICE_PRINCIPAL: &str = "config.amazonaws.com";
 
 /// The calls Config makes before it will take a delivery channel, in the order it makes
-/// them: it assumes the configuration recorder's role, then reads the bucket's ACL under
-/// it, then writes a delivered object. The two S3 calls are the entries of
-/// [`DELIVERY_CHECKS`], which a bucket's own policy decides; the assume precedes them.
+/// them: it assumes the configuration recorder's role, then reads the bucket's ACL, then
+/// writes a delivered object. The two S3 calls are the entries of [`DELIVERY_CHECKS`], which
+/// the bucket's own policy decides; the assume precedes them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeliveryCheck {
     /// `sts:AssumeRole` of the configuration recorder's IAM role, which Config performs as
-    /// its own service principal and makes the two S3 calls below under: a role this
-    /// account's IAM holds nothing under, or whose trust policy does not admit Config,
-    /// cannot be assumed, so no delivery can be made with it.
+    /// its own service principal: a role this account's IAM holds nothing under, or whose
+    /// trust policy does not admit Config, cannot be assumed, so no delivery can be made
+    /// with it.
     AssumeRole,
     /// `s3:GetBucketAcl` on the bucket itself (`arn:aws:s3:::<bucket>`), which the bucket
     /// policy AWS documents for a delivery channel grants in its
@@ -78,9 +71,9 @@ pub enum DeliveryCheck {
 
 /// The S3 calls a delivery channel has to be PERMITTED before it is taken, in the order the
 /// service makes them — which is the order a refusal names them in, since the first one
-/// denied is the one reported. Each is decided from the two sources of that permission
-/// together: the bucket's own policy and the permissions the recorder's role states (see the
-/// module docs). The assume of the recorder's role is not among them: it is decided by the
+/// denied is the one reported. Each is decided from the ONE source of that permission: the
+/// policy in force on the bucket itself, Config making them as its own service principal (see
+/// the module docs). The assume of the recorder's role is not among them: it is decided by the
 /// trust policy that role carries, and is made before any of these.
 ///
 /// The two are the calls the service's own refusals NAME ("unable to get s3 bucket acl",
@@ -106,7 +99,7 @@ impl DeliveryCheck {
     /// key the write would have gone to.
     fn denied_clause(self, key_prefix: Option<&str>, role_arn: Option<&str>) -> String {
         match self {
-            // The role the delivery would have been made under, named as the request's own
+            // The role the delivery would have been made with, named as the request's own
             // configuration recorder carries it.
             Self::AssumeRole => format!("assume role: {}", role_arn.unwrap_or_default()),
             Self::BucketAcl => "get s3 bucket acl".to_string(),
@@ -158,12 +151,13 @@ const NO_KEY_PREFIX: &str = "null";
 /// What the bucket behind a delivery channel says about Config delivering into it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeliveryAuthorization {
-    /// Every check a delivery channel has to pass is permitted: by the policy in force on
-    /// the bucket, by the permissions the configuration recorder's role states, or by both.
+    /// Every check a delivery channel has to pass is permitted by the policy in force on the
+    /// bucket.
     Permitted,
-    /// The named check is withheld — NO source of the permission allows Config that S3 call,
-    /// or one of them denies it outright, or IAM does not let Config assume the recorder's
-    /// role — which is `InsufficientDeliveryPolicyException`, worded after that check.
+    /// The named check is withheld — the policy in force on the bucket does not allow the
+    /// Config service principal that S3 call, or denies it outright, or IAM does not let
+    /// Config assume the recorder's role — which is `InsufficientDeliveryPolicyException`,
+    /// worded after that check.
     Denied(DeliveryCheck),
     /// S3 established no policy for the bucket: it answered neither a policy nor that the
     /// bucket carries none, so there is nothing for this decision to read.
@@ -190,14 +184,14 @@ pub fn insufficient_delivery_policy_message(
 
 /// What the account says about Config delivering into the bucket `bucket` under
 /// `key_prefix`: the policy in force on that bucket, read from S3 over the in-process
-/// callback, together with the permissions the configuration recorder's role states, read
-/// from IAM over the same callback.
+/// callback.
 ///
 /// `source_arn` is the resource of Config's the delivery is made for — the account's
 /// customer managed configuration recorder — for a policy that conditions its grant on
 /// it; a channel put before any recorder names one carries none. `role_arn` is the IAM role
-/// that recorder runs as, the one Config assumes to make the delivery at all and whose own
-/// permissions the calls it then makes are authorized against.
+/// that recorder runs as, the one Config assumes to make the delivery at all: whether that
+/// assume is possible is decided here, while what the role is allowed is not, the S3 calls
+/// below being made as the Config service principal and not under the role's identity.
 pub async fn delivery_authorization(
     callback: &smithy_server_runtime::EmbeddedEmulator,
     region: &str,
@@ -206,7 +200,7 @@ pub async fn delivery_authorization(
     source_arn: Option<&str>,
     role_arn: Option<&str>,
 ) -> DeliveryAuthorization {
-    // The delivery is made UNDER the recorder's role, so a role IAM answers Config cannot
+    // The delivery needs the recorder's role assumed, so a role IAM answers Config cannot
     // assume withholds it before the bucket is read at all — which is why this is decided
     // first and is the check such a refusal names.
     let unassumable = match role_arn.map(str::trim).filter(|role| !role.is_empty()) {
@@ -227,106 +221,16 @@ pub async fn delivery_authorization(
         return DeliveryAuthorization::Denied(DeliveryCheck::AssumeRole);
     }
     let document = match policy_in_force(callback, region, bucket).await {
-        PolicyInForce::Document(document) => Some(document),
-        // A bucket of this account carrying no policy states nothing about the delivery —
-        // which is not a denial: the permission may still come from the role the calls are
-        // made under, and only a check NEITHER source allows is refused.
-        PolicyInForce::None => None,
+        PolicyInForce::Document(document) => document,
+        // A bucket carrying no policy grants the Config service principal nothing, which is
+        // the first of these calls withheld: nothing else can state the grant for it.
+        PolicyInForce::None => String::new(),
         PolicyInForce::Unanswered => return DeliveryAuthorization::Unanswered,
     };
-    let denied = denied_delivery_check_from_either(
-        callback,
-        region,
-        document.as_deref(),
-        bucket,
-        key_prefix,
-        source_arn,
-        role_arn,
-    )
-    .await;
-    match denied {
+    match denied_delivery_check(&document, region, bucket, key_prefix, source_arn) {
         Some(denied) => DeliveryAuthorization::Denied(denied),
         None => DeliveryAuthorization::Permitted,
     }
-}
-
-/// The FIRST check of a delivery that NO source of the permission allows — the bucket policy
-/// `document` (`None` for a bucket carrying none) and the permissions the recorder's role
-/// states, weighed together the way IAM weighs them within one account — or `None` when every
-/// check is permitted.
-///
-/// The checks are asked in the order the service makes them ([`DELIVERY_CHECKS`]), and the
-/// role is asked only about the checks the bucket's own policy does not already allow, so a
-/// bucket carrying the documented policy settles the decision without a hop.
-async fn denied_delivery_check_from_either(
-    callback: &smithy_server_runtime::EmbeddedEmulator,
-    region: &str,
-    document: Option<&str>,
-    bucket: &str,
-    key_prefix: Option<&str>,
-    source_arn: Option<&str>,
-    role_arn: Option<&str>,
-) -> Option<DeliveryCheck> {
-    let account_id = ::emulator_server::emulator_account_id().to_string();
-    let check_key = super::delivery_writability_check_key(key_prefix, &account_id);
-    for check in DELIVERY_CHECKS {
-        let key = match check {
-            DeliveryCheck::ObjectWrite => Some(check_key.as_str()),
-            _ => None,
-        };
-        let from_bucket = document
-            .map(|document| {
-                bucket_policy_decision(document, check, region, bucket, key, source_arn)
-            })
-            .unwrap_or_default();
-        // An allow the bucket's policy already states needs nothing of the role, and a deny
-        // it states cannot be overridden by one.
-        let from_role = if from_bucket == Decision::NotStated {
-            recorder_role_decision(callback, region, role_arn, check, bucket, key, source_arn).await
-        } else {
-            Decision::NotStated
-        };
-        if !is_allowed(from_role, from_bucket) {
-            return Some(check);
-        }
-    }
-    None
-}
-
-/// What the permissions in force on the configuration recorder's role say about the S3 call
-/// `check` makes — `key` being the object a write goes to, for the check that writes one.
-///
-/// Put to IAM itself (see the module docs), in the condition context a delivery carries, so a
-/// role granting the call only for an object written with the canned ACL Config uses is read
-/// as granting it. A channel whose recorder names no role, a role nothing can be shown about
-/// and a bucket this crate cannot name all state nothing.
-async fn recorder_role_decision(
-    callback: &smithy_server_runtime::EmbeddedEmulator,
-    region: &str,
-    role_arn: Option<&str>,
-    check: DeliveryCheck,
-    bucket: &str,
-    key: Option<&str>,
-    source_arn: Option<&str>,
-) -> Decision {
-    let Some(role_arn) = role_arn.map(str::trim).filter(|role| !role.is_empty()) else {
-        return Decision::NotStated;
-    };
-    let Some(resource) = delivery_check_resource(check, region, bucket, key) else {
-        return Decision::NotStated;
-    };
-    let account_id = ::emulator_server::emulator_account_id().to_string();
-    let context = delivery_context(&account_id, source_arn);
-    ::service_common::iam_role::role_action_decision_through(
-        callback,
-        region,
-        role_arn,
-        check.action(),
-        &resource,
-        &context,
-    )
-    .await
-    .unwrap_or_default()
 }
 
 /// What the bucket policy `document` says about the S3 call `check` makes, asked about the
@@ -377,49 +281,34 @@ fn delivery_check_resource(
 /// `bucket` is.
 ///
 /// This is the authorization of a delivery Config PERFORMS, rather than of the channel it
-/// is performed through: the permission is read at the moment of the write, from the two
-/// sources it may come from (see the module docs) — a grant taken away after the channel was
-/// established withholds the write just as one that never existed does, and the delivery is
-/// reported as the failure it then is ([`INSUFFICIENT_DELIVERY_POLICY_CODE`]). It asks about
-/// the OBJECT the write targets, so a statement covering that key permits it and one that
-/// does not cover it does not.
+/// is performed through: the permission is read at the moment of the write, from the policy
+/// then in force on the bucket (see the module docs) — a grant taken away after the channel
+/// was established withholds the write just as one that never existed does, and the delivery
+/// is reported as the failure it then is ([`INSUFFICIENT_DELIVERY_POLICY_CODE`]). It asks
+/// about the OBJECT the write targets, so a statement covering that key permits it and one
+/// that does not cover it does not.
 ///
 /// `source_arn` is the resource of Config's the delivery is made for, for a policy that
-/// conditions its grant on it, and `role_arn` the role the write is made under — both exactly
-/// as [`delivery_authorization`] passes them.
+/// conditions its grant on it — exactly as [`delivery_authorization`] passes it.
 pub async fn delivered_object_authorization(
     callback: &smithy_server_runtime::EmbeddedEmulator,
     region: &str,
     bucket: &str,
     key: &str,
     source_arn: Option<&str>,
-    role_arn: Option<&str>,
 ) -> DeliveryAuthorization {
     let document = match policy_in_force(callback, region, bucket).await {
-        PolicyInForce::Document(document) => Some(document),
-        // A bucket of this account carrying no policy states nothing about the write, which
-        // the role the write is made under may still state.
-        PolicyInForce::None => None,
+        PolicyInForce::Document(document) => document,
+        // A bucket carrying no policy grants the Config service principal nothing, so there
+        // is no statement for the write to stand on.
+        PolicyInForce::None => String::new(),
         // S3 established nothing about the bucket's policy, so there is nothing to withhold
-        // the write on — as for the channel, this decides what the POLICIES say and nothing
+        // the write on — as for the channel, this decides what the POLICY says and nothing
         // else.
         PolicyInForce::Unanswered => return DeliveryAuthorization::Unanswered,
     };
-    let check = DeliveryCheck::ObjectWrite;
-    let from_bucket = document
-        .as_deref()
-        .map(|document| {
-            bucket_policy_decision(document, check, region, bucket, Some(key), source_arn)
-        })
-        .unwrap_or_default();
-    let from_role = if from_bucket == Decision::NotStated {
-        recorder_role_decision(callback, region, role_arn, check, bucket, Some(key), source_arn)
-            .await
-    } else {
-        Decision::NotStated
-    };
-    if !is_allowed(from_role, from_bucket) {
-        return DeliveryAuthorization::Denied(check);
+    if object_write_is_denied(&document, region, bucket, key, source_arn) {
+        return DeliveryAuthorization::Denied(DeliveryCheck::ObjectWrite);
     }
     DeliveryAuthorization::Permitted
 }
@@ -464,9 +353,9 @@ async fn policy_in_force(
 /// asked about the resource that call is made on, in the condition context a delivery
 /// carries — or `None` for a policy that allows them all.
 ///
-/// The bucket's HALF of the decision alone, which is what a client reading a delivery
-/// bucket's own policy asks about; the whole decision weighs it against the permissions the
-/// recorder's role states as well (see the module docs).
+/// The WHOLE decision a channel's admission turns on, the bucket's own policy being its only
+/// source ([`delivery_authorization`] reads that document from S3 and asks this), and what a
+/// client reading a delivery bucket's policy itself asks about.
 pub fn denied_delivery_check(
     document: &str,
     region: &str,

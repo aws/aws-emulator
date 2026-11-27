@@ -17,9 +17,10 @@
 //! both before it takes the channel — so the suite lives here: a crate-local test can only
 //! ever see one side of those calls.
 //!
-//! The rows differ along what the rule generalises over: WHICH SOURCE of the permission
-//! states the delivery grants (the bucket's own policy, the identity policy in force on the
-//! recorder's role, or both — IAM weighs an allow from either), whether the request NAMES the
+//! The rows differ along what the rule generalises over: whether the recorder's own role
+//! states the delivery grants BESIDE the bucket's policy (the calls Config makes on the
+//! bucket are made as its own service principal, so the bucket's policy is the one source of
+//! that permission and the role's grants add nothing), whether the request NAMES the
 //! recorder and the channel or leaves each to Config's own default, which recording strategy
 //! the recording group asks for, and whether the channel configures an `s3KeyPrefix` and a
 //! snapshot delivery frequency.
@@ -84,17 +85,16 @@ const SETTLE_DEADLINE: Duration = Duration::from_secs(60);
 /// own, long enough not to spin.
 const POLL_INTERVAL: Duration = Duration::from_millis(25);
 
-/// Where a row's delivery grants come from. Config makes the delivery under the recorder's
-/// role, so the two sources IAM weighs together are the policy in force on the bucket and
-/// the identity policies in force on that role; an allow from either is an allow.
+/// What a row's account states about the delivery beside the bucket's own policy. Config
+/// makes those S3 calls as its own service principal, which holds no identity-based
+/// policies, so the policy in force on the bucket states the permission in every row and the
+/// recorder's role is the dimension that varies.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Grants {
-    /// Only the bucket's own policy states them — the policy AWS documents for a delivery
-    /// channel's bucket.
+    /// The bucket's own policy alone — the policy AWS documents for a delivery channel's
+    /// bucket — with the role stating nothing of S3.
     BucketPolicy,
-    /// Only the recorder's role states them, the bucket carrying no policy at all.
-    RolePolicy,
-    /// Both do.
+    /// The same policy, with the recorder's role stating the delivery grants as well.
     Both,
 }
 
@@ -127,8 +127,8 @@ fn rows() -> Vec<Row> {
             delivery_frequency: None,
         },
         Row {
-            case: "no bucket policy, the grants stated on the recorder's role",
-            grants: Grants::RolePolicy,
+            case: "the documented bucket policy, the grants stated on the role as well",
+            grants: Grants::Both,
             recorder_name: Some("sim2real-recorder"),
             recording_group: json!({
                 "allSupported": false,
@@ -387,33 +387,27 @@ async fn recorder_role(
     element(&created, "Arn")
 }
 
-/// Hold the delivery bucket, through S3's own `CreateBucket` — and, where the row asks for
-/// it, the policy in force on it through `PutBucketPolicy`.
-async fn delivery_bucket(
-    router: &MultiServiceRouter,
-    case: &str,
-    bucket: &str,
-    grants: Grants,
-) {
+/// Hold the delivery bucket, through S3's own `CreateBucket`, and the policy AWS documents
+/// for a delivery channel's bucket in force on it through `PutBucketPolicy` — the one source
+/// of the permission the delivery needs, so every row states it.
+async fn delivery_bucket(router: &MultiServiceRouter, case: &str, bucket: &str) {
     let (status, created) = s3(router, "PUT", &format!("/{bucket}"), "").await;
     assert_eq!(
         status, 200,
         "case {case:?}: setup CreateBucket({bucket:?}) must succeed, got {status} with {created}"
     );
-    if grants != Grants::RolePolicy {
-        let (status, answered) = s3(
-            router,
-            "PUT",
-            &format!("/{bucket}?policy"),
-            &delivery_bucket_policy(bucket),
-        )
-        .await;
-        assert!(
-            (200..300).contains(&status),
-            "case {case:?}: setup PutBucketPolicy({bucket:?}) must succeed, got {status} with \
-             {answered}"
-        );
-    }
+    let (status, answered) = s3(
+        router,
+        "PUT",
+        &format!("/{bucket}?policy"),
+        &delivery_bucket_policy(bucket),
+    )
+    .await;
+    assert!(
+        (200..300).contains(&status),
+        "case {case:?}: setup PutBucketPolicy({bucket:?}) must succeed, got {status} with \
+         {answered}"
+    );
 }
 
 /// The recorder status Config reports under `name`, waited for until its clock-owed status
@@ -473,7 +467,7 @@ async fn the_documented_recorder_provisioning_sequence_is_served_on_its_first_at
         let bucket = "sim2real-config-delivery";
         let role_name = "sim2real-config-recorder-role";
         let role_arn = recorder_role(&router, case, role_name, bucket, *grants).await;
-        delivery_bucket(&router, case, bucket, *grants).await;
+        delivery_bucket(&router, case, bucket).await;
 
         // 1. The recorder, with the role IAM holds: served on the FIRST attempt — nothing
         //    about the role is still to be provisioned, so there is no refusal to retry past.
@@ -494,8 +488,8 @@ async fn the_documented_recorder_provisioning_sequence_is_served_on_its_first_at
         );
         let recorder_name = recorder_name.unwrap_or(DEFAULT_NAME);
 
-        // 2. The delivery channel into that bucket: served on the FIRST attempt, whichever
-        //    source states the grants the delivery needs.
+        // 2. The delivery channel into that bucket: served on the FIRST attempt, the
+        //    bucket's own policy stating what the delivery needs.
         let mut channel = json!({ "s3BucketName": bucket });
         if let Some(named) = channel_name {
             channel["name"] = json!(named);
@@ -606,7 +600,7 @@ async fn the_resource_config_plane_behind_a_provisioned_recorder_answers() {
         Grants::BucketPolicy,
     )
     .await;
-    delivery_bucket(&router, case, bucket, Grants::BucketPolicy).await;
+    delivery_bucket(&router, case, bucket).await;
     for (operation, body) in [
         (
             "PutConfigurationRecorder",

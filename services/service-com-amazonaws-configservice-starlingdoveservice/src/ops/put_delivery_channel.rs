@@ -244,10 +244,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             )
         };
 
-        // Config delivers as its own service principal, UNDER the configuration recorder's
-        // IAM role: a channel is only usable if Config can assume that role and if the
-        // policy in force on the bucket it names admits Config — the refusal this operation
-        // models for a delivery the role or the policy withholds.
+        // Config delivers as its own service principal, which holds no identity-based
+        // permissions: a channel is only usable if Config can assume the configuration
+        // recorder's IAM role and if the policy in force on the bucket the channel names
+        // admits that principal each S3 call the delivery needs — the refusal this operation
+        // models for a delivery the role or that policy withholds.
         if let Some(bucket) = requested.s3_bucket_name.as_deref() {
             let prefix = requested.s3_key_prefix.as_deref();
             let authorization = crate::state::delivery_authorization(
