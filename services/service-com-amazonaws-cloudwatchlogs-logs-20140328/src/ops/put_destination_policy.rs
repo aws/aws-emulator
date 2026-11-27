@@ -192,18 +192,20 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             )));
         }
 
-        // "An access policy is an IAM policy document": a document that is not a JSON object
-        // is not one, and neither is one whose statements do not identify the principals they
-        // authorize — "accessPolicy [...] authorizes cross-account users to deliver their log
-        // events to the associated destination", so a statement that allows the wildcard
-        // principal and narrows it with no condition authorizes every principal there is and
-        // is refused. What the statements DO authorize is not interpreted here — the claims
-        // come from other accounts, which nothing in this store makes — so an accepted
-        // document is kept and reported verbatim.
-        if !::serde_json::from_str::<::serde_json::Value>(&input.access_policy)
-            .is_ok_and(|document| document.is_object())
-            || crate::state::access_policy_allows_every_principal(&input.access_policy)
-        {
+        // "An access policy is an IAM policy document": what the service's IAM policy parser
+        // takes is a document in the IAM JSON policy language's resource-based form, not any
+        // JSON that happens to parse — "accessPolicy [...] authorizes cross-account users to
+        // deliver their log events to the associated destination", so its statements name an
+        // effect, the actions they cover and the principals they authorize, and a statement
+        // that allows the wildcard principal and narrows it with no condition authorizes every
+        // principal there is ([`crate::state::is_access_policy`]). What the statements DO
+        // authorize is not interpreted here — the claims come from other accounts, which
+        // nothing in this store makes — so an accepted document is kept and reported verbatim.
+        //
+        // The parse runs BEFORE the destination is resolved, because it is about the document
+        // the request carried: a caller whose policy will not parse is told so whether or not
+        // the destination it named exists.
+        if !crate::state::is_access_policy(&input.access_policy) {
             return Err(invalid(
                 crate::state::ACCESS_POLICY_PARSE_FAILED.to_string(),
             ));

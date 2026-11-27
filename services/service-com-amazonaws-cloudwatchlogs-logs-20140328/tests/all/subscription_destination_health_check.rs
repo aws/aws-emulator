@@ -185,7 +185,12 @@ async fn an_accepted_put_writes_one_health_check_to_its_destination() {
     for row in &rows {
         emulator.create_stream(row.case, row.stream).await;
     }
-    tokio::time::sleep(past_activation()).await;
+    // Every stream is WAITED FOR until it reports itself usable, rather than for a span of
+    // the clock: the status it leaves `CREATING` for is one the clock owes, and the wait ends
+    // as soon as the stream says so.
+    for row in &rows {
+        emulator.await_active_stream(row.case, row.stream).await;
+    }
 
     for row in &rows {
         let case = row.case;
@@ -219,11 +224,17 @@ async fn an_accepted_put_writes_one_health_check_to_its_destination() {
     for row in &rows {
         let case = row.case;
         let checks = emulator.health_checks(case, row.stream).await;
+        // One check per accepted put — and, for a row that goes through a logical
+        // destination, the test message `PutDestination` wrote while it validated that
+        // destination, which is the same control record.
+        let expected = row.puts + usize::from(row.through_logical_destination);
         assert_eq!(
             checks.len(),
+            expected,
+            "case {case}: {} accepted put(s) and {} destination(s) write one control record \
+             each, got {checks:?}",
             row.puts,
-            "case {case}: {} accepted put(s) write one health check each, got {checks:?}",
-            row.puts
+            usize::from(row.through_logical_destination)
         );
         for (key, envelope) in &checks {
             assert_health_check(case, envelope);

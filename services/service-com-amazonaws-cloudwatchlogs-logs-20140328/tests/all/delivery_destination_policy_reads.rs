@@ -365,7 +365,7 @@ async fn a_namesake_of_another_resource_is_not_a_delivery_destination() {
         &json!({
             "destinationName": name,
             "targetArn": "arn:aws:kinesis:eu-west-2:123456789012:stream/vended",
-            "roleArn": "arn:aws:iam::123456789012:role/CWLtoKinesisRole",
+            "roleArn": "arn:aws:iam::000000000000:role/CWLtoKinesisRole",
         }),
     )
     .await;

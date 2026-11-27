@@ -51,19 +51,24 @@ const LIST_TAGS: &str = "ListTagsForResource";
 const INVALID_PARAMETER: &str = "InvalidParameterException";
 
 /// One physical target of each vendor a destination can deliver to: a Kinesis stream (the
-/// example `PutDestination$targetArn` gives), a Firehose delivery stream, a Lambda function,
-/// and a Kinesis stream owned by ANOTHER account — a destination is "used only to create
-/// destinations for cross-account subscriptions", so the target's account is not this one's.
+/// example `PutDestination$targetArn` gives), a Firehose delivery stream — "We currently
+/// support Kinesis Data Streams and Firehose as logical destinations" — and a Kinesis stream
+/// owned by ANOTHER account, a destination being "used only to create destinations for
+/// cross-account subscriptions". A Lambda function is here as a target of a vendor a
+/// destination does NOT deliver to.
 const KINESIS_ARN: &str = "arn:aws:kinesis:eu-west-2:123456789012:stream/log-events";
 const FIREHOSE_ARN: &str = "arn:aws:firehose:eu-west-2:123456789012:deliverystream/log-events";
 const LAMBDA_ARN: &str = "arn:aws:lambda:eu-west-2:123456789012:function:log-consumer";
 const CROSS_ACCOUNT_KINESIS_ARN: &str = "arn:aws:kinesis:us-east-1:210987654321:stream/other";
+const CROSS_ACCOUNT_FIREHOSE_ARN: &str =
+    "arn:aws:firehose:us-east-1:210987654321:deliverystream/other";
 
-/// The roles a destination can be created with: a plain IAM role, one under a path, and one
-/// in another account.
-const ROLE_ARN: &str = "arn:aws:iam::123456789012:role/CWLtoKinesisRole";
-const ROLE_WITH_PATH_ARN: &str = "arn:aws:iam::123456789012:role/service-role/CWLtoKinesis";
-const CROSS_ACCOUNT_ROLE_ARN: &str = "arn:aws:iam::210987654321:role/CWLtoKinesisRole";
+/// The roles a destination can be created with: a plain IAM role and one under a path, both
+/// in the CALLER's own account — a role is passed to this service by the account that holds
+/// it, so a `roleArn` of another account is refused
+/// (`destination_role_passing.rs` covers that rule).
+const ROLE_ARN: &str = "arn:aws:iam::000000000000:role/CWLtoKinesisRole";
+const ROLE_WITH_PATH_ARN: &str = "arn:aws:iam::000000000000:role/service-role/CWLtoKinesis";
 
 /// One put, and what the service must then report for the destination it created.
 #[derive(Debug)]
@@ -227,17 +232,17 @@ fn cases() -> Vec<Case> {
         )
         .with_tags(&[("team", "platform")]),
         Case::of(
-            "a Lambda function target, with several tags",
-            "lambda-dest",
-            LAMBDA_ARN,
+            "a Firehose delivery stream target, with several tags",
+            "firehose-tagged-dest",
+            CROSS_ACCOUNT_FIREHOSE_ARN,
             ROLE_ARN,
         )
         .with_tags(&[("env", "prod"), ("owner", "obs"), ("tier", "gold")]),
         Case::of(
-            "a target and a role in another account",
+            "a target in another account",
             "cross-account-dest",
             CROSS_ACCOUNT_KINESIS_ARN,
-            CROSS_ACCOUNT_ROLE_ARN,
+            ROLE_ARN,
         ),
         // The character classes `DestinationName`'s pattern (`^[^:*]*$`) admits: everything
         // but a colon and a star.
@@ -370,8 +375,8 @@ async fn a_put_under_a_stored_name_updates_it_in_place() {
     let updates: [(&str, &str, &str); 4] = [
         ("a new target of the same vendor", KINESIS_ARN, ROLE_WITH_PATH_ARN),
         ("a target of another vendor", FIREHOSE_ARN, ROLE_ARN),
-        ("a target in another account", CROSS_ACCOUNT_KINESIS_ARN, CROSS_ACCOUNT_ROLE_ARN),
-        ("a Lambda function target", LAMBDA_ARN, ROLE_ARN),
+        ("a target in another account", CROSS_ACCOUNT_KINESIS_ARN, ROLE_WITH_PATH_ARN),
+        ("a target in another account", CROSS_ACCOUNT_FIREHOSE_ARN, ROLE_ARN),
     ];
 
     for (label, target_arn, role_arn) in updates {
@@ -543,9 +548,10 @@ async fn a_role_or_target_that_is_not_an_arn_is_refused() {
         }
     }
 
-    // An ARN of any vendor is accepted for either member: the target is documented as a
-    // physical resource "(for example, a Kinesis stream)", so its vendor is not constrained.
-    for (index, target_arn) in [KINESIS_ARN, FIREHOSE_ARN, LAMBDA_ARN, CROSS_ACCOUNT_KINESIS_ARN]
+    // An ARN of a vendor a destination delivers to is accepted whatever account it names;
+    // one of any other vendor configures a delivery this service cannot make, so it is
+    // refused naming that vendor.
+    for (index, target_arn) in [KINESIS_ARN, FIREHOSE_ARN, CROSS_ACCOUNT_KINESIS_ARN]
         .into_iter()
         .enumerate()
     {
@@ -565,6 +571,33 @@ async fn a_role_or_target_that_is_not_an_arn_is_refused() {
             "case {target_arn:?}: expected the target to be reported as given, got {read}"
         );
     }
+
+    // A target of a vendor a logical destination does not deliver to is refused, and nothing
+    // is stored for it.
+    let name = "unsupported-vendor";
+    let (code, message) = logs
+        .refusal(
+            PUT,
+            &json!({
+                "destinationName": name,
+                "targetArn": LAMBDA_ARN,
+                "roleArn": ROLE_ARN,
+            }),
+        )
+        .await;
+    assert_eq!(
+        (code.as_str(), message.as_str()),
+        (
+            INVALID_PARAMETER,
+            "Invalid destination. Vendor lambda not supported."
+        ),
+        "case {LAMBDA_ARN:?}: expected the vendor refusal, got {code} {message:?}"
+    );
+    assert_eq!(
+        described(&logs, name).await,
+        None,
+        "case {LAMBDA_ARN:?}: a refused put stores nothing"
+    );
 }
 
 /// `DescribeDestinations` reports every destination the account holds "ASCII-sorted by

@@ -86,6 +86,12 @@ fn role_arn(name: &str) -> String {
     format!("arn:aws:iam::{OTHER_ACCOUNT}:role/{name}")
 }
 
+/// The same form in the emulator's OWN account: the only account a role can be PASSED to
+/// this service from, which is what a logical destination is created with.
+fn own_account_role_arn(name: &str) -> String {
+    format!("arn:aws:iam::{}:role/{name}", engine::emulator_account_id())
+}
+
 /// One `PutSubscriptionFilter` body; `role` is left out of the request when it is `None`.
 fn put_filter_body(group: &str, name: &str, destination: &str, role: Option<&str>) -> Value {
     let mut body = json!({
@@ -201,7 +207,7 @@ async fn the_documented_cross_account_flow_is_accepted() {
             &json!({
                 "destinationName": destination_name,
                 "targetArn": other_account_arn("kinesis", "stream/log-events"),
-                "roleArn": role_arn("CWLtoKinesisRole"),
+                "roleArn": own_account_role_arn("CWLtoKinesisRole"),
             }),
         )
         .await;
@@ -361,10 +367,12 @@ async fn a_role_is_required_only_where_the_delivery_assumes_one() {
     }
 }
 
-/// An access policy has to identify the principals it authorizes: a statement allowing the
-/// wildcard principal with no condition to narrow it is refused with the service's fixed
-/// parse sentence and attaches nothing, while a concrete principal, a wildcard narrowed by a
-/// condition, and a wildcard under `Deny` are accepted and round-trip verbatim.
+/// An access policy has to identify the principals it authorizes, and they have to be the
+/// ACCOUNTS whose claims it grants: a statement allowing the wildcard principal with no
+/// condition to narrow it is refused with the service's fixed parse sentence and attaches
+/// nothing — as are a document that is no IAM policy at all and a grant to a service
+/// principal — while a concrete account, a wildcard narrowed by a condition, and a wildcard
+/// under `Deny` are accepted and round-trip verbatim.
 #[tokio::test]
 async fn an_access_policy_that_authorizes_every_principal_is_refused() {
     let logs = Logs::new();
@@ -374,7 +382,7 @@ async fn an_access_policy_that_authorizes_every_principal_is_refused() {
         &json!({
             "destinationName": destination_name,
             "targetArn": other_account_arn("kinesis", "stream/log-events"),
-            "roleArn": role_arn("CWLtoKinesisRole"),
+            "roleArn": own_account_role_arn("CWLtoKinesisRole"),
         }),
     )
     .await;
@@ -430,6 +438,23 @@ async fn an_access_policy_that_authorizes_every_principal_is_refused() {
             "a single statement object rather than a list",
             policy(statement(json!("*"), None)),
         ),
+        // The same sentence refuses a document that is not an IAM policy at all: one whose
+        // statement identifies no principal to authorize, and one carrying no statement. And
+        // one whose grant is not a grant to an ACCOUNT: what this policy authorizes is
+        // another account's claim on the destination, so a SERVICE principal is a permission
+        // of that service rather than this document's grant.
+        (
+            "a statement naming no principal at all",
+            policy(json!([statement(Value::Null, None)])),
+        ),
+        ("a document carrying no statements", "{}".to_string()),
+        (
+            "a grant to a service principal",
+            policy(json!([statement(
+                json!({"Service": "logs.amazonaws.com"}),
+                None,
+            )])),
+        ),
     ];
 
     for (case, document) in &refused {
@@ -441,7 +466,7 @@ async fn an_access_policy_that_authorizes_every_principal_is_refused() {
             .await;
         assert_eq!(
             code, INVALID_PARAMETER,
-            "case {case:?}: a policy that authorizes every principal is refused, \
+            "case {case:?}: a policy the IAM parser will not take is refused, \
              got {code} {message}"
         );
         assert_eq!(
@@ -488,13 +513,6 @@ async fn an_access_policy_that_authorizes_every_principal_is_refused() {
             )])),
         ),
         (
-            "a service principal",
-            policy(json!([statement(
-                json!({"Service": "logs.amazonaws.com"}),
-                None,
-            )])),
-        ),
-        (
             "the wildcard narrowed to an organization",
             policy(json!([statement(
                 json!({"AWS": "*"}),
@@ -518,11 +536,6 @@ async fn an_access_policy_that_authorizes_every_principal_is_refused() {
                 "Resource": "*",
             }])),
         ),
-        (
-            "a statement naming no principal at all",
-            policy(json!([statement(Value::Null, None)])),
-        ),
-        ("a document carrying no statements", "{}".to_string()),
     ];
 
     for (case, document) in &accepted {

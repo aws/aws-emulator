@@ -21,12 +21,12 @@
 //! from the shared store cannot pass.
 //!
 //! The table spans what the rule generalises over rather than one request: policy documents of
-//! several forms and sizes (the smallest JSON object, one statement, several statements, a
-//! nested condition, non-ASCII contents, pretty-printed whitespace, and a document on the
-//! documented maximum size and one past it), destinations of several targets and names at both
-//! published `DestinationName` length bounds, puts that attach a first policy and puts that
-//! replace one, every shape of value the member refuses, and each combination of grant kind
-//! and `forceUpdate`.
+//! several forms and sizes (one statement written as an object, one statement in a list,
+//! several statements, a nested condition, non-ASCII contents, pretty-printed whitespace, and
+//! a document on the documented maximum size and one past it), destinations of several targets
+//! and names at both published `DestinationName` length bounds, puts that attach a first policy
+//! and puts that replace one, every shape of value the member refuses, and each combination of
+//! grant kind and `forceUpdate`.
 
 use serde_json::{json, Value};
 
@@ -44,10 +44,11 @@ const INVALID_PARAMETER: &str = "InvalidParameterException";
 
 /// Physical targets a destination delivers to, and the role it impersonates: one Kinesis
 /// stream (the example `PutDestination$targetArn` gives), one Firehose delivery stream, and a
-/// plain IAM role.
+/// plain IAM role of the caller's OWN account — a role is passed to this service by the
+/// account that holds it.
 const KINESIS_ARN: &str = "arn:aws:kinesis:eu-west-2:123456789012:stream/log-events";
 const FIREHOSE_ARN: &str = "arn:aws:firehose:eu-west-2:123456789012:deliverystream/log-events";
-const ROLE_ARN: &str = "arn:aws:iam::123456789012:role/CWLtoKinesisRole";
+const ROLE_ARN: &str = "arn:aws:iam::000000000000:role/CWLtoKinesisRole";
 
 /// The accounts and the organization an access policy grants to.
 const SENDER_ACCOUNT: &str = "210987654321";
@@ -164,17 +165,47 @@ fn organization_grant_policy(organization_id: &str, destination_name: &str) -> S
     .to_string()
 }
 
-/// A JSON object of exactly `length` bytes: the smallest object padded through one `Sid`
-/// value, so a case can sit on a documented size bound.
-fn policy_of_length(length: usize) -> String {
-    let skeleton = r#"{"Sid":""}"#;
-    format!(r#"{{"Sid":"{}"}}"#, "p".repeat(length - skeleton.len()))
+/// One real grant whose `Sid` carries `sid`: the rows that vary a document's SIZE and
+/// character set pad that one element, so each of them is still a document the service's IAM
+/// policy parser takes.
+fn sid_policy(sid: &str) -> String {
+    json!({
+        "Version": "2012-10-17",
+        "Statement": [{
+            "Sid": sid,
+            "Effect": "Allow",
+            "Principal": {"AWS": format!("arn:aws:iam::{SENDER_ACCOUNT}:root")},
+            "Action": "logs:PutSubscriptionFilter",
+            "Resource": "*",
+        }],
+    })
+    .to_string()
 }
 
-/// Access policy documents spanning form, size, nesting, character set and whitespace.
+/// A policy document of exactly `length` bytes: [`sid_policy`] padded through its `Sid`
+/// value, so a case can sit on a documented size bound.
+fn policy_of_length(length: usize) -> String {
+    let skeleton = sid_policy("");
+    sid_policy(&"p".repeat(length.saturating_sub(skeleton.len())))
+}
+
+/// Access policy documents spanning form, size, nesting, character set and whitespace. Every
+/// row is an IAM policy document, which is what the member carries ("An access policy is an
+/// IAM policy document"); JSON that is not one is a refused row instead.
 fn policies() -> Vec<PolicyCase> {
     vec![
-        PolicyCase::of("the smallest JSON object", "{}"),
+        PolicyCase::of(
+            "one statement written as an object rather than a list",
+            &json!({
+                "Version": "2012-10-17",
+                "Statement": {
+                    "Effect": "Allow",
+                    "Principal": {"AWS": format!("arn:aws:iam::{SENDER_ACCOUNT}:root")},
+                    "Action": "logs:PutSubscriptionFilter",
+                },
+            })
+            .to_string(),
+        ),
         PolicyCase::of(
             "a one-account grant",
             &account_grant_policy(&[SENDER_ACCOUNT], "kinesis-dest"),
@@ -205,11 +236,11 @@ fn policies() -> Vec<PolicyCase> {
         ),
         PolicyCase::of(
             "a policy carrying non-ASCII contents",
-            &json!({"Sid": "zugriff-\u{00fc}ber-gr\u{00f6}\u{00dfe}-\u{65e5}\u{672c}"}).to_string(),
+            &sid_policy("zugriff-\u{00fc}ber-gr\u{00f6}\u{00dfe}-\u{65e5}\u{672c}"),
         ),
         PolicyCase::of(
             "a pretty-printed policy, whitespace and all",
-            "{\n  \"Version\" : \"2012-10-17\",\n  \"Statement\" : [ ]\n}",
+            "{\n  \"Version\" : \"2012-10-17\",\n  \"Statement\" : [ {\n    \"Effect\" : \"Allow\",\n    \"Principal\" : {\n      \"AWS\" : \"arn:aws:iam::123456789012:root\"\n    },\n    \"Action\" : \"logs:PutSubscriptionFilter\"\n  } ]\n}",
         ),
         // On the documented size of `accessPolicy` ("This can be up to 5120 bytes"). Source:
         // `state::MAX_ACCESS_POLICY_BYTES`.
@@ -316,7 +347,12 @@ async fn a_destination_with_no_policy_attached_reports_none() {
         );
     }
 
-    put_policy(&logs, &destinations[0].name, "{}").await;
+    put_policy(
+        &logs,
+        &destinations[0].name,
+        &account_grant_policy(&[SENDER_ACCOUNT], &destinations[0].name),
+    )
+    .await;
     for destination in destinations.iter().skip(1) {
         let reported = reported_policy(&logs, &destination.name).await;
         assert_eq!(
@@ -443,7 +479,13 @@ async fn a_destination_the_account_does_not_hold_is_refused() {
         let (code, message) = logs
             .refusal(
                 PUT_POLICY,
-                &json!({"destinationName": name, "accessPolicy": "{}"}),
+                &json!({
+                    "destinationName": name,
+                    // A document the parser TAKES, so the refusal is the one about the
+                    // destination: the parse comes FIRST, and a document it rejects is refused
+                    // for the document whether or not the destination exists.
+                    "accessPolicy": account_grant_policy(&[SENDER_ACCOUNT], name),
+                }),
             )
             .await;
         assert_eq!(
@@ -488,6 +530,17 @@ async fn a_policy_that_is_not_an_iam_policy_document_is_refused() {
     let rejected = [
         ("plain text", "not a policy at all".to_string()),
         ("a one-character document", "p".to_string()),
+        // JSON that parses and is still not an IAM policy document: the empty object, an
+        // object declaring no statement, and one whose statement list is empty.
+        ("the empty JSON object", "{}".to_string()),
+        (
+            "an object that declares no statement",
+            json!({"Sid": "a"}).to_string(),
+        ),
+        (
+            "a policy whose statement list is empty",
+            json!({"Version": "2012-10-17", "Statement": []}).to_string(),
+        ),
         (
             "a JSON array of statements",
             r#"[{"Effect":"Allow"}]"#.to_string(),
@@ -620,7 +673,17 @@ impl Grant {
             Self::OtherOrganization => {
                 organization_grant_policy(OTHER_ORGANIZATION_ID, destination_name)
             }
-            Self::Nobody => "{}".to_string(),
+            Self::Nobody => json!({
+                "Version": "2012-10-17",
+                "Statement": [{
+                    "Sid": "DenyEverySender",
+                    "Effect": "Deny",
+                    "Principal": {"AWS": format!("arn:aws:iam::{SENDER_ACCOUNT}:root")},
+                    "Action": "logs:PutSubscriptionFilter",
+                    "Resource": "*",
+                }],
+            })
+            .to_string(),
         }
     }
 }

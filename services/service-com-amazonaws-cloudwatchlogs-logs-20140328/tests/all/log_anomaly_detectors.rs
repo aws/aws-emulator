@@ -55,6 +55,10 @@ const NOT_FOUND: &str = "ResourceNotFoundException";
 /// The code answered when a create would grow the account's store past its ceiling.
 const LIMIT_EXCEEDED: &str = "LimitExceededException";
 
+/// The code answered when the request provided none of an input the operation requires,
+/// which is a request-validation failure rather than a value the service rejected.
+const VALIDATION: &str = "ValidationException";
+
 /// A KMS key ARN of the form `DetectorKmsKeyArn`'s `@pattern` admits, for the rows that
 /// assign one: "Optionally assigns a KMS key to secure this anomaly detector".
 const KMS_KEY: &str = "arn:aws:kms:eu-west-2:000000000000:key/aaaabbbb-cccc-dddd-eeee-ffff00001111";
@@ -443,7 +447,7 @@ async fn a_request_that_names_no_single_log_group_is_refused() {
 
     // (case, the logGroupArnList, the code the refusal carries)
     let cases: Vec<(&str, Value, &str)> = vec![
-        ("no log group at all", json!([]), INVALID_PARAMETER),
+        ("no log group at all", json!([]), VALIDATION),
         (
             "two log groups, where only one may be specified",
             json!([group.clone(), log_group_arn(REGION, "anomaly-detectors/other", false)]),

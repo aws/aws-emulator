@@ -3180,27 +3180,54 @@ fn arn_parts(arn: &str) -> Option<(&str, &str, &str, &str, &str)> {
 /// `roleArn` names, so a subscription against one of them cannot be configured without
 /// that role: a stream of one of the two streaming services named as direct destinations
 /// ("An Amazon Kinesis stream belonging to the same account as the subscription filter",
-/// "A Kinesis Data Firehose delivery stream belonging to the same account").
+/// "A Kinesis Data Firehose delivery stream belonging to the same account"), and this
+/// service's OWN vendor, whose deliveries a subscription makes under the caller's role
+/// unless the ARN names the one resource that carries a role of its own
+/// ([`subscription_role_required_vendor`]).
 ///
-/// The other two destination kinds carry their own authorisation, so neither needs
-/// `roleArn`: a Lambda function is invoked directly, which is why the operation documents
-/// the `iam:PassRole` requirement for "any destination except a Lambda function", and a
-/// logical destination created with `PutDestination` was given the role it delivers
+/// The two destination kinds that need no `roleArn` are the ones carrying their own
+/// authorisation: a Lambda function is invoked directly, which is why the operation
+/// documents the `iam:PassRole` requirement for "any destination except a Lambda function",
+/// and a logical destination created with `PutDestination` was given the role it delivers
 /// through when it was created (`roleArn`: "You don't need to provide the ARN when you are
 /// working with a logical destination for cross-account delivery").
-pub const ROLE_ASSUMED_DESTINATION_VENDORS: [&str; 2] = ["kinesis", "firehose"];
+pub const ROLE_ASSUMED_DESTINATION_VENDORS: [&str; 3] = ["kinesis", "firehose", LOGS_ARN_VENDOR];
+
+/// The vendor segment this service's own ARNs carry — its `arnNamespace`, the one a log
+/// group, a log stream and a logical destination are all named under.
+pub const LOGS_ARN_VENDOR: &str = "logs";
 
 /// The vendor of a `destinationArn` whose delivery needs the role `roleArn` names, or
 /// `None` when the filter can be configured without one.
 ///
-/// Only the vendors in [`ROLE_ASSUMED_DESTINATION_VENDORS`] need one. A vendor this
-/// operation delivers to nothing in needs no role either: there is no delivery to
-/// authorise, and such a `destinationArn` is refused for the resource it names instead.
+/// The question is asked of the ARN's VENDOR rather than of the resource it names, because
+/// the role is what the delivery to that vendor is made under: a well-formed ARN of one of
+/// [`ROLE_ASSUMED_DESTINATION_VENDORS`] needs the role whatever resource of that vendor it
+/// names. The one exception is the resource that carries a role of its own — a logical
+/// destination of this service, which `PutDestination` gave one — so a subscription to one
+/// needs no `roleArn`.
+///
+/// A vendor this operation delivers to nothing in needs no role either: there is no delivery
+/// to authorise, and such a `destinationArn` is refused for the resource it names instead.
 pub fn subscription_role_required_vendor(arn: &str) -> Option<&str> {
-    let (_partition, vendor, _region, _account, _resource) = arn_parts(arn)?;
-    ROLE_ASSUMED_DESTINATION_VENDORS
-        .contains(&vendor)
+    let (_partition, vendor, _region, _account, resource) = arn_parts(arn)?;
+    if !ROLE_ASSUMED_DESTINATION_VENDORS.contains(&vendor) {
+        return None;
+    }
+    // The logical destination is the resource that carries its own role.
+    (!(vendor == LOGS_ARN_VENDOR && resource.starts_with(DESTINATION_ARN_PREFIX)))
         .then_some(vendor)
+}
+
+/// AWS's refusal for a subscription delivery to a vendor it makes under an assumed role
+/// ([`subscription_role_required_vendor`]) configured with no `roleArn`: the fixed text names
+/// the two members the pairing rule relates, and its one variable part is the vendor the
+/// delivery would be made to, read off the `destinationArn` the request carried.
+///
+/// Stated once here so the rule and its sentence stay together: the refusal is about the
+/// delivery the subscription configures, not about the shape of the ARN it named.
+pub fn destination_role_required_message(vendor: &str) -> String {
+    format!("destinationArn for vendor {vendor} cannot be used without roleArn")
 }
 
 /// Whether an ARN names a CloudWatch Logs log group — the only resource type a resource
@@ -4193,7 +4220,38 @@ pub fn transformer_not_found_message(log_group_name: &str) -> String {
 /// Both variable parts are taken from the request and from the emulator's own account
 /// identity; the sentence is otherwise fixed.
 pub fn log_group_not_found_for_owner_message(log_group_name: &str, owner_account_id: &str) -> String {
-    format!("Log group '{log_group_name}' for owner '{owner_account_id}' cannot be found")
+    log_group_for_owner_sentence(log_group_name, owner_account_id)
+}
+
+/// The same refusal, terminated, for the surface that states it as a full sentence: the
+/// log-anomaly-detector operations, which resolve the log groups a detector watches from the
+/// ARNs the request lists and report the IDENTIFIER they were handed rather than a name.
+///
+/// Both variable parts come from the request and from the emulator's own account identity —
+/// the identifier as the caller wrote it, and the account that would own that group — so a
+/// request listing several identifiers says WHICH one was not found.
+pub fn log_group_identifier_not_found_for_owner_message(
+    log_group_identifier: &str,
+    owner_account_id: &str,
+) -> String {
+    format!(
+        "{}.",
+        log_group_for_owner_sentence(log_group_identifier, owner_account_id)
+    )
+}
+
+/// The words both forms above share: the group that was looked for and the account that
+/// would own it, unterminated, so the two surfaces cannot word the same refusal differently.
+fn log_group_for_owner_sentence(log_group: &str, owner_account_id: &str) -> String {
+    format!("Log group '{log_group}' for owner '{owner_account_id}' cannot be found")
+}
+
+/// The refusal CloudWatch Logs answers a request that provided NONE of an input it requires:
+/// `<parameter> must be provided.` — the parameter as the service names it, and nothing from
+/// the request. It is a request-validation failure rather than a rejected value, so the
+/// operations that state it answer it with `ValidationException`.
+pub fn required_input_message(parameter: &str) -> String {
+    format!("{parameter} must be provided.")
 }
 
 /// The refusal the data protection policy DELETE answers when the log group it resolves holds

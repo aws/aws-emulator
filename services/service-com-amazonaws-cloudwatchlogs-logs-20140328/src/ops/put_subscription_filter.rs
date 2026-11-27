@@ -347,25 +347,27 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> PutSubscriptionFi
         }
 
         // "To perform a PutSubscriptionFilter operation for any destination except a
-        // Lambda function, you must also have the iam:PassRole permission": a stream of
-        // one of the two streaming services named as a DIRECT destination is delivered to
-        // through a role CloudWatch Logs assumes, so a filter on one cannot be configured
-        // without it. The other two kinds carry their own authorisation — a Lambda
-        // function is invoked directly, and a logical destination was given its role by
+        // Lambda function, you must also have the iam:PassRole permission": a delivery to
+        // one of the vendors CloudWatch Logs reaches by assuming a role is made under the
+        // role the put names, so a filter on one cannot be configured without it. The two
+        // kinds that carry their own authorisation need no `roleArn` — a Lambda function is
+        // invoked directly, and a logical destination was given its role by
         // `PutDestination` ("You don't need to provide the ARN when you are working with a
-        // logical destination for cross-account delivery") — so neither needs `roleArn`.
-        // The refusal names the vendor it was asked to deliver to.
+        // logical destination for cross-account delivery").
         //
-        // This runs BEFORE the destination-kind check below because that is the order the
-        // service answers in: a put of a streaming-vendor ARN that names no stream, with
-        // no roleArn, is refused for the missing role rather than for the resource the ARN
-        // names.
+        // The question is asked of the ARN's VENDOR
+        // ([`crate::state::subscription_role_required_vendor`]), which is what the delivery
+        // would be made to, and the refusal names that vendor. It runs BEFORE the
+        // destination-kind check below because that is the order the service answers in: an
+        // ARN of a role-assumed vendor naming a resource this operation delivers to nothing
+        // in — another of this service's own resources, say — is refused for the missing
+        // role rather than for the resource the ARN names.
         if input.role_arn.is_none() {
             if let Some(vendor) =
                 crate::state::subscription_role_required_vendor(&input.destination_arn)
             {
-                return Err(invalid(format!(
-                    "destinationArn for vendor {vendor} cannot be used without roleArn"
+                return Err(invalid(crate::state::destination_role_required_message(
+                    vendor,
                 )));
             }
         }

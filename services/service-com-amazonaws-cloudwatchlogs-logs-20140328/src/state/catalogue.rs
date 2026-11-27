@@ -910,6 +910,19 @@ pub const ANOMALY_STATE_BASELINE: &str = "Baseline";
 /// group that this anomaly detector will watch. You can specify only one log group ARN."
 pub const ANOMALY_DETECTOR_LOG_GROUPS: usize = 1;
 
+/// How the service NAMES the log groups a detector is created over in a refusal about them:
+/// the input `CreateLogAnomalyDetector$logGroupArnList` carries, stated the way AWS states
+/// it when the request provided none of it — one ARN or several, hence the plural in
+/// parentheses.
+pub const ANOMALY_DETECTOR_LOG_GROUP_INPUT: &str = "LogGroupArn(s)";
+
+/// The refusal `CreateLogAnomalyDetector` answers a request listing more log groups than one
+/// detector watches ([`ANOMALY_DETECTOR_LOG_GROUPS`]): the restriction
+/// `CreateLogAnomalyDetector$logGroupArnList` documents in its own words — "You can specify
+/// only one log group ARN." — stated for the class, so nothing of the request is
+/// interpolated.
+pub const ANOMALY_DETECTOR_ONE_LOG_GROUP_MESSAGE: &str = "You can specify only one log group ARN.";
+
 /// THE EMULATOR'S OWN CEILING on the log anomaly detectors one account holds, not a quota
 /// cited from AWS: every accepted create mints a fresh ARN and keeps the detector's
 /// configuration in memory for as long as the process runs, and nothing expires one, so

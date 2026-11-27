@@ -78,13 +78,14 @@ fn missing_destination_message(destination_name: &str) -> String {
 
 /// One physical target of each vendor a destination can deliver to, and the roles it can be
 /// created with — a destination is "used only to create destinations for cross-account
-/// subscriptions", so one target and one role are in another account.
+/// subscriptions", so one target is in another account, while both roles are in the caller's
+/// own: a role is passed to this service by the account that holds it.
 const KINESIS_ARN: &str = "arn:aws:kinesis:eu-west-2:123456789012:stream/log-events";
 const FIREHOSE_ARN: &str = "arn:aws:firehose:eu-west-2:123456789012:deliverystream/log-events";
-const LAMBDA_ARN: &str = "arn:aws:lambda:eu-west-2:123456789012:function:log-consumer";
+const OTHER_FIREHOSE_ARN: &str = "arn:aws:firehose:eu-west-2:123456789012:deliverystream/retired";
 const CROSS_ACCOUNT_KINESIS_ARN: &str = "arn:aws:kinesis:us-east-1:210987654321:stream/other";
-const ROLE_ARN: &str = "arn:aws:iam::123456789012:role/CWLtoKinesisRole";
-const CROSS_ACCOUNT_ROLE_ARN: &str = "arn:aws:iam::210987654321:role/CWLtoKinesisRole";
+const ROLE_ARN: &str = "arn:aws:iam::000000000000:role/CWLtoKinesisRole";
+const OTHER_ROLE_ARN: &str = "arn:aws:iam::000000000000:role/service-role/CWLtoKinesis";
 
 /// An access policy document — "An IAM policy document that governs which Amazon Web
 /// Services accounts can create subscription filters against this destination."
@@ -186,16 +187,16 @@ fn cases() -> Vec<Case> {
         Case::of(
             "a name outside ASCII, several tags and a policy",
             "ログ-送信先",
-            LAMBDA_ARN,
+            OTHER_FIREHOSE_ARN,
             ROLE_ARN,
         )
         .with_tags(&[("env", "prod"), ("owner", "obs"), ("tier", "gold")])
         .with_access_policy(),
         Case::of(
-            "a name carrying a space, a cross-account target and role, with a policy",
+            "a name carrying a space, a cross-account target, with a policy",
             "cross account dest",
             CROSS_ACCOUNT_KINESIS_ARN,
-            CROSS_ACCOUNT_ROLE_ARN,
+            OTHER_ROLE_ARN,
         )
         .with_access_policy(),
         // Both published bounds of `DestinationName` (`@length` 1..512).
@@ -397,7 +398,7 @@ async fn deleting_a_destination_the_account_does_not_hold_is_refused() {
     });
 
     // A destination created and then deleted, so the second delete of it names nothing.
-    let gone = Case::of("a destination already deleted", "retired-dest", LAMBDA_ARN, ROLE_ARN);
+    let gone = Case::of("a destination already deleted", "retired-dest", OTHER_FIREHOSE_ARN, ROLE_ARN);
     create(&logs, &gone).await;
     delete(&logs, &gone.name).await;
 
@@ -464,7 +465,7 @@ async fn a_put_after_a_delete_creates_a_fresh_destination() {
         "the destination put again after the delete",
         &original.name,
         FIREHOSE_ARN,
-        CROSS_ACCOUNT_ROLE_ARN,
+        OTHER_ROLE_ARN,
     );
     let before = now_ms();
     logs.ok(PUT, &recreated.put_body()).await;
@@ -481,7 +482,7 @@ async fn a_put_after_a_delete_creates_a_fresh_destination() {
     );
     assert_eq!(
         read.get("roleArn"),
-        Some(&json!(CROSS_ACCOUNT_ROLE_ARN)),
+        Some(&json!(OTHER_ROLE_ARN)),
         "case {:?}: expected the new put's roleArn, got {read}",
         recreated.label
     );

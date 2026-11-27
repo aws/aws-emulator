@@ -168,6 +168,81 @@ fn error_code(body: &serde_json::Value) -> String {
     raw.rsplit(['#', '/']).next().unwrap_or(raw).to_string()
 }
 
+/// Drive one Kinesis operation that must succeed, answering its parsed body.
+async fn kinesis(
+    router: &MultiServiceRouter,
+    case: &str,
+    operation: &str,
+    body: &serde_json::Value,
+) -> serde_json::Value {
+    let (status, text) = send(
+        router,
+        "kinesis",
+        "application/x-amz-json-1.1",
+        Some(&format!("Kinesis_20131202.{operation}")),
+        body.to_string(),
+    )
+    .await;
+    let parsed: serde_json::Value = if text.is_empty() {
+        serde_json::Value::Null
+    } else {
+        serde_json::from_str(&text).unwrap_or(serde_json::Value::Null)
+    };
+    assert_eq!(
+        status, 200,
+        "case {case:?}: kinesis {operation} must succeed, got {status} {parsed}"
+    );
+    parsed
+}
+
+/// The status a Kinesis stream reports once it can take a record.
+const STREAM_ACTIVE: &str = "ACTIVE";
+
+/// How long a row waits for a stream to report itself usable, and how often it looks. The
+/// deadline is generous: it is not a limit any case tests, only room for a loaded host.
+const ACTIVE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
+const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(50);
+
+/// A one-shard Kinesis stream that a `PutDestination` can deliver its test message to: the put
+/// VALIDATES the target it is handed by writing one record to it, so the stream has to be there
+/// and usable before the destination over it is configured.
+///
+/// The CONDITION is what is waited for rather than a span of the clock: a create arms a
+/// transition the emulator's clock owes, and this looks again until the stream reports it has
+/// been made or [`ACTIVE_DEADLINE`] has passed.
+async fn usable_stream(router: &MultiServiceRouter, case: &str, stream: &str) {
+    kinesis(
+        router,
+        case,
+        "CreateStream",
+        &serde_json::json!({"StreamName": stream, "ShardCount": 1}),
+    )
+    .await;
+    let deadline = std::time::Instant::now() + ACTIVE_DEADLINE;
+    loop {
+        let summary = kinesis(
+            router,
+            case,
+            "DescribeStreamSummary",
+            &serde_json::json!({"StreamName": stream}),
+        )
+        .await;
+        let status = summary["StreamDescriptionSummary"]["StreamStatus"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+        if status == STREAM_ACTIVE {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "case {case:?}: expected the stream {stream:?} to reach {STREAM_ACTIVE}, got \
+             {status:?}"
+        );
+        tokio::time::sleep(POLL_INTERVAL).await;
+    }
+}
+
 /// A trust policy with one statement, as a client sends one.
 fn trust(effect: &str, action: &str, principals: &str) -> String {
     format!(
@@ -345,6 +420,14 @@ async fn a_subscription_filter_is_configured_only_under_a_role_this_service_can_
             &serde_json::json!({"logGroupName": format!("/aws/emulator/{}", row.name)}),
         )
         .await;
+        // The Kinesis rows' destination has to EXIST for the rule under test to be the one the
+        // put answers: a `PutDestination` validates its target by delivering a test message to
+        // it, so a target Kinesis holds nothing under is refused for that instead of for the
+        // role. The Firehose rows name a service this suite does not mount, which answers
+        // nothing about their target either way.
+        if row.kind == Kind::Kinesis {
+            usable_stream(&router, row.case, row.name).await;
+        }
     }
 
     for row in &rows {

@@ -623,13 +623,20 @@ async fn a_subscription_delivery_is_authorized_against_the_role_its_configuratio
         .await;
 
         let keys = delivered_keys(&router, case, &stream).await;
-        let expected: Vec<String> = if row.delivers {
-            // The health check the put wrote, keyed on the log group it validated the filter
-            // for, then the envelope of the batch, keyed on the log stream it came from.
-            vec![group.clone(), LOG_STREAM.to_string()]
-        } else {
-            Vec::new()
-        };
+        // What the stream holds, in order: the test message `PutDestination` delivered while it
+        // VALIDATED the destination — keyed on the destination it was configuring, and written
+        // for every row that creates one, because validating a target is not a delivery of log
+        // data and so is not the delivery role's to allow — then, for a row whose role governs
+        // the write, the health check the put wrote (keyed on the log group it validated the
+        // filter for) and the envelope of the batch (keyed on the log stream it came from).
+        let mut expected: Vec<String> = Vec::new();
+        if matches!(row.governs, Governs::TheLogicalDestinationsRole) {
+            expected.push(row.name.to_string());
+        }
+        if row.delivers {
+            expected.push(group.clone());
+            expected.push(LOG_STREAM.to_string());
+        }
         assert_eq!(
             keys, expected,
             "case {case:?}: expected the destination to hold {expected:?}, got {keys:?}"

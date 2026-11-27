@@ -47,17 +47,31 @@ fn missing_destination_message(destination_name: &str) -> String {
 }
 
 /// Physical targets a destination delivers to, and the role CloudWatch Logs impersonates to
-/// reach them.
+/// reach them — a role of the caller's OWN account, the only account a role can be passed
+/// from.
 const KINESIS_ARN: &str = "arn:aws:kinesis:eu-west-2:123456789012:stream/log-events";
 const FIREHOSE_ARN: &str = "arn:aws:firehose:eu-west-2:123456789012:deliverystream/log-events";
-const ROLE_ARN: &str = "arn:aws:iam::123456789012:role/CWLtoKinesisRole";
+const ROLE_ARN: &str = "arn:aws:iam::000000000000:role/CWLtoKinesisRole";
 
-/// Access policy documents spanning what `accessPolicy` admits — the smallest JSON object and
-/// a full cross-account grant — so each row shows the refusal's message depends on the name
-/// alone and not on the document beside it.
+/// Access policy documents spanning what `accessPolicy` admits — one statement written as an
+/// object and a full cross-account grant written as a list — so each row shows the refusal's
+/// message depends on the name alone and not on the document beside it. Both are documents the
+/// service's IAM policy parser TAKES: the parse comes first, so a document it rejects is
+/// refused for the document rather than for the destination.
 fn access_policies() -> Vec<(&'static str, String)> {
     vec![
-        ("the smallest JSON object", "{}".to_string()),
+        (
+            "one statement written as an object rather than a list",
+            json!({
+                "Version": "2012-10-17",
+                "Statement": {
+                    "Effect": "Allow",
+                    "Principal": {"AWS": "210987654321"},
+                    "Action": "logs:PutSubscriptionFilter",
+                },
+            })
+            .to_string(),
+        ),
         (
             "a cross-account grant",
             json!({

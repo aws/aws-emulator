@@ -211,8 +211,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .filter(|name| !name.trim().is_empty());
         // "This is formatted as a JSON string": a document that is not a JSON object is not a
         // policy document, and what refuses it is the service's IAM policy parser — the same
-        // parser, and the same fixed sentence, that refuses an access policy it will not take
-        // ([`crate::state::ACCESS_POLICY_PARSE_FAILED`]).
+        // fixed sentence an access policy it will not take is refused with
+        // ([`crate::state::ACCESS_POLICY_PARSE_FAILED`]). What this surface asks of the
+        // document STOPS there: its own recorded behaviour accepts the empty object, so the
+        // statement-level grammar a destination's access policy is held to
+        // ([`crate::state::is_access_policy`]) is not asked here.
         if !::serde_json::from_str::<::serde_json::Value>(policy_document)
             .is_ok_and(|document| document.is_object())
         {

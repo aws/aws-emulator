@@ -471,7 +471,7 @@ async fn a_name_the_account_holds_no_destination_under_is_refused() {
         &json!({
             "destinationName": namesake,
             "targetArn": "arn:aws:kinesis:eu-west-2:123456789012:stream/vended",
-            "roleArn": "arn:aws:iam::123456789012:role/CWLtoKinesisRole",
+            "roleArn": "arn:aws:iam::000000000000:role/CWLtoKinesisRole",
         }),
     )
     .await;

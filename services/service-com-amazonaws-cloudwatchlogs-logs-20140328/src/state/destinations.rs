@@ -97,6 +97,30 @@ pub fn destination_arn(region: &str, name: &str) -> String {
 /// without naming which one failed.
 pub const DESTINATION_ARN_PARSE_FAILED: &str = "Error parsing ARN from given role or target";
 
+/// The vendors a logical destination can deliver to, as the ARN service segment naming each.
+///
+/// A destination "encapsulates a physical resource (such as an Amazon Kinesis stream)" and
+/// `PutSubscriptionFilter` states which of them one can be: "A logical destination created
+/// with PutDestination that belongs to a different account, for cross-account delivery. We
+/// currently support Kinesis Data Streams and Firehose as logical destinations." So a
+/// `targetArn` of any other service names a resource this service does not deliver to
+/// through a destination, whatever else that resource is.
+pub const DESTINATION_TARGET_VENDORS: [&str; 2] = ["kinesis", "firehose"];
+
+/// The refusal CloudWatch Logs answers a `PutDestination` whose `targetArn` names a resource
+/// of a vendor a destination cannot deliver to, or `None` for a target it can
+/// ([`DESTINATION_TARGET_VENDORS`]) and for a value that is no ARN at all — which names no
+/// vendor and is refused for the form it is in instead ([`DESTINATION_ARN_PARSE_FAILED`]).
+///
+/// The fixed text states that the destination is invalid and why; its one variable part is
+/// the vendor, read off the `targetArn` the request carried, so the sentence states the rule
+/// rather than one call's target.
+pub fn unsupported_target_vendor_message(target_arn: &str) -> Option<String> {
+    let (vendor, _resource) = arn_service_and_resource(target_arn)?;
+    (!DESTINATION_TARGET_VENDORS.contains(&vendor))
+        .then(|| format!("Invalid destination. Vendor {vendor} not supported."))
+}
+
 /// What this service states for a put that would create a destination past
 /// [`MAX_DESTINATIONS`]: the quota that refused it.
 ///
@@ -198,6 +222,53 @@ pub fn access_policy_grants_organization(document: &str) -> bool {
 pub const ACCESS_POLICY_PARSE_FAILED: &str =
     "Error occurred while parsing accessPolicy. Please check if the accessPolicy has been \
      constructed correctly using IAM grammar.";
+
+/// Whether `document` is a document CloudWatch Logs' IAM policy parser TAKES, which is what
+/// decides between storing it and answering [`ACCESS_POLICY_PARSE_FAILED`].
+///
+/// A member documented as an IAM policy document carries one in the IAM JSON policy language,
+/// and this operation ATTACHES that document to one of this account's resources, so the
+/// readings every service of this emulator applies to such a document are applied here, each
+/// stated once for the workspace:
+///
+/// * the document is a policy being attached — a JSON object whose member names the language
+///   defines, carrying a statement element and a version string the language defines
+///   ([`::service_common::iam_policy::attached_policy_defect`]);
+/// * its statements are RESOURCE-policy statements — each naming an effect, the actions it
+///   covers and, this being the element that says who the destination is shared with, the
+///   principals it grants them to ([`::service_common::iam_policy::resource_policy_defect`]);
+/// * every value those principal elements name is a principal the language defines a form for
+///   ([`::service_common::iam_policy_principals::unreadable_policy_principal`]), since a value
+///   outside them denotes no identity the grant could ever be evaluated against.
+///
+/// Beyond those, two clauses are this surface's own, and both come from WHAT a destination's
+/// access policy is for — "a destination controls what is written to it [...] a cross-account
+/// user cannot call PutSubscriptionFilter against this destination [until] the destination
+/// owner [...] call[s] PutDestinationPolicy" (`PutDestination`):
+///
+/// * every statement grants to an ACCOUNT ([`grants_to_an_account`]), because what this policy
+///   authorizes is another ACCOUNT's claim on this destination. A grant to a SERVICE principal
+///   is a service's permission on a resource, which is not what this document says, so the
+///   parser does not take it;
+/// * and a statement that ALLOWS the wildcard principal and narrows it with no condition
+///   identifies nobody to grant to ([`access_policy_allows_every_principal`]).
+///
+/// Asked of the DOCUMENT alone, so it can be — and is — asked before the resource the policy
+/// would be attached to is resolved: the parse is about the document the request carried, not
+/// about this account's state.
+pub fn is_access_policy(document: &str) -> bool {
+    if ::service_common::iam_policy::attached_policy_defect(document, |_| true).is_some()
+        || ::service_common::iam_policy::resource_policy_defect(document).is_some()
+        || ::service_common::iam_policy_principals::unreadable_policy_principal(document).is_some()
+        || access_policy_allows_every_principal(document)
+    {
+        return false;
+    }
+    let Ok(parsed) = ::serde_json::from_str::<::serde_json::Value>(document) else {
+        return false;
+    };
+    policy_statements(&parsed).iter().all(grants_to_an_account)
+}
 
 /// The principal value that names EVERY principal rather than one: the IAM wildcard.
 pub(super) const WILDCARD_PRINCIPAL: &str = "*";

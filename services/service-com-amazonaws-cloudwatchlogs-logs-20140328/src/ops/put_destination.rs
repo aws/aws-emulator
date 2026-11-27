@@ -11,8 +11,14 @@
 //!
 //! The put VALIDATES the wiring it configures the way the service does — by assuming the
 //! `roleArn` it names and test-delivering a message to the target
-//! ([`crate::state::delivery_role`]) — so a role IAM reports CloudWatch Logs cannot assume is
-//! refused with `InvalidParameterException` and no destination is stored.
+//! ([`crate::state::delivery_role`],
+//! [`crate::state::subscription_delivery::undeliverable_target_message`]) — so a role IAM
+//! reports CloudWatch Logs cannot assume, and a target whose own service refuses the test
+//! message, are both refused with `InvalidParameterException` and no destination is stored. A
+//! `roleArn` of ANOTHER account is refused before that: a role is passed to this service by
+//! the account that holds it ([`crate::state::cross_account_role_refusal`]). So is a
+//! `targetArn` of a vendor a logical destination cannot deliver to
+//! ([`crate::state::DESTINATION_TARGET_VENDORS`]).
 //!
 //! ## Shape of an operation
 //!
@@ -178,17 +184,39 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // together and reported as one failure
         // (`crate::state::DESTINATION_ARN_PARSE_FAILED`).
         //
-        // Nothing narrower is asserted about `targetArn`: `Destination$targetArn` documents
-        // the target as a physical resource "(for example, a Kinesis stream)" — an example
-        // rather than a closed set. What IS asked about `roleArn` is the one thing the service
-        // establishes while it configures the destination, below: that this service can assume
-        // it. What that role is then ALLOWED to do is asked of IAM per delivery, where the
-        // write is made.
+        // What is asked of each of them afterwards is asked separately: of `targetArn`, the
+        // vendor it names, since a destination delivers only to the ones this service
+        // supports; of `roleArn`, the account it belongs to and whether this service can
+        // assume it, the one thing the service establishes while it configures the
+        // destination. What that role is then ALLOWED to do is asked of IAM per delivery,
+        // where the write is made.
         if [input.target_arn.as_str(), input.role_arn.as_str()]
             .iter()
             .any(|value| crate::state::arn_service_and_resource(value).is_none())
         {
             return Err(invalid(crate::state::DESTINATION_ARN_PARSE_FAILED));
+        }
+
+        // The role is PASSED to this service by the caller that holds it — "To perform a
+        // PutDestination operation, you must also have the iam:PassRole permission" — and a
+        // principal of one account cannot pass a role of another, so a `roleArn` whose account
+        // segment is not the caller's own is refused and NOTHING is stored
+        // ([`crate::state::cross_account_role_refusal`]); `DescribeDestinations` then reports
+        // no such destination. Asked before the role is assumed below, because a role of
+        // another account is refused for the account it belongs to whatever IAM would say
+        // about assuming it.
+        if let Some(message) = crate::state::cross_account_role_refusal(&input.role_arn) {
+            return Err(invalid(message));
+        }
+
+        // A destination "encapsulates a physical resource", and the resources one can
+        // encapsulate are the streaming destinations this service documents for it ("We
+        // currently support Kinesis Data Streams and Firehose as logical destinations",
+        // `PutSubscriptionFilter`). A `targetArn` of any other vendor configures a delivery
+        // this service could never make, so it is refused naming that vendor and nothing is
+        // stored ([`crate::state::unsupported_target_vendor_message`]).
+        if let Some(message) = crate::state::unsupported_target_vendor_message(&input.target_arn) {
+            return Err(invalid(&message));
         }
 
         // What the role is for is the delivery CloudWatch Logs makes to the target under it
@@ -208,6 +236,23 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         .await
         {
             return Err(invalid(&message));
+        }
+
+        // The wiring is validated by DELIVERING that test message: a target whose own service
+        // refuses the record is a destination that could never deliver anything, so the put is
+        // refused with the service's sentence for an undeliverable destination and nothing is
+        // stored ([`crate::state::subscription_delivery::undeliverable_target_message`]). The
+        // record is keyed on the destination being configured, which is what the check is
+        // about. Asked before the store's guard is taken, for the reason above.
+        if let Some(message) = crate::state::subscription_delivery::undeliverable_target_message(
+            ctx,
+            &region,
+            &input.target_arn,
+            &input.destination_name,
+        )
+        .await
+        {
+            return Err(invalid(message));
         }
 
         let state = crate::state::service_state(&*self.engine).ok_or_else(|| {

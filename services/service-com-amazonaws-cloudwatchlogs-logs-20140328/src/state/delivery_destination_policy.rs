@@ -141,11 +141,13 @@ pub fn names_a_delivery_action(value: &str) -> bool {
 /// Whether a statement grants its actions to an ACCOUNT: the key an IAM policy names an
 /// account principal under.
 ///
-/// A delivery destination policy is what lets ANOTHER ACCOUNT create a delivery to this
-/// account's destination, so the principal it grants to is an account — named by its id, by its
-/// root ARN or by the ARN of one of its roles or users — or the wildcard that names every
-/// principal. A grant to a SERVICE principal alone is a service's permission on a resource,
-/// which is not what this policy does.
+/// A policy that shares one of this account's resources with ANOTHER ACCOUNT — a delivery
+/// destination policy, which lets that account create a delivery to this account's
+/// destination, and a logical destination's access policy, which lets it register a
+/// subscription filter against this account's destination — grants to an account: named by its
+/// id, by its root ARN or by the ARN of one of its roles or users, or the wildcard that names
+/// every principal. A grant to a SERVICE principal alone is a service's permission on a
+/// resource, which is not what either policy does.
 pub fn grants_to_an_account(statement: &::serde_json::Value) -> bool {
     PRINCIPAL_ELEMENTS
         .into_iter()
@@ -218,7 +220,11 @@ const ACTION_ELEMENTS: [&str; 2] = ["Action", "NotAction"];
 /// The statements a policy document declares: the entries of its `Statement` list, or the one
 /// statement written as the object itself rather than as a list — the two spellings the IAM
 /// policy language admits.
-fn policy_statements(document: &::serde_json::Value) -> Vec<::serde_json::Value> {
+///
+/// `pub(super)` so the OTHER surface of this service that reads a submitted policy document —
+/// the destination access policy ([`super::is_access_policy`]) — walks the same statements
+/// this one does rather than carrying a second reading of that element.
+pub(super) fn policy_statements(document: &::serde_json::Value) -> Vec<::serde_json::Value> {
     match document.get("Statement") {
         Some(::serde_json::Value::Array(entries)) => entries.clone(),
         Some(statement @ ::serde_json::Value::Object(_)) => vec![statement.clone()],

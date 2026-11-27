@@ -28,9 +28,7 @@
 use serde_json::json;
 
 use crate::harness::base_ms;
-use crate::subscription_fan_out::{
-    assert_envelope, past_activation, stream_arn, Emulator, BY_LOG_STREAM,
-};
+use crate::subscription_fan_out::{assert_envelope, stream_arn, Emulator, BY_LOG_STREAM};
 
 /// The line every case writes, which an empty filter pattern selects.
 const LINE: &str = "ERROR disk full";
@@ -100,7 +98,14 @@ async fn an_undecidable_delivery_role_withholds_nothing() {
             .create_stream(row.case, &format!("stream-{}", row.name))
             .await;
     }
-    tokio::time::sleep(past_activation()).await;
+    // Every stream is WAITED FOR until it reports itself usable, rather than for a span of
+    // the clock: the status it leaves `CREATING` for is one the clock owes, and the wait ends
+    // as soon as the stream says so.
+    for row in &rows {
+        emulator
+            .await_active_stream(row.case, &format!("stream-{}", row.name))
+            .await;
+    }
 
     for row in &rows {
         let case = row.case;
@@ -216,9 +221,12 @@ async fn an_undecidable_delivery_role_withholds_nothing() {
             "case {case}: log data grouped by log stream is keyed on the log stream, got {key}"
         );
         let checks = emulator.health_checks(case, &stream).await;
+        // The put's health check, and — for a row whose filter names a logical destination —
+        // the test message `PutDestination` wrote while it validated that destination.
+        let expected = 1 + usize::from(row.destination_role_arn.is_some());
         assert_eq!(
             checks.len(),
-            1,
+            expected,
             "case {case}: the put's health check is written under the same role, got {checks:?}"
         );
 

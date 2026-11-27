@@ -2,10 +2,12 @@
 
 //! @op CreateLogAnomalyDetector
 //! Implemented: stores one anomaly detector over the single log group it was asked to
-//! watch and hands back the ARN it minted for it, or refuses a request that names more
+//! watch and hands back the ARN it minted for it, or refuses a request that lists no log
+//! group at all (the missing required input, `ValidationException`), one that names more
 //! than one log group, something that is not a log group ARN, or a log group this account
-//! does not hold in this region — and refuses a create that would grow the account's
-//! detector store past the emulator's own ceiling. This is the ONLY file to touch for this
+//! does not hold in this region — naming the identifier it could not find and the account
+//! that would own it. It also refuses a create that would grow the account's detector store
+//! past the emulator's own ceiling. This is the ONLY file to touch for this
 //! operation.
 //!
 //! A 501 from this operation means "nobody has written it yet", never "the emulator is
@@ -129,7 +131,10 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-cloudwatchlogs-logs-201
 // here — hence the `CreateLogAnomalyDetectorError` alias below. An operation that models no errors
 // generates an UNINHABITED enum here, which is correct and expected: there is nothing
 // to construct until the model says otherwise.
-#[smithy_macros::operation_error("com.amazonaws.cloudwatchlogs#CreateLogAnomalyDetector")]
+#[smithy_macros::operation_error(
+    "com.amazonaws.cloudwatchlogs#CreateLogAnomalyDetector",
+    extra_errors = ["ValidationException"]
+)]
 #[derive(Debug)]
 pub enum CreateLogAnomalyDetectorErrorModeled {
     InvalidParameterException(InvalidParameterException),
@@ -137,6 +142,10 @@ pub enum CreateLogAnomalyDetectorErrorModeled {
     OperationAbortedException(OperationAbortedException),
     ResourceNotFoundException(ResourceNotFoundException),
     ServiceUnavailableException(ServiceUnavailableException),
+    // Widened in through `extra_errors`: the SERVICE models `ValidationException` and
+    // answers it for a request that provided none of a required input, which this
+    // operation's own `errors` list omits. See `crate::state::required_input_message`.
+    ValidationException(ValidationException),
 }
 
 /// This operation's error channel, as the generated `impl Operation` names it
@@ -202,6 +211,23 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             )
         };
 
+        // "An array containing the ARN of the log group that this anomaly detector will
+        // watch": the list is required, so a request that lists NO ARN provided none of a
+        // required input — a request-validation failure rather than a value the service
+        // rejected, which is why it is answered with `ValidationException` and a sentence
+        // naming the input that must be provided
+        // ([`crate::state::required_input_message`]) rather than with a count.
+        if input.log_group_arn_list.is_empty() {
+            return Err(CreateLogAnomalyDetectorErrorModeled::ValidationException(
+                ValidationException {
+                    message: Some(crate::state::required_input_message(
+                        crate::state::ANOMALY_DETECTOR_LOG_GROUP_INPUT,
+                    )),
+                },
+            )
+            .into());
+        }
+
         // A member this operation parses as an ARN and was handed something that is not one
         // is refused before anything is looked up, with the service's validation-error
         // message naming the member and the value it could not parse.
@@ -211,16 +237,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             }
         }
 
-        // "An array containing the ARN of the log group that this anomaly detector will
-        // watch. You can specify only one log group ARN": the list is required, so a request
-        // that names no log group names nothing to watch, and one that names several asks
-        // for a detector this operation does not create.
-        if input.log_group_arn_list.len() != crate::state::ANOMALY_DETECTOR_LOG_GROUPS {
-            return Err(invalid(format!(
-                "logGroupArnList must contain exactly {} log group ARN, got {}",
-                crate::state::ANOMALY_DETECTOR_LOG_GROUPS,
-                input.log_group_arn_list.len()
-            )));
+        // "You can specify only one log group ARN": a request naming several asks for a
+        // detector this operation does not create, so the refusal states the documented
+        // restriction and nothing of the request.
+        if input.log_group_arn_list.len() > crate::state::ANOMALY_DETECTOR_LOG_GROUPS {
+            return Err(invalid(
+                crate::state::ANOMALY_DETECTOR_ONE_LOG_GROUP_MESSAGE.to_string(),
+            ));
         }
 
         // The ARNs parse, so this is a refusal of the resource they name rather than of
@@ -276,16 +299,24 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // there is nothing for it to scan until the log group the request named exists. The
         // ARN names a region and an account as well as a name, so an ARN naming another
         // region's or another account's log group names a resource this account does not
-        // hold here, even when a stored group happens to share its name.
-        if input.log_group_arn_list.iter().any(|arn| {
+        // hold here, even when a stored group happens to share its name. The refusal states
+        // WHICH identifier was not found — the one the request wrote, verbatim — and the
+        // account that would own that group
+        // ([`crate::state::log_group_identifier_not_found_for_owner_message`]).
+        if let Some(arn) = input.log_group_arn_list.iter().find(|arn| {
             let name = crate::state::log_group_name_from_identifier(arn);
             !store.log_groups.contains_key(name)
-                || *arn != crate::state::log_group_arn(&region, name, false)
+                || **arn != crate::state::log_group_arn(&region, name, false)
         }) {
             return Err(
                 CreateLogAnomalyDetectorErrorModeled::ResourceNotFoundException(
                     ResourceNotFoundException {
-                        message: Some(crate::state::resource_not_found_message("log group")),
+                        message: Some(
+                            crate::state::log_group_identifier_not_found_for_owner_message(
+                                arn,
+                                ::engine::emulator_account_id(),
+                            ),
+                        ),
                     },
                 )
                 .into(),

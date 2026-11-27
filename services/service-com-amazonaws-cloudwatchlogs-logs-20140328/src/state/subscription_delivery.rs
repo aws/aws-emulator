@@ -379,14 +379,7 @@ pub fn health_check(
 ) -> Option<Delivery> {
     let physical_destination_arn = physical_destination(store, configured_destination_arn)?;
     let destination_type = destination_type(&physical_destination_arn)?;
-    let named = CONTROL_MESSAGE_DESTINATIONS
-        .iter()
-        .find(|(kind, _)| *kind == destination_type)
-        .map(|(_, named)| *named)?;
-    let body = control_envelope(
-        &format!("{CONTROL_MESSAGE_PREFIX} {named}."),
-        super::now_ms(),
-    );
+    let payload = control_message(destination_type, super::now_ms())?;
     Some(Delivery {
         log_group_name: log_group_name.to_string(),
         filter_name: filter_name.to_string(),
@@ -401,8 +394,128 @@ pub fn health_check(
         // The check belongs to no log stream, so the group whose filter is being validated
         // is what it is keyed on.
         partition_key: log_group_name.to_string(),
-        payload: gzip(&body),
+        payload,
     })
+}
+
+/// The TEST MESSAGE CloudWatch Logs writes while it VALIDATES a destination: the health-check
+/// envelope above, gzipped the way the receiving service reads a delivered record, naming the
+/// kind of destination being checked ([`CONTROL_MESSAGE_DESTINATIONS`]).
+///
+/// `None` for a kind no record is written to, which is what makes a destination that is not
+/// stream-like owe no check and no test message.
+fn control_message(destination_type: &str, at_ms: i64) -> Option<Vec<u8>> {
+    let named = CONTROL_MESSAGE_DESTINATIONS
+        .iter()
+        .find(|(kind, _)| *kind == destination_type)
+        .map(|(_, named)| *named)?;
+    Some(gzip(&control_envelope(
+        &format!("{CONTROL_MESSAGE_PREFIX} {named}."),
+        at_ms,
+    )))
+}
+
+/// AWS's refusal for a destination whose TARGET would not take the test message CloudWatch
+/// Logs delivers to it while `PutDestination` configures the destination. Fixed text for the
+/// class: it names neither the target, nor its vendor, nor anything else from the request.
+pub const TEST_MESSAGE_UNDELIVERABLE: &str =
+    "Could not deliver test message to specified destination. Check if the destination is \
+     valid.";
+
+/// That refusal for the target `target_arn`, or `None` when nothing grounds one.
+///
+/// `PutDestination` validates the wiring it configures by DELIVERING one test message to the
+/// target — the same record a `PutSubscriptionFilter` writes to the destination it configures
+/// ([`health_check`]) — so a target its own service reports it holds nothing under is a
+/// destination that could never deliver anything, and the put is refused rather than storing
+/// it. The write is made to the service that owns the target, over the in-process callback,
+/// exactly as a forwarded envelope is.
+///
+/// The refusal is grounded in the OWNING SERVICE'S OWN ANSWER, and in one answer only: that
+/// service reporting the target MISSING. Every other outcome establishes nothing about the
+/// target — an emulator assembled with that service absent, a call that could not be made,
+/// any other fault of the write — so it refuses nothing, and a target of no stream-like kind
+/// owes no test message in the first place.
+///
+/// `region` is the Region the request was signed for, used only for a `target_arn` that names
+/// no Region of its own; the Region that reaches the endpoint is held to the grammar a Region
+/// is written in, so no value a request carried can name a host.
+pub async fn undeliverable_target_message(
+    ctx: &smithy_server_runtime::OperationContext<'_>,
+    region: &str,
+    target_arn: &str,
+    partition_key: &str,
+) -> Option<&'static str> {
+    let destination_type = destination_type(target_arn)?;
+    let payload = control_message(destination_type, super::now_ms())?;
+    let fallback_region =
+        ::service_common::arn::region_label(region).unwrap_or(super::DEFAULT_REGION);
+    let target_region = super::arn_region(target_arn)
+        .and_then(::service_common::arn::region_label)
+        .unwrap_or(fallback_region)
+        .to_string();
+    if destination_type == KINESIS_DESTINATION_TYPE {
+        let stream_name = ::service_common::arn::resource_id_of_type(target_arn, KINESIS_STREAM.1)?;
+        let client = callback_client!(aws_sdk_kinesis, ctx.callback(), "kinesis", target_region);
+        let answer = client
+            .put_record()
+            .stream_name(stream_name)
+            .partition_key(partition_key)
+            .data(::aws_sdk_kinesis::primitives::Blob::new(payload))
+            .send()
+            .await;
+        answer.err().and_then(|error| {
+            let reported_absent = error.as_service_error().is_some_and(
+                ::aws_sdk_kinesis::operation::put_record::PutRecordError::is_resource_not_found_exception,
+            );
+            refused_test_message(reported_absent, &error, target_arn)
+        })
+    } else {
+        let stream_name =
+            ::service_common::arn::resource_id_of_type(target_arn, FIREHOSE_DELIVERY_STREAM.1)?;
+        let record = ::aws_sdk_firehose::types::Record::builder()
+            .data(::aws_sdk_firehose::primitives::Blob::new(payload))
+            .build()
+            .ok()?;
+        let client = callback_client!(aws_sdk_firehose, ctx.callback(), "firehose", target_region);
+        let answer = client
+            .put_record()
+            .delivery_stream_name(stream_name)
+            .record(record)
+            .send()
+            .await;
+        answer.err().and_then(|error| {
+            let reported_absent = error.as_service_error().is_some_and(
+                ::aws_sdk_firehose::operation::put_record::PutRecordError::is_resource_not_found_exception,
+            );
+            refused_test_message(reported_absent, &error, target_arn)
+        })
+    }
+}
+
+/// [`TEST_MESSAGE_UNDELIVERABLE`] when the target's own service reported the target MISSING,
+/// and `None` for every other failed write — this emulator failing to make the call, or a
+/// fault that says nothing about whether the target is there — which is worth a warning
+/// instead. The caller's own value is rendered in its escaped `Debug` form, so an ARN
+/// carrying a newline cannot forge a log line.
+fn refused_test_message<E, R>(
+    reported_absent: bool,
+    error: &::aws_sdk_kinesis::error::SdkError<E, R>,
+    target_arn: &str,
+) -> Option<&'static str>
+where
+    E: ::std::error::Error + 'static,
+    R: ::std::fmt::Debug,
+{
+    if reported_absent {
+        return Some(TEST_MESSAGE_UNDELIVERABLE);
+    }
+    ::tracing::warn!(
+        target_arn = ?target_arn,
+        error = %::aws_smithy_types::error::display::DisplayErrorContext(error),
+        "a destination's target did not take the test message, and reported no missing resource"
+    );
+    None
 }
 
 /// Every envelope the events `PutLogEvents` just stored on `log_stream_name` owe the
