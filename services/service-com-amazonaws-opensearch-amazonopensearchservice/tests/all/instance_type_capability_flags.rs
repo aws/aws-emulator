@@ -12,14 +12,18 @@
 //! The rule under test: every capability member of an entry is documented "supported for
 //! the instance type", so each reports a capability OF THAT TYPE —
 //!
-//! * a capability the INSTANCE provides (encryption at rest together with node-to-node
-//!   encryption, and the warm tier) is reported off the instance family alone: the same
-//!   answer on every release that offers the type, including a release older than the
-//!   feature, and the same answer the create path refuses a configuration on;
+//! * a capability the INSTANCE provides (the warm tier) is reported off the instance
+//!   family alone: the same answer on every release that offers the type, including a
+//!   release older than the feature, and the same answer the create path refuses a
+//!   configuration on;
 //! * a capability the ENGINE provides (Amazon Cognito authentication, application
 //!   logging, fine-grained access control) is reported off the release that introduced
 //!   it, so it is reported off wherever the engine does not have it and stays reported
-//!   once it is.
+//!   once it is;
+//! * a capability that needs BOTH (encryption at rest together with node-to-node
+//!   encryption: hardware that provides them and an engine release that has them) is
+//!   reported off the pairing, so a family that offers it is still reported unsupported
+//!   on a release older than the features.
 //!
 //! The rows differ along what the rule generalises over: the instance family (burstable,
 //! general purpose, compute-, memory- and storage-optimized, OpenSearch-optimized, the
@@ -31,7 +35,10 @@ use std::collections::BTreeMap;
 use serde_json::Value;
 
 use super::domain_lifecycle::Emulator;
-use super::instance_type_catalog::{list_type, whole_listing};
+// `ENCRYPTION_RELEASE` is the release BOTH features `EncryptionEnabled` reports are
+// available from — AWS documents encryption at rest from 5.1 and node-to-node encryption
+// from 6.0 — stated once in the suite that owns the listing's rules.
+use super::instance_type_catalog::{list_type, whole_listing, ENCRYPTION_RELEASE};
 
 /// The engine releases every table below spans: the oldest Elasticsearch release, each
 /// release one of the features arrived in, one either side of it, and OpenSearch
@@ -59,12 +66,13 @@ const ENGINE_FEATURE_RELEASE: (u32, u32) = (5, 1);
 /// The Elasticsearch release fine-grained access control is available from.
 const ADVANCED_SECURITY_RELEASE: (u32, u32) = (6, 7);
 
-/// One row of the capability table: an instance type, whether its family offers the two
-/// encryption features, and whether its family offers the warm tier.
+/// One row of the capability table: an instance type, whether its family is one the two
+/// encryption features are available on at all, and whether its family offers the warm
+/// tier.
 ///
 /// The expectations are the FAMILY's: the unencrypted previous generations are the `m3`
 /// and `t2` families, and the warm tier is offered on every family except the burstable
-/// ones (`t2`, `t3`, `t4g`) — the same two answers the create path reads.
+/// ones (`t2`, `t3`, `t4g`) — the warm answer being the one the create path reads.
 const CAPABILITIES: [(&str, bool, bool); 11] = [
     ("r5.large.search", true, true),
     ("r5.24xlarge.search", true, true),
@@ -100,7 +108,9 @@ fn parse(release: &str) -> (&str, u32, u32) {
 
 /// Whether a feature an Elasticsearch release introduced is available on `release`.
 /// OpenSearch 1.0 forked from Elasticsearch 7.10, so every OpenSearch release has them.
-fn has_engine_feature(release: &str, since: (u32, u32)) -> bool {
+///
+/// Shared with the sibling suites that state a release-gated capability.
+pub(crate) fn has_engine_feature(release: &str, since: (u32, u32)) -> bool {
     let (engine, major, minor) = parse(release);
     engine == "OpenSearch" || (major, minor) >= since
 }
@@ -143,19 +153,12 @@ async fn a_capability_the_instance_provides_is_reported_on_every_release_that_of
     let mut covered: BTreeMap<&str, usize> = BTreeMap::new();
     for release in RELEASES {
         let listing = listing_by_type(&emulator, release).await;
-        for (instance_type, encryption, warm) in rows() {
+        for (instance_type, _, warm) in rows() {
             let Some(entry) = listing.get(instance_type) else {
                 continue;
             };
             *covered.entry(instance_type).or_default() += 1;
             let case = format!("{instance_type} on {release}");
-
-            let reported = flag(entry, "EncryptionEnabled", &case);
-            assert_eq!(
-                reported, encryption,
-                "case {case}: expected the family's encryption support ({encryption}) \
-                 whatever the release, got {reported}"
-            );
 
             let reported = flag(entry, "WarmEnabled", &case);
             assert_eq!(
@@ -200,6 +203,16 @@ async fn a_capability_the_engine_provides_is_reported_off_the_release() {
                 );
             }
 
+            // The two encryption features need hardware that provides them AND an engine
+            // release that has them, so the pairing is what the member reports.
+            let expected = encryption && has_engine_feature(release, ENCRYPTION_RELEASE);
+            let reported = flag(entry, "EncryptionEnabled", &case);
+            assert_eq!(
+                reported, expected,
+                "case {case}: expected EncryptionEnabled to follow the family's support \
+                 and the release ({expected}), got {reported}"
+            );
+
             // Fine-grained access control needs an engine that has it AND both
             // encryption features, so it is reported only where the two meet.
             let advanced = flag(entry, "AdvancedSecurityEnabled", &case);
@@ -224,9 +237,11 @@ async fn an_entry_reports_the_instances_capabilities_on_a_release_without_the_en
 
     // The combination the two kinds of capability produce together, which neither rule
     // alone states: on a release OLDER than fine-grained access control, an entry still
-    // reports the encryption and warm-tier support its instance type provides, and
-    // reports fine-grained access control off. One row per family group that offers both
-    // capabilities, read through the `instanceType` filter so the case names one entry.
+    // reports the warm-tier support its instance type provides, reports fine-grained
+    // access control off, and reports the two encryption features exactly where the
+    // release has them — off on a release before node-to-node encryption, on from it.
+    // One row per family group that offers both capabilities, read through the
+    // `instanceType` filter so the case names one entry.
     for release in ["Elasticsearch_5.1", "Elasticsearch_6.0"] {
         for instance_type in [
             "r5.large.search",
@@ -255,7 +270,10 @@ async fn an_entry_reports_the_instances_capabilities_on_a_release_without_the_en
             );
             let entry = &entries[0];
             for (member, expected) in [
-                ("EncryptionEnabled", true),
+                (
+                    "EncryptionEnabled",
+                    has_engine_feature(release, ENCRYPTION_RELEASE),
+                ),
                 ("WarmEnabled", true),
                 ("CognitoEnabled", true),
                 ("AppLogsEnabled", true),

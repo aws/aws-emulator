@@ -41,12 +41,13 @@ use super::instance_type_catalog::list_type;
 /// The roles a general-purpose, compute-optimized or memory-optimized family serves.
 const DATA_MASTER_COORDINATOR: &[&str] = &["data", "master", "coordinator"];
 
-/// The roles a storage-optimized family serves: a dedicated coordinator node holds none
-/// of the domain's data, so it is not provisioned on one.
+/// The roles a storage-optimized family of an earlier generation serves: a dedicated
+/// coordinator node holds none of the domain's data, so it is not provisioned on one.
 const DATA_AND_MASTER: &[&str] = &["data", "master"];
 
-/// The role an OpenSearch-optimized family serves: its instances hold the domain's data
-/// and are never master-eligible.
+/// The role a family published for the DATA TIER alone serves — the OpenSearch-optimized
+/// families, and the storage-optimized generations that arrived after the engines forked:
+/// its instances hold the domain's data and are never master-eligible.
 const DATA_ONLY: &[&str] = &["data"];
 
 /// One row per current-generation family, each naming a DIFFERENT published size so the
@@ -63,10 +64,10 @@ const CURRENT_GENERATION: [(&str, &str, &str, &[&str]); 17] = [
     ("m8g.12xlarge.search", "OpenSearch_2.15", "OpenSearch_2.13", DATA_MASTER_COORDINATOR),
     ("r8g.large.search", "OpenSearch_2.15", "OpenSearch_2.13", DATA_MASTER_COORDINATOR),
     ("r8gd.medium.search", "OpenSearch_2.15", "OpenSearch_2.13", DATA_MASTER_COORDINATOR),
-    ("i8ge.18xlarge.search", "OpenSearch_2.15", "OpenSearch_2.13", DATA_AND_MASTER),
-    ("i8g.4xlarge.search", "OpenSearch_2.15", "OpenSearch_2.13", DATA_AND_MASTER),
+    ("i8ge.18xlarge.search", "OpenSearch_2.15", "OpenSearch_2.13", DATA_ONLY),
+    ("i8g.4xlarge.search", "OpenSearch_2.15", "OpenSearch_2.13", DATA_ONLY),
     // The seventh-generation Intel dense-storage family.
-    ("i7i.12xlarge.search", "OpenSearch_2.13", "OpenSearch_2.11", DATA_AND_MASTER),
+    ("i7i.12xlarge.search", "OpenSearch_2.13", "OpenSearch_2.11", DATA_ONLY),
     // The Graviton families offered from the Graviton prerequisite onwards, so from an
     // Elasticsearch release and on every OpenSearch one.
     ("im4gn.8xlarge.search", "Elasticsearch_7.9", "Elasticsearch_7.8", DATA_AND_MASTER),

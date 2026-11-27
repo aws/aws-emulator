@@ -156,17 +156,40 @@ pub(super) const GRAVITON4_SINCE_OPENSEARCH: (u32, u32) = (2, 15);
 /// both, so it is unavailable on them too.
 pub(super) const UNENCRYPTED_FAMILIES: [&str; 2] = ["m3", "t2"];
 
-/// Whether the instance family of `instance_type` offers both encryption features
-/// `InstanceTypeDetails$EncryptionEnabled` covers — "whether encryption at rest and
-/// node-to-node encryption are supported for the instance type".
+/// Whether the instance family of `instance_type` is one both encryption features are
+/// available on at all — the hardware half of what
+/// `InstanceTypeDetails$EncryptionEnabled` reports ("whether encryption at rest and
+/// node-to-node encryption are supported for the instance type").
 ///
-/// A property of the hardware, so it is read off the family
-/// ([`UNENCRYPTED_FAMILIES`]) and off nothing else: the catalog answers what the TYPE
-/// supports, which is the same answer however old the release the listing is for. The
-/// ONE derivation of that capability, as [`offers_warm_storage`] is of the warm tier's.
+/// Read off the family ([`UNENCRYPTED_FAMILIES`]) and off nothing else, so the answer is
+/// the same for every size of a family. [`offers_encryption_on`] is the whole answer: the
+/// features also need an engine that has them.
 pub fn offers_encryption(instance_type: &str) -> bool {
     let family = instance_family(instance_type).unwrap_or(instance_type);
     !UNENCRYPTED_FAMILIES.contains(&family)
+}
+
+/// The Elasticsearch release BOTH features `InstanceTypeDetails$EncryptionEnabled`
+/// reports are available from.
+///
+/// AWS documents encryption at rest as requiring OpenSearch or Elasticsearch 5.1 or
+/// later and node-to-node encryption as requiring 6.0 or later; the member reports the
+/// two TOGETHER, and a release has the pair only once it has each of them, so the gate
+/// is the later of the two — node-to-node encryption's.
+pub(super) const ENCRYPTION_SINCE_ELASTICSEARCH: (u32, u32) = (6, 0);
+
+/// Whether `version` offers both encryption features on `instance_type` — the whole of
+/// what `InstanceTypeDetails$EncryptionEnabled` reports.
+///
+/// Encryption at rest and node-to-node encryption each need BOTH halves of the pairing a
+/// listing is about: hardware that provides them ([`offers_encryption`]) and an engine
+/// release that has them ([`ENCRYPTION_SINCE_ELASTICSEARCH`]). A release older than the
+/// one a feature arrived in cannot serve it on any instance type, so the catalog of such
+/// a release reports the pair unsupported — which is what the recorded listing of an old
+/// Elasticsearch release carries for families a current release reports it on. The ONE
+/// derivation of that capability, as [`offers_warm_storage`] is of the warm tier's.
+pub fn offers_encryption_on(version: EngineVersion, instance_type: &str) -> bool {
+    offers_encryption(instance_type) && version.since_elasticsearch(ENCRYPTION_SINCE_ELASTICSEARCH)
 }
 
 /// The burstable instance families. UltraWarm cannot be attached to a cluster whose
@@ -192,8 +215,15 @@ pub(super) const ROLES_WITH_COORDINATOR: &[&str] = &[
 /// family, a burstable one and a previous generation publish these two.
 pub(super) const ROLES_DATA_AND_MASTER: &[&str] = &[INSTANCE_ROLE_DATA, INSTANCE_ROLE_MASTER];
 
-/// The roles an OpenSearch-optimized family serves: its instances hold the domain's
-/// data and are never master-eligible.
+/// The roles a family published for the DATA TIER alone serves: its instances hold the
+/// domain's data and are never master-eligible, so neither of the other hot-tier roles is
+/// available on them.
+///
+/// The OpenSearch-optimized families are published that way, and so are the
+/// storage-optimized generations that arrived after the engines forked (`i7i`, `i8g`
+/// beside `i8ge`), whose recorded catalog entries carry the data role alone. The earlier
+/// storage-optimized generations stay master-eligible ([`ROLES_DATA_AND_MASTER`]), which
+/// is what their own entries report.
 pub(super) const ROLES_DATA_ONLY: &[&str] = &[INSTANCE_ROLE_DATA];
 
 /// The roles the UltraWarm family serves: the warm tier, and nothing else.
@@ -619,7 +649,9 @@ pub(super) const INSTANCE_TYPE_CATALOG: &[CatalogFamily] = &[
         releases: OfferedReleases::Every,
     },
     // Storage optimized: an instance of one holds the domain's data on storage built
-    // into it, and a coordinator node holds none, so it is not provisioned on one.
+    // into it, and a coordinator node holds none, so it is not provisioned on one. The
+    // generations that arrived after the engines forked are published for the data tier
+    // alone, so they are not master-eligible either ([`ROLES_DATA_ONLY`]).
     CatalogFamily {
         family: "i8ge",
         instance_types: &[
@@ -632,7 +664,7 @@ pub(super) const INSTANCE_TYPE_CATALOG: &[CatalogFamily] = &[
             "i8ge.18xlarge.search",
             "i8ge.24xlarge.search",
         ],
-        roles: ROLES_DATA_AND_MASTER,
+        roles: ROLES_DATA_ONLY,
         releases: OfferedReleases::SinceOpenSearch(GRAVITON4_SINCE_OPENSEARCH),
     },
     CatalogFamily {
@@ -647,7 +679,7 @@ pub(super) const INSTANCE_TYPE_CATALOG: &[CatalogFamily] = &[
             "i8g.16xlarge.search",
             "i8g.24xlarge.search",
         ],
-        roles: ROLES_DATA_AND_MASTER,
+        roles: ROLES_DATA_ONLY,
         releases: OfferedReleases::SinceOpenSearch(GRAVITON4_SINCE_OPENSEARCH),
     },
     CatalogFamily {
@@ -662,7 +694,7 @@ pub(super) const INSTANCE_TYPE_CATALOG: &[CatalogFamily] = &[
             "i7i.16xlarge.search",
             "i7i.24xlarge.search",
         ],
-        roles: ROLES_DATA_AND_MASTER,
+        roles: ROLES_DATA_ONLY,
         releases: OfferedReleases::SinceOpenSearch(SEVENTH_GENERATION_INTEL_SINCE_OPENSEARCH),
     },
     CatalogFamily {
@@ -958,8 +990,10 @@ pub fn offers_warm_storage(instance_type: &str) -> bool {
 /// publishes them, and NO role for a type the catalog does not publish — which names
 /// no instance type, so there is no instance to serve a role.
 ///
-/// The roles are the catalog entry's: the UltraWarm family serves the warm tier, an
-/// OpenSearch-optimized instance is a data node only, a general-purpose, compute- or
+/// The roles are the catalog entry's: the UltraWarm family serves the warm tier, a
+/// family published for the data tier alone — an OpenSearch-optimized one, or a
+/// storage-optimized generation that arrived after the engines forked — is a data node
+/// only, a general-purpose, compute- or
 /// memory-optimized instance can also be a dedicated coordinator node, and every other
 /// family is a data node and master-eligible. This is the ONE derivation of them, so
 /// the roles the instance-type catalog reports for a type are the roles the limit
@@ -973,17 +1007,19 @@ pub fn instance_roles(instance_type: &str) -> Vec<&'static str> {
 /// Every feature member of this entry is documented "supported for the instance type",
 /// so each reports a capability OF THAT TYPE:
 ///
-/// * a capability the instance itself provides — encryption at rest together with
-///   node-to-node encryption ([`offers_encryption`]), and the warm tier
+/// * a capability the instance itself provides — the warm tier
 ///   ([`offers_warm_storage`]) — is reported off the instance family alone, and is not
-///   withheld because the release the listing is for is older than the feature. Those
-///   are the same two answers a create is refused on, so what the catalog publishes for
-///   a type and what a configuration naming it is refused on cannot disagree;
+///   withheld because the release the listing is for is older than the feature. That is
+///   the same answer a create is refused on, so what the catalog publishes for a type and
+///   what a configuration naming it is refused on cannot disagree;
 /// * a capability the ENGINE provides — Amazon Cognito authentication, application
 ///   logging and fine-grained access control — is reported off the release that
 ///   introduced it, because an engine that does not have the feature cannot serve it on
 ///   any instance type. Fine-grained access control needs both encryption features, so
-///   it is reported only where they are.
+///   it is reported only where they are;
+/// * the two encryption features need BOTH — hardware that provides them and an engine
+///   release that has them — so they are reported off the pairing
+///   ([`offers_encryption_on`]).
 ///
 /// The roles are the ones the catalog publishes for the type ([`instance_roles`]), so
 /// the entry reports the roles an instance of it can actually be provisioned in.
@@ -995,7 +1031,7 @@ pub fn instance_type_details(
     instance_type: &str,
     availability_zones: Option<Vec<String>>,
 ) -> InstanceTypeDetails {
-    let encryption = offers_encryption(instance_type);
+    let encryption = offers_encryption_on(version, instance_type);
     let instance_role = instance_roles(instance_type)
         .into_iter()
         .map(str::to_string)

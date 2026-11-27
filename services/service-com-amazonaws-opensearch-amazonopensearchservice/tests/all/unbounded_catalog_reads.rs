@@ -13,15 +13,10 @@
 //! so a request that names no page size has named no bound: the whole published listing is
 //! reported in one answer, which therefore carries no `NextToken` at all.
 //!
-//! The Reserved Instance offering catalog is NOT one of those reads — its recorded answer
-//! bounds an unbounded request to one page and names the token to resume from, which
-//! `reserved_offerings_default_page` is the suite for. What this suite asserts of it is the
-//! other half of that rule: following the token reaches every offering, so the bound hides
-//! nothing.
-//!
-//! The rows differ along what the rule generalises over: the catalog read (the engine-version
-//! catalog and the instance-type catalog), and how the absent bound is expressed (no
-//! `maxResults` at all, and the modelled default `maxResults=0`).
+//! The rows differ along what the rule generalises over: the catalog read (the
+//! engine-version catalog, the instance-type catalog and the Reserved Instance offering
+//! catalog, which is larger than the largest page the model admits), and how the absent
+//! bound is expressed (no `maxResults` at all, and the modelled default `maxResults=0`).
 
 use std::collections::BTreeSet;
 
@@ -49,8 +44,7 @@ struct Catalog {
 }
 
 /// Every catalog this service answers COMPLETE for a request that names no page size, as a
-/// read and the member to read. The offering catalog is bounded by the service's own page
-/// instead — see the module docs.
+/// read and the member to read.
 fn catalogs() -> Vec<Catalog> {
     vec![
         Catalog {
@@ -62,6 +56,11 @@ fn catalogs() -> Vec<Catalog> {
             case: "instance types",
             path: format!("{PREFIX}/opensearch/instanceTypeDetails/{PUBLISHED_RELEASE}"),
             member: "InstanceTypeDetails",
+        },
+        Catalog {
+            case: "reserved instance offerings",
+            path: format!("{PREFIX}/opensearch/reservedInstanceOfferings"),
+            member: "ReservedInstanceOfferings",
         },
     ]
 }

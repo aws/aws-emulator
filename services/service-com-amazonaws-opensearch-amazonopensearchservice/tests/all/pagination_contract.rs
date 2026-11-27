@@ -337,7 +337,7 @@ async fn a_set_larger_than_the_answer_names_where_to_resume_and_the_last_answer_
 
     // One row per page size the answer is bounded by: the smallest, two that do not
     // divide the catalog, and the largest the model allows. A request that names no page
-    // size is bounded by the service's own page — the row below this loop.
+    // size names no bound at all — the row below this loop.
     for (case, query, bound) in [
         ("maxResults=1", "maxResults=1".to_owned(), 1_usize),
         ("maxResults=7", "maxResults=7".to_owned(), 7),
@@ -360,23 +360,23 @@ async fn a_set_larger_than_the_answer_names_where_to_resume_and_the_last_answer_
     }
 
     // `MaxResults` is `@default(0)`: a request that names no page size, or names that
-    // default, has named no bound of its own, so the SERVICE's own page bounds the answer
-    // and the answer names where to resume — the largest page the member admits, since no
-    // answer of this operation is larger than the largest page a caller could ask for.
+    // default, has named no bound of its own, so the whole set is reported in one answer
+    // and there is nothing left to resume from.
     for (case, query) in [("no page size", ""), ("maxResults=0", "maxResults=0")] {
         let answer = offerings(&emulator, query).await;
         let reported = offering_ids(&answer, case);
         assert_eq!(
             reported,
-            catalog[..100].to_vec(),
-            "case {case}: expected the service's own page of 100 entries, got {} entries",
+            catalog.clone(),
+            "case {case}: expected the whole set of {} entries, got {} entries",
+            catalog.len(),
             reported.len()
         );
-        assert_eq!(
-            answer.body["NextToken"].as_str(),
-            Some(catalog[100].as_str()),
-            "case {case}: entries remain, so the answer names where to resume, got {:?}",
-            answer.body
+        assert!(
+            answer.body["NextToken"].is_null(),
+            "case {case}: the answer reports the whole set, so it names nothing to resume \
+             from, got {:?}",
+            answer.body["NextToken"]
         );
     }
 

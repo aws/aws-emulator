@@ -11,12 +11,12 @@
 //!
 //! An offering is published BY the service, never created by a caller, so this is a
 //! pure read: it writes nothing, and the catalog, the ids in it and the prices on it
-//! are the same for every caller and on every call. A request that names no
-//! `MaxResults` is answered with the service's OWN largest page and the token to
-//! resume from, the way the recorded answer of this operation reports a first page of
-//! the Region's catalog beside a `NextToken`; a request that names a page size is
-//! bounded by it instead. Either way the whole catalog is reachable by following the
-//! token.
+//! are the same for every caller and on every call. `MaxResults` is the bound the
+//! REQUEST names: a request that names one is answered with that page and the token to
+//! resume from, and a request that names none (the member is `@default(0)`) has named no
+//! bound at all, so the whole published catalog is reported in one answer with no token —
+//! the way the recorded answer of an unfiltered call reports every offering the Region
+//! publishes, and the way this service's other published catalogs answer.
 //!
 //! ## Shape of an operation
 //!
@@ -96,18 +96,6 @@ use super::types::*;
 
 /// The largest page this operation answers with: `MaxResults` is `@range(max: 100)`.
 const MAX_PAGE_SIZE: i32 = 100;
-
-/// The page a request that names NO `MaxResults` is bounded by.
-///
-/// `MaxResults` is "an optional parameter that specifies the maximum number of results to
-/// return. You can use nextToken to get the next page of results" and is `@default(0)`, so
-/// a request may name no bound — but the service still answers ONE page of the catalog it
-/// publishes and the token to resume from, which is what the recorded answer of an
-/// unbounded call carries. The bound is the largest page the member itself admits
-/// ([`MAX_PAGE_SIZE`], its `@range(max: 100)`): no answer of this operation is larger than
-/// the largest page a caller could ask for, and nothing of the catalog is hidden, because
-/// the token walks the rest of it page by page.
-const DEFAULT_PAGE_SIZE: usize = MAX_PAGE_SIZE as usize;
 
 // `#[operation_error]` below expands to an invocation of the LOCAL declarative
 // `smithy!` macro, which this line is what emits into the module. Without it the
@@ -273,15 +261,16 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         // "An optional parameter that specifies the maximum number of results to
         // return. You can use nextToken to get the next page of results." The bound on a
-        // page is the one the REQUEST named; a request that named none
-        // (`MaxResults` is `@default(0)`) is bounded by the service's own page
-        // ([`DEFAULT_PAGE_SIZE`]) and told where to resume, which is what the recorded
-        // answer of such a call carries. Every value reaching here other than that default
-        // is in `1..=MAX_PAGE_SIZE`.
+        // page is the one the REQUEST named; a request that named none (`MaxResults` is
+        // `@default(0)`) named no bound at all, so the listing it selected is reported
+        // COMPLETE in one answer and there is no token to hand out — which is what the
+        // recorded answer of an unfiltered call carries, every offering the Region
+        // publishes, and what the sibling published-catalog reads of this service answer.
+        // Every value reaching here other than that default is in `1..=MAX_PAGE_SIZE`.
         let page_size = usize::try_from(input.max_results)
             .ok()
             .filter(|size| *size > 0)
-            .unwrap_or(DEFAULT_PAGE_SIZE);
+            .unwrap_or(selected.len());
         let end = start.saturating_add(page_size).min(selected.len());
         let page: Vec<ReservedInstanceOffering> = selected[start..end]
             .iter()

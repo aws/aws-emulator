@@ -113,12 +113,22 @@ pub(crate) const PREVIOUS_GENERATION_BURSTABLE: [&str; 3] =
     ["t2.micro.search", "t2.small.search", "t2.medium.search"];
 
 /// The families whose instances hold the domain's data and are never master-eligible:
-/// the OpenSearch-optimized ones.
-const DATA_ONLY_FAMILIES: [&str; 4] = ["oi2", "om2", "or1", "or2"];
+/// the OpenSearch-optimized ones, and the storage-optimized generations that arrived
+/// after the engines forked.
+const DATA_ONLY_FAMILIES: [&str; 7] = ["i7i", "i8g", "i8ge", "oi2", "om2", "or1", "or2"];
 
 /// The families neither encryption at rest nor node-to-node encryption is available
 /// on, whatever the version.
-const UNENCRYPTED_FAMILIES: [&str; 2] = ["m3", "t2"];
+///
+/// Shared with the sibling suites that state the same rule about one entry.
+pub(crate) const UNENCRYPTED_FAMILIES: [&str; 2] = ["m3", "t2"];
+
+/// The Elasticsearch release both features `InstanceTypeDetails$EncryptionEnabled`
+/// reports are available from: AWS documents encryption at rest from 5.1 and
+/// node-to-node encryption from 6.0, and the member reports the pair.
+///
+/// Shared with the sibling suites that state the same rule about one entry.
+pub(crate) const ENCRYPTION_RELEASE: (u32, u32) = (6, 0);
 
 /// The burstable families, which UltraWarm cannot be attached to.
 const BURSTABLE_FAMILIES: [&str; 3] = ["t2", "t3", "t4g"];
@@ -237,14 +247,18 @@ pub(crate) fn instance_types(listing: &[Value]) -> Vec<String> {
 }
 
 /// A boolean feature member of one entry, with the case named on failure.
-fn flag(entry: &Value, member: &str, case: &str) -> bool {
+///
+/// Shared with the sibling suites that read one entry's capability members.
+pub(crate) fn flag(entry: &Value, member: &str, case: &str) -> bool {
     entry[member]
         .as_bool()
         .unwrap_or_else(|| panic!("case {case}: expected a boolean {member}, got {entry:?}"))
 }
 
 /// One entry's `InstanceRole`, with the case named on failure.
-fn roles(entry: &Value, case: &str) -> Vec<String> {
+///
+/// Shared with the sibling suites that read one entry's roles back.
+pub(crate) fn roles(entry: &Value, case: &str) -> Vec<String> {
     entry["InstanceRole"]
         .as_array()
         .unwrap_or_else(|| panic!("case {case}: expected an InstanceRole array, got {entry:?}"))
@@ -258,7 +272,9 @@ fn roles(entry: &Value, case: &str) -> Vec<String> {
 }
 
 /// The family token of an instance type, which is `<family>.<size>.search`.
-fn family(instance_type: &str) -> &str {
+///
+/// Shared with the sibling suites that read an entry's family back.
+pub(crate) fn family(instance_type: &str) -> &str {
     instance_type.split('.').next().unwrap_or(instance_type)
 }
 
@@ -593,15 +609,16 @@ async fn roles_and_features_follow_the_family_and_the_engine_release() {
             let family = family(&instance_type);
             let case = format!("{instance_type} on {version}");
 
-            // Both features `EncryptionEnabled` covers are the INSTANCE TYPE's, so the
-            // member follows the family and nothing else — including on a release older
-            // than the features.
+            // `EncryptionEnabled` reports the two encryption features together, and each
+            // needs hardware that provides it AND an engine release that has it, so the
+            // member follows the family and the release.
             let encryption = flag(&entry, "EncryptionEnabled", &case);
             assert_eq!(
                 encryption,
-                !UNENCRYPTED_FAMILIES.contains(&family),
-                "case {case}: expected encryption support to follow the family, got \
-                 {encryption}"
+                !UNENCRYPTED_FAMILIES.contains(&family)
+                    && since_elasticsearch(version, ENCRYPTION_RELEASE),
+                "case {case}: expected encryption support to follow the family and the \
+                 release, got {encryption}"
             );
 
             let cognito = flag(&entry, "CognitoEnabled", &case);
@@ -720,6 +737,7 @@ async fn roles_and_features_follow_the_family_and_the_engine_release() {
         ("i3", vec!["data", "master"]),
         ("c4", vec!["data", "master"]),
         ("t3", vec!["data", "master"]),
+        ("i7i", vec!["data"]),
         ("oi2", vec!["data"]),
         ("or1", vec!["data"]),
         ("ultrawarm1", vec!["ultrawarm"]),
@@ -852,6 +870,18 @@ async fn anchored_entries_are_reported_exactly() {
             }),
         ),
         (
+            "OpenSearch_2.19",
+            json!({
+                "InstanceType": "i7i.4xlarge.search",
+                "EncryptionEnabled": true,
+                "CognitoEnabled": true,
+                "AppLogsEnabled": true,
+                "AdvancedSecurityEnabled": true,
+                "WarmEnabled": true,
+                "InstanceRole": ["data"],
+            }),
+        ),
+        (
             "OpenSearch_2.11",
             json!({
                 "InstanceType": "m5.large.search",
@@ -915,7 +945,7 @@ async fn anchored_entries_are_reported_exactly() {
             "Elasticsearch_5.1",
             json!({
                 "InstanceType": "c4.large.search",
-                "EncryptionEnabled": true,
+                "EncryptionEnabled": false,
                 "CognitoEnabled": true,
                 "AppLogsEnabled": true,
                 "AdvancedSecurityEnabled": false,
@@ -923,8 +953,9 @@ async fn anchored_entries_are_reported_exactly() {
                 "InstanceRole": ["data", "master"],
             }),
         ),
-        // A release older than fine-grained access control: the two capabilities the
-        // INSTANCE provides are reported, and the one the engine does not have is not.
+        // A release older than fine-grained access control but not older than the two
+        // encryption features: the capability the INSTANCE provides and the ones the
+        // engine has are reported, and the one it does not have is not.
         (
             "Elasticsearch_6.0",
             json!({

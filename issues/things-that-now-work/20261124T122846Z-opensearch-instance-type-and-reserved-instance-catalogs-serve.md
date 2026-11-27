@@ -105,3 +105,53 @@ Smithy cited: com.amazonaws.opensearch#InstanceTypeDetails{InstanceType: OpenSea
 3. Cause 5: replay step task#16 - the same operation for a legacy Elasticsearch engine version. The response must be that version's catalog (r4/r3/c4/m4-class, EncryptionEnabled false, InstanceRole ['data','master']), not the c5-generation list the current-version requests return.
 4. Cause 6: replay fixture opensearch-catalog-describe-reserved-instance-offerings step task#1 (DescribeReservedInstanceOfferings, unfiltered). The page must contain offerings for several instance types and both Duration 31536000 and 94608000 across ALL_UPFRONT / PARTIAL_UPFRONT / NO_UPFRONT, with per-offering FixedPrice and RecurringCharges - not one synthesized instance type and term.
 5. All six steps must pass against the recorded responses.
+
+## Resolution
+
+Three rules were wrong, and each is fixed where it is derived once:
+
+1. `InstanceTypeDetails$EncryptionEnabled` reports encryption at rest TOGETHER WITH
+   node-to-node encryption, and each of the two needs both an instance family that
+   provides it and an engine release that has it — AWS documents encryption at rest from
+   Elasticsearch 5.1 and node-to-node encryption from 6.0 — so a release older than the
+   later of the two now reports the pair unsupported whatever the family
+   (`state::offers_encryption_on`), which is what the recorded listing of an old
+   Elasticsearch release carries for a family a current release reports it on.
+   Fine-grained access control, which requires both, is therefore never reported where
+   they are not. The capabilities the INSTANCE provides (the warm tier) and the ones the
+   ENGINE provides (Cognito authentication, application logging) are unchanged.
+2. `InstanceRole` is the roles an instance of the entry's FAMILY can be provisioned in, so
+   a family the service publishes for the data tier alone reports the data role and
+   nothing else: that is the OpenSearch-optimized families, and now also the
+   storage-optimized generations that arrived after the engines forked (`i7i`, `i8g`
+   beside `i8ge`), as the recorded catalog of a current release reports them. Because the
+   roles have one derivation (`state::instance_roles`), the limit catalog publishes a
+   block for exactly those roles too.
+3. `MaxResults` is the bound the REQUEST names. `DescribeReservedInstanceOfferings`
+   bounded a request that named none by a page size the emulator chose for itself, so
+   nothing past the first hundred offerings was reported at all; the member is
+   `@default(0)`, so such a request names no bound and the whole listing it selected is
+   now reported in one answer with no token, as the recorded unfiltered answer carries
+   every offering the Region publishes and as this service's sibling catalog reads
+   already answer.
+
+Held by `tests/all/published_catalog_contents.rs`, with the existing
+`instance_type_catalog`, `instance_type_capability_flags`,
+`current_generation_instance_types`, `reserved_instance_offerings`,
+`reserved_offering_service_page`, `unbounded_catalog_reads` and `pagination_contract`
+suites restated against the corrected rules.
+
+DECLINED, as in 20261114T093806Z: the ORDER each of these sets is published in, which is
+what both replay keys still report, and the per-offering price figures and
+`ReservedInstanceOfferingId` values. `InstanceTypeDetailsList` and
+`ReservedInstanceOfferingList` carry no ordering trait and no documented order, and no
+value either entry carries orders the recorded listings — the offering listing interleaves
+instance type, term and payment option, and the instance-type listing interleaves families
+and sizes — so a recorded position is a function of AWS's own collection and of the
+offering ids it mints, neither of which this API publishes. This issue says the same of
+them: "the individual prices, the offering GUIDs and the exact index positions of this
+recording are illustrations, not the requirement". Both catalogs are published in an order
+that is a function of the catalog alone and is stable across calls, and the offering
+catalog spans every instance type the service publishes times both published terms times
+all three payment options, each with its own fixed price and its own recurring charge —
+which is the requirement this issue states.
