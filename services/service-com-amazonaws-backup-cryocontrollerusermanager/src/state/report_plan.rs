@@ -247,8 +247,8 @@ pub fn stored_report_setting(setting: ReportSetting) -> ReportSetting {
 /// [`DEFAULT_REPORT_FREQUENCY_HOURS`]).
 pub fn stored_report_timing() -> ReportTiming {
     ReportTiming {
-        report_frequency_hours: DEFAULT_REPORT_FREQUENCY_HOURS,
-        report_start_hour: DEFAULT_REPORT_START_HOUR,
+        report_frequency_hours: Some(DEFAULT_REPORT_FREQUENCY_HOURS),
+        report_start_hour: Some(DEFAULT_REPORT_START_HOUR),
     }
 }
 

@@ -1,0 +1,50 @@
+{
+  "smithy": "2.0",
+  "shapes": {
+    "com.amazonaws.backup#ReportPlan": {
+      "type": "structure",
+      "members": {
+        "ReportPlanArn": { "target": "com.amazonaws.backup#ARN" },
+        "ReportPlanName": { "target": "com.amazonaws.backup#ReportPlanName" },
+        "ReportPlanDescription": { "target": "com.amazonaws.backup#ReportPlanDescription" },
+        "ReportSetting": { "target": "com.amazonaws.backup#ReportSetting" },
+        "ReportDeliveryChannel": { "target": "com.amazonaws.backup#ReportDeliveryChannel" },
+        "DeploymentStatus": { "target": "com.amazonaws.backup#string" },
+        "CreationTime": { "target": "com.amazonaws.backup#timestamp" },
+        "LastAttemptedExecutionTime": { "target": "com.amazonaws.backup#timestamp" },
+        "LastSuccessfulExecutionTime": { "target": "com.amazonaws.backup#timestamp" },
+        "ReportTiming": { "target": "com.amazonaws.backup#ReportTiming" }
+      }
+    },
+    "com.amazonaws.backup#ReportTiming": {
+      "type": "structure",
+      "members": {
+        "ReportFrequencyHours": { "target": "com.amazonaws.backup#integer" },
+        "ReportStartHour": { "target": "com.amazonaws.backup#integer" }
+      }
+    },
+    "com.amazonaws.backup#ARN": { "type": "string" },
+    "com.amazonaws.backup#ReportPlanName": {
+      "type": "string",
+      "traits": {
+        "smithy.api#length": { "min": 1, "max": 256 },
+        "smithy.api#pattern": "^[a-zA-Z][_a-zA-Z0-9]*$"
+      }
+    },
+    "com.amazonaws.backup#ReportPlanDescription": {
+      "type": "string",
+      "traits": {
+        "smithy.api#length": { "min": 0, "max": 1024 },
+        "smithy.api#pattern": "\\S"
+      }
+    },
+    "com.amazonaws.backup#ReportSetting": { "type": "structure", "members": {} },
+    "com.amazonaws.backup#ReportDeliveryChannel": { "type": "structure", "members": {} },
+    "com.amazonaws.backup#string": { "type": "string" },
+    "com.amazonaws.backup#timestamp": { "type": "timestamp" },
+    "com.amazonaws.backup#integer": {
+      "type": "integer",
+      "traits": { "smithy.api#default": 0 }
+    }
+  }
+}

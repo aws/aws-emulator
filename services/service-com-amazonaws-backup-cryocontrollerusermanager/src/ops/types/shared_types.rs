@@ -122,7 +122,7 @@ pub struct BackupRuleInput {
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.backup#Lifecycle")]
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct Lifecycle {
     pub move_to_cold_storage_after_days: Option<i64>,
     pub delete_after_days: Option<i64>,
@@ -131,45 +131,42 @@ pub struct Lifecycle {
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.backup#CopyAction")]
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct CopyAction {
     pub lifecycle: Option<Lifecycle>,
     pub destination_backup_vault_arn: String,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.backup#IndexAction")]
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct IndexAction {
     pub resource_types: Option<Vec<String>>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.backup#ScanAction")]
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct ScanAction {
     pub malware_scanner: Option<String>,
     pub scan_mode: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.backup#AdvancedBackupSetting")]
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct AdvancedBackupSetting {
     pub resource_type: Option<String>,
     pub backup_options: Option<std::collections::HashMap<String, String>>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.backup#ScanSetting")]
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct ScanSetting {
     pub malware_scanner: Option<String>,
     pub resource_types: Option<Vec<String>>,
     pub scanner_role_arn: Option<String>,
 }
 
-// `PartialEq`/`Eq`: what makes one resource selection of a plan the same as
-// another is the DOCUMENT it states, so the stored bodies are compared member
-// for member (`crate::state`'s `holds_backup_selection_document`).
 #[smithy_macros::smithy(shape = "com.amazonaws.backup#BackupSelection")]
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct BackupSelection {
     pub selection_name: String,
     pub iam_role_arn: String,
@@ -179,20 +176,19 @@ pub struct BackupSelection {
     pub conditions: Option<Conditions>,
 }
 
-// `skip_validation = ["ConditionType"]`: a tag condition's operator is read BY NAME, and
-// AWS Backup reads that name without regard to letter case — the one operator the model
-// lists as `STRINGEQUALS` is the operator its own documentation spells `StringEquals`
-// (the doc of `Condition$ConditionType` and of `BackupSelection$ListOfTags`), and a
-// condition stating it either way assigns resources by it. Matching the set as
-// case-sensitive equality at the request boundary refuses a selection AWS stores, so the
-// set is enforced by `CreateBackupSelection`'s handler instead
-// (`crate::state::rejected_condition_type`), which admits any casing of an admitted
-// operator and refuses everything else in the boundary's own words.
+// `skip_validation = ["ConditionType"]`: AWS Backup reads a tag condition's operator BY
+// NAME, without regard to ASCII case — the operator the model lists as `STRINGEQUALS` is
+// the one its own documentation spells `StringEquals` — while the boundary can only match
+// a modelled value set as case-sensitive equality. The set is therefore enforced by the
+// handler instead (`crate::state::rejected_condition_type`), in the boundary's own words
+// and over the path the boundary spells, so a value that is no casing of an admitted
+// operator is still refused. `skip_validation` drops only this member's constraint
+// traits; it is still `@required`, so an absent operator is refused as before.
 #[smithy_macros::smithy(
     shape = "com.amazonaws.backup#Condition",
     skip_validation = ["ConditionType"]
 )]
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct Condition {
     pub condition_type: String,
     pub condition_key: String,
@@ -200,7 +196,7 @@ pub struct Condition {
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.backup#Conditions")]
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct Conditions {
     pub string_equals: Option<Vec<ConditionParameter>>,
     pub string_not_equals: Option<Vec<ConditionParameter>>,
@@ -209,7 +205,7 @@ pub struct Conditions {
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.backup#ConditionParameter")]
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct ConditionParameter {
     pub condition_key: Option<String>,
     pub condition_value: Option<String>,
@@ -385,9 +381,12 @@ pub struct ReportDestination {
     pub s3_keys: Option<Vec<String>>,
 }
 
-// `ReportPlan` is declared in `types::report_plan_wire`, not here: the recorded wire
-// carries a member on it the on-disk model does not declare, so its schema and codec
-// are written out rather than derived (that module's note says why).
+// `ReportPlan` is NOT declared here, although `DescribeReportPlan` and
+// `ListReportPlans` both reach it: AWS answers with a member the published
+// snapshot does not declare, so the shape is declared in `report_plan_wire` from
+// the local overlay model instead (see `smithy-model/LOCAL-ADDITIONS.md`).
+// `types/mod.rs` re-exports it, so `use super::types::*` resolves it from here as
+// it does any other shape.
 
 #[smithy_macros::smithy(shape = "com.amazonaws.backup#RestoreJobCreator")]
 #[derive(Debug, Clone, Default)]
@@ -420,7 +419,7 @@ pub struct BackupPlan {
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.backup#BackupRule")]
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct BackupRule {
     pub rule_name: String,
     pub target_backup_vault_name: String,
@@ -532,7 +531,7 @@ pub const BACKUP_JOB_STATUS_VALUES: &[&str] = &["ABORTED", "ABORTING", "AGGREGAT
 
 
 /// The values `BackupVaultEvent` accepts on the wire.
-pub const BACKUP_VAULT_EVENT_VALUES: &[&str] = &["ACCESS_POINT_AVAILABLE", "ACCESS_POINT_CREATION_FAILED", "ACCESS_POINT_DELETED", "ACCESS_POINT_DELETION_FAILED", "ACCESS_POINT_DISASSOCIATED", "ACCESS_POINT_EXPIRED", "BACKUP_JOB_COMPLETED", "BACKUP_JOB_EXPIRED", "BACKUP_JOB_FAILED", "BACKUP_JOB_STARTED", "BACKUP_JOB_SUCCESSFUL", "BACKUP_PLAN_CREATED", "BACKUP_PLAN_MODIFIED", "CONTINUOUS_BACKUP_INTERRUPTED", "COPY_JOB_FAILED", "COPY_JOB_STARTED", "COPY_JOB_SUCCESSFUL", "EKS_BACKUP_OBJECT_FAILED", "EKS_RESTORE_OBJECT_FAILED", "EKS_RESTORE_OBJECT_SKIPPED", "RECOVERY_POINT_INDEXING_FAILED", "RECOVERY_POINT_INDEX_COMPLETED", "RECOVERY_POINT_INDEX_DELETED", "RECOVERY_POINT_MODIFIED", "RESTORE_JOB_COMPLETED", "RESTORE_JOB_FAILED", "RESTORE_JOB_STARTED", "RESTORE_JOB_SUCCESSFUL", "S3_BACKUP_OBJECT_FAILED", "S3_RESTORE_OBJECT_FAILED"];
+pub const BACKUP_VAULT_EVENT_VALUES: &[&str] = &["ACCESS_POINT_AVAILABLE", "ACCESS_POINT_CREATION_FAILED", "ACCESS_POINT_DELETED", "ACCESS_POINT_DELETION_FAILED", "ACCESS_POINT_DISASSOCIATED", "ACCESS_POINT_EXPIRED", "BACKUP_JOB_COMPLETED", "BACKUP_JOB_EXPIRED", "BACKUP_JOB_FAILED", "BACKUP_JOB_STARTED", "BACKUP_JOB_SUCCESSFUL", "BACKUP_PLAN_CREATED", "BACKUP_PLAN_MODIFIED", "CONTINUOUS_BACKUP_INTERRUPTED", "COPY_JOB_FAILED", "COPY_JOB_STARTED", "COPY_JOB_SUCCESSFUL", "EKS_BACKUP_OBJECT_FAILED", "EKS_RESTORE_MODIFICATION_FAILED", "EKS_RESTORE_MODIFICATION_SUCCESS", "EKS_RESTORE_OBJECT_FAILED", "EKS_RESTORE_OBJECT_SKIPPED", "RECOVERY_POINT_INDEXING_FAILED", "RECOVERY_POINT_INDEX_COMPLETED", "RECOVERY_POINT_INDEX_DELETED", "RECOVERY_POINT_MODIFIED", "RESTORE_JOB_COMPLETED", "RESTORE_JOB_FAILED", "RESTORE_JOB_STARTED", "RESTORE_JOB_SUCCESSFUL", "S3_BACKUP_OBJECT_FAILED", "S3_RESTORE_OBJECT_FAILED"];
 
 
 /// The values `ConditionType` accepts on the wire.

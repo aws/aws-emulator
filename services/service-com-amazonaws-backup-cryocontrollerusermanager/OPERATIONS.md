@@ -301,7 +301,7 @@ contents — read that shape in the model above when you need its own members.
 
 - **Route:** `GET /account-settings -> 200`
 - **Input:** (no members)
-- **Output:** `ResourceTypeOptInPreference` (map<string,boolean>), `ResourceTypeManagementPreference` (map<string,boolean>)
+- **Output:** `ResourceTypeOptInPreference` (map<string,boolean>), `ResourceTypeManagementPreference` (map<string,boolean>), `ResourceTypeOptInIncremental` (map<string,boolean>)
 - **Errors:** `ServiceUnavailableException (HTTP 500)`
 
 ## DescribeReportJob
@@ -883,7 +883,7 @@ contents — read that shape in the model above when you need its own members.
 ## UpdateRegionSettings
 
 - **Route:** `PUT /account-settings -> 200`
-- **Input:** `ResourceTypeOptInPreference` (map<string,boolean>), `ResourceTypeManagementPreference` (map<string,boolean>)
+- **Input:** `ResourceTypeOptInPreference` (map<string,boolean>), `ResourceTypeManagementPreference` (map<string,boolean>), `ResourceTypeOptInIncremental` (map<string,boolean>)
 - **Output:** (no members)
 - **Errors:** `InvalidParameterValueException (HTTP 400)`, `MissingParameterValueException (HTTP 400)`, `ServiceUnavailableException (HTTP 500)`
 

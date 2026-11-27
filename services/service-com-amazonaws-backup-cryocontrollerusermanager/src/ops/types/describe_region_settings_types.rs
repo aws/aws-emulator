@@ -21,5 +21,6 @@ pub struct DescribeRegionSettingsInput {
 pub struct DescribeRegionSettingsOutput {
     pub resource_type_opt_in_preference: Option<std::collections::HashMap<String, bool>>,
     pub resource_type_management_preference: Option<std::collections::HashMap<String, bool>>,
+    pub resource_type_opt_in_incremental: Option<std::collections::HashMap<String, bool>>,
 }
 
