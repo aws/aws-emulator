@@ -839,7 +839,11 @@ fn argument_strings(value: Option<&cst::Value>) -> Vec<String> {
 }
 
 /// The type a field or argument names, as a reference tree.
-fn type_reference(value_type: Option<cst::Type>) -> Option<TypeRef> {
+///
+/// Public because a type reference is read wherever a GraphQL type is named: beside the type
+/// definitions this module parses, the data plane coerces a request's variable values against
+/// the references the operation's variable definitions name.
+pub fn type_reference(value_type: Option<cst::Type>) -> Option<TypeRef> {
     match value_type? {
         cst::Type::NamedType(named) => Some(TypeRef::Named(
             named.name().map(|name| name.text().to_string())?,

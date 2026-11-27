@@ -6,9 +6,10 @@
 //!
 //! AppSync validates the incoming document against the API's ACTIVE schema first, so a
 //! selection the type it is selected from does not declare is a failure of the REQUEST — one
-//! GraphQL validation error per such selection, and no `data` at all — rather than a field
-//! that resolves to nothing. This module is that reading of the rule; the executor beside it
-//! ([`super`]) runs only what this stage admits.
+//! GraphQL validation error per such selection, each at the position in the document it was
+//! written at, and a `data` of null, because validation runs before anything is executed —
+//! rather than a field that resolves to nothing. This module is that reading of the rule; the
+//! executor beside it ([`super`]) runs only what this stage admits.
 //!
 //! What it costs is bounded by the reading that produced the selection: a document deeper
 //! than [`MAX_SELECTION_DEPTH`] or wider than [`MAX_SELECTED_NODES`] is refused before it is
@@ -73,13 +74,11 @@ pub(super) fn schema_validation_errors(
             if introspection::is_introspection_field(&field.name) {
                 continue;
             }
-            errors.push(json!({
-                "message": undefined_field_message(
-                    &field.name,
-                    root_type,
-                    ::std::slice::from_ref(&field.name),
-                ),
-            }));
+            errors.push(undefined_field_error(
+                field,
+                root_type,
+                ::std::slice::from_ref(&field.name),
+            ));
         }
         return errors;
     }
@@ -121,9 +120,7 @@ fn gated_introspection_errors(
             continue;
         }
         at.push(selected.name.clone());
-        errors.push(json!({
-            "message": undefined_field_message(&selected.name, meta_type, at),
-        }));
+        errors.push(undefined_field_error(selected, meta_type, at));
         at.pop();
     }
     at.pop();
@@ -167,9 +164,7 @@ pub(super) fn undefined_fields(
             .iter()
             .find(|declared| declared.name == field.name)
         {
-            None => errors.push(json!({
-                "message": undefined_field_message(&field.name, type_name, at),
-            })),
+            None => errors.push(undefined_field_error(field, type_name, at)),
             Some(declared) if !field.selections.is_empty() => {
                 let child = declared
                     .value_type
@@ -182,6 +177,24 @@ pub(super) fn undefined_fields(
         }
         at.pop();
     }
+}
+
+/// The validation error ONE selection the type does not declare is reported as: the sentence
+/// that states the class of the failure, and the position in the request's document the
+/// selection was written at.
+///
+/// A validation error is a REQUEST error — the document was refused before anything of it was
+/// executed — so it carries no `path` into a result and none of the `errorType` values
+/// AppSync's own data-plane errors are classed by: the position in the document and the
+/// sentence are the whole of it.
+fn undefined_field_error(field: &SelectedField, type_name: &str, at: &[String]) -> Json {
+    let mut error = JsonMap::new();
+    error.insert(
+        "message".to_string(),
+        Json::String(undefined_field_message(&field.name, type_name, at)),
+    );
+    super::document_location::located(field.location, &mut error);
+    Json::Object(error)
 }
 
 /// The sentence a validation failure of the `FieldUndefined` class states: the field, the

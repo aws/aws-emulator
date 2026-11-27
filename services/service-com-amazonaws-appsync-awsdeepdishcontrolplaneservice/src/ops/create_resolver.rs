@@ -358,6 +358,18 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .into());
         }
 
+        // A resolver is attached to a FIELD of the type the request addresses, and the fields
+        // a type has are the ones the API's active schema declares for it — so a field that
+        // type does not declare is one no query can select, and the create is refused with
+        // the modelled not-found error rather than leaving the API holding a resolver bound
+        // to nothing (`crate::state::GraphqlApiRecord::resolver_field_refusal`).
+        if let Some(message) = api.resolver_field_refusal(&input.type_name, &input.field_name) {
+            return Err(CreateResolverErrorModeled::NotFoundException(NotFoundException {
+                message: Some(message),
+            })
+            .into());
+        }
+
         // A field is resolved by at most one resolver, so a field that already carries
         // one is not re-attached: the create is refused and the resolver already there
         // is left exactly as it was.

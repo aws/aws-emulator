@@ -2981,6 +2981,17 @@ pub async fn reconcile(
                                     reported_state: state,
                                     provider_request: None,
                                 });
+                                // The change is NOT in force yet, so this resource has not
+                                // published it: nothing that depends on it is acted on in this
+                                // pass either, exactly as nothing depending on a resource that
+                                // is still being CREATED is ([`awaits_a_dependency`], and the
+                                // custom-resource change above, which holds its dependents for
+                                // the same reason). "A resource that depends on another is
+                                // scheduled only once that one has finished", and a change the
+                                // owning service has accepted without carrying out has not
+                                // finished — so a dependent acted on now would be asked for
+                                // against the configuration the resource still has.
+                                unpublished.insert(resource.logical_id.clone());
                             }
                             // That service says the change is not going to take effect, so
                             // waiting it out would report a resource as changed that is not:

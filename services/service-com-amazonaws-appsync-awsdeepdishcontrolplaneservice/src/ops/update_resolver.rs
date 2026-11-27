@@ -354,6 +354,19 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .into());
         }
 
+        // The same rule the create enforces, over the same pair: a resolver is attached to a
+        // FIELD of the type the request addresses, and the fields a type has are the ones the
+        // API's active schema declares for it, so an update addressing a field that type does
+        // not declare is refused with the modelled not-found error and the stored resolvers
+        // are left exactly as they were
+        // (`crate::state::GraphqlApiRecord::resolver_field_refusal`).
+        if let Some(message) = api.resolver_field_refusal(&input.type_name, &input.field_name) {
+            return Err(UpdateResolverErrorModeled::NotFoundException(NotFoundException {
+                message: Some(message),
+            })
+            .into());
+        }
+
         // A resolver is addressed by the type and field it is attached to, so a field
         // the API carries no resolver on names no resource to update — the update
         // attaches none, the way a create is the only call that attaches one.

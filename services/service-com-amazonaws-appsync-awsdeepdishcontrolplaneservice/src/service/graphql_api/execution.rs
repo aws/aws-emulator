@@ -65,6 +65,14 @@ use crate::state::{DataSourceRecord, Definitions, ResolverRecord};
 mod schema_validation;
 use schema_validation::schema_validation_errors;
 
+/// WHERE in the request's own document a validation error is about.
+mod document_location;
+pub use document_location::DocumentLocation;
+
+/// The stage that checks one request's VARIABLES against the variable definitions the
+/// operation declares, which GraphQL coerces them against before execution.
+mod variable_values;
+
 /// The GraphQL request a client POSTs: "a JSON object with a `query`", with the operation to
 /// run and the variables its document is parameterised by.
 #[derive(Debug, Clone, Default)]
@@ -128,6 +136,15 @@ pub struct Answer {
     /// `extensions.evictFromApiCache` removed ([`super::api_cache`]). `None` for a request
     /// that asked for no eviction, which is answered with no such member at all.
     pub extensions: Option<Json>,
+    /// The sentence a body this endpoint could not turn into a GraphQL OPERATION at all is
+    /// refused with, and `None` for a request that became one.
+    ///
+    /// Such a body is refused by the HTTP FRONT DOOR rather than answered as a GraphQL
+    /// result ([`super::query`]): it reached no operation, so the answer carries the one
+    /// error naming that class and no `data` member at all — which is exactly what tells it
+    /// apart from a document that parsed and was refused BEFORE execution, whose `data` is
+    /// present and null ([`Answer::invalid`]).
+    pub malformed: Option<&'static str>,
 }
 
 /// What resolving ONE field came to, as the API's field-level logging reports it: where the
@@ -187,6 +204,39 @@ impl Answer {
             errors: vec![json!({"message": message})],
             traces: Vec::new(),
             extensions: None,
+            malformed: None,
+        }
+    }
+
+    /// The answer a document that PARSES but fails GraphQL VALIDATION is given: the errors
+    /// that refused it, each at the position in the document it is about, and `data` present
+    /// and NULL.
+    ///
+    /// Validation happens before execution, so such a request resolved nothing at all: the
+    /// `data` member is reported as the null it resolved to, which is what tells a client the
+    /// request was refused as a whole rather than that it never became an operation
+    /// ([`Self::malformed`]).
+    fn invalid(errors: Vec<Json>) -> Self {
+        Self {
+            data: Some(Json::Null),
+            errors,
+            traces: Vec::new(),
+            extensions: None,
+            malformed: None,
+        }
+    }
+
+    /// The answer a body that is no GraphQL operation at all is given ([`Self::malformed`]).
+    fn malformed(message: &'static str) -> Self {
+        Self {
+            data: None,
+            errors: vec![json!({
+                "errorType": MALFORMED_REQUEST_ERROR_TYPE,
+                "message": message,
+            })],
+            traces: Vec::new(),
+            extensions: None,
+            malformed: Some(message),
         }
     }
 
@@ -211,6 +261,11 @@ impl Answer {
 const DATA_MEMBER: &str = "data";
 const ERRORS_MEMBER: &str = "errors";
 const EXTENSIONS_MEMBER: &str = "extensions";
+
+/// The `errorType` AppSync refuses a body it could not turn into a GraphQL operation with:
+/// the class of its HTTP front door's own refusals, which is what a client reads when the
+/// answer carries no `data` member at all ([`Answer::malformed`]).
+pub const MALFORMED_REQUEST_ERROR_TYPE: &str = "MalformedHttpRequestException";
 
 /// What joins the type and the field in the RESOLVER NAME an enhanced resolver-level series
 /// is dimensioned on: resolver metrics are "recorded by API ID and resolver name", and a
@@ -469,9 +524,17 @@ pub async fn execute(context: &PlaneContext, request: &GraphqlRequest) -> Answer
         &request.variables,
     ) {
         Ok(read) => read,
-        Err(refusal) => return Answer::refused(refusal),
+        // A body that never became a GraphQL operation is refused by the HTTP front door,
+        // and one the request itself is at fault for is reported as a request-level error of
+        // the result ([`Answer::malformed`]).
+        Err(Refusal::Malformed(message)) => return Answer::malformed(message),
+        Err(Refusal::Request(message)) => return Answer::refused(message),
     };
     let (kind, fields) = (read.kind, read.fields);
+    // The errors the request's VARIABLES carry against the variable definitions the operation
+    // declares, reported once the document's own selections have been validated below:
+    // GraphQL coerces the variable values of an operation it has already validated.
+    let invalid_variables = read.invalid_variables;
     // The transitions the clock owes this API's ASSOCIATIONS are materialised as they are
     // read here, exactly as the one it owes a cache instance is ([`api_cache::serving`]): a
     // merge that came due carries a source API's types and the definitions that resolve them
@@ -515,19 +578,17 @@ pub async fn execute(context: &PlaneContext, request: &GraphqlRequest) -> Answer
     // The document is validated against the API's ACTIVE schema BEFORE any field of it is
     // dispatched, the way AppSync validates one: a selection the schema does not declare
     // is a validation failure of the request rather than a field that resolves to nothing,
-    // so the request is answered with those errors and nothing resolved.
+    // so the request is answered with those errors and nothing resolved. The variable values
+    // are coerced against the definitions the operation declares once the document itself has
+    // been validated, which is the order GraphQL states the two stages in, so a document that
+    // fails both is reported as the document it is.
     let invalid = schema_validation_errors(context, &root_type, &fields);
+    let invalid = match invalid.is_empty() {
+        true => invalid_variables,
+        false => invalid,
+    };
     if !invalid.is_empty() {
-        return Answer {
-            // Validation runs BEFORE execution, so a document it refuses resolved NOTHING:
-            // the result carries its `data` member as the null it resolved to, which is what
-            // tells a client the request failed as a whole rather than that one field of it
-            // did.
-            data: Some(Json::Null),
-            errors: invalid,
-            traces: Vec::new(),
-            extensions: None,
-        };
+        return Answer::invalid(invalid);
     }
     // Both read off ONE guard of the store, taken and released before the execution starts:
     // whether the API captures field-level logs, and which of its ENHANCED series this
@@ -572,6 +633,7 @@ pub async fn execute(context: &PlaneContext, request: &GraphqlRequest) -> Answer
                 errors: Vec::new(),
                 traces: Vec::new(),
                 extensions: None,
+                malformed: None,
             };
         }
     }
@@ -657,6 +719,7 @@ pub async fn execute(context: &PlaneContext, request: &GraphqlRequest) -> Answer
         errors: execution.errors,
         traces: execution.traces,
         extensions: api_cache::reported_eviction(deleted),
+        malformed: None,
     }
 }
 
@@ -723,35 +786,66 @@ pub fn subscription_selection(
     }
 }
 
-/// One request's document as the execution reads it: which operation is being run, and the
-/// fields it selects.
+/// One request's document as the execution reads it: which operation is being run, the
+/// fields it selects, and what its VARIABLES do not satisfy.
 #[derive(Debug, Clone)]
 struct ReadOperation {
     kind: OperationKind,
     fields: Vec<SelectedField>,
+    /// The validation errors the request's variable values carry against the variable
+    /// definitions this operation declares ([`variable_values`]) — empty for a request whose
+    /// variables satisfy them, which is every request that is executed.
+    invalid_variables: Vec<Json>,
+}
+
+/// Why one request's document is not executed.
+#[derive(Debug, Clone)]
+enum Refusal {
+    /// The body is no GraphQL operation at all, so nothing of the GraphQL plane is reached:
+    /// AppSync's HTTP front door refuses it ([`Answer::malformed`]).
+    Malformed(&'static str),
+    /// The document became an operation, and the REQUEST is at fault for something about it
+    /// this endpoint reports as a request-level error of the result.
+    Request(String),
+}
+
+/// Lets the readers below keep stating their own refusals as the sentence they state, so only
+/// the two front-door classes name a class at all.
+impl From<String> for Refusal {
+    fn from(message: String) -> Self {
+        Self::Request(message)
+    }
 }
 
 /// Read one document: the operation to run and the fields it selects, owned, with the
 /// request's own variables already substituted.
+///
+/// A body AppSync cannot turn into a GraphQL operation is refused as MALFORMED rather than
+/// answered as a result: a document that does not parse, and an empty `query`, which carries
+/// no document to parse at all.
 ///
 /// Synchronous on purpose — nothing of the parser's tree escapes it.
 fn read_operation(
     query: &str,
     operation_name: Option<&str>,
     variables: &JsonMap<String, Json>,
-) -> Result<ReadOperation, String> {
+) -> Result<ReadOperation, Refusal> {
+    if query.trim().is_empty() {
+        return Err(Refusal::Malformed(QUERY_IS_EMPTY));
+    }
     let parsed = ::apollo_parser::Parser::new(query)
         .recursion_limit(crate::state::DEFINITION_RECURSION_LIMIT)
         .token_limit(crate::state::DEFINITION_TOKEN_LIMIT)
         .parse();
-    if let Some(error) = parsed.errors().next() {
-        return Err(format!("{NOT_A_DOCUMENT} {}", error.message()));
+    if parsed.errors().next().is_some() {
+        return Err(Refusal::Malformed(NOT_A_DOCUMENT));
     }
     let document = parsed.document();
     let operation = selected_operation(&document, operation_name)
-        .ok_or_else(|| no_such_operation(operation_name))?;
+        .ok_or_else(|| Refusal::Request(no_such_operation(operation_name)))?;
     let mut expansion = Expansion {
         document: &document,
+        source: query,
         variables,
         remaining: MAX_SELECTED_NODES,
         held: MAX_ARGUMENT_BYTES,
@@ -761,6 +855,11 @@ fn read_operation(
     Ok(ReadOperation {
         kind: operation.kind,
         fields,
+        invalid_variables: variable_values::invalid_variables(
+            query,
+            operation.variable_definitions.as_ref(),
+            variables,
+        ),
     })
 }
 
@@ -3769,9 +3868,14 @@ impl OperationKind {
     }
 }
 
-/// One operation of a document: which kind it is, and the fields it selects.
+/// One operation of a document: which kind it is, the variables it is parameterised by, and
+/// the fields it selects.
 struct Operation {
     kind: OperationKind,
+    /// The variable definitions the operation declares, which the request's own `variables`
+    /// are coerced against ([`variable_values`]), and `None` for an operation that declares
+    /// none.
+    variable_definitions: Option<::apollo_parser::cst::VariableDefinitions>,
     selection_set: Option<::apollo_parser::cst::SelectionSet>,
 }
 
@@ -3814,6 +3918,7 @@ fn selected_operation(
     };
     Some(Operation {
         kind,
+        variable_definitions: chosen.variable_definitions(),
         selection_set: chosen.selection_set(),
     })
 }
@@ -3828,6 +3933,10 @@ pub struct SelectedField {
     pub name: String,
     pub arguments: JsonMap<String, Json>,
     pub selections: Vec<SelectedField>,
+    /// WHERE in the request's document this selection was written, which is the position a
+    /// validation error about it states ([`DocumentLocation`]), and `None` for a selection
+    /// the reading could not place in the document.
+    pub location: Option<DocumentLocation>,
 }
 
 /// Reading ONE request's document into the fields it selects: what the reading needs, and
@@ -3844,6 +3953,9 @@ pub struct SelectedField {
 /// memory reading it costs.
 struct Expansion<'a> {
     document: &'a ::apollo_parser::cst::Document,
+    /// The document's own TEXT, which the position of each selection it reads is counted in
+    /// ([`DocumentLocation::of`]).
+    source: &'a str,
     variables: &'a JsonMap<String, Json>,
     /// How many more fields this document may expand to, all levels together.
     remaining: usize,
@@ -3898,6 +4010,10 @@ impl Expansion<'_> {
                         name,
                         arguments,
                         selections,
+                        location: DocumentLocation::of(
+                            self.source,
+                            cst::CstNode::syntax(&selected),
+                        ),
                     });
                 }
                 // An inline fragment selects on the same object its parent does, so its own
@@ -4140,7 +4256,12 @@ fn no_such_operation(operation_name: Option<&str>) -> String {
 }
 
 /// The sentences this module's own refusals state.
-const NOT_A_DOCUMENT: &str = "The request's query is not a GraphQL document:";
+///
+/// The first two are the HTTP front door's own, for the two bodies that reach no operation at
+/// all ([`Answer::malformed`]): a `query` that is not a GraphQL document, and one that carries
+/// no document at all.
+const NOT_A_DOCUMENT: &str = "Unable to parse GraphQL query.";
+const QUERY_IS_EMPTY: &str = "Invalid request, `query` can't be empty.";
 const NO_SUCH_OPERATION: &str = "This document declares no operation named";
 const ONE_OPERATION: &str =
     "A request that names no operation must carry a document with exactly one operation.";
@@ -4206,6 +4327,7 @@ mod tests {
             name: name.to_string(),
             arguments: arguments.as_object().cloned().unwrap_or_default(),
             selections,
+            location: None,
         }
     }
 

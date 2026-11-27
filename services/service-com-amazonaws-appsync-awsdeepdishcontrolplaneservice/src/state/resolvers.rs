@@ -124,6 +124,31 @@ impl GraphqlApiRecord {
             .get(&(type_name.to_string(), field_name.to_string()))
     }
 
+    /// The refusal a write of a resolver on `field_name` of `type_name` earns from this API's
+    /// ACTIVE SCHEMA, or `None` where that schema has nothing against it.
+    ///
+    /// A resolver is attached to a FIELD of a type of its API — `CreateResolver` "converts
+    /// incoming requests" for one field, and its URI names the type the field belongs to — so
+    /// a type the API's schema DECLARES decides which fields of it a resolver can be attached
+    /// to: a name that type declares no field under is a field no query can select, and the
+    /// write is refused with the modelled not-found error
+    /// ([`no_field_named_message`]) rather than leaving the API holding a resolver bound to
+    /// nothing.
+    ///
+    /// A type the schema declares NOTHING about is no judgement either way: this service
+    /// attaches a resolver to the `typeName` the request names without waiting for a schema to
+    /// declare it ([`Self::holds_type`]), so there is no declaration of its fields to weigh
+    /// the field against.
+    pub fn resolver_field_refusal(&self, type_name: &str, field_name: &str) -> Option<String> {
+        let declared = self.types.get(type_name)?;
+        declared
+            .parsed
+            .fields
+            .iter()
+            .all(|field| field.name != field_name)
+            .then(|| no_field_named_message(field_name, type_name))
+    }
+
     /// Every resolver attached to a field of `type_name`, in the order they were
     /// created.
     ///
@@ -185,6 +210,16 @@ pub fn resolver_resource(api_id: &str, type_name: &str, field_name: &str) -> Str
 /// request.
 pub fn no_data_source_named_message(name: &str) -> String {
     format!("No data source found named {name}")
+}
+
+/// The text a `NotFoundException` (HTTP 404) carries for a resolver addressed at a field the
+/// type does not declare: AppSync's sentence for an unresolvable FIELD reference, whose two
+/// variable parts are the field and the type the request named.
+///
+/// A resolver resolves one field of one type, so a field the type declares none of is the
+/// reference that resolves to nothing — the absence the sentence states.
+pub fn no_field_named_message(field_name: &str, type_name: &str) -> String {
+    format!("No field named {field_name} found on type {type_name}")
 }
 
 /// The text a `NotFoundException` (HTTP 404) carries for a field that carries no

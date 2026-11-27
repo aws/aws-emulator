@@ -680,11 +680,19 @@ async fn served_request(
         .await;
     }
     let answered = execution::execute(context, &request).await;
+    // A body that never became a GraphQL OPERATION is refused by the HTTP front door rather
+    // than answered as a GraphQL result: it carries the class of that refusal and no `data`
+    // member at all ([`execution::Answer::malformed`]), which is what tells it apart from a
+    // document that parsed and was refused before execution.
+    let status = match answered.malformed {
+        Some(_) => MALFORMED_REQUEST_STATUS,
+        None => 200,
+    };
     field_logs::delivered(
         context,
         &field_logs::Served {
             request_id,
-            status: 200,
+            status,
             started,
             latency: clock.elapsed(),
             answer: Some(&answered),
@@ -693,9 +701,20 @@ async fn served_request(
     .await;
     // What the API publishes about having answered this request, which is the ONLY way a
     // client observes its request rate, its latency and its client-error rate.
-    context.metrics.request_answered(200, clock.elapsed());
-    json_response(200, &answered.document())
+    context.metrics.request_answered(status, clock.elapsed());
+    match answered.malformed {
+        Some(message) => error_response(
+            MALFORMED_REQUEST_STATUS,
+            execution::MALFORMED_REQUEST_ERROR_TYPE,
+            message,
+        ),
+        None => json_response(200, &answered.document()),
+    }
 }
+
+/// The status AppSync's HTTP front door refuses a body it could not turn into a GraphQL
+/// operation with: the request itself is at fault, and no operation of the API was reached.
+const MALFORMED_REQUEST_STATUS: u16 = 400;
 
 /// One refusal the API's own logs report: the answer, and the record the API logs about
 /// having refused the request.

@@ -542,6 +542,28 @@ async fn the_endpoint_refuses_what_it_does_not_serve_or_authorize() {
             status: 400,
             error_type: "BadRequestException",
         },
+        // The two bodies that carry a `query` this endpoint cannot turn into a GraphQL
+        // OPERATION at all: AppSync's HTTP front door refuses each of them, which is the
+        // class of refusal that carries no `data` member — unlike a document that parses and
+        // is refused before execution, whose `data` is present and null.
+        Row {
+            case: "a query that is not a GraphQL document",
+            path: GRAPHQL_PATH,
+            method: "POST",
+            body: json!({"query": "query { ping"}),
+            api_key: Some(LIVE_KEY),
+            status: 400,
+            error_type: "MalformedHttpRequestException",
+        },
+        Row {
+            case: "a query carrying no document at all",
+            path: GRAPHQL_PATH,
+            method: "POST",
+            body: json!({"query": ""}),
+            api_key: Some(LIVE_KEY),
+            status: 400,
+            error_type: "MalformedHttpRequestException",
+        },
     ];
 
     for row in rows {
@@ -577,7 +599,6 @@ async fn the_endpoint_refuses_what_it_does_not_serve_or_authorize() {
     // fragment spread into itself, and an expansion wider than one request may select —
     // each refused before any resolver runs.
     for (case, query) in [
-        ("a document that does not parse", "query { ping".to_string()),
         (
             "an operation the document does not declare",
             "query Named { ping }".to_string(),
