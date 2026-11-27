@@ -76,7 +76,9 @@ use ::service_com_amazonaws_lambda_awsgirapiservice::state::execution::package::
 use ::service_com_amazonaws_lambda_awsgirapiservice::state::execution::python::{
     self, Budget, Completion, Stop,
 };
-use ::service_com_amazonaws_lambda_awsgirapiservice::state::execution::INIT_PHASE_LIMIT;
+use ::service_com_amazonaws_lambda_awsgirapiservice::state::execution::{
+    ENVIRONMENT_BUILD_SPAN, INIT_PHASE_LIMIT,
+};
 
 /// The module the runtime contract is handed to the interpreter as, and the entry point it
 /// resolves in it.
@@ -105,23 +107,38 @@ const RUN_STACK_BYTES: usize = 16 * 1024 * 1024;
 /// model or a network.
 ///
 /// It is a span of the RUN's own time rather than of this host's: it is read against a clock
-/// the run itself drives ([`RUN_CLOCK_TICK`]) and spent by the agent's own doings — one tick
-/// per traced event it delivers, and the waits it asks for — and by nothing of this host's
-/// speed. So what an invocation answers is what the deployed code produced on an idle host
-/// and on a loaded one alike: the interpreter one invocation runs in is built for it and the
-/// deployed code's own imports are read in it, work this emulator may need several times as
-/// long over when the host is busy, and none of it is the agent's doing. What a run may take
-/// of THIS host is bounded beside it ([`RUN_HOST_CEILING`]).
-const RUN_WALL_CLOCK: Duration = Duration::from_secs(10);
+/// the run itself drives ([`AGENT_RUN_CLOCK_TICK`]) and spent by the agent's own doings — one
+/// tick per traced event it delivers, and the waits it asks for — and by nothing of this
+/// host's speed. So what an invocation answers is what the deployed code produced on an idle
+/// host and on a loaded one alike: the interpreter one invocation runs in is built for it and
+/// the deployed code's own imports are read in it, work this emulator may need several times
+/// as long over when the host is busy, and none of it is the agent's doing. What a run may
+/// take of THIS host is bounded beside it ([`AGENT_RUN_HOST_CEILING`]).
+pub const AGENT_RUN_WALL_CLOCK: Duration = Duration::from_secs(10);
 
 /// How far ONE reading of an invocation's clock moves it.
 ///
 /// The span above is spent by what the RUN does, and a traced event is one of those: the
 /// engine reads the run's clock once per event the agent delivers and once per sample the
 /// host's watch takes over it. The tick is sized so that the whole step budget
-/// ([`run_budget`]) spends part of that span, which leaves an agent that computes without end
-/// to be answered by a count of its OWN work rather than by how fast this host interprets it.
-const RUN_CLOCK_TICK: Duration = Duration::from_nanos(100);
+/// ([`agent_run_budget`]) spends part of that span, which leaves an agent that computes
+/// without end to be answered by a count of its OWN work rather than by how fast this host
+/// interprets it.
+pub const AGENT_RUN_CLOCK_TICK: Duration = Duration::from_nanos(100);
+
+/// Every span the ENGINE spends on one invocation, in the run's own time: building the
+/// execution environment the agent runs in ([`ENVIRONMENT_BUILD_SPAN`]), reading the deployed
+/// code's own modules in it ([`INIT_PHASE_LIMIT`]) and then the invocation itself
+/// ([`AGENT_RUN_WALL_CLOCK`]).
+///
+/// The first two are this EMULATOR's own work and not the agent's — an interpreter is built
+/// and the deployment's modules are read before a line of the entry point runs — and the
+/// engine charges them to no bound of this host's. So they are what the host time one
+/// invocation may take has to cover: a ceiling under this sum stops an invocation the engine
+/// has not finished standing up yet.
+const ENGINE_SPANS_PER_RUN: Duration = ENVIRONMENT_BUILD_SPAN
+    .saturating_add(INIT_PHASE_LIMIT)
+    .saturating_add(AGENT_RUN_WALL_CLOCK);
 
 /// How much of THIS HOST's own time ONE invocation may take, past which the engine stops it
 /// whatever the run's own clock reads.
@@ -132,17 +149,17 @@ const RUN_CLOCK_TICK: Duration = Duration::from_nanos(100);
 /// stops it: the engine reads it from this host's own clock at every traced event and from
 /// the host's own watch over the run ([`python::Clock::within`]).
 ///
-/// It is generous beside the spans the engine's own phases take in the run's own time
-/// ([`INIT_PHASE_LIMIT`] for the deployed code the environment is stood up with, then the
-/// span above for the invocation itself), because a busy host may need several times as long
-/// of its own for the same work, and an invocation the deployed code ANSWERED has to be
-/// reported on that answer rather than on this host's load.
-const RUN_HOST_CEILING: Duration = INIT_PHASE_LIMIT
-    .saturating_add(RUN_WALL_CLOCK)
-    .saturating_mul(HOST_CEILING_OVER_THE_ENGINE_SPAN);
+/// It is generous beside EVERY span the engine spends on one invocation
+/// ([`ENGINE_SPANS_PER_RUN`]) — the environment it builds for the run and the deployed code's
+/// imports it reads in it, which is where most of an invocation's host time goes, as well as
+/// the invocation's own span — because a busy host may need several times as long of its own
+/// for the same work, and an invocation the deployed code ANSWERED has to be reported on that
+/// answer rather than on this host's load.
+pub const AGENT_RUN_HOST_CEILING: Duration =
+    ENGINE_SPANS_PER_RUN.saturating_mul(HOST_CEILING_OVER_THE_ENGINE_SPAN);
 
 /// How many times the engine's own spans the host ceiling allows for
-/// ([`RUN_HOST_CEILING`]).
+/// ([`AGENT_RUN_HOST_CEILING`]).
 const HOST_CEILING_OVER_THE_ENGINE_SPAN: u32 = 3;
 
 /// How much longer than the host time one run may take it is waited for before it is given up
@@ -152,17 +169,17 @@ const HOST_CEILING_OVER_THE_ENGINE_SPAN: u32 = 3;
 /// and the interpreter is then finalized, so the answer of a stopped run arrives a little
 /// after that bound rather than at it. Past this the call is answered instead of waiting for
 /// an agent that is not coming back.
-const RUN_GRACE: Duration = Duration::from_secs(5);
+pub const AGENT_RUN_GRACE: Duration = Duration::from_secs(5);
 
 /// How long this invocation waits for the thread the run happens on: the host time one run
-/// may take ([`RUN_HOST_CEILING`]) and the grace the engine's own stop needs to land.
+/// may take ([`AGENT_RUN_HOST_CEILING`]) and the grace the engine's own stop needs to land.
 ///
 /// DERIVED, not chosen: a run that is going to answer at all has answered by then, because
 /// every span the engine spends — standing the interpreter up, reading the deployed code's
 /// modules and running the invocation — is inside the ceiling the run is held to. A wait of
 /// the run's own span alone would give up on a run whose own bounds had not been reached yet,
 /// and report an agent that was still being stood up as one that did not answer in time.
-const RUN_HOST_WAIT: Duration = RUN_HOST_CEILING.saturating_add(RUN_GRACE);
+pub const AGENT_RUN_HOST_WAIT: Duration = AGENT_RUN_HOST_CEILING.saturating_add(AGENT_RUN_GRACE);
 
 /// How many traced events one invocation may spend, how much memory it may add to this
 /// process, how much of its output is kept, how large its answer may be and how deep it may
@@ -171,9 +188,10 @@ const RUN_HOST_WAIT: Duration = RUN_HOST_CEILING.saturating_add(RUN_GRACE);
 /// Every one of them is the EMULATOR's: the agent is caller-supplied code, so what one
 /// invocation may cost is stated here and enforced by the engine inside the run, in host
 /// code the agent cannot reach.
-fn run_budget() -> Budget {
+#[must_use]
+pub fn agent_run_budget() -> Budget {
     Budget {
-        wall_clock: RUN_WALL_CLOCK,
+        wall_clock: AGENT_RUN_WALL_CLOCK,
         steps: 50_000_000,
         memory_bytes: 256 * 1024 * 1024,
         // The agent sees no writable directory of its own beyond what the engine serves one,
@@ -274,7 +292,7 @@ pub async fn run_agent(run: &AgentRun<'_>) -> Result<AgentAnswer, AgentRunFailur
     let environment = run.environment.clone();
     let session = run.session_id.to_string();
     let invoked_arn = run.invoked_arn.to_string();
-    let budget = run_budget();
+    let budget = agent_run_budget();
     let (sender, receiver) = ::tokio::sync::oneshot::channel();
     let spawned = ::std::thread::Builder::new()
         .name("agentcore-runtime-invocation".to_string())
@@ -312,7 +330,7 @@ pub async fn run_agent(run: &AgentRun<'_>) -> Result<AgentAnswer, AgentRunFailur
                 // The clock the run's own span is read against: one the RUN drives, a tick
                 // per traced event it delivers, stating what the run may take of THIS host
                 // besides.
-                &python::Clock::driven(RUN_CLOCK_TICK).within(RUN_HOST_CEILING),
+                &python::Clock::driven(AGENT_RUN_CLOCK_TICK).within(AGENT_RUN_HOST_CEILING),
             );
             let _ = sender.send(finished);
         });
@@ -321,7 +339,7 @@ pub async fn run_agent(run: &AgentRun<'_>) -> Result<AgentAnswer, AgentRunFailur
             "the deployed agent could not be given a thread to run on".to_string(),
         ));
     }
-    let waited = ::tokio::time::timeout(RUN_HOST_WAIT, receiver).await;
+    let waited = ::tokio::time::timeout(AGENT_RUN_HOST_WAIT, receiver).await;
     let finished = match waited {
         Ok(Ok(finished)) => finished,
         // The run was given up on, or its thread ended without reporting: the caller is
@@ -356,7 +374,7 @@ fn stopped_reason(stop: Stop) -> String {
     match stop {
         Stop::Deadline => format!(
             "the deployed agent did not answer within {} seconds",
-            RUN_WALL_CLOCK.as_secs()
+            AGENT_RUN_WALL_CLOCK.as_secs()
         ),
         // Not a span of the agent's own: this is the run having been given up on, so it says
         // so rather than reporting a bound of the invocation that never ran out.
