@@ -71,8 +71,10 @@
 //!   granular you want the forecast to be. You can get 3 months of DAILY forecasts or 18
 //!   months of MONTHLY forecasts. The GetCostForecast operation supports only DAILY and
 //!   MONTHLY granularities.
-//! * `Metric` (Metric, one of: AMORTIZED_COST | BLENDED_COST | NET_AMORTIZED_COST |
-//!   NET_UNBLENDED_COST | NORMALIZED_USAGE_AMOUNT | UNBLENDED_COST | USAGE_QUANTITY)
+//! * `Metric` (Metric, one of: AMORTIZED_COST | BILLED_COST | BLENDED_COST |
+//!   CONTRACTED_COST | LIST_COST | NET_AMORTIZED_COST | NET_UNBLENDED_COST |
+//!   NORMALIZED_USAGE_AMOUNT | PUBLIC_EQUIVALENT_BILLED_COST | PUBLIC_ON_DEMAND_COST |
+//!   UNBLENDED_COST | USAGE_QUANTITY)
 //!   **required** — Which metric Cost Explorer uses to create your forecast. For more
 //!   information about blended and unblended rates, see Why does the "blended" annotation
 //!   appear on some line items in my bill?. Valid values for a GetCostForecast call are the

@@ -133,7 +133,7 @@ contents — read that shape in the model above when you need its own members.
 
 ## GetCostForecast
 
-- **Input:** `TimePeriod` (DateInterval, required), `Metric` (Metric, one of: AMORTIZED_COST | BLENDED_COST | NET_AMORTIZED_COST | NET_UNBLENDED_COST | NORMALIZED_USAGE_AMOUNT | UNBLENDED_COST | USAGE_QUANTITY, required), `Granularity` (Granularity, one of: DAILY | HOURLY | MONTHLY, required), `Filter` (Expression), `BillingViewArn` (string, len 20..2048, pattern ^arn:aws[a-z-]*:(billing)::[0-9]{12}:billingview/[-a-zA-Z0-9/:_+=.-@]{1,43}$), `PredictionIntervalLevel` (integer, range 51..99)
+- **Input:** `TimePeriod` (DateInterval, required), `Metric` (Metric, one of: AMORTIZED_COST | BILLED_COST | BLENDED_COST | CONTRACTED_COST | LIST_COST | NET_AMORTIZED_COST | NET_UNBLENDED_COST | NORMALIZED_USAGE_AMOUNT | PUBLIC_EQUIVALENT_BILLED_COST | PUBLIC_ON_DEMAND_COST | UNBLENDED_COST | USAGE_QUANTITY, required), `Granularity` (Granularity, one of: DAILY | HOURLY | MONTHLY, required), `Filter` (Expression), `BillingViewArn` (string, len 20..2048, pattern ^arn:aws[a-z-]*:(billing)::[0-9]{12}:billingview/[-a-zA-Z0-9/:_+=.-@]{1,43}$), `PredictionIntervalLevel` (integer, range 51..99)
 - **Output:** `Total` (MetricValue), `ForecastResultsByTime` (list<ForecastResult>)
 - **Errors:** `BillingViewHealthStatusException (HTTP 400)`, `DataUnavailableException (HTTP 400)`, `LimitExceededException (HTTP 400)`, `ResourceNotFoundException (HTTP 404)`
 
@@ -209,7 +209,7 @@ contents — read that shape in the model above when you need its own members.
 
 ## GetUsageForecast
 
-- **Input:** `TimePeriod` (DateInterval, required), `Metric` (Metric, one of: AMORTIZED_COST | BLENDED_COST | NET_AMORTIZED_COST | NET_UNBLENDED_COST | NORMALIZED_USAGE_AMOUNT | UNBLENDED_COST | USAGE_QUANTITY, required), `Granularity` (Granularity, one of: DAILY | HOURLY | MONTHLY, required), `Filter` (Expression), `BillingViewArn` (string, len 20..2048, pattern ^arn:aws[a-z-]*:(billing)::[0-9]{12}:billingview/[-a-zA-Z0-9/:_+=.-@]{1,43}$), `PredictionIntervalLevel` (integer, range 51..99)
+- **Input:** `TimePeriod` (DateInterval, required), `Metric` (Metric, one of: AMORTIZED_COST | BILLED_COST | BLENDED_COST | CONTRACTED_COST | LIST_COST | NET_AMORTIZED_COST | NET_UNBLENDED_COST | NORMALIZED_USAGE_AMOUNT | PUBLIC_EQUIVALENT_BILLED_COST | PUBLIC_ON_DEMAND_COST | UNBLENDED_COST | USAGE_QUANTITY, required), `Granularity` (Granularity, one of: DAILY | HOURLY | MONTHLY, required), `Filter` (Expression), `BillingViewArn` (string, len 20..2048, pattern ^arn:aws[a-z-]*:(billing)::[0-9]{12}:billingview/[-a-zA-Z0-9/:_+=.-@]{1,43}$), `PredictionIntervalLevel` (integer, range 51..99)
 - **Output:** `Total` (MetricValue), `ForecastResultsByTime` (list<ForecastResult>)
 - **Errors:** `BillingViewHealthStatusException (HTTP 400)`, `DataUnavailableException (HTTP 400)`, `LimitExceededException (HTTP 400)`, `ResourceNotFoundException (HTTP 404)`, `UnresolvableUsageUnitException (HTTP 400)`
 
