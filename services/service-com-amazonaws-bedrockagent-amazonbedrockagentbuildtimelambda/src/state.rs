@@ -270,7 +270,8 @@ use crate::ops::types::{
     DocumentMetadata, FlowDefinition, FlowValidation, FlowVersionSummary, GetFlowOutput,
     GetFlowVersionOutput, GuardrailConfiguration, ImageExtractionConfiguration, IngestionJob, IngestionJobStatistics,
     KnowledgeBase, KnowledgeBaseConfiguration, KnowledgeBaseDocumentDetail, KnowledgeBaseSummary,
-    MediaExtractionConfiguration, MemoryConfiguration, PromptOverrideConfiguration, S3Content,
+    MediaExtractionConfiguration, MemoryConfiguration, MetadataConfiguration,
+    PromptOverrideConfiguration, S3Content,
     S3Location, ServerSideEncryptionConfiguration, StorageConfiguration, UpdateFlowOutput,
     VectorIngestionConfiguration,
 };
@@ -1259,6 +1260,14 @@ pub struct KnowledgeBaseRecord {
     /// Reasons the last API operation on the knowledge base failed; empty while
     /// nothing has failed.
     pub failure_reasons: Vec<String>,
+    /// The custom metadata field configurations this knowledge base carries, and
+    /// `None` while it carries none.
+    ///
+    /// Held as the modelled list itself rather than as a flattened one, so a read
+    /// reports back exactly what the last write stored: a knowledge base no write
+    /// has supplied configurations for carries none, and one a write supplied an
+    /// empty list for carries an empty list.
+    pub metadata_configurations: Option<Vec<MetadataConfiguration>>,
     /// The resource-based POLICY this knowledge base carries, and `None` while it
     /// carries none.
     ///
@@ -1298,6 +1307,7 @@ impl KnowledgeBaseRecord {
             updated_at: to_date_time(self.updated_at),
             failure_reasons: (!self.failure_reasons.is_empty())
                 .then(|| self.failure_reasons.clone()),
+            metadata_configurations: self.metadata_configurations.clone(),
         }
     }
 

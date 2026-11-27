@@ -14,6 +14,11 @@
 //! that would leave a different one on the record is refused with the modelled
 //! `ValidationException` and writes nothing.
 //!
+//! `metadataConfigurations` — the custom metadata field configurations the modelled
+//! `KnowledgeBase` reports — is one of the overwritten members: this is the operation
+//! that supplies them, and an update that carries none leaves the knowledge base
+//! carrying none.
+//!
 //! ## Shape of an operation
 //!
 //! Each operation is a struct that owns the shared engine and implements
@@ -68,6 +73,11 @@
 //!   same configuration as when the knowledge base was created.
 //! * `knowledgeBaseId` (Id, pattern ^[0-9a-zA-Z]{10}$) **required** — The unique identifier
 //!   of the knowledge base to update.
+//! * `metadataConfigurations` (MetadataConfigurations, len ..30) — A list of up to 30 custom
+//!   metadata field configurations. Each configuration carries the field's `name`
+//!   (MetadataKeyName, len 1..200, pattern ^[a-zA-Z0-9_][a-zA-Z0-9_-]*$, sensitive), its
+//!   `type` (FieldType: STRING, STRING_LIST) and its `searchability` (SearchableStatus:
+//!   ENABLED, DISABLED).
 //! * `name` (Name, pattern ^([0-9a-zA-Z][_-]?){1,100}$) **required** — Specifies a new name
 //!   for the knowledge base.
 //! * `roleArn` (KnowledgeBaseRoleArn, len ..2048, pattern
@@ -374,6 +384,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         record.role_arn = input.role_arn;
         record.knowledge_base_configuration = input.knowledge_base_configuration;
         record.storage_configuration = input.storage_configuration;
+        // `metadataConfigurations` is one of those overwritten members: the
+        // modelled `KnowledgeBase` reports the custom metadata field
+        // configurations the knowledge base carries, this request is the one
+        // that supplies them, and a request that carries none leaves the
+        // knowledge base carrying none. The admissible field names, data types
+        // and searchability values are the constraints of the modelled
+        // `MetadataConfigurations` list and its members, so a value outside one
+        // of them is refused at the request boundary rather than here.
+        record.metadata_configurations = input.metadata_configurations;
         // The resource changed at this instant, so this is its last-updated one.
         record.updated_at = now;
         // This operation answers 202, i.e. the change is ACCEPTED here and

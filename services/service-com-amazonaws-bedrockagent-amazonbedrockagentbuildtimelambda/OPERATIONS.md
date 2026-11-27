@@ -553,7 +553,7 @@ contents — read that shape in the model above when you need its own members.
 
 - **Route:** `PUT /knowledgebases/{knowledgeBaseId} -> 202`
 - **Traits:** @idempotent
-- **Input:** `knowledgeBaseId` (string, pattern ^[0-9a-zA-Z]{10}$, @httpLabel, required), `name` (string, pattern ^([0-9a-zA-Z][_-]?){1,100}$, required), `description` (string, len 1..200), `roleArn` (string, len ..2048, pattern ^arn:aws(-[^:]+)?:iam::([0-9]{12})?:role/.+$, required), `knowledgeBaseConfiguration` (KnowledgeBaseConfiguration, required), `storageConfiguration` (StorageConfiguration)
+- **Input:** `knowledgeBaseId` (string, pattern ^[0-9a-zA-Z]{10}$, @httpLabel, required), `name` (string, pattern ^([0-9a-zA-Z][_-]?){1,100}$, required), `description` (string, len 1..200), `roleArn` (string, len ..2048, pattern ^arn:aws(-[^:]+)?:iam::([0-9]{12})?:role/.+$, required), `knowledgeBaseConfiguration` (KnowledgeBaseConfiguration, required), `storageConfiguration` (StorageConfiguration), `metadataConfigurations` (list<MetadataConfiguration>, len ..30)
 - **Output:** `knowledgeBase` (KnowledgeBase, required)
 - **Errors:** `AccessDeniedException (HTTP 403)`, `ConflictException (HTTP 409)`, `InternalServerException (HTTP 500)`, `ResourceNotFoundException (HTTP 404)`, `ThrottlingException (HTTP 429)`, `ValidationException (HTTP 400)`
 

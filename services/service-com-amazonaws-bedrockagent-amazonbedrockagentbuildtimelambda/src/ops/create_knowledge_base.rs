@@ -390,6 +390,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             removal_due_at: None,
             // Nothing has failed on a knowledge base this call just created.
             failure_reasons: Vec::new(),
+            // `CreateKnowledgeBaseRequest` models no `metadataConfigurations`
+            // member (`smithy_query(query="operation",operation="CreateKnowledgeBase")`),
+            // so a created knowledge base carries no custom metadata field
+            // configurations until a write that takes them supplies some.
+            metadata_configurations: None,
             // A knowledge base is created carrying no resource-based policy: one
             // exists only once a write attaches it (`crate::state::resource_policies`).
             resource_policy: None,

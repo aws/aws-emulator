@@ -20,6 +20,7 @@ pub struct UpdateKnowledgeBaseInput {
     pub role_arn: String,
     pub knowledge_base_configuration: KnowledgeBaseConfiguration,
     pub storage_configuration: Option<StorageConfiguration>,
+    pub metadata_configurations: Option<Vec<MetadataConfiguration>>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.bedrockagent#UpdateKnowledgeBaseResponse")]

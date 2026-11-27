@@ -916,11 +916,11 @@ pub struct SessionSummaryConfiguration {
     pub max_recent_sessions: Option<i32>,
 }
 
-/// `Agent`. Its schema and codec come from [`bedrock_agent_schema_and_codec!`] for the
-/// reason [`DataSource`]'s do: `createdAt`, `updatedAt` and `preparedAt` target
-/// `DateTimestamp`, which carries `@timestampFormat("date-time")`
+/// `Agent`. Its schema and codec come from [`bedrock_agent_schema_and_codec!`] rather
+/// than `#[smithy_macros::smithy(shape = ...)]` because `createdAt`, `updatedAt` and
+/// `preparedAt` target `DateTimestamp`, which carries `@timestampFormat("date-time")`
 /// (`smithy_query(query="shape", shape="Agent")`), and the derive does not put that trait
-/// on a member schema — see `types/date_time_wire.rs`.
+/// on a member schema — see `types/date_time_wire.rs` for that whole story.
 ///
 /// The member list below is the model's, member for member: same shape ids, same wire
 /// names, same order, same shape types.
@@ -1582,11 +1582,12 @@ pub struct FlowAliasConcurrencyConfiguration {
     pub max_concurrency: Option<i32>,
 }
 
-/// `IngestionJob`. Its schema and codec come from [`bedrock_agent_schema_and_codec!`] for
-/// the reason [`DataSource`]'s do: `startedAt`, `updatedAt` and `textReadyAt` target
-/// `DateTimestamp`, which carries `@timestampFormat("date-time")`
-/// (`smithy_query(query="shape", shape="IngestionJob")`), and the derive does not put that
-/// trait on a member schema — see `types/date_time_wire.rs`.
+/// `IngestionJob`. Its schema and codec come from [`bedrock_agent_schema_and_codec!`]
+/// rather than `#[smithy_macros::smithy(shape = ...)]` because `startedAt`, `updatedAt`
+/// and `textReadyAt` target `DateTimestamp`, which carries
+/// `@timestampFormat("date-time")` (`smithy_query(query="shape", shape="IngestionJob")`),
+/// and the derive does not put that trait on a member schema — see
+/// `types/date_time_wire.rs` for that whole story.
 ///
 /// The member list below is the model's, member for member: same shape ids, same wire
 /// names, same order, same shape types.
@@ -1693,15 +1694,15 @@ pub struct CustomDocumentIdentifier {
 
 /// `KnowledgeBaseDocumentDetail`. Its schema and codec come from
 /// [`bedrock_agent_schema_and_codec!`] rather than
-/// `#[smithy_macros::smithy(shape = ...)]` because `updatedAt` targets
-/// `DateTimestamp`, which carries `@timestampFormat("date-time")`
+/// `#[smithy_macros::smithy(shape = ...)]` because `updatedAt` targets `DateTimestamp`,
+/// which carries `@timestampFormat("date-time")`
 /// (`smithy_query(query="shape", shape="KnowledgeBaseDocumentDetail")`), and the derive
 /// does not put that trait on a member schema — see `types/date_time_wire.rs` for that
 /// whole story.
 ///
 /// The member list below is the model's, member for member: same shape ids, same wire
 /// names, same order, same shape types.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct KnowledgeBaseDocumentDetail {
     pub knowledge_base_id: String,
     pub data_source_id: String,
@@ -2106,10 +2107,10 @@ pub struct S3VectorsConfiguration {
 }
 
 /// `KnowledgeBase`. Its schema and codec come from [`bedrock_agent_schema_and_codec!`]
-/// for the reason [`DataSource`]'s do: `createdAt` and `updatedAt` target
-/// `DateTimestamp`, which carries `@timestampFormat("date-time")`
+/// rather than `#[smithy_macros::smithy(shape = ...)]` because `createdAt` and
+/// `updatedAt` target `DateTimestamp`, which carries `@timestampFormat("date-time")`
 /// (`smithy_query(query="shape", shape="KnowledgeBase")`), and the derive does not put
-/// that trait on a member schema — see `types/date_time_wire.rs`.
+/// that trait on a member schema — see `types/date_time_wire.rs` for that whole story.
 ///
 /// The member list below is the model's, member for member: same shape ids, same wire
 /// names, same order, same shape types.
@@ -2126,6 +2127,7 @@ pub struct KnowledgeBase {
     pub created_at: ::aws_smithy_types::DateTime,
     pub updated_at: ::aws_smithy_types::DateTime,
     pub failure_reasons: Option<Vec<String>>,
+    pub metadata_configurations: Option<Vec<MetadataConfiguration>>,
 }
 
 bedrock_agent_schema_and_codec!(
@@ -2180,7 +2182,23 @@ bedrock_agent_schema_and_codec!(
         opt,
         list_of_string
     ),
+    (
+        M_METADATA_CONFIGURATIONS,
+        metadata_configurations,
+        "metadataConfigurations",
+        11,
+        opt,
+        list_of_struct(MetadataConfiguration)
+    ),
 );
+
+#[smithy_macros::smithy(shape = "com.amazonaws.bedrockagent#MetadataConfiguration")]
+#[derive(Debug, Clone, Default)]
+pub struct MetadataConfiguration {
+    pub name: String,
+    pub r#type: String,
+    pub searchability: String,
+}
 
 #[smithy_macros::smithy(shape = "com.amazonaws.bedrockagent#PromptVariant")]
 #[derive(Debug, Clone)]
@@ -2338,6 +2356,10 @@ pub const ENABLED_OR_DISABLED_STATE_VALUES: &[&str] = &["DISABLED", "ENABLED"];
 
 /// The values `EnrichmentStrategyMethod` accepts on the wire.
 pub const ENRICHMENT_STRATEGY_METHOD_VALUES: &[&str] = &["CHUNK_ENTITY_EXTRACTION"];
+
+
+/// The values `FieldType` accepts on the wire.
+pub const FIELD_TYPE_VALUES: &[&str] = &["STRING", "STRING_LIST"];
 
 
 /// The values `FlowConnectionType` accepts on the wire.
@@ -2506,6 +2528,10 @@ pub const RETRIEVAL_INSTRUCTION_STATUS_VALUES: &[&str] = &["ACTIVE", "INACTIVE"]
 
 /// The values `SalesforceAuthType` accepts on the wire.
 pub const SALESFORCE_AUTH_TYPE_VALUES: &[&str] = &["OAUTH2_CLIENT_CREDENTIALS"];
+
+
+/// The values `SearchableStatus` accepts on the wire.
+pub const SEARCHABLE_STATUS_VALUES: &[&str] = &["DISABLED", "ENABLED"];
 
 
 /// The values `SharePointAuthType` accepts on the wire.
