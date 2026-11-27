@@ -114,11 +114,11 @@ pub const NETWORK_INTERFACE_STATUS_AVAILABLE: &str = "available";
 
 /// The status of a network interface a create has just minted, at the instant of minting.
 ///
-/// RECORDED behaviour: `CreateNetworkInterface` answers the interface in `pending`, and the
-/// modelled `NetworkInterfaceStatus` enum does not carry that member at all
+/// RECORDED behaviour: that create answers the interface in `pending`, and the modelled
+/// `NetworkInterfaceStatus` enum does not carry that member at all
 /// (`smithy_query(query="shape",shape="NetworkInterfaceStatus")` lists `available`,
 /// `associated`, `attaching`, `in-use` and `detaching`), so the recorded answer is the
-/// requirement here rather than the enum.
+/// requirement for that one response rather than the enum.
 ///
 /// It belongs to that ONE answer: every READ of a created interface — the describe a client
 /// makes straight after the create, and one made long after — reports

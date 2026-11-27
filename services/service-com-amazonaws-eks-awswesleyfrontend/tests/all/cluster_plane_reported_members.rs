@@ -85,23 +85,23 @@ fn the_assigned_service_cidr_avoids_the_vpc_address_space() {
         ),
         (
             "a VPC whose range CONTAINS the preferred block",
-            vec!["10.0.0.0/8".to_string()],
+            vec!["172.16.0.0/12".to_string()],
             alternate_block(),
         ),
         (
             "a VPC whose range sits INSIDE the preferred block",
-            vec!["10.100.5.0/24".to_string()],
+            vec!["172.20.5.0/24".to_string()],
             alternate_block(),
         ),
         (
             "a VPC that overlaps only the other block",
-            vec!["172.20.0.0/24".to_string()],
+            vec!["10.100.0.0/24".to_string()],
             preferred_block(),
         ),
         (
             "a VPC with several ranges, one of them overlapping the preferred block",
             vec![
-                "10.100.0.0/20".to_string(),
+                "172.20.0.0/20".to_string(),
                 "172.16.0.0/20".to_string(),
                 "192.168.8.0/22".to_string(),
             ],

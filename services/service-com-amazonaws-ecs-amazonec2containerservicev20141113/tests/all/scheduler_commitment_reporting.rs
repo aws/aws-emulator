@@ -17,10 +17,9 @@
 //!    to the pass, not to the call.
 //! 2. `Service$runStatus` reports the stall while EITHER count is unmet, so a caller that
 //!    scales away from a count the scheduler has already taken on still sees it.
-//! 3. `Service$availabilityZoneRebalancing` on a create that names none follows WHERE the
-//!    service is placed — on for a service Amazon ECS places itself, never set for one on
-//!    the cluster's own capacity, which reads as `DISABLED` — and an update that names none
-//!    resolves to the value the service carries.
+//! 3. `Service$availabilityZoneRebalancing` on a create that names none is the member's
+//!    documented create default, `ENABLED`, wherever the service is placed — and an update
+//!    that names none resolves to the value the service carries.
 //! 4. An Auto Scaling group capacity provider is stored with the managed-scaling members
 //!    and the managed-draining option Amazon ECS applies to a create that names none.
 //! 5. Moving a service onto a capacity provider strategy replaces the tasks it placed
@@ -297,8 +296,8 @@ async fn the_placement_failure_event_belongs_to_the_scheduler_pass_not_to_the_ca
 /// One row of the Availability Zone rebalancing table.
 struct RebalancingRow {
     case: &'static str,
-    /// The `launchType` the create names: where the service's tasks are placed, which is
-    /// what a create that names no rebalancing resolves the member from.
+    /// The `launchType` the create names: where the service's tasks are placed, which the
+    /// create's own default for the member does not depend on.
     launch_type: &'static str,
     /// What the CREATE names, or `None` for a create that names none.
     created_with: Option<&'static str>,
@@ -314,15 +313,13 @@ struct RebalancingRow {
 /// specified for AvailabilityZoneRebalancing, Amazon ECS defaults the value to ENABLED. For
 /// update service requests, when no value is specified ... Amazon ECS defaults to the
 /// existing service's AvailabilityZoneRebalancing value. If the service never had an
-/// AvailabilityZoneRebalancing value set, Amazon ECS treats this as DISABLED." Rebalancing
-/// MOVES tasks between Availability Zones, which Amazon ECS can only do where it owns the
-/// capacity: a create that names no value resolves the documented default for a service
-/// placed on Fargate and leaves one placed on the cluster's own capacity with no value set,
-/// which the closing sentence reads as DISABLED. Either way the value the service CARRIES is
-/// what an update that names none keeps. The rows span where the service is placed, which of
-/// the two calls names a value, and each value of the enum
-/// (`smithy_query(query="shape", shape="AvailabilityZoneRebalancing")` = [ENABLED,
-/// DISABLED]).
+/// AvailabilityZoneRebalancing value set, Amazon ECS treats this as DISABLED." The create
+/// default carries no condition on it, so a create that names no value leaves the service
+/// ENABLED wherever its tasks are placed; either way the value the service CARRIES is what an
+/// update that names none keeps. The rows span which of the two calls names a value, each
+/// value of the enum (`smithy_query(query="shape", shape="AvailabilityZoneRebalancing")` =
+/// [ENABLED, DISABLED]), and where the service is placed — which the create default does not
+/// turn on.
 #[tokio::test]
 async fn availability_zone_rebalancing_defaults_on_a_create_and_resolves_on_an_update() {
     let rows: [RebalancingRow; 7] = [
@@ -331,8 +328,8 @@ async fn availability_zone_rebalancing_defaults_on_a_create_and_resolves_on_an_u
             launch_type: "EC2",
             created_with: None,
             updated_with: None,
-            expect_created: "DISABLED",
-            expect_updated: "DISABLED",
+            expect_created: "ENABLED",
+            expect_updated: "ENABLED",
         },
         RebalancingRow {
             case: "neither call names a value, on Fargate",
@@ -359,12 +356,12 @@ async fn availability_zone_rebalancing_defaults_on_a_create_and_resolves_on_an_u
             expect_updated: "DISABLED",
         },
         RebalancingRow {
-            case: "the update sets it",
+            case: "the update disables what the create defaulted to",
             launch_type: "EC2",
             created_with: None,
-            updated_with: Some("ENABLED"),
-            expect_created: "DISABLED",
-            expect_updated: "ENABLED",
+            updated_with: Some("DISABLED"),
+            expect_created: "ENABLED",
+            expect_updated: "DISABLED",
         },
         RebalancingRow {
             case: "the update disables what the create set",
@@ -375,12 +372,12 @@ async fn availability_zone_rebalancing_defaults_on_a_create_and_resolves_on_an_u
             expect_updated: "DISABLED",
         },
         RebalancingRow {
-            case: "the update disables what a Fargate create resolved",
+            case: "the update sets what a Fargate create had disabled",
             launch_type: "FARGATE",
-            created_with: None,
-            updated_with: Some("DISABLED"),
-            expect_created: "ENABLED",
-            expect_updated: "DISABLED",
+            created_with: Some("DISABLED"),
+            updated_with: Some("ENABLED"),
+            expect_created: "DISABLED",
+            expect_updated: "ENABLED",
         },
     ];
 

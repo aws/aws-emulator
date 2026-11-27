@@ -2,24 +2,26 @@
 
 //! What `availabilityZoneRebalancing` a create that NAMES NONE leaves a service with.
 //!
-//! The rule under test: Availability Zone rebalancing MOVES a service's tasks between
-//! Availability Zones ("Indicates whether to use Availability Zone rebalancing for the
-//! service"), which Amazon ECS can only do where it owns the capacity the replacement task
-//! is placed on. So a create that names no value resolves the member's documented default —
-//! "For create service requests, when no value is specified for
-//! AvailabilityZoneRebalancing, Amazon ECS defaults the value to ENABLED" — for a service
-//! placed on FARGATE, and leaves a service placed on the capacity registered to the cluster
-//! with no value set at all, which the same member's doc reads as DISABLED ("If the service
-//! never had an AvailabilityZoneRebalancing value set, Amazon ECS treats this as DISABLED").
-//! Whatever the create resolved is the value every later read reports and the value an
-//! update that names none keeps.
+//! The rule under test: the member states its create default with no condition on it — "For
+//! create service requests, when no value is specified for AvailabilityZoneRebalancing,
+//! Amazon ECS defaults the value to ENABLED" — so every service a create that names no value
+//! leaves behind carries `ENABLED`, wherever its tasks are placed. `DISABLED` is the value of
+//! a service whose own request stated it. Whatever the create resolved is the value every
+//! later read reports and the value an update that names none keeps ("For update service
+//! requests, when no value is specified ... Amazon ECS defaults to the existing service's
+//! AvailabilityZoneRebalancing value").
 //!
-//! The rows differ along WHERE the service is placed, which is what the rule generalises
-//! over: a launch type the create names (the one Amazon ECS places itself and the one it
-//! places on the cluster's own capacity), a capacity provider strategy naming each of the
-//! two predefined Fargate providers, a strategy naming a provider over an Auto Scaling
-//! group of the account, the cluster's own default strategy where the create names neither,
-//! and a create that names nothing at all on a cluster that has no default either.
+//! The rows differ along WHERE the service is placed, which is exactly what the create
+//! default does NOT depend on: a launch type the create names (the one Amazon ECS places
+//! itself and the one it places on the cluster's own capacity), a capacity provider strategy
+//! naming each of the two predefined Fargate providers, a strategy naming a provider over an
+//! Auto Scaling group of the account, the cluster's own default strategy where the create
+//! names neither, and a create that names nothing at all on a cluster that has no default
+//! either. Each placement is driven twice: once by a create that names no value, and once by
+//! a create that names the other value of the enum
+//! (`smithy_query(query="shape", shape="AvailabilityZoneRebalancing")` = [ENABLED,
+//! DISABLED]), so a value that was reported without being read off the stored record cannot
+//! pass either row.
 //!
 //! Every case goes through the shared wire harness in [`crate::ecs_wire`], the same front
 //! door a client uses, so a value not computed from the stored record cannot pass.
@@ -49,15 +51,13 @@ enum Places {
     Nothing,
 }
 
-/// One row: where the service is placed, and the `availabilityZoneRebalancing` a create that
-/// names none has to leave it with.
+/// One row: where the service is placed.
 #[derive(Debug, Clone, Copy)]
 struct Row {
     case: &'static str,
     places: Places,
     /// Whether the row runs on the cluster that carries a default strategy.
     on_cluster_with_default: bool,
-    expect: &'static str,
 }
 
 /// The cluster whose capacity providers are the two predefined Fargate ones and the group
@@ -111,16 +111,20 @@ fn placed_on_fargate(row: &Row) -> bool {
     }
 }
 
-/// The `CreateService` body for one row, naming NO `availabilityZoneRebalancing`.
-fn create_request(row: &Row, service_name: &str) -> Value {
-    let cluster = if row.on_cluster_with_default {
+/// The cluster one row's services are created on.
+fn cluster_of(row: &Row) -> &'static str {
+    if row.on_cluster_with_default {
         CLUSTER_WITH_DEFAULT
     } else {
         CLUSTER_WITHOUT_DEFAULT
-    };
+    }
+}
+
+/// The `CreateService` body for one row, naming `requested` — or no value at all for `None`.
+fn create_request(row: &Row, service_name: &str, requested: Option<&str>) -> Value {
     let fargate = placed_on_fargate(row);
     let mut request = json!({
-        "cluster": cluster,
+        "cluster": cluster_of(row),
         "serviceName": service_name,
         "taskDefinition": if fargate { FARGATE_FAMILY } else { EC2_FAMILY },
         // These rows are about the stored record, so no row asks for a task.
@@ -136,11 +140,77 @@ fn create_request(row: &Row, service_name: &str) -> Value {
         }
         Places::Nothing => {}
     }
+    if let Some(value) = requested {
+        request["availabilityZoneRebalancing"] = json!(value);
+    }
     request
 }
 
+/// Create the service, then assert the create, the read after it and an update that names no
+/// value all report `expect`.
+async fn create_and_assert(
+    router: &MultiServiceRouter,
+    row: &Row,
+    service_name: &str,
+    requested: Option<&str>,
+    expect: &str,
+) {
+    let case = row.case;
+    let cluster = cluster_of(row);
+    let created = ok(
+        router,
+        "CreateService",
+        create_request(row, service_name, requested),
+        case,
+    )
+    .await;
+    let reported = string(&created["service"], "availabilityZoneRebalancing", case);
+    assert_eq!(
+        reported, expect,
+        "case {case:?} (create naming {requested:?}): expected availabilityZoneRebalancing \
+         {expect:?}, got {reported:?} in {created}"
+    );
+
+    // The value the create resolved is the one the STORED record carries, so the read
+    // reports it too.
+    let described = ok(
+        router,
+        "DescribeServices",
+        json!({ "cluster": cluster, "services": [service_name] }),
+        case,
+    )
+    .await;
+    let read = string(
+        &described["services"][0],
+        "availabilityZoneRebalancing",
+        case,
+    );
+    assert_eq!(
+        read, expect,
+        "case {case:?} (create naming {requested:?}): the read must report what the create \
+         resolved, expected {expect:?}, got {read:?} in {described}"
+    );
+
+    // "For update service requests, when no value is specified ... Amazon ECS defaults
+    // to the existing service's AvailabilityZoneRebalancing value": an unrelated update
+    // keeps it.
+    let updated = ok(
+        router,
+        "UpdateService",
+        json!({ "cluster": cluster, "service": service_name, "desiredCount": 0 }),
+        case,
+    )
+    .await;
+    let after = string(&updated["service"], "availabilityZoneRebalancing", case);
+    assert_eq!(
+        after, expect,
+        "case {case:?} (create naming {requested:?}): an update naming no value keeps the \
+         service's value, expected {expect:?}, got {after:?} in {updated}"
+    );
+}
+
 #[tokio::test]
-async fn the_rebalancing_a_create_resolves_follows_where_the_service_is_placed() {
+async fn a_create_that_names_no_rebalancing_enables_it_wherever_the_service_is_placed() {
     let router = service();
     let setup = "setup";
     create_cluster(&router, CLUSTER_WITHOUT_DEFAULT, setup).await;
@@ -186,106 +256,52 @@ async fn the_rebalancing_a_create_resolves_follows_where_the_service_is_placed()
             case: "a launch type on the capacity registered to the cluster",
             places: Places::LaunchType("EC2"),
             on_cluster_with_default: false,
-            expect: DISABLED,
         },
         Row {
             case: "the Fargate launch type",
             places: Places::LaunchType("FARGATE"),
             on_cluster_with_default: false,
-            expect: ENABLED,
         },
         Row {
             case: "a strategy naming the predefined Fargate provider",
             places: Places::Strategy("FARGATE"),
             on_cluster_with_default: false,
-            expect: ENABLED,
         },
         Row {
             case: "a strategy naming the predefined Fargate Spot provider",
             places: Places::Strategy("FARGATE_SPOT"),
             on_cluster_with_default: false,
-            expect: ENABLED,
         },
         Row {
             case: "a strategy naming a provider over an Auto Scaling group",
             places: Places::Strategy(GROUP_PROVIDER),
             on_cluster_with_default: false,
-            expect: DISABLED,
         },
         Row {
             case: "neither, on a cluster whose default strategy places on Fargate",
             places: Places::Nothing,
             on_cluster_with_default: true,
-            expect: ENABLED,
         },
         Row {
             case: "neither, on a cluster that has no default strategy",
             places: Places::Nothing,
             on_cluster_with_default: false,
-            expect: DISABLED,
         },
     ];
 
     for (index, row) in rows.iter().enumerate() {
-        let case = row.case;
-        let service_name = format!("rebalance{index}");
-        let cluster = if row.on_cluster_with_default {
-            CLUSTER_WITH_DEFAULT
-        } else {
-            CLUSTER_WITHOUT_DEFAULT
-        };
-        let created = ok(
+        // A create that names NO value: the member's documented create default, whatever
+        // this row's placement is.
+        create_and_assert(&router, row, &format!("rebalance{index}"), None, ENABLED).await;
+        // And a create that NAMES the other value of the enum keeps that one, so the row
+        // above is reading the record rather than a constant.
+        create_and_assert(
             &router,
-            "CreateService",
-            create_request(row, &service_name),
-            case,
+            row,
+            &format!("rebalanceoff{index}"),
+            Some(DISABLED),
+            DISABLED,
         )
         .await;
-        let reported = string(&created["service"], "availabilityZoneRebalancing", case);
-        assert_eq!(
-            reported, row.expect,
-            "case {case:?}: expected availabilityZoneRebalancing {:?} for this placement, \
-             got {reported:?} in {created}",
-            row.expect
-        );
-
-        // The value the create resolved is the one the STORED record carries, so the read
-        // reports it too.
-        let described = ok(
-            &router,
-            "DescribeServices",
-            json!({ "cluster": cluster, "services": [service_name.clone()] }),
-            case,
-        )
-        .await;
-        let read = string(
-            &described["services"][0],
-            "availabilityZoneRebalancing",
-            case,
-        );
-        assert_eq!(
-            read, row.expect,
-            "case {case:?}: the read must report what the create resolved, expected {:?}, \
-             got {read:?} in {described}",
-            row.expect
-        );
-
-        // "For update service requests, when no value is specified ... Amazon ECS defaults
-        // to the existing service's AvailabilityZoneRebalancing value": an unrelated update
-        // keeps it.
-        let updated = ok(
-            &router,
-            "UpdateService",
-            json!({ "cluster": cluster, "service": service_name, "desiredCount": 0 }),
-            case,
-        )
-        .await;
-        let after = string(&updated["service"], "availabilityZoneRebalancing", case);
-        assert_eq!(
-            after, row.expect,
-            "case {case:?}: an update naming no value keeps the service's value, expected \
-             {:?}, got {after:?} in {updated}",
-            row.expect
-        );
     }
 }

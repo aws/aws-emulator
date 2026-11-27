@@ -373,20 +373,13 @@ async fn service_create_reads_back_with_the_task_set_its_scheduler_placed() {
             "NONE",
             "case {case:?}: unexpected propagateTags in {created}"
         );
-        // A create that names no `availabilityZoneRebalancing` resolves it from WHERE the
-        // service's tasks are placed: on by default for a service Amazon ECS places itself,
-        // and never set at all — which the member's doc reads as DISABLED — for one placed
-        // on the capacity registered to the cluster.
-        let on_fargate = test.expect_launch_type == Some("FARGATE")
-            || test
-                .expect_capacity_provider
-                .is_some_and(|provider| provider.starts_with("FARGATE"));
-        let expect_rebalancing = if on_fargate { "ENABLED" } else { "DISABLED" };
+        // A create that names no `availabilityZoneRebalancing` resolves the member's
+        // documented create default, wherever the service's tasks are placed.
         assert_eq!(
             string(created, "availabilityZoneRebalancing", case),
-            expect_rebalancing,
-            "case {case:?}: expected availabilityZoneRebalancing {expect_rebalancing} for \
-             this placement, got {created}"
+            "ENABLED",
+            "case {case:?}: expected availabilityZoneRebalancing ENABLED on a create that \
+             named none, got {created}"
         );
         let configuration = &created["deploymentConfiguration"];
         assert_eq!(

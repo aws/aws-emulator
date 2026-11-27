@@ -2706,27 +2706,20 @@ pub const AZ_REBALANCING_ENABLED: &str = "ENABLED";
 /// ECS treats this as DISABLED."
 pub const AZ_REBALANCING_DISABLED: &str = "DISABLED";
 
-/// The `availabilityZoneRebalancing` a CREATE that named none leaves a service with, for a
-/// service placed on Fargate (`places_on_fargate`) and for one that is not.
+/// The `availabilityZoneRebalancing` a CREATE that named none leaves a service with.
 ///
-/// Rebalancing MOVES a service's tasks between Availability Zones ("Indicates whether to use
-/// Availability Zone rebalancing for the service"), which Amazon ECS can only do where it
-/// owns the capacity the replacement task is placed on: a service on Fargate is placed by
-/// Amazon ECS itself, so the create resolves the member's documented default
-/// ([`AZ_REBALANCING_ENABLED`]), while a service placed on the capacity registered to the
-/// cluster is left with no value set at all, which the same member's doc says is read as
-/// [`AZ_REBALANCING_DISABLED`] — "If the service never had an AvailabilityZoneRebalancing
-/// value set, Amazon ECS treats this as DISABLED."
+/// The member's doc states the create default with no condition on it — "For create service
+/// requests, when no value is specified for AvailabilityZoneRebalancing, Amazon ECS defaults
+/// the value to ENABLED" — so every service this API creates comes out of its create
+/// [`AZ_REBALANCING_ENABLED`], wherever its tasks are placed. [`AZ_REBALANCING_DISABLED`] is
+/// the value of a service a REQUEST stated it for, and the reading the same member's closing
+/// sentence gives a record that carries no value at all.
 ///
 /// ONE statement of that default, so the value a create stores and the value every later
 /// read and update of the service reports cannot drift
 /// ([`az_rebalancing_after_update`]).
-pub fn default_az_rebalancing(places_on_fargate: bool) -> &'static str {
-    if places_on_fargate {
-        AZ_REBALANCING_ENABLED
-    } else {
-        AZ_REBALANCING_DISABLED
-    }
+pub fn default_az_rebalancing() -> &'static str {
+    AZ_REBALANCING_ENABLED
 }
 
 /// The `availabilityZoneRebalancing` an UPDATE leaves a service with: the value the request

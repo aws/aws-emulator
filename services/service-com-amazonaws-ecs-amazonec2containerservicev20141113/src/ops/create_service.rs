@@ -1183,14 +1183,6 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .into());
         }
 
-        // Where this service's tasks are placed, read off the pair the record is about to
-        // carry ([`crate::state::places_on_fargate`]): the launch type resolved above, else
-        // the capacity providers of the strategy in force. It decides the rebalancing a
-        // create that named none leaves the service with
-        // ([`crate::state::default_az_rebalancing`]).
-        let on_fargate =
-            crate::state::places_on_fargate(launch_type.as_deref(), &capacity_provider_strategy);
-
         let created_at = crate::state::now();
         let deployment_id = guard.next_deployment_id();
         // The service revision this deployment rolls out is minted with the deployment.
@@ -1260,15 +1252,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             enable_execute_command: input.enable_execute_command,
             // "For create service requests, when no value is specified for
             // AvailabilityZoneRebalancing, Amazon ECS defaults the value to ENABLED" — the
-            // default a create resolves for a service Amazon ECS places itself, while a
-            // service placed on capacity registered to the cluster is left with no value of
-            // its own ([`crate::state::default_az_rebalancing`]). The created service
-            // carries what that resolves to, so an update that names none keeps it
+            // default a create resolves wherever the service's tasks are placed
+            // ([`crate::state::default_az_rebalancing`]). The created service carries what
+            // that resolves to, so an update that names none keeps it
             // ([`crate::state::az_rebalancing_after_update`]).
             availability_zone_rebalancing: input
                 .availability_zone_rebalancing
                 .clone()
-                .unwrap_or_else(|| crate::state::default_az_rebalancing(on_fargate).to_string()),
+                .unwrap_or_else(|| crate::state::default_az_rebalancing().to_string()),
             tags: input.tags.clone().unwrap_or_default(),
             // "The principal that created the service": the authenticated caller, the
             // identity every request to this emulator signs as.

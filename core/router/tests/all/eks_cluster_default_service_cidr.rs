@@ -47,9 +47,9 @@ const BOOT_STACK_SIZE: usize = 64 * 1024 * 1024;
 
 /// The two blocks the model documents, as this service orders them: the one a cluster
 /// is assigned when the VPC leaves it free, and the one it falls back to.
-const PREFERRED: &str = "10.100.0.0/16";
+const PREFERRED: &str = "172.20.0.0/16";
 /// See [`PREFERRED`].
-const ALTERNATE: &str = "172.20.0.0/16";
+const ALTERNATE: &str = "10.100.0.0/16";
 
 /// One row: the VPC a cluster is created in, the two subnets it gets, and the service
 /// CIDR Amazon EKS must assign it.
@@ -78,32 +78,32 @@ const ROWS: &[Row] = &[
     Row {
         case: "a VPC whose range IS the preferred block",
         cluster: "default-cidr-same",
-        vpc_cidr: "10.100.0.0/16",
+        vpc_cidr: "172.20.0.0/16",
         secondary_cidr: None,
-        subnet_cidrs: ["10.100.1.0/24", "10.100.2.0/24"],
+        subnet_cidrs: ["172.20.1.0/24", "172.20.2.0/24"],
         assigned: ALTERNATE,
     },
     Row {
         case: "a VPC whose range sits INSIDE the preferred block",
         cluster: "default-cidr-inside",
-        vpc_cidr: "10.100.8.0/22",
+        vpc_cidr: "172.20.8.0/22",
         secondary_cidr: None,
-        subnet_cidrs: ["10.100.8.0/24", "10.100.9.0/24"],
+        subnet_cidrs: ["172.20.8.0/24", "172.20.9.0/24"],
         assigned: ALTERNATE,
     },
     Row {
         case: "a VPC that overlaps only the other block",
         cluster: "default-cidr-other",
-        vpc_cidr: "172.20.0.0/16",
+        vpc_cidr: "10.100.0.0/16",
         secondary_cidr: None,
-        subnet_cidrs: ["172.20.1.0/24", "172.20.2.0/24"],
+        subnet_cidrs: ["10.100.1.0/24", "10.100.2.0/24"],
         assigned: PREFERRED,
     },
     Row {
         case: "a VPC whose SECOND associated range overlaps the preferred block",
         cluster: "default-cidr-secondary",
         vpc_cidr: "10.40.0.0/16",
-        secondary_cidr: Some("10.100.0.0/16"),
+        secondary_cidr: Some("172.20.0.0/16"),
         subnet_cidrs: ["10.40.1.0/24", "10.40.2.0/24"],
         assigned: ALTERNATE,
     },
