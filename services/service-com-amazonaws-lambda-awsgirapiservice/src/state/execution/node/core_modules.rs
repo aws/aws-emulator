@@ -25,24 +25,33 @@
 //! package; nothing here pretends to be a module it is not.
 //!
 //! A module whose whole capability this runtime HAS NONE OF is supplied all the same, with
-//! the calls that need that capability refused ([`child_process`], [`sockets`]): the standard
-//! library is part of what a managed runtime promises, so an import of one of its modules has
-//! to load — a program whose module body imports one and whose running code handles the
-//! refusal is a program that runs — and what is answered for is the CALL rather than the
-//! import.
+//! the calls that need that capability refused ([`child_process`], [`sockets`],
+//! [`host_absent`]): the standard library is part of what a managed runtime promises, so an
+//! import of one of its modules has to load — a program whose module body imports one and
+//! whose running code handles the refusal is a program that runs — and what is answered for
+//! is the CALL rather than the import. The same promise covers the modules whose whole
+//! content is a VIEW of what the run already holds ([`environment_views`]) and the CONSOLE
+//! that library installs ([`console`]), whose whole method surface is here because a program
+//! calls those methods on the global and on a console it builds itself alike.
 
 /// The byte container and its codecs.
 mod buffer;
 /// The child-process interface, on a runtime that starts no child.
 mod child_process;
+/// The records a program writes, and the console it builds its own over its own streams.
+pub(super) mod console;
 /// The digests, keyed digests and random bytes.
 mod crypto;
 /// The three modules a program observes its own execution through.
 mod diagnostics;
 /// The name service of the execution environment.
 mod dns;
+/// The modules whose whole content is a view of something this environment already holds.
+mod environment_views;
 /// The in-memory filesystem a function has.
 mod fs;
+/// The modules whose whole capability this runtime has none of.
+mod host_absent;
 /// The HTTP client a handler sends a request of its own with.
 mod http;
 /// The lines a program reads off a stream, and the source it compiles at runtime.
@@ -72,6 +81,10 @@ pub(super) const CORE_MODULES: &[(&str, &str)] = &[
     ("events", EVENTS_SOURCE),
     ("buffer", buffer::BUFFER_SOURCE),
     ("child_process", child_process::CHILD_PROCESS_SOURCE),
+    // The console is ONE implementation on two sinks ([`console`]): this module's own, which
+    // the runtime binds to the global it installs, and the `Console` a program builds over
+    // its own streams.
+    ("console", console::CONSOLE_SOURCE),
     ("crypto", crypto::CRYPTO_SOURCE),
     ("fs", fs::FS_SOURCE),
     ("fs/promises", fs::FS_PROMISES_SOURCE),
@@ -81,6 +94,14 @@ pub(super) const CORE_MODULES: &[(&str, &str)] = &[
     ("stream/promises", streams::STREAM_PROMISES_SOURCE),
     ("string_decoder", streams::STRING_DECODER_SOURCE),
     ("os", system::OS_SOURCE),
+    // The views of what the run already holds ([`environment_views`]): the process object the
+    // runtime installs as a global, the two submodules of modules already here, the legacy
+    // name of one of them, and the terminal this environment is attached to — none.
+    ("process", environment_views::PROCESS_SOURCE),
+    ("util/types", environment_views::UTIL_TYPES_SOURCE),
+    ("path/posix", environment_views::PATH_POSIX_SOURCE),
+    ("sys", environment_views::SYS_SOURCE),
+    ("tty", environment_views::TTY_SOURCE),
     // `http` and `https` are ONE client, under each of the two schemes it is imported for
     // ([`http`]): what a request that states no protocol of its own is sent under is the
     // only thing the two modules differ in.
@@ -104,6 +125,17 @@ pub(super) const CORE_MODULES: &[(&str, &str)] = &[
     ("vm", scripting::VM_SOURCE),
     ("readline", scripting::READLINE_SOURCE),
     ("readline/promises", scripting::READLINE_PROMISES_SOURCE),
+    // The modules whose whole capability this runtime has none of ([`host_absent`]), supplied
+    // for the same reason `child_process` and the socket modules above are: the CALL that
+    // needs the capability is refused, never the import.
+    ("http2", host_absent::HTTP2_SOURCE),
+    ("dgram", host_absent::DGRAM_SOURCE),
+    ("cluster", host_absent::CLUSTER_SOURCE),
+    ("inspector", host_absent::INSPECTOR_SOURCE),
+    ("inspector/promises", host_absent::INSPECTOR_PROMISES_SOURCE),
+    ("repl", host_absent::REPL_SOURCE),
+    ("wasi", host_absent::WASI_SOURCE),
+    ("trace_events", host_absent::TRACE_EVENTS_SOURCE),
 ];
 
 /// The source of the core module `name` names, or `None` when this emulator supplies none.
@@ -135,7 +167,7 @@ mod tests {
                 );
             }
         }
-        for absent in ["http2", "inspector", "node:http2", "", "node:"] {
+        for absent in ["sqlite", "test", "node:sqlite", "", "node:"] {
             assert!(
                 core_module_source(absent).is_none(),
                 "case {absent:?}: this emulator supplies no such core module, so none must \

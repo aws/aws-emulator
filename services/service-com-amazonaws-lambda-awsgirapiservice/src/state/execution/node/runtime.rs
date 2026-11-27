@@ -1055,8 +1055,10 @@ pub(super) const RUNTIME_SOURCE: &str = r##"
     // formatted text carries — a multi-line `console.log`, the stack of an error. That is
     // what tells it apart from a write the handler made straight to `process.stdout`, which
     // the platform frames by its lines.
-    function writeLine(level, args) {
-        var text = util.format.apply(null, Array.prototype.slice.call(args));
+    function writeLine(level, args, line) {
+        var text = line === undefined
+            ? util.format.apply(null, Array.prototype.slice.call(args))
+            : String(line);
         if (state === null || state.requestId === null || state.requestId === undefined) {
             hostRecord(text + '\n');
             return;
@@ -1169,16 +1171,11 @@ pub(super) const RUNTIME_SOURCE: &str = r##"
         return state !== null && state.logFormat === JSON_LOG_FORMAT;
     }
 
-    var console = {
-        log: function () { writeLine('INFO', arguments); },
-        info: function () { writeLine('INFO', arguments); },
-        debug: function () { writeLine('DEBUG', arguments); },
-        dir: function () { writeLine('INFO', arguments); },
-        warn: function () { writeLine('WARN', arguments); },
-        error: function () { writeLine('ERROR', arguments); },
-        trace: function () { writeLine('TRACE', arguments); }
-    };
-    globalThis.console = console;
+    // The console of this runtime is the `console` core module's own surface — its whole
+    // documented method set, which is also what a `Console` a handler builds over its own
+    // streams carries — writing through the record channel above, which is what makes
+    // `require('console') === console` hold here as it does on node.
+    globalThis.console = requireId(CORE_PREFIX + 'console').__recordWith(writeLine);
 
     // ---------------------------------------------------------------- timers
 
