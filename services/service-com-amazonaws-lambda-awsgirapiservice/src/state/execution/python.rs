@@ -22,10 +22,13 @@
 //!   `sys.modules`, `importlib` or `__import__`, however the guest rebinds or deletes
 //!   names;
 //! * the modules a Python program expects of its operating system are this module's OWN
-//!   ([`host_posix_module`], [`host_thread_module`]): the environment is the invocation's
+//!   ([`super::host_posix`]): the environment is the invocation's
 //!   own variables held in memory, the working directory is the task root the runtime
 //!   reports, randomness comes from the host's own generator, and every call that would
 //!   reach a host file, process or descriptor raises;
+//! * a THREAD a handler starts runs on the invocation's own thread, inside a slice of the
+//!   invocation's own budget ([`super::guest_thread`]), so no thread of this process runs
+//!   guest code outside the bounds below;
 //! * `socket` is one of those: no socket EXTENSION is registered — `_socket` and `_ssl` stay
 //!   off the allow-list above, so the standard library's own `socket` has nothing to be built
 //!   on and no guest code holds a host socket or a host descriptor. What this runtime supplies
@@ -197,8 +200,10 @@ pub const BINARY_ID_PREFIX: &str = "binary:";
 /// `_posixsubprocess`, `mmap`, `_ctypes`, `fcntl`, `termios`, `resource`, `pwd`, `grp`,
 /// `syslog`, `_signal`, `_interpreters`, `_interpchannels`, `_interpqueues`,
 /// `_testinternalcapi`, and every other module whose calls land on the host. `posix` and
-/// `_thread` are absent for the same reason, and this module supplies its OWN of each
-/// instead (see [`host_posix_module`], [`host_thread_module`]). Where one of those names a
+/// `_thread` are absent for the same reason: this module supplies its own `posix`
+/// ([`super::host_posix`]), and the thread-less `_thread` the interpreter itself carries has
+/// the calls that start a thread replaced by the cooperative ones
+/// ([`super::guest_thread`]). Where one of those names a
 /// module of the standard library a handler imports (`socket`, `ssl`, `select`, `signal`,
 /// `subprocess`), the module ITSELF is supplied on the import path in Python
 /// ([`runtime_stdlib`]), so the import succeeds and only the call needing the absent
@@ -1236,7 +1241,7 @@ fn prepare(vm: &VirtualMachine, session: &Arc<Session>) -> PyResult<EnvironmentS
     // adopting function's ([`install_function_surface`]): an environment no function has
     // adopted yet holds no variable of one.
     let environ = EnvironmentSinks::capture(vm)?;
-    refuse_guest_threads(vm)?;
+    refuse_guest_threads(vm, session)?;
     clamp_guest_sleep(vm, session)?;
     // Put the host module in `sys.modules` under the name the runtime source imports it
     // by. The import machinery answers from there first, and the name is NOT in the native
@@ -1767,7 +1772,14 @@ fn install_trace_hook(
     let hook = vm.new_function(
         "__lambda_trace",
         move |_args: FuncArgs, vm: &VirtualMachine| {
-            if let Some(stop) = stepping.bounds().step() {
+            // A cooperative thread's body runs inside a SLICE of this run's own budget
+            // ([`super::guest_thread`]), and the event that spends the last of it ends THAT
+            // body alone: the run itself carries on with what is left of its bounds. The run's
+            // own event is spent FIRST either way, so a body that swallows the stop below
+            // spends the run's budget exactly as any other guest code that spins does.
+            let stop = stepping.bounds().step();
+            let slice_spent = stop.is_none() && super::guest_thread::slice_spent();
+            if slice_spent || stop.is_some() {
                 // The slot again, with this same hook, so a guest that catches what follows
                 // is traced — and stopped — at its next event too.
                 if !arming_now.replace(true) {
@@ -1778,7 +1790,10 @@ fn install_trace_hook(
                     }
                     arming_now.set(false);
                 }
-                return Err(vm.new_runtime_error(stop.reason().to_owned()));
+                return Err(match stop {
+                    Some(stop) => vm.new_runtime_error(stop.reason().to_owned()),
+                    None => super::guest_thread::stopping(vm),
+                });
             }
             // The local tracer for the frame this event belongs to is this same hook, so
             // every event of every frame spends the budget.
@@ -1956,7 +1971,7 @@ fn host_module(vm: &VirtualMachine, session: &Arc<Session>) -> PyResult<PyRef<Py
             let access = access.addressed_by_client(
                 addressed.and_then(super::aws_api::ClientEndpoint::configured),
             );
-            let remaining = call_bounds.remaining();
+            let remaining = call_bounds.remaining_for_a_call();
             if remaining.is_zero() {
                 return Err(vm.new_runtime_error(Stop::Deadline.reason().to_owned()));
             }
@@ -2050,7 +2065,7 @@ fn host_module(vm: &VirtualMachine, session: &Arc<Session>) -> PyResult<PyRef<Py
                     ))
                     .into());
             };
-            let remaining = request_bounds.remaining();
+            let remaining = request_bounds.remaining_for_a_call();
             if remaining.is_zero() {
                 return Err(vm.new_runtime_error(Stop::Deadline.reason().to_owned()));
             }
@@ -2138,7 +2153,7 @@ fn host_module(vm: &VirtualMachine, session: &Arc<Session>) -> PyResult<PyRef<Py
                      emulator"
                 )));
             }
-            let remaining = call_bounds.remaining();
+            let remaining = call_bounds.remaining_for_a_call();
             if remaining.is_zero() {
                 return Err(vm.new_runtime_error(Stop::Deadline.reason().to_owned()));
             }
@@ -2177,7 +2192,7 @@ fn host_module(vm: &VirtualMachine, session: &Arc<Session>) -> PyResult<PyRef<Py
             if let Some(stop) = call_bounds.stopped() {
                 return Err(vm.new_runtime_error(stop.reason().to_owned()));
             }
-            let remaining = call_bounds.remaining();
+            let remaining = call_bounds.remaining_for_a_call();
             if remaining.is_zero() {
                 return Err(vm.new_runtime_error(Stop::Deadline.reason().to_owned()));
             }
@@ -2664,33 +2679,62 @@ fn narrow_posix(vm: &VirtualMachine) -> PyResult<()> {
     Ok(())
 }
 
-/// Take away every call that would start a HOST thread, on the single `_thread` module
+/// Take away every call that would start a HOST thread, and put this emulator's own
+/// COOPERATIVE ones in their place, on the single `_thread` module.
 ///
-/// A real guest thread would run outside the step budget, the stop latch and the memory
-/// sample, so none can be started. The build registers no native thread module at all (the
-/// engine feature that would is not taken, see this crate's `Cargo.toml`), so the one a
-/// guest imports is the engine's own thread-less stub; these refusals are what make that
-/// explicit at every name that starts something.
-fn refuse_guest_threads(vm: &VirtualMachine) -> PyResult<()> {
+/// A thread of this PROCESS would run outside the step budget, the stop latch and the memory
+/// sample, so none is started: the calls that would start one are replaced by the ones that run
+/// a thread's body on the invocation's own thread, inside a slice of its own budget
+/// ([`super::guest_thread`]). The names that reach ACROSS the threads of a process stay refused
+/// — the substrate's refusals are installed FIRST, and the cooperative calls are put over the
+/// three that start a thread — because there is no second thread of this process to reach.
+fn refuse_guest_threads(vm: &VirtualMachine, session: &Arc<Session>) -> PyResult<()> {
     ::python_guest_substrate::refuse_guest_threads(
         vm,
         "a Lambda function in this emulator cannot start a thread",
         REFUSED_RUN,
     )?;
+    super::guest_thread::install(vm, thread_run_access(session))?;
     install_thread_local(vm)?;
     Ok(())
+}
+
+/// How the thread interface reaches the invocation an environment is SERVING: what it has left
+/// of its own bounds, and its own log.
+///
+/// Read through the session rather than closed over, exactly as every other host function of
+/// this environment reads it, so the budget a thread's body is given and the log its stop is
+/// reported in are the serving invocation's own however many invocations the environment has
+/// served.
+fn thread_run_access(session: &Arc<Session>) -> super::guest_thread::RunAccess {
+    let starting = Arc::clone(session);
+    let logging = Arc::clone(session);
+    super::guest_thread::RunAccess {
+        left: Box::new(move || {
+            let bounds = starting.bounds();
+            super::guest_thread::Left {
+                invocation: bounds.run,
+                deadline: bounds.remaining(),
+                steps: bounds.steps.load(Ordering::Relaxed),
+                stopped: bounds.stopped().is_some(),
+            }
+        }),
+        log: Box::new(move |line| {
+            captured(&logging.capture()).write_record(line);
+        }),
+    }
 }
 
 /// Install the THREAD-LOCAL type of that same `_thread` module, which is what
 /// `threading.local` is and what the standard library's own modules keep their per-thread
 /// state in.
 ///
-/// An invocation runs on ONE thread — a handler can start none ([`refuse_guest_threads`]) — so
-/// the data one thread holds is the data the object holds, which is ordinary attribute lookup:
-/// an attribute SET on the object is read back off it, and one the object does not carry falls
-/// back to the CLASS's own, exactly as a thread-local does for a subclass that declares a
-/// default (`asyncio.events`'s own `_RunningLoop.loop_pid` is such a default, and the engine's
-/// thread-less stub answers an `AttributeError` for it instead).
+/// The threads of an invocation run one at a time, on the invocation's own thread
+/// ([`super::guest_thread`]), so the data one thread holds is the data the object holds, which
+/// is ordinary attribute lookup: an attribute SET on the object is read back off it, and one the
+/// object does not carry falls back to the CLASS's own, exactly as a thread-local does for a
+/// subclass that declares a default (`asyncio.events`'s own `_RunningLoop.loop_pid` is such a
+/// default, and the engine's thread-less stub answers an `AttributeError` for it instead).
 fn install_thread_local(vm: &VirtualMachine) -> PyResult<()> {
     let threads = vm.import("_thread", 0)?;
     for name in ["local", "_local"] {
@@ -2710,7 +2754,7 @@ fn install_thread_local(vm: &VirtualMachine) -> PyResult<()> {
 /// [`install_thread_local`].
 const THREAD_LOCAL_SOURCE: &str = r#"
 class local:
-    """Data held for one thread, of which an invocation runs exactly one."""
+    """Data held for one thread, of which an invocation runs one at a time."""
 
     def __new__(cls, *args, **kwargs):
         if (args or kwargs) and cls.__init__ is local.__init__:
@@ -2810,7 +2854,19 @@ pub struct Bounds {
     /// what an initialization spends is counted here and judged against that span
     /// ([`Self::past_the_init_limit`]).
     init_waiting: AtomicU64,
+    /// WHICH run this is, as an identity nothing else of this process shares: the runs of one
+    /// process are NUMBERED ([`NEXT_RUN`]).
+    ///
+    /// A host reading held for the length of one run is held under this number rather than under
+    /// the address of these bounds, because an address a dropped run held is an address the next
+    /// run may be given — and the budget one run's threads have spent
+    /// ([`super::guest_thread`]) must not be read as another run's.
+    run: u64,
 }
+
+/// The number the NEXT run of this process is given ([`Bounds::run`]). It starts at one, so zero
+/// is the number of no run at all.
+static NEXT_RUN: AtomicU64 = AtomicU64::new(1);
 
 impl Bounds {
     /// The bounds of a run with `budget`, in its INIT phase: the deadline is the one the
@@ -2852,6 +2908,7 @@ impl Bounds {
             host_waiting: AtomicU64::new(0),
             suspended: AtomicU64::new(0),
             init_waiting: AtomicU64::new(0),
+            run: NEXT_RUN.fetch_add(1, Ordering::Relaxed),
         }
     }
 
@@ -3034,6 +3091,11 @@ impl Bounds {
     /// The caller states what the guest asked for; no guest code decides how much of it the
     /// host spends.
     fn wait(&self, asked: Duration) {
+        // A wait taken inside a cooperative thread's body is held to what that body has left
+        // of its own slice ([`super::guest_thread::held_inside_the_slice`]): what such a body
+        // waits for can only be produced by another thread of the same invocation, which does
+        // not run while it waits, so the span it asked for is not a span the invocation spends.
+        let asked = super::guest_thread::held_inside_the_slice(asked);
         if self.initializing() {
             self.wait_in_init(asked);
             return;
@@ -3257,6 +3319,18 @@ impl Bounds {
     /// How long the run has left.
     fn remaining(&self) -> Duration {
         self.deadline().saturating_duration_since(self.clock.now())
+    }
+
+    /// How long ONE CALL the guest is making may be held for: what the run has left, held
+    /// inside what a cooperative thread's body has left of its own slice
+    /// ([`super::guest_thread::held_inside_the_slice`]).
+    ///
+    /// The reading every blocking seam of this runtime takes its span from, so a long poll a
+    /// thread's body makes is answered inside that body's own slice instead of holding the
+    /// invocation until its deadline — what such a call waits for can only be produced by
+    /// another thread of the same invocation, which does not run while it waits.
+    fn remaining_for_a_call(&self) -> Duration {
+        super::guest_thread::held_inside_the_slice(self.remaining())
     }
 }
 
@@ -4117,7 +4191,10 @@ mod tests {
             ("the host's posix", "__import__('posix').open('/etc/hostname', 0)"),
             ("a host file", "open('/etc/hostname').read()"),
             ("a host directory", "__import__('os').listdir('/')"),
-            ("a thread", "__import__('_thread').start_new_thread(print, ())"),
+            (
+                "an interrupt of the thread an invocation runs on",
+                "__import__('_thread').interrupt_main()",
+            ),
             ("a memory map", "__import__('mmap')"),
             ("a host library", "__import__('ctypes')"),
             ("the host's environment", "__import__('os').environ['PATH']"),

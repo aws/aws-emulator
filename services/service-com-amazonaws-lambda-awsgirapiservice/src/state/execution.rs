@@ -189,6 +189,10 @@ pub mod guest_sysconfig;
 /// against its own `PATH` and mounts and run over its filesystem in this process.
 pub mod guest_child_process;
 
+/// The THREADS an invocation's own code starts, run on the invocation's own thread inside a
+/// slice of its own budget.
+mod guest_thread;
+
 /// The Amazon S3 half of that seam, whose own protocol binds a request per operation.
 mod aws_s3;
 

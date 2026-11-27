@@ -379,8 +379,12 @@ async fn a_cell_reaches_nothing_of_the_host() {
             false,
         ),
         (
-            "starting a guest thread",
-            "import _thread\n_thread.start_new_thread(lambda: None, ())\n",
+            // Starting a thread RUNS its body on the cell's own thread, inside a slice of the
+            // cell's own budget (`…lambda…::state::execution::guest_thread`), so it is no reach
+            // of the host. What stays out of reach is the call that reaches ACROSS the threads
+            // of this process, into the run the cell is served by.
+            "interrupting the thread a cell runs on",
+            "import _thread\n_thread.interrupt_main()\n",
             false,
         ),
         (

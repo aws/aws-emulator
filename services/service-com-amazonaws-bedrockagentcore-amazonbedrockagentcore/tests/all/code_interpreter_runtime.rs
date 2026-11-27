@@ -1003,7 +1003,13 @@ async fn a_python_run_cannot_reach_the_host() {
         ("the-host-posix-stat", "import posix; posix.statvfs('/')"),
         ("a-native-library", "import ctypes"),
         ("a-memory-map", "import mmap"),
-        ("a-thread", "import _thread; _thread.start_new_thread(print, ())"),
+        (
+            // Starting a thread RUNS its body in this process, on the run's own thread
+            // (`performed` below). What stays out of reach is the call that would reach ACROSS
+            // the threads of this process, into the run this one is served by.
+            "an-interrupt-of-the-running-thread",
+            "import _thread; _thread.interrupt_main()",
+        ),
         (
             "a-re-import-of-a-dropped-module",
             "import sys; sys.modules.pop('posix', None); import posix; posix.fork()",
@@ -1020,14 +1026,19 @@ async fn a_python_run_cannot_reach_the_host() {
         ("a-host-file", "open('/etc/hostname').read()"),
     ];
 
-    // (case, the attempt that RUNS a program of the sandbox rather than reaching the host).
-    // Starting a child is not an escape: the program is one of the sandbox's own utilities,
-    // resolved and performed IN this process over the files the run was given
-    // (`…lambda…::state::execution::guest_child_process`), so no host process is started and
-    // no host path is opened for it — the call answers what the program came to.
+    // (case, the attempt that RUNS something of the sandbox rather than reaching the host).
+    // Neither starting a child nor starting a thread is an escape. The child's program is one
+    // of the sandbox's own utilities, resolved and performed IN this process over the files the
+    // run was given (`…lambda…::state::execution::guest_child_process`), so no host process is
+    // started and no host path is opened for it. A thread's body is the run's OWN code, called
+    // on the run's own thread inside a slice of the run's own budget
+    // (`…lambda…::state::execution::guest_thread`), so no thread of this process runs it and
+    // every bound the run is judged against still applies to it. Each call answers what the
+    // program, or the body, came to.
     let performed: Vec<(&str, &str)> = vec![
         ("a-subprocess", "import subprocess; subprocess.run(['echo'])"),
         ("a-process-pipe", "import os; os.popen('echo hi')"),
+        ("a-thread", "import _thread; _thread.start_new_thread(print, ())"),
     ];
 
     let mut program = String::new();
@@ -1056,8 +1067,8 @@ async fn a_python_run_cannot_reach_the_host() {
     for (case, attempt) in &performed {
         assert!(
             stdout.contains(&format!("{case} reached")),
-            "case {case:?}: a program of the sandbox is performed in this process, so the call \
-             answers ({attempt}), got {stdout:?} in {result}"
+            "case {case:?}: what the sandbox itself runs is performed in this process, so the \
+             call answers ({attempt}), got {stdout:?} in {result}"
         );
     }
 

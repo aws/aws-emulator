@@ -132,3 +132,18 @@ value (`host_not_own`, recorded in
 (a resolver the emulator's own clients honour for the zone a resource publishes in, plus a
 `Host` allowlist entry for it); until the core has one, this cause needs no further work in
 this service.
+
+One more divergence follows from that same blocked host form, and is recorded here rather
+than lost with the report it was filed in
+(`issues/things-that-now-work/20261122T005913Z-lambda-3-net-new-causes-cloudformation-alias-routingconfig.md`,
+its cause 3 of 3, whose other two causes are fixed): the payload-2.0 event a function URL
+request is given reports `requestContext.domainPrefix` and `requestContext.apiId` as the url
+id, which on AWS is also the FIRST LABEL of `requestContext.domainName`, so the identity
+`domainPrefix == domainName.split('.')[0] == apiId` holds there by construction. It cannot
+hold while the authority this emulator publishes and answers on is a loopback `host:port`,
+whose first label is part of an IP address. Behavioural check:
+`lambda.url-get-event-v2-carries-raw-path-query-and-lowercased-headers`, at
+`assert rc["domainPrefix"] == host.split(".")[0] == rc["apiId"]` and, with the URL announced
+on the listener opened for that URL, already at `assert headers["host"] == host` — the client
+reaches this emulator at its own endpoint rather than at the published authority, so the
+`Host` the event reports is that endpoint's. The same core-side name service settles both.
