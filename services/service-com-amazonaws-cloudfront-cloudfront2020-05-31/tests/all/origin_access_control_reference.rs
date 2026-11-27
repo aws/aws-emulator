@@ -24,7 +24,7 @@
 //! control was created under, a value in no such shape), WHERE in the origin list the
 //! reference sits and how many origins carry it, the KIND of origin that carries it (an
 //! Amazon S3 origin, which is what an origin access control is for, and a custom origin at
-//! an Amazon API Gateway endpoint), the configuration the live control itself was created
+//! a Lambda function URL endpoint), the configuration the live control itself was created
 //! with (every row of the origin access control table whose origin type is that origin's
 //! kind, which is the pairing a stored configuration has to satisfy), and WHICH call submits
 //! the configuration (`CreateDistribution`, `CreateDistributionWithTags` and
@@ -121,7 +121,7 @@ enum OriginKind {
     /// empty `OriginAccessIdentity` element").
     S3,
     /// A `CustomOriginConfig` origin, which carries no origin access identity at all — here
-    /// an Amazon API Gateway API, addressed at its own `execute-api` endpoint.
+    /// a Lambda function URL, addressed at the host Lambda publishes one at.
     Custom,
 }
 
@@ -132,7 +132,7 @@ impl OriginKind {
     fn origin_type(self) -> &'static str {
         match self {
             OriginKind::S3 => "s3",
-            OriginKind::Custom => "execute-api",
+            OriginKind::Custom => "lambda",
         }
     }
 }
@@ -246,7 +246,7 @@ fn config_xml(
                  </S3OriginConfig>"
             )),
             OriginKind::Custom => out.push_str(&format!(
-                "<DomainName>{origin_id}.execute-api.us-east-1.amazonaws.com</DomainName>\
+                "<DomainName>{origin_id}.lambda-url.us-east-1.on.aws</DomainName>\
                  <CustomOriginConfig><HTTPPort>80</HTTPPort><HTTPSPort>443</HTTPSPort>\
                  <OriginProtocolPolicy>https-only</OriginProtocolPolicy></CustomOriginConfig>"
             )),

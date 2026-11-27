@@ -617,9 +617,9 @@ const STATED_VALUE_ORDERS: &[&[&str]] = &[
     // requests to, which this API publishes as the signing name of that origin's own service:
     // the service lists the object store first and then the compute and media origins, which is
     // not the order the schema declares
-    // (`smithy_query(query="shape",shape="OriginAccessControlOriginTypes")` -> s3, execute-api,
-    // mediastore, mediapackagev2, lambda).
-    &["s3", "execute-api", "lambda", "mediastore", "mediapackagev2"],
+    // (`smithy_query(query="shape",shape="OriginAccessControlOriginTypes")` -> s3, mediastore,
+    // mediapackagev2, lambda).
+    &["s3", "lambda", "mediastore", "mediapackagev2"],
 ];
 
 /// `refusal` with the enum's admitted values listed in the order this service publishes that

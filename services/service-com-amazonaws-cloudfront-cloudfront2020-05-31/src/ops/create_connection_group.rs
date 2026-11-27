@@ -69,6 +69,9 @@
 //!   identifier that is unique within your Amazon Web Services account. This name can't be
 //!   updated after you create the connection group.
 //! * `Tags` (Tags) — A complex type that contains zero or more Tag elements.
+//! * `ViewerFallback` (ViewerFallback) — The distribution whose certificate CloudFront uses
+//!   for viewer requests that arrive on the connection group's Anycast static IPs without
+//!   Server Name Indication (SNI).
 //!
 //! ## Output
 //!
@@ -257,6 +260,24 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             }
         }
 
+        // `ViewerFallback$DistributionId` is "the ID of the distribution whose certificate
+        // CloudFront uses to establish TLS connections for viewer requests that don't include
+        // SNI": the member names a DISTRIBUTION, so an id this service holds no distribution
+        // under is no entity — the same rule every other member of this surface that names a
+        // stored resource follows, resolved BEFORE the group is written so a group never
+        // reports a fallback nothing holds.
+        let viewer_fallback_distribution_id =
+            crate::state::viewer_fallback_distribution_id(input.viewer_fallback.as_ref())
+                .map(str::to_string);
+        if let Some(distribution_id) = &viewer_fallback_distribution_id {
+            if store.distribution(distribution_id).is_none() {
+                return Err(CreateConnectionGroupErrorModeled::EntityNotFound(
+                    crate::state::distribution_not_found(),
+                )
+                .into());
+            }
+        }
+
         // "The entity limit has been exceeded." The store grows only here and in the
         // automatic creation of the account's default group, so the bound is an entry
         // count refused before the insert.
@@ -288,6 +309,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             // Only the group this service creates BY ITSELF, for a tenant that named none,
             // is the account's default one.
             is_default: false,
+            // Held as the id the lookup above resolved, so a later read answers the
+            // fallback from this record rather than from the request being served.
+            viewer_fallback_distribution_id,
             status: crate::state::STATUS_IN_PROGRESS.to_string(),
             deployed_due: now + crate::state::PROPAGATION_DELAY,
             created_time: now,

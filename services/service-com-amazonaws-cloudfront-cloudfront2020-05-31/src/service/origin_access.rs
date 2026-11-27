@@ -96,13 +96,12 @@ const SIGNS_EVERY_REQUEST: [&str; 2] = ["always", "always-amz-auth"];
 const SIGNS_UNLESS_THE_VIEWER_PRESENTED_ONE: &str = "no-override";
 
 /// The signing name of the service each `OriginAccessControlOriginType` names
-/// (`smithy_query(query="shape",shape="OriginAccessControlOriginTypes")`: `s3`, `execute-api`,
-/// `mediastore`, `mediapackagev2`, `lambda`) — the service the origin belongs to, which is the
+/// (`smithy_query(query="shape",shape="OriginAccessControlOriginTypes")`: `s3`, `mediastore`,
+/// `mediapackagev2`, `lambda`) — the service the origin belongs to, which is the
 /// name the origin request's own credential scope carries. Each origin type IS that signing
 /// name, which is how this API publishes the member.
-const ORIGIN_TYPE_SIGNING_NAMES: [(&str, &str); 5] = [
+const ORIGIN_TYPE_SIGNING_NAMES: [(&str, &str); 4] = [
     ("s3", "s3"),
-    ("execute-api", "execute-api"),
     ("mediastore", "mediastore"),
     ("mediapackagev2", "mediapackagev2"),
     ("lambda", "lambda"),
@@ -367,8 +366,8 @@ fn signing_name(origin_type: &str) -> Option<&'static str> {
 ///
 /// Each origin type names ONE service ("The type of origin that this origin access control is
 /// for"), and that service's origins are addressed at that service's own endpoint: an Amazon S3
-/// bucket at the S3 endpoint, a Lambda function URL at the function-URL endpoint, an Amazon API
-/// Gateway API at `execute-api`, and the two Elemental origins at theirs. So the question of
+/// bucket at the S3 endpoint, a Lambda function URL at the function-URL endpoint, and the two
+/// Elemental origins at theirs. So the question of
 /// whether a control is the one that may front an origin is a question about the origin's
 /// ADDRESS.
 ///

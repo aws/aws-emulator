@@ -210,6 +210,7 @@ pub struct CustomOriginConfig {
     pub origin_keepalive_timeout: Option<i32>,
     pub ip_address_type: Option<String>,
     pub origin_mtls_config: Option<OriginMtlsConfig>,
+    pub origin_http_version: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.cloudfront#OriginSslProtocols")]
@@ -232,6 +233,7 @@ pub struct VpcOriginConfig {
     pub owner_account_id: Option<String>,
     pub origin_read_timeout: Option<i32>,
     pub origin_keepalive_timeout: Option<i32>,
+    pub origin_http_version: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.cloudfront#OriginShield")]
@@ -1099,6 +1101,12 @@ pub struct EntitySizeLimitExceeded {
     pub message: Option<String>,
 }
 
+#[smithy_macros::smithy(shape = "com.amazonaws.cloudfront#ViewerFallback")]
+#[derive(Debug, Clone, Default)]
+pub struct ViewerFallback {
+    pub distribution_id: Option<String>,
+}
+
 #[smithy_macros::smithy(shape = "com.amazonaws.cloudfront#ConnectionGroup")]
 #[derive(Debug, Clone, Default)]
 pub struct ConnectionGroup {
@@ -1114,6 +1122,7 @@ pub struct ConnectionGroup {
     pub status: Option<String>,
     pub enabled: Option<bool>,
     pub is_default: Option<bool>,
+    pub viewer_fallback: Option<ViewerFallback>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.cloudfront#ContinuousDeploymentPolicyConfig")]
@@ -1202,6 +1211,7 @@ pub struct NoSuchContinuousDeploymentPolicy {
 #[derive(Debug, Clone, Default)]
 pub struct DomainItem {
     pub domain: String,
+    pub serve_on: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.cloudfront#Customizations")]
@@ -1270,6 +1280,7 @@ pub struct DistributionTenant {
 pub struct DomainResult {
     pub domain: String,
     pub status: Option<String>,
+    pub serve_on: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.cloudfront#InvalidAssociation")]
@@ -1674,11 +1685,6 @@ pub struct ResponseHeadersPolicyConfig {
     pub comment: Option<String>,
     pub name: String,
     pub cors_config: Option<ResponseHeadersPolicyCorsConfig>,
-    // Held as `SecurityHeadersConfigProjection` — the modelled
-    // `ResponseHeadersPolicySecurityHeadersConfig` plus the way CloudFront writes it, so
-    // every operation that serializes a policy serializes the whole structure (see
-    // `super::security_headers_wire`). The projection derefs to the modelled shape, so a
-    // reader of one header is unaffected.
     pub security_headers_config: Option<SecurityHeadersConfigProjection>,
     pub server_timing_headers_config: Option<ResponseHeadersPolicyServerTimingHeadersConfig>,
     pub custom_headers_config: Option<ResponseHeadersPolicyCustomHeadersConfig>,
@@ -2235,8 +2241,12 @@ pub const METHOD_VALUES: &[&str] = &["DELETE", "GET", "HEAD", "OPTIONS", "PATCH"
 pub const MINIMUM_PROTOCOL_VERSION_VALUES: &[&str] = &["SSLv3", "TLSv1", "TLSv1.1_2016", "TLSv1.2_2018", "TLSv1.2_2019", "TLSv1.2_2021", "TLSv1.2_2025", "TLSv1.3_2025", "TLSv1_2016"];
 
 
+/// The values `OnDomainTakeover` accepts on the wire.
+pub const ON_DOMAIN_TAKEOVER_VALUES: &[&str] = &["allow", "reject"];
+
+
 /// The values `OriginAccessControlOriginTypes` accepts on the wire.
-pub const ORIGIN_ACCESS_CONTROL_ORIGIN_TYPES_VALUES: &[&str] = &["execute-api", "lambda", "mediapackagev2", "mediastore", "s3"];
+pub const ORIGIN_ACCESS_CONTROL_ORIGIN_TYPES_VALUES: &[&str] = &["lambda", "mediapackagev2", "mediastore", "s3"];
 
 
 /// The values `OriginAccessControlSigningBehaviors` accepts on the wire.
@@ -2249,6 +2259,10 @@ pub const ORIGIN_ACCESS_CONTROL_SIGNING_PROTOCOLS_VALUES: &[&str] = &["sigv4", "
 
 /// The values `OriginGroupSelectionCriteria` accepts on the wire.
 pub const ORIGIN_GROUP_SELECTION_CRITERIA_VALUES: &[&str] = &["default", "media-quality-based"];
+
+
+/// The values `OriginHttpVersion` accepts on the wire.
+pub const ORIGIN_HTTP_VERSION_VALUES: &[&str] = &["http1.1", "http2"];
 
 
 /// The values `OriginProtocolPolicy` accepts on the wire.
@@ -2293,6 +2307,10 @@ pub const RESPONSE_HEADERS_POLICY_TYPE_VALUES: &[&str] = &["custom", "managed"];
 
 /// The values `SSLSupportMethod` accepts on the wire.
 pub const S_S_L_SUPPORT_METHOD_VALUES: &[&str] = &["sni-only", "static-ip", "vip"];
+
+
+/// The values `ServeOn` accepts on the wire.
+pub const SERVE_ON_VALUES: &[&str] = &["any", "anycast-ip-list-only"];
 
 
 /// The values `SslProtocol` accepts on the wire.

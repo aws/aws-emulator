@@ -94,7 +94,7 @@ const SIGNING_BEHAVIORS: [&str; 4] = ["never", "always", "no-override", "always-
 
 /// Every value of `OriginAccessControlOriginTypes`
 /// (`smithy_query(query="shape",shape="OriginAccessControlOriginTypes")`).
-const ORIGIN_TYPES: [&str; 5] = ["s3", "execute-api", "mediastore", "mediapackagev2", "lambda"];
+const ORIGIN_TYPES: [&str; 4] = ["s3", "mediastore", "mediapackagev2", "lambda"];
 
 /// The two services this suite exercises, mounted on ONE engine exactly as
 /// `core/router/src/lib.rs` mounts them. Request authentication is off, as in every other

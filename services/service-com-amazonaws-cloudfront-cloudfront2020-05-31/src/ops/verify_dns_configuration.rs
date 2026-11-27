@@ -279,7 +279,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 }
                 vec![domain.clone()]
             }
-            None => tenant.domains.clone(),
+            None => tenant.domain_names(),
         };
         // The endpoint every domain in scope is compared against: the routing endpoint of
         // the connection group this tenant is routed through, read from that group's

@@ -82,7 +82,7 @@ contents — read that shape in the model above when you need its own members.
 ## CreateConnectionGroup
 
 - **Route:** `POST /2020-05-31/connection-group -> 201`
-- **Input:** `Name` (string, required), `Ipv6Enabled` (boolean), `Tags` (Tags), `AnycastIpListId` (string), `Enabled` (boolean)
+- **Input:** `Name` (string, required), `Ipv6Enabled` (boolean), `Tags` (Tags), `AnycastIpListId` (string), `Enabled` (boolean), `ViewerFallback` (ViewerFallback)
 - **Output:** `ConnectionGroup` (ConnectionGroup, @httpPayload), `ETag` (string, @httpHeader(ETag))
 - **Errors:** `AccessDenied (HTTP 403)`, `EntityAlreadyExists (HTTP 409)`, `EntityLimitExceeded (HTTP 400)`, `EntityNotFound (HTTP 404)`, `InvalidArgument (HTTP 400)`, `InvalidTagging (HTTP 400)`
 
@@ -103,7 +103,7 @@ contents — read that shape in the model above when you need its own members.
 ## CreateDistributionTenant
 
 - **Route:** `POST /2020-05-31/distribution-tenant -> 201`
-- **Input:** `DistributionId` (string, required), `Name` (string, required), `Domains` (list<DomainItem>, required), `Tags` (Tags), `Customizations` (Customizations), `Parameters` (list<Parameter>), `ConnectionGroupId` (string), `ManagedCertificateRequest` (ManagedCertificateRequest), `Enabled` (boolean)
+- **Input:** `DistributionId` (string, required), `Name` (string, required), `Domains` (list<DomainItem>, required), `Tags` (Tags), `Customizations` (Customizations), `Parameters` (list<Parameter>), `ConnectionGroupId` (string), `ManagedCertificateRequest` (ManagedCertificateRequest), `Enabled` (boolean), `OnDomainTakeover` (OnDomainTakeover, one of: allow | reject)
 - **Output:** `DistributionTenant` (DistributionTenant, @httpPayload), `ETag` (string, @httpHeader(ETag))
 - **Errors:** `AccessDenied (HTTP 403)`, `CNAMEAlreadyExists (HTTP 409)`, `EntityAlreadyExists (HTTP 409)`, `EntityLimitExceeded (HTTP 400)`, `EntityNotFound (HTTP 404)`, `InvalidArgument (HTTP 400)`, `InvalidAssociation (HTTP 409)`, `InvalidTagging (HTTP 400)`
 
@@ -974,7 +974,7 @@ contents — read that shape in the model above when you need its own members.
 ## ListTagsForResource
 
 - **Route:** `GET /2020-05-31/tagging -> 200`
-- **Input:** `Resource` (string, pattern ^arn:aws(-cn)?:cloudfront::[0-9]+:, @httpQuery(Resource), required)
+- **Input:** `Resource` (string, pattern ^arn:aws(-[a-z]+)*:cloudfront::[0-9]{12}:, @httpQuery(Resource), required)
 - **Output:** `Tags` (Tags, @httpPayload, required)
 - **Errors:** `AccessDenied (HTTP 403)`, `InvalidArgument (HTTP 400)`, `InvalidTagging (HTTP 400)`, `NoSuchResource (HTTP 404)`
 
@@ -1017,7 +1017,7 @@ contents — read that shape in the model above when you need its own members.
 ## TagResource
 
 - **Route:** `POST /2020-05-31/tagging?Operation=Tag -> 204`
-- **Input:** `Resource` (string, pattern ^arn:aws(-cn)?:cloudfront::[0-9]+:, @httpQuery(Resource), required), `Tags` (Tags, @httpPayload, required)
+- **Input:** `Resource` (string, pattern ^arn:aws(-[a-z]+)*:cloudfront::[0-9]{12}:, @httpQuery(Resource), required), `Tags` (Tags, @httpPayload, required)
 - **Output:** (no members)
 - **Errors:** `AccessDenied (HTTP 403)`, `InvalidArgument (HTTP 400)`, `InvalidTagging (HTTP 400)`, `NoSuchResource (HTTP 404)`
 
@@ -1038,7 +1038,7 @@ contents — read that shape in the model above when you need its own members.
 ## UntagResource
 
 - **Route:** `POST /2020-05-31/tagging?Operation=Untag -> 204`
-- **Input:** `Resource` (string, pattern ^arn:aws(-cn)?:cloudfront::[0-9]+:, @httpQuery(Resource), required), `TagKeys` (TagKeys, @httpPayload, required)
+- **Input:** `Resource` (string, pattern ^arn:aws(-[a-z]+)*:cloudfront::[0-9]{12}:, @httpQuery(Resource), required), `TagKeys` (TagKeys, @httpPayload, required)
 - **Output:** (no members)
 - **Errors:** `AccessDenied (HTTP 403)`, `InvalidArgument (HTTP 400)`, `InvalidTagging (HTTP 400)`, `NoSuchResource (HTTP 404)`
 
@@ -1073,7 +1073,7 @@ contents — read that shape in the model above when you need its own members.
 ## UpdateConnectionGroup
 
 - **Route:** `PUT /2020-05-31/connection-group/{Id} -> 200`
-- **Input:** `Id` (string, @httpLabel, required), `Ipv6Enabled` (boolean), `IfMatch` (string, @httpHeader(If-Match), required), `AnycastIpListId` (string), `Enabled` (boolean)
+- **Input:** `Id` (string, @httpLabel, required), `Ipv6Enabled` (boolean), `IfMatch` (string, @httpHeader(If-Match), required), `AnycastIpListId` (string), `Enabled` (boolean), `ViewerFallback` (ViewerFallback)
 - **Output:** `ConnectionGroup` (ConnectionGroup, @httpPayload), `ETag` (string, @httpHeader(ETag))
 - **Errors:** `AccessDenied (HTTP 403)`, `EntityAlreadyExists (HTTP 409)`, `EntityLimitExceeded (HTTP 400)`, `EntityNotFound (HTTP 404)`, `InvalidArgument (HTTP 400)`, `InvalidIfMatchVersion (HTTP 400)`, `PreconditionFailed (HTTP 412)`, `ResourceInUse (HTTP 409)`
 
@@ -1089,12 +1089,12 @@ contents — read that shape in the model above when you need its own members.
 - **Route:** `PUT /2020-05-31/distribution/{Id}/config -> 200`
 - **Input:** `DistributionConfig` (DistributionConfig, @httpPayload, required), `Id` (string, @httpLabel, required), `IfMatch` (string, @httpHeader(If-Match))
 - **Output:** `Distribution` (Distribution, @httpPayload), `ETag` (string, @httpHeader(ETag))
-- **Errors:** `AccessDenied (HTTP 403)`, `CNAMEAlreadyExists (HTTP 409)`, `ContinuousDeploymentPolicyInUse (HTTP 409)`, `EntityNotFound (HTTP 404)`, `IllegalFieldLevelEncryptionConfigAssociationWithCacheBehavior (HTTP 400)`, `IllegalOriginAccessConfiguration (HTTP 400)`, `IllegalUpdate (HTTP 400)`, `InconsistentQuantities (HTTP 400)`, `InvalidArgument (HTTP 400)`, `InvalidDefaultRootObject (HTTP 400)`, `InvalidDomainNameForOriginAccessControl (HTTP 400)`, `InvalidErrorCode (HTTP 400)`, `InvalidForwardCookies (HTTP 400)`, `InvalidFunctionAssociation (HTTP 400)`, `InvalidGeoRestrictionParameter (HTTP 400)`, `InvalidHeadersForS3Origin (HTTP 400)`, `InvalidIfMatchVersion (HTTP 400)`, `InvalidLambdaFunctionAssociation (HTTP 400)`, `InvalidLocationCode (HTTP 400)`, `InvalidMinimumProtocolVersion (HTTP 400)`, `InvalidOriginAccessControl (HTTP 400)`, `InvalidOriginAccessIdentity (HTTP 400)`, `InvalidOriginKeepaliveTimeout (HTTP 400)`, `InvalidOriginReadTimeout (HTTP 400)`, `InvalidQueryStringParameters (HTTP 400)`, `InvalidRelativePath (HTTP 400)`, `InvalidRequiredProtocol (HTTP 400)`, `InvalidResponseCode (HTTP 400)`, `InvalidTTLOrder (HTTP 400)`, `InvalidViewerCertificate (HTTP 400)`, `InvalidWebACLId (HTTP 400)`, `MissingBody (HTTP 400)`, `NoSuchCachePolicy (HTTP 404)`, `NoSuchContinuousDeploymentPolicy (HTTP 404)`, `NoSuchDistribution (HTTP 404)`, `NoSuchFieldLevelEncryptionConfig (HTTP 404)`, `NoSuchOrigin (HTTP 404)`, `NoSuchOriginRequestPolicy (HTTP 404)`, `NoSuchRealtimeLogConfig (HTTP 404)`, `NoSuchResponseHeadersPolicy (HTTP 404)`, `PreconditionFailed (HTTP 412)`, `RealtimeLogConfigOwnerMismatch (HTTP 401)`, `StagingDistributionInUse (HTTP 409)`, `TooManyCacheBehaviors (HTTP 400)`, `TooManyCertificates (HTTP 400)`, `TooManyCookieNamesInWhiteList (HTTP 400)`, `TooManyDistributionCNAMEs (HTTP 400)`, `TooManyDistributionsAssociatedToCachePolicy (HTTP 400)`, `TooManyDistributionsAssociatedToFieldLevelEncryptionConfig (HTTP 400)`, `TooManyDistributionsAssociatedToKeyGroup (HTTP 400)`, `TooManyDistributionsAssociatedToOriginAccessControl (HTTP 400)`, `TooManyDistributionsAssociatedToOriginRequestPolicy (HTTP 400)`, `TooManyDistributionsAssociatedToResponseHeadersPolicy (HTTP 400)`, `TooManyDistributionsWithFunctionAssociations (HTTP 400)`, `TooManyDistributionsWithLambdaAssociations (HTTP 400)`, `TooManyDistributionsWithSingleFunctionARN (HTTP 400)`, `TooManyFunctionAssociations (HTTP 400)`, `TooManyHeadersInForwardedValues (HTTP 400)`, `TooManyKeyGroupsAssociatedToDistribution (HTTP 400)`, `TooManyLambdaFunctionAssociations (HTTP 400)`, `TooManyOriginCustomHeaders (HTTP 400)`, `TooManyOriginGroupsPerDistribution (HTTP 400)`, `TooManyOrigins (HTTP 400)`, `TooManyQueryStringParameters (HTTP 400)`, `TooManyTrustedSigners (HTTP 400)`, `TrustedKeyGroupDoesNotExist (HTTP 400)`, `TrustedSignerDoesNotExist (HTTP 400)`
+- **Errors:** `AccessDenied (HTTP 403)`, `CNAMEAlreadyExists (HTTP 409)`, `ContinuousDeploymentPolicyInUse (HTTP 409)`, `EntityLimitExceeded (HTTP 400)`, `EntityNotFound (HTTP 404)`, `IllegalFieldLevelEncryptionConfigAssociationWithCacheBehavior (HTTP 400)`, `IllegalOriginAccessConfiguration (HTTP 400)`, `IllegalUpdate (HTTP 400)`, `InconsistentQuantities (HTTP 400)`, `InvalidArgument (HTTP 400)`, `InvalidDefaultRootObject (HTTP 400)`, `InvalidDomainNameForOriginAccessControl (HTTP 400)`, `InvalidErrorCode (HTTP 400)`, `InvalidForwardCookies (HTTP 400)`, `InvalidFunctionAssociation (HTTP 400)`, `InvalidGeoRestrictionParameter (HTTP 400)`, `InvalidHeadersForS3Origin (HTTP 400)`, `InvalidIfMatchVersion (HTTP 400)`, `InvalidLambdaFunctionAssociation (HTTP 400)`, `InvalidLocationCode (HTTP 400)`, `InvalidMinimumProtocolVersion (HTTP 400)`, `InvalidOriginAccessControl (HTTP 400)`, `InvalidOriginAccessIdentity (HTTP 400)`, `InvalidOriginKeepaliveTimeout (HTTP 400)`, `InvalidOriginReadTimeout (HTTP 400)`, `InvalidQueryStringParameters (HTTP 400)`, `InvalidRelativePath (HTTP 400)`, `InvalidRequiredProtocol (HTTP 400)`, `InvalidResponseCode (HTTP 400)`, `InvalidTTLOrder (HTTP 400)`, `InvalidViewerCertificate (HTTP 400)`, `InvalidWebACLId (HTTP 400)`, `MissingBody (HTTP 400)`, `NoSuchCachePolicy (HTTP 404)`, `NoSuchContinuousDeploymentPolicy (HTTP 404)`, `NoSuchDistribution (HTTP 404)`, `NoSuchFieldLevelEncryptionConfig (HTTP 404)`, `NoSuchOrigin (HTTP 404)`, `NoSuchOriginRequestPolicy (HTTP 404)`, `NoSuchRealtimeLogConfig (HTTP 404)`, `NoSuchResponseHeadersPolicy (HTTP 404)`, `PreconditionFailed (HTTP 412)`, `RealtimeLogConfigOwnerMismatch (HTTP 401)`, `StagingDistributionInUse (HTTP 409)`, `TooManyCacheBehaviors (HTTP 400)`, `TooManyCertificates (HTTP 400)`, `TooManyCookieNamesInWhiteList (HTTP 400)`, `TooManyDistributionCNAMEs (HTTP 400)`, `TooManyDistributionsAssociatedToCachePolicy (HTTP 400)`, `TooManyDistributionsAssociatedToFieldLevelEncryptionConfig (HTTP 400)`, `TooManyDistributionsAssociatedToKeyGroup (HTTP 400)`, `TooManyDistributionsAssociatedToOriginAccessControl (HTTP 400)`, `TooManyDistributionsAssociatedToOriginRequestPolicy (HTTP 400)`, `TooManyDistributionsAssociatedToResponseHeadersPolicy (HTTP 400)`, `TooManyDistributionsWithFunctionAssociations (HTTP 400)`, `TooManyDistributionsWithLambdaAssociations (HTTP 400)`, `TooManyDistributionsWithSingleFunctionARN (HTTP 400)`, `TooManyFunctionAssociations (HTTP 400)`, `TooManyHeadersInForwardedValues (HTTP 400)`, `TooManyKeyGroupsAssociatedToDistribution (HTTP 400)`, `TooManyLambdaFunctionAssociations (HTTP 400)`, `TooManyOriginCustomHeaders (HTTP 400)`, `TooManyOriginGroupsPerDistribution (HTTP 400)`, `TooManyOrigins (HTTP 400)`, `TooManyQueryStringParameters (HTTP 400)`, `TooManyTrustedSigners (HTTP 400)`, `TrustedKeyGroupDoesNotExist (HTTP 400)`, `TrustedSignerDoesNotExist (HTTP 400)`
 
 ## UpdateDistributionTenant
 
 - **Route:** `PUT /2020-05-31/distribution-tenant/{Id} -> 200`
-- **Input:** `Id` (string, @httpLabel, required), `DistributionId` (string), `Domains` (list<DomainItem>), `Customizations` (Customizations), `Parameters` (list<Parameter>), `ConnectionGroupId` (string), `IfMatch` (string, @httpHeader(If-Match), required), `ManagedCertificateRequest` (ManagedCertificateRequest), `Enabled` (boolean)
+- **Input:** `Id` (string, @httpLabel, required), `DistributionId` (string), `Domains` (list<DomainItem>), `Customizations` (Customizations), `Parameters` (list<Parameter>), `ConnectionGroupId` (string), `IfMatch` (string, @httpHeader(If-Match), required), `ManagedCertificateRequest` (ManagedCertificateRequest), `Enabled` (boolean), `OnDomainTakeover` (OnDomainTakeover, one of: allow | reject)
 - **Output:** `DistributionTenant` (DistributionTenant, @httpPayload), `ETag` (string, @httpHeader(ETag))
 - **Errors:** `AccessDenied (HTTP 403)`, `CNAMEAlreadyExists (HTTP 409)`, `EntityAlreadyExists (HTTP 409)`, `EntityLimitExceeded (HTTP 400)`, `EntityNotFound (HTTP 404)`, `InvalidArgument (HTTP 400)`, `InvalidAssociation (HTTP 409)`, `InvalidIfMatchVersion (HTTP 400)`, `PreconditionFailed (HTTP 412)`
 
@@ -1110,7 +1110,7 @@ contents — read that shape in the model above when you need its own members.
 - **Route:** `POST /2020-05-31/domain-association -> 200`
 - **Input:** `Domain` (string, required), `TargetResource` (DistributionResourceId, required), `IfMatch` (string, @httpHeader(If-Match))
 - **Output:** `Domain` (string), `ResourceId` (string), `ETag` (string, @httpHeader(ETag))
-- **Errors:** `AccessDenied (HTTP 403)`, `EntityNotFound (HTTP 404)`, `IllegalUpdate (HTTP 400)`, `InvalidArgument (HTTP 400)`, `InvalidIfMatchVersion (HTTP 400)`, `PreconditionFailed (HTTP 412)`
+- **Errors:** `AccessDenied (HTTP 403)`, `EntityLimitExceeded (HTTP 400)`, `EntityNotFound (HTTP 404)`, `IllegalUpdate (HTTP 400)`, `InvalidArgument (HTTP 400)`, `InvalidAssociation (HTTP 409)`, `InvalidIfMatchVersion (HTTP 400)`, `PreconditionFailed (HTTP 412)`
 
 ## UpdateFieldLevelEncryptionConfig
 

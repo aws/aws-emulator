@@ -19,6 +19,7 @@ pub struct UpdateConnectionGroupInput {
     pub if_match: String,
     pub anycast_ip_list_id: Option<String>,
     pub enabled: Option<bool>,
+    pub viewer_fallback: Option<ViewerFallback>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.cloudfront#UpdateConnectionGroupResult")]

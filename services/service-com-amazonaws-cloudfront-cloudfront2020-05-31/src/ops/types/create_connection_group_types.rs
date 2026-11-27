@@ -19,6 +19,7 @@ pub struct CreateConnectionGroupInput {
     pub tags: Option<Tags>,
     pub anycast_ip_list_id: Option<String>,
     pub enabled: Option<bool>,
+    pub viewer_fallback: Option<ViewerFallback>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.cloudfront#CreateConnectionGroupResult")]

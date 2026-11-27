@@ -85,7 +85,7 @@ use crate::ops::types::{
     ContinuousDeploymentSingleHeaderConfig, ContinuousDeploymentSingleWeightConfig,
     CustomErrorResponse, CustomErrorResponses, CustomOriginConfig,
     Customizations, DefaultCacheBehavior, Distribution, DistributionConfig, DistributionSummary,
-    DistributionTenant, DistributionTenantSummary, DomainConflict, DomainResult,
+    DistributionTenant, DistributionTenantSummary, DomainConflict, DomainItem, DomainResult,
     EntityAlreadyExists,
     EntityNotFound, FieldLevelEncryption, FieldLevelEncryptionConfig,
     FieldLevelEncryptionProfile, FieldLevelEncryptionProfileConfig,
@@ -111,6 +111,7 @@ use crate::ops::types::{
     StreamingDistributionSummary, StreamingLoggingConfig, StringSchemaConfig, Tag, Tags,
     TrafficConfig, TenantConfig, TrustedKeyGroups, TrustedSigners, ValidationTokenDetail,
     ViewerCertificate,
+    ViewerFallback,
     WebAclCustomization,
 };
 
@@ -167,6 +168,14 @@ pub use ca_certificates_bundle::*;
 /// name reachable as `crate::state::<name>`.
 pub mod standard_logging;
 pub use standard_logging::*;
+
+/// WHERE a viewer's request has to arrive for a resource of this service to answer it: the
+/// arrival addresses a tenant's domain is served on, whether a call moves a domain another
+/// resource serves, and the distribution whose certificate answers a viewer that arrives
+/// without SNI. A SUBMODULE for the same reason [`functions`] is one; `pub use` keeps every
+/// name reachable as `crate::state::<name>`.
+pub mod tenant_routing;
+pub use tenant_routing::*;
 
 /// The VPC ORIGIN slice of this store: the VPC origin record, the id one is addressed by,
 /// the lookup every read goes through, the bound a create is refused at, and the modelled
@@ -2093,6 +2102,12 @@ pub struct StoredConnectionGroup {
     /// connection group for the distribution tenants." True of the ONE group this
     /// service creates by itself, when a tenant that named none needed one.
     pub is_default: bool,
+    /// The distribution `ConnectionGroup$ViewerFallback` names — "the distribution whose
+    /// certificate CloudFront uses for viewer requests that arrive on the connection group's
+    /// Anycast static IPs without Server Name Indication (SNI)" — or `None` when the group
+    /// names none. Only ever a distribution this service holds: the call that stated it
+    /// resolved the id first ([`viewer_fallback_distribution_id`]).
+    pub viewer_fallback_distribution_id: Option<String>,
     /// [`STATUS_IN_PROGRESS`] until [`StoredConnectionGroup::deployed_due`], then
     /// [`STATUS_DEPLOYED`]: a connection group's routing endpoint reaches the edge
     /// locations the same way a distribution's configuration does.
@@ -2147,7 +2162,19 @@ impl StoredConnectionGroup {
             status: Some(self.status.clone()),
             enabled: Some(self.enabled),
             is_default: Some(self.is_default),
+            viewer_fallback: self.to_viewer_fallback(),
         }
+    }
+
+    /// The `ViewerFallback` projection both of this group's projections report, built from
+    /// the one stored distribution id — so a group that names no fallback reports none
+    /// rather than an element describing nothing.
+    fn to_viewer_fallback(&self) -> Option<ViewerFallback> {
+        self.viewer_fallback_distribution_id
+            .clone()
+            .map(|distribution_id| ViewerFallback {
+                distribution_id: Some(distribution_id),
+            })
     }
 
     /// The `ConnectionGroupSummary` a listing reports, read from the same stored record
@@ -2166,6 +2193,7 @@ impl StoredConnectionGroup {
             enabled: Some(self.enabled),
             status: Some(self.status.clone()),
             is_default: Some(self.is_default),
+            viewer_fallback: self.to_viewer_fallback(),
         }
     }
 }
@@ -2192,8 +2220,9 @@ pub struct StoredDistributionTenant {
     pub distribution_id: String,
     /// The domains associated with this tenant, in the order the create listed them. Each
     /// is reported as a `DomainResult` under the status it is served at
-    /// ([`ComAmazonawsCloudfrontCloudfront20200531State::domain_is_active`]).
-    pub domains: Vec<String>,
+    /// ([`ComAmazonawsCloudfrontCloudfront20200531State::domain_is_active`]) and on the
+    /// arrival addresses it is served on ([`TenantDomain`]).
+    pub domains: Vec<TenantDomain>,
     /// `DistributionTenant$ConnectionGroupId` — the connection group the tenant's viewers
     /// are routed through: the one the create named, or the account's default one.
     pub connection_group_id: String,
@@ -2258,7 +2287,18 @@ impl StoredDistributionTenant {
 
     /// Whether this tenant holds `domain`, compared as DNS names are.
     pub fn holds_domain(&self, domain: &str) -> bool {
-        self.domains.iter().any(|held| same_domain(held, domain))
+        self.domains.iter().any(|held| held.is(domain))
+    }
+
+    /// The NAMES this tenant holds, in the order they were associated — what every rule
+    /// about the name alone is evaluated over ([`tenant_domain_names`]).
+    pub fn domain_names(&self) -> Vec<String> {
+        tenant_domain_names(&self.domains)
+    }
+
+    /// The association this tenant holds for `domain`, or `None` when it holds none.
+    pub fn domain(&self, domain: &str) -> Option<&TenantDomain> {
+        self.domains.iter().find(|held| held.is(domain))
     }
 
     /// Whether `domain` is still waiting for this tenant's CloudFront managed certificate to
@@ -2317,16 +2357,20 @@ impl StoredDistributionTenant {
     fn to_domain_results(&self, is_active: impl Fn(&str) -> bool) -> Vec<DomainResult> {
         self.domains
             .iter()
-            .map(|domain| DomainResult {
-                domain: domain.clone(),
+            .map(|held| DomainResult {
+                domain: held.domain.clone(),
                 status: Some(
-                    if is_active(domain) {
+                    if is_active(&held.domain) {
                         DOMAIN_STATUS_ACTIVE
                     } else {
                         DOMAIN_STATUS_INACTIVE
                     }
                     .to_string(),
                 ),
+                // Read back from the association rather than re-derived: the member is
+                // "which requests for this domain CloudFront routes to the distribution
+                // tenant", which is what the call that bound the domain stated.
+                serve_on: Some(held.serve_on.clone()),
             })
             .collect()
     }
@@ -2441,9 +2485,9 @@ impl StoredDistributionTenant {
 pub struct DistributionTenantUpdate {
     /// `DistributionId` — "The ID for the multi-tenant distribution."
     pub distribution_id: Option<String>,
-    /// The domain names from `Domains` — "The domains to update for the distribution
-    /// tenant."
-    pub domains: Option<Vec<String>>,
+    /// The associations `Domains` binds — "The domains to update for the distribution
+    /// tenant" — each with the arrival addresses it is served on.
+    pub domains: Option<Vec<TenantDomain>>,
     /// `Customizations` — the tenant's overrides of its distribution's settings.
     pub customizations: Option<Customizations>,
     /// `Parameters` — the values that fill in the distribution's

@@ -537,12 +537,12 @@ fn distribution_xml(reference: &str, origins: &[(&str, Option<&str>)]) -> String
         origins.len()
     );
     for (origin_id, control) in origins {
-        // An Amazon API Gateway origin at its own `execute-api` endpoint: the origin an
-        // `execute-api` origin access control is for, which is the type the control under
-        // test carries ([`table`]'s first row).
+        // A Lambda function URL origin at the host Lambda publishes one at: the origin a
+        // `lambda` origin access control is for, which is the type the control under test
+        // carries.
         out.push_str(&format!(
             "<Origin><Id>{origin_id}</Id>\
-             <DomainName>{origin_id}.execute-api.us-east-1.amazonaws.com</DomainName>\
+             <DomainName>{origin_id}.lambda-url.us-east-1.on.aws</DomainName>\
              <CustomOriginConfig><HTTPPort>80</HTTPPort><HTTPSPort>443</HTTPSPort>\
              <OriginProtocolPolicy>https-only</OriginProtocolPolicy></CustomOriginConfig>"
         ));
@@ -598,14 +598,25 @@ async fn a_control_an_origin_still_names_cannot_be_deleted() {
     ];
 
     let rows = table();
+    // The control every origin below names has to be one a Lambda function URL origin admits
+    // — the pairing a stored configuration satisfies — so it is chosen by its origin type
+    // rather than by its position in the table.
+    let fronting = rows
+        .iter()
+        .find(|row| row.origin_type() == "lambda")
+        .expect("the control table carries a row of origin type lambda");
+    let unreferenced = rows
+        .iter()
+        .find(|row| row.origin_type() != "lambda")
+        .expect("the control table carries a row of another origin type");
     for attachment in &attachments {
         let case = attachment.case;
         let router = emulator();
         // Two controls: the one the distribution names, and one it does not — which stays
         // deletable throughout, so the refusal is about the reference and not about there
         // being a distribution at all.
-        let (id, etag) = create(&router, &rows[0]).await;
-        let (spare_id, spare_etag) = create(&router, &rows[1]).await;
+        let (id, etag) = create(&router, fronting).await;
+        let (spare_id, spare_etag) = create(&router, unreferenced).await;
 
         let origin_ids: Vec<String> = (0..attachment.attached.len())
             .map(|index| format!("origin-{index}"))

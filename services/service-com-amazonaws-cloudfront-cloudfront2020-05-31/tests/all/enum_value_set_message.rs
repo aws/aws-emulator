@@ -60,12 +60,12 @@ const SIGNING_PROTOCOL_SET: &str = "sigv4, sigv4a";
 /// first.
 const SIGNING_BEHAVIOR_SET: &str = "always-amz-auth, never, always, no-override";
 
-/// `OriginAccessControlOriginTypes` admits s3, execute-api, mediastore, mediapackagev2 and
+/// `OriginAccessControlOriginTypes` admits s3, mediastore, mediapackagev2 and
 /// lambda, in that order
 /// (`smithy_query(query="shape",shape="OriginAccessControlOriginTypes")`) — each value is the
 /// signing name of the service the origin belongs to — and is listed with the object store
 /// first and then the compute and media origins.
-const ORIGIN_TYPE_SET: &str = "s3, execute-api, lambda, mediastore, mediapackagev2";
+const ORIGIN_TYPE_SET: &str = "s3, lambda, mediastore, mediapackagev2";
 
 /// One case: an operation, the binding its enum-constrained member travels in, and what the
 /// refusal must say about it.

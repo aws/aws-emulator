@@ -83,6 +83,9 @@
 //! * `Name` (string) **required** — The name of the distribution tenant. Enter a friendly
 //!   identifier that is unique within your Amazon Web Services account. This name can't be
 //!   updated after you create the distribution tenant.
+//! * `OnDomainTakeover` (OnDomainTakeover, one of: allow | reject) — Specifies whether
+//!   CloudFront moves a domain in this request to this distribution tenant when the domain is
+//!   already associated with another standard distribution or distribution tenant. …
 //! * `Parameters` (Parameters) — A list of parameter values to add to the resource. A
 //!   parameter is specified as a key-value pair. A valid parameter value must exist for any
 //!   parameter that is marked as required in the multi-tenant distribution.
@@ -212,13 +215,16 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // name, and none named twice — the ONE rule every call that binds a tenant's domains
         // runs, decided from the request alone and counted BEFORE anything walks the list,
         // so neither the work this request causes nor the record it would store grows with a
-        // list the caller chose the length of.
-        let domains: Vec<String> = input
+        // list the caller chose the length of. Each association carries the arrival addresses
+        // it is served on, with `ServeOn`'s documented default resolved
+        // ([`crate::state::TenantDomain`]).
+        let domains: Vec<crate::state::TenantDomain> = input
             .domains
             .iter()
-            .map(|item| item.domain.clone())
+            .map(crate::state::TenantDomain::from_item)
             .collect();
-        if let Some(reason) = crate::state::tenant_domains_refusal(&domains) {
+        let domain_names = crate::state::tenant_domain_names(&domains);
+        if let Some(reason) = crate::state::tenant_domains_refusal(&domain_names) {
             return Err(invalid_argument(reason));
         }
 
@@ -375,13 +381,41 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // reached at it yet, because the certificate the claim waits on has not been
         // validated, routes nowhere and so takes nothing: several tenants may stage a claim
         // on it, and the validation decides which one it ends up routing to.
-        for domain in &domains {
-            if store.domain_in_use(domain, None) {
-                return Err(CreateDistributionTenantErrorModeled::CNAMEAlreadyExists(
-                    crate::state::cname_already_exists(),
-                )
-                .into());
+        //
+        // `OnDomainTakeover` decides what becomes of a domain another resource DOES serve:
+        // "`allow` – CloudFront moves the domain to this distribution tenant when the
+        // domain's DNS points to this distribution tenant", and a call that states nothing
+        // asks for `reject`, where "the request fails if the domain is associated with
+        // another resource". A tenant is reached through its connection group, so the DNS
+        // record has to point at THAT group's routing endpoint — the group this create names,
+        // or the account's default one where it names none. The names to move are collected
+        // here and moved once the tenant they move to exists; nothing is written on a path
+        // that refuses.
+        let moves_domains = crate::state::takes_over_domains(input.on_domain_takeover.as_deref());
+        let target_connection_group_id = match &input.connection_group_id {
+            Some(named) => Some(named.clone()),
+            None => store
+                .existing_default_connection_group()
+                .map(|group| group.id.clone()),
+        };
+        let mut moved_domains: Vec<String> = Vec::new();
+        for domain in &domain_names {
+            if !store.domain_in_use(domain, None) {
+                continue;
             }
+            if moves_domains
+                && store.domain_points_at_connection_group(
+                    domain,
+                    target_connection_group_id.as_deref(),
+                )
+            {
+                moved_domains.push(domain.clone());
+                continue;
+            }
+            return Err(CreateDistributionTenantErrorModeled::CNAMEAlreadyExists(
+                crate::state::cname_already_exists(),
+            )
+            .into());
         }
 
         // A tenant's domains are where its viewers reach it, so CloudFront binds one only to
@@ -402,7 +436,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // this domain, so the refusal is about the DOMAIN.
         if input.managed_certificate_request.is_none()
             && store
-                .unproven_domain(domains.iter().map(String::as_str))
+                .unproven_domain(domain_names.iter().map(String::as_str))
                 .is_some()
         {
             let refusal = if names_a_certificate {
@@ -423,7 +457,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // and so demands nothing of DNS.
         if let Some(request) = &input.managed_certificate_request {
             if store
-                .unverifiable_certificate_domain(request, &domains)
+                .unverifiable_certificate_domain(request, &domain_names)
                 .is_some()
             {
                 return Err(CreateDistributionTenantErrorModeled::InvalidArgument(
@@ -460,7 +494,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // tenant without one.
         let managed_certificate = input
             .managed_certificate_request
-            .map(|request| store.request_managed_certificate(request, &domains, now));
+            .map(|request| store.request_managed_certificate(request, &domain_names, now));
         let stored = crate::state::StoredDistributionTenant {
             arn: crate::state::distribution_tenant_arn(&id),
             id: id.clone(),
@@ -492,7 +526,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             invalidations: std::collections::BTreeMap::new(),
         };
         let distribution_tenant = store.distribution_tenant_document(&stored);
-        store.distribution_tenants.insert(id, stored);
+        store.distribution_tenants.insert(id.clone(), stored);
+        // A domain this create TAKES OVER is released from the resources that were serving
+        // it only once the tenant it moves to is in the store, so the name is never held by
+        // nothing; the move versions every record it changes. The tenant's own document is
+        // unaffected by it — a domain's reported status is decided by this tenant's record,
+        // its connection group and this service's DNS view, none of which the move touches.
+        for domain in &moved_domains {
+            store.move_domain_to_tenant(domain, &id, now);
+        }
 
         Ok(CreateDistributionTenantOutput {
             // "The distribution tenant that you created" — read from the record just

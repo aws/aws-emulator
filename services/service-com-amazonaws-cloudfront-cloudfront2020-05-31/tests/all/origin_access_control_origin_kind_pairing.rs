@@ -105,16 +105,12 @@ struct OriginType {
 }
 
 /// Every origin type the model admits
-/// (`smithy_query(query="shape",shape="OriginAccessControlOriginTypes")`: `s3`, `execute-api`,
-/// `mediastore`, `mediapackagev2`, `lambda`), each at an address its own service publishes.
-const ORIGIN_TYPES: [OriginType; 5] = [
+/// (`smithy_query(query="shape",shape="OriginAccessControlOriginTypes")`: `s3`, `mediastore`,
+/// `mediapackagev2`, `lambda`), each at an address its own service publishes.
+const ORIGIN_TYPES: [OriginType; 4] = [
     OriginType {
         origin_type: "s3",
         domain_name: "reports.s3.us-east-1.amazonaws.com",
-    },
-    OriginType {
-        origin_type: "execute-api",
-        domain_name: "a1b2c3d4e5.execute-api.us-east-1.amazonaws.com",
     },
     OriginType {
         origin_type: "mediastore",

@@ -81,9 +81,11 @@
 //! ## Errors
 //!
 //! * `AccessDenied` (HTTP 403) — Access denied.
+//! * `EntityLimitExceeded` (HTTP 400) — The entity limit has been exceeded.
 //! * `EntityNotFound` (HTTP 404) — The entity was not found.
 //! * `IllegalUpdate` (HTTP 400) — The update contains modifications that are not allowed.
 //! * `InvalidArgument` (HTTP 400) — An argument is invalid.
+//! * `InvalidAssociation` (HTTP 409) — The specified CloudFront resource can't be associated.
 //! * `InvalidIfMatchVersion` (HTTP 400) — The If-Match version is missing or not valid.
 //! * `PreconditionFailed` (HTTP 412) — The precondition in one or more of the request fields
 //!   evaluated to false.
@@ -106,9 +108,11 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-cloudfront-cloudfront20
 #[derive(Debug)]
 pub enum UpdateDomainAssociationErrorModeled {
     AccessDenied(AccessDenied),
+    EntityLimitExceeded(EntityLimitExceeded),
     EntityNotFound(EntityNotFound),
     IllegalUpdate(IllegalUpdate),
     InvalidArgument(InvalidArgument),
+    InvalidAssociation(InvalidAssociation),
     InvalidIfMatchVersion(InvalidIfMatchVersion),
     PreconditionFailed(PreconditionFailed),
 }

@@ -5,8 +5,8 @@
 //!
 //! `OriginAccessControlConfig$OriginAccessControlOriginType` is "the type of origin that this
 //! origin access control is for", and every value of it names ONE service
-//! (`smithy_query(query="shape",shape="OriginAccessControlOriginTypes")`: `s3`, `execute-api`,
-//! `mediastore`, `mediapackagev2`, `lambda`). What the control does is sign the origin request
+//! (`smithy_query(query="shape",shape="OriginAccessControlOriginTypes")`: `s3`, `mediastore`,
+//! `mediapackagev2`, `lambda`). What the control does is sign the origin request
 //! CloudFront makes to THAT service — the signing name of the credential scope is that
 //! service's, and the grant admitting the signed fetch is written in that service's own
 //! resource policy — so a control is the one that may front an origin only while the origin is

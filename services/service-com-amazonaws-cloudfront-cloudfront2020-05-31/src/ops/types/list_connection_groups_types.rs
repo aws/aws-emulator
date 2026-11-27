@@ -46,5 +46,6 @@ pub struct ConnectionGroupSummary {
     pub enabled: Option<bool>,
     pub status: Option<String>,
     pub is_default: Option<bool>,
+    pub viewer_fallback: Option<ViewerFallback>,
 }
 

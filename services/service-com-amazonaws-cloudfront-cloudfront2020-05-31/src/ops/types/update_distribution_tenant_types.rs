@@ -23,6 +23,7 @@ pub struct UpdateDistributionTenantInput {
     pub if_match: String,
     pub managed_certificate_request: Option<ManagedCertificateRequest>,
     pub enabled: Option<bool>,
+    pub on_domain_takeover: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.cloudfront#UpdateDistributionTenantResult")]

@@ -11,7 +11,7 @@
 //!
 //! * every value of it names ONE service
 //!   (`smithy_query(query="shape",shape="OriginAccessControlOriginTypes")`: `s3`,
-//!   `execute-api`, `mediastore`, `mediapackagev2`, `lambda`), and the control signs the origin
+//!   `mediastore`, `mediapackagev2`, `lambda`), and the control signs the origin
 //!   request CloudFront makes to THAT service — so every call that stores a
 //!   `DistributionConfig` admits a control on an origin only while the origin is of the kind
 //!   that service's is: specified with the configuration member that names that kind
@@ -128,11 +128,16 @@ fn addresses() -> Vec<Address> {
             s3_origin_config: true,
             fronted_by: Some("s3"),
         },
+        // An Amazon API Gateway API is addressed at its own `execute-api` endpoint, which is
+        // the endpoint of a service no `OriginAccessControlOriginType` names
+        // (`smithy_query(query="shape",shape="OriginAccessControlOriginTypes")`: s3, mediastore,
+        // mediapackagev2, lambda) — so no control may front one, exactly as none may front a
+        // customer domain.
         Address {
             case: "an Amazon API Gateway API at its execute-api endpoint",
             domain_name: "a1b2c3d4e5.execute-api.us-east-1.amazonaws.com",
             s3_origin_config: false,
-            fronted_by: Some("execute-api"),
+            fronted_by: None,
         },
         Address {
             case: "a Lambda function URL at the host AWS publishes",

@@ -500,7 +500,7 @@ async fn a_value_outside_a_modelled_enum_is_a_request_that_cannot_be_read() {
 
     // Another document, and two members of it, each constrained by an enum of its own:
     // `OriginAccessControlSigningProtocols` admits sigv4 and sigv4a, and
-    // `OriginAccessControlOriginTypes` admits s3, execute-api, mediastore, mediapackagev2 and
+    // `OriginAccessControlOriginTypes` admits s3, mediastore, mediapackagev2 and
     // lambda (`smithy_query(query="shape",shape="…")`), each the signing name of the service
     // its origin belongs to; the origin type's set is listed in the order this API publishes
     // it.
@@ -523,7 +523,7 @@ async fn a_value_outside_a_modelled_enum_is_a_request_that_cannot_be_read() {
             &value,
             &answer,
             "originAccessControlOriginType",
-            "[s3, execute-api, lambda, mediastore, mediapackagev2]",
+            "[s3, lambda, mediastore, mediapackagev2]",
         );
     }
 

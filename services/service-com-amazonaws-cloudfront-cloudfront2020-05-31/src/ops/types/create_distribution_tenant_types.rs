@@ -23,6 +23,7 @@ pub struct CreateDistributionTenantInput {
     pub connection_group_id: Option<String>,
     pub managed_certificate_request: Option<ManagedCertificateRequest>,
     pub enabled: Option<bool>,
+    pub on_domain_takeover: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.cloudfront#CreateDistributionTenantResult")]

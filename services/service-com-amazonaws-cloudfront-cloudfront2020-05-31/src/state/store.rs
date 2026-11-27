@@ -329,16 +329,10 @@ impl ComAmazonawsCloudfrontCloudfront20200531State {
             Some(tenant.id.as_str()) != except_tenant_id && tenant.serves_domain(domain)
         });
         served_by_tenant
-            || self.distributions.values().any(|distribution| {
-                distribution
-                    .config
-                    .aliases
-                    .as_ref()
-                    .and_then(|aliases| aliases.items.as_deref())
-                    .unwrap_or_default()
-                    .iter()
-                    .any(|alias| same_domain(alias, domain))
-            })
+            || self
+                .distributions
+                .values()
+                .any(|distribution| distribution.declares_alias(domain))
     }
 
     /// Whether the DNS record this service can read for `domain` points at
@@ -364,32 +358,120 @@ impl ComAmazonawsCloudfrontCloudfront20200531State {
         }
     }
 
+    /// Whether the DNS record this service can read for `domain` points at the routing
+    /// endpoint of the connection group `connection_group_id` names.
+    ///
+    /// This is what "the domain's DNS points to this distribution tenant" asks: a tenant is
+    /// reached through the connection group it is routed through, so the endpoint the name
+    /// has to resolve to is that group's. A call that names no group, and a group this store
+    /// does not hold, resolve to no endpoint at all, so nothing points there.
+    pub fn domain_points_at_connection_group(
+        &self,
+        domain: &str,
+        connection_group_id: Option<&str>,
+    ) -> bool {
+        let routing_endpoint = connection_group_id
+            .and_then(|id| self.connection_group(id))
+            .map(|group| group.routing_endpoint.as_str());
+        self.domain_points_at_routing_endpoint(domain, routing_endpoint)
+    }
+
+    /// Release `domain` from every CloudFront resource of this account that holds it apart
+    /// from the distribution tenant `tenant_id`, so the tenant that just claimed it is the
+    /// one it routes to.
+    ///
+    /// This is the MOVE `OnDomainTakeover` asks for: "`allow` – CloudFront moves the domain
+    /// to this distribution tenant when the domain's DNS points to this distribution
+    /// tenant." A domain routes to at most one CloudFront resource
+    /// ([`Self::domain_in_use`]), so moving it to one resource is releasing it from the
+    /// others: the name is dropped from the `Domains` of every other distribution tenant
+    /// that holds it and from the alternate domain names of every distribution that declares
+    /// it, compared as DNS names are.
+    ///
+    /// Each record the move changes is versioned exactly as any other change to that record
+    /// is — a freshly minted token, `LastModifiedTime` of `now`, and the non-terminal status
+    /// again, since the configuration it now runs under has to reach the edge locations — so
+    /// the token a caller holding the released resource matched on no longer satisfies an
+    /// `If-Match` against it. A distribution's propagation deadline is not restarted, for the
+    /// reason [`Self::apply_config`] states.
+    ///
+    /// The records to change are named BEFORE any of them is written, so the walk is over
+    /// the store as it stood when the move began and no version token is minted for a record
+    /// the move does not touch.
+    pub fn move_domain_to_tenant(&mut self, domain: &str, tenant_id: &str, now: SystemTime) {
+        let released_tenants: Vec<String> = self
+            .distribution_tenants
+            .values()
+            .filter(|tenant| tenant.id != tenant_id && tenant.holds_domain(domain))
+            .map(|tenant| tenant.id.clone())
+            .collect();
+        let released_distributions: Vec<String> = self
+            .distributions
+            .values()
+            .filter(|distribution| distribution.declares_alias(domain))
+            .map(|distribution| distribution.id.clone())
+            .collect();
+        for id in released_tenants {
+            let etag = self.next_etag();
+            if let Some(tenant) = self.distribution_tenants.get_mut(&id) {
+                tenant.domains.retain(|held| !held.is(domain));
+                tenant.last_modified_time = now;
+                tenant.etag = etag;
+                tenant.status = STATUS_IN_PROGRESS.to_string();
+                tenant.deployed_due = now + PROPAGATION_DELAY;
+            }
+        }
+        for id in released_distributions {
+            let etag = self.next_etag();
+            if let Some(distribution) = self.distributions.get_mut(&id) {
+                distribution.release_alias(domain);
+                distribution.last_modified_time = now;
+                distribution.etag = etag;
+                distribution.status = STATUS_IN_PROGRESS.to_string();
+                distribution.deployed_due = distribution.deployed_due.max(now);
+            }
+        }
+    }
+
     /// Whether `tenant`'s `domain` is ACTIVE: whether a viewer asking for it reaches the
     /// tenant.
     ///
     /// `DomainResult$Status` is "whether the domain is active or inactive", and a viewer
-    /// reaches a distribution tenant at one of its domains only when BOTH halves of the path
-    /// to it are in place:
+    /// reaches a distribution tenant at one of its domains only when every half of the path
+    /// to it is in place:
     ///
     /// * the domain resolves to the routing endpoint of the connection group the tenant is
     ///   routed through ([`Self::domain_points_at_routing_endpoint`]) — until the DNS record
     ///   points there, the viewer never arrives at CloudFront at all, which is exactly the
     ///   configuration `VerifyDnsConfiguration` exists to troubleshoot;
-    /// * and the domain is served over a certificate that has been issued, so the handshake
-    ///   for that name completes ([`StoredDistributionTenant::serves_domain`]).
+    /// * the domain is served over a certificate that has been issued, so the handshake
+    ///   for that name completes ([`StoredDistributionTenant::serves_domain`]);
+    /// * and the addresses the domain is served on exist. A domain bound
+    ///   [`SERVE_ON_ANYCAST_IP_LIST_ONLY`] is routed to the tenant "only when [requests]
+    ///   arrive on the Anycast static IPs of the distribution tenant's connection group",
+    ///   and CloudFront "treats requests that arrive on other IP addresses as requests for
+    ///   an unknown domain" — so while that group names no Anycast static IP list there are
+    ///   no addresses a request for the domain can arrive on and nothing reaches the tenant
+    ///   at it. A domain served on [`SERVE_ON_ANY`] is reached "regardless of the IP address
+    ///   that they arrive on" and asks nothing of the group.
     ///
-    /// Neither follows from writing the association down, so a domain a create or an update
-    /// has just associated is [`DOMAIN_STATUS_INACTIVE`]: the association is a claim on the
-    /// name, and the name becomes active once it is validated and served. The DNS half is
-    /// read from this service's own DNS view, which holds records only for the names
-    /// CloudFront MINTS ([`Self::resolved_cloudfront_endpoint`]) — a name in a customer's
-    /// zone is published by DNS this emulator neither runs nor reaches, so a tenant's domain
-    /// stays inactive until it is pointed at a CloudFront endpoint this service answers for.
+    /// Neither of the first two follows from writing the association down, so a domain a
+    /// create or an update has just associated is [`DOMAIN_STATUS_INACTIVE`]: the association
+    /// is a claim on the name, and the name becomes active once it is validated and served.
+    /// The DNS half is read from this service's own DNS view, which holds records only for
+    /// the names CloudFront MINTS ([`Self::resolved_cloudfront_endpoint`]) — a name in a
+    /// customer's zone is published by DNS this emulator neither runs nor reaches, so a
+    /// tenant's domain stays inactive until it is pointed at a CloudFront endpoint this
+    /// service answers for.
     pub fn domain_is_active(&self, tenant: &StoredDistributionTenant, domain: &str) -> bool {
-        let routing_endpoint = self
-            .connection_group(&tenant.connection_group_id)
-            .map(|group| group.routing_endpoint.as_str());
+        let group = self.connection_group(&tenant.connection_group_id);
+        let routing_endpoint = group.map(|group| group.routing_endpoint.as_str());
+        let arrival_addresses_exist = tenant
+            .domain(domain)
+            .is_none_or(|held| !held.anycast_ips_only())
+            || group.is_some_and(|group| group.anycast_ip_list_id.is_some());
         tenant.serves_domain(domain)
+            && arrival_addresses_exist
             && self.domain_points_at_routing_endpoint(domain, routing_endpoint)
     }
 
@@ -449,13 +531,7 @@ impl ComAmazonawsCloudfrontCloudfront20200531State {
             });
         };
         for distribution in self.distributions.values() {
-            let aliases = distribution
-                .config
-                .aliases
-                .as_ref()
-                .and_then(|aliases| aliases.items.as_deref())
-                .unwrap_or_default();
-            for alias in aliases {
+            for alias in distribution.aliases() {
                 if domains_conflict(alias, requested) {
                     push(
                         alias,
@@ -466,9 +542,9 @@ impl ComAmazonawsCloudfrontCloudfront20200531State {
             }
         }
         for tenant in self.distribution_tenants.values() {
-            for domain in &tenant.domains {
-                if domains_conflict(domain, requested) {
-                    push(domain, DISTRIBUTION_RESOURCE_TYPE_TENANT, &tenant.id);
+            for held in &tenant.domains {
+                if domains_conflict(&held.domain, requested) {
+                    push(&held.domain, DISTRIBUTION_RESOURCE_TYPE_TENANT, &tenant.id);
                 }
             }
         }
@@ -2009,6 +2085,18 @@ impl ComAmazonawsCloudfrontCloudfront20200531State {
         }
     }
 
+    /// The account's default connection group, or `None` while it has none.
+    ///
+    /// At most one group carries [`StoredConnectionGroup::is_default`] — the ONE this service
+    /// creates by itself ([`Self::default_connection_group`]) — so at most one answers. A
+    /// READ, so nothing is created by asking: the create is owed to the call that NEEDS a
+    /// group, not to the one that looks for it.
+    pub fn existing_default_connection_group(&self) -> Option<&StoredConnectionGroup> {
+        self.connection_groups
+            .values()
+            .find(|group| group.is_default)
+    }
+
     /// The id of the account's default connection group, creating the group on the first
     /// call that needs one — which is what "CloudFront will automatically create a default
     /// connection group for you" means. Every later call reads that one id back, and the
@@ -2030,7 +2118,7 @@ impl ComAmazonawsCloudfrontCloudfront20200531State {
         now: SystemTime,
         endpoint: Option<EdgeEndpoint>,
     ) -> String {
-        if let Some(group) = self.connection_groups.values().find(|group| group.is_default) {
+        if let Some(group) = self.existing_default_connection_group() {
             return group.id.clone();
         }
         let id = self.allocate_connection_group_id();
@@ -2055,6 +2143,9 @@ impl ComAmazonawsCloudfrontCloudfront20200531State {
             ipv6_enabled: DEFAULT_CONNECTION_GROUP_IPV6_ENABLED,
             enabled: DEFAULT_CONNECTION_GROUP_ENABLED,
             is_default: true,
+            // Nothing asked for a viewer fallback either, so the automatic group names no
+            // distribution to answer a viewer that arrives without SNI.
+            viewer_fallback_distribution_id: None,
             status: STATUS_IN_PROGRESS.to_string(),
             deployed_due: now + PROPAGATION_DELAY,
             created_time: now,
@@ -2477,12 +2568,15 @@ impl ComAmazonawsCloudfrontCloudfront20200531State {
         } = update;
         // The certificate covers the domains the tenant holds AFTER this update, so it is
         // minted from the effective list rather than from the one the record carried.
-        let certificate_domains = domains.clone().unwrap_or_else(|| {
-            self.distribution_tenants
-                .get(id)
-                .map(|tenant| tenant.domains.clone())
-                .unwrap_or_default()
-        });
+        let certificate_domains = domains
+            .as_deref()
+            .map(tenant_domain_names)
+            .unwrap_or_else(|| {
+                self.distribution_tenants
+                    .get(id)
+                    .map(StoredDistributionTenant::domain_names)
+                    .unwrap_or_default()
+            });
         let etag = self.next_etag();
         let managed_certificate = managed_certificate_request
             .map(|request| self.request_managed_certificate(request, &certificate_domains, now));
@@ -2760,6 +2854,7 @@ impl ComAmazonawsCloudfrontCloudfront20200531State {
         anycast_ip_list_id: Option<String>,
         enabled: Option<bool>,
         ipv6_enabled: Option<bool>,
+        viewer_fallback: Option<ViewerFallback>,
         now: SystemTime,
     ) -> Option<&StoredConnectionGroup> {
         if !self.connection_groups.contains_key(id) {
@@ -2775,6 +2870,13 @@ impl ComAmazonawsCloudfrontCloudfront20200531State {
         }
         if let Some(ipv6_enabled) = ipv6_enabled {
             stored.ipv6_enabled = ipv6_enabled;
+        }
+        // A stated `ViewerFallback` REPLACES what the group held, down to one that names no
+        // distribution, which describes no fallback and so leaves the group with none
+        // ([`viewer_fallback_distribution_id`]).
+        if let Some(fallback) = viewer_fallback {
+            stored.viewer_fallback_distribution_id =
+                viewer_fallback_distribution_id(Some(&fallback)).map(str::to_string);
         }
         stored.status = STATUS_IN_PROGRESS.to_string();
         stored.deployed_due = now + PROPAGATION_DELAY;

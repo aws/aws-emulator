@@ -83,6 +83,9 @@
 //!   the GetDistributionTenant API operation.
 //! * `ManagedCertificateRequest` (ManagedCertificateRequest) — An object that contains the
 //!   CloudFront managed ACM certificate request.
+//! * `OnDomainTakeover` (OnDomainTakeover, one of: allow | reject) — Specifies whether
+//!   CloudFront moves a domain in this request to this distribution tenant when the domain is
+//!   already associated with another standard distribution or distribution tenant. …
 //! * `Parameters` (Parameters) — A list of parameter values to add to the resource. A
 //!   parameter is specified as a key-value pair. A valid parameter value must exist for any
 //!   parameter that is marked as required in the multi-tenant distribution.
@@ -223,11 +226,17 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             )
             .into());
         }
-        let stated_domains: Option<Vec<String>> = input
-            .domains
-            .as_ref()
-            .map(|domains| domains.iter().map(|item| item.domain.clone()).collect());
-        if let Some(reason) = stated_domains
+        let stated_domains: Option<Vec<crate::state::TenantDomain>> =
+            input.domains.as_ref().map(|domains| {
+                domains
+                    .iter()
+                    .map(crate::state::TenantDomain::from_item)
+                    .collect()
+            });
+        let stated_domain_names: Option<Vec<String>> = stated_domains
+            .as_deref()
+            .map(crate::state::tenant_domain_names);
+        if let Some(reason) = stated_domain_names
             .as_deref()
             .and_then(crate::state::tenant_domains_refusal)
         {
@@ -288,7 +297,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .into());
         };
         let current_etag = tenant.etag.clone();
-        let held_domains = tenant.domains.clone();
+        let held_domains = tenant.domain_names();
+        let current_connection_group_id = tenant.connection_group_id.clone();
         let current_distribution_id = tenant.distribution_id.clone();
         let current_parameters = tenant.parameters.clone();
         // Whether the tenant ALREADY holds a certificate, which an update that states no
@@ -322,7 +332,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // request states one, the stored value where it does not. Every rule below is
         // evaluated against THAT state, because it is the state the tenant has to be
         // admissible in — not against the fragment the request happens to carry.
-        let effective_domains = stated_domains.clone().unwrap_or_else(|| held_domains.clone());
+        let effective_domains = stated_domain_names
+            .clone()
+            .unwrap_or_else(|| held_domains.clone());
         let effective_distribution_id = input
             .distribution_id
             .clone()
@@ -406,13 +418,36 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // domain whose only other claimant cannot be reached at it yet, because the
         // certificate that claim waits on has not been validated, routes nowhere and so
         // takes nothing.
+        //
+        // `OnDomainTakeover` decides what becomes of a domain another resource DOES serve,
+        // on the same rule the create of a tenant runs: with "`allow`" the domain is MOVED
+        // to this tenant when its DNS points at the connection group the tenant ends up
+        // routed through, and otherwise the request fails. The names to move are collected
+        // here and moved once the update has landed; nothing is written on a path that
+        // refuses.
+        let moves_domains = crate::state::takes_over_domains(input.on_domain_takeover.as_deref());
+        let effective_connection_group_id = input
+            .connection_group_id
+            .clone()
+            .unwrap_or(current_connection_group_id);
+        let mut moved_domains: Vec<String> = Vec::new();
         for domain in &effective_domains {
-            if store.domain_in_use(domain, Some(&input.id)) {
-                return Err(UpdateDistributionTenantErrorModeled::CNAMEAlreadyExists(
-                    crate::state::cname_already_exists(),
-                )
-                .into());
+            if !store.domain_in_use(domain, Some(&input.id)) {
+                continue;
             }
+            if moves_domains
+                && store.domain_points_at_connection_group(
+                    domain,
+                    Some(&effective_connection_group_id),
+                )
+            {
+                moved_domains.push(domain.clone());
+                continue;
+            }
+            return Err(UpdateDistributionTenantErrorModeled::CNAMEAlreadyExists(
+                crate::state::cname_already_exists(),
+            )
+            .into());
         }
 
         // A domain is BOUND to a tenant by the call that associates it, and CloudFront binds
@@ -491,6 +526,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             )
             .into());
         };
+        // A domain this update TAKES OVER is released from the resources that were serving
+        // it once the tenant holds it, so the name is never held by nothing; the move
+        // versions every record it changes, and leaves this tenant's own record — and so the
+        // document below — exactly as the update wrote it.
+        for domain in &moved_domains {
+            store.move_domain_to_tenant(domain, &input.id, now);
+        }
 
         Ok(UpdateDistributionTenantOutput {
             // "The distribution tenant that you're updating" — read from the record just

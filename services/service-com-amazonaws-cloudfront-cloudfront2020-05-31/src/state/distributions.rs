@@ -695,6 +695,42 @@ impl StoredDistribution {
         }
     }
 
+    /// The ALTERNATE DOMAIN NAMES this distribution declares, in the order its configuration
+    /// states them: `DistributionConfig$Aliases` is "a complex type that contains
+    /// information about CNAMEs (alternate domain names), if any, for this distribution", and
+    /// a configuration whose `Items` is absent declares none whatever `Quantity` says.
+    pub fn aliases(&self) -> &[String] {
+        self.config
+            .aliases
+            .as_ref()
+            .and_then(|aliases| aliases.items.as_deref())
+            .unwrap_or_default()
+    }
+
+    /// Whether this distribution declares `domain` as one of its alternate domain names,
+    /// compared as DNS names are ([`same_domain`]).
+    pub fn declares_alias(&self, domain: &str) -> bool {
+        self.aliases().iter().any(|alias| same_domain(alias, domain))
+    }
+
+    /// Drop `domain` from this distribution's alternate domain names, leaving the stated
+    /// `Quantity` the count of the names that remain — "the number of CNAME aliases, if any,
+    /// that you want to associate with this distribution", which is a property of the list
+    /// rather than of the request that last rewrote it.
+    ///
+    /// Only the names are touched: this is a release of ONE association, so the rest of the
+    /// configuration the distribution runs under is left exactly as it stands.
+    pub fn release_alias(&mut self, domain: &str) {
+        let Some(aliases) = self.config.aliases.as_mut() else {
+            return;
+        };
+        let Some(items) = aliases.items.as_mut() else {
+            return;
+        };
+        items.retain(|alias| !same_domain(alias, domain));
+        aliases.quantity = i32::try_from(items.len()).unwrap_or(i32::MAX);
+    }
+
     /// The `Distribution` projection `CreateDistribution`, `GetDistribution` and
     /// `UpdateDistribution` return.
     ///

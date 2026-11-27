@@ -72,6 +72,9 @@
 //!   retrieving the connection group that you're updating.
 //! * `Ipv6Enabled` (boolean) — Enable IPv6 for the connection group. For more information,
 //!   see Enable IPv6 in the Amazon CloudFront Developer Guide.
+//! * `ViewerFallback` (ViewerFallback) — The distribution whose certificate CloudFront uses
+//!   for viewer requests that arrive on the connection group's Anycast static IPs without
+//!   Server Name Indication (SNI).
 //!
 //! ## Output
 //!
@@ -230,6 +233,22 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             }
         }
 
+        // `ViewerFallback$DistributionId` is "the ID of the distribution whose certificate
+        // CloudFront uses to establish TLS connections for viewer requests that don't include
+        // SNI": the member names a DISTRIBUTION, so an id this service holds no distribution
+        // under is no entity — the same rule the create of a group applies to the member it
+        // takes.
+        if let Some(distribution_id) =
+            crate::state::viewer_fallback_distribution_id(input.viewer_fallback.as_ref())
+        {
+            if store.distribution(distribution_id).is_none() {
+                return Err(UpdateConnectionGroupErrorModeled::EntityNotFound(
+                    crate::state::distribution_not_found(),
+                )
+                .into());
+            }
+        }
+
         // The members this update submits are all optional and are applied by the one
         // mutator the store owns, so what an omitted member leaves alone is decided in one
         // place.
@@ -238,6 +257,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             input.anycast_ip_list_id,
             input.enabled,
             input.ipv6_enabled,
+            input.viewer_fallback,
             now,
         ) else {
             return Err(UpdateConnectionGroupErrorModeled::EntityNotFound(

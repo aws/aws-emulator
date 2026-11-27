@@ -85,6 +85,7 @@
 //! * `CNAMEAlreadyExists` (HTTP 409) — The CNAME specified is already defined for CloudFront.
 //! * `ContinuousDeploymentPolicyInUse` (HTTP 409) — You cannot delete a continuous deployment
 //!   policy that is associated with a primary distribution.
+//! * `EntityLimitExceeded` (HTTP 400) — The entity limit has been exceeded.
 //! * `EntityNotFound` (HTTP 404) — The entity was not found.
 //! * `IllegalFieldLevelEncryptionConfigAssociationWithCacheBehavior` (HTTP 400) — The
 //!   specified configuration for field-level encryption can't be associated with the
@@ -241,6 +242,7 @@ pub enum UpdateDistributionErrorModeled {
     AccessDenied(AccessDenied),
     CNAMEAlreadyExists(CNAMEAlreadyExists),
     ContinuousDeploymentPolicyInUse(ContinuousDeploymentPolicyInUse),
+    EntityLimitExceeded(EntityLimitExceeded),
     EntityNotFound(EntityNotFound),
     IllegalFieldLevelEncryptionConfigAssociationWithCacheBehavior(IllegalFieldLevelEncryptionConfigAssociationWithCacheBehavior),
     IllegalOriginAccessConfiguration(IllegalOriginAccessConfiguration),
