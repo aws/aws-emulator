@@ -8,6 +8,12 @@
 //! lives in `<operation>_types`. Every submodule is re-exported here, so
 //! `use super::types::*` resolves a type wherever it lives.
 //!
+//! `budget_action_to_add_types` is the one submodule the generator does not own: it
+//! declares `BudgetActionToAdd`, which two operations reach and which would therefore live
+//! in `shared_types`, because that shape carries a `skip_validation` this crate chose and
+//! the model cannot express. See that module for why, and `shared_types` for the pointer
+//! back.
+//!
 //! The `_types` suffix keeps these submodule names disjoint from the operation
 //! module names: `ops/mod.rs` declares `pub mod types;` beside one
 //! `pub mod <operation>;` per operation and glob-re-exports both, so a submodule
@@ -32,6 +38,7 @@ pub mod batch_get_task_types;
 pub mod batch_get_worker_types;
 pub mod batch_update_job_types;
 pub mod batch_update_task_types;
+pub mod budget_action_to_add_types;
 pub mod copy_job_template_types;
 pub mod create_budget_types;
 pub mod create_farm_types;
@@ -179,6 +186,8 @@ pub use batch_get_worker_types::*;
 pub use batch_update_job_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use batch_update_task_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use budget_action_to_add_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use copy_job_template_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
