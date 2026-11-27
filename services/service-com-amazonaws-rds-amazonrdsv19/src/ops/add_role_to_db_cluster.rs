@@ -257,25 +257,21 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // feature associates the role with the cluster itself, which no catalogue entry
         // gates.
         //
-        // The SENTENCE is the one a DB cluster words every unperformable role integration in
-        // ([`crate::state::ROLE_NOT_TRUSTED_MESSAGE`]): on this resource the role and the
-        // feature are the two halves of ONE integration — the role has to carry what the
-        // named feature needs — so a request whose feature the engine does not publish is
-        // refused in the same terms as one whose role the service cannot take on, and a
-        // client matching that sentence sees it for either defect. (A DB INSTANCE words the
-        // same refusal for itself, naming the feature and the engine:
-        // [`crate::state::unsupported_feature_name_message`].)
-        if let Some(feature_name) = &input.feature_name {
-            if !crate::state::feature_name_is_supported(
-                &engine,
-                engine_version.as_deref(),
-                feature_name,
-            ) {
-                return Err(AddRoleToDBClusterError::invalid_parameter_value(
-                    crate::state::ROLE_NOT_TRUSTED_MESSAGE,
-                ));
-            }
-        }
+        // The SENTENCE names the value and the ENGINE it was rejected for
+        // ([`crate::state::cluster_unsupported_feature_name_message`]): the engine is what
+        // decides whether the feature exists, so a caller is told which value is wrong and
+        // whose list to read. The ROLE's own defect — a role this service cannot take on — is
+        // the other half of the integration and carries that integration's own sentence
+        // above. The check is the one every call that records an association on a cluster
+        // makes ([`crate::state::check_cluster_role_feature_name`], which the create and
+        // restore paths run over the whole `AssociatedRoles` list they carry), so the feature
+        // names a cluster can act for do not depend on which call recorded the association.
+        crate::state::check_cluster_role_feature_name(
+            &engine,
+            engine_version.as_deref(),
+            input.feature_name.as_deref(),
+        )
+        .map_err(AddRoleToDBClusterError::invalid_parameter_value)?;
 
         let mut store = state.lock();
         // Resolved again under the new guard: the lock was released for the IAM lookup, so a

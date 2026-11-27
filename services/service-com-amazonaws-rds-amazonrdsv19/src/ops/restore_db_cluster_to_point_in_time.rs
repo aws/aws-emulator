@@ -738,6 +738,18 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             )
             .ok()
             .flatten();
+            // Every `AssociatedRoles` entry is held to the `SupportedFeatureNames` of the
+            // engine version the restored cluster will RUN — the source cluster's, which is
+            // what this restore keeps — exactly as `AddRoleToDBCluster` holds the one
+            // association it makes: the entry is the same association, so a feature name that
+            // engine does not publish is the same `InvalidParameterValue` whichever call
+            // records it.
+            crate::state::check_cluster_role_feature_names(
+                &source.engine,
+                resolved_version.map(|entry| entry.engine_version),
+                &associated_roles,
+            )
+            .map_err(RestoreDBClusterToPointInTimeError::invalid_parameter_value)?;
             if let Some(entry) = resolved_version {
                 if !entry
                     .profile

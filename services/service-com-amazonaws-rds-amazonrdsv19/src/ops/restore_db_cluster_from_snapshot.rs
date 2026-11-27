@@ -700,6 +700,17 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 version_hint.as_deref(),
             )
             .map_err(RestoreDBClusterFromSnapshotError::invalid_parameter_combination)?;
+            // Every `AssociatedRoles` entry is held to the `SupportedFeatureNames` of the
+            // engine version the restored cluster will RUN, exactly as `AddRoleToDBCluster`
+            // holds the one association it makes: the entry is the same association, so a
+            // feature name that engine does not publish is the same `InvalidParameterValue`
+            // whichever call records it.
+            crate::state::check_cluster_role_feature_names(
+                &input.engine,
+                resolved_version.map(|entry| entry.engine_version),
+                &associated_roles,
+            )
+            .map_err(RestoreDBClusterFromSnapshotError::invalid_parameter_value)?;
             // The mode the restored cluster runs: the request's, else the one the snapshot
             // recorded for the cluster it was taken from, else the default a create gets.
             let engine_mode = requested_engine_mode

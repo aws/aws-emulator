@@ -681,6 +681,18 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             input.engine_version.as_deref(),
         )
         .map_err(CreateDBClusterError::invalid_parameter_combination)?;
+        // Every `AssociatedRoles` entry is held to the `SupportedFeatureNames` of the engine
+        // version the cluster will RUN, exactly as `AddRoleToDBCluster` holds the one
+        // association it makes: the entry is the same association, so a feature name that
+        // engine does not publish is the same `InvalidParameterValue` whichever call records
+        // it — and a cluster acting for a feature its engine has none of is a cluster AWS
+        // would never have created.
+        crate::state::check_cluster_role_feature_names(
+            &input.engine,
+            resolved_version.map(|entry| entry.engine_version),
+            &associated_roles,
+        )
+        .map_err(CreateDBClusterError::invalid_parameter_value)?;
         // `EngineMode`: "either provisioned or serverless". The value's own DOMAIN is the
         // two the member publishes, checked here against the request alone; whether the
         // engine VERSION the cluster resolves to RUNS the mode asked for is a capability of

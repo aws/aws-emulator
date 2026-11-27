@@ -207,7 +207,9 @@ const CLUSTER_CASES: &[ClusterCase] = &[
                 "AssociatedRoles.DBClusterAssociatedRole.1.RoleArn",
                 "arn:aws:iam::000000000000:role/emu-s3-import",
             ),
-            ("AssociatedRoles.DBClusterAssociatedRole.1.FeatureName", "s3Import"),
+            // One of the `SupportedFeatureNames` this engine publishes: Aurora MySQL
+            // associates a role per machine-learning service and publishes no S3 feature.
+            ("AssociatedRoles.DBClusterAssociatedRole.1.FeatureName", "SageMaker"),
         ],
         expected: &[
             ("BacktrackWindow", "259200"),
@@ -217,7 +219,7 @@ const CLUSTER_CASES: &[ClusterCase] = &[
             ("Domain", "d-9067f6d4bc"),
             ("IAMRoleName", "rds-directoryservice-access"),
             ("RoleArn", "arn:aws:iam::000000000000:role/emu-s3-import"),
-            ("FeatureName", "s3Import"),
+            ("FeatureName", "SageMaker"),
             // An association is in place from the create onwards.
             ("Status", "ACTIVE"),
         ],

@@ -361,9 +361,9 @@ struct Identity {
 /// A minted name carries the documented DNS form
 /// `<identifier>.<role><label>.<region>.<suffix>` — `cluster-` for the writer and
 /// `cluster-ro-` for the reader — in which the 12-character server-assigned label is visible:
-/// the CLUSTER mints the name from its own identifier, and the suffix is the zone its data
-/// plane is reached in (see `state::cluster_endpoint_names`). The model gives a DB cluster one
-/// `Port` for the pair, so no endpoint member carries a port of its own.
+/// the CLUSTER mints the name from its own identifier, and the suffix is the endpoint domain of
+/// the control plane that owns its engine (see `state::cluster_endpoint_names`). The model gives
+/// a DB cluster one `Port` for the pair, so no endpoint member carries a port of its own.
 fn endpoint_name(case: &str, identifier: &str, role: &str, suffix: &str, endpoint: &str) -> String {
     let prefix = format!("{identifier}.{role}");
     let tail = format!(".{REGION}.{suffix}");

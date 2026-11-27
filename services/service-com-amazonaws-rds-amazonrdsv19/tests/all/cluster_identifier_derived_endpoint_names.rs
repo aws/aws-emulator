@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: CC0-1.0
 
-//! The two endpoint names a DB CLUSTER mints from its own `DBClusterIdentifier`.
+//! The ADDRESS a DB CLUSTER publishes for each of its two endpoint members.
 //!
 //! The rule under test: a DB cluster this emulator serves no data plane for publishes its
 //! write path and its read path as the two DNS host NAMES it mints from its own identifier —
@@ -23,7 +23,7 @@
 //!
 //! The rows span what the rule generalises over: the MEMBERSHIP the cluster has (no instance at
 //! all, one member, a writer beside a replica), the engines and wires (Aurora PostgreSQL,
-//! Aurora MySQL, the Multi-AZ DB cluster of a community engine, and an engine this emulator
+//! Aurora MySQL, the Multi-AZ DB cluster of a community engine, and two engines this emulator
 //! serves no data plane for), and the identifier SHAPES a request can name (the shortest, a
 //! long hyphenated one, and one written in another case, which is "stored as a lowercase
 //! string"). Every row is read through each operation that answers with a cluster envelope —
@@ -132,7 +132,7 @@ const ROWS: &[Row] = &[
         extra: &[],
     },
     // The contrast rows: an engine whose wire this emulator serves no data plane for keeps the
-    // published AWS form, so the minted names are read on these \u2014 over the identifier SHAPES a
+    // published AWS form, so the minted names are read on these — over the identifier SHAPES a
     // request can name.
     Row {
         case: "a cluster of an engine this emulator serves no data plane for",

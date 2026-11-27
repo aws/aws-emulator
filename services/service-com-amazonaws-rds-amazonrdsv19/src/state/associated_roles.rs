@@ -28,6 +28,7 @@
 //! list and a request that names one of its entries cannot disagree.
 
 use super::*;
+use crate::ops::DBClusterAssociatedRole;
 
 /// The service principal a role must trust for Amazon RDS to assume it on a DB instance's
 /// or DB cluster's behalf: the principal `rds.amazonaws.com`, which is what the trust
@@ -81,8 +82,9 @@ pub fn feature_name_is_supported(
 /// not publish is refused with: "The feature name &lt;FeatureName&gt; is not valid for the
 /// engine &lt;engine&gt;."
 ///
-/// A DB CLUSTER words the same refusal differently — see [`ROLE_NOT_TRUSTED_MESSAGE`], the one
-/// sentence that resource gives every unperformable role integration.
+/// A DB CLUSTER words the same refusal differently — see
+/// [`cluster_unsupported_feature_name_message`], which names the engine by its product name
+/// rather than by the description below.
 ///
 /// The sentence names the value that was rejected and the ENGINE it was rejected for, under
 /// the DESCRIPTION that engine is published with rather than its product name
@@ -95,6 +97,79 @@ pub fn unsupported_feature_name_message(engine: &str, feature_name: &str) -> Str
         "The feature name {feature_name} is not valid for the engine {}.",
         engine_published_description(engine)
     )
+}
+
+/// What a request associating a role with a DB CLUSTER for a `FeatureName` that cluster's
+/// engine version does not publish is refused with: "The feature name &lt;FeatureName&gt; is
+/// not valid for the &lt;engine&gt; engine."
+///
+/// The fixed text is "The feature name ", " is not valid for the " and " engine."; the
+/// variable parts are the value the request carried and the ENGINE it was rejected for, named
+/// by the product name that engine is published under ([`engine_display_name`]) — the name of
+/// it a sentence puts in front of the word "engine", and the one a client reading the published
+/// catalogue has already seen.
+///
+/// The ENGINE is what decides whether a feature name exists at all
+/// ([`feature_name_is_supported`]), so the refusal names it beside the value: a caller that
+/// read the sentence knows both which value was wrong and which engine's list to read instead.
+/// A DB INSTANCE words the same refusal its own way
+/// ([`unsupported_feature_name_message`]), and a role Amazon RDS cannot take on is a defect of
+/// the ROLE rather than of the feature and carries that integration's own sentence
+/// ([`ROLE_NOT_TRUSTED_MESSAGE`]).
+#[must_use]
+pub fn cluster_unsupported_feature_name_message(engine: &str, feature_name: &str) -> String {
+    format!(
+        "The feature name {feature_name} is not valid for the {} engine.",
+        engine_display_name(engine)
+    )
+}
+
+/// Hold ONE `FeatureName` a DB cluster's role association names to the `SupportedFeatureNames`
+/// of the engine version that cluster runs: `Ok` for a feature the engine publishes and for an
+/// association that names NONE — which associates the role with the cluster itself, the member
+/// being optional and no catalogue entry gating it — and otherwise the sentence the request is
+/// refused with ([`cluster_unsupported_feature_name_message`]), which is the Query API's
+/// `InvalidParameterValue`.
+///
+/// The one reading of that question for every call that records an association on a cluster:
+/// `AddRoleToDBCluster`, which makes one ([`crate::ops::add_role_to_db_cluster`]), and the
+/// `AssociatedRoles` list a create or restore carries, which is a list of them
+/// ([`check_cluster_role_feature_names`]).
+pub fn check_cluster_role_feature_name(
+    engine: &str,
+    engine_version: Option<&str>,
+    feature_name: Option<&str>,
+) -> Result<(), String> {
+    let Some(feature_name) = feature_name else {
+        return Ok(());
+    };
+    if feature_name_is_supported(engine, engine_version, feature_name) {
+        return Ok(());
+    }
+    Err(cluster_unsupported_feature_name_message(engine, feature_name))
+}
+
+/// Hold every `AssociatedRoles` entry a DB cluster is being created or restored WITH to the
+/// `SupportedFeatureNames` of the engine version that cluster will run, the way
+/// `AddRoleToDBCluster` holds the one association it makes
+/// ([`crate::ops::add_role_to_db_cluster`]).
+///
+/// An entry is a role association exactly as that call makes one — "a list of Amazon Web
+/// Services Identity and Access Management (IAM) roles to associate with the DB cluster", each
+/// carrying the `RoleArn` and the optional `FeatureName` that call takes — so the feature name
+/// it names has to be one the engine publishes whichever call records it: a create that took a
+/// value AWS refuses would leave a cluster acting for a feature of an engine that has no such
+/// feature. Each entry is judged by [`check_cluster_role_feature_name`], the one reading of
+/// that question, and `Err` carries the sentence the FIRST entry it refuses is refused with.
+pub fn check_cluster_role_feature_names(
+    engine: &str,
+    engine_version: Option<&str>,
+    roles: &[DBClusterAssociatedRole],
+) -> Result<(), String> {
+    for role in roles {
+        check_cluster_role_feature_name(engine, engine_version, role.feature_name.as_deref())?;
+    }
+    Ok(())
 }
 
 /// The engine's `DBEngineDescription`, as the published engine catalogue reports it
@@ -168,11 +243,13 @@ pub fn invalid_role_arn_message(role_arn: &str) -> String {
 /// a role the service cannot take on is associable for no feature at all, so a request whose
 /// role AND feature name are both unusable is refused for the role.
 ///
-/// On a DB CLUSTER it is the sentence EVERY defect of the role integration carries, the
-/// unpublished `FeatureName` included ([`crate::ops::add_role_to_db_cluster`]): the role and
-/// the feature are the two halves of one integration there — the role has to carry what the
-/// named feature needs — and Amazon RDS reports that integration as unperformable rather than
-/// saying which half it was.
+/// On a DB CLUSTER it is the sentence a role Amazon RDS cannot take on is refused with,
+/// whichever feature the request named: the role and the feature are the two halves of one
+/// integration there — the role has to carry what the named feature needs — and this half is
+/// reported as the integration being unperformable rather than as a defect of one value. A
+/// `FeatureName` the cluster's engine does not publish is the OTHER half and carries its own
+/// sentence, which names the value and the engine
+/// ([`cluster_unsupported_feature_name_message`]).
 ///
 /// ONE fixed sentence, with no variable part: this refusal names neither the role ARN the
 /// request carried, nor the principal the trust policy is missing, nor the feature that was

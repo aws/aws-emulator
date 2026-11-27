@@ -633,17 +633,18 @@ struct EngineNameRow {
     /// Whether the row's resource is a DB CLUSTER (the Aurora engines) or a DB instance.
     cluster: bool,
     feature: &'static str,
-    /// The engine's `DBEngineDescription`, which is the name a sentence about the engine
-    /// uses: the same description `DescribeDBEngineVersions` reports for it.
+    /// The name the refusal calls the engine by: the `DBEngineDescription`
+    /// `DescribeDBEngineVersions` reports for it on a DB INSTANCE, and the product name that
+    /// catalogue publishes beside it on a DB CLUSTER, whose sentence puts the engine in front
+    /// of the word "engine".
     display: &'static str,
 }
 
-/// The engine-name table: the refusal a DB INSTANCE gives names the ENGINE, under the
-/// description that engine publishes, so the rows span engines whose descriptions differ in
-/// form — an Aurora engine named for its product, one whose description parenthesises the
-/// dialect, and the community editions of the two provisioned engines — with a feature name
-/// published for ANOTHER engine beside one published in another case. The two CLUSTER rows
-/// span the same defect on the resource that words it as a role integration instead.
+/// The engine-name table: every refusal names the ENGINE, so the rows span engines whose
+/// published names differ in form — an Aurora engine named for its product, one whose
+/// description parenthesises the dialect while its product name does not, and the community
+/// editions of the two provisioned engines — with a feature name published for ANOTHER engine
+/// beside one published in another case.
 const ENGINE_NAME_ROWS: &[EngineNameRow] = &[
     EngineNameRow {
         case: "Aurora MySQL does not publish the S3 import feature",
@@ -657,7 +658,7 @@ const ENGINE_NAME_ROWS: &[EngineNameRow] = &[
         engine: "aurora-postgresql",
         cluster: true,
         feature: "S3_INTEGRATION",
-        display: "Aurora (PostgreSQL)",
+        display: "Aurora PostgreSQL",
     },
     EngineNameRow {
         case: "RDS for MySQL publishes no role feature at all",
@@ -676,10 +677,11 @@ const ENGINE_NAME_ROWS: &[EngineNameRow] = &[
 ];
 
 /// Rule: a `FeatureName` the addressed resource's engine does not publish is refused with
-/// `InvalidParameterValue` and the sentence AWS words it in for that RESOURCE — a DB instance
-/// names the value the request carried and its engine, under the description that engine
-/// publishes, while a DB CLUSTER words every defect of the role integration it was asked for
-/// in the integration's own fixed sentence ([`st::ROLE_NOT_TRUSTED_MESSAGE`]).
+/// `InvalidParameterValue` and a sentence naming the value the request carried and that
+/// ENGINE, in the words AWS gives that RESOURCE: a DB instance names the engine by the
+/// description it is published with ([`st::unsupported_feature_name_message`]) and a DB
+/// cluster by its product name
+/// ([`st::cluster_unsupported_feature_name_message`]).
 #[tokio::test]
 async fn an_unpublished_feature_name_is_refused_naming_the_engine() {
     let (router, _engine) = emulator();
@@ -710,7 +712,10 @@ async fn an_unpublished_feature_name_is_refused_naming_the_engine() {
         );
         let message = text(&body, "Message");
         let expected = match row.cluster {
-            true => st::ROLE_NOT_TRUSTED_MESSAGE.to_string(),
+            true => format!(
+                "The feature name {} is not valid for the {} engine.",
+                row.feature, row.display
+            ),
             false => format!(
                 "The feature name {} is not valid for the engine {}.",
                 row.feature, row.display

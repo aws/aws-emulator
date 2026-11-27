@@ -10,10 +10,10 @@
 //! version publishes.** So a request carrying BOTH defects is refused for the role, and
 //! neither refusal records an association.
 //!
-//! WHICH sentence the unpublished `FeatureName` itself carries is the resource's own: a DB
-//! CLUSTER words every defect of the integration in that same fixed sentence, because the role
-//! and the feature are the two halves of one integration there, while a DB INSTANCE names the
-//! feature and its engine.
+//! WHICH sentence the unpublished `FeatureName` itself carries is the resource's own: each
+//! names the value the request carried and the ENGINE it was rejected for — the engine is what
+//! decides whether the feature exists — a DB instance under the DESCRIPTION that engine is
+//! published with and a DB cluster under its product name.
 //!
 //! IAM is mounted beside this service on ONE engine, exactly as the assembled router mounts
 //! them, so the role each row names is a role that service really holds (or really does not)
@@ -112,9 +112,10 @@ struct Kind {
     /// A `FeatureName` it does not: `S3_INTEGRATION` is the Oracle and Microsoft SQL Server
     /// name, which no PostgreSQL version publishes.
     unpublished_feature: &'static str,
-    /// Whether this resource words the unpublished-feature refusal in the role integration's
-    /// own fixed sentence, which is what a DB cluster does.
-    feature_refused_as_role_integration: bool,
+    /// Which sentence this resource words the unpublished-feature refusal in: a DB cluster
+    /// names the engine by its PRODUCT name and a DB instance by the description that engine
+    /// is published with.
+    feature_refusal: fn(&str, &str) -> String,
 }
 
 const KINDS: &[Kind] = &[
@@ -126,7 +127,7 @@ const KINDS: &[Kind] = &[
         describe: "DescribeDBInstances",
         published_feature: "s3Import",
         unpublished_feature: "S3_INTEGRATION",
-        feature_refused_as_role_integration: false,
+        feature_refusal: st::unsupported_feature_name_message,
     },
     Kind {
         kind: "DB cluster",
@@ -136,7 +137,7 @@ const KINDS: &[Kind] = &[
         describe: "DescribeDBClusters",
         published_feature: "s3Export",
         unpublished_feature: "S3_INTEGRATION",
-        feature_refused_as_role_integration: true,
+        feature_refusal: st::cluster_unsupported_feature_name_message,
     },
 ];
 
@@ -194,13 +195,9 @@ async fn a_role_the_service_cannot_assume_is_refused_before_the_feature_name() {
                 | Defect::NoSuchRoleAndUnpublishedFeature => {
                     Some(st::ROLE_NOT_TRUSTED_MESSAGE.to_string())
                 }
-                Defect::UnpublishedFeature => match kind.feature_refused_as_role_integration {
-                    true => Some(st::ROLE_NOT_TRUSTED_MESSAGE.to_string()),
-                    false => Some(st::unsupported_feature_name_message(
-                        kind.engine,
-                        feature_name,
-                    )),
-                },
+                Defect::UnpublishedFeature => {
+                    Some((kind.feature_refusal)(kind.engine, feature_name))
+                }
                 Defect::None => None,
             };
             match expected_sentence {
