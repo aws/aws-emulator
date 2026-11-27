@@ -2129,8 +2129,10 @@ impl ComAmazonawsRdsAmazonrdsv19State {
             endpoint: instance.endpoint_address(),
             // The address and port a client reaches the instance on, which is what a
             // proxy target reports: for an instance whose engine this emulator serves,
-            // that is its engine listener's (`data_plane`).
-            port: instance.published_port(),
+            // that is its engine listener's (`data_plane`), and for a member of a DB
+            // cluster that manages its port, that cluster's
+            // ([`DbInstanceRecord::endpoint_published_port`]).
+            port: instance.endpoint_published_port(self.db_cluster_of(instance).as_ref()),
         })
     }
 
@@ -2173,7 +2175,7 @@ impl ComAmazonawsRdsAmazonrdsv19State {
                         Some(RegisteredDatabase {
                             arn: member.arn(),
                             endpoint: member.endpoint_address(),
-                            port: member.published_port(),
+                            port: member.endpoint_published_port(Some(cluster)),
                         }),
                         // `cluster_members` reports the writer first, which is the member
                         // `DBClusterMembers` reports `IsClusterWriter` for.

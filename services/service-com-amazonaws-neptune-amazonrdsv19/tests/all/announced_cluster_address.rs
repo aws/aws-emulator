@@ -307,6 +307,134 @@ async fn an_emulator_served_on_no_port_announces_the_aws_shaped_host_and_the_eng
     }
 }
 
+/// RULE: the port is a CLUSTER-level property every member of the cluster takes on.
+///
+/// `CreateDBInstanceMessage$Port` is "Not applicable. The port is managed by the DB cluster"
+/// and `CreateDBClusterMessage$Port` is "the port number on which the instances in the DB
+/// cluster accept connections", so an instance's `Endpoint$Port` is the port its cluster is
+/// on whatever its own create asked for — on an emulator served on no port, where that is
+/// the port the create configured rather than the one this process answers on.
+///
+/// The rows span the cluster's port (the engine default the create names none for, a port the
+/// create chose, and each bound of the range the model publishes for an endpoint port) and
+/// the member's own `Port` member (absent, a different port, the cluster's own).
+#[tokio::test]
+async fn a_cluster_member_announces_the_port_of_the_cluster_that_manages_it() {
+    // The bounds are the ones `ModifyDBClusterMessage$Port` publishes for a port at all:
+    // "Constraints: Value must be 1150-65535".
+    let cases: [(&str, Option<&str>, Option<&str>, &str); 6] = [
+        ("neither create names a port, so the engine default", None, None, "8182"),
+        ("a port the cluster's create chose", Some("8183"), None, "8183"),
+        (
+            "the member names a port of its own, which does not apply",
+            Some("8191"),
+            Some("7777"),
+            "8191",
+        ),
+        (
+            "the member names the same port its cluster is on",
+            Some("9999"),
+            Some("9999"),
+            "9999",
+        ),
+        ("the lowest port the published range admits", Some("1150"), None, "1150"),
+        ("the highest port the published range admits", Some("65535"), None, "65535"),
+    ];
+
+    for (index, (name, cluster_port, member_port, expected)) in cases.into_iter().enumerate() {
+        let neptune = Neptune::new();
+        // Addressed at one of AWS's own hosts, on a router served on no port: the cluster
+        // announces the port its create configured, and its member must announce that one.
+        let host = Some("rds.us-east-1.amazonaws.com");
+        let identifier = format!("member-port-graph-{index}");
+        let mut params: Vec<(&str, &str)> = vec![
+            ("DBClusterIdentifier", identifier.as_str()),
+            ("Engine", "neptune"),
+        ];
+        if let Some(port) = cluster_port {
+            params.push(("Port", port));
+        }
+        let created = call(&neptune, host, "CreateDBCluster", &params).await;
+        assert_eq!(
+            created.status, 200,
+            "case {name:?}: CreateDBCluster must succeed, got {} with body {}",
+            created.status, created.body
+        );
+        let announced = created.field(&["CreateDBClusterResult", "DBCluster", "Port"]);
+        assert_eq!(
+            announced, expected,
+            "case {name:?}: expected the cluster's Port {expected:?}, got {announced:?}"
+        );
+
+        let instance = format!("{identifier}-1");
+        let mut params: Vec<(&str, &str)> = vec![
+            ("DBInstanceIdentifier", instance.as_str()),
+            ("DBInstanceClass", "db.t4g.medium"),
+            ("Engine", "neptune"),
+            ("DBClusterIdentifier", identifier.as_str()),
+        ];
+        if let Some(port) = member_port {
+            params.push(("Port", port));
+        }
+        let created_instance = call(&neptune, host, "CreateDBInstance", &params).await;
+        assert_eq!(
+            created_instance.status, 200,
+            "case {name:?}: CreateDBInstance must succeed, got {} with body {}",
+            created_instance.status, created_instance.body
+        );
+        let read = created_instance.field(&[
+            "CreateDBInstanceResult",
+            "DBInstance",
+            "Endpoint",
+            "Port",
+        ]);
+        assert_eq!(
+            read, expected,
+            "case {name:?}: expected the member's Endpoint.Port {expected:?} — the port its \
+             cluster accepts connections on — got {read:?}"
+        );
+
+        // ROUND TRIP: the port is resolved from the stored cluster, so a later describe
+        // reports the same value for the member and for the cluster alike.
+        let described_instance = call(
+            &neptune,
+            host,
+            "DescribeDBInstances",
+            &[("DBInstanceIdentifier", instance.as_str())],
+        )
+        .await;
+        let read = described_instance.field(&[
+            "DescribeDBInstancesResult",
+            "DBInstances",
+            "DBInstance",
+            "Endpoint",
+            "Port",
+        ]);
+        assert_eq!(
+            read, expected,
+            "case {name:?}: DescribeDBInstances must report Endpoint.Port {expected:?}, got \
+             {read:?}"
+        );
+        let described = call(
+            &neptune,
+            host,
+            "DescribeDBClusters",
+            &[("DBClusterIdentifier", identifier.as_str())],
+        )
+        .await;
+        let read = described.field(&[
+            "DescribeDBClustersResult",
+            "DBClusters",
+            "DBCluster",
+            "Port",
+        ]);
+        assert_eq!(
+            read, expected,
+            "case {name:?}: DescribeDBClusters must report Port {expected:?}, got {read:?}"
+        );
+    }
+}
+
 /// Drive one awsQuery call, with or without a `Host` header.
 async fn call(
     neptune: &Neptune,

@@ -760,6 +760,25 @@ pub fn cluster_view(record: &DbClusterRecord, status: &str) -> DBCluster {
     }
 }
 
+/// The port a DB INSTANCE's endpoint accepts connections on: the port of the DB CLUSTER it
+/// belongs to.
+///
+/// The port is a CLUSTER-level property that every member takes on:
+/// `CreateDBInstanceMessage$Port` is "Not applicable. The port is managed by the DB
+/// cluster", and `CreateDBClusterMessage$Port` is "the port number on which the instances in
+/// the DB cluster accept connections". So a member is reached on the port its cluster is
+/// reached on, whatever its own create asked for, and a change to the cluster's port moves
+/// its members with it — the two records cannot contradict each other about one port.
+///
+/// The port stored on the member's own record is what a member whose cluster this store no
+/// longer holds keeps reporting, rather than a port invented for it.
+pub fn instance_endpoint_port(
+    record: &DbInstanceRecord,
+    cluster: Option<&DbClusterRecord>,
+) -> i32 {
+    cluster.map_or(record.endpoint_port, |cluster| cluster.port)
+}
+
 /// Render a persisted instance as the modelled `DBInstance`, overriding only the reported
 /// `DBInstanceStatus`.
 ///
@@ -782,7 +801,7 @@ pub fn instance_view(
         db_name: None,
         endpoint: Some(Endpoint {
             address: Some(record.endpoint_address.clone()),
-            port: Some(record.endpoint_port),
+            port: Some(instance_endpoint_port(record, cluster)),
             hosted_zone_id: Some(record.hosted_zone_id.clone()),
         }),
         allocated_storage: Some(cluster.map_or(CLUSTER_ALLOCATED_STORAGE, |c| c.allocated_storage)),
@@ -819,7 +838,15 @@ pub fn instance_view(
         status_infos: Some(Vec::new()),
         storage_type: cluster.and_then(|c| c.storage_type.clone()),
         tde_credential_arn: None,
-        db_instance_port: Some(record.endpoint_port),
+        // `DbInstancePort`: "the port that the DB instance listens on. If the DB instance is
+        // part of a DB cluster, this can be a different port than the DB cluster port." A
+        // Neptune DB instance is always a member of a cluster — its create requires a
+        // `DBClusterIdentifier` — and that cluster MANAGES the port
+        // ([`instance_endpoint_port`]), so such a member listens on no port of its own and
+        // the API reports zero for it; the port a client dials is its cluster's, which
+        // `Endpoint.Port` reports. The same reading the shared `rds` front door takes of this
+        // member for a cluster whose settings its cluster manages.
+        db_instance_port: Some(0),
         db_cluster_identifier: Some(record.cluster_identifier.clone()),
         storage_encrypted: Some(cluster.is_some_and(|c| c.storage_encrypted)),
         kms_key_id: cluster.and_then(|c| c.kms_key_id.clone()),

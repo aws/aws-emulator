@@ -899,6 +899,7 @@ impl DbInstanceRecord {
     /// listener the two are the same value.
     ///
     /// An instance of an engine whose data plane this emulator serves as an API
+    /// An instance of an engine whose data plane this emulator serves as an API
     /// ([`engine_data_plane_is_an_api`]) has no listener of its own: that plane is reached at
     /// this process's address, which the instance publishes through `Endpoint$Address`
     /// ([`Self::endpoint_address`]), while its port stays the instance's own — the same
