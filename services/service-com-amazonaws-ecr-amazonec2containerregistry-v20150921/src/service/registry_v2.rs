@@ -6,9 +6,9 @@
 //! # The rule this module implements
 //!
 //! Amazon ECR serves the Docker Registry HTTP API V2 on the registry endpoint it publishes
-//! for a registry — AWS's own `<account>.dkr.ecr.<region>.amazonaws.com`, which is what a
-//! repository's `repositoryUri` names, and here also the endpoint a caller reached this
-//! emulator on, which is what `GetAuthorizationToken` reports as its `proxyEndpoint`: a
+//! for a registry — AWS's own `<account>.dkr.ecr.<region>.amazonaws.com` there, and here the
+//! endpoint a caller reached this emulator on, which is what a repository's `repositoryUri`
+//! is published at and what `GetAuthorizationToken` reports as its `proxyEndpoint`: a
 //! request to `/v2/<name>/manifests/<reference>`
 //! carrying the `docker login` credential answers the manifest that repository holds for
 //! the reference, and one to `/v2/<name>/blobs/<digest>` answers the blob's own bytes. That

@@ -3,21 +3,19 @@
 //! The address Amazon ECR publishes for a repository is one a consumer can DIAL — wherever a
 //! client picks that address up, including off an artifact another service derived from it.
 //!
-//! The rule under test: **the URI Amazon ECR reports for a repository is the ADDRESS of the
-//! registry that HOLDS it — the owning account's id, the fixed `dkr` and `ecr` labels and that
-//! registry's Region, over the zone this emulator announces its own names in — followed by the
+//! The rule under test: **the URI Amazon ECR reports for a repository is the ADDRESS this
+//! emulator answers that caller's registry requests at — host and port whole — followed by the
 //! repository's own name as the path; and every value another service derives from the URI
 //! carries the same authority.** `Repository$repositoryUri` is "The URI for the repository.
 //! You can use this URI for container image `push` and `pull` operations", so a container
-//! client splits it on the first `/`, DIALS what is ahead of that `/` and reads the registry
-//! out of those same labels. The zone AWS serves its registries in
+//! client splits it on the first `/` and DIALS what is ahead of that `/`: the authority has to
+//! be an address a connection opened to it reaches. The host AWS serves its registries at
 //! (`<account>.dkr.ecr.<region>.amazonaws.com`) resolves at genuine AWS infrastructure, so a
 //! client handed one leaves the emulated environment carrying the credential its `docker
-//! login` was issued; the zone this emulator announces in is the one it is reached in, which
-//! leads back to this process, where the registry's `/v2` plane answers a request whatever
-//! host it arrived on. The same identity is reported BESIDE the address, by `registryId` and
-//! the ARN, read off the stored record. That is the rule the owning crate states and its own
-//! suites pin
+//! login` was issued; the address this emulator is reached at leads back to this process,
+//! where the registry's `/v2` plane answers a request whatever host it arrived on. WHICH
+//! registry holds the repository is reported BESIDE the address, by `registryId` and the ARN,
+//! read off the stored record. That is the rule the owning crate states and its own suites pin
 //! (`services/service-com-amazonaws-ecr-amazonec2containerregistry-v20150921`:
 //! `src/state/registry_address.rs`, `tests/all/repository_uri_registry_layout.rs`,
 //! `tests/all/published_registry_address.rs`), and this suite reads it where three crates
@@ -32,10 +30,10 @@
 //! Amazon ECS registered.
 //!
 //! The rows differ along what the rule generalises over: the Region (and so the partition)
-//! the stack deploys in, which the published address names the holding registry by, the
+//! the stack deploys in, which the reported ARN names the holding registry by, the
 //! address this emulator is SERVED at — an IPv4 socket, an IPv6 socket, a host an operator
-//! serves it at, and one carrying no port — whose zone the published address is written over,
-//! whether the template NAMES the repository or leaves the name to
+//! serves it at, and one carrying no port — which is the address published, whether the
+//! template NAMES the repository or leaves the name to
 //! CloudFormation, whether that name carries a namespace path, and how the declaration
 //! derives the container image from the attribute (`Fn::Sub` over it, `Fn::Join` over it, and
 //! the bare `Fn::GetAtt`, which carries no tag at all).
@@ -283,32 +281,17 @@ struct Row {
     family: &'static str,
     /// How the declaration derives the container image from the repository's address.
     derived: Derived,
-    /// The zone every registry name this deployment publishes is written over: the zone of
-    /// `served_base` — the one RFC 6761 reserves for the loopback interface where that address
-    /// is an IP literal, and the host itself where an operator serves this process under a
-    /// name. Spelled out per row rather than derived, so an address built on anything else
-    /// fails these rows.
-    announced_zone: &'static str,
 }
 
-/// The authority Amazon ECR publishes a repository of this deployment at: this account's
-/// registry in the stack's Region, named as every Amazon ECR registry host is, over the zone
-/// this deployment announces its own names in — the address a client dials AND reads the
-/// holding registry out of.
+/// The authority Amazon ECR publishes a repository of this deployment at: the address this
+/// deployment is served at, host and port whole — the address a client dials.
 fn published_authority(row: &Row) -> String {
-    format!(
-        "{ACCOUNT}.dkr.ecr.{}.{}",
-        row.region, row.announced_zone
-    )
+    row.served_base
+        .split_once("://")
+        .map_or(row.served_base, |(_scheme, authority)| authority)
+        .trim_end_matches('/')
+        .to_string()
 }
-
-/// The label run every Amazon ECR registry HOST carries between the owning account's id and
-/// the registry's Region, as `AuthorizationData$proxyEndpoint` spells the registry URL format
-/// (`https://aws_account_id.dkr.ecr.region.amazonaws.com`). Every address this emulator
-/// publishes for a repository carries it; what differs from AWS's own spelling is the ZONE
-/// behind it, which is one this process answers in. Spelled out here rather than imported, so
-/// a published address that lost that spelling fails these rows.
-const REGISTRY_LABEL_RUN: &str = ".dkr.ecr.";
 
 const ROWS: &[Row] = &[
     Row {
@@ -319,7 +302,6 @@ const ROWS: &[Row] = &[
         repository_name: Some("registry-authority-worker"),
         family: "registry-authority-worker",
         derived: Derived::Sub("latest"),
-        announced_zone: "localhost",
     },
     Row {
         case: "a namespaced repository and an Fn::Join image, in another partition's Region, \
@@ -330,7 +312,6 @@ const ROWS: &[Row] = &[
         repository_name: Some("team/registry-authority-worker"),
         family: "registry-authority-namespaced",
         derived: Derived::Join("2026-01"),
-        announced_zone: "localhost",
     },
     Row {
         case: "a repository CloudFormation names and an Fn::Sub image, served at a host an \
@@ -341,7 +322,6 @@ const ROWS: &[Row] = &[
         repository_name: None,
         family: "registry-authority-generated",
         derived: Derived::Sub("1.0"),
-        announced_zone: "registry.emulator.test",
     },
     Row {
         case: "a named repository and the bare attribute as the image, served at a host \
@@ -352,7 +332,6 @@ const ROWS: &[Row] = &[
         repository_name: Some("registry-authority-untagged"),
         family: "registry-authority-untagged",
         derived: Derived::GetAtt,
-        announced_zone: "registry.emulator.test",
     },
 ];
 
@@ -400,25 +379,20 @@ fn authority_and_path<'uri>(case: &str, uri: &'uri str) -> (&'uri str, &'uri str
 }
 
 /// Assert that `uri` is the URI an Amazon ECR registry publishes for `repository`, as the rule
-/// this suite states reads it: this account's registry in the stack's Region, over the zone
-/// this deployment announces its names in, and the repository's own name as the path.
+/// this suite states reads it: the address this deployment is served at, and the repository's
+/// own name as the path.
 fn assert_registry_uri(case: &str, row: &Row, uri: &str, repository: &str) {
     let (authority, path) = authority_and_path(case, uri);
     assert_eq!(
         authority,
         published_authority(row).as_str(),
-        "case {case:?}: expected the host of the registry holding a repository of {:?}, for a \
-         deployment served at {:?}, as the authority of {uri:?}, got {authority:?}",
-        row.region,
+        "case {case:?}: expected the address this deployment, served at {:?}, answers registry \
+         requests at as the authority of {uri:?}, got {authority:?}",
         row.served_base
     );
     assert!(
-        authority.to_ascii_lowercase().contains(REGISTRY_LABEL_RUN),
-        "case {case:?}: expected the registry host spelling in {authority:?}"
-    );
-    assert!(
         !authority.to_ascii_lowercase().ends_with(".amazonaws.com"),
-        "case {case:?}: expected a zone this emulator answers in, got {authority:?}, which \
+        "case {case:?}: expected an address this emulator answers on, got {authority:?}, which \
          resolves at genuine AWS infrastructure"
     );
     assert_eq!(

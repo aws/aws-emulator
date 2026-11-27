@@ -131,11 +131,6 @@ struct Row {
     /// The `assignPublicIp` the registration's `networkConfiguration` names, or `None` where
     /// it names the structure with no member at all.
     assign_public_ip: Option<&'static str>,
-    /// The zone every registry name this row's deployment publishes is written over: the zone
-    /// of `served_base` — the one RFC 6761 reserves for the loopback interface where that
-    /// address is an IP literal or a loopback name, and the host itself where an operator
-    /// serves this process under a name. Spelled out per row rather than derived.
-    announced_zone: &'static str,
 }
 
 /// The endpoint an Amazon ECR call is addressed to.
@@ -167,7 +162,6 @@ const ROWS: &[Row] = &[
         repository: "batch-worker",
         addressed: Addressed::Bare,
         assign_public_ip: Some("ENABLED"),
-        announced_zone: "localhost",
     },
     Row {
         case: "a tagged image of a namespaced repository, served at a loopback name, created \
@@ -178,7 +172,6 @@ const ROWS: &[Row] = &[
         repository: "team/batch-worker",
         addressed: Addressed::Tag("2026-01"),
         assign_public_ip: Some("DISABLED"),
-        announced_zone: "localhost",
     },
     Row {
         case: "a digest-addressed image, served at a host an operator chose",
@@ -188,7 +181,6 @@ const ROWS: &[Row] = &[
         repository: "org/team/batch-worker",
         addressed: Addressed::Digest,
         assign_public_ip: None,
-        announced_zone: "registry.emulator.test",
     },
     Row {
         case: "an image of a repository whose name carries the punctuation the pattern \
@@ -199,7 +191,6 @@ const ROWS: &[Row] = &[
         repository: "a.b_c--d",
         addressed: Addressed::Tag("latest"),
         assign_public_ip: Some("ENABLED"),
-        announced_zone: "registry.emulator.test",
     },
 ];
 
@@ -351,34 +342,23 @@ fn authority_and_path<'value>(case: &str, value: &'value str) -> (&'value str, &
     })
 }
 
-/// Assert that `address` is published on the authority Amazon ECR assigns a repository of
-/// `region`'s registry when this emulator is served at `served_base` — this account's
-/// registry named as every Amazon ECR registry host is, over the zone of that served address,
-/// which is no zone AWS publishes its own endpoints in — and answer that authority.
+/// Assert that `address` is published on the authority Amazon ECR assigns a repository when
+/// this emulator is served at `served_base` — that served address, host and port whole, which
+/// is no name AWS publishes its own endpoints in — and answer that authority.
 ///
-/// A name a service hands a client is a name the client resolves and then dials, so it has to
-/// be written in a zone that leads back to this process; the composition itself is Amazon
-/// ECR's own rule and its own suites' subject (`src/state/registry_address.rs`,
-/// `tests/all/repository_uri_registry_layout.rs`). What is read here is the half a consumer of
-/// the address depends on, which is that dialling it arrives at this emulator — which every
-/// row then does. Taken off the row's own served address rather than imported, so an address
-/// built on anything else fails these rows.
-fn assert_dialable_authority(
-    case: &str,
-    served_base: &str,
-    announced_zone: &str,
-    region: &str,
-    address: &str,
-) -> String {
+/// An address a service hands a client is one the client DIALS, so it has to lead back to this
+/// process; the composition itself is Amazon ECR's own rule and its own suites' subject
+/// (`src/state/registry_address.rs`, `tests/all/repository_uri_registry_layout.rs`). What is
+/// read here is the half a consumer of the address depends on, which is that dialling it
+/// arrives at this emulator — which every row then does. Taken off the row's own served
+/// address rather than imported, so an address built on anything else fails these rows.
+fn assert_dialable_authority(case: &str, served_base: &str, address: &str) -> String {
     let (authority, _path) = authority_and_path(case, address);
-    let lowered = authority.to_ascii_lowercase();
-    let published = format!("{ACCOUNT}.dkr.ecr.{region}.{announced_zone}").to_ascii_lowercase();
     assert_eq!(
-        lowered, published,
-        "case {case:?}: expected {address:?} to be published at this account's registry in \
-         {region:?} over the zone of the address this emulator is reached at \
-         ({:?}), got {authority:?}",
-        served_authority(served_base)
+        authority,
+        served_authority(served_base),
+        "case {case:?}: expected {address:?} to be published at the address this emulator is \
+         reached at, got {authority:?}"
     );
     authority.to_string()
 }
@@ -591,13 +571,7 @@ async fn a_read_back_job_definition_names_the_registry_address_amazon_ecr_publis
             )
             .await;
         let uri = string_at(case, &created, "/repository/repositoryUri");
-        let published = assert_dialable_authority(
-            case,
-            row.served_base,
-            row.announced_zone,
-            row.region,
-            &uri,
-        );
+        let published = assert_dialable_authority(case, row.served_base, &uri);
         let (_authority, path) = authority_and_path(case, &uri);
         assert_eq!(
             path, row.repository,
@@ -622,13 +596,7 @@ async fn a_read_back_job_definition_names_the_registry_address_amazon_ecr_publis
             "case {case:?}: expected the read to report the image the registration supplied, \
              got {described}"
         );
-        let image_authority = assert_dialable_authority(
-            case,
-            row.served_base,
-            row.announced_zone,
-            row.region,
-            image,
-        );
+        let image_authority = assert_dialable_authority(case, row.served_base, image);
         assert_eq!(
             image_authority, published,
             "case {case:?}: expected the read to publish the authority Amazon ECR assigned \
@@ -713,11 +681,9 @@ async fn a_pull_at_the_image_a_job_definition_names_reaches_this_registry() {
         ("by digest", "digest/pulled-worker", Addressed::Digest),
     ];
     let served_base = "https://127.0.0.1:36063";
-    // The Region these calls are made in, and the zone a process served at an address literal
-    // announces its own names in — stated once, so the registration and the expectation
+    // The Region these calls are made in, stated once so the registration and the expectation
     // cannot drift apart.
     let region = "us-west-2";
-    let announced_zone = "localhost";
 
     for (case, repository, addressed) in rows {
         let emulator = Emulator::at(served_base, region, EcrHost::ServiceEndpoint);
@@ -743,8 +709,7 @@ async fn a_pull_at_the_image_a_job_definition_names_reaches_this_registry() {
 
         // Split exactly as a runtime does: the authority it dials, then the repository and
         // the reference inside it.
-        let authority =
-            assert_dialable_authority(case, served_base, announced_zone, region, &image);
+        let authority = assert_dialable_authority(case, served_base, &image);
         let (_authority, addressed_repository) = authority_and_path(case, &image);
         let (repository_path, pulled) = match addressed {
             Addressed::Digest => addressed_repository

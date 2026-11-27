@@ -1,26 +1,24 @@
 // SPDX-License-Identifier: CC0-1.0
 
-//! What an Amazon ECR-access walk can RESOLVE out of the URI reported for the repository
-//! behind a Fargate service's image: the registry that holds it, read off the URI's own
-//! authority.
+//! What an Amazon ECR-access walk can RESOLVE about the repository behind a Fargate service's
+//! image: the registry that holds it, read off the repository's own reported identity, and the
+//! address the walk would dial, read off the URI.
 //!
-//! RULE: the authority of `Repository$repositoryUri` ("The URI for the repository. You can use
-//! this URI for container image `push` and `pull` operations") is the holding registry's own
-//! DNS name — the owning account's 12-digit id as its first label, then the two fixed labels
-//! the registry URL format states (`AuthorizationData$proxyEndpoint`: "The Amazon ECR registry
-//! URL format is `https://aws_account_id.dkr.ecr.region.amazonaws.com`"), then the Region that
-//! registry serves, then the zone the registry is served in — followed by `/` and the
-//! repository's own name. So a reader that splits the value on the first `/` RECOVERS the
-//! account id and the Region from the authority alone, with nothing but the URI in hand, and
-//! confirms the repository it names is the one of that account in that Region.
+//! RULE: `Repository$repositoryUri` ("The URI for the repository. You can use this URI for
+//! container image `push` and `pull` operations") is the ADDRESS this emulator answers that
+//! caller's registry requests at, followed by `/` and the repository's own name — so a reader
+//! that splits the value on the first `/` has the address it dials and the repository it asks
+//! for — while WHICH registry holds the repository is reported beside it, by
+//! `Repository$registryId` (the owning account, `^[0-9]{12}$`) and the Region
+//! `Repository$repositoryArn` names. A walk therefore recovers the account id and the Region
+//! from the repository the read reports, and the dialable address from the URI.
 //!
 //! That is what makes the value actionable to a consumer: the account id and the Region are
 //! what an `ecr:` resource ARN, a `docker login` target and a cross-account check are composed
-//! from, and a bare address of this process — which carries neither label — leaves every one
-//! of them unresolvable even when the path after the `/` is right. The zone behind the Region
-//! is this emulator's own rather than one AWS publishes its endpoints in: a name there resolves
-//! at genuine Amazon ECR rather than at this process, so a client handed one would leave the
-//! emulated environment carrying the credential its `docker login` was issued.
+//! from, and the address is what a pull opens a connection to. The address is never a name AWS
+//! publishes its endpoints in: such a name resolves at genuine Amazon ECR rather than at this
+//! process, so a client handed one would leave the emulated environment carrying the credential
+//! its `docker login` was issued.
 //!
 //! Three services have to agree before a walk reaches that conclusion, which is why this suite
 //! lives beside the router: Amazon ECS holds the cluster, the service and the revision whose
@@ -44,12 +42,13 @@
 //! the whole-registry form of the read, where the walk is handed every repository of the
 //! registry at once rather than the one it asked for by name.
 //!
-//! Nothing here composes the expected authority from a constant: every row reads the labels off
-//! the value and compares them against the identity the SAME response reports (`registryId` and
-//! the Region `repositoryArn` names) and against the account the Amazon ECS record it walked
-//! from is in. The fixed labels and the zones an announced name must stay out of are spelled
-//! out below from the documented sources named on them, so a value that agrees with another
-//! suite's copy of a mistake still fails here.
+//! Nothing here composes the expected authority from a constant: every row reads the address
+//! off the value and the identity off the SAME response (`registryId` and the Region
+//! `repositoryArn` names), holds the two against the account the Amazon ECS record it walked
+//! from is in, and requires the published address to be the one this emulator reports for
+//! itself. The zones an announced address must stay out of are spelled out below from the
+//! documented sources named on them, so a value that agrees with another suite's copy of a
+//! mistake still fails here.
 
 use std::sync::Arc;
 
@@ -102,26 +101,28 @@ const MANIFEST: &str = concat!(
     r#""layers":[]}"#
 );
 
-/// The two fixed labels every Amazon ECR registry authority carries between the owning
-/// account's id and the Region it serves, as the registry URL format the model documents
-/// spells them — "The Amazon ECR registry URL format is
-/// `https://aws_account_id.dkr.ecr.region.amazonaws.com`":
-///
-/// ```text
-/// smithy_query(query="doc",shape="AuthorizationData",member="proxyEndpoint",model_path="services/service-com-amazonaws-ecr-amazonec2containerregistry-v20150921/smithy-model/com-amazonaws-ecr-amazonec2containerregistry-v20150921.json")
-/// ```
-///
-/// Spelled out here rather than imported so a value that spells them, or orders them, any other
-/// way fails these rows.
-const FIXED_LABELS: [&str; 2] = ["dkr", "ecr"];
+/// The authority this emulator publishes every address at while it is served on NO port at
+/// all, which is what the router these rows drive is: the host of the base
+/// `smithy_server_runtime::UNSERVED_URL_BASE` reports for such a process — a name RFC 6761
+/// reserves so that nothing resolves it, which is the honest answer where this emulator has no
+/// address of its own to hand out.
+fn unserved_authority() -> &'static str {
+    ::smithy_server_runtime::UNSERVED_URL_BASE
+        .split_once("://")
+        .map_or(::smithy_server_runtime::UNSERVED_URL_BASE, |(_scheme, authority)| authority)
+}
 
-/// How many digits an account id — and so the first label of a registry authority — carries, as
+/// How many digits an account id — and so `Repository$registryId` — carries, as
 /// `Repository$registryId`'s own pattern (`^[0-9]{12}$`) bounds it:
 ///
 /// ```text
 /// smithy_query(query="shape",shape="RegistryId",model_path="services/service-com-amazonaws-ecr-amazonec2containerregistry-v20150921/smithy-model/com-amazonaws-ecr-amazonec2containerregistry-v20150921.json")
 /// ```
 const ACCOUNT_ID_DIGITS: usize = 12;
+
+/// The account id this emulator mints every identity and every registry id from, which is the
+/// account a repository of this estate is reported under.
+const EMULATOR_ACCOUNT: &str = ::engine::EMULATOR_ACCOUNT_ID;
 
 /// The DNS suffixes AWS publishes its OWN endpoints under, spelled out here rather than
 /// imported so an address a service of this emulator announces slipping into one of them fails
@@ -348,8 +349,9 @@ fn string(case: &str, body: &Value, pointer: &str) -> String {
         .to_string()
 }
 
-/// What a reader RECOVERS from a reported repository URI: the registry's account and Region,
-/// read off the authority's own labels, and the repository name its path carries.
+/// What a reader RECOVERS about a repository: the registry's account and Region, read off the
+/// identity the SAME response reports beside the address, and the repository name the URI's
+/// path carries.
 #[derive(Debug, PartialEq, Eq)]
 struct Resolved {
     account: String,
@@ -359,14 +361,15 @@ struct Resolved {
     authority: String,
 }
 
-/// Resolve `uri` the way a consumer of the member does: split it on the FIRST `/`, read the
-/// registry out of the authority's labels, and take the path as the repository name.
+/// Resolve the URI `uri` the way a consumer of the member does — split it on the FIRST `/`,
+/// take the authority as the address to dial and the path as the repository name — beside the
+/// identity `account` and `region` the response reported for that repository.
 ///
-/// Every structural requirement of the value is asserted here — the path, the absence of a
-/// port, the account label's shape, the two fixed labels, a Region label and a non-empty zone
-/// behind it that is not one AWS publishes its own endpoints in — so a caller is handed only
-/// what a reader can actually derive from the value.
-fn resolved(case: &str, uri: &str) -> Resolved {
+/// Every structural requirement of the value is asserted here: a repository name behind the
+/// first `/`, an authority that is the address this emulator reports for itself, and never one
+/// in a zone AWS publishes its own endpoints in — so a caller is handed only what a reader can
+/// actually derive from the value.
+fn resolved(case: &str, uri: &str, account: &str, region: &str) -> Resolved {
     let (authority, path) = uri
         .split_once('/')
         .unwrap_or_else(|| panic!("case {case:?}: expected <authority>/<name>, got {uri:?}"));
@@ -374,53 +377,29 @@ fn resolved(case: &str, uri: &str) -> Resolved {
         !path.is_empty(),
         "case {case:?}: expected a repository name behind the first '/' of {uri:?}"
     );
-    // The value AWS publishes carries no port: a container client resolves the authority and
-    // dials the registry on the port its scheme implies.
-    assert!(
-        !authority.contains(':'),
-        "case {case:?}: expected no port in the authority of {uri:?}, got {authority:?}"
-    );
-
-    let labels: Vec<&str> = authority.split('.').collect();
-    let [dkr, ecr] = FIXED_LABELS;
-    assert!(
-        labels.len() >= 5,
-        "case {case:?}: expected <account>.{dkr}.{ecr}.<region>.<zone> in {authority:?}, got {} \
-         labels",
-        labels.len()
-    );
-    let account = labels[0];
-    assert!(
-        account.len() == ACCOUNT_ID_DIGITS && account.chars().all(|digit| digit.is_ascii_digit()),
-        "case {case:?}: expected a {ACCOUNT_ID_DIGITS}-digit account id as the first label of \
-         {authority:?}, got {account:?}"
-    );
     assert_eq!(
-        (labels[1], labels[2]),
-        (dkr, ecr),
-        "case {case:?}: expected the fixed labels {dkr:?} and {ecr:?} behind the account in \
-         {authority:?}, got {:?} and {:?}",
-        labels[1],
-        labels[2]
+        authority,
+        unserved_authority(),
+        "case {case:?}: expected the authority of {uri:?} to be the address this emulator \
+         reports for itself, got {authority:?}"
     );
-    let region = labels[3];
-    assert!(
-        !region.is_empty(),
-        "case {case:?}: expected a Region label behind {dkr}.{ecr} in {authority:?}"
-    );
-
-    let zone = labels[4..].join(".");
-    assert!(
-        labels[4..].iter().all(|label| !label.is_empty()),
-        "case {case:?}: expected a served zone behind the Region in {authority:?}, got {zone:?}"
-    );
-    let lowered = zone.to_ascii_lowercase();
+    let host = authority.rsplit_once(':').map_or(authority, |(host, _)| host);
+    let lowered = host.to_ascii_lowercase();
     assert!(
         !AWS_ENDPOINT_DNS_SUFFIXES
             .iter()
-            .any(|suffix| lowered == suffix.trim_start_matches('.') || lowered.ends_with(suffix)),
-        "case {case:?}: expected a zone this emulator answers in behind {region:?}, got \
-         {zone:?}, which AWS publishes its own endpoints in"
+            .any(|suffix| lowered.ends_with(suffix)),
+        "case {case:?}: expected an address this emulator answers on, got {authority:?}, which \
+         AWS publishes its own endpoints in"
+    );
+    assert!(
+        account.len() == ACCOUNT_ID_DIGITS && account.chars().all(|digit| digit.is_ascii_digit()),
+        "case {case:?}: expected a {ACCOUNT_ID_DIGITS}-digit account id beside {uri:?}, got \
+         {account:?}"
+    );
+    assert!(
+        !region.is_empty(),
+        "case {case:?}: expected the Region holding the repository beside {uri:?}"
     );
 
     Resolved {
@@ -712,45 +691,32 @@ async fn the_ecr_access_walk_recovers_the_account_and_region_from_the_reported_u
             .unwrap_or_else(|| panic!("case {case:?}: expected an ARN, got {reported_arn:?}"))
             .to_string();
 
-        // What the walk concludes, read out of the URI ALONE: the account, the Region and the
-        // repository it addresses.
-        let read = resolved(case, &reported_uri);
+        // What the walk concludes: the repository the URI addresses, and the account and the
+        // Region the read reports for it.
+        let read = resolved(case, &reported_uri, &reported_registry, &arn_region);
         assert_eq!(
             read.repository, row.repository,
             "case {case:?}: expected {reported_uri:?} to address the repository {:?}, got {:?}",
             row.repository, read.repository
         );
         assert_eq!(
-            read.account, reported_registry,
-            "case {case:?}: expected {reported_uri:?} to resolve to the registry this response \
-             reports, {reported_registry:?}, got {:?}",
-            read.account
-        );
-        assert_eq!(
             read.account, caller_account,
-            "case {case:?}: expected {reported_uri:?} to resolve to the account the inspected \
-             service is in, {caller_account:?}, got {:?}",
+            "case {case:?}: expected the repository behind {reported_uri:?} to be held by the \
+             account the inspected service is in, {caller_account:?}, got {:?}",
             read.account
         );
         assert_eq!(
             read.region, row.region,
-            "case {case:?}: expected {reported_uri:?} to resolve to the Region holding the \
-             repository, {:?}, got {:?}",
+            "case {case:?}: expected the repository behind {reported_uri:?} to be held in {:?}, \
+             got {:?}",
             row.region, read.region
         );
-        assert_eq!(
-            read.region, arn_region,
-            "case {case:?}: expected {reported_uri:?} to resolve to the Region its own ARN \
-             names, {arn_region:?}, got {:?}",
-            read.region
-        );
         // The same conclusion stated the way a consumer composing an `ecr:` ARN or a `docker
-        // login` target reaches it: the authority BEGINS with the account and the Region.
-        let [dkr, ecr] = FIXED_LABELS;
-        let addresses = format!("{}.{dkr}.{ecr}.{}.", read.account, read.region);
+        // login` target reaches it: the ARN names the account and the Region the read reported.
+        let addresses = format!("arn:aws:ecr:{}:{}:repository/", read.region, read.account);
         assert!(
-            reported_uri.starts_with(&addresses),
-            "case {case:?}: expected {reported_uri:?} to begin {addresses:?}"
+            reported_arn.starts_with(&addresses),
+            "case {case:?}: expected {reported_arn:?} to begin {addresses:?}"
         );
 
         // And it is one registry whichever path reported it: the URI the create announced, the
@@ -761,7 +727,7 @@ async fn the_ecr_access_walk_recovers_the_account_and_region_from_the_reported_u
              got {reported_uri:?}",
             seeded.announced_uri
         );
-        let reference_registry = resolved(case, &image);
+        let reference_registry = resolved(case, &image, &reported_registry, &arn_region);
         assert_eq!(
             (
                 reference_registry.authority.as_str(),
@@ -808,7 +774,7 @@ async fn every_entry_of_the_whole_registry_read_resolves_to_the_registry_it_was_
             let name = string(&entry, repository, "/repositoryName");
             let uri = string(&entry, repository, "/repositoryUri");
             let registry = string(&entry, repository, "/registryId");
-            let read = resolved(&entry, &uri);
+            let read = resolved(&entry, &uri, &registry, row.region);
             assert_eq!(
                 read.repository, name,
                 "case {entry:?}: expected {uri:?} to address the repository this entry reports, \
@@ -816,13 +782,11 @@ async fn every_entry_of_the_whole_registry_read_resolves_to_the_registry_it_was_
                 read.repository
             );
             assert_eq!(
-                (read.account.as_str(), read.region.as_str()),
-                (registry.as_str(), row.region),
-                "case {entry:?}: expected {uri:?} to resolve to the registry of {registry:?} in \
-                 {:?}, got {:?} in {:?}",
-                row.region,
-                read.account,
-                read.region
+                read.account.as_str(),
+                EMULATOR_ACCOUNT,
+                "case {entry:?}: expected the repository behind {uri:?} to be held by this \
+                 account's registry, got {:?}",
+                read.account
             );
             addressed.push((name, uri));
         }

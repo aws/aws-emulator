@@ -1,27 +1,29 @@
 // SPDX-License-Identifier: CC0-1.0
 
-//! Which registry a repository's published address NAMES, read out of the address itself.
+//! Which registry a reported repository belongs to, read off the response that carries its
+//! published address.
 //!
 //! The rule under test: **an Amazon ECR registry is one account's in ONE Region, so the
-//! identity a repository reports is the `(account, Region, name)` triple — and
-//! `Repository$repositoryUri` ("The URI for the repository. You can use this URI for
-//! container image `push` and `pull` operations") carries that whole triple: the owning
-//! account, the two fixed registry labels and the holding registry's Region as the labels of
-//! the authority a client dials, then the repository's own name as the path. Two registries
-//! therefore never publish one URI for one name, and what the URI names agrees with the
-//! identity members reported beside it.**
+//! identity a repository reports is the `(account, Region, name)` triple — carried by
+//! `Repository$registryId`, the Region of `Repository$repositoryArn` and
+//! `Repository$repositoryName` — and `Repository$repositoryUri` ("The URI for the repository.
+//! You can use this URI for container image `push` and `pull` operations") is the ADDRESS
+//! that repository is reached at: the endpoint this emulator answers that caller's registry
+//! requests at, with the repository's own name as the path. Two registries holding one name
+//! are therefore told apart by that identity, reported beside the address, while the address
+//! itself is one endpoint serving every registry this emulator holds.**
 //!
 //! Where the sibling suite `crate::repository_registry_uri` asserts the composed value
 //! against the authority this harness expects, this suite READS the reported value the way a
-//! consumer of the member does — splitting it at the first `/` and the authority into its
-//! labels — and holds what it reads against the OTHER members of the same response: the
-//! account `Repository$registryId` reports and the Region `Repository$repositoryArn` names
-//! ("The ARN contains the `arn:aws:ecr` namespace, followed by the region of the repository,
-//! Amazon Web Services account ID of the repository owner, repository namespace, and
-//! repository name"). So a URI that dropped a label of the registry it belongs to — leaving
-//! one name in two Regions published under one address — fails here however the authority is
-//! spelled, since the Region label is then no longer the Region the ARN names and the grid's
-//! addresses are no longer distinct.
+//! consumer of the member does — splitting it at the first `/` into the authority it dials and
+//! the repository it asks for — and holds what it reads against the OTHER members of the same
+//! response: the account `Repository$registryId` reports and the Region
+//! `Repository$repositoryArn` names ("The ARN contains the `arn:aws:ecr` namespace, followed
+//! by the region of the repository, Amazon Web Services account ID of the repository owner,
+//! repository namespace, and repository name"). So a response that lost the Region of the
+//! registry holding the repository — leaving one name in two Regions indistinguishable —
+//! fails here however the address is spelled, and so does a path that is not the repository's
+//! own name.
 //!
 //! The class the rule generalises over is the Region the repository is held in crossed with
 //! the repository name, read back through every operation that reports a `Repository`.
@@ -56,62 +58,35 @@ const REGIONS: &[&str] = &[
 /// ```
 const NAMES: &[&str] = &["svc", "group-b.service-2", "a__b", "org/team/svc"];
 
-/// The two labels every Amazon ECR registry authority carries between the owning account and
-/// the registry's Region.
-///
-/// Source: the registry URL format the model states in `AuthorizationData$proxyEndpoint`,
-/// "The Amazon ECR registry URL format is `https://aws_account_id.dkr.ecr.region.amazonaws.com`".
-const FIXED_REGISTRY_LABELS: [&str; 2] = ["dkr", "ecr"];
-
 /// The error a create for a name the ADDRESSED registry already holds is refused with.
 const ALREADY_EXISTS: &str = "RepositoryAlreadyExistsException";
 
-/// What a published repository address names, read the way a consumer of the member reads
-/// it.
+/// What a reported repository IS, read the way a consumer of the member reads it: the address
+/// it is published at, and the identity reported beside that address.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct PublishedAddress {
-    /// The account the authority's first label names.
+struct Reported {
+    /// The account `Repository$registryId` reports as the owner of the registry holding it.
     registry_id: String,
-    /// The Region the authority names: the label after the two fixed ones.
+    /// The Region `Repository$repositoryArn` names, which is the registry holding it.
     region: String,
-    /// Everything after the Region label — the zone the registry is served in, which says
-    /// nothing about WHICH registry it is.
-    zone: String,
+    /// The authority ahead of the first `/` of the published URI — the address a client
+    /// dials, which says nothing about WHICH registry it is.
+    authority: String,
     /// The repository the path after the first `/` asks for.
     repository: String,
 }
 
 /// Read `uri` as a container client does: split it at the first `/` — the authority it dials
-/// ahead of that `/`, the repository it asks for after it — and split the authority into the
-/// account label, the two fixed registry labels, the Region label and the zone that follows
-/// them.
-fn published_address(case: &str, uri: &str) -> PublishedAddress {
+/// ahead of that `/`, the repository it asks for after it.
+fn published_address(case: &str, uri: &str) -> (String, String) {
     let (authority, repository) = uri.split_once('/').unwrap_or_else(|| {
         panic!("case {case:?}: expected <authority>/<repository>, got {uri:?}")
     });
     assert!(
-        !authority.contains(':'),
-        "case {case:?}: expected an authority carrying no port, as AWS's own spelling does, \
-         got {authority:?}"
+        !authority.is_empty(),
+        "case {case:?}: expected an address ahead of the path, got {uri:?}"
     );
-    let labels: Vec<&str> = authority.splitn(5, '.').collect();
-    assert_eq!(
-        labels.len(),
-        5,
-        "case {case:?}: expected the account, {FIXED_REGISTRY_LABELS:?}, the Region and a \
-         zone in the authority, got {authority:?}"
-    );
-    assert_eq!(
-        [labels[1], labels[2]],
-        FIXED_REGISTRY_LABELS,
-        "case {case:?}: expected the fixed registry labels, got {authority:?}"
-    );
-    PublishedAddress {
-        registry_id: labels[0].to_string(),
-        region: labels[3].to_string(),
-        zone: labels[4].to_string(),
-        repository: repository.to_string(),
-    }
+    (authority.to_string(), repository.to_string())
 }
 
 /// The Region a repository ARN names: its fourth field, as the member documents the layout
@@ -125,53 +100,53 @@ fn arn_region(case: &str, arn: &str) -> String {
         .to_string()
 }
 
-/// The address the `Repository` at `pointer` publishes, held against the identity members
-/// reported beside it in the same response: the account `registryId` names, the Region the
-/// ARN names and the repository `repositoryName` is.
-fn reported_address(case: &str, body: &Value, pointer: &str) -> PublishedAddress {
+/// What the `Repository` at `pointer` reports: the address it is published at, and the
+/// identity members reported beside it in the same response — the account `registryId` names,
+/// the Region the ARN names and the repository `repositoryName` is.
+fn reported_address(case: &str, body: &Value, pointer: &str) -> Reported {
     let uri = at(body, &format!("{pointer}/repositoryUri"))
         .as_str()
         .unwrap_or_else(|| panic!("case {case:?}: expected a repositoryUri, got {body}"))
         .to_string();
-    let address = published_address(case, &uri);
+    let (authority, repository) = published_address(case, &uri);
 
     let registry_id = at(body, &format!("{pointer}/registryId"));
-    assert_eq!(
-        Value::from(address.registry_id.as_str()),
-        registry_id,
-        "case {case:?}: expected the address {uri:?} to name the account reported beside it, \
-         got {registry_id:?}"
-    );
+    let registry_id = registry_id
+        .as_str()
+        .unwrap_or_else(|| panic!("case {case:?}: expected a registryId, got {body}"))
+        .to_string();
     let arn = at(body, &format!("{pointer}/repositoryArn"));
     let arn = arn
         .as_str()
         .unwrap_or_else(|| panic!("case {case:?}: expected a repositoryArn, got {body}"));
-    assert_eq!(
-        address.region,
-        arn_region(case, arn),
-        "case {case:?}: expected the address {uri:?} to name the Region of the registry its \
-         ARN {arn:?} names"
-    );
     let name = at(body, &format!("{pointer}/repositoryName"));
     assert_eq!(
-        Value::from(address.repository.as_str()),
+        Value::from(repository.as_str()),
         name,
         "case {case:?}: expected the path of {uri:?} to be the repository's own name, got \
          {name:?}"
     );
-    address
+    Reported {
+        registry_id,
+        region: arn_region(case, arn),
+        authority,
+        repository,
+    }
 }
 
-/// RULE: the address a repository is published at names the registry that holds it — the
+/// RULE: the identity a reported repository carries names the registry that holds it — the
 /// owning account and the Region — so across a grid of Regions crossed with repository names
-/// every address is distinct, differs from the others only in the labels of that identity,
-/// and is the same value whichever operation reports the repository.
+/// every identity is distinct, every repository is published at the one address this emulator
+/// answers registry requests at, and both are the same whichever operation reports it.
 #[tokio::test]
 async fn one_name_in_many_registries_is_published_at_one_address_each() {
     let router = emulator();
-    // Every address this grid produced, so a URI two registries share is caught however it
-    // was spelled: the key is the address, the value the row that published it.
+    // Every identity this grid produced, so two registries reported as one are caught
+    // however the response was spelled: the key is the identity, the value the row that
+    // reported it.
     let mut published: BTreeMap<String, String> = BTreeMap::new();
+    // Every address it published, which is one endpoint for the whole grid.
+    let mut addresses: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
 
     for region in REGIONS {
         for name in NAMES {
@@ -188,7 +163,7 @@ async fn one_name_in_many_registries_is_published_at_one_address_each() {
             assert_eq!(
                 (address.registry_id.as_str(), address.region.as_str()),
                 (REGISTRY_ID, *region),
-                "case {case:?}: expected the address to name this account's registry in the \
+                "case {case:?}: expected the identity to name this account's registry in the \
                  Region addressed, got {address:?}"
             );
             assert_eq!(
@@ -212,19 +187,15 @@ async fn one_name_in_many_registries_is_published_at_one_address_each() {
                  {described}"
             );
 
-            let uri = format!(
-                "{}.{}.{}.{}.{}/{}",
-                address.registry_id,
-                FIXED_REGISTRY_LABELS[0],
-                FIXED_REGISTRY_LABELS[1],
-                address.region,
-                address.zone,
-                address.repository
+            addresses.insert(address.authority.clone());
+            let identity = format!(
+                "{}/{}/{}",
+                address.registry_id, address.region, address.repository
             );
-            if let Some(held_by) = published.insert(uri.clone(), case.clone()) {
+            if let Some(held_by) = published.insert(identity.clone(), case.clone()) {
                 panic!(
-                    "case {case:?}: expected an address of its own, got {uri:?}, already \
-                     published for {held_by:?}"
+                    "case {case:?}: expected an identity of its own, got {identity:?}, already \
+                     reported for {held_by:?}"
                 );
             }
         }
@@ -233,26 +204,23 @@ async fn one_name_in_many_registries_is_published_at_one_address_each() {
     assert_eq!(
         published.len(),
         REGIONS.len() * NAMES.len(),
-        "expected one address per Region and name, got {published:?}"
+        "expected one identity per Region and name, got {published:?}"
     );
-    // Only the identity labels differ: every row is served in the one zone this emulator
-    // announces its names in, so the distinctness above comes from the registry each address
-    // names rather than from where the registries are served.
-    let zones: std::collections::BTreeSet<String> = published
-        .keys()
-        .map(|uri| published_address("the published grid", uri).zone)
-        .collect();
+    // The distinctness above comes from the registry each repository belongs to rather than
+    // from where it is served: one endpoint answers for every registry this emulator holds,
+    // and the credential a `/v2` request presents says which registry it addresses.
     assert_eq!(
-        zones.len(),
+        addresses.len(),
         1,
-        "expected every registry to be served in the one announced zone, got {zones:?}"
+        "expected every registry to publish the one endpoint this emulator answers registry \
+         requests at, got {addresses:?}"
     );
 }
 
 /// RULE: the duplicate-name guard is per registry, so the create AWS refuses is the one
 /// addressed to the Region that already holds the name — reported with the sentence AWS
 /// words it in — while the same name in every other Region is a repository of its own,
-/// published at its own registry's address.
+/// reported with its own registry's identity.
 #[tokio::test]
 async fn a_name_one_registry_holds_is_published_elsewhere_under_its_own_registry() {
     for name in NAMES {
@@ -318,13 +286,13 @@ async fn a_name_one_registry_holds_is_published_elsewhere_under_its_own_registry
             let address = reported_address(&case, &created, "/repository");
             assert_eq!(
                 address.region, **region,
-                "case {case:?}: expected the address to name the Region holding it, got \
+                "case {case:?}: expected the identity to name the Region holding it, got \
                  {address:?}"
             );
             assert_ne!(
                 address, home_address,
-                "case {case:?}: expected two registries holding one name to publish two \
-                 addresses, got {address:?} for both"
+                "case {case:?}: expected two registries holding one name to be reported as two \
+                 repositories, got {address:?} for both"
             );
 
             let deleted = ok_in_region(

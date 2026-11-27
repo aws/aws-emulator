@@ -42,7 +42,8 @@ pub const SERVED_URL_BASE: &str = "https://127.0.0.1:9297";
 /// Its calls are addressed to [`endpoint_host`], which names a service and is therefore an
 /// endpoint no registry client can use, so the address reported to them is the one this
 /// emulator is served at ([`SERVED_URL_BASE`]) — host and port, without the scheme. A
-/// repository's own URI is a registry NAME instead ([`published_registry_authority_in`]).
+/// repository's own URI is that same endpoint with the repository's name as its path
+/// ([`published_registry_authority`]).
 pub const ANNOUNCED_REGISTRY_ENDPOINT: &str = "127.0.0.1:9297";
 
 /// The registry URL a `docker login` of a call made through this harness is pointed at
@@ -66,9 +67,9 @@ pub const REGISTRY_ID: &str = "000000000000";
 /// It is the host every repository of that registry is addressed under ON AWS, so it is the
 /// spelling a client's own reference may be written in, which a pull reads back — and never
 /// the authority this registry PUBLISHES for a repository
-/// ([`published_registry_authority_in`]), which is that same layout over the zone this
-/// emulator announces its own names in, because no listener of this emulator answers for a
-/// name AWS serves.
+/// ([`published_registry_authority`]), which is the endpoint this emulator answers the
+/// caller's registry requests at, because no listener of this emulator answers for a name AWS
+/// serves.
 pub fn registry_host_in(region: &str) -> String {
     let suffix = match region {
         region if region.starts_with("cn-") => "amazonaws.com.cn",
@@ -82,43 +83,35 @@ pub fn registry_host_in(region: &str) -> String {
     format!("{REGISTRY_ID}.dkr.ecr.{region}.{suffix}")
 }
 
-/// The authority this registry publishes a repository of `region`'s registry at, to a call
-/// made through this harness: this account's registry host in that Region
-/// ([`registry_host_in`]'s layout) over the zone this emulator announces its own names in,
-/// which for a process served on a loopback socket ([`SERVED_URL_BASE`]) is the zone RFC 6761
-/// reserves for that interface ([`ANNOUNCED_ZONE`]).
+/// The authority this registry publishes every repository it holds at, to a call made through
+/// this harness: the endpoint this emulator answers that caller's registry requests at
+/// ([`ANNOUNCED_REGISTRY_ENDPOINT`]), host and port whole.
 ///
 /// `Repository$repositoryUri` is an ADDRESS a container client splits on the first `/` and
-/// DIALS, and a name it READS the registry out of, so the authority carries the owning
-/// account, the two fixed labels and the Region — and no port, as AWS's own spelling carries
-/// none — over a zone that leads back to this process, never the zone AWS serves its own
-/// registries in ([`registry_host_in`]), which resolves at Amazon ECR rather than near this
-/// emulator. The URL a `docker login` is pointed at is a different member
-/// ([`announced_registry_url`]): that one is dialled as given, so it carries the endpoint this
-/// emulator answers on, port included. Spelled out here rather than imported so a wrong
-/// composition in the implementation fails these tests.
-pub fn published_registry_authority_in(region: &str) -> String {
-    format!("{REGISTRY_ID}.dkr.ecr.{region}.{ANNOUNCED_ZONE}")
+/// DIALS, so the authority is an endpoint this process answers on rather than a name the
+/// client would have to resolve: neither the zone AWS serves its own registries in
+/// ([`registry_host_in`], which resolves at Amazon ECR rather than near this emulator) nor a
+/// registry-shaped name of this emulator's own, which the core's front door refuses on a
+/// loopback bind. The URL a `docker login` is pointed at is built on the same endpoint
+/// ([`announced_registry_url`]), behind a scheme, so the two addresses this service publishes
+/// cannot disagree. WHICH registry holds the repository is reported beside the URI, by
+/// `Repository$registryId` and the Region in `Repository$repositoryArn`. Spelled out here
+/// rather than imported so a wrong composition in the implementation fails these tests.
+pub fn published_registry_authority() -> String {
+    ANNOUNCED_REGISTRY_ENDPOINT.to_string()
 }
 
-/// The zone this emulator announces its own registry names in, for a process served at
-/// [`SERVED_URL_BASE`]: the zone RFC 6761 reserves for the loopback interface the core binds
-/// its listeners on, which is what an emulator reached at an address literal announces in.
-pub const ANNOUNCED_ZONE: &str = "localhost";
-
-/// The URI Amazon ECR reports for the repository `name` held in `region`, to a call made
-/// through this harness (`Repository$repositoryUri`: "The URI for the repository. You can use
-/// this URI for container image `push` and `pull` operations"): the authority that
-/// repository's registry is published at ([`published_registry_authority_in`]) followed by the
-/// repository's own name as the path.
-pub fn published_repository_uri_in(region: &str, name: &str) -> String {
-    format!("{}/{name}", published_registry_authority_in(region))
-}
-
-/// [`published_repository_uri_in`] for the Region every call through this harness is signed
-/// for ([`REGION`]), which is the registry that holds the repositories those calls create.
+/// The URI Amazon ECR reports for the repository `name`, to a call made through this harness
+/// (`Repository$repositoryUri`: "The URI for the repository. You can use this URI for
+/// container image `push` and `pull` operations"): the authority the repository's registry is
+/// published at ([`published_registry_authority`]) followed by the repository's own name as
+/// the path.
+///
+/// One authority serves every registry this emulator holds, so a repository of another
+/// Region's registry is published at the same address — the credential a `/v2` request
+/// presents says which registry it addresses.
 pub fn published_repository_uri(name: &str) -> String {
-    published_repository_uri_in(REGION, name)
+    format!("{}/{name}", published_registry_authority())
 }
 
 /// The `X-Amz-Target` prefix this service routes on (`OPERATIONS.md`, "Wire protocol").

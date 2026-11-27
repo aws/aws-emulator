@@ -5,7 +5,7 @@
 //! RULE under test: **every address this registry hands a caller leads back to one of the two
 //! endpoints this emulator is really reached at — the endpoint the CALLER arrived on, or the
 //! address this emulator is SERVED at — and nothing of what it carries is taken from the host
-//! that caller happened to address.** The two members are read differently, and that is what
+//! that caller happened to address.** Both members are read as addresses, and that is what
 //! each is composed of:
 //!
 //! * `AuthorizationData$proxyEndpoint` ("The registry URL to use for this authorization token
@@ -13,18 +13,16 @@
 //!   resolve, so its authority IS one of those two endpoints, `host[:port]` whole, and nothing
 //!   is composed on top of either.
 //! * `Repository$repositoryUri` ("The URI for the repository. You can use this URI for
-//!   container image `push` and `pull` operations") is read twice over: a client dials the
-//!   authority ahead of the first `/` AND recovers the registry holding the repository from its
-//!   leading labels. So it is that registry's own host — the owning account's id, the two fixed
-//!   labels of a registry host and the Region, all three off the STORED RECORD — written over
-//!   the ZONE of the endpoint above, with the repository's own name as the path and no port.
+//!   container image `push` and `pull` operations") is split on the first `/` and the authority
+//!   ahead of it DIALLED, so it is that same endpoint, with the repository's own name as the
+//!   path.
 //!
 //! What neither may take anything from is the host the caller addressed. A caller that arrives
 //! on another account's registry layout, on another Region's, or on a name in a zone AWS
-//! publishes its own endpoints in must still be told the account and the Region the record
-//! carries, in a zone this process answers in: AWS's own spelling resolves at the real Amazon
-//! ECR, and an account or a Region echoed from the arrival host would name a registry this
-//! emulator does not hold.
+//! publishes its own endpoints in is published an address of this process instead, and told
+//! the account and the Region the RECORD carries beside it: AWS's own spelling resolves at the
+//! real Amazon ECR, and an account or a Region echoed from the arrival host would name a
+//! registry this emulator does not hold.
 //!
 //! What this suite adds to its siblings is WHAT each value is made of rather than which of the
 //! two endpoints wins. `crate::published_registry_address` varies the endpoint a call arrived
@@ -72,12 +70,13 @@ const REGISTRY_LABEL_RUN: &str = ".dkr.ecr.";
 /// The tag the image of every row is pushed under.
 const TAG: &str = "v1";
 
-/// One pairing: where this emulator is SERVED, the endpoint a caller ARRIVED on, and the zone
-/// the registry names announced to that caller are written over.
+/// One pairing: where this emulator is SERVED, the endpoint a caller ARRIVED on, and the
+/// endpoint this emulator answers that caller's registry requests at — the address both
+/// members it announces to that caller are built on.
 ///
-/// Which of the two endpoints the login URL carries is the sibling suites' subject; what is
-/// asserted here is that it carries ONE OF THEM, and that the repository's own name is written
-/// over that endpoint's zone with nothing taken from the arrival host.
+/// Which of the two endpoints that is, is the sibling suites' subject; what is asserted here
+/// is that it is ONE OF THEM, and that the repository's own name is the path behind it with
+/// nothing taken from the arrival host.
 struct Pairing {
     case: &'static str,
     /// The base URL the router is served at, which is what
@@ -85,11 +84,10 @@ struct Pairing {
     served_base: &'static str,
     /// The `Host` every call of the row carries.
     reached: &'static str,
-    /// The zone of the endpoint this emulator answers that caller's registry requests at: the
-    /// one RFC 6761 reserves for the loopback interface where that endpoint is an address
-    /// literal or a loopback name, and the host itself where an operator serves this process
-    /// under a name. Spelled out per row rather than derived.
-    zone: &'static str,
+    /// The endpoint this emulator answers that caller's registry requests at: the arrival
+    /// endpoint where a registry request addressed there reaches this registry, and the served
+    /// address where it does not. Spelled out per row rather than derived.
+    published: &'static str,
 }
 
 /// The pairings the rows drive.
@@ -98,55 +96,55 @@ const PAIRINGS: &[Pairing] = &[
         case: "a client of a local emulator, talking to the socket it is served on",
         served_base: "https://127.0.0.1:9297",
         reached: "127.0.0.1:9297",
-        zone: "localhost",
+        published: "127.0.0.1:9297",
     },
     Pairing {
         case: "a caller on the registry layout composed in the loopback zone",
         served_base: "https://127.0.0.1:36505",
         reached: "000000000000.dkr.ecr.us-west-2.localhost:36505",
-        zone: "localhost",
+        published: "127.0.0.1:36505",
     },
     Pairing {
         case: "a caller on the registry host AWS publishes for this account",
         served_base: "https://127.0.0.1:9297",
         reached: "000000000000.dkr.ecr.eu-west-1.amazonaws.com",
-        zone: "localhost",
+        published: "127.0.0.1:9297",
     },
     Pairing {
         case: "a caller on this service's own endpoint host, served under an operator's name",
         served_base: "https://registry.emulator.test:8443",
         reached: "api.ecr.eu-west-1.amazonaws.com",
-        zone: "registry.emulator.test",
+        published: "registry.emulator.test:8443",
     },
     Pairing {
         case: "a caller on the loopback name, served on an IPv6 socket",
         served_base: "https://[::1]:9443",
         reached: "localhost:9443",
-        zone: "localhost",
+        published: "localhost:9443",
     },
     Pairing {
         case: "a caller on ANOTHER service's host, served at a host of this service",
         served_base: "https://ecr.localhost:8443",
         reached: "dynamodb.localhost:8443",
-        zone: "ecr.localhost",
+        published: "ecr.localhost:8443",
     },
     Pairing {
         case: "a caller on the registry layout composed in an operator's own zone",
         served_base: "https://127.0.0.1:9297",
         reached: "000000000000.dkr.ecr.eu-west-1.registry.emulator.test:9297",
-        zone: "localhost",
+        published: "127.0.0.1:9297",
     },
     Pairing {
         case: "a caller on the registry layout of ANOTHER account",
         served_base: "https://127.0.0.1:9297",
         reached: "111122223333.dkr.ecr.eu-west-1.localhost:9297",
-        zone: "localhost",
+        published: "127.0.0.1:9297",
     },
     Pairing {
         case: "a caller on the registry layout of another partition's Region",
         served_base: "https://127.0.0.1:9297",
         reached: "000000000000.dkr.ecr.cn-north-1.amazonaws.com.cn",
-        zone: "localhost",
+        published: "127.0.0.1:9297",
     },
 ];
 
@@ -226,21 +224,20 @@ fn text(case: &str, body: &Value, pointer: &str) -> String {
 }
 
 /// The authority of the URI `uri` the repository `name` of `region`'s registry was published
-/// at, asserted to be that registry's own host over the zone of the endpoint this emulator
-/// answers that caller at — and to take nothing from the host the caller addressed.
+/// at, asserted to be the endpoint this emulator answers that caller's registry requests at —
+/// and to take nothing from the host the caller addressed.
 ///
-/// Four readings, each of them what makes the value usable by whoever was handed it:
+/// Three readings, each of them what makes the value usable by whoever was handed it:
 ///
 /// * it is `<authority>/<name>`, so a client that splits it on the first `/` dials the
 ///   authority and asks for the repository the path names;
-/// * the authority is this account's registry in the Region the RECORD is held in, in the one
-///   layout every registry host carries — never the account or the Region of the host the
-///   caller happened to address, and never a port, which the value AWS publishes carries none
-///   of;
-/// * a client on this machine can reach what the zone names: it names the loopback interface
-///   this emulator's listeners are bound on
+/// * the authority is one of the two endpoints this emulator is reached at, whole — never the
+///   account or the Region of the host the caller happened to address, which would be a name
+///   this process does not answer for;
+/// * a client on this machine can reach it: it names the loopback interface this emulator's
+///   listeners are bound on
 ///   (`service_common::data_plane_addressing::names_the_loopback_interface`, the tree's one
-///   reading of that) or it is the host this emulator is served at;
+///   reading of that) or it is the address this emulator is served at;
 /// * it names no zone AWS publishes its own endpoints in, so nothing sends the next push out
 ///   of the emulated environment carrying the credential it is holding.
 fn published_registry_authority(
@@ -258,23 +255,20 @@ fn published_registry_authority(
         "case {case:?}: expected the path of {uri:?} to be the repository name {name:?}, got \
          {path:?}"
     );
-    let [dkr, ecr] = ["dkr", "ecr"];
     assert_eq!(
-        authority,
-        format!("{REGISTRY_ID}.{dkr}.{ecr}.{region}.{}", pairing.zone),
-        "case {case:?}: expected the authority of {uri:?} to name this account's registry in \
-         the Region the record is held in, over the zone of the endpoint this emulator answers \
-         this caller at — nothing of the host the caller addressed ({:?}) — got {authority:?}",
+        authority, pairing.published,
+        "case {case:?}: expected the authority of {uri:?} to be the endpoint this emulator \
+         answers this caller's registry requests at — nothing of the host the caller addressed \
+         ({:?}), and nothing of the Region {region:?} the record is held in — got {authority:?}",
         pairing.reached
     );
     let served = served_authority(pairing.served_base);
-    let zone = pairing.zone;
     assert!(
-        ::service_common::data_plane_addressing::names_the_loopback_interface(zone)
-            || zone == ::service_common::data_plane_addressing::host_only(served),
-        "case {case:?}: expected a zone a client on this machine reaches — the loopback \
-         interface this emulator's listeners are bound on, or the host it is served at \
-         ({served:?}) — got {zone:?}"
+        ::service_common::data_plane_addressing::names_the_loopback_interface(authority)
+            || authority == served,
+        "case {case:?}: expected an address a client on this machine reaches — the loopback \
+         interface this emulator's listeners are bound on, or the address it is served at \
+         ({served:?}) — got {authority:?}"
     );
     for suffix in AWS_ENDPOINT_DNS_SUFFIXES {
         assert!(

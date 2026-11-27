@@ -4,25 +4,23 @@
 //! across every path such a repository comes to EXIST by.
 //!
 //! The rule under test: **`Repository$repositoryUri` is composed off the repository's own
-//! stored record — the registry that holds it, as the owning account's id, the fixed labels
-//! `dkr` and `ecr` and the Region, over the zone this emulator announces its own names in —
-//! followed by `/` and the repository's name exactly as it was submitted, so nothing about how
-//! the repository came to exist and nothing about the cache rule covering its name enters the
-//! value.** "The URI for the repository. You can use this URI for container image `push` and
-//! `pull` operations"
+//! stored record and the endpoint this emulator answers the caller's registry requests at —
+//! that endpoint, followed by `/` and the repository's name exactly as it was submitted — so
+//! nothing about how the repository came to exist and nothing about the cache rule covering
+//! its name enters the value.** "The URI for the repository. You can use this URI for
+//! container image `push` and `pull` operations"
 //!
 //! ```text
 //! smithy_query(query="doc",shape="Repository",member="repositoryUri",model_path="services/service-com-amazonaws-ecr-amazonec2containerregistry-v20150921/smithy-model/com-amazonaws-ecr-amazonec2containerregistry-v20150921.json")
 //! ```
 //!
 //! is a value a container client splits on the first `/`: it DIALS the authority ahead of that
-//! `/` and asks for the repository the path names, and it reads the registry holding the
-//! repository out of that authority's own labels — the account its first label is and the
-//! Region its fourth — which is how a consumer derives a task definition's `image`, a
-//! function's `ImageUri` or a `docker login` target from it. An address that is the socket this
-//! emulator happens to be served on carries none of that identity, which is why the labels and
-//! their order are the requirement and the account, the Region and the name are read off state
-//! and the request.
+//! `/` and asks for the repository the path names, so that authority has to be an address a
+//! connection opened to it reaches. The registry HOLDING the repository is read beside the
+//! address instead — the account `registryId` reports and the Region the `repositoryArn`
+//! names — which is how a consumer derives a task definition's `image`, a function's
+//! `ImageUri` or a `docker login` target from it, and both readings come off the same stored
+//! record.
 //!
 //! What this suite adds to its siblings — `crate::repository_uri_registry_layout`, which reads
 //! the label layout off every operation that reports a `Repository`;
@@ -41,21 +39,14 @@
 //! crate's harness signs for by default) and with how deep the rule's prefix and the path
 //! under it are. Every assertion names its case and reads the identity it compares against
 //! off the SAME response — `registryId` and the Region the `repositoryArn` names — so a value
-//! that took its account, its Region, its label order or its path from anywhere else fails
-//! these rows.
+//! that took its account, its Region or its path from anywhere else fails these rows.
 
 use serde_json::{json, Value};
 use smithy_server_runtime::MultiServiceRouter;
 
 use crate::wire::{
-    at, emulator, ok_in_region, published_repository_uri_in, registry_host_in, REGISTRY_ID,
+    at, emulator, ok_in_region, published_repository_uri, registry_host_in, REGISTRY_ID,
 };
-
-/// The label run every Amazon ECR registry authority carries between the owning account's id
-/// and the Region, as the registry URL format `AuthorizationData$proxyEndpoint` documents
-/// spells it (`https://aws_account_id.dkr.ecr.region.amazonaws.com`). Spelled out here rather
-/// than imported, so a published address that lost that spelling fails this suite.
-const REGISTRY_LABEL_RUN: &str = ".dkr.ecr.";
 
 /// The upstream the rules below cache from, and the `UpstreamRegistry` that URL belongs to:
 ///
@@ -240,10 +231,10 @@ fn text(case: &str, body: &Value, pointer: &str) -> String {
         .to_string()
 }
 
-/// Assert that the `Repository` at `pointer` in `body` is published at the registry holding
-/// it, and answer the authority it was published at.
+/// Assert that the `Repository` at `pointer` in `body` is published at the endpoint this
+/// emulator answers the caller at, and answer the authority it was published at.
 ///
-/// The identity the value is compared against is read off the SAME response — `registryId`,
+/// The identity the value is reported beside is read off the SAME response — `registryId`,
 /// and the Region the `repositoryArn` names — so nothing of it is taken from the reader's own
 /// endpoint or from this test's own idea of where the repository lives.
 fn assert_published_uri(case: &str, body: &Value, pointer: &str, row: &Cached) -> String {
@@ -258,9 +249,9 @@ fn assert_published_uri(case: &str, body: &Value, pointer: &str, row: &Cached) -
         .unwrap_or_else(|| panic!("case {case:?}: {arn:?} names no Region"))
         .to_string();
 
-    // The value, in full: the authority of the registry the response itself reports, and the
-    // repository's own name as the path.
-    let expected = published_repository_uri_in(&region, &repository);
+    // The value, in full: the endpoint this emulator answers the caller's registry requests
+    // at, and the repository's own name as the path.
+    let expected = published_repository_uri(&repository);
     assert_eq!(
         uri, expected,
         "case {case:?}: expected {expected:?}, got {uri:?}"
@@ -282,26 +273,12 @@ fn assert_published_uri(case: &str, body: &Value, pointer: &str, row: &Cached) -
         "case {case:?}: expected the path of {uri:?} to be the repository name \
          {repository:?}, got {path:?}"
     );
-    // An authority that names the registry: the account's id ahead of the fixed labels, the
-    // Region behind them, and no port — the value AWS publishes carries none, and a container
-    // client dials the registry on the port its scheme implies.
-    assert!(
-        authority
-            .to_ascii_lowercase()
-            .starts_with(&format!("{registry_id}{REGISTRY_LABEL_RUN}{region}.")),
-        "case {case:?}: expected {authority:?} to name this account's registry in {region:?}, \
-         as {registry_id}{REGISTRY_LABEL_RUN}{region}.<zone>"
-    );
-    assert!(
-        !authority.contains(':'),
-        "case {case:?}: expected no port in the authority of {uri:?}, got {authority:?}"
-    );
-    // And a zone this emulator answers in rather than the one AWS serves its own registries
-    // in, which resolves nowhere near this process.
+    // An address this emulator answers on rather than the host AWS serves this registry at,
+    // which resolves nowhere near this process.
     assert_ne!(
         authority,
         registry_host_in(row.region),
-        "case {case:?}: expected a zone this emulator answers in behind {:?}, got the host AWS \
+        "case {case:?}: expected an address this emulator answers on for {:?}, got the host AWS \
          serves this registry at",
         row.region
     );
@@ -321,9 +298,10 @@ async fn described(router: &MultiServiceRouter, case: &str, row: &Cached) -> Val
     .await
 }
 
-/// RULE: a repository under a pull-through-cache rule's prefix is published at the authority of
-/// the registry holding it, with its own name as the path — whichever path brought the
-/// repository into existence, and whether or not a rule covers its name.
+/// RULE: a repository under a pull-through-cache rule's prefix is published at the endpoint
+/// this emulator answers the caller's registry requests at, with its own name as the path —
+/// whichever path brought the repository into existence, and whether or not a rule covers its
+/// name.
 #[tokio::test]
 async fn a_cached_repositorys_uri_names_its_registry_however_the_repository_came_to_exist() {
     for row in CACHED {
