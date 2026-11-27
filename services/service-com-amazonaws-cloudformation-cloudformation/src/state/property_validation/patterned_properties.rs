@@ -256,7 +256,8 @@ pub(super) fn value_outside_its_pattern(resource: &StoredResource) -> Option<Pro
 /// every value of the properties whose form matters most. What one evaluation may spend is
 /// bounded THERE, by that module's own step budget, and the expression handed to it is this
 /// catalogue's own static text rather than anything a request carries; how many evaluations one
-/// declaration can ask for is bounded HERE ([`MAX_JUDGED_VALUES`]), so the work one request buys
+/// declaration can ask for is bounded by the stage's own walk of a member chain
+/// ([`super::MAX_JUDGED_VALUES`]), so the work one request buys
 /// is a product of two constants rather than of a constant and a value a template chooses.
 fn admits(pattern: &'static str, value: &str) -> bool {
     ::service_common::unapplied_patterns::modelled_pattern_admits(pattern, value)
@@ -266,78 +267,19 @@ fn admits(pattern: &'static str, value: &str) -> bool {
 /// under the resource's property document — the chain's own members, with the INDEX of an
 /// element where the chain stepped through a list.
 ///
-/// The values are collected in declaration order, which is the order the stage reports the
-/// first failure from, and at most [`MAX_JUDGED_VALUES`] of them. A member the declaration does
-/// not carry, a value that is not text and a chain that runs into a value no member can be read
-/// off contribute nothing: none of them is a spelling this stage judges.
+/// The walk is the stage's one walk of a member chain ([`super::judged_at`]), which bounds how
+/// many values one declaration is judged on and where each of them sits; what this adds is
+/// which of those values this question is about. A member the declaration does not carry, a
+/// value that is not text and a chain that runs into a value no member can be read off
+/// contribute nothing: none of them is a spelling this stage judges. The bound is charged
+/// against every value the chain NAMES rather than against the spellings alone, so a list
+/// carrying values of other types judges fewer spellings than its length — which leaves those
+/// ADMITTED, the reading every value this stage cannot decide about gets.
 pub(super) fn judged_values<'a>(document: &'a Value, chain: &[&str]) -> Vec<(Vec<String>, &'a str)> {
-    let mut found = Vec::new();
-    collect(document, chain, &mut Vec::new(), &mut found);
-    found
-}
-
-/// The walk behind [`judged_values`]: one step of the chain per call, over each element where
-/// the declaration states a LIST at that step.
-///
-/// The recursion is as deep as the chain is long and no deeper — a step reads at most one list
-/// level, so a list nested inside a list yields no value rather than another frame, and nothing
-/// a caller's template states decides how far this descends. The walk also STOPS at
-/// [`MAX_JUDGED_VALUES`], so neither does anything a template states decide how many values come
-/// out of it.
-fn collect<'a>(
-    document: &'a Value,
-    chain: &[&str],
-    at: &mut Vec<String>,
-    found: &mut Vec<(Vec<String>, &'a str)>,
-) {
-    for (index, element) in elements_of(document) {
-        if found.len() >= MAX_JUDGED_VALUES {
-            return;
-        }
-        if let Some(index) = index {
-            at.push(index.to_string());
-        }
-        match chain.split_first() {
-            None => {
-                if let Value::String(declared) = element {
-                    found.push((at.clone(), declared.as_str()));
-                }
-            }
-            Some((member, rest)) => {
-                if let Some(nested) = element.get(member) {
-                    at.push((*member).to_string());
-                    collect(nested, rest, at, found);
-                    at.pop();
-                }
-            }
-        }
-        if index.is_some() {
-            at.pop();
-        }
-    }
-}
-
-/// The most values ONE declaration may have judged against ONE row of the catalogue.
-///
-/// A list-valued property is judged element by element, and how many elements it carries is the
-/// template's to say — so the number of matches one operation can ask for is bounded here rather
-/// than left to the document, and the work it buys is the product of this and the step budget
-/// each match is held to ([`admits`]). A value past it is left ADMITTED, which is the treatment
-/// every value this stage cannot decide gets: it is still judged where the resource is really
-/// created, by the service that owns it.
-const MAX_JUDGED_VALUES: usize = 128;
-
-/// The values one step of a chain is taken over: the elements of a LIST the declaration states
-/// there, each with its own index, and otherwise the value itself with no index at all.
-fn elements_of(document: &Value) -> Vec<(Option<usize>, &Value)> {
-    match document {
-        Value::Array(elements) => elements
-            .iter()
-            .enumerate()
-            .map(|(index, element)| (Some(index), element))
-            .collect(),
-        value => vec![(None, value)],
-    }
+    super::judged_at(document, chain)
+        .into_iter()
+        .filter_map(|(at, declared)| declared.as_str().map(|declared| (at, declared)))
+        .collect()
 }
 
 /// How CloudFormation reports a property value outside the pattern its type's schema states:
@@ -355,6 +297,7 @@ pub fn pattern_failure_reason(value: &str, pattern: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::super::MAX_JUDGED_VALUES;
     use ::serde_json::json;
     use ::std::collections::BTreeMap;
 

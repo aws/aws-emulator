@@ -1374,13 +1374,18 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             // Not asked at all of a deployment CloudFormation has already refused for a
             // reference it could not resolve, for the reason `create_stack` records: that
             // refusal is the one diagnostic for every property whose value it took away.
-            let property_failure = (input.disable_validation != Some(true)
-                && unresolved_cross_stack.is_none())
-                .then(|| {
-                    crate::state::property_validation::failure(&stack.declarations_to_validate())
-                })
-                .flatten();
-            if let Some(failure) = &property_failure {
+            let property_failures = if input.disable_validation != Some(true)
+                && unresolved_cross_stack.is_none()
+            {
+                crate::state::property_validation::failures(&stack.declarations_to_validate())
+            } else {
+                Vec::new()
+            };
+            // One event per error, recorded LAST ERROR FIRST for the reason `create_stack`
+            // records them that way: the operation's event stream reports the events of one
+            // operation newest first, so this is the order that reads them in the order the
+            // stage found them.
+            for failure in property_failures.iter().rev() {
                 stack.record_validation_failure(
                     ::std::time::SystemTime::now(),
                     &failure.logical_id,
@@ -1400,7 +1405,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             // already refused is not reported as failing this stage too: the first refusal
             // is its one diagnostic.
             let name_conflict = name_conflict.filter(|_| {
-                unresolved_cross_stack.is_none() && property_failure.is_none()
+                unresolved_cross_stack.is_none() && property_failures.is_empty()
             });
             if let Some(conflicting) = &name_conflict {
                 stack.record_validation_failure(
@@ -1416,11 +1421,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             // summary over the stage's errors, whichever stage failed, each error's own
             // detail being on the validation result recorded above
             // ([`crate::state::early_validation::validation_failure_summary`]).
-            let failed_validation = property_failure
-                .as_ref()
-                .map(|failure| {
+            let failed_validation = (!property_failures.is_empty())
+                .then(|| {
                     crate::state::property_validation::validation_failure_summary(
-                        ::std::slice::from_ref(failure),
+                        &property_failures,
                     )
                 })
                 .or_else(|| {

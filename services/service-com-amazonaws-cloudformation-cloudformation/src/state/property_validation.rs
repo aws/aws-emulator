@@ -30,6 +30,11 @@
 //!   the rows this emulator holds ([`REQUIRED_PROPERTIES`]), which is the
 //!   `Required property [<member>] not found` the stage reports
 //!   ([`missing_property_reason`]);
+//! * that SAME question asked of a structure NESTED inside a property the declaration states
+//!   — a member the nested structure's own contract marks required that the structure does
+//!   not carry — over the rows this emulator holds
+//!   ([`nested_required_members::NESTED_REQUIRED_MEMBERS`]), which is the same sentence
+//!   reported at the pointer of the structure that lacks the member;
 //! * a member the contract states NO property for, over the types whose property set this
 //!   emulator holds in full ([`declared_properties`]), which is the
 //!   `Unsupported property [<member>]` the stage reports
@@ -130,6 +135,10 @@ use super::StoredResource;
 /// Which properties a type HAS at all, which is the other question its schema makes
 /// decidable here.
 pub mod declared_properties;
+
+/// Which members a NESTED property structure requires, which is the required-property
+/// question asked of the structures inside a declaration rather than of the document itself.
+pub mod nested_required_members;
 
 /// Which SPELLINGS a property admits, which is the other question its schema makes decidable
 /// about a value.
@@ -342,9 +351,8 @@ pub struct RequiredProperties {
 /// "Required: Yes", in the order that reference lists a type's properties (alphabetically)
 /// — which are the `@required` members of the call the owning API creates such a resource
 /// with, less the name CloudFormation itself may generate (see the module docs). That order
-/// is observable only in which property a declaration missing SEVERAL of them is reported
-/// for, and reading it off the reference is what keeps that choice the contract's rather
-/// than this catalogue's.
+/// is the order a declaration missing SEVERAL of them is reported in, and reading it off the
+/// reference is what keeps that order the contract's rather than this catalogue's.
 pub const REQUIRED_PROPERTIES: &[RequiredProperties] = &[
     // `AWS::Pipes::Pipe`: `CreatePipe` declares `Source`, `Target` and `RoleArn` required
     // beside the `Name` CloudFormation generates, so a pipe cannot be created without the
@@ -535,6 +543,122 @@ pub fn properties_path(logical_id: &str) -> String {
 /// which the path above steps through.
 const PROPERTIES_SECTION: &str = "Properties";
 
+/// Every value a declaration carries AT a member chain, each with the path it sits at under
+/// the resource's property document — the chain's own members, with the INDEX of an element
+/// where the chain stepped through a LIST.
+///
+/// The ONE walk of this stage that steps a property document down a chain of members over
+/// every element of every list it passes through, so the questions asked of a nested value —
+/// the spelling it is held to ([`patterned_properties`]), the length bounds it is held to
+/// ([`bounded_properties`]) and the members the structure it is must carry
+/// ([`nested_required_members`]) — cannot disagree about where a judged value sits, nor about
+/// how many of them one declaration is judged on.
+///
+/// The values come out in declaration order, which is the order the stage reports the first
+/// failure from, and at most [`MAX_JUDGED_VALUES`] of them. A member the declaration does not
+/// carry and a chain that runs into a value no member can be read off contribute nothing:
+/// neither is a value the chain names.
+///
+/// What the walk may SPEND is bounded too ([`MAX_WALKED_VALUES`]): a chain stepping through a
+/// list at more than one of its steps visits the PRODUCT of those lists' lengths, every one of
+/// which the submitted template states, and a chain whose last member is absent everywhere
+/// produces no value to count while visiting them all. So the budget is charged per value
+/// visited rather than per value produced, and a walk that spends it answers with what it found
+/// so far — which is the fail-open reading a value this stage cannot reach gets anyway.
+pub(super) fn judged_at<'a>(
+    document: &'a Value,
+    chain: &[&str],
+) -> Vec<(Vec<String>, &'a Value)> {
+    let mut found = Vec::new();
+    let mut budget = MAX_WALKED_VALUES;
+    collect(document, chain, &mut Vec::new(), &mut found, &mut budget);
+    found
+}
+
+/// The walk behind [`judged_at`]: one step of the chain per call, over each element where the
+/// declaration states a LIST at that step.
+///
+/// The recursion is as deep as the chain is long and no deeper — a step reads at most one list
+/// level, so a list nested directly inside a list yields no value rather than another frame,
+/// and nothing a caller's template states decides how far this descends. The walk also STOPS
+/// at [`MAX_JUDGED_VALUES`] values produced and at [`MAX_WALKED_VALUES`] values visited, so
+/// neither does anything a template states decide how many values come out of it, nor how much
+/// work one request buys.
+fn collect<'a>(
+    document: &'a Value,
+    chain: &[&str],
+    at: &mut Vec<String>,
+    found: &mut Vec<(Vec<String>, &'a Value)>,
+    budget: &mut usize,
+) {
+    for (index, element) in elements_of(document) {
+        if found.len() >= MAX_JUDGED_VALUES || *budget == 0 {
+            return;
+        }
+        *budget -= 1;
+        if let Some(index) = index {
+            at.push(index.to_string());
+        }
+        match chain.split_first() {
+            None => found.push((at.clone(), element)),
+            Some((member, rest)) => {
+                if let Some(nested) = element.get(member) {
+                    at.push((*member).to_string());
+                    collect(nested, rest, at, found, budget);
+                    at.pop();
+                }
+            }
+        }
+        if index.is_some() {
+            at.pop();
+        }
+    }
+}
+
+/// The values one step of a chain is taken over: the elements of a LIST the declaration states
+/// there, each with its own index, and otherwise the value itself with no index at all.
+///
+/// At most [`MAX_WALKED_VALUES`] of them, which is all one walk may visit in total, so the list
+/// a step is taken over costs a bounded amount to lay out however long the template states it.
+fn elements_of(document: &Value) -> Vec<(Option<usize>, &Value)> {
+    match document {
+        Value::Array(elements) => elements
+            .iter()
+            .enumerate()
+            .take(MAX_WALKED_VALUES)
+            .map(|(index, element)| (Some(index), element))
+            .collect(),
+        value => vec![(None, value)],
+    }
+}
+
+/// The most values ONE declaration may have judged against ONE row of a catalogue of this
+/// stage.
+///
+/// A list-valued property is judged element by element, and how many elements it carries is
+/// the template's to say — so the number of values one operation can ask to have judged is
+/// bounded here rather than left to the document. A value past it is left ADMITTED, which is
+/// the treatment every value this stage cannot decide gets: it is still judged where the
+/// resource is really created, by the service that owns it.
+pub(super) const MAX_JUDGED_VALUES: usize = 128;
+
+/// The most values ONE walk of a member chain may VISIT, whether or not they are values the
+/// chain names.
+///
+/// A chain that steps through a list at more than one of its steps reaches the PRODUCT of those
+/// lists' lengths, and a chain whose last member is absent reaches none of its values while
+/// visiting all of those — so the walk is charged for every value it looks at, not only for the
+/// ones it produces, and what one request can make this stage spend is a constant rather than
+/// something the submitted template chooses. Chosen far above the structures any template of a
+/// real estate states under one property (a rule's targets, a task's tags) and small enough
+/// that the worst case this bound permits stays a fraction of a millisecond of work. A value
+/// past it is left ADMITTED, as every value this stage cannot decide about is.
+///
+/// The budget is ONE WALK's, and a question that holds a declaration to several rows walks each
+/// of them, so what one declaration of a type with `n` rows may have visited is `n` times this
+/// — a product of this constant and a catalogue's own length, and of nothing a template states.
+pub(super) const MAX_WALKED_VALUES: usize = 4_096;
+
 /// The path ONE MEMBER of a declaration's property document sits at: the chain of members
 /// leading to it, under the `Properties` of the resource the template declares.
 ///
@@ -554,15 +678,55 @@ pub fn member_path(logical_id: &str, property: &[&str]) -> String {
     )
 }
 
-/// `Some(failure)` for the first resource of `declared` whose property document its type's
-/// contract refuses — the failure the operation reports instead of deploying anything;
-/// `None` when every resource passes what this stage can judge.
+/// Every error this stage reports for `declared`: the errors of the FIRST resource whose
+/// property document its type's contract refuses — what the operation reports instead of
+/// deploying anything; empty when every resource passes what this stage can judge.
 ///
 /// The resources are walked in the order the deployment would have created them, so the
-/// failure reported is the one the operation would have run into first, and each resource is
-/// judged in the order its type's schema states its conditions: that the document carries
-/// every property the type REQUIRES (a property that is not there has no value to hold to a
-/// set), then that every member it does carry is one the type HAS
+/// declaration reported on is the one the operation would have run into first
+/// ([`resource_failures`] is what each one is judged by, and in which order).
+///
+/// A schema validation reports ONE error per violation it found, which is why this answers a
+/// LIST: a declaration missing several required members is as many errors as there are members
+/// missing, each recorded as its own validation result and counted by the summary the stack
+/// carries ([`validation_failure_summary`]).
+///
+/// How many it reports is bounded by [`MAX_REPORTED_FAILURES`], so a document cannot decide
+/// how many validation results one operation records.
+pub fn failures(declared: &[StoredResource]) -> Vec<PropertyFailure> {
+    let mut failures: Vec<PropertyFailure> = declared
+        .iter()
+        .map(resource_failures)
+        .find(|failures| !failures.is_empty())
+        .unwrap_or_default();
+    failures.truncate(MAX_REPORTED_FAILURES);
+    failures
+}
+
+/// The most errors ONE operation is refused with.
+///
+/// A declaration states how many structures this stage judges, and each of them can be missing
+/// every member its contract requires — so how many validation results an operation records is
+/// bounded here rather than by the template, as the values judged against one row of a
+/// catalogue are ([`MAX_JUDGED_VALUES`]). The operation is refused either way: what the bound
+/// decides is how much of the diagnosis one request buys, and the errors kept are the first
+/// ones, which are the ones a template author fixes first.
+pub const MAX_REPORTED_FAILURES: usize = 128;
+
+/// The FIRST error of [`failures`], for a caller that only asks whether this stage refuses the
+/// declaration and on what.
+pub fn failure(declared: &[StoredResource]) -> Option<PropertyFailure> {
+    failures(declared).into_iter().next()
+}
+
+/// Every error one resource's property document is refused with; empty for a declaration that
+/// passes what this stage can judge.
+///
+/// A resource is judged in the order its type's schema states its conditions: that the
+/// document carries every property the type REQUIRES (a property that is not there has no
+/// value to hold to a set) and that every structure it states inside one carries the members
+/// that structure requires ([`required_members`] asks both), then that every member it
+/// does carry is one the type HAS
 /// ([`declared_properties`]), then the `oneOf` over those members, and last each value
 /// against what its property states about a value — the STRUCTURE it states
 /// ([`structured_properties`]) and the scalar TYPE it states
@@ -576,34 +740,58 @@ pub fn member_path(logical_id: &str, property: &[&str]) -> String {
 /// about values of two different types, so neither can stand in for the other, and a text
 /// outside its LENGTH bounds is reported as that rather than as a spelling, which is the verdict
 /// a schema validator reports for a value that is both too short and mis-spelled.
-pub fn failure(declared: &[StoredResource]) -> Option<PropertyFailure> {
-    declared.iter().find_map(|resource| {
-        missing_required_property(resource)
-            .or_else(|| declared_properties::undeclared_property(resource))
-            .or_else(|| matched_several_subschemas(resource))
-            .or_else(|| structured_properties::value_of_another_structure(resource))
-            .or_else(|| typed_properties::value_of_another_type(resource))
-            .or_else(|| inadmissible_value(resource))
-            .or_else(|| enum_properties::value_outside_its_enum(resource))
-            .or_else(|| bounded_properties::value_outside_its_length(resource))
-            .or_else(|| patterned_properties::value_outside_its_pattern(resource))
-            .or_else(|| ranged_properties::value_outside_its_range(resource))
-    })
+///
+/// Only the PRESENCE question answers every error it found; the questions about a VALUE answer
+/// the first value they refuse, as this emulator knows them one row at a time.
+fn resource_failures(resource: &StoredResource) -> Vec<PropertyFailure> {
+    let missing = required_members(resource);
+    if !missing.is_empty() {
+        return missing;
+    }
+    declared_properties::undeclared_property(resource)
+        .or_else(|| matched_several_subschemas(resource))
+        .or_else(|| structured_properties::value_of_another_structure(resource))
+        .or_else(|| typed_properties::value_of_another_type(resource))
+        .or_else(|| inadmissible_value(resource))
+        .or_else(|| enum_properties::value_outside_its_enum(resource))
+        .or_else(|| bounded_properties::value_outside_its_length(resource))
+        .or_else(|| patterned_properties::value_outside_its_pattern(resource))
+        .or_else(|| ranged_properties::value_outside_its_range(resource))
+        .into_iter()
+        .collect()
+}
+
+/// Every member a declaration is REQUIRED to carry and does not: the properties its type's
+/// contract requires of the document itself ([`missing_required_properties`]), then the
+/// members the structures it states inside those properties require
+/// ([`nested_required_members`]).
+///
+/// One question, asked of the document and of every structure in it, so a declaration missing
+/// two of them is reported as the two errors it is — at the pointer of whichever structure each
+/// member is missing from. The document's own properties come first, because a property that is
+/// not there states no structure for the other half of the question to judge.
+fn required_members(resource: &StoredResource) -> Vec<PropertyFailure> {
+    let mut missing = missing_required_properties(resource);
+    missing.extend(nested_required_members::missing_nested_required_members(
+        resource,
+    ));
+    missing
 }
 
 /// How a stack operation reports, ON THE STACK, that its resources did not pass this stage:
 /// how many errors the stage found, and that the detail of each one is on the operation's own
 /// events.
 ///
-/// A failed schema validation has as many errors as there are declarations it refused, and
-/// each error's detail — the resource, the property and the path — is recorded as the
-/// validation result it is ([`PropertyFailure`]), which `DescribeEvents` reports. So what the
-/// STACK carries is the summary that counts them and says where to read them, rather than one
-/// of the reasons standing in for all of them.
+/// A failed schema validation reports ONE error per violation it found, so a declaration
+/// missing SEVERAL required members is that many errors, and each error's detail — the
+/// resource, the property and the path — is recorded as the validation result it is
+/// ([`PropertyFailure`]), which `DescribeEvents` reports. So what the STACK carries is the
+/// summary that counts them and says where to read them, rather than one of the reasons
+/// standing in for all of them.
 ///
 /// The one variable part is the count, which is how many failures this stage reported for the
-/// operation — the length of `failures`, since [`failure`] reports the FIRST declaration the
-/// stage refuses and the operation is then refused on it.
+/// operation — the length of `failures`, since [`failures`] reports every error of the FIRST
+/// declaration the stage refuses and the operation is then refused on it.
 ///
 /// The sentence itself is the one EVERY pre-deployment validation stage reports on the stack
 /// ([`super::early_validation::validation_failure_summary`]), so this stage and the existence
@@ -646,26 +834,22 @@ pub fn matched_subschemas_reason(matched: usize) -> String {
     format!("#: #: {matched} subschemas matched instead of one")
 }
 
-/// `Some(failure)` for a resource whose declaration does not carry a property its type's
-/// contract requires ([`REQUIRED_PROPERTIES`]) — the first such property in the order the
-/// contract publishes them; `None` for a type with no row, and for one carrying every
-/// property its row names.
-fn missing_required_property(resource: &StoredResource) -> Option<PropertyFailure> {
+/// Every property a resource's declaration does not carry that its type's contract requires
+/// ([`REQUIRED_PROPERTIES`]), in the order the contract publishes them; empty for a type with
+/// no row, and for one carrying every property its row names.
+fn missing_required_properties(resource: &StoredResource) -> Vec<PropertyFailure> {
     REQUIRED_PROPERTIES
         .iter()
         .filter(|row| row.resource_type == resource.resource_type)
-        .find_map(|row| {
-            let missing = row
-                .required
-                .iter()
-                .find(|property| resource.properties.get(*property).is_none())?;
-            Some(PropertyFailure {
-                logical_id: resource.logical_id.clone(),
-                resource_type: resource.resource_type.clone(),
-                reason: missing_property_reason(missing),
-                path: properties_path(&resource.logical_id),
-            })
+        .flat_map(|row| row.required)
+        .filter(|property| resource.properties.get(*property).is_none())
+        .map(|missing| PropertyFailure {
+            logical_id: resource.logical_id.clone(),
+            resource_type: resource.resource_type.clone(),
+            reason: missing_property_reason(missing),
+            path: properties_path(&resource.logical_id),
         })
+        .collect()
 }
 
 /// `Some(failure)` for a resource carrying a property value its type's contract does not

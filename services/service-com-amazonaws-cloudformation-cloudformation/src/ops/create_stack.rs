@@ -895,12 +895,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // of a resource this operation is about to create — is a property the declaration
         // carries, and the stage is given it as such
         // ([`crate::state::StoredStack::declarations_to_validate`]).
-        let property_failure = (input.disable_validation != Some(true)
-            && unresolved_cross_stack.is_none())
-            .then(|| {
-                crate::state::property_validation::failure(&stack.declarations_to_validate())
-            })
-            .flatten();
+        let property_failures = if input.disable_validation != Some(true)
+            && unresolved_cross_stack.is_none()
+        {
+            crate::state::property_validation::failures(&stack.declarations_to_validate())
+        } else {
+            Vec::new()
+        };
         let refused_before_validation = transform_failure.or(unresolved_cross_stack);
         // The OTHER pre-deployment validation stage, over the same `DisableValidation`
         // switch: the resource EXISTENCE check. A resource this create would make under a
@@ -916,7 +917,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // refusal is its one diagnostic.
         let name_conflict = if input.disable_validation == Some(true)
             || refused_before_validation.is_some()
-            || property_failure.is_some()
+            || !property_failures.is_empty()
         {
             None
         } else {
@@ -945,12 +946,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // ([`crate::state::early_validation::validation_failure_summary`]) — so the stack
         // reports that CloudFormation refused the deployment and where to read why, rather
         // than one stage's wording of one failure.
-        let failed_validation = property_failure
-            .as_ref()
-            .map(|failure| {
-                crate::state::property_validation::validation_failure_summary(
-                    ::std::slice::from_ref(failure),
-                )
+        let failed_validation = (!property_failures.is_empty())
+            .then(|| {
+                crate::state::property_validation::validation_failure_summary(&property_failures)
             })
             .or_else(|| {
                 name_conflict.as_ref().map(|_| {
@@ -1079,11 +1077,18 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             // ([`crate::state::StoredStack::carrying_out_its_deployment`]).
             stack.carrying_out_its_deployment();
             // A pre-deployment validation this create's resources did not pass is reported
-            // as the validation result it is: an event about the resource NOTHING was done
-            // to, naming the validation, its status and what failed it — which is the detail
-            // `DescribeEvents` reports for a failure CloudFormation caught before
-            // provisioning ([`crate::state::property_validation`]).
-            if let Some(failure) = &property_failure {
+            // as the validation results it is: one event per error, about the resource
+            // NOTHING was done to, naming the validation, its status and what failed it —
+            // which is the detail `DescribeEvents` reports for a failure CloudFormation caught
+            // before provisioning ([`crate::state::property_validation`]).
+            //
+            // Recorded LAST ERROR FIRST, so the operation's own event stream — which reports
+            // the events of one operation newest first, and keeps events sharing an instant in
+            // the order they were appended, reversed ([`crate::ops::describe_events`]) — reads
+            // the errors in the order the stage found them: the properties the document itself
+            // requires before the members of the structures inside it, each in the order its
+            // contract publishes them.
+            for failure in property_failures.iter().rev() {
                 stack.record_validation_failure(
                     now,
                     &failure.logical_id,
