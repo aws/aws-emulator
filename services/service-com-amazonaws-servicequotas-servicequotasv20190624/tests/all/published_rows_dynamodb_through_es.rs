@@ -156,7 +156,7 @@ const ROWS: &[Row] = &[
         value: 300_000.0,
         unit: "None",
         adjustable: true,
-        description: "The maximum aggregated amount of IOPS that can be provisioned across \
+        description: "The maximum aggregated number of IOPS that can be provisioned across \
                       Provisioned IOPS SSD (io1) volumes in this Region.",
         period: None,
         metric: Metric::None,
@@ -200,8 +200,9 @@ const ROWS: &[Row] = &[
         unit: "None",
         adjustable: true,
         description: "The maximum number of CompleteLayerUpload requests that you can make per \
-                      second in the current Region. This API is called once per image layer \
-                      when an image is pushed.",
+                      second in the current Region. When an image is pushed, the \
+                      CompleteLayerUpload API is called once per each new image layer to \
+                      verify that the upload has completed.",
         period: Some((1, "SECOND")),
         metric: Metric::Calls {
             usage_service: "ECR",
@@ -292,7 +293,7 @@ const ROWS: &[Row] = &[
         value: 90.0,
         unit: "None",
         adjustable: true,
-        description: "The maximum number of nodes in one cluster with cluster mode enabled.",
+        description: "The maximum number of nodes in an individual Redis or Valkey cluster.",
         period: Some((5, "MINUTE")),
         metric: Metric::Resources {
             usage_service: "ElastiCache",
@@ -581,13 +582,12 @@ async fn every_row_carries_its_services_published_wording() {
                              in the current Region."
                         );
                         // A rate of an operation a client calls on the PUSH PATH closes on
-                        // the clause that states when it is invoked during a push.
-                        let on_push = format!(
-                            "{class} This API is called once per image layer when an image is \
-                             pushed."
-                        );
+                        // the clause that states when it is invoked during a push, which
+                        // the service publishes per operation.
+                        let on_push = format!("{class} When an image is pushed");
                         assert!(
-                            text == class || text == on_push,
+                            text == class
+                                || (text.starts_with(&on_push) && text.ends_with('.')),
                             "case {case}: expected {class:?}, alone or closing on the \
                              push-path clause, got {text:?}"
                         );
@@ -628,9 +628,11 @@ async fn every_row_carries_its_services_published_wording() {
                     "case {case}: expected the service's created-plane form, got {text:?}"
                 ),
                 // Amazon ElastiCache words a plane of the Region as what an account may
-                // create in a Region, without naming the account.
+                // create in a Region, without naming the account. The node plane of the
+                // Region is the one AWS words around the reserved and non-reserved nodes
+                // the count is made up of instead, so it states its own sentence.
                 "elasticache" => {
-                    if name.ends_with(" per Region") {
+                    if name.ends_with(" per Region") && name != "Nodes per Region" {
                         matched += 1;
                         assert!(
                             text.ends_with(" you can create in a Region.")
@@ -640,14 +642,21 @@ async fn every_row_carries_its_services_published_wording() {
                     }
                 }
                 // Amazon EBS words an aggregated plane as what may be requested across the
-                // volumes of one type in the Region.
+                // volumes of one type in the Region, counting storage as an AMOUNT in the
+                // TiB it is sold in and IOPS as a NUMBER of operations.
                 "ebs" if name.starts_with("Storage for")
                     || name.starts_with("Storage modifications for")
-                    || name.starts_with("IOPS for") =>
+                    || name.starts_with("IOPS for")
+                    || name.starts_with("IOPS modifications for") =>
                 {
                     matched += 1;
+                    let counted = if name.starts_with("IOPS") {
+                        "number of IOPS"
+                    } else {
+                        "amount of storage, in TiB,"
+                    };
                     assert!(
-                        text.starts_with("The maximum aggregated amount of ")
+                        text.starts_with(&format!("The maximum aggregated {counted} that can be "))
                             && text.ends_with(" volumes in this Region."),
                         "case {case}: expected the service's aggregated-plane form, got \
                          {text:?}"
@@ -662,7 +671,7 @@ async fn every_row_carries_its_services_published_wording() {
             "dynamodb" => 6,
             "ebs" => 10,
             "ecr" => 14,
-            "elasticache" => 6,
+            "elasticache" => 5,
             _ => 0,
         };
         assert!(

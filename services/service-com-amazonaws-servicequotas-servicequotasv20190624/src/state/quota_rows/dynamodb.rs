@@ -9,6 +9,19 @@ const DYNAMODB_USAGE_SERVICE: &str = "DynamoDB";
 
 /// The page of the Amazon DynamoDB Developer Guide this service points a reader at for the
 /// quota behind a row, with the anchor of the section that states it.
+fn developer_guide_url(page: &str, anchor: &str) -> String {
+    let anchor = if anchor.is_empty() {
+        String::new()
+    } else {
+        format!("#{anchor}")
+    };
+    format!(
+        "https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/{page}.html{anchor}"
+    )
+}
+
+/// The clause that closes a row of this service: the page of the Developer Guide that
+/// states the limit.
 ///
 /// SOURCE: the recorded default-quota listing of `dynamodb`, whose rows close with
 /// `For more information, see <this page>#<anchor>` rather than describing the limit in the
@@ -17,14 +30,9 @@ const DYNAMODB_USAGE_SERVICE: &str = "DynamoDB";
 /// at the Service Quotas page. The sentence is published WITHOUT a closing full stop after
 /// the link.
 fn see_developer_guide(page: &str, anchor: &str) -> String {
-    let anchor = if anchor.is_empty() {
-        String::new()
-    } else {
-        format!("#{anchor}")
-    };
     format!(
-        "For more information, see \
-         https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/{page}.html{anchor}"
+        "For more information, see {}",
+        developer_guide_url(page, anchor)
     )
 }
 
@@ -41,6 +49,23 @@ fn throughput_description(capacity: &str, allocated_over: &str) -> String {
     format!(
         "The maximum number of {capacity} throughput allocated {allocated_over}. {}",
         see_developer_guide("Limits", "default-limits-throughput-capacity-modes")
+    )
+}
+
+/// The sentence DynamoDB publishes for a plane of CAPACITY UNITS: the units the plane
+/// allows, whose they are, and the clause naming which tables they are counted over.
+///
+/// SOURCE: the recorded default-quota listing of `dynamodb`, whose account-level
+/// provisioned-write row reads `The maximum number of write capacity units allocated for
+/// the account; applicable only for tables (including all associated global secondary
+/// indexes) in provisioned read/write capacity mode.` and whose streams row reads the same
+/// sentence around `allowed for a table with streams enabled` and `tables`. The class is
+/// that one sentence around the capacity, the allowance clause as the service words it and
+/// the tables the clause applies to, so it is built once here.
+fn capacity_units_description(capacity: &str, allowance: &str, applicable_to: &str) -> String {
+    format!(
+        "The maximum number of {capacity} capacity units {allowance}; applicable only for \
+         {applicable_to} in provisioned read/write capacity mode."
     )
 }
 
@@ -72,6 +97,11 @@ fn throughput_description(capacity: &str, allocated_over: &str) -> String {
 /// those are the bindings and the name carried here; the export-job concurrency that
 /// binding displaced takes the code it vacated (`L-6F30DCE1`) with that code's published
 /// adjustability, which is the one member of it no source names for that plane.
+///
+/// It states `L-923BEB7A` for the write-throughput plane of a table with STREAMS enabled,
+/// so that plane is what the code publishes here; the on-demand read plane of the account
+/// this catalog had served under it names no other code any source states, so it is left to
+/// the default-quota-set gap.
 pub(in crate::state) fn dynamodb_quotas() -> Vec<QuotaRow> {
     // The account-level provisioned-throughput planes, the two DynamoDB publishes an
     // `AWS/Usage` resource count for: the capacity units provisioned across the
@@ -91,10 +121,14 @@ pub(in crate::state) fn dynamodb_quotas() -> Vec<QuotaRow> {
                 ("Type", "Resource"),
             ],
         ))
-        .describe(&throughput_description(
-            capacity,
-            "across all your tables and global secondary indexes using provisioned \
-             read/write capacity mode",
+        .describe(&format!(
+            "{} {}",
+            capacity_units_description(
+                capacity,
+                "allocated for the account",
+                "tables (including all associated global secondary indexes)",
+            ),
+            see_developer_guide("Limits", "default-limits-throughput-capacity-modes")
         ))
     };
     vec![
@@ -123,15 +157,27 @@ pub(in crate::state) fn dynamodb_quotas() -> Vec<QuotaRow> {
                 "The maximum number of concurrent export jobs in this account in the current \
                  Region.",
             ),
+        // The write-throughput plane of a table WITH STREAMS ENABLED, published under the
+        // code the recorded listing states for it: the capacity units a streaming table may
+        // be allocated, closing on the clause that other quotas may apply as well and on the
+        // streams section of the Service Quotas page. The on-demand account read plane this
+        // catalog had published under this code names no other code any source here states,
+        // so it is left to the default-quota-set gap rather than served under a neighbouring
+        // quota's code.
         quota(
-            "Account-level read throughput limit (On-demand mode)",
+            "Write throughput limit for DynamoDB Streams (Provisioned mode)",
             40_000.0,
         )
         .code("L-923BEB7A")
-        .describe(
-            "The maximum number of read request units that all on-demand tables in this \
-             account in the current Region can serve per second.",
-        ),
+        .describe(&format!(
+            "{} Other quotas might also apply. {}",
+            capacity_units_description(
+                "write",
+                "allowed for a table with streams enabled",
+                "tables"
+            ),
+            see_developer_guide("ServiceQuotas", "limits-dynamodb-streams")
+        )),
         quota("Table-level write throughput limit", 40_000.0)
             .code("L-AB614373")
             .describe(&throughput_description(
@@ -183,7 +229,11 @@ pub(in crate::state) fn dynamodb_quotas() -> Vec<QuotaRow> {
         // code it is bound to is the listing's.
         quota("Global Secondary Indexes per table", 20.0)
             .code("L-F7858A77")
-            .describe("The maximum number of global secondary indexes per table."),
+            .describe(&format!(
+                "The maximum number of global secondary indexes that can be created for a \
+                 table. For more information, see, {}",
+                developer_guide_url("ServiceQuotas", "limits-secondary-indexes")
+            )),
         // The table plane of the account, the one DynamoDB publishes a CloudWatch
         // usage metric for (`AWS/Usage`, `ResourceCount`, `Resource=TableCount`).
         quota("Maximum number of tables", 2500.0)

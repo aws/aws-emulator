@@ -20,6 +20,17 @@ fn per_region_description(counted: &str) -> String {
     format!("The maximum number of {counted} you can create in a Region.")
 }
 
+/// The sentence ElastiCache publishes for a plane counted inside ONE CLUSTER of one engine:
+/// the nodes an individual cluster of that engine may hold.
+///
+/// SOURCE: the recorded default-quota listing of `elasticache`, whose Memcached row reads
+/// `The maximum number of nodes in an individual Memcached cluster.` and whose Redis row
+/// reads the same sentence around `Redis or Valkey`. The class is that one sentence around
+/// the engine the cluster runs, so it is built once here.
+fn nodes_per_cluster_description(engine: &str) -> String {
+    format!("The maximum number of nodes in an individual {engine} cluster.")
+}
+
 /// Amazon ElastiCache's published default-quota catalog.
 ///
 /// SOURCE: AWS's published Service Quotas data for the `elasticache` service code (the
@@ -38,14 +49,16 @@ fn per_region_description(counted: &str) -> String {
 ///
 /// A quota this catalog can cite no code for is left to the default-quota-set gap rather
 /// than published under a neighbouring code (see [`super::descriptive_quota_code`]), which
-/// is why the replica plane of a shard, the user-group plane and the manual-backup plane of
-/// the Region are absent: `L-AF354865`, which this catalog had published the user-group
-/// plane under, is the code the per-cluster node plane is published under, and
-/// `L-3F15A733` and `L-DFE45DF3`, which it had published the per-cluster Memcached node
-/// plane and the manual-backup plane under, are the codes the parameter-group plane and the
-/// node plane of the Region are published under. The Memcached node plane the first of
-/// those bindings displaced takes the code the parameter-group plane vacated, with that
-/// code's published adjustability.
+/// is why the replica plane of a shard, the manual-backup plane of the Region and the
+/// cache-security-group plane of the Region are absent: `L-AF354865`, which this catalog
+/// had published the user-group plane under, is the code the per-cluster node plane is
+/// published under, `L-3F15A733` and `L-DFE45DF3`, which it had published the per-cluster
+/// Memcached node plane and the manual-backup plane under, are the codes the
+/// parameter-group plane and the node plane of the Region are published under, and
+/// `L-AD484FC5`, which it had published the cache-security-group plane under, is the code
+/// the USER-GROUP plane of the Region is published under. The Memcached node plane is
+/// published under `L-8C334AD1`, and the shard plane that binding displaced takes the code
+/// it vacated, with that code's published adjustability.
 pub(in crate::state) fn elasticache_quotas() -> Vec<QuotaRow> {
     let metered = |code: &str, name: &str, value: f64, resource: &str, counted: &str| {
         resource_count_plane(code, name, value, ELASTICACHE_USAGE_SERVICE, resource, counted)
@@ -92,13 +105,18 @@ pub(in crate::state) fn elasticache_quotas() -> Vec<QuotaRow> {
         .describe(
             "The maximum number of snapshots that can be taken per day per serverless cache.",
         ),
-        // The node plane of ONE Memcached cluster, the plane the parameter-group binding
-        // above displaced: it takes the code that binding vacated, and keeps the
-        // adjustability the recorded listing reports for THAT code.
-        quota("Nodes per cluster (Memcached)", 40.0)
-            .code("L-7D6587E6")
-            .fixed()
-            .describe("The maximum number of nodes in one Memcached cluster."),
+        // The shard plane of ONE cluster with cluster mode enabled, counted inside the
+        // cluster and metered under that plane's own series. It is the plane the Memcached
+        // node binding below displaced: it takes the code that binding vacated, with that
+        // code's published adjustability.
+        inside(
+            "L-7D6587E6",
+            "Shards per cluster (cluster mode enabled)",
+            500.0,
+            "ShardsPerCluster",
+        )
+        .fixed()
+        .describe("The maximum number of shards in one cluster with cluster mode enabled."),
         metered(
             "L-80E085C7",
             "Users per Region",
@@ -106,17 +124,18 @@ pub(in crate::state) fn elasticache_quotas() -> Vec<QuotaRow> {
             "User",
             "users",
         ),
-        // The shard plane of ONE cluster with cluster mode enabled, counted inside the
-        // cluster and metered under that plane's own series: the recorded listing publishes
-        // this code over the window a resource count is published with, which is the window
-        // every metered plane of this service carries.
+        // The node plane of ONE Memcached cluster, published under the code the recorded
+        // listing states for it, in the sentence this service words a per-cluster node
+        // plane with and metered the way it meters a plane counted inside a cluster: the
+        // listing publishes this code with a resource count over the window those counts
+        // are published with.
         inside(
             "L-8C334AD1",
-            "Shards per cluster (cluster mode enabled)",
-            500.0,
-            "ShardsPerCluster",
+            "Nodes per cluster (Memcached)",
+            40.0,
+            "NodesPerCluster",
         )
-        .describe("The maximum number of shards in one cluster with cluster mode enabled."),
+        .describe(&nodes_per_cluster_description("Memcached")),
         // The user plane of ONE user group, counted inside the group. The service words
         // this one as the users a client DEFINES for the group.
         inside(
@@ -133,12 +152,16 @@ pub(in crate::state) fn elasticache_quotas() -> Vec<QuotaRow> {
             "SubnetsPerSubnetGroup",
         )
         .describe("The maximum number of subnets you can add to a subnet group."),
+        // The user-group plane of the Region, published under the code the recorded listing
+        // states for it, with that plane's own resource count; the cache-security-group
+        // plane this catalog had served here names no other code that listing states, so it
+        // is left to the default-quota-set gap.
         metered(
             "L-AD484FC5",
-            "Security groups per Region",
-            50.0,
-            "SecurityGroupsPerRegion",
-            "cache security groups",
+            "User Groups per Region",
+            200.0,
+            "UserGroup",
+            "user groups",
         ),
         // The node plane of ONE cluster with cluster mode enabled, counted inside the
         // cluster and metered under that plane's own series, with the limit the recorded
@@ -149,7 +172,7 @@ pub(in crate::state) fn elasticache_quotas() -> Vec<QuotaRow> {
             90.0,
             "NodesPerCluster",
         )
-        .describe("The maximum number of nodes in one cluster with cluster mode enabled."),
+        .describe(&nodes_per_cluster_description("Redis or Valkey")),
         metered(
             "L-BBCDAECC",
             "Serverless caches per Region",
@@ -159,13 +182,20 @@ pub(in crate::state) fn elasticache_quotas() -> Vec<QuotaRow> {
         ),
         // The node plane of the Region, published under the code the recorded listing
         // states for it; the manual-backup plane this catalog had served here names no
-        // other code that listing states, so it is left to the default-quota-set gap.
+        // other code that listing states, so it is left to the default-quota-set gap. The
+        // service words this one around the reserved and non-reserved nodes the Region's
+        // count is made up of rather than in the per-Region voice of the planes beside it.
         metered(
             "L-DFE45DF3",
             "Nodes per Region",
             300.0,
             "NodesPerRegion",
             "nodes",
+        )
+        .describe(
+            "The maximum number of nodes across all clusters in a Region. This quota applies \
+             to both your reserved and non-reserved nodes within the given Region. You can \
+             have up to 300 reserved nodes and 300 non-reserved nodes in the same Region.",
         ),
     ]
 }

@@ -32,16 +32,17 @@ fn ecr_rate_sentence(api: &str) -> String {
 /// PATH: the class sentence, followed by the clause that states when the operation is
 /// invoked during a push.
 ///
-/// SOURCE: the recorded default-quota listing of `ecr`, whose layer-availability,
-/// layer-upload-completion and layer rate rows close with a second sentence saying that the
-/// operation is called once per image layer when an image is pushed, rather than with the
-/// class sentence alone. The clause belongs to the published text of every row of that
-/// class, so it is built once here.
-fn push_path_request_rate(code: &str, api: &str, per_second: f64) -> QuotaRow {
-    ecr_request_rate(code, api, per_second).describe(&format!(
-        "{} This API is called once per image layer when an image is pushed.",
-        ecr_rate_sentence(api)
-    ))
+/// SOURCE: the recorded default-quota listing of `ecr`, whose layer-upload row reads the
+/// class sentence followed by `When an image is pushed, the InitiateLayerUpload API is
+/// called once per image layer that has not already been uploaded. Whether or not an image
+/// layer has been uploaded is determined by the BatchCheckLayerAvailability API action.`,
+/// and the "Amazon ECR service quotas" page of the Amazon ECR User Guide for the same
+/// clause of each other push-path operation. The clause names WHEN the operation is called
+/// during a push and is published per operation rather than per class, so it is passed in
+/// while every other member of the row still comes from the one rate constructor.
+fn push_path_request_rate(code: &str, api: &str, per_second: f64, when_called: &str) -> QuotaRow {
+    ecr_request_rate(code, api, per_second)
+        .describe(&format!("{} {when_called}", ecr_rate_sentence(api)))
 }
 
 /// Amazon Elastic Container Registry's published default-quota catalog.
@@ -54,11 +55,12 @@ fn push_path_request_rate(code: &str, api: &str, per_second: f64) -> QuotaRow {
 /// than being a count, and a request-rate row carries the one-second window and the
 /// `AWS/Usage` `CallCount` of the operation it throttles ([`ecr_request_rate`]).
 ///
-/// The recorded listing publishes the `CompleteLayerUpload` rate under `L-44194860` and the
-/// `PutImage` rate under `L-AD52DFB2`, so those are the codes they are published under
-/// here; the registry replication plane and the pull-path `GetDownloadUrlForLayer` rate
-/// this catalog had published under them take the codes those bindings vacated, because the
-/// listing reports every one of those codes in this service's catalog.
+/// The recorded listing publishes the `CompleteLayerUpload` rate under `L-44194860`, the
+/// `PutImage` rate under `L-AD52DFB2` and the `InitiateLayerUpload` rate under
+/// `L-95B28F8D`, so those are the codes they are published under here; the registry
+/// replication plane, the pull-path `GetDownloadUrlForLayer` rate and the `BatchGetImage`
+/// rate this catalog had published under them take the codes those bindings vacated,
+/// because the listing reports every one of those codes in this service's catalog.
 ///
 /// A row of a push-path operation closes on the clause stating when the operation is
 /// invoked during a push ([`push_path_request_rate`]) rather than on the class sentence
@@ -102,7 +104,13 @@ pub(in crate::state) fn ecr_quotas() -> Vec<QuotaRow> {
             .unit("Gigabytes")
             .fixed()
             .describe("The maximum size, in GiB, of one image layer."),
-        push_path_request_rate("L-44194860", "CompleteLayerUpload", 100.0),
+        push_path_request_rate(
+            "L-44194860",
+            "CompleteLayerUpload",
+            100.0,
+            "When an image is pushed, the CompleteLayerUpload API is called once per each \
+             new image layer to verify that the upload has completed.",
+        ),
         rate("L-55A41110", "GetAuthorizationToken", 500.0),
         // The pull-through cache plane of a registry, which the service describes without
         // naming the registry: the limit is on the rules themselves.
@@ -111,7 +119,18 @@ pub(in crate::state) fn ecr_quotas() -> Vec<QuotaRow> {
             .fixed()
             .describe("The maximum number of pull-through cache rules."),
         rate("L-8BE1781E", "BatchDeleteImage", 100.0).fixed(),
-        rate("L-95B28F8D", "BatchGetImage", 10_000.0),
+        // The layer-upload rate of the push path, published under the code the recorded
+        // listing states for it, with the adjustability that code is published with; the
+        // `BatchGetImage` rate this catalog had served here takes the code this binding
+        // vacated.
+        push_path_request_rate(
+            "L-95B28F8D",
+            "InitiateLayerUpload",
+            100.0,
+            "When an image is pushed, the InitiateLayerUpload API is called once per image \
+             layer that has not already been uploaded. Whether or not an image layer has \
+             been uploaded is determined by the BatchCheckLayerAvailability API action.",
+        ),
         quota("Replication destinations per registry", 25.0)
             .code("L-9B60BFFB")
             .fixed()
@@ -126,9 +145,24 @@ pub(in crate::state) fn ecr_quotas() -> Vec<QuotaRow> {
         // The push-path image rate, published under the code the recorded listing states
         // for it; the pull-path layer-download rate this catalog had served here takes the
         // code that binding vacated.
-        rate("L-AD52DFB2", "PutImage", 10.0),
-        push_path_request_rate("L-B9173138", "BatchCheckLayerAvailability", 1000.0),
-        rate("L-C0B33BA1", "InitiateLayerUpload", 100.0).fixed(),
+        push_path_request_rate(
+            "L-AD52DFB2",
+            "PutImage",
+            10.0,
+            "When an image is pushed and all new image layers have been uploaded, the \
+             PutImage API is called once to create or update the image manifest and the \
+             tags associated with the image.",
+        ),
+        push_path_request_rate(
+            "L-B9173138",
+            "BatchCheckLayerAvailability",
+            1000.0,
+            "When an image is pushed, the BatchCheckLayerAvailability API is called once \
+             per image layer to verify if that image layer has already been uploaded.",
+        ),
+        // The image-read rate the layer-upload binding above displaced: it takes the code
+        // that binding vacated, with that code's published adjustability.
+        rate("L-C0B33BA1", "BatchGetImage", 10_000.0).fixed(),
         rate("L-CB63E564", "ListImages", 100.0).fixed(),
         rate("L-CFEB8E8D", "GetDownloadUrlForLayer", 3000.0),
         rate("L-EF8F6F4E", "UploadLayerPart", 1000.0).fixed(),

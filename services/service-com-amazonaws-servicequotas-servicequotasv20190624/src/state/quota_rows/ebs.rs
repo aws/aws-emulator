@@ -31,10 +31,12 @@ fn direct_api_rate(code: &str, api: &str, scope: &str, per_second: f64) -> Quota
 ///
 /// SOURCE: the recorded default-quota listing of `ebs`, whose gp2 storage-modification row
 /// reads `The maximum aggregated amount of storage, in TiB, that can be requested in volume
-/// modifications across General Purpose SSD (gp2) volumes in this Region.` The class is that
-/// one sentence around what the plane aggregates — with the unit it is counted in where the
-/// plane states one — what may be DONE with it on that plane, and the volume type it is
-/// counted over, so it is built once here.
+/// modifications across General Purpose SSD (gp2) volumes in this Region.` and whose io1
+/// IOPS-modification row reads `The maximum aggregated number of IOPS that can be requested
+/// in volume modifications across Provisioned IOPS SSD (io1) volumes in this Region.` The
+/// class is that one sentence around how the plane's quantity is counted — an AMOUNT of
+/// storage in the TiB it is sold in, a NUMBER of IOPS — what may be DONE with it on that
+/// plane, and the volume type it is counted over, so it is built once here.
 ///
 /// The two planes of a volume type differ in that verb and in nothing else: the capacity
 /// plane itself is what may be PROVISIONED across the type's volumes, while the
@@ -43,7 +45,7 @@ fn direct_api_rate(code: &str, api: &str, scope: &str, per_second: f64) -> Quota
 /// forms).
 fn aggregated_description(aggregated: &str, may_be: &str, volume_type: &str) -> String {
     format!(
-        "The maximum aggregated amount of {aggregated} that can be {may_be} \
+        "The maximum aggregated {aggregated} that can be {may_be} \
          across {volume_type} volumes in this Region."
     )
 }
@@ -59,6 +61,12 @@ fn provisioned_description(aggregated: &str, volume_type: &str) -> String {
 fn modification_description(aggregated: &str, volume_type: &str) -> String {
     aggregated_description(aggregated, "requested in volume modifications", volume_type)
 }
+
+/// How this service counts a STORAGE plane: an amount, in the TiB the capacity is sold in.
+const STORAGE_COUNTED: &str = "amount of storage, in TiB,";
+
+/// How this service counts an IOPS plane: a number of operations per second.
+const IOPS_COUNTED: &str = "number of IOPS";
 
 /// Amazon Elastic Block Store's published default-quota catalog.
 ///
@@ -88,6 +96,11 @@ fn modification_description(aggregated: &str, volume_type: &str) -> String {
 /// provisioned-storage and storage-modification planes, the io1 IOPS-modification plane and
 /// the time-based snapshot-copy throughput of a destination Region, so those codes carry
 /// those planes here and the Magnetic storage plane takes the code the io2 binding vacated.
+/// The listing also states `L-309BACF6` for the SNAPSHOT plane of the Region and
+/// `L-59C8FC87` for the storage-modification plane of the General Purpose SSD (gp3) type,
+/// so those are the quotas those codes publish here; the `DeleteSnapshot` and
+/// `DescribeVolumeStatus` rates this catalog had served under them name no other code that
+/// listing states, so they go to the same gap.
 /// `L-C125AE42` and `L-DB2FBAA1` are codes the recorded listing states in this catalog, so
 /// each answers a row — the attachment plane of a Multi-Attach enabled volume and the
 /// fast-snapshot-restore plane of the Region, the two planes this service publishes that no
@@ -101,7 +114,7 @@ pub(in crate::state) fn ebs_quotas() -> Vec<QuotaRow> {
     let storage = |code: &str, volume_type: &str, tebibytes: f64| {
         quota(format!("Storage for {volume_type} volumes, in TiB"), tebibytes)
             .code(code)
-            .describe(&provisioned_description("storage, in TiB,", volume_type))
+            .describe(&provisioned_description(STORAGE_COUNTED, volume_type))
     };
     // The storage all volumes of one type may be MODIFIED to in the Region, which the
     // service publishes beside the storage plane itself. The TiB it is counted in is named
@@ -112,7 +125,7 @@ pub(in crate::state) fn ebs_quotas() -> Vec<QuotaRow> {
             tebibytes,
         )
         .code(code)
-        .describe(&modification_description("storage, in TiB,", volume_type))
+        .describe(&modification_description(STORAGE_COUNTED, volume_type))
     };
     // An IOPS plane of one volume type: the provisioned IOPS of all volumes of that
     // type in the Region.
@@ -122,7 +135,7 @@ pub(in crate::state) fn ebs_quotas() -> Vec<QuotaRow> {
             operations_per_second,
         )
         .code(code)
-        .describe(&provisioned_description("IOPS", volume_type))
+        .describe(&provisioned_description(IOPS_COUNTED, volume_type))
     };
     // The IOPS all volumes of one type may be MODIFIED to in the Region, published beside
     // the IOPS plane itself the way the storage-modification plane is published beside the
@@ -133,7 +146,7 @@ pub(in crate::state) fn ebs_quotas() -> Vec<QuotaRow> {
             operations_per_second,
         )
         .code(code)
-        .describe(&modification_description("IOPS", volume_type))
+        .describe(&modification_description(IOPS_COUNTED, volume_type))
     };
     vec![
         // The one volume-attachment rate AWS publishes as not adjustable.
@@ -152,7 +165,13 @@ pub(in crate::state) fn ebs_quotas() -> Vec<QuotaRow> {
         direct_api_rate("L-18E976AB", "ListSnapshotBlocks", "account", 50.0),
         rate("L-1D4D9345", "CreateVolume", 100.0).fixed(),
         storage("L-17AF77E8", "Throughput Optimized HDD (st1)", 50.0),
-        rate("L-309BACF6", "DeleteSnapshot", 100.0),
+        // The snapshot plane of the Region, published under the code the recorded listing
+        // states for it: the snapshots the account may hold there at once. The
+        // `DeleteSnapshot` rate this catalog had served here names no other code that
+        // listing states, so it is left to the default-quota-set gap.
+        quota("Snapshots per Region", 100_000.0)
+            .code("L-309BACF6")
+            .describe("The maximum number of snapshots per Region."),
         rate("L-35B31D98", "DeleteVolume", 100.0),
         // The volume-copy plane of the account: how many copies may run AT ONCE, which
         // is a concurrency and not one of the per-API rates beside it. The service words
@@ -164,7 +183,11 @@ pub(in crate::state) fn ebs_quotas() -> Vec<QuotaRow> {
                  this region.",
             ),
         rate("L-3A0E616D", "DescribeSnapshots", 100.0),
-        rate("L-59C8FC87", "DescribeVolumeStatus", 100.0),
+        // The storage-modification plane of the General Purpose SSD (gp3) type, published
+        // under the code the recorded listing states for it; the `DescribeVolumeStatus`
+        // rate this catalog had served here names no other code that listing states, so it
+        // is left to the default-quota-set gap.
+        storage_modifications("L-59C8FC87", "General Purpose SSD (gp3)", 500.0),
         rate("L-5F80CA91", "DescribeVolumes", 100.0),
         rate("L-631ECBD3", "DescribeVolumesModifications", 100.0),
         rate("L-651D1834", "DetachVolume", 100.0),
@@ -246,8 +269,8 @@ pub(in crate::state) fn ebs_quotas() -> Vec<QuotaRow> {
         quota("Time-based snapshot copy throughput per destination Region", 2000.0)
             .code("L-E137849C")
             .describe(
-                "The maximum throughput, in MiB/s, of the time-based snapshot copies running \
-                 to a single destination Region.",
+                "The maximum account-level throughput, in MiB/sec, for time-based snapshot \
+                 copy operations per destination Region.",
             ),
         quota("Archived snapshots per volume", 25.0)
             .code("L-E20676C1")

@@ -73,13 +73,18 @@ fn elb_description(counted: &str) -> String {
 /// `L-B6DF7632`, so that is the code it is published under here, and the CERTIFICATE planes
 /// of an Application and of a Network Load Balancer under `L-9365A611` and `L-52964454`.
 /// `L-37E1617B` is the revocation ENTRIES of a trust store — the entries its lists carry
-/// together, a different quota from the lists themselves (`L-EBC0C08B`) — and `L-8A66D0E6`
-/// is the Region's RESERVED Application Load Balancer capacity, published with nothing
-/// reserved. The two Gateway Load Balancer planes the certificate bindings displaced take
-/// the codes those bindings vacated; the per-Availability Zone subnet plane of a load
-/// balancer names no other code the listing states and is left to the default-quota-set
-/// gap, the way the per-Availability Zone target plane of a Network Load Balancer is — a
-/// code identifies ONE quota (see [`super::descriptive_quota_code`]).
+/// together, a different quota from the lists themselves, which that listing publishes
+/// under `L-332EE142` — and `L-8A66D0E6` is the Region's RESERVED Application Load Balancer
+/// capacity, published with nothing reserved. It publishes the listener plane of a CLASSIC
+/// Load Balancer under `L-1A491844` and the per-Availability Zone target plane of a Network
+/// Load Balancer under `L-B211E961`. The two Gateway Load Balancer planes the certificate
+/// bindings displaced, the per-Region Network Load Balancer plane the Classic listener
+/// binding displaced and the per-Region target group plane the revocation-list binding
+/// displaced take the codes those bindings vacated, each with that code's published
+/// adjustability; the per-Availability Zone subnet plane of a load balancer and the
+/// condition-wildcard plane of a rule name no other code the listing states and are left to
+/// the default-quota-set gap — a code identifies ONE quota (see
+/// [`super::descriptive_quota_code`]).
 ///
 /// Adjustability is published PER CODE and is not a property of the plane: the recorded
 /// listing reports the trust-store, certificate, condition, security-group, tag and
@@ -124,12 +129,15 @@ pub(in crate::state) fn elasticloadbalancing_quotas() -> Vec<QuotaRow> {
             "ClassicLoadBalancersPerRegion",
             "Classic Load Balancers",
         ),
-        metered(
+        // The listener plane of a Classic Load Balancer, published under the code the
+        // recorded listing states for it, with that plane's own resource count; the
+        // per-Region Network Load Balancer plane this catalog had served here takes the
+        // code this binding vacated.
+        plane(
             "L-1A491844",
-            "Network Load Balancers per Region",
-            50.0,
-            "NetworkLoadBalancersPerRegion",
-            "Network Load Balancers",
+            "Listeners per Classic Load Balancer",
+            100.0,
+            "listeners per Classic Load Balancer",
         ),
         // The network-interface plane of a VPC: the ENIs every Network Load Balancer of
         // the VPC takes together, metered by CloudWatch like the per-Region planes. The
@@ -143,21 +151,25 @@ pub(in crate::state) fn elasticloadbalancing_quotas() -> Vec<QuotaRow> {
             "Network Load Balancer ENIs per VPC",
         )
         .describe("The total number of Network Load Balancer eni's per VPC"),
-        metered(
+        // The revocation-LIST plane of a trust store, published under the code the recorded
+        // listing states for it: the lists a trust store may hold, which the service words
+        // with the lists capitalised the way its own quota name does. The per-Region target
+        // group plane this catalog had served here takes the code this binding vacated.
+        unmetered(
             "L-332EE142",
-            "Target groups per Region",
-            3000.0,
-            "TargetGroupsPerRegion",
-            "target groups",
+            "Revocation lists per trust store",
+            30.0,
+            "Revocation lists per trust store",
         ),
         // The revocation-ENTRY plane of a trust store — the entries the lists it holds
         // carry together, which is a different quota from the lists themselves — published
-        // under the code the recorded listing states for it and as adjustable.
+        // under the code the recorded listing states for it and as adjustable. The entries
+        // are capitalised in the sentence the way the quota's own name capitalises them.
         unmetered(
             "L-37E1617B",
             "Revocation entries per trust store",
             500_000.0,
-            "revocation entries per trust store",
+            "Revocation entries per trust store",
         ),
         unmetered(
             "L-43FE5A42",
@@ -173,11 +185,14 @@ pub(in crate::state) fn elasticloadbalancing_quotas() -> Vec<QuotaRow> {
             25.0,
             "certificates per Network Load Balancer",
         ),
-        plane(
+        // The per-Region Network Load Balancer plane the Classic listener binding above
+        // displaced: it takes the code that binding vacated.
+        metered(
             "L-53DA6B97",
-            "Listeners per Classic Load Balancer",
-            100.0,
-            "listeners per Classic Load Balancer",
+            "Network Load Balancers per Region",
+            50.0,
+            "NetworkLoadBalancersPerRegion",
+            "Network Load Balancers",
         ),
         metered(
             "L-57A373D6",
@@ -276,11 +291,15 @@ pub(in crate::state) fn elasticloadbalancing_quotas() -> Vec<QuotaRow> {
             "instances registered with one Classic Load Balancer",
         ),
         unmetered("L-A8F7060B", "Condition values per rule", 5.0, "condition values per rule"),
+        // The per-Availability Zone target plane of a Network Load Balancer, published
+        // under the code the recorded listing states for it, with that plane's own resource
+        // count. The condition-wildcard plane of a rule this catalog had served here names
+        // no other code that listing states, so it is left to the default-quota-set gap.
         plane(
             "L-B211E961",
-            "Condition wildcards per rule",
-            5.0,
-            "condition wildcards per rule",
+            "Targets per Availability Zone per Network Load Balancer",
+            500.0,
+            "targets per Availability Zone per Network Load Balancer",
         ),
         plane(
             "L-B22855CB",
@@ -306,12 +325,16 @@ pub(in crate::state) fn elasticloadbalancing_quotas() -> Vec<QuotaRow> {
             25.0,
             "certificate authority certificates per trust store",
         ),
-        plane(
+        // The per-Region target group plane the revocation-list binding above displaced: it
+        // takes the code that binding vacated, with that code's published adjustability.
+        metered(
             "L-EBC0C08B",
-            "Revocation lists per trust store",
-            10.0,
-            "certificate revocation lists per trust store",
-        ),
+            "Target groups per Region",
+            3000.0,
+            "TargetGroupsPerRegion",
+            "target groups",
+        )
+        .fixed(),
         plane(
             "L-EEF1AD04",
             "Security groups per load balancer",

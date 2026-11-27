@@ -153,9 +153,10 @@ const ROWS: &[Row] = &[
         value: 80_000.0,
         unit: "None",
         adjustable: true,
-        description: "The maximum number of write throughput allocated across all your tables \
-                      and global secondary indexes using provisioned read/write capacity mode. \
-                      For more information, see \
+        description: "The maximum number of write capacity units allocated for the account; \
+                      applicable only for tables (including all associated global secondary \
+                      indexes) in provisioned read/write capacity mode. For more \
+                      information, see \
                       https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/Limits\
                       .html#default-limits-throughput-capacity-modes",
         period: None,
@@ -252,8 +253,9 @@ const ROWS: &[Row] = &[
         unit: "None",
         adjustable: true,
         description: "The maximum number of BatchCheckLayerAvailability requests that you can \
-                      make per second in the current Region. This API is called once per image \
-                      layer when an image is pushed.",
+                      make per second in the current Region. When an image is pushed, the \
+                      BatchCheckLayerAvailability API is called once per image layer to \
+                      verify if that image layer has already been uploaded.",
         period: Some((1, "SECOND")),
         metric: Metric::Calls {
             usage_service: "ECR",

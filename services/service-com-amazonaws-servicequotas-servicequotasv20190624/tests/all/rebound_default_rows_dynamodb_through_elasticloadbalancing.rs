@@ -94,7 +94,10 @@ const ROWS: &[Row] = &[
         value: 20.0,
         unit: "None",
         adjustable: true,
-        description: "The maximum number of global secondary indexes per table.",
+        description: "The maximum number of global secondary indexes that can be created for \
+                      a table. For more information, see, \
+                      https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/\
+                      ServiceQuotas.html#limits-secondary-indexes",
         period: None,
         metric: Metric::None,
     },
@@ -179,7 +182,7 @@ const ROWS: &[Row] = &[
         value: 500_000.0,
         unit: "None",
         adjustable: true,
-        description: "The maximum aggregated amount of IOPS that can be requested in volume \
+        description: "The maximum aggregated number of IOPS that can be requested in volume \
                       modifications across Provisioned IOPS SSD (io1) volumes in this Region.",
         period: None,
         metric: Metric::None,
@@ -194,8 +197,8 @@ const ROWS: &[Row] = &[
         value: 2000.0,
         unit: "None",
         adjustable: true,
-        description: "The maximum throughput, in MiB/s, of the time-based snapshot copies \
-                      running to a single destination Region.",
+        description: "The maximum account-level throughput, in MiB/sec, for time-based \
+                      snapshot copy operations per destination Region.",
         period: None,
         metric: Metric::None,
     },
@@ -221,7 +224,9 @@ const ROWS: &[Row] = &[
         unit: "None",
         adjustable: true,
         description: "The maximum number of PutImage requests that you can make per second in \
-                      the current Region.",
+                      the current Region. When an image is pushed and all new image layers \
+                      have been uploaded, the PutImage API is called once to create or update \
+                      the image manifest and the tags associated with the image.",
         period: Some((1, "SECOND")),
         metric: Metric::Calls {
             usage_service: "ECR",
@@ -236,8 +241,9 @@ const ROWS: &[Row] = &[
         unit: "None",
         adjustable: true,
         description: "The maximum number of BatchCheckLayerAvailability requests that you can \
-                      make per second in the current Region. This API is called once per image \
-                      layer when an image is pushed.",
+                      make per second in the current Region. When an image is pushed, the \
+                      BatchCheckLayerAvailability API is called once per image layer to \
+                      verify if that image layer has already been uploaded.",
         period: Some((1, "SECOND")),
         metric: Metric::Calls {
             usage_service: "ECR",
@@ -308,25 +314,31 @@ const ROWS: &[Row] = &[
         value: 300.0,
         unit: "None",
         adjustable: true,
-        description: "The maximum number of nodes you can create in a Region.",
+        description: "The maximum number of nodes across all clusters in a Region. This quota \
+                      applies to both your reserved and non-reserved nodes within the given \
+                      Region. You can have up to 300 reserved nodes and 300 non-reserved \
+                      nodes in the same Region.",
         period: Some((5, "MINUTE")),
         metric: Metric::Resources {
             usage_service: "ElastiCache",
             resource: "NodesPerRegion",
         },
     },
-    // The Memcached node plane the parameter-group binding displaced, on the code it
-    // vacated and with that code's published adjustability.
+    // The shard plane the Memcached node binding displaced, on the code it vacated and with
+    // that code's published adjustability.
     Row {
         service_code: "elasticache",
         quota_code: "L-7D6587E6",
-        quota_name: "Nodes per cluster (Memcached)",
-        value: 40.0,
+        quota_name: "Shards per cluster (cluster mode enabled)",
+        value: 500.0,
         unit: "None",
         adjustable: false,
-        description: "The maximum number of nodes in one Memcached cluster.",
-        period: None,
-        metric: Metric::None,
+        description: "The maximum number of shards in one cluster with cluster mode enabled.",
+        period: Some((5, "MINUTE")),
+        metric: Metric::Resources {
+            usage_service: "ElastiCache",
+            resource: "ShardsPerCluster",
+        },
     },
     // Two EFS planes published in a unit of their own: the throughput of one NFS client,
     // over the one-second window, and the length of a symbolic link, in bytes.
@@ -344,12 +356,11 @@ const ROWS: &[Row] = &[
     Row {
         service_code: "elasticfilesystem",
         quota_code: "L-B8B14E21",
-        quota_name: "Length of a symbolic link",
-        value: 1024.0,
+        quota_name: "File system symbolic link (symlink) length",
+        value: 4080.0,
         unit: "Bytes",
         adjustable: false,
-        description: "The maximum length, in bytes, of the path a symbolic link in a file \
-                      system points at",
+        description: "The maximum length that a file system symbolic link, or symlink, can be",
         period: None,
         metric: Metric::None,
     },
@@ -392,7 +403,7 @@ const ROWS: &[Row] = &[
         value: 500_000.0,
         unit: "None",
         adjustable: true,
-        description: "The maximum number of revocation entries per trust store",
+        description: "The maximum number of Revocation entries per trust store",
         period: None,
         metric: Metric::None,
     },
@@ -719,12 +730,10 @@ async fn a_rows_family_carries_its_services_wording_on_every_row() {
                             "The maximum number of {api} requests that you can make per second \
                              in the current Region."
                         );
-                        let on_push = format!(
-                            "{class} This API is called once per image layer when an image is \
-                             pushed."
-                        );
+                        let on_push = format!("{class} When an image is pushed");
                         assert!(
-                            text == class || text == on_push,
+                            text == class
+                                || (text.starts_with(&on_push) && text.ends_with('.')),
                             "case {case}: expected {class:?}, alone or closing on the push-path \
                              clause, got {text:?}"
                         );
@@ -793,8 +802,13 @@ async fn a_displaced_plane_never_answers_the_code_it_moved_off() {
         ("dynamodb", "Concurrent export jobs", "L-F7858A77"),
         ("ebs", "Storage for Magnetic (standard) volumes, in TiB", "L-9A0E0F82"),
         ("ecr", "Rate of GetDownloadUrlForLayer requests", "L-AD52DFB2"),
+        ("ecr", "Rate of BatchGetImage requests", "L-95B28F8D"),
         ("elasticache", "Nodes per cluster (Memcached)", "L-3F15A733"),
+        ("elasticache", "Shards per cluster (cluster mode enabled)", "L-8C334AD1"),
+        ("elasticfilesystem", "File systems per account", "L-03A6A61D"),
         ("elasticloadbalancing", "Listeners per Gateway Load Balancer", "L-52964454"),
+        ("elasticloadbalancing", "Network Load Balancers per Region", "L-1A491844"),
+        ("elasticloadbalancing", "Target groups per Region", "L-332EE142"),
         (
             "elasticloadbalancing",
             "Targets per Availability Zone per Gateway Load Balancer",
@@ -804,13 +818,18 @@ async fn a_displaced_plane_never_answers_the_code_it_moved_off() {
     // The planes this catalog can cite no code for at all: published under NO row, rather
     // than under a neighbour's code.
     const UNCITED: &[(&str, &str)] = &[
+        ("dynamodb", "Account-level read throughput limit (On-demand mode)"),
         ("ebs", "Rate of CopySnapshot requests"),
         ("ebs", "Rate of UnlockSnapshot requests"),
         ("ebs", "Rate of ModifySnapshotAttribute requests"),
+        ("ebs", "Rate of DeleteSnapshot requests"),
+        ("ebs", "Rate of DescribeVolumeStatus requests"),
         ("elasticache", "Manual backups per Region"),
+        ("elasticache", "Security groups per Region"),
         ("elasticfilesystem", "Total provisioned throughput per Region"),
         ("elasticfilesystem", "Rate of DescribeAccessPoints requests"),
         ("elasticloadbalancing", "Subnets per Availability Zone per load balancer"),
+        ("elasticloadbalancing", "Condition wildcards per rule"),
     ];
 
     let mut catalogs: BTreeMap<&str, BTreeMap<String, Value>> = BTreeMap::new();

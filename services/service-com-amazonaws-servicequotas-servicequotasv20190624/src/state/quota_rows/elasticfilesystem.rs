@@ -32,6 +32,11 @@ const EFS_USAGE_SERVICE: &str = "EFS";
 /// name no other code the listing states and are left to the default-quota-set gap, the way
 /// the tag plane of a file system is — this catalog can cite no code for it, and a code
 /// identifies ONE quota (see [`super::descriptive_quota_code`]).
+///
+/// That listing also states `L-848C634D` for the FILE-SYSTEM plane of the account, so that
+/// is the code it is published under here, with that code's published adjustability; the
+/// `DeleteAccessPoint` rate this catalog had served there takes the code that binding
+/// vacated (`L-03A6A61D`), with the adjustability of this service's rate class.
 pub(in crate::state) fn elasticfilesystem_quotas() -> Vec<QuotaRow> {
     // This service publishes its per-API rates as NOT adjustable — a per-second API rate is
     // a property of the service rather than a ceiling an account can have raised — so the
@@ -49,12 +54,9 @@ pub(in crate::state) fn elasticfilesystem_quotas() -> Vec<QuotaRow> {
     // this service's planes, so every one of them is worded through this one hook.
     let plane_sentence = |sentence: &str| sentence.trim_end_matches('.').to_string();
     vec![
-        quota("File systems per account", 1000.0)
-            .code("L-03A6A61D")
-            .fixed()
-            .describe(&plane_sentence(
-                "The maximum number of file systems in this account in the current Region.",
-            )),
+        // The access-point deletion rate, on the code the file-system plane below vacated
+        // and with the adjustability this service's rate class is published with.
+        rate("L-03A6A61D", "DeleteAccessPoint", 5.0),
         // The throughput plane of ONE NFS client: how much a single client may drive,
         // published in megabytes over a one-second window rather than as a rate per second
         // in the unit itself, and as fixed. The recorded listing states this code for that
@@ -125,7 +127,16 @@ pub(in crate::state) fn elasticfilesystem_quotas() -> Vec<QuotaRow> {
         rate("L-6D380DD0", "CreateFileSystem", 5.0),
         rate("L-7391004C", "CreateMountTarget", 5.0),
         rate("L-7FEABCD7", "CreateReplicationConfiguration", 5.0),
-        rate("L-848C634D", "DeleteAccessPoint", 5.0).adjustable(),
+        // The file-system plane of the account, published under the code the recorded
+        // listing states for it and with that code's published adjustability: the file
+        // systems one account may have in a Region. The `DeleteAccessPoint` rate this
+        // catalog had served here takes the code this binding vacated.
+        quota("File systems per account", 1000.0)
+            .code("L-848C634D")
+            .describe(&plane_sentence(
+                "The maximum number of file systems that a customer account can have in an \
+                 AWS Region",
+            )),
         rate("L-A139E5A7", "DeleteFileSystem", 5.0),
         // The read-IOPS plane of ONE file system running Elastic throughput: counted per
         // second, like the service's rates, but a plane of the file system rather than a
@@ -139,18 +150,16 @@ pub(in crate::state) fn elasticfilesystem_quotas() -> Vec<QuotaRow> {
         .describe(&plane_sentence(
             "The maximum read IOPS for one file system with Elastic throughput mode enabled.",
         )),
-        // The symbolic-link plane of a file system: how long a link's target path may be,
-        // published in bytes and as fixed. The recorded listing states this code for that
-        // plane, so it carries it here; the `DescribeAccessPoints` rate this catalog had
-        // served under it names no other code that listing states and is left to the
-        // default-quota-set gap.
-        quota("Length of a symbolic link", 1024.0)
+        // The symbolic-link plane of a file system: how long a link may be, published in
+        // bytes and as fixed. The recorded listing states this code for that plane, so it
+        // carries it here; the `DescribeAccessPoints` rate this catalog had served under it
+        // names no other code that listing states and is left to the default-quota-set gap.
+        quota("File system symbolic link (symlink) length", 4080.0)
             .code("L-B8B14E21")
             .unit("Bytes")
             .fixed()
             .describe(&plane_sentence(
-                "The maximum length, in bytes, of the path a symbolic link in a file system \
-                 points at.",
+                "The maximum length that a file system symbolic link, or symlink, can be",
             )),
         rate("L-BFB6FB19", "DescribeFileSystems", 100.0),
         rate("L-C8C0D2A0", "DescribeMountTargets", 100.0),
