@@ -179,8 +179,8 @@ pub fn evaluate(template: &str, context: &Json, budget: ::std::time::Duration) -
             "{TOO_LONG_A_TEMPLATE} {MAX_TEMPLATE_BYTES} bytes."
         )));
     }
-    let nodes = parse_with_position(template)
-        .map_err(|(_, at)| Fault::Fault(parse_diagnostic(template, at)))?;
+    let nodes = parse_with_diagnosis(template)
+        .map_err(|failure| Fault::Fault(parse_diagnostic(template, &failure)))?;
     let mut env = JsonMap::new();
     env.insert(CONTEXT_KEY.to_string(), context.clone());
     let mut run = Run {
@@ -960,29 +960,104 @@ pub(crate) fn within_value_bytes(projected: usize) -> Result<(), String> {
 
 /// How a template that does not PARSE is reported: the diagnostic the Velocity parser states
 /// for text that stopped being a template — the exception class it raises, the token the parse
-/// stopped at, and the line and column that token sits at in the template the caller
-/// submitted.
+/// stopped at, the line and column that token sits at in the template the caller submitted,
+/// and the tokens the grammar would have accepted there.
 ///
-/// `at` is where the parse stopped, in characters
-/// (`::service_common::velocity_template::parse_with_position`). A parse that reached the end
-/// of the text stopped at the end-of-file token, which is what Velocity names it by.
-fn parse_diagnostic(template: &str, at: usize) -> String {
+/// `failure` is what the parse reported about where it stopped
+/// (`::service_common::velocity_template::parse_with_diagnosis`): the index, in characters, and
+/// the accepted-token set of that position. A parse that reached the end of the text stopped at
+/// the end-of-file token, which is what Velocity names it by, and which the parser states at
+/// the last character it read rather than after it.
+///
+/// The accepted tokens are headed the way the parser heads them — `Was expecting one of:` over
+/// a set, `Was expecting:` over a single token — and then listed one four-space-indented
+/// `<TOKEN> ...` line each, the last of them followed by that same indent. A parse that stopped
+/// against one of this endpoint's own bounds rather than against the grammar has no accepted
+/// set, and so is stated as the position alone.
+fn parse_diagnostic(template: &str, failure: &ParseFailure) -> String {
     let characters: Vec<char> = template.chars().collect();
-    let (line, column) = place_of(&characters, at);
-    let token: String = match characters.get(at..) {
-        None | Some([]) => END_OF_TEMPLATE.to_string(),
-        Some(rest) => rest
-            .iter()
-            .take_while(|character| !character.is_whitespace())
-            .take(MAX_TOKEN_CHARACTERS)
-            .collect(),
-    };
-    let token = if token.is_empty() {
-        END_OF_TEMPLATE.to_string()
+    let at = failure.at.min(characters.len());
+    let (line, column) = position_of(&characters, at);
+    let token = offending_token(&characters, at);
+    let mut diagnostic = format!(
+        "{PARSE_ERROR}: Encountered \"{token}\" at {TEMPLATE_NAME}[line {line}, column {column}]"
+    );
+    let accepted = failure.expected.tokens();
+    if accepted.is_empty() {
+        return diagnostic;
+    }
+    diagnostic.push('\n');
+    diagnostic.push_str(if accepted.len() == 1 {
+        WAS_EXPECTING
     } else {
-        token
+        WAS_EXPECTING_ONE_OF
+    });
+    for token in accepted {
+        diagnostic.push_str(ACCEPTED_INDENT);
+        diagnostic.push_str(token);
+        diagnostic.push_str(ACCEPTED_MORE);
+    }
+    diagnostic.push_str(ACCEPTED_INDENT);
+    diagnostic
+}
+
+/// The token the parse stopped at, as the language's own reader takes it off the text: the
+/// run of characters that spell ONE token and nothing of what follows it.
+///
+/// The reader is the one this service reads a template with
+/// (`::service_common::velocity_template`), driven from that one position, so the diagnostic
+/// quotes the token the parse itself read rather than a second reading of the text: a
+/// reference, a directive, a name, a number or a quoted string is however much of the text
+/// that reader takes. Anything else is the operator it spells. Text that ran out stopped at the
+/// end-of-input token, which Velocity names [`END_OF_TEMPLATE`], and however long a token is,
+/// only [`MAX_TOKEN_CHARACTERS`] of it are quoted.
+fn offending_token(characters: &[char], at: usize) -> String {
+    let rest = characters.get(at..).unwrap_or_default();
+    let Some(&first) = rest.first() else {
+        return END_OF_TEMPLATE.to_string();
     };
-    format!("{PARSE_ERROR}: Encountered \"{token}\" at line {line}, column {column}.")
+    let mut reader = Parse::at(characters, at);
+    let read = match first {
+        '$' => reader.reference().is_some(),
+        '#' => reader.directive_name().is_some(),
+        '"' | '\'' => reader.quoted(first).is_ok(),
+        character if character.is_ascii_digit() => reader.number().is_ok(),
+        character if character.is_alphabetic() || character == '_' => {
+            reader.identifier().is_some()
+        }
+        _ => false,
+    };
+    if read && reader.at > at {
+        let end = reader.at.min(at.saturating_add(MAX_TOKEN_CHARACTERS));
+        return characters
+            .get(at..end)
+            .unwrap_or_default()
+            .iter()
+            .collect();
+    }
+    // Everything else is the operator the text spells: two characters where the language
+    // spells one that way, and the character itself otherwise.
+    let pair: String = rest.iter().take(2).collect();
+    if TWO_CHARACTER_OPERATORS.contains(&pair.as_str()) {
+        return pair;
+    }
+    first.to_string()
+}
+
+/// Where the offending token sits in `characters`, as a parse diagnostic states a position.
+///
+/// A token of the text is stated where it BEGINS. The end-of-input token has no text of its
+/// own: the parser states it at the last character it read, so a template that simply stopped
+/// mid-construct is reported at its final character and not at the place after it.
+fn position_of(characters: &[char], at: usize) -> (usize, usize) {
+    if at < characters.len() {
+        return place_of(characters, at);
+    }
+    match characters.len() {
+        // Nothing was read at all, so there is no character the position can point at.
+        0 => (1, 0),
+        length => place_of(characters, length - 1),
+    }
 }
 
 /// Which line and column of `characters` the index `at` sits at, both counted from one, as a
@@ -1007,8 +1082,31 @@ const PARSE_ERROR: &str = "org.apache.velocity.exception.ParseErrorException";
 /// See [`PARSE_ERROR`].
 const END_OF_TEMPLATE: &str = "<EOF>";
 
+/// The name the parser reads a template under, which it states a position INSIDE: a call to
+/// this endpoint carries a template and no name for it, so the position reads
+/// `velocity[line L, column C]` under the parser's own name for the text it was handed.
+const TEMPLATE_NAME: &str = "velocity";
+
+/// How the diagnostic heads the tokens the grammar would have accepted where the parse
+/// stopped, and how it writes each of them: one indented line per token, each stated as one way
+/// the text could have gone on.
+const WAS_EXPECTING_ONE_OF: &str = "Was expecting one of:";
+/// See [`WAS_EXPECTING_ONE_OF`]: a position that accepts exactly one token is headed in the
+/// singular.
+const WAS_EXPECTING: &str = "Was expecting:";
+/// See [`WAS_EXPECTING_ONE_OF`].
+const ACCEPTED_INDENT: &str = "\n    ";
+/// See [`WAS_EXPECTING_ONE_OF`].
+const ACCEPTED_MORE: &str = " ...";
+
 /// How much of the token a parse stopped at the diagnostic quotes.
 const MAX_TOKEN_CHARACTERS: usize = 32;
+
+/// The operators of the language that are spelled with TWO characters, which is how much of
+/// the text one of them takes as the token a parse stopped at ([`offending_token`]). Source:
+/// the operator spellings the one reader of this language takes
+/// (`::service_common::velocity_template`).
+const TWO_CHARACTER_OPERATORS: [&str; 6] = ["==", "!=", "<=", ">=", "&&", "||"];
 
 /// The sentences a template fault states. The ones the SYNTAX states are the language's own
 /// ([`::service_common::velocity_template`]); these are what a RUN of a parsed template

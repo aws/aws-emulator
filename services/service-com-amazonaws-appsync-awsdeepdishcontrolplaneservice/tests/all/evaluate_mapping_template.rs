@@ -358,7 +358,7 @@ async fn a_template_this_cannot_evaluate_is_a_served_error_and_a_bad_context_is_
             answer.status, answer.body
         );
         assert!(
-            message.contains(PARSE_ERROR) && message.contains("at line "),
+            message.contains(PARSE_ERROR) && message.contains("at velocity[line "),
             "case {case:?}: expected the parse diagnostic, got {message:?}"
         );
         assert!(

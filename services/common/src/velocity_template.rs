@@ -149,6 +149,102 @@ pub enum Terminator {
     ElseIf(Expr),
 }
 
+/// What the grammar would have ACCEPTED where a parse stopped.
+///
+/// A parser states a failure by naming the token it stopped at and the tokens it could have
+/// gone on with, so a caller that words a parse failure the way the language's own parser
+/// words one — one line per accepted token — needs the accepted set beside the position.
+/// Each variant is one POSITION OF THE GRAMMAR rather than one construct: what may follow a
+/// complete operand is the same set wherever that operand sits, bar the token the construct
+/// around it closes with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Expected {
+    /// Nothing the grammar states: the parse stopped against one of this reader's own BOUNDS
+    /// (how deeply a template may nest) or against text the language's own lexer, not its
+    /// parser, refuses — neither of which has an accepted-token set.
+    #[default]
+    Unstated,
+    /// Where an operand must BEGIN: a `#set` value, a condition, an argument, an element.
+    Operand,
+    /// Just past a complete operand, inside a construct that closes with `)`.
+    OperandDoneCloseParen,
+    /// Just past a complete argument of a call: another one follows a comma.
+    OperandDoneArgument,
+    /// Just past a complete element of a `[ … ]` list, or of an index.
+    OperandDoneCloseBracket,
+    /// Just past a complete value of a `{ … }` map.
+    OperandDoneCloseCurly,
+    /// Just past a map's key, which its value follows a colon.
+    MapSeparator,
+    /// The `(` a directive's arguments open with.
+    DirectiveArguments,
+    /// The variable a `#set` assigns to or a `#foreach` names.
+    Variable,
+    /// The `=` of a `#set`.
+    Assignment,
+    /// The `in` of a `#foreach`.
+    LoopIn,
+    /// The `#end` an open block is closed by.
+    BlockEnd,
+    /// The `#end`, `#else` or `#elseif` an open conditional is continued or closed by.
+    ConditionalEnd,
+    /// The end of the template: nothing may follow.
+    EndOfTemplate,
+}
+
+impl Expected {
+    /// The accepted tokens, each as the TOKEN IMAGE the language's parser prints for it — a
+    /// named token as `<NAME>`, a token the grammar spells inline as that text in quotes.
+    ///
+    /// The images and the names are the Apache Velocity parser grammar's own
+    /// (`org.apache.velocity.runtime.parser.ParserConstants`: `RPAREN`, `LPAREN`,
+    /// `WHITESPACE`, `IDENTIFIER`, `STRING_LITERAL`, `INTEGER_LITERAL`,
+    /// `FLOATING_POINT_LITERAL`, `TRUE`, `FALSE`, `LOGICAL_NOT`, `LOGICAL_AND`, `LOGICAL_OR`,
+    /// `LOGICAL_LT`, `LOGICAL_LE`, `LOGICAL_GT`, `LOGICAL_GE`, `LOGICAL_EQUALS`,
+    /// `LOGICAL_NOT_EQUALS`, `IN`, `END`, `ELSE`, `ELSEIF`, `EOF`), which is what a diagnostic
+    /// of that parser lists them under; the arithmetic operators, the index and the grouping
+    /// characters are spelled inline by that grammar and so are listed quoted.
+    #[must_use]
+    pub fn tokens(self) -> Vec<&'static str> {
+        // What may follow a COMPLETE operand: the expression may be indexed, the construct
+        // around it may close, space may separate it from either, or a binary operator may
+        // carry the expression on.
+        let after_operand = |closers: &[&'static str]| {
+            let mut tokens = vec![INDEX_TOKEN];
+            tokens.extend_from_slice(closers);
+            tokens.push(WHITESPACE_TOKEN);
+            tokens.extend_from_slice(&ARITHMETIC_TOKENS);
+            tokens.extend_from_slice(&LOGICAL_TOKENS);
+            tokens
+        };
+        match self {
+            Self::Unstated => Vec::new(),
+            Self::Operand => OPERAND_TOKENS.to_vec(),
+            Self::OperandDoneCloseParen => after_operand(&[CLOSE_PAREN_TOKEN]),
+            Self::OperandDoneArgument => after_operand(&[CLOSE_PAREN_TOKEN, COMMA_TOKEN]),
+            Self::OperandDoneCloseBracket => after_operand(&[CLOSE_BRACKET_TOKEN, COMMA_TOKEN]),
+            Self::OperandDoneCloseCurly => after_operand(&[CLOSE_CURLY_TOKEN, COMMA_TOKEN]),
+            Self::MapSeparator => vec![COLON_TOKEN, WHITESPACE_TOKEN],
+            Self::DirectiveArguments => vec![OPEN_PAREN_TOKEN, WHITESPACE_TOKEN],
+            Self::Variable => vec![IDENTIFIER_TOKEN, WHITESPACE_TOKEN],
+            Self::Assignment => vec![ASSIGN_TOKEN, WHITESPACE_TOKEN],
+            Self::LoopIn => vec![IN_TOKEN, WHITESPACE_TOKEN],
+            Self::BlockEnd => vec![END_TOKEN],
+            Self::ConditionalEnd => vec![END_TOKEN, ELSE_TOKEN, ELSEIF_TOKEN],
+            Self::EndOfTemplate => vec![END_OF_INPUT_TOKEN],
+        }
+    }
+}
+
+/// A parse that did not finish: why it stopped, WHERE it stopped — the index, in CHARACTERS,
+/// the cursor had reached — and what the grammar would have accepted there.
+#[derive(Debug, Clone)]
+pub struct ParseFailure {
+    pub why: String,
+    pub at: usize,
+    pub expected: Expected,
+}
+
 /// Parse a whole template.
 pub fn parse(template: &str) -> Result<Vec<Node>, String> {
     parse_with_position(template).map_err(|(why, _)| why)
@@ -161,18 +257,35 @@ pub fn parse(template: &str) -> Result<Vec<Node>, String> {
 /// column and the token the parse stopped at — needs the position as well as the reason, which
 /// is why this is the parse [`parse`] itself is written in terms of.
 pub fn parse_with_position(template: &str) -> Result<Vec<Node>, (String, usize)> {
+    parse_with_diagnosis(template).map_err(|failure| (failure.why, failure.at))
+}
+
+/// Parse a whole template, reporting everything a DIAGNOSTIC of the failure states: why the
+/// parse stopped, where it stopped and what the grammar would have accepted there
+/// ([`ParseFailure`]).
+///
+/// This is the parse the two above are written in terms of, for a caller that words a parse
+/// failure the way the language's own parser words one.
+pub fn parse_with_diagnosis(template: &str) -> Result<Vec<Node>, ParseFailure> {
     let characters: Vec<char> = template.chars().collect();
-    let mut parse = Parse {
-        src: &characters,
-        at: 0,
-        nesting: 0,
-    };
+    let mut parse = Parse::at(&characters, 0);
     let parsed = parse.block();
     let at = parse.at.min(characters.len());
-    let (nodes, terminator) = parsed.map_err(|why| (why, at))?;
+    let (nodes, terminator) = parsed.map_err(|why| ParseFailure {
+        why,
+        at,
+        expected: parse.expected,
+    })?;
     match terminator {
         Terminator::Eof => Ok(nodes),
-        _ => Err((UNEXPECTED_DIRECTIVE.to_string(), at)),
+        // A block-closing directive at the top level closes a block nothing opened, and the
+        // DIRECTIVE is what the parse stopped at, so the failure is stated where that
+        // directive begins rather than wherever reading it left the cursor.
+        _ => Err(ParseFailure {
+            why: UNEXPECTED_DIRECTIVE.to_string(),
+            at: parse.terminator_at.min(characters.len()),
+            expected: Expected::EndOfTemplate,
+        }),
     }
 }
 
@@ -186,6 +299,12 @@ pub struct Parse<'t> {
     pub at: usize,
     /// How deeply the parse is nested, which [`MAX_NESTING`] bounds.
     pub nesting: usize,
+    /// What the grammar would have accepted where this parse last stopped, which the failure
+    /// that stopped it records as it is raised ([`Parse::expecting`]).
+    pub expected: Expected,
+    /// Where the block-closing directive that ended the last block begins, which is where a
+    /// parse stopped when it is one that closed a block nothing had opened.
+    pub terminator_at: usize,
 }
 
 impl<'t> Parse<'t> {
@@ -196,16 +315,26 @@ impl<'t> Parse<'t> {
             src,
             at,
             nesting: 0,
+            expected: Expected::Unstated,
+            terminator_at: at,
         }
     }
 }
 
 impl Parse<'_> {
+    /// State a failure: `why` the parse stopped, recording what the grammar would have
+    /// accepted at the cursor so the diagnostic of it can list those tokens.
+    pub fn expecting(&mut self, expected: Expected, why: &str) -> String {
+        self.expected = expected;
+        why.to_string()
+    }
+
     /// Enter one level of nesting, or refuse a template that nests past the bound.
     pub fn deeper(&mut self) -> Result<(), String> {
         self.nesting = self.nesting.saturating_add(1);
         if self.nesting > MAX_NESTING {
-            return Err(format!("{TOO_DEEP} {MAX_NESTING}."));
+            let why = format!("{TOO_DEEP} {MAX_NESTING}.");
+            return Err(self.expecting(Expected::Unstated, &why));
         }
         Ok(())
     }
@@ -303,16 +432,19 @@ impl Parse<'_> {
                             self.skip_trailing_newline();
                         }
                         "end" => {
+                            self.terminator_at = hash;
                             self.skip_trailing_newline();
                             flush(&mut text, &mut nodes);
                             return Ok((nodes, Terminator::End));
                         }
                         "else" => {
+                            self.terminator_at = hash;
                             self.skip_trailing_newline();
                             flush(&mut text, &mut nodes);
                             return Ok((nodes, Terminator::Else));
                         }
                         "elseif" => {
+                            self.terminator_at = hash;
                             let condition = self.parenthesised()?;
                             self.skip_trailing_newline();
                             flush(&mut text, &mut nodes);
@@ -529,7 +661,7 @@ impl Parse<'_> {
     /// The argument list the cursor is on: `(` expressions `)`.
     pub fn arguments(&mut self) -> Result<Vec<Expr>, String> {
         if self.peek(0) != Some('(') {
-            return Err(NOT_AN_ARGUMENT_LIST.to_string());
+            return Err(self.expecting(Expected::DirectiveArguments, NOT_AN_ARGUMENT_LIST));
         }
         self.at += 1;
         let mut args = Vec::new();
@@ -550,7 +682,9 @@ impl Parse<'_> {
                     self.at += 1;
                     return Ok(args);
                 }
-                _ => return Err(NOT_AN_ARGUMENT_LIST.to_string()),
+                _ => {
+                    return Err(self.expecting(Expected::OperandDoneArgument, NOT_AN_ARGUMENT_LIST))
+                }
             }
         }
     }
@@ -576,7 +710,7 @@ impl Parse<'_> {
         let value = self.expression()?;
         self.skip_spaces();
         if self.peek(0) != Some(')') {
-            return Err(NOT_A_DIRECTIVE.to_string());
+            return Err(self.expecting(Expected::OperandDoneCloseParen, NOT_A_DIRECTIVE));
         }
         self.at += 1;
         Ok(Some(value))
@@ -586,13 +720,13 @@ impl Parse<'_> {
     pub fn parenthesised(&mut self) -> Result<Expr, String> {
         self.skip_spaces();
         if self.peek(0) != Some('(') {
-            return Err(NOT_A_DIRECTIVE.to_string());
+            return Err(self.expecting(Expected::DirectiveArguments, NOT_A_DIRECTIVE));
         }
         self.at += 1;
         let expression = self.expression()?;
         self.skip_spaces();
         if self.peek(0) != Some(')') {
-            return Err(NOT_A_DIRECTIVE.to_string());
+            return Err(self.expecting(Expected::OperandDoneCloseParen, NOT_A_DIRECTIVE));
         }
         self.at += 1;
         Ok(expression)
@@ -602,22 +736,22 @@ impl Parse<'_> {
     pub fn assignment(&mut self) -> Result<(Reference, Expr), String> {
         self.skip_spaces();
         if self.peek(0) != Some('(') {
-            return Err(NOT_A_DIRECTIVE.to_string());
+            return Err(self.expecting(Expected::DirectiveArguments, NOT_A_DIRECTIVE));
         }
         self.at += 1;
         self.skip_spaces();
         let Some((target, _, _)) = self.reference() else {
-            return Err(NOT_AN_ASSIGNMENT.to_string());
+            return Err(self.expecting(Expected::Variable, NOT_AN_ASSIGNMENT));
         };
         self.skip_spaces();
         if self.peek(0) != Some('=') {
-            return Err(NOT_AN_ASSIGNMENT.to_string());
+            return Err(self.expecting(Expected::Assignment, NOT_AN_ASSIGNMENT));
         }
         self.at += 1;
         let value = self.expression()?;
         self.skip_spaces();
         if self.peek(0) != Some(')') {
-            return Err(NOT_AN_ASSIGNMENT.to_string());
+            return Err(self.expecting(Expected::OperandDoneCloseParen, NOT_AN_ASSIGNMENT));
         }
         self.at += 1;
         Ok((target, value))
@@ -650,10 +784,10 @@ impl Parse<'_> {
                             branches,
                             otherwise,
                         }),
-                        _ => Err(NO_END.to_string()),
+                        _ => Err(self.expecting(Expected::BlockEnd, NO_END)),
                     };
                 }
-                Terminator::Eof => return Err(NO_END.to_string()),
+                Terminator::Eof => return Err(self.expecting(Expected::ConditionalEnd, NO_END)),
             }
         }
     }
@@ -662,12 +796,12 @@ impl Parse<'_> {
     pub fn loop_over(&mut self) -> Result<Node, String> {
         self.skip_spaces();
         if self.peek(0) != Some('(') {
-            return Err(NOT_A_DIRECTIVE.to_string());
+            return Err(self.expecting(Expected::DirectiveArguments, NOT_A_DIRECTIVE));
         }
         self.at += 1;
         self.skip_spaces();
         if self.peek(0) != Some('$') {
-            return Err(NOT_A_LOOP.to_string());
+            return Err(self.expecting(Expected::Variable, NOT_A_LOOP));
         }
         self.at += 1;
         let braced = self.peek(0) == Some('{');
@@ -675,27 +809,27 @@ impl Parse<'_> {
             self.at += 1;
         }
         let Some(name) = self.identifier() else {
-            return Err(NOT_A_LOOP.to_string());
+            return Err(self.expecting(Expected::Variable, NOT_A_LOOP));
         };
         if braced && self.peek(0) == Some('}') {
             self.at += 1;
         }
         self.skip_spaces();
         if !self.matches(&['i', 'n']) {
-            return Err(NOT_A_LOOP.to_string());
+            return Err(self.expecting(Expected::LoopIn, NOT_A_LOOP));
         }
         self.at += 2;
         let over = self.expression()?;
         self.skip_spaces();
         if self.peek(0) != Some(')') {
-            return Err(NOT_A_LOOP.to_string());
+            return Err(self.expecting(Expected::OperandDoneCloseParen, NOT_A_LOOP));
         }
         self.at += 1;
         self.skip_trailing_newline();
         let (body, terminator) = self.block()?;
         match terminator {
             Terminator::End => Ok(Node::ForEach { name, over, body }),
-            _ => Err(NO_END.to_string()),
+            _ => Err(self.expecting(Expected::BlockEnd, NO_END)),
         }
     }
 
@@ -893,14 +1027,14 @@ impl Parse<'_> {
                 let inner = self.expression()?;
                 self.skip_spaces();
                 if self.peek(0) != Some(')') {
-                    return Err(NOT_AN_EXPRESSION.to_string());
+                    return Err(self.expecting(Expected::OperandDoneCloseParen, NOT_AN_EXPRESSION));
                 }
                 self.at += 1;
                 Ok(inner)
             }
             Some('$') => match self.reference() {
                 Some((reference, _, _)) => Ok(Expr::Reference(reference)),
-                None => Err(NOT_AN_EXPRESSION.to_string()),
+                None => Err(self.expecting(Expected::Operand, NOT_AN_EXPRESSION)),
             },
             Some('\'') => {
                 let text = self.quoted('\'')?;
@@ -911,15 +1045,18 @@ impl Parse<'_> {
                 // A double-quoted string carries references, so it renders as a template.
                 if text.contains('$') || text.contains('#') {
                     let nested: Vec<char> = text.chars().collect();
-                    let mut parse = Parse {
-                        src: &nested,
-                        at: 0,
-                        nesting: self.nesting,
-                    };
-                    let (nodes, terminator) = parse.block()?;
+                    let mut parse = Parse::at(&nested, 0);
+                    parse.nesting = self.nesting;
+                    let parsed = parse.block();
+                    // The string is a template of its own, parsed by its own cursor, so what
+                    // the grammar accepted where THAT parse stopped is carried back out to be
+                    // stated: only the position stays this one's, because the inner cursor
+                    // counts from the start of the string rather than of the template.
+                    self.expected = parse.expected;
+                    let (nodes, terminator) = parsed?;
                     return match terminator {
                         Terminator::Eof => Ok(Expr::Interpolated(nodes)),
-                        _ => Err(UNEXPECTED_DIRECTIVE.to_string()),
+                        _ => Err(self.expecting(Expected::EndOfTemplate, UNEXPECTED_DIRECTIVE)),
                     };
                 }
                 Ok(Expr::Literal(Json::String(text)))
@@ -941,7 +1078,10 @@ impl Parse<'_> {
                             self.at += 1;
                             return Ok(Expr::List(elements));
                         }
-                        _ => return Err(NOT_AN_EXPRESSION.to_string()),
+                        _ => {
+                            return Err(self
+                                .expecting(Expected::OperandDoneCloseBracket, NOT_AN_EXPRESSION))
+                        }
                     }
                 }
             }
@@ -957,7 +1097,7 @@ impl Parse<'_> {
                     let key = self.expression()?;
                     self.skip_spaces();
                     if self.peek(0) != Some(':') {
-                        return Err(NOT_AN_EXPRESSION.to_string());
+                        return Err(self.expecting(Expected::MapSeparator, NOT_AN_EXPRESSION));
                     }
                     self.at += 1;
                     let value = self.expression()?;
@@ -969,23 +1109,27 @@ impl Parse<'_> {
                             self.at += 1;
                             return Ok(Expr::Map(entries));
                         }
-                        _ => return Err(NOT_AN_EXPRESSION.to_string()),
+                        _ => {
+                            return Err(
+                                self.expecting(Expected::OperandDoneCloseCurly, NOT_AN_EXPRESSION)
+                            )
+                        }
                     }
                 }
             }
             Some(character) if character.is_ascii_digit() || character == '-' => self.number(),
             Some(character) if character.is_alphabetic() => {
                 let Some(word) = self.identifier() else {
-                    return Err(NOT_AN_EXPRESSION.to_string());
+                    return Err(self.expecting(Expected::Operand, NOT_AN_EXPRESSION));
                 };
                 match word.as_str() {
                     "true" => Ok(Expr::Literal(Json::Bool(true))),
                     "false" => Ok(Expr::Literal(Json::Bool(false))),
                     "null" => Ok(Expr::Literal(Json::Null)),
-                    _ => Err(NOT_AN_EXPRESSION.to_string()),
+                    _ => Err(self.expecting(Expected::Operand, NOT_AN_EXPRESSION)),
                 }
             }
-            _ => Err(NOT_AN_EXPRESSION.to_string()),
+            _ => Err(self.expecting(Expected::Operand, NOT_AN_EXPRESSION)),
         }
     }
 
@@ -1010,9 +1154,10 @@ impl Parse<'_> {
             }
         }
         let text: String = self.src[start..self.at].iter().collect();
-        text.parse::<f64>()
-            .map(|parsed| Expr::Literal(number(parsed)))
-            .map_err(|_| NOT_AN_EXPRESSION.to_string())
+        match text.parse::<f64>() {
+            Ok(parsed) => Ok(Expr::Literal(number(parsed))),
+            Err(_) => Err(self.expecting(Expected::Operand, NOT_AN_EXPRESSION)),
+        }
     }
 
     /// The quoted string the cursor is on, with its escapes resolved.
@@ -1038,7 +1183,9 @@ impl Parse<'_> {
             }
             text.push(character);
         }
-        Err(NOT_AN_EXPRESSION.to_string())
+        // A string the text never closes is what the LEXER refuses rather than the parser, so
+        // there is no accepted-token set to state for it.
+        Err(self.expecting(Expected::Unstated, NOT_AN_EXPRESSION))
     }
 }
 
@@ -1369,6 +1516,69 @@ fn kind_of(value: &Json) -> &'static str {
         Json::Object(_) => "a map",
     }
 }
+
+// The TOKEN IMAGES an accepted-token set is listed under ([`Expected::tokens`]). A named token
+// of the Apache Velocity parser grammar is written `<NAME>` under that grammar's own name for
+// it; a token that grammar spells inline is written as that text, quoted.
+/// `[`, which indexes the expression to its left.
+const INDEX_TOKEN: &str = "\"[\"";
+/// The `)` and `(` a construct's arguments close and open with.
+const CLOSE_PAREN_TOKEN: &str = "<RPAREN>";
+/// See [`CLOSE_PAREN_TOKEN`].
+const OPEN_PAREN_TOKEN: &str = "<LPAREN>";
+/// The space a construct's parts may be written around.
+const WHITESPACE_TOKEN: &str = "<WHITESPACE>";
+/// The `,` another argument, element or entry follows.
+const COMMA_TOKEN: &str = "\",\"";
+/// The `]` a list or an index closes with.
+const CLOSE_BRACKET_TOKEN: &str = "\"]\"";
+/// The `}` a map closes with, and the `:` its key is followed by.
+const CLOSE_CURLY_TOKEN: &str = "\"}\"";
+/// See [`CLOSE_CURLY_TOKEN`].
+const COLON_TOKEN: &str = "\":\"";
+/// The `=` a `#set` assigns with.
+const ASSIGN_TOKEN: &str = "\"=\"";
+/// The name a variable is written under.
+const IDENTIFIER_TOKEN: &str = "<IDENTIFIER>";
+/// The `in` of a `#foreach`.
+const IN_TOKEN: &str = "<IN>";
+/// The directives a block is continued or closed by.
+const END_TOKEN: &str = "<END>";
+/// See [`END_TOKEN`].
+const ELSE_TOKEN: &str = "<ELSE>";
+/// See [`END_TOKEN`].
+const ELSEIF_TOKEN: &str = "<ELSEIF>";
+/// The end of the template, which is the token a parse that ran out of text stopped at.
+const END_OF_INPUT_TOKEN: &str = "<EOF>";
+/// The arithmetic operators an expression may carry on with, which the grammar spells inline.
+const ARITHMETIC_TOKENS: [&str; 5] = ["\"-\"", "\"+\"", "\"*\"", "\"/\"", "\"%\""];
+/// The logical and relational operators it may carry on with, each a named token.
+const LOGICAL_TOKENS: [&str; 8] = [
+    "<LOGICAL_AND>",
+    "<LOGICAL_OR>",
+    "<LOGICAL_LT>",
+    "<LOGICAL_LE>",
+    "<LOGICAL_GT>",
+    "<LOGICAL_GE>",
+    "<LOGICAL_EQUALS>",
+    "<LOGICAL_NOT_EQUALS>",
+];
+/// What an OPERAND may begin with: a reference or a word, a literal of each kind the language
+/// has, a prefix operator, a grouped expression, a list or a map.
+const OPERAND_TOKENS: [&str; 12] = [
+    WHITESPACE_TOKEN,
+    OPEN_PAREN_TOKEN,
+    IDENTIFIER_TOKEN,
+    "<STRING_LITERAL>",
+    "<INTEGER_LITERAL>",
+    "<FLOATING_POINT_LITERAL>",
+    "<TRUE>",
+    "<FALSE>",
+    "<LOGICAL_NOT>",
+    "\"-\"",
+    INDEX_TOKEN,
+    "\"{\"",
+];
 
 /// The sentences a template fault states.
 pub const UNEXPECTED_DIRECTIVE: &str =
