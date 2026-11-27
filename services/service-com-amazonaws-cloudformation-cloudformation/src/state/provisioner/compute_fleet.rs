@@ -1572,6 +1572,72 @@ pub(crate) async fn set_group_capacity(
     .map(|_| ())
 }
 
+/// The process that "adds instances to the Auto Scaling group when the group scales out", as
+/// that service's own catalog names it (`ProcessType$ProcessName`).
+///
+/// It is also what launches the REPLACEMENT a terminated instance leaves owed — "if you do not
+/// specify the option to decrement the desired capacity, Amazon EC2 Auto Scaling launches
+/// instances to replace the ones that are terminated"
+/// (`TerminateInstanceInAutoScalingGroup`) — so a group that has it suspended holds the
+/// capacity it is short of rather than launching into it, and launches it when the process is
+/// resumed.
+const AUTOSCALING_LAUNCH_PROCESS: &str = "Launch";
+
+/// Hold the group `name` back from LAUNCHING, which is what lets a batch of a rolling update
+/// take its instances out of service before their replacements are launched.
+///
+/// `SuspendProcesses` "suspends the specified auto scaling processes … for the specified Auto
+/// Scaling group", and this names the one process whose suspension withholds the launch
+/// ([`AUTOSCALING_LAUNCH_PROCESS`]): everything else the group does — the health it reports,
+/// the instances it takes out of service — is left running.
+pub(crate) async fn withhold_group_launches(
+    ctx: &smithy_server_runtime::OperationContext<'_>,
+    region: &str,
+    name: &str,
+) -> Result<(), Refusal> {
+    scaling_process_call(ctx, region, name, "SuspendProcesses").await
+}
+
+/// Let the group `name` launch again, which is what brings a batch's replacements up.
+///
+/// `ResumeProcesses` "resumes the specified auto scaling processes": the group then does again
+/// what the process does, which is to bring its instances to the capacity it holds — the
+/// capacity the batch's termination left it short of.
+pub(crate) async fn resume_group_launches(
+    ctx: &smithy_server_runtime::OperationContext<'_>,
+    region: &str,
+    name: &str,
+) -> Result<(), Refusal> {
+    scaling_process_call(ctx, region, name, "ResumeProcesses").await
+}
+
+/// The one call both of those make: `ScalingProcessQuery` carries the group and the processes
+/// it names, so a suspension and a resumption of the same process differ only in the action.
+async fn scaling_process_call(
+    ctx: &smithy_server_runtime::OperationContext<'_>,
+    region: &str,
+    name: &str,
+    action: &str,
+) -> Result<(), Refusal> {
+    let parameters = vec![
+        ("AutoScalingGroupName".to_string(), name.to_string()),
+        (
+            "ScalingProcesses.member.1".to_string(),
+            AUTOSCALING_LAUNCH_PROCESS.to_string(),
+        ),
+    ];
+    call_query(
+        ctx,
+        AUTOSCALING_SIGNING_NAME,
+        region,
+        AUTOSCALING_API_VERSION,
+        action,
+        &parameters,
+    )
+    .await
+    .map(|_| ())
+}
+
 /// The Auto Scaling group as that service reports it NOW, or `None` where it reports no such
 /// group: the scalar members of the one entry `DescribeAutoScalingGroups` answers for the
 /// name, in the spellings this TYPE declares them in

@@ -271,6 +271,17 @@ pub struct StoredStack {
     /// status is not owed while one is unfinished ([`Self::settle`]), exactly as it is not
     /// while a resource-signal wait is unsatisfied. Empty for every other operation.
     pub rolling_updates: Vec<rolling_update::RollingUpdate>,
+    /// The Auto Scaling groups — by the name that service addresses each by, which is the
+    /// group's physical id — whose `Launch` process this service has SUSPENDED so that a batch
+    /// of a rolling update takes its instances out of service before their replacements are
+    /// launched ([`rolling_update::BATCH_REPLACEMENT`]).
+    ///
+    /// Kept on the STACK rather than on the replacement that made it, and not cleared when an
+    /// operation opens: a suspension is CloudFormation's to lift whatever became of that
+    /// operation, so the pass that carries the replacements out lifts the ones no open
+    /// replacement needs ([`StoredStack::stale_withheld_group_launches`]). At most one entry
+    /// per Auto Scaling group of the stack, so it is bounded by the resources a stack may hold.
+    pub withheld_group_launches: BTreeSet<String>,
     /// The exported output values this stack's deployed template IMPORTS, keyed by export
     /// name: "the value of an output exported by another stack", resolved once where the
     /// template was deployed. A stack that imports an export is what `ListImports` reports
@@ -390,6 +401,7 @@ impl StoredStack {
             retained_event_properties_bytes: 0,
             signals: ::std::collections::VecDeque::new(),
             rolling_updates: Vec::new(),
+            withheld_group_launches: BTreeSet::new(),
             imports: BTreeMap::new(),
             stack_outputs: super::stack_outputs::Values::new(),
             adopted: BTreeMap::new(),

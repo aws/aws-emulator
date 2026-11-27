@@ -20,11 +20,14 @@
 //!
 //! So an update of such a group is not one call to the owning service: it is that call
 //! followed by one batch per `MaxBatchSize` instances, each of which the stack's operation
-//! stays `UPDATE_IN_PROGRESS` across. That is what makes the replacement OBSERVABLE through
-//! the owning service's own reads — a client polling the group sees the in-service count dip
-//! by at most `MaxBatchSize`, never below `MinInstancesInService` and never above the group's
-//! desired capacity — and what makes a bad revision catchable: nothing is replaced past the
-//! batch whose instances reported their own bootstrap failed.
+//! stays `UPDATE_IN_PROGRESS` across. Each batch is itself in two halves — its instances leave
+//! service BEFORE their replacements are launched, and the group holds the capacity they left
+//! for the span a replacement takes to come up ([`BATCH_REPLACEMENT`]) — and that is what makes
+//! the replacement OBSERVABLE through the owning service's own reads: a client polling the
+//! group sees the in-service count dip by at most `MaxBatchSize`, held there long enough to be
+//! read, never below `MinInstancesInService` and never above the group's desired capacity. It
+//! is also what makes a bad revision catchable: nothing is replaced past the batch whose
+//! instances reported their own bootstrap failed.
 //!
 //! This module is the MODEL of that: what the policy states ([`RollingUpdatePolicy`]), which
 //! of a deployment's resources carry one ([`declared`]), the state one replacement in flight
@@ -78,6 +81,30 @@ const DEFAULT_MIN_SUCCESSFUL_INSTANCES_PERCENT: u64 = 100;
 /// Default: PT0S (zero seconds). If the `WaitOnResourceSignals` property is set to true, the
 /// default is PT5M."
 const DEFAULT_SIGNALLED_PAUSE_TIME: Duration = Duration::from_secs(300);
+
+/// How long ONE batch of a replacement takes to bring its replacements up: the span between
+/// the batch's instances leaving service and their replacements being launched.
+///
+/// A batch is a COMPOSITE of moves another service makes — the batch's instances go out of
+/// service, the group launches a replacement for each, and each replacement comes into service
+/// — and the whole point of the policy is that a client watching the group sees it happen:
+/// "the minimum number of instances that must be in service … while CloudFormation updates old
+/// instances" is a floor a reader can hold the update to only while there is something to
+/// read. So the group holds the capacity the batch took out of service for this span, which is
+/// the dip the floor is a floor under.
+///
+/// The value is CHOSEN, not an AWS-published figure, and is never slept for: it is stored as
+/// the instant the batch's replacements come due and materialised by whichever pass finds it
+/// past. It is the span this emulator gives a transition the CLOCK — rather than a caller —
+/// brings about, which is what a batch is: the composite of the moves above, longer than any
+/// one of the single lifecycle spans the owning service gives them, so a client polling the
+/// group gets several looks at each batch rather than finding the whole group swapped between
+/// two of them. A replacement of a group therefore takes about one such span per batch. Its
+/// CEILING is the window the batch itself is bounded by ([`RollingUpdate::batch_deadline`]):
+/// the span the policy gives a batch to come through ("`PauseTime` … the amount of time that
+/// CloudFormation should wait for the Auto Scaling group to receive the required number of
+/// signals") has to outlast it, or no batch could ever come through.
+pub const BATCH_REPLACEMENT: Duration = Duration::from_secs(3);
 
 /// What one `AutoScalingRollingUpdate` states, with every member a declaration leaves out at
 /// the default that member documents.
@@ -292,9 +319,14 @@ pub struct RecordedSignals {
 pub enum BatchStep {
     /// Nothing: the batch in flight has not come through yet, so the next one does not start.
     Hold,
-    /// Terminate these instances of the group, which is what makes it launch their
-    /// replacements from the configuration now in force.
+    /// Hold the group back from launching and terminate these instances of it, which is what
+    /// takes the batch out of service before its replacements are launched.
     Replace(Vec<String>),
+    /// Let the group launch again, now that the batch's instances are out of service and the
+    /// span their replacements take to come up has passed, and ask it for the capacity it
+    /// carries — the one it already holds — so it brings a replacement for each of them up from
+    /// the configuration the update put in force.
+    LaunchReplacements(usize),
     /// Ask the group to hold this many instances: more than it was declared with, so that it
     /// launches a replacement before an old instance is taken out — which is what a group that
     /// can spare none of its instances above `MinInstancesInService` needs before any batch of
@@ -331,7 +363,9 @@ impl RollingUpdate {
     }
 
     /// The one step this replacement owes at `now`, given what the owning service reports
-    /// about the group and the signals the stack has recorded for it.
+    /// about the group, the signals the stack has recorded for it, and whether the group's
+    /// launches are the ones this replacement is holding back
+    /// ([`super::StoredStack::withholds_group_launch`]).
     ///
     /// Pure: the caller is what makes the calls the step asks for and what records what they
     /// answered ([`crate::state::provisioning::rolling_update`]), so the decision is made the
@@ -342,6 +376,7 @@ impl RollingUpdate {
         &self,
         reported: &GroupReport,
         signals: &RecordedSignals,
+        launch_withheld: bool,
         now: SystemTime,
     ) -> BatchStep {
         let held = reported.held();
@@ -364,6 +399,21 @@ impl RollingUpdate {
         // How many of the instances this replacement found have been replaced already, which
         // is what the signals the batches have collected are counted against.
         let replaced = self.original.len().saturating_sub(outstanding.len());
+        // While the group's launches are this replacement's to release, the batch is between
+        // its two halves: its instances have been taken out of service and their replacements
+        // are not launched yet, and NOTHING else of the replacement can make progress until
+        // the group holds its capacity again. They are asked for once the batch's instances are
+        // really gone — "the instances are not terminated immediately"
+        // (`TerminateInstanceInAutoScalingGroup`), and a replacement of an instance the group
+        // still holds is not a replacement — and once the span a replacement takes to come up
+        // has passed ([`BATCH_REPLACEMENT`]), which is the dip this policy's floor is a floor
+        // under.
+        if launch_withheld {
+            if batch_in_flight || !self.replacements_due(now) {
+                return self.held_or_expired(now, replaced, signals);
+            }
+            return BatchStep::LaunchReplacements(reported.desired_capacity);
+        }
         if batch_in_flight || !self.batch.is_empty() {
             // The batch is through when the group is back to its desired size with the
             // replacements in service and they have signalled what the policy asks for.
@@ -466,6 +516,14 @@ impl RollingUpdate {
         self.batch_started_at
             .checked_add(window)
             .unwrap_or(self.batch_started_at)
+    }
+
+    /// Whether the span the batch in flight takes to bring its replacements up has passed
+    /// ([`BATCH_REPLACEMENT`]), counted from the instant the batch was taken out of service.
+    fn replacements_due(&self, now: SystemTime) -> bool {
+        self.batch_started_at
+            .checked_add(BATCH_REPLACEMENT)
+            .is_none_or(|due| due <= now)
     }
 
     /// Whether the span the policy asks CloudFormation to PAUSE for after a batch has elapsed,
@@ -627,8 +685,15 @@ impl super::StoredStack {
         plan.started = true;
     }
 
-    /// Record the batch a pass has just terminated, which the group is now launching
-    /// replacements for.
+    /// Record the batch a pass has just CLAIMED, which it is about to take out of service and
+    /// which the group then launches replacements for.
+    ///
+    /// Claimed BEFORE the calls that carry it out, under the same lock the step was decided in:
+    /// a pass of this module runs beside every other one (every operation that reports a
+    /// stack's progress drives one), and two passes that both decided the same batch would take
+    /// more instances out of service than `MaxBatchSize` allows — and could lift the hold on
+    /// the group's launches while the other was still taking its batch out. A pass whose calls
+    /// are then refused gives the claim back ([`Self::release_rolling_update_batch`]).
     pub fn record_rolling_update_batch(
         &mut self,
         logical_id: &str,
@@ -638,6 +703,14 @@ impl super::StoredStack {
         if let Some(plan) = self.open_rolling_update_mut(logical_id) {
             plan.batch = batch;
             plan.batch_started_at = now;
+        }
+    }
+
+    /// Give back the batch a pass claimed but could not take out of service, so the next pass
+    /// asks for the same one again.
+    pub fn release_rolling_update_batch(&mut self, logical_id: &str) {
+        if let Some(plan) = self.open_rolling_update_mut(logical_id) {
+            plan.batch.clear();
         }
     }
 
@@ -707,6 +780,62 @@ impl super::StoredStack {
         self.fail_transition_superseded(now, super::status::UPDATE_FAILED, summary.clone());
         self.begin_owed_update_rollback(now, summary);
         Some(super::wait_conditions::ExpiredWaitOwes::Revert)
+    }
+
+    /// Whether the `Launch` process of the group `group` — addressed as that service addresses
+    /// it, by the group's name — is one THIS service has suspended for a batch of a rolling
+    /// update, and so owes a resumption for.
+    ///
+    /// What a suspension CloudFormation did not make says about the group is that service's
+    /// business, which is why the question is answered off this record rather than off what the
+    /// group reports: a `Launch` a client suspended is not one this replacement resumes.
+    pub fn withholds_group_launch(&self, group: &str) -> bool {
+        self.withheld_group_launches.contains(group)
+    }
+
+    /// Record that this service has held the group's launches back.
+    pub fn withhold_group_launch(&mut self, group: &str) {
+        self.withheld_group_launches.insert(group.to_string());
+    }
+
+    /// Record that it no longer does, because the group has been let launch again.
+    pub fn release_group_launch(&mut self, group: &str) {
+        self.withheld_group_launches.remove(group);
+    }
+
+    /// Every group whose launches this service is still holding back although no replacement of
+    /// this stack is working through it any more.
+    ///
+    /// A suspension is CloudFormation's to LIFT whatever became of the operation that made it:
+    /// an operation superseded or cancelled while a batch was between its halves would
+    /// otherwise leave the group holding its launches back for good, which is a group that
+    /// never reaches the capacity it is configured for again. The record outlives the
+    /// replacement ([`super::StoredStack::rolling_updates`] is reopened by every operation)
+    /// exactly so that this question can be asked.
+    pub fn stale_withheld_group_launches(&self) -> Vec<String> {
+        if self.withheld_group_launches.is_empty() {
+            return Vec::new();
+        }
+        // A replacement that is still OPEN releases the hold itself, at the instant its batch
+        // is owed its replacements ([`RollingUpdate::next_step`]) — so nothing is stale while
+        // the operation that made the hold is still in flight and holds a record for that
+        // group. Read off the records themselves rather than off the replacements a PASS would
+        // carry ([`Self::open_rolling_updates`], which answers nothing while the operation is
+        // carrying its deployment out): a hold released while the batch's instances were still
+        // leaving the group would launch their replacements early, which is the dip this policy
+        // exists to make observable.
+        let in_flight = self.rolling_update_in_flight();
+        self.withheld_group_launches
+            .iter()
+            .filter(|group| {
+                !in_flight
+                    || !self
+                        .rolling_updates
+                        .iter()
+                        .any(|plan| !plan.finished && plan.physical_resource_id == **group)
+            })
+            .cloned()
+            .collect()
     }
 
     /// The record of one replacement that is still open, reached mutably.
