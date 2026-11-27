@@ -333,9 +333,10 @@ pub(in crate::state) mod ecr_pull_through_cache_rule;
 /// `AWS::ECS::TaskDefinition`: the revision a stack declares, registered in Amazon ECS
 /// itself ([`ecs_task_definition`]).
 mod ecs_task_definition;
-/// The four `AWS::ElasticLoadBalancingV2::*` types a stack declares — the load balancer, the
-/// target group traffic is routed to, the listener on the load balancer and the rule that
-/// routes a request: created in Elastic Load Balancing itself
+/// The five `AWS::ElasticLoadBalancingV2::*` types a stack declares — the load balancer, the
+/// target group traffic is routed to, the listener on the load balancer, the rule that
+/// routes a request and the trust store client certificates are authenticated against:
+/// created in Elastic Load Balancing itself
 /// ([`elastic_load_balancing`]).
 pub(super) mod elastic_load_balancing;
 /// `AWS::ElasticLoadBalancingV2::ListenerCertificate`: the certificates a stack adds to the
@@ -1422,9 +1423,10 @@ pub(super) enum Owner {
     /// association that puts a key in a plan. Which of them it is travels with the owner, as
     /// it does for the Amazon EC2 types above.
     ApiGatewayRestApi(apigateway_rest_api::Kind),
-    /// One of the four `AWS::ElasticLoadBalancingV2::*` types [`elastic_load_balancing`]
+    /// One of the five `AWS::ElasticLoadBalancingV2::*` types [`elastic_load_balancing`]
     /// creates in Elastic Load Balancing: the load balancer, a target group, a listener on
-    /// the load balancer and a rule of that listener. Which of them it is travels with the
+    /// the load balancer, a rule of that listener and the trust store its listeners
+    /// authenticate client certificates against. Which of them it is travels with the
     /// owner, as it does for the types above.
     ElasticLoadBalancing(elastic_load_balancing::Kind),
     /// `AWS::ElasticLoadBalancingV2::ListenerCertificate`, whose arms are

@@ -12261,6 +12261,7 @@ dependencies = [
  "http",
  "percent-encoding",
  "quick-xml",
+ "rcgen",
  "regex",
  "serde",
  "serde_json",

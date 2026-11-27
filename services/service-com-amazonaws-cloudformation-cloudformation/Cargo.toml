@@ -257,7 +257,7 @@ service-com-amazonaws-appconfig-amazonappconfig = { workspace = true }
 # service's own wire.
 service-com-amazonaws-appsync-awsdeepdishcontrolplaneservice = { workspace = true }
 # Elastic Load Balancing v2, for the `AWS::ElasticLoadBalancingV2::LoadBalancer`,
-# `::TargetGroup`, `::Listener` and `::ListenerRule` a stack really creates there
+# `::TargetGroup`, `::Listener`, `::ListenerRule` and `::TrustStore` a stack really creates there
 # (`state::provisioning::elastic_load_balancing`): a suite that deploys one must have its
 # owning service mounted beside CloudFormation, or the create is refused and the stack fails —
 # and the ARNs the stack publishes are read back through that service's own wire. The CLASSIC
@@ -364,6 +364,11 @@ service-com-amazonaws-dlm-dlm-20180112 = { workspace = true }
 # mounted beside CloudFormation, or the create is refused and the stack fails — and the analyzer
 # and its archive rules are read back through that service's own wire.
 service-com-amazonaws-accessanalyzer-accessanalyzer = { workspace = true }
+# Mints the real self-signed CA certificates the CA certificates bundle of an
+# `AWS::ElasticLoadBalancingV2::TrustStore` is staged from: Elastic Load Balancing counts the
+# certificates it can PARSE out of that Amazon S3 object, so the suite that deploys a trust store
+# stages certificates a parser really accepts rather than text that looks like one.
+rcgen = "0.13"
 
 [lints]
 workspace = true

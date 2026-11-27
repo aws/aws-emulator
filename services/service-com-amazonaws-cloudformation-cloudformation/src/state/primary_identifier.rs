@@ -363,12 +363,13 @@ pub(crate) fn identifying_return_value(resource_type: &str) -> Option<&'static s
         // types are identified by the PAIR each of their APIs addresses one by, which
         // [`super::template::composite_identity_properties`] records.)
         crate::state::provisioning::sagemaker_studio::SAGEMAKER_DOMAIN => "DomainId",
-        // The Elastic Load Balancing v2 types: a load balancer, a target group, a listener
-        // and a listener rule are each identified by their own ARN.
+        // The Elastic Load Balancing v2 types: a load balancer, a target group, a listener,
+        // a listener rule and a trust store are each identified by their own ARN.
         ELB_LOAD_BALANCER => "LoadBalancerArn",
         ELB_TARGET_GROUP => "TargetGroupArn",
         "AWS::ElasticLoadBalancingV2::Listener" => "ListenerArn",
         "AWS::ElasticLoadBalancingV2::ListenerRule" => "RuleArn",
+        crate::state::template::ELB_TRUST_STORE => "TrustStoreArn",
         // An Amazon ECS service and cluster: "Ref returns the Amazon Resource Name (ARN)".
         "AWS::ECS::Service" | ECS_CLUSTER => "Arn",
         // The Amazon EC2 network types, each identified by the id Amazon EC2 assigns — under

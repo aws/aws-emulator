@@ -290,7 +290,12 @@ pub(super) fn naming_rules(resource_type: &str) -> Option<NameRules> {
         // Elastic Load Balancing `CreateLoadBalancer.Name` and
         // `CreateTargetGroup.Name`: each "can have a maximum of 32 characters" (Elastic
         // Load Balancing API reference) — the ELBv2 model carries no `@length` for either.
-        ELB_LOAD_BALANCER | ELB_TARGET_GROUP => rules(32, Characters::AsGenerated),
+        // The same service's `CreateTrustStore.Name` is bounded by its own model
+        // (`TrustStoreName`, `@length(min: 1, max: 32)` with pattern
+        // `^([a-zA-Z0-9]+-)*[a-zA-Z0-9]+$`), which a generated name's character set satisfies.
+        ELB_LOAD_BALANCER | ELB_TARGET_GROUP | ELB_TRUST_STORE => {
+            rules(32, Characters::AsGenerated)
+        }
         // Amazon S3 Tables `CreateTableBucket.name`: `TableBucketName`,
         // `@length(min: 3, max: 63)` with pattern `^[0-9a-z-]*$` (that service's own Smithy
         // model), which admits no upper case; that service also holds a name to beginning

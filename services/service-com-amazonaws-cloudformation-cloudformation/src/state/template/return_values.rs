@@ -295,6 +295,11 @@ pub fn published_attribute_names(resource_type: &str) -> &'static [&'static str]
             "TargetGroupFullName",
             "TargetGroupName",
         ],
+        // Source: `AWS::ElasticLoadBalancingV2::TrustStore`'s own "Return values" section —
+        // the number of CA certificates the bundle it was created from holds, the status
+        // Elastic Load Balancing reports the trust store in, and the ARN that service minted
+        // for it (which is also what its `Ref` returns).
+        ELB_TRUST_STORE => &["NumberOfCaCertificates", "Status", "TrustStoreArn"],
         "AWS::RDS::DBCluster" => &[
             "DBClusterArn",
             "DBClusterResourceId",
@@ -1620,6 +1625,13 @@ pub fn identity_is_service_assigned(resource_type: &str) -> bool {
         || resource_type == ELB_TARGET_GROUP
         || resource_type == ELB_LISTENER
         || resource_type == ELB_LISTENER_RULE
+        // A TRUST STORE is a fifth: `CreateTrustStore` takes the store's NAME and no
+        // identifier, and answers an ARN carrying the same 16-character identifier that
+        // service mints (`truststore/<name>/<id>`), which "Ref returns" — so the identity in
+        // force is the one the create answered and the ARN computed here is the stand-in a
+        // declaration (an HTTPS listener's `MutualAuthentication.TrustStoreArn`) is resolved
+        // against until then.
+        || resource_type == ELB_TRUST_STORE
         // An Amazon ECS task-definition REVISION is one more: `RegisterTaskDefinition` takes
         // the FAMILY and no identifier, and Amazon ECS allocates the revision — "the revision
         // is a version number of a task definition in a family", incremented per registration
@@ -3216,10 +3228,20 @@ fn lambda_function_arn(
 pub const ELB_LISTENER: &str = "AWS::ElasticLoadBalancingV2::Listener";
 pub const ELB_LISTENER_RULE: &str = "AWS::ElasticLoadBalancingV2::ListenerRule";
 
-/// The salts a listener's and a rule's assigned ids are derived under, beside the load
-/// balancer's and the target group's (see [`service_assigned_label`]).
+/// The same service's TRUST STORE: the set of CA certificates an HTTPS listener
+/// authenticates client certificates against, whose own ARN carries the identifier that
+/// service mints for it (`truststore/<name>/<id>`) and is what the type's `Ref` returns.
+pub const ELB_TRUST_STORE: &str = "AWS::ElasticLoadBalancingV2::TrustStore";
+
+/// The salts a listener's, a rule's and a trust store's assigned ids are derived under,
+/// beside the load balancer's and the target group's (see [`service_assigned_label`]).
 pub(super) const ELB_LISTENER_ID_SALT: &str = "elasticloadbalancing/listener-id";
 pub(super) const ELB_LISTENER_RULE_ID_SALT: &str = "elasticloadbalancing/listener-rule-id";
+pub(super) const ELB_TRUST_STORE_ID_SALT: &str = "elasticloadbalancing/truststore-id";
+
+/// The ARN resource segment a trust store's own ARN carries ahead of its name and the id
+/// that service assigned it (`truststore/<name>/<id>`).
+pub(super) const ELB_TRUST_STORE_SEGMENT: &str = "truststore";
 
 /// The ARN resource segment of each Elastic Load Balancing v2 resource kind, which is what
 /// a nested ARN replaces: a listener's is `listener/app/<lb>/<lb id>/<listener id>` and a

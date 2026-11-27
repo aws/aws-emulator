@@ -1461,6 +1461,31 @@ pub(crate) fn return_values(
             attributes.insert("TargetGroupName".to_string(), name.to_string());
             (arn, attributes)
         }
+        // "Ref returns the ARN of the trust store"; Fn::GetAtt: NumberOfCaCertificates,
+        // Status, TrustStoreArn. This is the type `super::provisioning` creates in Elastic
+        // Load Balancing itself, so the ARN carries the same `truststore/<name>/<id>` form
+        // that service mints — a stand-in until its create has answered — and the two values
+        // only IT can produce stand in as well: the number of certificates it counted in the
+        // bundle the declaration names, and the status it reports the trust store in while it
+        // brings it up.
+        ELB_TRUST_STORE => {
+            let id = service_assigned_label(ELB_TRUST_STORE_ID_SALT, name, ELB_ID_HEX_DIGITS);
+            let arn = ::emulator_server::emulator_arn(
+                "elasticloadbalancing",
+                region,
+                &format!("{ELB_TRUST_STORE_SEGMENT}/{name}/{id}"),
+            );
+            attributes.insert(
+                "NumberOfCaCertificates".to_string(),
+                service_assigned_document(name, "NumberOfCaCertificates"),
+            );
+            attributes.insert(
+                "Status".to_string(),
+                service_assigned_document(name, "Status"),
+            );
+            attributes.insert("TrustStoreArn".to_string(), arn.clone());
+            (arn, attributes)
+        }
         // "Ref returns the DBClusterIdentifier"; Fn::GetAtt: DBClusterArn,
         // DBClusterResourceId, Endpoint.Address, Endpoint.Port, MasterUserSecret.SecretArn,
         // ReadEndpoint.Address. The endpoints are the published Aurora forms,

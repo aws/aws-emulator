@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! The Elastic Load Balancing v2 resources a stack declares — the load balancer, the target
-//! group traffic is routed to, the listener that accepts connections on the load balancer and
-//! the rule that routes them — created in Elastic Load Balancing itself.
+//! group traffic is routed to, the listener that accepts connections on the load balancer, the
+//! rule that routes them and the trust store its listeners authenticate client certificates
+//! against — created in Elastic Load Balancing itself.
 //!
-//! This is the per-type half of provisioning for four resource types, the half
+//! This is the per-type half of provisioning for five resource types, the half
 //! [`super::super::provisioner`] holds for every other type this emulator creates; it lives
 //! in its own module beside [`super::lambda_function`] for the reason that module records —
 //! that file is past the length a change to this repository may touch — and is reached
@@ -70,9 +71,9 @@ use crate::state::StoredResource;
 
 /// The resource types this module provisions. Visible to the rest of this service's state
 /// because more than one module answers about them
-/// ([`crate::state::template::identity_is_service_assigned`] names all four).
+/// ([`crate::state::template::identity_is_service_assigned`] names all five).
 pub(in crate::state) use crate::state::template::{
-    ELB_LISTENER, ELB_LISTENER_RULE, ELB_LOAD_BALANCER, ELB_TARGET_GROUP,
+    ELB_LISTENER, ELB_LISTENER_RULE, ELB_LOAD_BALANCER, ELB_TARGET_GROUP, ELB_TRUST_STORE,
 };
 
 /// Elastic Load Balancing's signing name — which is what routes the in-process call to its
@@ -84,9 +85,10 @@ const ELB_SIGNING_NAME: &str = "elasticloadbalancing";
 const ELB_API_VERSION: &str = "2015-12-01";
 
 /// The codes Elastic Load Balancing refuses a call naming a resource it does not hold with
-/// (`LoadBalancerNotFound`, `TargetGroupNotFound`, `ListenerNotFound`, `RuleNotFound`, each
-/// the `awsQueryError` of the type's own modelled not-found exception): a DELETE answered
-/// with one of them is asking for the state that service is already in.
+/// (`LoadBalancerNotFound`, `TargetGroupNotFound`, `ListenerNotFound`, `RuleNotFound` and
+/// `TrustStoreNotFound`, each the `awsQueryError` of the type's own modelled not-found
+/// exception): a DELETE answered with one of them is asking for the state that service is
+/// already in.
 ///
 /// Judged on the CODE, never on a message, which carries the request's own ARN.
 const NOT_FOUND_CODES: &[&str] = &[
@@ -94,7 +96,13 @@ const NOT_FOUND_CODES: &[&str] = &[
     "TargetGroupNotFound",
     LISTENER_NOT_FOUND,
     "RuleNotFound",
+    TRUST_STORE_NOT_FOUND,
 ];
+
+/// The code Elastic Load Balancing refuses a call naming a TRUST STORE it does not hold with:
+/// the `awsQueryError` of `TrustStoreNotFoundException`, which every call that addresses a
+/// trust store by ARN answers — the delete and the read of one included.
+const TRUST_STORE_NOT_FOUND: &str = "TrustStoreNotFound";
 
 /// The code Elastic Load Balancing refuses a call naming a LISTENER it does not hold with: the
 /// `awsQueryError` of `ListenerNotFoundException`, which every call that addresses a listener
@@ -110,6 +118,13 @@ const LOAD_BALANCER_ACTIVE: &str = "active";
 /// (`LoadBalancerState$Code`: "the load balancer is being set up").
 const LOAD_BALANCER_PROVISIONING: &str = "provisioning";
 
+/// The two statuses a trust store is reported in (`TrustStoreStatus`, whose enum values are
+/// exactly these): a trust store Elastic Load Balancing is still building the certificate set
+/// of, and the one it reports ready.
+const TRUST_STORE_ACTIVE: &str = "ACTIVE";
+/// See [`TRUST_STORE_ACTIVE`].
+const TRUST_STORE_CREATING: &str = "CREATING";
+
 /// Which of this module's types one resource is.
 ///
 /// Visible to the whole of this service's state module, because it travels with
@@ -124,6 +139,8 @@ pub(in crate::state) enum Kind {
     Listener,
     /// `AWS::ElasticLoadBalancingV2::ListenerRule`.
     ListenerRule,
+    /// `AWS::ElasticLoadBalancingV2::TrustStore`.
+    TrustStore,
 }
 
 /// The kind `resource_type` names, or `None` for a type this module does not own.
@@ -133,6 +150,7 @@ pub(super) fn kind_of(resource_type: &str) -> Option<Kind> {
         ELB_TARGET_GROUP => Some(Kind::TargetGroup),
         ELB_LISTENER => Some(Kind::Listener),
         ELB_LISTENER_RULE => Some(Kind::ListenerRule),
+        ELB_TRUST_STORE => Some(Kind::TrustStore),
         _ => None,
     }
 }
@@ -237,6 +255,25 @@ const LISTENER_RULE_MEMBERS: &[(&str, QueryMember)] = &[
 /// merged tag set. A rule declares no name.
 const LISTENER_RULE_PROPERTIES_NOT_SENT: &[&str] = &["Tags"];
 
+/// The members of `CreateTrustStore` an `AWS::ElasticLoadBalancingV2::TrustStore` declares
+/// under the same names: the Amazon S3 object its CA certificate bundle is read from, which
+/// is what that create counts the certificates of.
+///
+/// Source: `CreateTrustStore`'s member list
+/// (`smithy_query(query="operation",operation="CreateTrustStore")`), intersected with the
+/// properties that type publishes. `ModifyTrustStore` takes the same three
+/// ([`update_trust_store`]).
+const TRUST_STORE_MEMBERS: &[(&str, QueryMember)] = &[
+    ("CaCertificatesBundleS3Bucket", QueryMember::Scalar),
+    ("CaCertificatesBundleS3Key", QueryMember::Scalar),
+    ("CaCertificatesBundleS3ObjectVersion", QueryMember::Scalar),
+];
+
+/// The `AWS::ElasticLoadBalancingV2::TrustStore` properties the walk does not send, for the
+/// reasons [`LOAD_BALANCER_PROPERTIES_NOT_SENT`] records for the load balancer's own: the name
+/// CloudFormation decides, and the merged tag set.
+const TRUST_STORE_PROPERTIES_NOT_SENT: &[&str] = &["Name", "Tags"];
+
 /// The properties of each type that cannot change on the resource that EXISTS: a declaration
 /// that changes one asks for a resource of a different identity, and Elastic Load Balancing
 /// publishes no call that changes it — a load balancer's name, scheme and family, a target
@@ -261,14 +298,19 @@ const CREATE_ONLY_PROPERTIES: &[(&str, &[&str])] = &[
     ),
     (ELB_LISTENER, &["LoadBalancerArn"]),
     (ELB_LISTENER_RULE, &["ListenerArn"]),
+    // A trust store's `Name` is documented "This name must be unique per region and can't be
+    // changed after creation" (`CreateTrustStore$Name`), and `ModifyTrustStore` takes no name
+    // at all.
+    (ELB_TRUST_STORE, &["Name"]),
 ];
 
 /// Create the resource one of these types declares, in Elastic Load Balancing itself — so a
 /// client that deployed the stack reads the load balancer back with `DescribeLoadBalancers`,
-/// its listeners with `DescribeListeners`, the target group with `DescribeTargetGroups` and
-/// the rule with `DescribeRules`, every one by the ARN the stack published.
+/// its listeners with `DescribeListeners`, the target group with `DescribeTargetGroups`, the
+/// rule with `DescribeRules` and the trust store with `DescribeTrustStores` and
+/// `DescribeTrustStoreAssociations`, every one by the ARN the stack published.
 ///
-/// Every one of the four types publishes a `Tags` property, and every one of the four creates
+/// Every one of these types publishes a `Tags` property, and every one of their creates
 /// takes that list as its own member, so the resource carries the tags CloudFormation gives
 /// it beside the ones its declaration asks for.
 pub(super) async fn create(
@@ -283,6 +325,7 @@ pub(super) async fn create(
         Kind::TargetGroup => create_target_group(ctx, region, resource, propagated).await,
         Kind::Listener => create_listener(ctx, region, resource, propagated).await,
         Kind::ListenerRule => create_rule(ctx, region, resource, propagated).await,
+        Kind::TrustStore => create_trust_store(ctx, region, resource, propagated).await,
     }
 }
 
@@ -444,6 +487,44 @@ async fn create_rule(
     })
 }
 
+/// Create the trust store an `AWS::ElasticLoadBalancingV2::TrustStore` declares, from the CA
+/// certificate bundle its declaration names in Amazon S3.
+///
+/// The ARN that create answers is the resource's identity, which is what a listener's
+/// `MutualAuthentication.TrustStoreArn` resolves to — so the trust store a stack's mTLS
+/// listener authenticates against is one Elastic Load Balancing really holds, and
+/// `DescribeTrustStores`, `DescribeTrustStoreAssociations` and `DeleteTrustStore` all answer
+/// for it.
+async fn create_trust_store(
+    ctx: &smithy_server_runtime::OperationContext<'_>,
+    region: &str,
+    resource: &StoredResource,
+    propagated: &[(String, String)],
+) -> Result<Created, Refusal> {
+    let mut parameters = query_members(
+        &resource.properties,
+        TRUST_STORE_MEMBERS,
+        &[],
+        TRUST_STORE_PROPERTIES_NOT_SENT,
+        ELB_TRUST_STORE,
+    )?;
+    // `CreateTrustStore$Name` is required by that call while the type's own `Name` is
+    // optional, so the trust store is created under the name the stack decided.
+    parameters.push(("Name".to_string(), declared_name(resource)));
+    push_tag_list(
+        &mut parameters,
+        "Tags",
+        "member",
+        &tags_of(&resource.properties, propagated),
+    );
+    let answered = call_elb(ctx, region, "CreateTrustStore", &parameters).await?;
+    let arn = answered_arn(&answered, "TrustStoreArn", ELB_TRUST_STORE)?;
+    Ok(Created {
+        physical_resource_id: Some(arn.clone()),
+        attributes: trust_store_attributes(&answered, &arn),
+    })
+}
+
 /// Apply the attribute list a declaration asks for through the owning service's own
 /// `Modify…Attributes` call, which is the only way those settings reach a resource: they are
 /// no member of any create.
@@ -489,18 +570,32 @@ async fn register_targets(
 /// `CreateLoadBalancer` answers the load balancer [`LOAD_BALANCER_PROVISIONING`] — "the load
 /// balancer is being set up" — and a load balancer in that state serves no connection, so the
 /// resource's creation is held open until Elastic Load Balancing reports it
-/// [`LOAD_BALANCER_ACTIVE`], "the load balancer is ready". A target group, a listener and a
-/// rule each EXIST the moment their own create answers: that service reports no state one of
-/// them is still coming up in.
+/// [`LOAD_BALANCER_ACTIVE`], "the load balancer is ready". `CreateTrustStore` is the same case:
+/// it answers the trust store [`TRUST_STORE_CREATING`], and a listener authenticates no client
+/// certificate against a trust store whose certificate set that service is still building, so
+/// the wait ends when it reports [`TRUST_STORE_ACTIVE`]. A target group, a listener and a rule
+/// each EXIST the moment their own create answers: that service reports no state one of them is
+/// still coming up in.
 pub(super) async fn readiness(
     ctx: &smithy_server_runtime::OperationContext<'_>,
     region: &str,
     kind: Kind,
     physical_resource_id: &str,
 ) -> Result<Readiness, Refusal> {
-    if kind != Kind::LoadBalancer {
-        return Ok(Readiness::Ready);
+    match kind {
+        Kind::LoadBalancer => load_balancer_readiness(ctx, region, physical_resource_id).await,
+        Kind::TrustStore => trust_store_readiness(ctx, region, physical_resource_id).await,
+        Kind::TargetGroup | Kind::Listener | Kind::ListenerRule => Ok(Readiness::Ready),
     }
+}
+
+/// [`readiness`] for a load balancer, whose state Elastic Load Balancing reports as it brings
+/// it up.
+async fn load_balancer_readiness(
+    ctx: &smithy_server_runtime::OperationContext<'_>,
+    region: &str,
+    physical_resource_id: &str,
+) -> Result<Readiness, Refusal> {
     let Some(state) = load_balancer_state(ctx, region, physical_resource_id).await? else {
         return Ok(Readiness::Failed(format!(
             "Elastic Load Balancing holds no load balancer for {physical_resource_id}"
@@ -516,24 +611,56 @@ pub(super) async fn readiness(
     }
 }
 
-/// The attributes a load balancer publishes now that Elastic Load Balancing reports it up.
+/// [`readiness`] for a trust store, whose `Status` that service reports while it builds the
+/// certificate set the bundle holds.
+async fn trust_store_readiness(
+    ctx: &smithy_server_runtime::OperationContext<'_>,
+    region: &str,
+    physical_resource_id: &str,
+) -> Result<Readiness, Refusal> {
+    let Some(status) = trust_store_status(ctx, region, physical_resource_id).await? else {
+        return Ok(Readiness::Failed(format!(
+            "Elastic Load Balancing holds no trust store for {physical_resource_id}"
+        )));
+    };
+    match status.as_str() {
+        TRUST_STORE_ACTIVE => Ok(Readiness::Ready),
+        TRUST_STORE_CREATING => Ok(Readiness::Pending(status)),
+        other => Ok(Readiness::Failed(format!(
+            "Elastic Load Balancing reports trust store {physical_resource_id} in status \
+             {other}"
+        ))),
+    }
+}
+
+/// The attributes a load balancer or a trust store publishes now that Elastic Load Balancing
+/// reports it up.
 ///
-/// Only the load balancer has any ([`readiness`]), and what changes while it comes up is what
-/// that service fills in as it provisions the load balancer, so the type's attributes are read
-/// off it again once it reports it ready. A resource that service no longer holds carries none
-/// rather than an invented value.
+/// Only those two are waited for ([`readiness`]), and what changes while one comes up is what
+/// that service fills in as it provisions the resource — the load balancer's published host and
+/// hosted zone, the trust store's status — so the type's attributes are read off it again once
+/// it reports it ready. A resource that service no longer holds carries none rather than an
+/// invented value.
 pub(super) async fn ready_attributes(
     ctx: &smithy_server_runtime::OperationContext<'_>,
     region: &str,
     kind: Kind,
     physical_resource_id: &str,
 ) -> Result<BTreeMap<String, String>, Refusal> {
-    if kind != Kind::LoadBalancer {
-        return Ok(BTreeMap::new());
-    }
-    match describe_load_balancer(ctx, region, physical_resource_id).await? {
-        Some(described) => Ok(load_balancer_attributes(&described, physical_resource_id)),
-        None => Ok(BTreeMap::new()),
+    match kind {
+        Kind::LoadBalancer => match describe_load_balancer(ctx, region, physical_resource_id)
+            .await?
+        {
+            Some(described) => Ok(load_balancer_attributes(&described, physical_resource_id)),
+            None => Ok(BTreeMap::new()),
+        },
+        Kind::TrustStore => {
+            match describe_one(ctx, region, Kind::TrustStore, physical_resource_id).await? {
+                Some(described) => Ok(trust_store_attributes(&described, physical_resource_id)),
+                None => Ok(BTreeMap::new()),
+            }
+        }
+        Kind::TargetGroup | Kind::Listener | Kind::ListenerRule => Ok(BTreeMap::new()),
     }
 }
 
@@ -562,6 +689,7 @@ pub(super) async fn update(
         Kind::TargetGroup => update_target_group(ctx, region, &arn, declared).await,
         Kind::Listener => update_listener(ctx, region, &arn, declared).await,
         Kind::ListenerRule => update_rule(ctx, region, &arn, declared).await,
+        Kind::TrustStore => update_trust_store(ctx, region, &arn, declared).await,
     }
 }
 
@@ -729,6 +857,29 @@ async fn update_rule(
     Ok(Some(Created::attributes(attributes)))
 }
 
+/// Apply a changed trust store declaration: `ModifyTrustStore`, the one call that re-points a
+/// trust store at another CA certificate bundle — which is every property of the type that can
+/// change on the trust store that exists ([`CREATE_ONLY_PROPERTIES`] holds its name).
+async fn update_trust_store(
+    ctx: &smithy_server_runtime::OperationContext<'_>,
+    region: &str,
+    arn: &str,
+    declared: &Value,
+) -> Result<Option<Created>, Refusal> {
+    let mut parameters = query_members(
+        declared,
+        TRUST_STORE_MEMBERS,
+        &[],
+        TRUST_STORE_PROPERTIES_NOT_SENT,
+        ELB_TRUST_STORE,
+    )?;
+    parameters.push(("TrustStoreArn".to_string(), arn.to_string()));
+    let answered = call_elb(ctx, region, "ModifyTrustStore", &parameters).await?;
+    Ok(Some(Created::attributes(trust_store_attributes(
+        &answered, arn,
+    ))))
+}
+
 /// Delete the resource a stack created, addressed by the ARN Elastic Load Balancing minted —
 /// this resource's physical id.
 ///
@@ -747,6 +898,7 @@ pub(super) async fn delete(
         Kind::TargetGroup => ("DeleteTargetGroup", "TargetGroupArn"),
         Kind::Listener => ("DeleteListener", "ListenerArn"),
         Kind::ListenerRule => ("DeleteRule", "RuleArn"),
+        Kind::TrustStore => ("DeleteTrustStore", "TrustStoreArn"),
     };
     let parameters = vec![(
         member.to_string(),
@@ -762,23 +914,24 @@ pub(super) async fn delete(
 /// Whether the owning service has finished removing a deleted resource.
 ///
 /// Every one of these deletes takes the resource away as it answers — Elastic Load Balancing
-/// reports no state a deleted load balancer, target group, listener or rule is still being
-/// removed in — so nothing is asked and nothing waits.
+/// reports no state a deleted load balancer, target group, listener, rule or trust store is
+/// still being removed in — so nothing is asked and nothing waits.
 pub(super) fn removal() -> Removal {
     Removal::Gone
 }
 
 /// The resource's configuration as Elastic Load Balancing reports it, for drift detection.
 ///
-/// Every one of the four types is read back from Elastic Load Balancing itself, by the ARN the
+/// Every one of these types is read back from Elastic Load Balancing itself, by the ARN the
 /// create minted, through that type's own plural read ([`describe`]) — so what a drift check
 /// compares a declaration against is the configuration the OWNING service reports, and the one
 /// answer that reports a resource as gone is that service's own not-found code for it.
 ///
 /// Each read reports its resource as a structure whose SCALAR members are its configuration (a
 /// load balancer's scheme, family and address type; a target group's port, protocol, target
-/// type and health check; a listener's port and protocol; a rule's priority), so those are the
-/// actual side of the comparison. A declared property the read spells under another name, or
+/// type and health check; a listener's port and protocol; a rule's priority; a trust store's
+/// name and status), so those are the actual side of the comparison. A declared property the
+/// read spells under another name, or
 /// reports as a nested document rather than as a scalar, is reported by it in no comparable
 /// form — [`super::super::drift`] compares only the properties BOTH sides name, so such a
 /// property establishes nothing rather than being guessed at.
@@ -825,7 +978,8 @@ pub(super) async fn actual_configuration(
 /// Source: each type's attribute read in that service's model
 /// (`smithy_query(query="operation",operation="DescribeLoadBalancerAttributes,DescribeTargetGroupAttributes,DescribeListenerAttributes")`),
 /// paired with the property whose declaration the matching `Modify…Attributes` applies
-/// ([`LOAD_BALANCER_PROPERTIES_NOT_SENT`] and its siblings). A rule carries no attributes.
+/// ([`LOAD_BALANCER_PROPERTIES_NOT_SENT`] and its siblings). Neither a rule nor a trust store
+/// carries attributes.
 fn attribute_collection(kind: Kind) -> Option<(&'static str, &'static str, &'static str)> {
     match kind {
         Kind::LoadBalancer => Some((
@@ -843,7 +997,9 @@ fn attribute_collection(kind: Kind) -> Option<(&'static str, &'static str, &'sta
             "DescribeListenerAttributes",
             "ListenerArn",
         )),
-        Kind::ListenerRule => None,
+        // Neither a rule nor a trust store carries an attribute collection: that service
+        // publishes no `Modify…Attributes` call for either.
+        Kind::ListenerRule | Kind::TrustStore => None,
     }
 }
 
@@ -991,6 +1147,26 @@ fn target_group_attributes(document: &str, arn: &str) -> BTreeMap<String, String
     attributes
 }
 
+/// The attributes an `AWS::ElasticLoadBalancingV2::TrustStore` publishes, read off what
+/// Elastic Load Balancing reported for the trust store.
+///
+/// "Ref returns the ARN of the trust store"; `Fn::GetAtt` reads `NumberOfCaCertificates`,
+/// `Status` and `TrustStoreArn` — and the two beside the ARN are that service's own report on
+/// the trust store: the number of certificates it counted in the bundle the declaration named
+/// (`TrustStore$NumberOfCaCertificates`) and the status it holds the store in
+/// (`TrustStore$Status`). A value it reports none of is carried EMPTY rather than as the
+/// stand-in the naming rules computed before the create.
+fn trust_store_attributes(document: &str, arn: &str) -> BTreeMap<String, String> {
+    let mut attributes = arn_only_attributes(ELB_TRUST_STORE, arn);
+    for member in ["NumberOfCaCertificates", "Status"] {
+        attributes.insert(
+            member.to_string(),
+            reported(document, member).unwrap_or_default(),
+        );
+    }
+    attributes
+}
+
 /// The ARN attributes a resource of `resource_type` carries, re-pointed at the ARN its owning
 /// service minted ([`crate::state::template::arn_attributes`], the one place that pair is
 /// written).
@@ -1024,6 +1200,19 @@ async fn load_balancer_state(
         .map(ToString::to_string))
 }
 
+/// The status Elastic Load Balancing reports the trust store `arn` in, or `None` for one it
+/// does not hold.
+async fn trust_store_status(
+    ctx: &smithy_server_runtime::OperationContext<'_>,
+    region: &str,
+    arn: &str,
+) -> Result<Option<String>, Refusal> {
+    let Some(described) = describe_one(ctx, region, Kind::TrustStore, arn).await? else {
+        return Ok(None);
+    };
+    Ok(reported(&described, "Status"))
+}
+
 /// The load balancer `arn`, as Elastic Load Balancing's own read of it, or `None` for one that
 /// service does not hold.
 async fn describe_load_balancer(
@@ -1038,12 +1227,12 @@ async fn describe_load_balancer(
 /// default list member name every list of this model uses.
 const ENTRY: &str = "member";
 
-/// How one of the four types is read back from Elastic Load Balancing: its own plural read, the
+/// How one of these types is read back from Elastic Load Balancing: its own plural read, the
 /// member that selects ONE resource by ARN, and the code that read refuses an ARN that service
 /// holds nothing under with.
 ///
 /// Source: each type's own read in that service's model
-/// (`smithy_query(query="operation",operation="DescribeTargetGroups,DescribeListeners,DescribeRules")`),
+/// (`smithy_query(query="operation",operation="DescribeTargetGroups,DescribeListeners,DescribeRules,DescribeTrustStores")`),
 /// whose selection member is the plural of the resource's ARN; the codes are the
 /// `awsQueryError` of each read's own not-found exception ([`NOT_FOUND_CODES`]).
 fn describe(kind: Kind) -> (&'static str, &'static str, &'static str) {
@@ -1064,6 +1253,11 @@ fn describe(kind: Kind) -> (&'static str, &'static str, &'static str) {
             LISTENER_NOT_FOUND,
         ),
         Kind::ListenerRule => ("DescribeRules", "RuleArns.member.1", "RuleNotFound"),
+        Kind::TrustStore => (
+            "DescribeTrustStores",
+            "TrustStoreArns.member.1",
+            TRUST_STORE_NOT_FOUND,
+        ),
     }
 }
 
@@ -1128,7 +1322,7 @@ mod tests {
     /// itself — so a declaration is carried out in the owning service's own vocabulary and
     /// nothing a template asked for is dropped.
     ///
-    /// The property lists are the "Properties" sections of the four resource types, and the
+    /// The property lists are the "Properties" sections of the five resource types, and the
     /// member lists are the creates' own ([`LOAD_BALANCER_MEMBERS`] and its siblings).
     #[test]
     fn every_published_property_is_sent_or_placed_by_the_arm() {
@@ -1199,6 +1393,18 @@ mod tests {
                 properties: &["Actions", "Conditions", "ListenerArn", "Priority", "Tags"],
                 members: LISTENER_RULE_MEMBERS,
                 placed: LISTENER_RULE_PROPERTIES_NOT_SENT,
+            },
+            Catalogue {
+                resource_type: ELB_TRUST_STORE,
+                properties: &[
+                    "CaCertificatesBundleS3Bucket",
+                    "CaCertificatesBundleS3Key",
+                    "CaCertificatesBundleS3ObjectVersion",
+                    "Name",
+                    "Tags",
+                ],
+                members: TRUST_STORE_MEMBERS,
+                placed: TRUST_STORE_PROPERTIES_NOT_SENT,
             },
         ];
         for row in rows {
