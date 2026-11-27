@@ -54,6 +54,11 @@
 //!   reference: auto-registration
 //!   would make `GetRecommendations` answer 200 for a campaign that was never
 //!   created, which is the one answer the real service never gives.
+//! * A seam registers a resource only under an ARN that references a resource of ITS OWN
+//!   kind, through the same [`require_resource_kind`] every read path applies: an ARN
+//!   whose resource type names another resource is no reference to this kind at all, so
+//!   no read path could ever resolve the entry and the seam refuses it instead of storing
+//!   one that is dead on arrival.
 //! * The item and action catalogs are stored with the campaign or recommender that
 //!   serves them, because that is what the resolved resource's solution version was
 //!   trained on — and a resource fitted to a dataset group also reads what the INGESTION
@@ -1020,14 +1025,16 @@ pub fn registry_unavailable<E>(operation: &str) -> crate::scaffolded::Scaffolded
 /// Register a campaign, one of the three seams that make a resource exist.
 ///
 /// Returns `true` when the campaign was registered, and `false` without touching
-/// anything when its ARN is empty, when the ARN is already registered (a campaign is
-/// created once; re-registering must not silently swap a catalog out from under a
-/// caller) or when `engine` does not carry this service's state.
+/// anything when its ARN references no campaign at all — an empty value, or one whose
+/// resource type names another resource ([`require_resource_kind`], the same check every
+/// read path applies) — when the ARN is already registered (a campaign is created once;
+/// re-registering must not silently swap a catalog out from under a caller) or when
+/// `engine` does not carry this service's state.
 pub fn register_campaign<Eng: Send + Sync + 'static>(engine: &Eng, campaign: Campaign) -> bool {
     let Some(state) = service_state(engine) else {
         return false;
     };
-    if campaign.arn.is_empty() {
+    if require_resource_kind(&campaign.arn, ResourceKind::Campaign).is_err() {
         return false;
     }
     let mut guard = state.lock();
@@ -1040,9 +1047,11 @@ pub fn register_campaign<Eng: Send + Sync + 'static>(engine: &Eng, campaign: Cam
 
 /// Register a domain recommender.
 ///
-/// Returns `false` without touching anything when the ARN is empty or already
-/// registered, when `use_case` is not one of [`RECOMMENDER_USE_CASES`] (the control
-/// plane refuses an unknown use case at `CreateRecommender`, so the runtime never
+/// Returns `false` without touching anything when the ARN references no recommender at
+/// all — an empty value, or one whose resource type names another resource
+/// ([`require_resource_kind`], the same check every read path applies) — when the ARN is
+/// already registered, when `use_case` is not one of [`RECOMMENDER_USE_CASES`] (the
+/// control plane refuses an unknown use case at `CreateRecommender`, so the runtime never
 /// sees one), or when `engine` does not carry this service's state.
 pub fn register_recommender<Eng: Send + Sync + 'static>(
     engine: &Eng,
@@ -1051,7 +1060,9 @@ pub fn register_recommender<Eng: Send + Sync + 'static>(
     let Some(state) = service_state(engine) else {
         return false;
     };
-    if recommender.arn.is_empty() || use_case_required_input(&recommender.use_case).is_none() {
+    if require_resource_kind(&recommender.arn, ResourceKind::Recommender).is_err()
+        || use_case_required_input(&recommender.use_case).is_none()
+    {
         return false;
     }
     let mut guard = state.lock();
@@ -1068,8 +1079,10 @@ pub fn register_recommender<Eng: Send + Sync + 'static>(
 ///
 /// `Err` carries the parse error, so an expression the runtime could not apply is
 /// refused where the filter is created — never at inference time, and never by
-/// quietly filtering nothing. `Ok(false)` means the ARN is empty, already registered,
-/// or `engine` does not carry this service's state.
+/// quietly filtering nothing. `Ok(false)` means the ARN references no filter at all (an
+/// empty value, or one whose resource type names another resource —
+/// [`require_resource_kind`], the same check every read path applies), the ARN is
+/// already registered, or `engine` does not carry this service's state.
 pub fn register_filter<Eng: Send + Sync + 'static>(
     engine: &Eng,
     arn: impl Into<String>,
@@ -1081,7 +1094,7 @@ pub fn register_filter<Eng: Send + Sync + 'static>(
     let Some(state) = service_state(engine) else {
         return Ok(false);
     };
-    if arn.is_empty() {
+    if require_resource_kind(&arn, ResourceKind::Filter).is_err() {
         return Ok(false);
     }
     let mut guard = state.lock();
