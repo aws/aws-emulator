@@ -38,9 +38,10 @@
 //!   kernel's own over an in-memory mapping;
 //! * the host-side bounds around the run: it happens on a thread of its own with the stack a
 //!   run is given, under the run slots of [`crate::ops`]'s own pool, and this module waits
-//!   for its answer no longer than the run's own wall clock and a grace on top of it — past
-//!   that the run has been given up on, its thread keeps its place in the pool until it
-//!   really ends, and the call is answered rather than left waiting.
+//!   for its answer no longer than every span the engine spends on one run — standing the
+//!   interpreter up, reading the program's imports, then the program's own wall clock — and a
+//!   grace on top of them; past that the run has been given up on, its thread keeps its place
+//!   in the pool until it really ends, and the call is answered rather than left waiting.
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -49,6 +50,9 @@ use std::time::Duration;
 use ::service_com_amazonaws_lambda_awsgirapiservice::state::execution::package::PackageModule;
 use ::service_com_amazonaws_lambda_awsgirapiservice::state::execution::python::{
     self, Budget, Completion, Stop,
+};
+use ::service_com_amazonaws_lambda_awsgirapiservice::state::execution::{
+    ENVIRONMENT_BUILD_SPAN, INIT_PHASE_LIMIT,
 };
 
 use super::SandboxFilesystem;
@@ -87,6 +91,21 @@ const RUN_WALL_CLOCK: Duration = Duration::from_secs(5);
 /// wall clock rather than at it. Past this the call is answered with the bound the run was
 /// stopped on instead of waiting for a program that is not coming back.
 const RUN_GRACE: Duration = Duration::from_secs(5);
+
+/// How long this call waits for the thread one run happens on before it gives up on it.
+///
+/// DERIVED, not chosen: the program's own span is only the last of the spans the engine
+/// spends on one run. Before a line of the program is read, the interpreter it runs in is
+/// built for it ([`ENVIRONMENT_BUILD_SPAN`]) and the program's own imports are read in it
+/// ([`INIT_PHASE_LIMIT`]) — work this emulator does on whatever host it is running on, which
+/// the engine charges to neither the program's span nor any bound of its own. A wait of the
+/// program's span alone would therefore give up on a run whose own bounds had not been
+/// reached yet, and report a program that was still being stood up as one stopped for taking
+/// too long, on a loaded host and never on an idle one.
+const RUN_HOST_WAIT: Duration = ENVIRONMENT_BUILD_SPAN
+    .saturating_add(INIT_PHASE_LIMIT)
+    .saturating_add(RUN_WALL_CLOCK)
+    .saturating_add(RUN_GRACE);
 
 /// How many traced events one program may spend, how much memory it may add to this process,
 /// how much of its output is kept, how large its answer may be and how deep it may recurse.
@@ -199,26 +218,16 @@ pub async fn run_python(
     if spawned.is_err() {
         return not_run("the program could not be given a thread to run on".to_string());
     }
-    let waited = ::tokio::time::timeout(
-        budget.wall_clock.saturating_add(RUN_GRACE),
-        receiver,
-    )
-    .await;
+    let waited = ::tokio::time::timeout(RUN_HOST_WAIT, receiver).await;
     let finished = match waited {
         Ok(Ok(finished)) => finished,
         // The run was given up on, or its thread ended without reporting: its own thread
-        // keeps the run slot until it really ends, and the caller is answered now.
+        // keeps the run slot until it really ends, and the caller is answered now. Nothing is
+        // known about what the program came to, so no bound of its own is reported for it.
         Ok(Err(_)) | Err(_) => {
-            return PythonRun {
-                stdout: String::new(),
-                stderr: format!(
-                    "The program was stopped after {} seconds.\n",
-                    RUN_WALL_CLOCK.as_secs()
-                ),
-                exit_code: 1,
-                elapsed: budget.wall_clock.saturating_add(RUN_GRACE),
-                failed_context: Vec::new(),
-            }
+            return not_run(
+                "The program was given up on: none of its answer was read.".to_string(),
+            )
         }
     };
     let elapsed = finished.elapsed;

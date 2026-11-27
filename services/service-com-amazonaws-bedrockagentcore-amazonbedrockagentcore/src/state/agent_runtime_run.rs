@@ -53,9 +53,11 @@
 //!   AWS that package runs an HTTP server inside the container; here the HOST delivers the
 //!   invocation, so the app records what was registered and starts nothing;
 //! * the host-side bounds around the run: it happens on a thread of its own with the stack a
-//!   run is given, and this module waits for its answer no longer than the run's own wall
-//!   clock and a grace on top of it — past that the run has been given up on and the call is
-//!   answered rather than left waiting.
+//!   run is given, and this module waits for its answer no longer than the host time one run
+//!   may take and a grace on top of it — past that the run has been given up on and the call
+//!   is answered rather than left waiting. The run's own span is read against a clock the RUN
+//!   drives, so which bound stopped an invocation is what the agent did and not how fast this
+//!   host happened to be running.
 //!
 //! The LISTENER the deployed code would open is the host, so the contract module puts its own
 //! server class in place of the ones a deployment stands its server up with: that is what
@@ -74,6 +76,7 @@ use ::service_com_amazonaws_lambda_awsgirapiservice::state::execution::package::
 use ::service_com_amazonaws_lambda_awsgirapiservice::state::execution::python::{
     self, Budget, Completion, Stop,
 };
+use ::service_com_amazonaws_lambda_awsgirapiservice::state::execution::INIT_PHASE_LIMIT;
 
 /// The module the runtime contract is handed to the interpreter as, and the entry point it
 /// resolves in it.
@@ -94,21 +97,72 @@ const APP_RUNTIME_MODULE: &str = "bedrock_agentcore/runtime/__init__.py";
 /// gives any other run of caller-supplied code.
 const RUN_STACK_BYTES: usize = 16 * 1024 * 1024;
 
-/// How long one invocation of a deployed agent may run for.
+/// How long one invocation of a deployed agent may run for, in the RUN'S OWN time.
 ///
 /// An EMULATOR bound, not an AWS one: the agent runs in this process, so a loop with no exit
 /// would otherwise hold a thread for ever. Long enough for any answer an agent computes in
 /// process, and far short of what AWS allows a session, because nothing here waits on a
 /// model or a network.
+///
+/// It is a span of the RUN's own time rather than of this host's: it is read against a clock
+/// the run itself drives ([`RUN_CLOCK_TICK`]) and spent by the agent's own doings — one tick
+/// per traced event it delivers, and the waits it asks for — and by nothing of this host's
+/// speed. So what an invocation answers is what the deployed code produced on an idle host
+/// and on a loaded one alike: the interpreter one invocation runs in is built for it and the
+/// deployed code's own imports are read in it, work this emulator may need several times as
+/// long over when the host is busy, and none of it is the agent's doing. What a run may take
+/// of THIS host is bounded beside it ([`RUN_HOST_CEILING`]).
 const RUN_WALL_CLOCK: Duration = Duration::from_secs(10);
 
-/// How much longer than its own wall clock a run is waited for before it is given up on.
+/// How far ONE reading of an invocation's clock moves it.
 ///
-/// CHOSEN: a run stops at the next event its interpreter delivers after the deadline, and
-/// the interpreter is then finalized, so the answer of a stopped run arrives a little after
-/// its wall clock rather than at it. Past this the call is answered with the bound the run
-/// was stopped on instead of waiting for an agent that is not coming back.
+/// The span above is spent by what the RUN does, and a traced event is one of those: the
+/// engine reads the run's clock once per event the agent delivers and once per sample the
+/// host's watch takes over it. The tick is sized so that the whole step budget
+/// ([`run_budget`]) spends part of that span, which leaves an agent that computes without end
+/// to be answered by a count of its OWN work rather than by how fast this host interprets it.
+const RUN_CLOCK_TICK: Duration = Duration::from_nanos(100);
+
+/// How much of THIS HOST's own time ONE invocation may take, past which the engine stops it
+/// whatever the run's own clock reads.
+///
+/// CHOSEN: the span above is the RUN's own time, so it bounds no CPU of this host — an agent
+/// spending traced events, or sitting in one long native call that delivers none, would hold
+/// a thread of this process for as long as the host took over it. This is the bound that
+/// stops it: the engine reads it from this host's own clock at every traced event and from
+/// the host's own watch over the run ([`python::Clock::within`]).
+///
+/// It is generous beside the spans the engine's own phases take in the run's own time
+/// ([`INIT_PHASE_LIMIT`] for the deployed code the environment is stood up with, then the
+/// span above for the invocation itself), because a busy host may need several times as long
+/// of its own for the same work, and an invocation the deployed code ANSWERED has to be
+/// reported on that answer rather than on this host's load.
+const RUN_HOST_CEILING: Duration = INIT_PHASE_LIMIT
+    .saturating_add(RUN_WALL_CLOCK)
+    .saturating_mul(HOST_CEILING_OVER_THE_ENGINE_SPAN);
+
+/// How many times the engine's own spans the host ceiling allows for
+/// ([`RUN_HOST_CEILING`]).
+const HOST_CEILING_OVER_THE_ENGINE_SPAN: u32 = 3;
+
+/// How much longer than the host time one run may take it is waited for before it is given up
+/// on.
+///
+/// CHOSEN: a run stops at the next event its interpreter delivers after a bound was latched,
+/// and the interpreter is then finalized, so the answer of a stopped run arrives a little
+/// after that bound rather than at it. Past this the call is answered instead of waiting for
+/// an agent that is not coming back.
 const RUN_GRACE: Duration = Duration::from_secs(5);
+
+/// How long this invocation waits for the thread the run happens on: the host time one run
+/// may take ([`RUN_HOST_CEILING`]) and the grace the engine's own stop needs to land.
+///
+/// DERIVED, not chosen: a run that is going to answer at all has answered by then, because
+/// every span the engine spends — standing the interpreter up, reading the deployed code's
+/// modules and running the invocation — is inside the ceiling the run is held to. A wait of
+/// the run's own span alone would give up on a run whose own bounds had not been reached yet,
+/// and report an agent that was still being stood up as one that did not answer in time.
+const RUN_HOST_WAIT: Duration = RUN_HOST_CEILING.saturating_add(RUN_GRACE);
 
 /// How many traced events one invocation may spend, how much memory it may add to this
 /// process, how much of its output is kept, how large its answer may be and how deep it may
@@ -226,33 +280,40 @@ pub async fn run_agent(run: &AgentRun<'_>) -> Result<AgentAnswer, AgentRunFailur
         .name("agentcore-runtime-invocation".to_string())
         .stack_size(RUN_STACK_BYTES)
         .spawn(move || {
-            let finished = python::run(&python::Run {
-                modules: &modules,
-                handler: CONTRACT_HANDLER,
-                environment: &environment,
-                // The instruction set the environment the agent runs in has, which the run
-                // reports as its own machine. A runtime names none, so it is the one the
-                // engine's own runtime reports when none is named.
-                architecture:
-                    ::service_com_amazonaws_lambda_awsgirapiservice::state::DEFAULT_ARCHITECTURE,
-                event: Some(&event),
-                // The session the invocation runs under is what identifies it to the agent,
-                // and the ARN it addressed is what the agent reads as the resource it is.
-                request_id: &session,
-                invoked_function_arn: &invoked_arn,
-                client_context: None,
-                tenant_id: None,
-                cognito_identity: None,
-                budget,
-                // The agent reaches no other service of this emulator: this run is given no
-                // seam to dispatch an AWS call on.
-                aws: None,
-                // It is no Lambda durable execution's run, so it takes no step of one.
-                durable: None,
-                // And it mounts no network file system: the only files it reads are the
-                // artifact's own.
-                file_systems: &[],
-            });
+            let finished = python::run_against(
+                &python::Run {
+                    modules: &modules,
+                    handler: CONTRACT_HANDLER,
+                    environment: &environment,
+                    // The instruction set the environment the agent runs in has, which the
+                    // run reports as its own machine. A runtime names none, so it is the one
+                    // the engine's own runtime reports when none is named.
+                    architecture:
+                        ::service_com_amazonaws_lambda_awsgirapiservice::state::DEFAULT_ARCHITECTURE,
+                    event: Some(&event),
+                    // The session the invocation runs under is what identifies it to the
+                    // agent, and the ARN it addressed is what the agent reads as the resource
+                    // it is.
+                    request_id: &session,
+                    invoked_function_arn: &invoked_arn,
+                    client_context: None,
+                    tenant_id: None,
+                    cognito_identity: None,
+                    budget,
+                    // The agent reaches no other service of this emulator: this run is given
+                    // no seam to dispatch an AWS call on.
+                    aws: None,
+                    // It is no Lambda durable execution's run, so it takes no step of one.
+                    durable: None,
+                    // And it mounts no network file system: the only files it reads are the
+                    // artifact's own.
+                    file_systems: &[],
+                },
+                // The clock the run's own span is read against: one the RUN drives, a tick
+                // per traced event it delivers, stating what the run may take of THIS host
+                // besides.
+                &python::Clock::driven(RUN_CLOCK_TICK).within(RUN_HOST_CEILING),
+            );
             let _ = sender.send(finished);
         });
     if spawned.is_err() {
@@ -260,8 +321,7 @@ pub async fn run_agent(run: &AgentRun<'_>) -> Result<AgentAnswer, AgentRunFailur
             "the deployed agent could not be given a thread to run on".to_string(),
         ));
     }
-    let waited =
-        ::tokio::time::timeout(budget.wall_clock.saturating_add(RUN_GRACE), receiver).await;
+    let waited = ::tokio::time::timeout(RUN_HOST_WAIT, receiver).await;
     let finished = match waited {
         Ok(Ok(finished)) => finished,
         // The run was given up on, or its thread ended without reporting: the caller is
@@ -294,10 +354,13 @@ pub async fn run_agent(run: &AgentRun<'_>) -> Result<AgentAnswer, AgentRunFailur
 /// How a run the engine STOPPED is reported, in the words of the bound it ran past.
 fn stopped_reason(stop: Stop) -> String {
     match stop {
-        Stop::Deadline | Stop::HostCeiling => format!(
+        Stop::Deadline => format!(
             "the deployed agent did not answer within {} seconds",
             RUN_WALL_CLOCK.as_secs()
         ),
+        // Not a span of the agent's own: this is the run having been given up on, so it says
+        // so rather than reporting a bound of the invocation that never ran out.
+        Stop::HostCeiling => "the invocation of the deployed agent was given up on".to_string(),
         Stop::Steps => "the deployed agent ran past the step budget of one invocation".to_string(),
         Stop::Memory => {
             "the deployed agent took more memory than one invocation may".to_string()
