@@ -321,7 +321,7 @@ pub fn published_attribute_names(resource_type: &str) -> &'static [&'static str]
         // ([`ec2_route_destination`]). Its `Ref` is the route's own composite id rather than
         // one of these attributes.
         EC2_ROUTE => &["CidrBlock"],
-        EC2_EIP => &["AllocationId"],
+        EC2_EIP => &["AllocationId", "PublicIp"],
         EC2_NAT_GATEWAY => &["NatGatewayId"],
         EC2_DHCP_OPTIONS => &["DhcpOptionsId"],
         EC2_VPN_GATEWAY => &["VPNGatewayId"],
@@ -2686,13 +2686,19 @@ pub fn resolve(value: &Value, scope: &Scope<'_>, budget: &mut Budget) -> Option<
 }
 
 /// What CloudFormation says about an `Fn::GetAtt` naming an attribute the resource it names
-/// does not publish: "Template error: resource <logical id> does not support attribute type
-/// <attribute> in Fn::GetAtt". Fixed text around the two names the error is about.
-pub fn unsupported_attribute_reason(logical_id: &str, attribute: &str) -> String {
-    format!(
-        "Template error: resource {logical_id} does not support attribute type {attribute} in \
-         Fn::GetAtt"
-    )
+/// does not publish: "Requested attribute <attribute> does not exist in schema for <resource
+/// type>". Fixed text around the attribute the template asked for and the type whose schema
+/// does not declare it.
+///
+/// The TYPE rather than the logical id, because the attributes a resource answers are a
+/// property of its type's schema — the same schema the registry publishes for it
+/// ([`crate::state::resource_schema`]) — so what the author has to change is the attribute
+/// name, and what says why is the type that does not have it. This is the reason the
+/// CONSUMING resource's create fails, which is where CloudFormation reports it: the read is
+/// resolved as that resource is deployed, so the diagnosis reaches the caller as that
+/// resource's `ResourceStatusReason` rather than as a refusal of the submitted template.
+pub fn unsupported_attribute_reason(resource_type: &str, attribute: &str) -> String {
+    format!("Requested attribute {attribute} does not exist in schema for {resource_type}")
 }
 
 /// Every resource of `template` whose declaration reads an attribute the resource it names
@@ -2797,24 +2803,8 @@ fn reads_an_unpublished_attribute(
                 }
             }
             if let Some(argument) = members.get(FN_SUB).filter(|_| members.len() == 1) {
-                let source = match argument {
-                    Value::String(source) => Some(source.as_str()),
-                    Value::Array(arguments) => arguments.first().and_then(Value::as_str),
-                    _ => None,
-                };
-                if let Some(source) = source {
-                    for (name, path) in super::substitution_names(source) {
-                        let Some(attribute) = path
-                            .as_deref()
-                            .and_then(|path| path.split_once('.'))
-                            .map(|(_, attribute)| attribute.to_string())
-                        else {
-                            continue;
-                        };
-                        if is_unpublished(scope, &name, &attribute) {
-                            return true;
-                        }
-                    }
+                if substituted_missing_attribute(argument, scope).is_some() {
+                    return true;
                 }
             }
             members
@@ -2838,8 +2828,14 @@ fn is_unpublished(scope: &Scope<'_>, logical_id: &str, attribute: &str) -> bool 
         .is_some_and(|resource| !publishes_attribute(&resource.attributes, attribute))
 }
 
-/// The FIRST `Fn::GetAtt` of `value` naming an attribute the resource it names does not
+/// The FIRST attribute read of `value` naming an attribute the resource it names does not
 /// publish, as `(logical id, attribute)`.
+///
+/// Both spellings an attribute is read in, exactly as [`reads_an_unpublished_attribute`]
+/// counts them: an `Fn::GetAtt`, and the `${Name.Attribute}` of an `Fn::Sub` source, "which
+/// is an `Fn::GetAtt` by another spelling". A read the deferral withholds a resource FOR has
+/// to be a read this can report once the records are settled, or the resource is created with
+/// the member that read left out instead of failing on it.
 ///
 /// Walked over the same document shape every other evaluation walks, and charged to the same
 /// budget, so a declaration cannot drive this deeper or longer than its own evaluation.
@@ -2862,6 +2858,11 @@ fn missing_attribute(
                     }
                 }
             }
+            if let Some(argument) = members.get(FN_SUB).filter(|_| members.len() == 1) {
+                if let Some(read) = substituted_missing_attribute(argument, scope) {
+                    return Some(read);
+                }
+            }
             members
                 .values()
                 .find_map(|member| missing_attribute(member, scope, depth + 1, budget))
@@ -2871,6 +2872,27 @@ fn missing_attribute(
             .find_map(|item| missing_attribute(item, scope, depth + 1, budget)),
         _ => None,
     }
+}
+
+/// The FIRST `${Name.Attribute}` variable of one `Fn::Sub` argument naming an attribute the
+/// resource it names does not publish — the `Fn::Sub` half of [`missing_attribute`], read off
+/// the source string the same way [`reads_an_unpublished_attribute`] reads it.
+fn substituted_missing_attribute(
+    argument: &Value,
+    scope: &Scope<'_>,
+) -> Option<(String, String)> {
+    let source = match argument {
+        Value::String(source) => Some(source.as_str()),
+        Value::Array(arguments) => arguments.first().and_then(Value::as_str),
+        _ => None,
+    }?;
+    super::substitution_names(source).into_iter().find_map(|(name, path)| {
+        let attribute = path
+            .as_deref()
+            .and_then(|path| path.split_once('.'))
+            .map(|(_, attribute)| attribute.to_string())?;
+        is_unpublished(scope, &name, &attribute).then_some((name, attribute))
+    })
 }
 
 /// The resource and attribute an `Fn::GetAtt` argument NAMES, for the two forms that spell

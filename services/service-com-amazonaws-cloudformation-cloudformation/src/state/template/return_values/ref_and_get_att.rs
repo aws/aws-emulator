@@ -1573,21 +1573,24 @@ pub(crate) fn return_values(
             let id = ec2_network_identity("rtb", "RouteTableId", name, &mut attributes);
             (id, attributes)
         }
-        // An Elastic IP address, whose published return values are the two halves of what
-        // `AllocateAddress` answers: "Ref returns the Elastic IP address" and "AllocationId
-        // — the ID that represents the allocation of the Elastic IP address". Only the
-        // allocation id has a FORM a rule here can compute (Amazon EC2's own `eipalloc-` plus
-        // 17 hexadecimal characters), which is the stand-in a NAT gateway of the same
-        // template is resolved against before the address is allocated and which the
-        // deployment then re-points at the allocation that service answered. The address
-        // itself is this resource's physical id, so it is the identity's own stand-in rather
-        // than an attribute computed beside it, and the create reports the address EC2
-        // allocated ([`super::provisioning`]).
+        // An Elastic IP address, whose "Return values" section publishes BOTH halves of what
+        // `AllocateAddress` answers: "AllocationId — the ID that represents the allocation of
+        // the Elastic IP address" and "PublicIp — the Elastic IP address", the latter being
+        // the same value "Ref returns the Elastic IP address" hands back. Only the allocation
+        // id has a FORM a rule here can compute (Amazon EC2's own `eipalloc-` plus 17
+        // hexadecimal characters); the address itself is this resource's physical id, so
+        // `PublicIp` carries the identity's own stand-in, and both are re-pointed at what
+        // that service really allocated once the create answers ([`super::provisioning`]).
+        // `PublicIp` is published HERE rather than left to resolve to nothing because a
+        // template reads it exactly as it reads the allocation id — the canonical Elastic IP
+        // plus Route 53 A-record pattern feeds it into a record's `ResourceRecords` — and an
+        // attribute the type publishes may not read as one its schema does not declare.
         EC2_EIP => {
             attributes.insert(
                 "AllocationId".to_string(),
                 generated_service_id("eipalloc", name, EC2_ID_HEX_DIGITS),
             );
+            attributes.insert("PublicIp".to_string(), name.to_string());
             (name.to_string(), attributes)
         }
         EC2_NAT_GATEWAY => {

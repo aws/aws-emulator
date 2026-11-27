@@ -1064,8 +1064,9 @@ impl StoredStack {
     /// the resource it names does not publish, with the error that is: the answer is in hand
     /// and does not carry the key, so the consuming resource cannot be created at all.
     ///
-    /// WHICH error depends on the resource NAMED. A type that does not publish the attribute
-    /// at all is a template error ([`template::unsupported_attribute_reason`]); a CUSTOM
+    /// WHICH error depends on the resource NAMED. A type whose schema does not declare the
+    /// attribute at all is reported against that type's schema
+    /// ([`template::unsupported_attribute_reason`]); a CUSTOM
     /// RESOURCE publishes whatever its provider's answer carried, so a key that answer left
     /// out is a fault of the VENDOR's response, named with the response object it was read
     /// from ([`provisioning::custom_resource::vendor_response_missing_attribute`]) — the
@@ -1119,10 +1120,11 @@ impl StoredStack {
     /// What a resource's declaration reading `attribute` of the resource `named` fails with
     /// ([`Self::resolve_deferred_declarations`] words every unresolved read through this).
     fn unresolved_read_reason(&self, named: &str, attribute: &str) -> String {
-        let answered = self
-            .current_resources()
+        let records = self.current_resources();
+        let record = records
             .iter()
-            .find(|resource| resource.logical_id == named)
+            .find(|resource| resource.logical_id == named);
+        let answered = record
             .filter(|resource| {
                 provisioning::custom_resource::is_custom_resource(&resource.resource_type)
             })
@@ -1139,7 +1141,14 @@ impl StoredStack {
                 named,
                 &request.request_id,
             ),
-            None => template::unsupported_attribute_reason(named, attribute),
+            // The attribute error names the TYPE whose schema does not declare the attribute,
+            // which is the type of the resource the read names; a `GetAtt` naming a logical id
+            // the stack holds no record for cannot reach here, since only an attribute of a
+            // resource the scope KNOWS is judged ([`template::unresolved_attributes`]).
+            None => template::unsupported_attribute_reason(
+                record.map(|resource| resource.resource_type.as_str()).unwrap_or_default(),
+                attribute,
+            ),
         }
     }
 

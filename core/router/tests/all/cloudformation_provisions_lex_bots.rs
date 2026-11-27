@@ -6,7 +6,7 @@
 //! owns it, and each published under the identity that service assigned.
 //!
 //! The rule under test: **a resource type's `Fn::GetAtt` surface is the set of return values
-//! AWS publishes for that type, and the "does not support attribute type" template error is
+//! AWS publishes for that type, and the "does not exist in schema for" attribute error is
 //! the answer only for an attribute OUTSIDE that set** — so `Fn::GetAtt` on an
 //! `AWS::Lex::BotVersion`'s `BotVersion` resolves to the numeric version Amazon Lex assigned
 //! when it cut the version, which is exactly what the `botVersion` of the alias beside it
@@ -475,7 +475,7 @@ async fn a_deployed_stack_publishes_the_version_amazon_lex_assigned_and_the_alia
         let case = row.case;
         let body = create_and_settle(&router, case, row.stack_name, &row.template).await;
         assert!(
-            !body.contains("does not support attribute type"),
+            !body.contains("does not exist in schema for"),
             "case {case:?}: expected Fn::GetAtt on a published return value to resolve, got \
              {body}"
         );
@@ -675,7 +675,7 @@ async fn the_change_set_path_resolves_the_version_attribute_too() {
         "case {case:?}: expected HTTP 200 from DescribeStacks, got {status} with {body}"
     );
     assert!(
-        !body.contains("does not support attribute type"),
+        !body.contains("does not exist in schema for"),
         "case {case:?}: expected Fn::GetAtt on a published return value to resolve, got {body}"
     );
     assert_eq!(
@@ -708,8 +708,10 @@ async fn the_change_set_path_resolves_the_version_attribute_too() {
     );
 }
 
-/// The negative control: `Fn::GetAtt` on an attribute the type genuinely does NOT publish is/// still refused with AWS's own template error, naming the referenced resource's LOGICAL ID
-/// and the attribute requested — the refusal the published `BotVersion` must never get.
+/// The negative control: `Fn::GetAtt` on an attribute the type genuinely does NOT publish is
+/// still refused with AWS's own schema error, naming the attribute requested and the TYPE of
+/// the resource whose schema has no such member — the refusal the published `BotVersion` must
+/// never get.
 #[tokio::test]
 async fn an_attribute_the_type_does_not_publish_is_still_refused_as_a_template_error() {
     let router = build_router();
@@ -764,7 +766,7 @@ async fn an_attribute_the_type_does_not_publish_is_still_refused_as_a_template_e
     );
 
     // The reason the failing resource carries is AWS's own fixed text around the two names the
-    // error is about: the referenced resource's logical id and the attribute requested.
+    // error is about: the attribute requested and the type whose schema does not declare it.
     let (status, events) = cloudformation(
         &router,
         "DescribeStackEvents",
@@ -776,8 +778,7 @@ async fn an_attribute_the_type_does_not_publish_is_still_refused_as_a_template_e
         "case {case:?}: expected HTTP 200 from DescribeStackEvents, got {status} with {events}"
     );
     let expected = format!(
-        "Template error: resource BookTripBotVersionWithCFN does not support attribute type \
-         {UNPUBLISHED_ATTRIBUTE} in Fn::GetAtt"
+        "Requested attribute {UNPUBLISHED_ATTRIBUTE} does not exist in schema for {BOT_VERSION}"
     );
     assert!(
         events.contains(&expected),

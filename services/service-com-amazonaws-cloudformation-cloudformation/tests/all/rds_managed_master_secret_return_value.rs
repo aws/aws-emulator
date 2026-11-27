@@ -12,7 +12,7 @@
 //!
 //! That is the deployment shape a database stack has: the template hands the managed secret's
 //! ARN to whatever reads the credentials (a function, a parameter), so an attribute the type
-//! does not publish fails that resource with "does not support attribute type …" and rolls the
+//! does not publish fails that resource with "does not exist in schema for …" and rolls the
 //! whole stack back — far from its cause.
 //!
 //! The rows differ along what the rule generalises over: which of the two RDS types the
