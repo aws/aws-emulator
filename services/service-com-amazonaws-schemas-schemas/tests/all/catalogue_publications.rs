@@ -13,14 +13,16 @@
 //!    no later source's entries are displaced;
 //! 2. `SchemaSummary$LastModified` ("The date and time that schema was modified",
 //!    `smithy_query(query="shape",shape="SchemaSummary")`) is the instant of the
-//!    PUBLICATION that wrote the entry: every entry one publication wrote reports that
-//!    one instant, an entry an earlier publication of its own wrote reports that
-//!    publication's instant, and no entry's instant is a function of its name.
+//!    PUBLICATION PASS that wrote the entry: every entry one pass wrote reports that one
+//!    whole-second instant, an entry an earlier publication of its own wrote reports that
+//!    publication's instant, two passes report two instants, and no entry's instant is a
+//!    function of its name — so a catalogue, which many passes write, reports many
+//!    instants rather than one for all of it.
 //!
 //! Every case drives the real wire path, through the harness in
 //! `registry_schema_lifecycle.rs` — nothing here touches the state struct directly.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::{json, Value};
 use service_com_amazonaws_schemas_schemas::state::{
@@ -363,68 +365,168 @@ async fn an_entry_reports_the_instant_of_the_publication_that_wrote_it() {
     }
 }
 
-/// RULE (the other half of it): an entry's instant is the publication's and NO function
-/// of the entry's name — entries one publication wrote report one instant however
-/// unalike their names are, and two names a letter's case apart report the instants of
-/// the publications that wrote them rather than two values derived from the two
-/// spellings.
+/// One pass of the catalogue's own publication: entries it wrote, named by what the pass
+/// was.
+struct PassRow {
+    /// What the pass wrote, for the case's message.
+    pass: &'static str,
+    entries: &'static [&'static str],
+    /// Whether this is the pass that wrote the CURRENT API-call spelling, whose instant the
+    /// case-spelling rows below check the current spelling against.
+    wrote_the_api_call_spelling: bool,
+}
+
+/// The passes the case below runs over.
+///
+/// A pass is a SET of entries written at one instant, and which sets those are is the
+/// catalogue's own structure: the CloudTrail-delivered family is written one member at a
+/// time across the sources that carry it, and a source's own event types as that source
+/// is onboarded. The rows differ along what the rule generalises over: three passes of
+/// the first kind (differing in the family member and in how many sources they span) and
+/// two of the second (a source that also carries the family, and one that carries none),
+/// at two, three, five and seven entries. No row's entries are derivable from one
+/// another: the first three span sources that share no name, and the last two span event
+/// names that share no stem.
+fn pass_rows() -> Vec<PassRow> {
+    vec![
+        PassRow {
+            pass: "the API-call pass",
+            entries: &[
+                "aws.a4b@AWSAPICallviaCloudTrail",
+                "aws.abuse@AWSAPICallviaCloudTrail",
+                "aws.autoscaling@AWSAPICallviaCloudTrail",
+                "aws.tagging@AWSAPICallviaCloudTrail",
+                "aws.xray@AWSAPICallviaCloudTrail",
+            ],
+            wrote_the_api_call_spelling: true,
+        },
+        PassRow {
+            pass: "the Insight pass",
+            entries: &[
+                "aws.a4b@AWSInsightviaCloudTrail",
+                "aws.tagging@AWSInsightviaCloudTrail",
+                "aws.xray@AWSInsightviaCloudTrail",
+            ],
+            wrote_the_api_call_spelling: false,
+        },
+        PassRow {
+            pass: "the service-event pass",
+            entries: &[
+                "aws.a4b@AWSServiceEventviaCloudTrail",
+                "aws.abuse@AWSServiceEventviaCloudTrail",
+            ],
+            wrote_the_api_call_spelling: false,
+        },
+        PassRow {
+            pass: "the aws.a4b onboarding pass",
+            entries: &[
+                "aws.a4b@RoomDeviceCalendarErrorStatus",
+                "aws.a4b@RoomStateChange",
+            ],
+            wrote_the_api_call_spelling: false,
+        },
+        PassRow {
+            pass: "the aws.aidevops onboarding pass",
+            entries: &[
+                "aws.aidevops@InvestigationCancelled",
+                "aws.aidevops@InvestigationCompleted",
+                "aws.aidevops@InvestigationCreated",
+                "aws.aidevops@InvestigationFailed",
+                "aws.aidevops@InvestigationInProgress",
+                "aws.aidevops@InvestigationLinked",
+                "aws.aidevops@InvestigationPendingTriage",
+            ],
+            wrote_the_api_call_spelling: false,
+        },
+    ]
+}
+
+/// RULE (the other half of it): an entry's instant is the PASS's and NO function of the
+/// entry's name — entries one pass wrote report one instant however unalike their names
+/// are, two passes report two instants (so two entries of ONE source differ when two
+/// passes wrote them), and two names a letter's case apart report the instants of the
+/// passes that wrote them rather than two values derived from the two spellings.
 #[tokio::test]
 async fn an_entrys_instant_is_no_function_of_its_name() {
     let emulator = Emulator::new();
     let elsewhere = Emulator::new();
 
-    // Entries of ONE publication — the one that wrote the catalogue's entries that carry
-    // no earlier publication of their own. Their names share no source, no event name and
-    // no length, so an instant computed from the name could not put them together.
-    let together = [
-        "aws.a4b@AWSAPICallviaCloudTrail",
-        "aws.xray@AWSInsightviaCloudTrail",
-        "aws.s3@ObjectCreated",
-        "aws.events@ScheduledEvent",
-        "aws.acm@ACMCertificateAvailable",
-        "aws.aidevops@InvestigationPendingTriage",
-    ];
-    let mut shared: Option<String> = None;
-    for name in together {
-        let instant = instant_of(&summary_of(&emulator, name).await, name);
-        assert!(
-            !instant.contains('.'),
-            "case {name:?}: a publication instant is whole-second, got {instant:?}"
-        );
-        match &shared {
-            Some(first) => assert_eq!(
-                &instant, first,
-                "case {name:?}: entries one publication wrote report one instant, got \
-                 {instant:?} against {first:?}"
-            ),
-            None => shared = Some(instant.clone()),
+    // Pass -> the one instant its entries report. Two passes landing on one instant would
+    // leave this map short.
+    let mut by_pass: BTreeSet<String> = BTreeSet::new();
+    let mut api_call_pass = String::new();
+    for row in pass_rows() {
+        let mut shared: Option<String> = None;
+        for name in row.entries {
+            let instant = instant_of(&summary_of(&emulator, name).await, name);
+            assert!(
+                !instant.contains('.'),
+                "case {name:?}: a publication instant is whole-second, got {instant:?}"
+            );
+            match &shared {
+                Some(first) => assert_eq!(
+                    &instant, first,
+                    "case {name:?}: entries {} wrote report one instant, got {instant:?} \
+                     against {first:?}",
+                    row.pass
+                ),
+                None => shared = Some(instant.clone()),
+            }
+            // And the same instant in a second store: the pass is seed data, not a
+            // reading of the clock this store was built at.
+            assert_eq!(
+                instant_of(&summary_of(&elsewhere, name).await, name),
+                instant,
+                "case {name:?}: a second store must report the same publication instant"
+            );
         }
-        // And the same instant in a second store: the publication is seed data, not a
-        // reading of the clock this store was built at.
-        assert_eq!(
-            instant_of(&summary_of(&elsewhere, name).await, name),
-            instant,
-            "case {name:?}: a second store must report the same publication instant"
+        let shared = shared.unwrap_or_default();
+        assert!(
+            by_pass.insert(shared.clone()),
+            "case {}: two passes must report two instants, got {shared:?} again in \
+             {by_pass:?}",
+            row.pass
+        );
+        if row.wrote_the_api_call_spelling {
+            api_call_pass = shared;
+        }
+    }
+
+    // Two entries of ONE source that two passes wrote: a family entry and the source's
+    // own event type report the instants of their own passes, so one source is not one
+    // instant either.
+    for (family, own) in [
+        ("aws.a4b@AWSAPICallviaCloudTrail", "aws.a4b@RoomStateChange"),
+        (
+            "aws.aidevops@InvestigationCreated",
+            "aws.a4b@RoomDeviceCalendarErrorStatus",
+        ),
+    ] {
+        assert_ne!(
+            instant_of(&summary_of(&emulator, family).await, family),
+            instant_of(&summary_of(&emulator, own).await, own),
+            "case {family:?}/{own:?}: two entries two passes wrote must report two instants"
         );
     }
-    let shared = shared.unwrap_or_default();
 
     // Two names a letter's case apart: the one an earlier publication wrote reports that
-    // publication's instant, and the other reports the instant of the publication that
-    // wrote IT — which is the one every entry above reports.
+    // publication's instant, and the other reports the instant of the pass that wrote IT
+    // — for the API-call spelling, the pass every entry of the first row above reports.
     let spellings = [
         (
             "aws.autoscaling@AWSAPICallViaCloudTrail",
             "2019-12-01T00:59:43Z",
             "aws.autoscaling@AWSAPICallviaCloudTrail",
+            Some(api_call_pass.clone()),
         ),
         (
             "aws.tag@TagChangeOnResource",
             "2022-03-24T16:40:20Z",
             "aws.tag@TagChangeonResource",
+            None,
         ),
     ];
-    for (published_earlier, instant, published_with_the_rest) in spellings {
+    for (published_earlier, instant, published_with_its_pass, pass_instant) in spellings {
         let earlier = summary_of(&emulator, published_earlier).await;
         assert_eq!(
             instant_of(&earlier, published_earlier),
@@ -432,16 +534,18 @@ async fn an_entrys_instant_is_no_function_of_its_name() {
             "case {published_earlier:?}: the entry its own publication wrote must report \
              that publication's instant, got {earlier:?}"
         );
-        let sibling = summary_of(&emulator, published_with_the_rest).await;
-        assert_eq!(
-            instant_of(&sibling, published_with_the_rest),
-            shared,
-            "case {published_with_the_rest:?}: an entry the catalogue's own publication \
-             wrote reports that publication's instant, got {sibling:?}"
-        );
+        let sibling = summary_of(&emulator, published_with_its_pass).await;
+        if let Some(pass_instant) = pass_instant {
+            assert_eq!(
+                instant_of(&sibling, published_with_its_pass),
+                pass_instant,
+                "case {published_with_its_pass:?}: an entry reports the instant of the \
+                 pass that wrote it, got {sibling:?}"
+            );
+        }
         assert_ne!(
             instant_of(&earlier, published_earlier),
-            instant_of(&sibling, published_with_the_rest),
+            instant_of(&sibling, published_with_its_pass),
             "case {published_earlier:?}: two entries two publications wrote must report \
              two instants"
         );
@@ -459,4 +563,83 @@ async fn an_entrys_instant_is_no_function_of_its_name() {
             "case {name:?}: the read and the listing must report one instant"
         );
     }
+}
+
+/// Every entry of a page as `<SchemaName> <LastModified>`, so one walk of the catalogue
+/// carries both members of each summary through the shared `walk` helper.
+fn names_and_instants(answer: &Answer) -> Vec<String> {
+    answer.body["Schemas"]
+        .as_array()
+        .unwrap_or_else(|| panic!("expected a Schemas array in {:?}", answer.body))
+        .iter()
+        .map(|item| {
+            format!(
+                "{} {}",
+                item["SchemaName"].as_str().unwrap_or_default(),
+                item["LastModified"].as_str().unwrap_or_default()
+            )
+        })
+        .collect()
+}
+
+/// RULE (the whole catalogue, not one entry of it): a published catalogue is written by
+/// MANY passes, so the instants it reports are many — it reports at least one instant per
+/// pass the CloudTrail-delivered family is written in, and no single instant covers the
+/// catalogue, which is what a client that orders, filters or re-fetches by
+/// `LastModified` reads.
+#[tokio::test]
+async fn the_catalogue_reports_the_instants_of_the_passes_that_wrote_it() {
+    let emulator = Emulator::new();
+
+    // One walk of the whole registry: every entry a client enumerating the catalogue
+    // sees, with the instant it reports.
+    let walked = walk(
+        &emulator,
+        &catalogue_uri(),
+        Some(MAX_PAGE_SIZE),
+        names_and_instants,
+    )
+    .await;
+    assert!(
+        walked.len() > CLOUD_TRAIL_EVENT_FAMILY.len(),
+        "the catalogue must publish more entries than one pass writes, got {}",
+        walked.len()
+    );
+
+    let mut entries_per_instant: BTreeMap<String, usize> = BTreeMap::new();
+    for row in &walked {
+        let (name, instant) = row
+            .split_once(' ')
+            .unwrap_or_else(|| panic!("case {row:?}: every entry reports a LastModified"));
+        assert!(
+            !instant.is_empty() && !instant.contains('.') && instant.ends_with('Z'),
+            "case {name:?}: a publication instant is a whole-second date-time, got \
+             {instant:?}"
+        );
+        *entries_per_instant.entry(instant.to_string()).or_default() += 1;
+    }
+
+    // One instant per pass at the very least: the family alone is written one member at a
+    // time, and the sources' own event types afterwards.
+    assert!(
+        entries_per_instant.len() >= CLOUD_TRAIL_EVENT_FAMILY.len(),
+        "the catalogue must report the instant of every pass that wrote it, got {} \
+         instants over {} entries: {entries_per_instant:?}",
+        entries_per_instant.len(),
+        walked.len()
+    );
+
+    // And no pass wrote the catalogue on its own: an instant shared by the whole of it
+    // makes every entry equally stale and the passes indistinguishable.
+    let (largest, covered) = entries_per_instant
+        .iter()
+        .max_by_key(|(_, covered)| **covered)
+        .map(|(instant, covered)| (instant.clone(), *covered))
+        .unwrap_or_default();
+    assert!(
+        covered * 2 < walked.len(),
+        "case {largest:?}: no one instant covers the catalogue, got {covered} of {} \
+         entries",
+        walked.len()
+    );
 }

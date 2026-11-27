@@ -171,8 +171,10 @@ async fn the_catalogue_publishes_the_whole_cloud_trail_family_of_a_source_it_hol
 /// RULE (an invariant): a published schema's `LastModified` is a property OF THE
 /// PUBLISHED SCHEMA — the same value in every store and across every reset, at
 /// whole-second precision — and not of the moment the store was built, so two stores
-/// built at two different moments report the same catalogue. WHICH instant each entry
-/// reports (the instant of the publication that wrote it) is `catalogue_publications.rs`.
+/// built at two different moments report the same catalogue; and it is the property of
+/// THAT schema, so entries different publications of the catalogue wrote report different
+/// instants. WHICH instant each entry reports (the instant of the publication that wrote
+/// it) is `catalogue_publications.rs`.
 #[tokio::test]
 async fn a_published_schema_reports_its_own_fixed_last_modified() {
     let first = Emulator::new();
@@ -226,15 +228,7 @@ async fn a_published_schema_reports_its_own_fixed_last_modified() {
             timestamp_at(&again, "LastModified"),
             "case {name:?}: a read must not move the instant"
         );
-        // Every row above is an entry of ONE publication — none of them carries an
-        // earlier publication of its own — so they report one instant between them,
-        // which is what the entries of any one publication do.
         seen.insert(modified.clone());
-        assert_eq!(
-            seen.len(),
-            1,
-            "case {name:?}: entries of one publication report one instant, got {seen:?}"
-        );
 
         // The listing reports the same instant as the read of the schema.
         let listed = first
@@ -250,6 +244,19 @@ async fn a_published_schema_reports_its_own_fixed_last_modified() {
             "case {name:?}: the summary and the read must report one instant"
         );
     }
+
+    // Each row above was written by a publication of its OWN — three members of the
+    // CloudTrail-delivered family, each written across every source that carries it, and
+    // four sources' own event types — so the catalogue reports one instant per row and
+    // does not collapse all of them onto one. WHICH instant each one reports is
+    // `catalogue_publications.rs`.
+    assert_eq!(
+        seen.len(),
+        rows.len(),
+        "every row is an entry of a publication of its own, so the catalogue reports \
+         {} instants for them, got {seen:?}",
+        rows.len()
+    );
 }
 
 /// RULE: a published schema's `VersionCount` is the number of versions the catalogue

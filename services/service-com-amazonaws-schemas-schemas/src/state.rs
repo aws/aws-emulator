@@ -2197,23 +2197,131 @@ pub struct PublishedEvent {
 /// satisfies none of that: it moves the instant on every boot, and so invalidates every
 /// client's cache on every run.
 ///
-/// The instant is catalogue DATA and is computed from NOTHING: a publication writes a
-/// SET of entries at one instant, so the entries of one publication all report that
-/// instant and an entry's own name says nothing about when it was published. The
-/// publications the catalogue publishes an instant of their own for are
-/// [`MANAGED_PUBLICATIONS`]; every entry none of them names belongs to the publication
-/// that wrote the rest of the catalogue, [`CATALOGUE_PUBLICATION_INSTANT`].
+/// The instant is catalogue DATA and is no function of the entry's name: a publication
+/// PASS writes a SET of entries at one instant, so every entry one pass wrote reports
+/// that one instant and an entry's own name says nothing about when it was published.
+///
+/// A published catalogue is written by MANY passes, so it reports MANY instants: an entry
+/// whose own publication the catalogue publishes an instant for reports that instant
+/// ([`MANAGED_PUBLICATIONS`]), and every other entry reports the instant of the pass of
+/// the catalogue's own publication that wrote it ([`CataloguePass`]). No entry falls back
+/// onto one instant shared by the whole catalogue: a client orders, filters and
+/// re-fetches by this member, and a catalogue collapsed onto a single instant makes every
+/// entry of it equally stale and the passes it is made of indistinguishable.
 pub fn managed_last_modified(schema_name: &str) -> SystemTime {
-    published_instant(managed_publication_instant(schema_name))
+    match managed_publication_instant(schema_name) {
+        Some(published) => published_instant(published),
+        None => catalogue_pass(schema_name).published_at(),
+    }
 }
 
 /// The `date-time` the catalogue publishes as the `LastModified` of the entry named
-/// `schema_name`: the instant of the publication that wrote that entry.
-fn managed_publication_instant(schema_name: &str) -> &'static str {
+/// `schema_name`, where it publishes one of its own: the instant of the publication that
+/// wrote that entry. `None` for an entry the catalogue's own publication wrote — see
+/// [`CataloguePass`].
+fn managed_publication_instant(schema_name: &str) -> Option<&'static str> {
     MANAGED_PUBLICATIONS
         .iter()
         .find(|(_, published)| published.contains(&schema_name))
-        .map_or(CATALOGUE_PUBLICATION_INSTANT, |(instant, _)| *instant)
+        .map(|(instant, _)| *instant)
+}
+
+/// One pass of the publication that wrote the catalogue this store seeds.
+///
+/// A publication does not write a catalogue in one stroke: it walks the inventory and
+/// writes it a SET of entries at a time, stamping each set with the instant that set was
+/// written at. Which sets those are is the inventory's own structure: the legacy API-call
+/// spelling was written before the rest ([`LEGACY_API_CALL_SOURCES`] carries it), the
+/// CloudTrail-delivered family ([`CLOUD_TRAIL_EVENT_FAMILY`]) one member at a time across
+/// every source that carries it — which is why one event name reports one instant over
+/// sources whose names have nothing in common — and each publishing source's own event
+/// types ([`AWS_SERVICE_EVENT_TYPES`]) as that source was onboarded, which is why two
+/// entries of ONE source report two instants when one of them is a family entry.
+///
+/// Nothing here is computed from the entry's name: the name selects the pass that wrote
+/// the entry, and the pass — not the entry — carries the instant, so entries one pass
+/// wrote report one whole-second instant however unalike their names are.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CataloguePass {
+    /// The pass that wrote the legacy API-call spelling, before the catalogue's own
+    /// publication began.
+    LegacyApiCall,
+    /// A pass of the catalogue's own publication, by its position in it.
+    Ordinal(usize),
+}
+
+impl CataloguePass {
+    /// The whole-second instant this pass wrote its entries at.
+    fn published_at(self) -> SystemTime {
+        match self {
+            Self::LegacyApiCall => published_instant(LEGACY_API_CALL_PUBLICATION_INSTANT),
+            Self::Ordinal(position) => {
+                published_instant(CATALOGUE_PUBLICATION_INSTANT)
+                    + CATALOGUE_PASS_INTERVAL
+                        .saturating_mul(u32::try_from(position).unwrap_or(u32::MAX))
+            }
+        }
+    }
+}
+
+/// Which pass of the catalogue's publication wrote the entry named — see
+/// [`CataloguePass`].
+fn catalogue_pass(schema_name: &str) -> CataloguePass {
+    match schema_name.split_once('@') {
+        Some((_, event_name)) if event_name == LEGACY_CLOUD_TRAIL_EVENT_NAME => {
+            CataloguePass::LegacyApiCall
+        }
+        Some((source, event_name)) => {
+            CataloguePass::Ordinal(catalogue_pass_position(source, event_name))
+        }
+        // A name of no `<source>@<EventName>` form names no published event type, so no
+        // pass of the publication wrote it; it reports the instant of the pass that
+        // closed the publication.
+        None => CataloguePass::Ordinal(last_catalogue_pass_position()),
+    }
+}
+
+/// The position, in the catalogue's own publication, of the pass that wrote the entry
+/// published as `<source>@<event_name>`: the family member's own pass where the entry is
+/// one of the CloudTrail-delivered family, and the source's onboarding pass otherwise.
+fn catalogue_pass_position(source: &str, event_name: &str) -> usize {
+    if let Some(member) = CLOUD_TRAIL_EVENT_FAMILY
+        .iter()
+        .position(|(_, name)| *name == event_name)
+    {
+        return member;
+    }
+    own_event_type_sources()
+        .iter()
+        .position(|onboarded| *onboarded == source)
+        .map_or_else(last_catalogue_pass_position, |onboarded| {
+            CLOUD_TRAIL_EVENT_FAMILY.len() + onboarded
+        })
+}
+
+/// The position of the pass that closed the catalogue's publication: the one after every
+/// pass the inventory accounts for.
+fn last_catalogue_pass_position() -> usize {
+    CLOUD_TRAIL_EVENT_FAMILY.len() + own_event_type_sources().len()
+}
+
+/// The sources the catalogue publishes event types of their own for, in the order its
+/// publication onboarded them: the order [`AWS_SERVICE_EVENT_TYPES`] lists a source's
+/// first entry in, one pass per source.
+///
+/// Collected ONCE per process and handed out by reference afterwards: the inventory is
+/// built from constants, so the onboarding order is the same in every store.
+fn own_event_type_sources() -> &'static [&'static str] {
+    static SOURCES: ::std::sync::OnceLock<Vec<&'static str>> = ::std::sync::OnceLock::new();
+    SOURCES.get_or_init(|| {
+        let mut sources: Vec<&'static str> = Vec::new();
+        for event in AWS_SERVICE_EVENT_TYPES {
+            if !sources.contains(&event.source) {
+                sources.push(event.source);
+            }
+        }
+        sources
+    })
 }
 
 /// The publications the catalogue publishes an instant OF THEIR OWN for: each one's
@@ -2229,11 +2337,19 @@ fn managed_publication_instant(schema_name: &str) -> &'static str {
 /// historical — a publication of the past, years before the catalogue was otherwise
 /// written, reported identically on every request.
 ///
+/// It is an OVERRIDE of the pass [`CataloguePass`] would otherwise place the entry in,
+/// not the catch-all the rest of the catalogue falls back onto: an entry named by no row
+/// here reports the instant of the pass of the catalogue's own publication that wrote it.
+///
 /// Each instant is a whole-second `date-time`, as [`published_instant`] reads it.
 const MANAGED_PUBLICATIONS: &[(&str, &[&str])] = &[
     // The legacy API-call spelling ([`LEGACY_API_CALL_SOURCES`]) was written before the
     // rest of its sources' blocks: each of its entries reports the instant of the pass
-    // that wrote it, years before the publication the source's other entries report.
+    // that wrote it, before the publication the source's other entries report. The first
+    // row is deliberately the instant of that pass itself
+    // ([`LEGACY_API_CALL_PUBLICATION_INSTANT`]) — it is where that instant is observed,
+    // and the rows after it are the seconds of the same pass the catalogue reports for the
+    // entries it wrote next.
     (
         "2019-12-01T00:59:39Z",
         &["aws.ec2@AWSAPICallViaCloudTrail"],
@@ -2294,23 +2410,40 @@ fn published_instant(text: &str) -> SystemTime {
     SystemTime::UNIX_EPOCH + Duration::from_secs(seconds)
 }
 
-/// The instant of the publication that wrote the catalogue this store seeds: what every
-/// entry [`MANAGED_PUBLICATIONS`] names no earlier publication of its own for reports.
+/// When the publication that wrote the catalogue this store seeds BEGAN: the instant its
+/// first pass ([`CataloguePass::Ordinal`] zero) wrote its entries at, with every later
+/// pass a [`CATALOGUE_PASS_INTERVAL`] after it.
 ///
-/// The entries of one publication report one instant, so a catalogue written by a single
-/// publication reports a single instant for the entries it wrote — which is what the
-/// published catalogue does for the entries of any one of its passes, whatever their
-/// names. Nothing here is computed from an entry: a value derived from the name would
-/// scatter the entries of one publication over unrelated moments, which is precisely
-/// what `LastModified` is read to rule out.
+/// It is 2019-12-01, when the event schema registry became available, so the catalogue
+/// this store seeds was published as that registry came up — after the pass that wrote
+/// the legacy API-call spelling ([`LEGACY_API_CALL_PUBLICATION_INSTANT`]), which is
+/// earlier still. Fixed seed data, so every pass reports the same instant in every
+/// process and across every reset of the store.
 ///
-/// It is 2019-12-01T00:00:00Z, when the event schema registry became available, so the
-/// catalogue this store seeds was published as that registry came up. Fixed seed data,
-/// so it reports the same instant in every process and across every reset of the store.
-/// It bounds no other member: an earlier VERSION of an entry was created before the
-/// publication that wrote the entry, which is where [`MANAGED_VERSION_INTERVAL`] lays
-/// each one.
-const CATALOGUE_PUBLICATION_INSTANT: &str = "2019-12-01T00:00:00Z";
+/// It bounds no other member: an earlier VERSION of an entry was created before the pass
+/// that wrote the entry, which is where [`MANAGED_VERSION_INTERVAL`] lays each one.
+const CATALOGUE_PUBLICATION_INSTANT: &str = "2019-12-01T01:00:00Z";
+
+/// How far apart two passes of the catalogue's publication stand.
+///
+/// AWS publishes no instant for a catalogue entry and the model states nothing about the
+/// value, so this span is the emulator's own, like [`MANAGED_VERSION_INTERVAL`]. What the
+/// store owes is that every entry ONE pass wrote reports one whole-second instant, that
+/// two passes report two instants, and that both are fixed seed data — so a client that
+/// orders, filters or re-fetches by `LastModified` sees the passes the catalogue is made
+/// of instead of one instant shared by all of it.
+const CATALOGUE_PASS_INTERVAL: Duration = Duration::from_secs(1);
+
+/// When the pass that wrote the legacy API-call spelling ran: before the catalogue's own
+/// publication began ([`CATALOGUE_PUBLICATION_INSTANT`]), which is why a source carrying
+/// that spelling reports an earlier instant for it than for the current spelling of the
+/// same event.
+///
+/// Source: the instant the published catalogue reports for the legacy entry of the first
+/// source that carries one — the whole pass is of that moment, and
+/// [`MANAGED_PUBLICATIONS`] carries the sets of it the catalogue reports a second of
+/// their own for.
+const LEGACY_API_CALL_PUBLICATION_INSTANT: &str = "2019-12-01T00:59:39Z";
 
 /// How far apart the catalogue's versions of one schema are published.
 ///

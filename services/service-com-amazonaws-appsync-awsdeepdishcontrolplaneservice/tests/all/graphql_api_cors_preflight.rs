@@ -629,17 +629,20 @@ async fn create_multi_mode_api(router: &MultiServiceRouter, name: &str) -> Graph
     )
     .await;
     assert_eq!(status, 200, "CreateGraphqlApi must answer 200, got {created}");
-    let api_id = created["graphqlApi"]["apiId"]
-        .as_str()
-        .unwrap_or_default()
-        .to_string();
-    let graphql = created["graphqlApi"]["dns"]["GRAPHQL"]
-        .as_str()
-        .unwrap_or_default()
-        .to_string();
+    let api = &created["graphqlApi"];
+    let api_id = api["apiId"].as_str().unwrap_or_default().to_string();
+    // The address a client DIALS is the `uris` entry's authority — a `dns` record carries
+    // the host alone, as a DNS record can — read the one way every suite of this crate
+    // reads it.
+    let graphql = crate::graphql_api_endpoint_dns_records::published_authority(api, "GRAPHQL");
     assert!(
         graphql.starts_with(&format!("{LOOPBACK_HOST}:")),
-        "dns.GRAPHQL must be an address this emulator serves, got {graphql:?}"
+        "uris.GRAPHQL must be published on an address this emulator serves, got {graphql:?}"
+    );
+    assert_eq!(
+        api["dns"]["GRAPHQL"].as_str(),
+        Some(LOOPBACK_HOST),
+        "dns.GRAPHQL must be the bare host the endpoint is served on, got {api}"
     );
     let (status, key) = appsync(
         router,
