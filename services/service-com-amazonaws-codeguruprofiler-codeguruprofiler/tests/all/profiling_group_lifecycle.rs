@@ -148,6 +148,38 @@ pub(crate) fn complete_aggregation_of_period_in(
     }
 }
 
+/// Let the aggregation PASS over every profile a group holds run through, by moving each
+/// stored profile's RECEIPT back past the span that pass takes
+/// (`state::AGGREGATION_PASS_MILLIS`) — and leaving the period each profile's DATA covers
+/// exactly where the submission placed it.
+///
+/// The pass that collects a submission into an aggregated profile runs once the window its
+/// data covers has closed AND the submission has arrived, so a case about a submission
+/// covering a window that had ALREADY closed when it was posted needs only its receipt
+/// aged: the window the case chose stays the window the data sits in, which is what
+/// [`complete_aggregation_of_period_in`] — which moves the data as well — cannot keep.
+/// `pub(crate)` so every suite lets that pass run one way.
+pub(crate) fn complete_aggregation_pass_in(engine: &Arc<engine::InMemoryEngine>, name: &str) {
+    use service_com_amazonaws_codeguruprofiler_codeguruprofiler::state::AGGREGATION_PASS_MILLIS;
+
+    // One second past the pass, in the whole seconds a stored receipt is moved by, so the
+    // aggregate is due rather than falling exactly on the instant of the read.
+    let back = AGGREGATION_PASS_MILLIS / 1_000 + 1;
+    let state = engine
+        .state::<service_com_amazonaws_codeguruprofiler_codeguruprofiler::ComAmazonawsCodeguruprofilerCodeguruprofilerState>();
+    let mut guard = state.lock();
+    let group = guard
+        .groups
+        .get_mut(name)
+        .unwrap_or_else(|| panic!("no stored group named {name}"));
+    for profile in group.profiles.iter_mut() {
+        profile.received_at = aws_smithy_types::DateTime::from_secs_and_nanos(
+            profile.received_at.secs() - back,
+            profile.received_at.subsec_nanos(),
+        );
+    }
+}
+
 /// One day in seconds, for the window arithmetic below.
 const DAY_SECONDS: i64 = 24 * 60 * 60;
 
@@ -423,6 +455,11 @@ impl Harness {
     /// [`complete_aggregation_of_period_in`] on this harness's engine.
     pub(crate) fn complete_aggregation_of_period(&self, name: &str, period_seconds: i64) {
         complete_aggregation_of_period_in(&self.engine, name, period_seconds);
+    }
+
+    /// [`complete_aggregation_pass_in`] on this harness's engine.
+    pub(crate) fn complete_aggregation_pass(&self, name: &str) {
+        complete_aggregation_pass_in(&self.engine, name);
     }
 
     /// Profile bytes retained across every group — what the store-wide budget bounds.

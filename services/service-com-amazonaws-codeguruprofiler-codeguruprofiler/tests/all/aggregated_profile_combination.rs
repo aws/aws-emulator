@@ -1180,12 +1180,17 @@ fn submitted_periods(now: i64) -> Vec<SubmittedPeriod> {
 
 /// A posted agent profile is collected into the aligned window of the period IT STATES,
 /// not of the instant its upload arrived: a submission whose stated period sits in a
-/// window that has already closed is aggregated as soon as the pass over THAT window is
-/// through and the aggregated profile served states THAT window, while one covering a
-/// window the service is still collecting into is covered by no aggregated profile — and
-/// a `start` that states no instant leaves the data where the upload arrived.
+/// window that has already closed is aggregated once the pass over it has run and the
+/// aggregated profile served states THAT window, while one covering a window the service
+/// is still collecting into is covered by no aggregated profile however long the pass has
+/// had to run — and a `start` that states no instant leaves the data where the upload
+/// arrived.
 ///
-/// Every row posts over HTTP and nothing is placed in the store, so what the service
+/// The pass runs after the submission ARRIVES as well as after its window closes, so every
+/// row is pending at the instant its post returns; only the rows whose stated window has
+/// closed become retrievable once that pass is through.
+///
+/// Every row posts over HTTP and nothing but the pass is let run, so what the service
 /// serves follows from the submitted document and the clock alone.
 #[tokio::test]
 async fn a_submission_is_collected_into_the_window_the_period_it_states_falls_in() {
@@ -1212,6 +1217,19 @@ async fn a_submission_is_collected_into_the_window_the_period_it_states_falls_in
             String::from_utf8_lossy(&posted.body)
         );
 
+        // Whatever window the submission states, the pass that would collect it has not
+        // run yet at the instant the post returns.
+        let submitted = harness.get_profile(&name, "?period=PT5M").await;
+        assert_eq!(
+            submitted.status,
+            404,
+            "case {label:?}: a submission the aggregation pass has not run over yet must \
+             not be served, got {} {}",
+            submitted.status,
+            String::from_utf8_lossy(&submitted.body)
+        );
+
+        harness.complete_aggregation_pass(&name);
         let answer = harness.get_profile(&name, "?period=PT5M").await;
         match case.window {
             Some(window) => {
@@ -1219,7 +1237,7 @@ async fn a_submission_is_collected_into_the_window_the_period_it_states_falls_in
                     answer.status,
                     200,
                     "case {label:?}: the aggregated profile of a closed period must be \
-                     served at once, got {} {}",
+                     served once the pass over it has run, got {} {}",
                     answer.status,
                     String::from_utf8_lossy(&answer.body)
                 );

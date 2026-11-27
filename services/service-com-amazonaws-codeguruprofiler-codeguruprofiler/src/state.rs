@@ -252,40 +252,55 @@ pub fn finest_aggregation_period_seconds() -> i64 {
     FINEST_AGGREGATION_PERIOD.1
 }
 
-/// How long after an aggregation window CLOSES its aggregated profile is available, in
-/// milliseconds.
+/// How long the service's pass that collects submitted profiles into the aggregated
+/// profile of a window takes, in milliseconds — measured from the moment there is
+/// anything to collect ([`aggregated_at`]).
 ///
 /// Collecting posted agent profiles into an aggregated profile is work the service does
 /// after the fact, not part of answering the post, so the aggregate a window owes falls
-/// due a span after the window ends rather than at the instant of the post. The span is
-/// this emulator's own choice (the real service's is neither modelled nor documented)
-/// and is deliberately NON-ZERO, so a caller that posts at the very end of a window and
-/// reads immediately still sees the pending-aggregation state.
-pub const AGGREGATION_PASS_MILLIS: i64 = 500;
+/// due a span after the pass over it can start rather than at the instant of the post.
+/// The span is this emulator's own choice (the real service's is neither modelled nor
+/// documented) and is deliberately NON-ZERO, so a caller that posts and reads straight
+/// away still sees the pending-aggregation state.
+pub const AGGREGATION_PASS_MILLIS: i64 = 3_000;
 
 /// When the aggregated profile OF THE AGGREGATION PERIOD `period_seconds` LONG that
-/// covers the data starting at `data_start` becomes available: the end of that period's
-/// window containing that instant, plus [`AGGREGATION_PASS_MILLIS`].
+/// covers the data starting at `data_start`, submitted at `received_at`, becomes
+/// available: [`AGGREGATION_PASS_MILLIS`] after the LATER of that period's window end
+/// and the instant the submission arrived.
 ///
-/// A window still open cannot have been aggregated — the service is still collecting
-/// profiles into it — so this is never earlier than the window's end, and the window is
-/// the one of the period being asked about: the aggregate of an hourly or daily window
-/// holding the data falls due when THAT window closes, however many finer windows
-/// inside it have closed already. A period that is not positive names no window
-/// ([`aggregation_window_start`]), so the instant itself stands in for the end.
-pub fn aggregated_at(data_start: DateTime, period_seconds: i64) -> DateTime {
+/// Two things have to have happened before a window's aggregated profile can hold a
+/// submission, so the pass runs after both of them. The window must have CLOSED — while
+/// it is open the service is still collecting into it — and the window is the one of the
+/// period being asked about, so the aggregate of an hourly or daily window holding the
+/// data falls due when THAT window closes, however many finer windows inside it have
+/// closed already. And the submission must have ARRIVED: a pass that ran before it
+/// arrived cannot have collected it, so a submission is never part of an aggregated
+/// profile at the instant it is accepted, however long ago the window its data covers
+/// closed. Receiving a profile and holding an aggregated profile of its window are
+/// different states, and this span is what separates them — what a caller polling for the
+/// aggregate waits out.
+///
+/// A period that is not positive names no window ([`aggregation_window_start`]), so the
+/// instant itself stands in for the end.
+pub fn aggregated_at(
+    data_start: DateTime,
+    received_at: DateTime,
+    period_seconds: i64,
+) -> DateTime {
+    const NANOS_PER_MILLI: i128 = 1_000_000;
     let window_end = aggregation_window_start(data_start, period_seconds)
         .secs()
         .saturating_add(period_seconds.max(0));
-    // The pass is stated in milliseconds, so it splits into the whole seconds to add and
-    // the sub-second remainder. `div_euclid`/`rem_euclid` keep that split correct for a
-    // span of any size and either sign: the remainder is always in `0..1_000`, so the
-    // nanoseconds are always the in-range part of the instant.
-    let whole_seconds = AGGREGATION_PASS_MILLIS.div_euclid(1_000);
-    let millis_within_second = AGGREGATION_PASS_MILLIS.rem_euclid(1_000);
-    DateTime::from_secs_and_nanos(
-        window_end.saturating_add(whole_seconds),
-        u32::try_from(millis_within_second).unwrap_or(0) * 1_000_000,
+    // The instant the pass over this submission's window can start: both the window's
+    // close and the submission's arrival are behind it. Nanoseconds, like every other
+    // instant comparison here ([`instant_key`]), so a receipt a fraction of a second
+    // after the window closed is not rounded back onto it.
+    let collectable_from = epoch_nanos(DateTime::from_secs(window_end))
+        .max(epoch_nanos(received_at));
+    shifted(
+        DateTime::from_secs(0),
+        collectable_from + i128::from(AGGREGATION_PASS_MILLIS) * NANOS_PER_MILLI,
     )
 }
 
@@ -850,9 +865,9 @@ pub struct AgentProfile {
 impl AgentProfile {
     /// When this posted profile has been collected into the aggregated profile of the
     /// aggregation period `period_seconds` long — the instant [`aggregated_at`] places for
-    /// the window its data covers.
+    /// the window its data covers and the instant it arrived.
     pub fn aggregated_at(&self, period_seconds: i64) -> DateTime {
-        aggregated_at(self.period_start, period_seconds)
+        aggregated_at(self.period_start, self.received_at, period_seconds)
     }
 
     /// Whether, as of `at`, this posted profile is part of the aggregated profile of the
@@ -861,13 +876,14 @@ impl AgentProfile {
     /// The operations that report AGGREGATED profiles (`GetProfile`, `ListProfileTimes`)
     /// count a posted profile only once this holds: until then the group has received
     /// the profile — `profilingStatus.latestAgentProfileReportedAt` says so — and no
-    /// aggregated profile of that period covers it yet. A profile whose data covers a
-    /// window that has already closed is therefore servable as soon as the pass over
-    /// that window is through, whenever the upload itself arrived. The period is the one the caller
-    /// is reporting about, so a window that is still open counts no profile it holds
-    /// whatever finer windows inside it have closed; a reader of a FREE-FORM range, which
-    /// names no aggregation period, asks about the finest window a profile is collected
-    /// into ([`finest_aggregation_period_seconds`]).
+    /// aggregated profile of that period covers it yet. The pass that collects it runs
+    /// after the window its data covers has closed AND after the submission itself
+    /// arrived ([`aggregated_at`]), so a profile is never already aggregated at the
+    /// instant it is posted, however long ago its window closed. The period is the one the
+    /// caller is reporting about, so a window that is still open counts no profile it
+    /// holds whatever finer windows inside it have closed; a reader of a FREE-FORM range,
+    /// which names no aggregation period, asks about the finest window a profile is
+    /// collected into ([`finest_aggregation_period_seconds`]).
     pub fn is_aggregated(&self, period_seconds: i64, at: DateTime) -> bool {
         instant_key(self.aggregated_at(period_seconds)) <= instant_key(at)
     }

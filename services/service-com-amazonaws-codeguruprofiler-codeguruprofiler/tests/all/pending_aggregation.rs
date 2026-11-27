@@ -7,11 +7,12 @@
 //! The rule every case here asserts: `GetProfile` and `ListProfileTimes` report
 //! AGGREGATED profiles, and a posted agent profile is not one at the instant it is
 //! received — the service collects posted profiles into aggregated profiles at periods
-//! aligned to UTC, so the window a profile lands in is still open when the post returns
-//! and its aggregate falls due a span after that window closes. Until then the window is
-//! covered by no aggregated profile, so `GetProfile` answers its 404
-//! `ResourceNotFoundException` with the fixed no-data text and `ListProfileTimes` reports
-//! no profile time for it — while the group still records that the profile was RECEIVED
+//! aligned to UTC, and its pass over a window runs once that window has closed and the
+//! submission has arrived, so nothing a post just delivered is aggregated when the post
+//! returns. Until the pass is through the window is covered by no aggregated profile, so
+//! `GetProfile` answers its 404 `ResourceNotFoundException` with the fixed no-data text
+//! and `ListProfileTimes` reports no profile time for it — while the group still records
+//! that the profile was RECEIVED
 //! (`profilingStatus.latestAgentProfileReportedAt`). Once the aggregation is due, the
 //! same requests serve the aggregated profile the window's profiles were collected into —
 //! each period's own aggregated profile once the window OF THAT PERIOD has closed.
@@ -22,12 +23,13 @@
 //! posted under, and how many profiles the group holds.
 //!
 //! The second half of that rule is the one the cases from
-//! [`a_submission_covering_a_closed_window_is_retrievable_at_once`] on assert, with the
-//! clock alone deciding it: a submission whose data covers a window that had ALREADY
-//! closed when it was posted is owed its aggregated profile right away, so `GetProfile`
-//! for the matching period answers 200 with that window's aggregated document without
-//! anything writing to the store in between — and whatever it answers, it answers: the
-//! 200 payload or one of the operation's modelled errors, never a request left hanging.
+//! [`a_submission_covering_a_closed_window_is_retrievable_once_the_pass_has_run`] on
+//! assert, with the clock alone deciding it: a submission whose data covers a window that
+//! had ALREADY closed when it was posted is owed its aggregated profile as soon as the
+//! pass over the submission itself is through, so `GetProfile` for the matching period
+//! then answers 200 with that window's aggregated document — and whatever it answers, it
+//! answers: the 200 payload or one of the operation's modelled errors, never a request
+//! left hanging.
 //!
 //! The harness is the one [`crate::profiling_group_lifecycle`] already builds, the
 //! aggregation is let fall due through the one shared helper every suite uses, and the
@@ -580,16 +582,17 @@ fn closed_window_rows() -> Vec<ClosedWindow> {
     ]
 }
 
-/// A submission whose data covers a window that has ALREADY closed is owed its aggregated
-/// profile at once: nothing has to write to the store in between, so the first
-/// `GetProfile` naming that period answers 200 with the aggregated document of that
-/// window.
+/// A submission whose data covers a window that has ALREADY closed is still not
+/// retrievable at the instant it is accepted — the pass that collects it has not run yet —
+/// and is owed its aggregated profile once that pass is through: the `GetProfile` naming
+/// that period then answers 200 with the aggregated document of THAT window, the one the
+/// submission's data sits in.
 ///
 /// The clock is read clear of every window boundary, so each row's window closed well
-/// before the submission was posted and the aggregation pass over it is through by the
-/// time the request is answered — which is why this needs no poll at all.
+/// before the submission was posted, and the only thing standing between the post and the
+/// 200 is the pass over the submission itself.
 #[tokio::test]
-async fn a_submission_covering_a_closed_window_is_retrievable_at_once() {
+async fn a_submission_covering_a_closed_window_is_retrievable_once_the_pass_has_run() {
     let harness = Harness::new();
     let now = now_clear_of_window_boundaries().await;
 
@@ -623,6 +626,27 @@ async fn a_submission_covering_a_closed_window_is_retrievable_at_once() {
         }
 
         let query = format!("?period={}", row.period);
+        // The window closed long ago, and the submission covering it has only just
+        // arrived: an accepted submission is not an aggregated profile.
+        let submitted = harness
+            .get_profile_accepting(&name, &query, Some(JSON))
+            .await;
+        assert_eq!(
+            submitted.status,
+            404,
+            "case {case:?}: a submission the aggregation pass has not run over yet must not \
+             be served, got {} {}",
+            submitted.status,
+            String::from_utf8_lossy(&submitted.body)
+        );
+        assert_eq!(
+            submitted.error_message(),
+            NO_PROFILES_IN_TIME_RANGE,
+            "case {case:?}: expected the fixed no-data text, got {:?}",
+            submitted.error_message()
+        );
+
+        harness.complete_aggregation_pass(&name);
         let answer = harness
             .get_profile_accepting(&name, &query, Some(JSON))
             .await;
@@ -630,7 +654,7 @@ async fn a_submission_covering_a_closed_window_is_retrievable_at_once() {
             answer.status,
             200,
             "case {case:?}: the aggregated profile of a window that closed before the post \
-             must be served at once, got {} {}",
+             must be served once the pass over the submission has run, got {} {}",
             answer.status,
             String::from_utf8_lossy(&answer.body)
         );
@@ -675,11 +699,10 @@ async fn a_submission_covering_a_closed_window_is_retrievable_at_once() {
 /// How long the poll below waits for a closed window's aggregated profile before failing
 /// the case.
 ///
-/// The service's pass over a closed window takes a fraction of a second
-/// (`state::AGGREGATION_PASS_MILLIS`), and the window these cases name closed before the
-/// submission was even posted, so the answer is expected on the FIRST attempt; this
-/// deadline exists only so a window whose aggregate never arrives fails here instead of
-/// spinning, which is the defect this suite's poll is about.
+/// The service's pass over a submission takes a few seconds
+/// (`state::AGGREGATION_PASS_MILLIS`), so the answer arrives well inside this; the
+/// deadline is deliberately generous so a window whose aggregate never arrives fails here
+/// instead of spinning, which is the defect this suite's poll is about.
 const AGGREGATION_DEADLINE: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// How often that poll looks again.
@@ -809,4 +832,174 @@ async fn polling_get_profile_after_a_post_for_a_closed_window_completes() {
         "expected the submitted frame, got {}",
         element_of(&served.body)
     );
+}
+
+/// An ACCEPTED submission is not an aggregated profile: whatever window its data covers,
+/// and however long ago that window closed, the pass that collects it into the window's
+/// aggregated profile runs after the submission arrives — so the request that names the
+/// window answers the modelled 404 with the fixed no-data text while the group already
+/// records the submission as RECEIVED, and answers 200 only once that pass is through.
+///
+/// Nothing writes to the store between the two: each row's submission is posted over HTTP
+/// and the CLOCK alone moves it from pending to retrievable, which the poll waits for.
+/// Rows differ in the aggregation period asked about (every one the model declares), how
+/// many of that period's windows ago the data's window closed, the representation the data
+/// was posted in and how many agents reported into the window
+/// ([`closed_window_rows`]) — the window a submission covers is what the rule
+/// generalises over, and in every row it had closed before the post.
+#[tokio::test]
+async fn an_accepted_submission_is_pending_the_pass_whatever_window_it_covers() {
+    let harness = Harness::new();
+    let now = now_clear_of_window_boundaries().await;
+    let rows = closed_window_rows();
+
+    // Each row is posted and then read straight away, so the read that must find the
+    // submission pending is the one right after its own post; the passes then run
+    // alongside each other while the rows are polled below.
+    for (index, row) in rows.iter().enumerate() {
+        let name = format!("pass-{index}");
+        let case = row.label;
+        assert_eq!(
+            create_group(&harness, &name).await.status,
+            201,
+            "case {case:?}: create must succeed"
+        );
+        let window_start = row.window_start(now);
+        for post in 0..row.posts {
+            let answer = harness
+                .post_agent_profile(
+                    &name,
+                    row.content_type,
+                    Some(&format!("ptok-pass-{index}-{post}")),
+                    row.posted_bytes(window_start, post),
+                )
+                .await;
+            assert_eq!(
+                answer.status,
+                204,
+                "case {case:?}: post {post} must answer 204, got {} {}",
+                answer.status,
+                String::from_utf8_lossy(&answer.body)
+            );
+        }
+
+        // Received — the group says so — and not yet aggregated.
+        let described = harness.describe(&name).await;
+        assert!(
+            described
+                .json()
+                .pointer("/profilingStatus/latestAgentProfileReportedAt")
+                .is_some(),
+            "case {case:?}: the submission must be recorded as received, got {}",
+            String::from_utf8_lossy(&described.body)
+        );
+
+        let query = format!("?period={}", row.period);
+        let pending = harness
+            .get_profile_accepting(&name, &query, Some(JSON))
+            .await;
+        assert_eq!(
+            pending.status,
+            404,
+            "case {case:?}: a submission the aggregation pass has not run over yet must not \
+             be served, got {} {}",
+            pending.status,
+            String::from_utf8_lossy(&pending.body)
+        );
+        assert_eq!(
+            pending.error_code(),
+            "ResourceNotFoundException",
+            "case {case:?}: expected ResourceNotFoundException, got {}",
+            String::from_utf8_lossy(&pending.body)
+        );
+        assert_eq!(
+            pending.error_message(),
+            NO_PROFILES_IN_TIME_RANGE,
+            "case {case:?}: expected the fixed no-data text, got {:?}",
+            pending.error_message()
+        );
+        let times = list_profile_times(&harness, &name, row.period).await;
+        assert_eq!(
+            reported_times(&times),
+            0,
+            "case {case:?}: a submission still pending the pass must contribute no profile \
+             time, got {}",
+            String::from_utf8_lossy(&times.body)
+        );
+    }
+
+    // And then the clock alone: each row's aggregated profile becomes retrievable, stating
+    // the window the submission's data covers and the agents that reported into it.
+    for (index, row) in rows.iter().enumerate() {
+        let name = format!("pass-{index}");
+        let case = row.label;
+        let window_start = row.window_start(now);
+        let length = period_length(row.period);
+        let query = format!("?period={}", row.period);
+        let deadline = std::time::Instant::now() + AGGREGATION_DEADLINE;
+        let mut attempts = 0usize;
+        let served = loop {
+            let answer = harness
+                .get_profile_accepting(&name, &query, Some(JSON))
+                .await;
+            if answer.status == 200 {
+                break answer;
+            }
+            assert_eq!(
+                answer.status,
+                404,
+                "case {case:?}, attempt {attempts}: GetProfile must answer the payload or \
+                 its modelled 404, got {} {}",
+                answer.status,
+                String::from_utf8_lossy(&answer.body)
+            );
+            assert_eq!(
+                answer.error_message(),
+                NO_PROFILES_IN_TIME_RANGE,
+                "case {case:?}, attempt {attempts}: expected the fixed no-data text, got {:?}",
+                answer.error_message()
+            );
+            assert!(
+                std::time::Instant::now() < deadline,
+                "case {case:?}: the aggregation pass never let the submission through: \
+                 {attempts} attempts answered 404"
+            );
+            attempts += 1;
+            tokio::time::sleep(POLL_INTERVAL).await;
+        };
+
+        let (start, end, reported_agents) = aggregation_of(case, &served.body);
+        assert_eq!(
+            start,
+            iso_millis(window_start),
+            "case {case:?}: expected the window's start, got {}",
+            element_of(&served.body)
+        );
+        assert_eq!(
+            end,
+            iso_millis(window_start + length),
+            "case {case:?}: expected the window's end, got {}",
+            element_of(&served.body)
+        );
+        assert_eq!(
+            reported_agents,
+            i64::try_from(row.posts).unwrap_or(0),
+            "case {case:?}: expected the window's {} submissions to be reported, got {}",
+            row.posts,
+            element_of(&served.body)
+        );
+        assert_eq!(
+            profile_data(&served.body),
+            row.expected_data(),
+            "case {case:?}: expected the window's submitted frames, got {}",
+            element_of(&served.body)
+        );
+        let times = list_profile_times(&harness, &name, row.period).await;
+        assert!(
+            reported_times(&times) >= 1,
+            "case {case:?}: the window whose pass has run must be reported as a profile \
+             time, got {}",
+            String::from_utf8_lossy(&times.body)
+        );
+    }
 }
