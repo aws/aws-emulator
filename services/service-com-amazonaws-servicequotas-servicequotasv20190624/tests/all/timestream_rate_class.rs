@@ -90,9 +90,10 @@ const RATE_ROWS: &[RateRow] = &[
 ];
 
 /// Codes in AWS's minted namespace that this catalog attributes to no Timestream quota:
-/// the two it used to key the scheduled-query and batch-load creation rates on, which the
-/// recorded listing publishes those rates under other codes.
-const UNATTRIBUTED_CODES: &[&str] = &["L-0C6E4BCB", "L-16B72159"];
+/// codes AWS mints for OTHER services' quotas (`L-F678F1CE` is Amazon VPC's VPCs per
+/// Region and `L-F8E2BA85` is Amazon SNS's published-message rate), so a client that
+/// carried a code across service codes resolves nothing here.
+const UNATTRIBUTED_CODES: &[&str] = &["L-F678F1CE", "L-F8E2BA85"];
 
 /// The API a `QuotaName` of this service's rate class throttles, or `None` for a name
 /// outside the class.

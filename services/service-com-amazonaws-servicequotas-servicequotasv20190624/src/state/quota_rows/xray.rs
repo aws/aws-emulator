@@ -22,30 +22,50 @@ use super::*;
 /// trace document, 500 Kilobytes, NOT adjustable), under `L-C6B6F05D` (the annotations
 /// indexed within one trace, with the sentence the service words it with), under
 /// `L-E2DD2778` (the tags of one group, 50, NOT adjustable), under `L-E75A2BBF` (the
-/// segments per second an account may send, 2600) and under `L-D781C0FD` (the size of one
-/// segment document). The `BatchGetTraces`, `PutTraceSegments`, `GetTraceSummaries` and
-/// `PutTelemetryRecords` rates and the trace retention this catalog used to key on those
-/// codes are NOT published here, and neither is the code it used to key the per-trace
-/// annotations on (`L-3B8EFF88`): no source available here states AWS's code for the rates
-/// and the retention or AWS's quota for `L-3B8EFF88`, so they are left to the
-/// default-quota-set gap rather than served under another quota's code. A row whose
-/// published `Description` no source available here states carries none, rather than a
-/// sentence this emulator words itself.
+/// segments per second an account may send, 2600), under `L-D781C0FD` (the size of one
+/// segment document), under `L-998BFF16` (the days X-Ray retains trace and service graph
+/// data, 30, NOT adjustable), under `L-7F259013` (the GROUPS of an account, 25, NOT
+/// adjustable) and under `L-5DB17969` (the days during which trace data may still be
+/// modified, 7, NOT adjustable). The `BatchGetTraces`, `PutTraceSegments`,
+/// `GetTraceSummaries`, `PutTelemetryRecords` and `GetServiceGraph` rates this catalog used
+/// to key on those codes are NOT published here: no source available here states AWS's code
+/// for them, so they are left to the default-quota-set gap rather than served under another
+/// quota's code. A row whose published `Description` no source available here states
+/// carries none, rather than a sentence this emulator words itself.
+///
+/// THE CODE NO SOURCE BINDS. `L-3B8EFF88` is a code this catalog publishes whose own quota
+/// no source available here names, so it carries a plane one of the bindings above
+/// displaced — the `GetSamplingRules` rate — as the module header says such a row does.
+/// That is not a claim that AWS publishes that rate under that code.
 pub(in crate::state) fn xray_quotas() -> Vec<QuotaRow> {
     let rate = |code: &str, api: &str, per_second: f64| {
         request_rate(code, XRAY_USAGE_SERVICE, api, per_second)
     };
     vec![
+        // A code whose own published quota no source available here states, carrying a
+        // plane one of the sourced bindings displaced (see the header).
+        rate("L-3B8EFF88", "GetSamplingRules", 10.0),
         quota("Trace document size (dynamic upper limit)", 500.0)
             .code("L-428FB8E0")
             .unit("Kilobytes")
             .fixed(),
-        quota("Groups", 25.0)
+        // The period during which trace data may still be modified, which the service
+        // publishes in days, with the unit in the quota's own name, as NOT adjustable.
+        quota("Trace data modification period in days", 7.0)
             .code("L-5DB17969")
+            .fixed(),
+        // The GROUPS of an account, which the recorded listing publishes under this code
+        // as NOT adjustable.
+        quota("Groups in an account", 25.0)
+            .code("L-7F259013")
+            .fixed()
             .describe("The maximum number of groups in this account in the current Region."),
-        rate("L-7F259013", "GetServiceGraph", 10.0),
         quota("Custom sampling rules per region", 25.0).code("L-8C0C998A"),
-        rate("L-998BFF16", "GetSamplingRules", 10.0),
+        // The retention of trace and service graph data, which the service publishes in
+        // days, with the unit in the quota's own name, as NOT adjustable.
+        quota("Trace and service graph retention in days", 30.0)
+            .code("L-998BFF16")
+            .fixed(),
         quota("Indexed annotations per trace", 50.0)
             .code("L-C6B6F05D")
             .fixed()

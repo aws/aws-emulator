@@ -121,17 +121,21 @@ const BOUND: &[Bound] = &[
     },
     // The account's published-MESSAGE rate: a rate over the same one-second window, named
     // and described as a count of messages rather than of one action's calls, and metered
-    // by a resource-usage series summed over the window rather than by an API call count.
-    // Which series that is the listing does not state, so the row names none.
+    // by a resource-usage series summed over the window rather than by an API call count —
+    // the account's published-message series, which the listing names for it.
     Bound {
         quota_code: "L-F8E2BA85",
         quota_name: "Messages Published per Second",
-        value: 30_000.0,
+        value: 9000.0,
         unit: "None",
         adjustable: true,
         description: "The maximum number of messages published per second.",
         period: Some((1, "SECOND")),
-        metric: Some(("ResourceCount", "Sum", "")),
+        metric: Some((
+            "ResourceCount",
+            "Sum",
+            "NumberOfMessagesPublishedPerAccount",
+        )),
     },
     // The account's PENDING SUBSCRIPTION plane: a counted plane metered by the service's
     // resource count over the five-minute window those counts are published on, under the

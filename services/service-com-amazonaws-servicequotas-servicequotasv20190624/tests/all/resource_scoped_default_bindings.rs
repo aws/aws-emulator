@@ -71,8 +71,8 @@ const ROWS: &[Row] = &[
     Row {
         service_code: "wafv2",
         quota_code: "L-71C2E81B",
-        quota_name: "Maximum number of custom response bodies per web ACL or rule group in WAF \
-                     for regional",
+        quota_name: "Maximum number of custom response bodies per web ACL or rule group for \
+                     regional",
         value: 50.0,
         unit: "None",
         adjustable: true,

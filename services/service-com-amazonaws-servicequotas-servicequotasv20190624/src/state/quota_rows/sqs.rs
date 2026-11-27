@@ -23,16 +23,26 @@ use super::*;
 /// in S3 Bucket`, 2 Gigabytes), under `L-BBEFA6CF` (`Queue Policy Size`, 8192 Bytes, NOT
 /// adjustable), under `L-BF2A6161` (`UTF-8 Queue Tag Value Length`, 256), under
 /// `L-9F628B95` (`Statements per Queue Policy`, 20), under `L-4FF3DAAF` (`Batched Message
-/// ID Length`, 80), under `L-B2A3B9D5` (`Message Invisibility Period`, 0 Seconds) and
-/// under `L-2DA3E3B2` (`Message Retention Time`, in seconds). The message size, the two
-/// transaction rates, the two in-flight-message planes, the queue tag count and the
-/// batch-entry count this catalog used to key on those eight codes are NOT published here,
-/// and neither are the codes it used to key the message-attribute count and the policy
-/// size on (`L-6A03DCE9`, `L-A7816957`): no source available here states AWS's code for the
-/// first group or AWS's quota for the last two, so they are left to the
+/// ID Length`, 80), under `L-B2A3B9D5` (`Message Invisibility Period`, 0 Seconds), under
+/// `L-2DA3E3B2` (`Message Retention Time`, in seconds), under `L-A01B4DF0` (`UTF-8 Queue
+/// Tag Key Length`, 128), under `L-F115E65A` (`Messages per Batch`, 10), under
+/// `L-C491D5A4` (`In-Flight Messages per Standard Queue`, 120000, in `Unit` `None`), under
+/// `L-E8A9C91E` (`Queue Name Length`, 80, in `Unit` `None`) and under `L-A7816957` (the
+/// delay a delay queue applies, published in MINUTES rather than in seconds). The message
+/// size, the two transaction rates, the second in-flight-message plane, the queue tag count
+/// and the batch-entry count this catalog used to key on those codes are NOT published
+/// here: no source available here states AWS's code for them, so they are left to the
 /// default-quota-set gap rather than served under another quota's code. A row whose
 /// published `Description` no source available here states carries none, rather than a
 /// sentence this emulator words itself.
+///
+/// THE CODES NO SOURCE BINDS. `L-49DA5CEC` and `L-6A03DCE9` are codes this catalog
+/// publishes whose own quota no source available here names, so each carries the plane one
+/// of the bindings above displaced — the visibility timeout of a consumed message and the
+/// time a receive request waits for one — as the module header says such a row does. That
+/// is not a claim that AWS publishes those planes under those codes. The message
+/// deduplication-ID length is left with no code of its own and is therefore published
+/// under no row.
 pub(in crate::state) fn sqs_quotas() -> Vec<QuotaRow> {
     vec![
         // The retention of ONE message. The quota is published in seconds, at the four
@@ -47,11 +57,16 @@ pub(in crate::state) fn sqs_quotas() -> Vec<QuotaRow> {
                 "The length of time, in seconds, for which Amazon SQS retains a message if \
                  it isn't deleted. The maximum is 14 days (1,209,600 seconds).",
             ),
-        quota("Delay Queue Delay", 900.0)
+        // A code whose own published quota no source available here states, carrying the
+        // plane the `L-E8A9C91E` binding displaced (see the header).
+        quota("Visibility Timeout", 43_200.0)
             .code("L-49DA5CEC")
             .unit("Seconds")
             .fixed()
-            .describe("The delay, in seconds, that a delay queue applies to a message."),
+            .describe(
+                "The time, in seconds, that a received message is hidden from the other \
+                 consumers of the queue.",
+            ),
         quota("Maximum Receives per Redrive Policy", 1000.0)
             .code("L-4BE1B2BD")
             .fixed()
@@ -63,6 +78,13 @@ pub(in crate::state) fn sqs_quotas() -> Vec<QuotaRow> {
             .code("L-4FF3DAAF")
             .fixed()
             .describe("The length of a batched message ID."),
+        // A code whose own published quota no source available here states, carrying the
+        // plane the `L-C491D5A4` binding displaced (see the header).
+        quota("Long Polling Wait Time", 20.0)
+            .code("L-6A03DCE9")
+            .unit("Seconds")
+            .fixed()
+            .describe("The time, in seconds, that a receive request waits for a message."),
         quota("Message Group ID Length", 128.0)
             .code("L-79B6240C")
             .fixed()
@@ -80,10 +102,17 @@ pub(in crate::state) fn sqs_quotas() -> Vec<QuotaRow> {
             .code("L-9F628B95")
             .fixed()
             .describe("The number of statements in a queue policy."),
-        quota("Queue Name Length", 80.0)
+        quota("UTF-8 Queue Tag Key Length", 128.0)
             .code("L-A01B4DF0")
             .fixed()
-            .describe("The number of characters in a queue name."),
+            .describe("The length of a UTF-8 queue tag key."),
+        // The delay a DELAY QUEUE applies to a message, which the recorded listing
+        // publishes under this code in MINUTES — the fifteen minutes a queue may delay a
+        // message by — rather than in the seconds the API takes.
+        quota("Delay Queue Delay", 15.0)
+            .code("L-A7816957")
+            .unit("Minutes")
+            .fixed(),
         // The window a consumed message stays hidden for, which SQS publishes at the zero
         // a queue applies by default.
         quota("Message Invisibility Period", 0.0)
@@ -103,23 +132,16 @@ pub(in crate::state) fn sqs_quotas() -> Vec<QuotaRow> {
             .code("L-BF2A6161")
             .fixed()
             .describe("The length of a UTF-8 queue tag value."),
-        quota("Long Polling Wait Time", 20.0)
+        // The messages one standard queue may have IN FLIGHT at once, which the recorded
+        // listing publishes under this code as a bare count rather than in a unit.
+        quota("In-Flight Messages per Standard Queue", 120_000.0)
             .code("L-C491D5A4")
-            .unit("Seconds")
-            .fixed()
-            .describe("The time, in seconds, that a receive request waits for a message."),
-        quota("Visibility Timeout", 43_200.0)
+            .fixed(),
+        quota("Queue Name Length", 80.0)
             .code("L-E8A9C91E")
-            .unit("Seconds")
             .fixed()
-            .describe(
-                "The time, in seconds, that a received message is hidden from the other \
-                 consumers of the queue.",
-            ),
-        quota("Message Deduplication ID Length", 128.0)
-            .code("L-F115E65A")
-            .fixed()
-            .describe("The number of characters in a message deduplication ID."),
+            .describe("The number of characters in a queue name."),
+        quota("Messages per Batch", 10.0).code("L-F115E65A").fixed(),
         // The principal plane of a queue policy: a count of the principals the policy
         // document may name, which AWS publishes as fixed.
         quota("Principals per Queue Policy", 50.0)

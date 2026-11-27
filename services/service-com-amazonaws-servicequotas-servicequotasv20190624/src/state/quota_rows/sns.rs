@@ -70,12 +70,15 @@ const SNS_USAGE_SERVICE: &str = "SNS";
 /// `L-B6107771` (`SetSubscriptionAttributes`, 900 per second), under `L-876E1222`
 /// (`GetSubscriptionAttributes`, 900 per second), under `L-AB928142` (`CreateTopic`, 900
 /// per second), under `L-154ECCA7` (`SetSMSAttributes`, ONE per second and published as
-/// not adjustable), under `L-F8E2BA85` (the account's published-MESSAGE rate, which SNS
-/// names and describes as a count of messages per second rather than as a count of
-/// `Publish` calls) and under `L-1A43D3DB` (the account's PENDING SUBSCRIPTION plane,
-/// metered by the service's `AWS/Usage` resource count under its
-/// `ApproximateNumberOfPendingSubscriptions` series). Those are the bindings carried here,
-/// and every member of each of those rows is that one quota's.
+/// not adjustable), under `L-93308085` (`Unsubscribe`, 100 per second and published as not
+/// adjustable), under `L-4EE37BC0` (`SetEndpointAttributes`, 900 per second), under
+/// `L-B98ECD3E` (`DeleteTopic`), under `L-F8E2BA85` (the account's published-MESSAGE rate,
+/// which SNS names and describes as a count of messages per second rather than as a count
+/// of `Publish` calls, at 9000 messages per second and metered by the account's
+/// `NumberOfMessagesPublishedPerAccount` series) and under `L-1A43D3DB` (the account's
+/// PENDING SUBSCRIPTION plane, metered by the service's `AWS/Usage` resource count under
+/// its `ApproximateNumberOfPendingSubscriptions` series). Those are the bindings carried
+/// here, and every member of each of those rows is that one quota's.
 ///
 /// THE CODES NO SOURCE BINDS. The other codes of this catalog are codes no source
 /// available here names the quota of. Each keeps a row, as the module header says every
@@ -87,7 +90,9 @@ const SNS_USAGE_SERVICE: &str = "SNS";
 /// `CreateSMSSandboxPhoneNumber`, `DeleteSMSSandboxPhoneNumber`, `GetEndpointAttributes`,
 /// `ListSMSSandboxPhoneNumbers`, `PutDataProtectionPolicy`, `UntagResource` and
 /// `VerifySMSSandboxPhoneNumber` rates, each a published SNS action whose own code no
-/// source states). Such a row is not a claim that AWS publishes that quota under that
+/// source states; `L-4126E74A` and `L-F6A3071A` carry the `ListSubscriptions` and
+/// `GetPlatformApplicationAttributes` rates, the planes the `L-93308085` and `L-4EE37BC0`
+/// bindings displaced). Such a row is not a claim that AWS publishes that quota under that
 /// code, and it is replaced the moment the quota the code publishes can be sourced.
 ///
 /// What IS each of those codes' own published fact is its ADJUSTABILITY, which the
@@ -128,7 +133,10 @@ pub(in crate::state) fn sns_quotas() -> Vec<QuotaRow> {
         // The rates the recorded listing names, each under the code THAT listing publishes
         // it under; `ListSubscriptionsByTopic` is published as NOT adjustable.
         sns_transaction_rate("L-390AADBE", "ListSubscriptionsByTopic", 30.0).fixed(),
-        sns_transaction_rate("L-4126E74A", "DeleteTopic", 30.0),
+        // A code whose own published quota no source available here states, carrying the
+        // plane the `L-93308085` binding displaced, at this code's own recorded
+        // adjustability (see the header).
+        sns_transaction_rate("L-4126E74A", "ListSubscriptions", 30.0),
         quota("FIFO Topics per Account", 1000.0)
             .code("L-41B81227")
             .describe(
@@ -136,7 +144,7 @@ pub(in crate::state) fn sns_quotas() -> Vec<QuotaRow> {
             ),
         sns_transaction_rate("L-4659BFC2", "GetDataProtectionPolicy", 30.0).fixed(),
         sns_transaction_rate("L-4738DDCE", "CreatePlatformApplication", 900.0),
-        sns_transaction_rate("L-4EE37BC0", "GetPlatformApplicationAttributes", 15.0),
+        sns_transaction_rate("L-4EE37BC0", "SetEndpointAttributes", 900.0),
         sns_transaction_rate("L-61103206", "GetSMSAttributes", 30.0),
         sns_transaction_rate("L-6521CF3A", "GetSMSSandboxAccountStatus", 30.0).fixed(),
         sns_transaction_rate("L-6635B4C9", "GetEndpointAttributes", 15.0).fixed(),
@@ -146,7 +154,7 @@ pub(in crate::state) fn sns_quotas() -> Vec<QuotaRow> {
         sns_transaction_rate("L-820458B0", "ListPhoneNumbersOptedOut", 30.0),
         sns_transaction_rate("L-856966E8", "ListPlatformApplications", 15.0).fixed(),
         sns_transaction_rate("L-876E1222", "GetSubscriptionAttributes", 900.0),
-        sns_transaction_rate("L-93308085", "ListSubscriptions", 30.0).fixed(),
+        sns_transaction_rate("L-93308085", "Unsubscribe", 100.0).fixed(),
         sns_transaction_rate("L-93CEC191", "ListSMSSandboxPhoneNumbers", 30.0).fixed(),
         sns_transaction_rate("L-9A72FF33", "ListTagsForResource", 100.0).fixed(),
         sns_transaction_rate("L-9D5EC8F7", "ListTopics", 30.0),
@@ -166,7 +174,7 @@ pub(in crate::state) fn sns_quotas() -> Vec<QuotaRow> {
         sns_transaction_rate("L-B3509C67", "PublishBatch", 30_000.0).fixed(),
         sns_transaction_rate("L-B6107771", "SetSubscriptionAttributes", 900.0),
         sns_transaction_rate("L-B96EDA7D", "RemovePermission", 30.0),
-        sns_transaction_rate("L-B98ECD3E", "SetEndpointAttributes", 15.0),
+        sns_transaction_rate("L-B98ECD3E", "DeleteTopic", 30.0),
         sns_transaction_rate("L-BBD4D2FF", "SetPlatformApplicationAttributes", 15.0).fixed(),
         sns_transaction_rate("L-BCD4AAF3", "UntagResource", 100.0),
         sns_transaction_rate("L-BF824DE9", "VerifySMSSandboxPhoneNumber", 30.0).fixed(),
@@ -179,22 +187,29 @@ pub(in crate::state) fn sns_quotas() -> Vec<QuotaRow> {
         quota("Topics per Account", 100_000.0)
             .code("L-F514C636")
             .describe("The maximum number of topics in this account in the current Region."),
-        sns_transaction_rate("L-F6A3071A", "Unsubscribe", 1000.0).fixed(),
+        // A code whose own published quota no source available here states, carrying the
+        // plane the `L-4EE37BC0` binding displaced, at this code's own recorded
+        // adjustability (see the header).
+        sns_transaction_rate("L-F6A3071A", "GetPlatformApplicationAttributes", 15.0).fixed(),
         // The account's PUBLISHED-MESSAGE rate, the one rate of this catalog SNS publishes
         // as a count of MESSAGES over the second rather than as a count of one action's
         // calls: the recorded listing names and describes it that way, publishes it over
         // the one-second window of the rate class, and meters it with an `AWS/Usage`
         // metric that is NOT a call count of an API — a resource-usage series summed over
-        // the window. Which series that is, the listing does not state, so the metric
-        // carries the dimensions the class does state and names no series.
-        quota("Messages Published per Second", 30_000.0)
+        // the window. The listing names the series it is read from — the account's
+        // published-message count — so the metric carries that `Resource` dimension.
+        quota("Messages Published per Second", 9000.0)
             .code("L-F8E2BA85")
             .period(1, "SECOND")
             .metric(aws_usage_metric(
                 "ResourceCount",
                 "Sum",
                 SNS_USAGE_SERVICE,
-                &[("Class", "None"), ("Type", "Resource")],
+                &[
+                    ("Class", "None"),
+                    ("Resource", "NumberOfMessagesPublishedPerAccount"),
+                    ("Type", "Resource"),
+                ],
             ))
             .describe("The maximum number of messages published per second."),
         sns_transaction_rate("L-FF07E5EA", "ConfirmSubscription", 900.0),

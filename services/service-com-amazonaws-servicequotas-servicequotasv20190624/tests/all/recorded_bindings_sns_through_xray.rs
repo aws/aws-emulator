@@ -159,18 +159,19 @@ const BOUND: &[Bound] = &[
     // The one rate of the notification catalog published as a count of MESSAGES over the
     // second rather than as a count of one action's calls: the recorded listing names and
     // describes it that way and meters it with a resource-usage series summed over the
-    // window, whose series it does not state.
+    // window — the account's published-message count.
     Bound {
         service_code: "sns",
         quota_code: "L-F8E2BA85",
         quota_name: "Messages Published per Second",
-        value: 30_000.0,
+        value: 9000.0,
         unit: "None",
         adjustable: true,
         description: "The maximum number of messages published per second.",
         period: Some((1, "SECOND")),
-        metric: Metric::ResourceRateWithoutSeries {
+        metric: Metric::ResourceRate {
             usage_service: "SNS",
+            resource: "NumberOfMessagesPublishedPerAccount",
         },
         resource_plane: None,
     },
@@ -259,7 +260,8 @@ const BOUND: &[Bound] = &[
         value: 2.0,
         unit: "Kilobytes",
         adjustable: false,
-        description: "",
+        description: "The maximum file size (in KB) of service provider SAML 2.0 certificates \
+                      (in PEM format).",
         period: None,
         metric: Metric::None,
         resource_plane: None,
@@ -758,7 +760,7 @@ fn the_table_spans_the_classes_a_binding_can_get_wrong() {
             Metric::None => "none",
             Metric::Calls { .. } => "calls",
             Metric::Resources { .. } => "resources",
-            Metric::ResourceRateWithoutSeries { .. } => "resource-rate-without-series",
+            Metric::ResourceRate { .. } => "resource-rate",
         })
         .collect();
     assert_eq!(

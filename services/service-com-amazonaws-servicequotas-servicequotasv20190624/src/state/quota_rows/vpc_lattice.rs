@@ -20,14 +20,18 @@ use super::*;
 /// auth policy, in Kilobytes, NOT adjustable, with the sentence the service words it
 /// with), under `L-5FF8F9B9` (the resource configurations of the Region, 2000), under
 /// `L-0DCA4434` (the resource gateways of one VPC, 500, adjustable), under `L-6095700C`
-/// (the resource configurations of one service network, 500) and under `L-CA6A1CC5` (the
-/// security groups of one association, 5, NOT adjustable). The service-network count, the
-/// header-match condition count, the per-resource auth-policy count, the per-service
-/// listener count and the account's target-group count this catalog used to key on those
-/// codes are NOT published here: no source available here states AWS's code for them, so
-/// they are left to the default-quota-set gap rather than served under another quota's
-/// code. A row whose published `Description` no source available here states carries none,
-/// rather than a sentence this emulator words itself.
+/// (the resource configurations of one service network, 500), under `L-CA6A1CC5` (the
+/// security groups of one association, 5, NOT adjustable), under `L-75D4A19E` (the SERVICES
+/// associated with one service network, 500), under `L-73D0F278` (the domain verifications
+/// of the Region, 5) and under `L-9CAD07FB` (the SERVICE NETWORKS of the Region, whose
+/// published limit no source available here states, so the row keeps the one this code has
+/// carried). The header-match condition count, the per-resource auth-policy count, the
+/// per-service listener count, the account's target-group count, the per-listener rule count
+/// and the service networks one service is associated with, which this catalog used to key
+/// on those codes, are NOT published here: no source available here states AWS's code for
+/// them, so they are left to the default-quota-set gap rather than served under another
+/// quota's code. A row whose published `Description` no source available here states
+/// carries none, rather than a sentence this emulator words itself.
 pub(in crate::state) fn vpc_lattice_quotas() -> Vec<QuotaRow> {
     vec![
         quota("Resource gateways per VPC", 500.0)
@@ -46,12 +50,10 @@ pub(in crate::state) fn vpc_lattice_quotas() -> Vec<QuotaRow> {
             .code("L-620C821E")
             .period(1, "SECOND")
             .describe("The maximum number of requests per second that one service serves."),
-        quota("Rules per listener", 100.0)
-            .code("L-73D0F278")
-            .describe("The maximum number of rules on one listener."),
-        quota("Service network associations per service", 5.0)
+        quota("Domain Verifications per AWS Region", 5.0).code("L-73D0F278"),
+        quota("Service associations per service network", 500.0)
             .code("L-75D4A19E")
-            .describe("The maximum number of service networks one service is associated with."),
+            .describe("The maximum number of services associated with one service network."),
         quota("Auth policy size", 10.0)
             .code("L-87FCA9B2")
             .unit("Kilobytes")
@@ -63,9 +65,10 @@ pub(in crate::state) fn vpc_lattice_quotas() -> Vec<QuotaRow> {
         quota("Services per account", 500.0)
             .code("L-9BC96FEF")
             .describe("The maximum number of services in this account in the current Region."),
-        quota("Services per service network", 500.0)
-            .code("L-9CAD07FB")
-            .describe("The maximum number of services associated with one service network."),
+        // The SERVICE NETWORKS of the Region. The recorded listing states the plane this
+        // code publishes but not its limit, so the row carries the limit this code has
+        // carried, as the module header says such a member is kept.
+        quota("Service networks per AWS Region", 500.0).code("L-9CAD07FB"),
         quota("Tags per resource", 50.0)
             .code("L-BB11C6B9")
             .fixed()

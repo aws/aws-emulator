@@ -22,13 +22,14 @@ use super::*;
 ///
 /// The recorded listing states the quota published under `L-40A36AF9`
 /// (`Graphics.g6.4xlarge WorkSpaces`), under `L-BD784BE1` (`Graphics.g6.16xlarge
-/// WorkSpaces`), under `L-63F14199` (`Graphics.g7.2xlarge WorkSpaces`) and under
-/// `L-8C70C791` (the General Purpose Value streaming instances of the account's WorkSpaces
-/// Pools, 50), every one of them metered by that plane's resource count. The
-/// connection-alias association count, the `DescribeAccount` and `CreateTags` rates and
-/// the per-directory certificate count this catalog used to key on those codes are NOT
-/// published here: no source available here states AWS's code for them, so they are left
-/// to the default-quota-set gap rather than served under another quota's code. A row whose
+/// WorkSpaces`), under `L-63F14199` (`Graphics.g7.2xlarge WorkSpaces`), under
+/// `L-F64A92CF` (`Graphics.g7.4xlarge WorkSpaces`) and under `L-8C70C791` (the General
+/// Purpose Value streaming instances of the account's WorkSpaces Pools, 50), every one of
+/// them metered by that plane's resource count. The connection-alias association count,
+/// the `DescribeAccount` and `CreateTags` rates, the per-directory certificate count and
+/// the `StartWorkspaces` rate this catalog used to key on those codes are NOT published
+/// here: no source available here states AWS's code for them, so they are left to the
+/// default-quota-set gap rather than served under another quota's code. A row whose
 /// published `Description` no source available here states carries none, rather than a
 /// sentence this emulator words itself.
 pub(in crate::state) fn workspaces_quotas() -> Vec<QuotaRow> {
@@ -160,7 +161,7 @@ pub(in crate::state) fn workspaces_quotas() -> Vec<QuotaRow> {
         rate("L-EEB759DE", "ModifyWorkspaceProperties", 5.0),
         rate("L-EF6817EC", "RebootWorkspaces", 5.0),
         rate("L-F61D0B79", "RebuildWorkspaces", 5.0),
-        rate("L-F64A92CF", "StartWorkspaces", 5.0),
+        graphics_bundle("L-F64A92CF", "Graphics.g7.4xlarge", "GraphicsG74xlargeWorkSpace"),
         rate("L-F7854FE2", "StopWorkspaces", 5.0),
     ]
 }

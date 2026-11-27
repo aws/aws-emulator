@@ -85,15 +85,10 @@ const CATALOGS: &[Catalog] = &[
     Catalog {
         service_code: "sqs",
         service_name: "Amazon Simple Queue Service (Amazon SQS)",
-        quota_count: 16,
+        quota_count: 18,
         withdrawn: &[
             "FIFOQueueTransactionsPerSecond",
             "MessagesInFlightPerStandardQueue",
-            // The codes this catalog used to key the message-attribute count and the
-            // queue-policy size on, which the recorded listing publishes under OTHER
-            // codes.
-            "L-6A03DCE9",
-            "L-A7816957",
         ],
     },
     Catalog {
@@ -105,34 +100,25 @@ const CATALOGS: &[Catalog] = &[
     Catalog {
         service_code: "storagegateway",
         service_name: "AWS Storage Gateway",
-        quota_count: 25,
-        // Beside the descriptive stand-in: the code this catalog used to key the
-        // virtual-tape size on, which the recorded listing publishes under another code.
-        withdrawn: &["GatewaysPerRegion", "L-6F75AC83"],
+        quota_count: 26,
+        withdrawn: &["GatewaysPerRegion"],
     },
     Catalog {
         service_code: "timestream",
         service_name: "Amazon Timestream",
-        quota_count: 29,
-        // Beside the descriptive stand-in: the two codes this catalog used to key the
-        // scheduled-query and batch-load creation rates on, which the recorded listing
-        // publishes those two rates under OTHER codes, so no quota of this service is
-        // attributable to them.
-        withdrawn: &["DatabasesPerAccount", "L-0C6E4BCB", "L-16B72159"],
+        quota_count: 31,
+        withdrawn: &["DatabasesPerAccount"],
     },
     Catalog {
         service_code: "vpc",
         service_name: "Amazon Virtual Private Cloud (Amazon VPC)",
-        quota_count: 31,
+        quota_count: 32,
         // The two stand-ins, beside a minted code AWS publishes no VPC quota under: the
-        // network-interface plane of the Region is published under `L-DF5E4CA3`. Beside
-        // them, the code this catalog used to key the peering-request expiry on, which the
-        // recorded listing publishes under another code.
+        // network-interface plane of the Region is published under `L-DF5E4CA3`.
         withdrawn: &[
             "PrefixListsPerRegion",
             "SecurityGroupsPerVPC",
             "L-045E6E9C",
-            "L-2C462E13",
         ],
     },
     Catalog {
@@ -144,10 +130,8 @@ const CATALOGS: &[Catalog] = &[
     Catalog {
         service_code: "wafv2",
         service_name: "AWS WAF",
-        quota_count: 33,
-        // Beside the stand-ins: the code this catalog used to key the account's regional
-        // IP sets on, which the recorded listing publishes under another code.
-        withdrawn: &["WebACLsPerRegion", "RuleGroupsPerRegion", "L-08788A4E"],
+        quota_count: 34,
+        withdrawn: &["WebACLsPerRegion", "RuleGroupsPerRegion"],
     },
     Catalog {
         service_code: "workspaces",
@@ -158,10 +142,8 @@ const CATALOGS: &[Catalog] = &[
     Catalog {
         service_code: "xray",
         service_name: "AWS X-Ray",
-        quota_count: 10,
-        // Beside the stand-in: the code this catalog used to key the per-trace annotation
-        // count on, which the recorded listing publishes under another code.
-        withdrawn: &["SamplingRules", "L-3B8EFF88"],
+        quota_count: 11,
+        withdrawn: &["SamplingRules"],
     },
 ];
 
@@ -173,25 +155,40 @@ const CATALOGS: &[Catalog] = &[
 /// `Description` is an optional member, so such a row publishes none; wording one here
 /// would be this emulator's sentence rather than the service's.
 const DESCRIPTION_WITHHELD: &[(&str, &str)] = &[
+    ("sqs", "L-A7816957"),
+    ("sqs", "L-C491D5A4"),
+    ("sqs", "L-F115E65A"),
+    ("sso", "L-0299121C"),
+    ("sso", "L-7E1D4E33"),
     ("sso", "L-89954265"),
-    ("sso", "L-C4FCA052"),
+    ("sso", "L-B44C7A29"),
+    ("storagegateway", "L-CEFD39A0"),
+    ("timestream", "L-1222731D"),
     ("vpc", "L-42B9C2CA"),
     ("vpc", "L-5F53652F"),
+    ("vpc", "L-A272D574"),
     ("vpc", "L-CA6CC422"),
+    ("vpc", "L-DFA99DE7"),
     ("vpc-lattice", "L-5FF8F9B9"),
     ("vpc-lattice", "L-6095700C"),
+    ("vpc-lattice", "L-73D0F278"),
+    ("vpc-lattice", "L-9CAD07FB"),
     ("vpc-lattice", "L-CA6A1CC5"),
     ("wafv2", "L-5B2F9B11"),
     ("wafv2", "L-71C2E81B"),
     ("wafv2", "L-B32E8672"),
+    ("wafv2", "L-BF0029B0"),
     ("wafv2", "L-D6DA96AE"),
     ("wafv2", "L-D95DED7E"),
     ("workspaces", "L-40A36AF9"),
     ("workspaces", "L-63F14199"),
     ("workspaces", "L-8C70C791"),
     ("workspaces", "L-BD784BE1"),
+    ("workspaces", "L-F64A92CF"),
     ("xray", "L-428FB8E0"),
+    ("xray", "L-5DB17969"),
     ("xray", "L-8C0C998A"),
+    ("xray", "L-998BFF16"),
     ("xray", "L-DB51D338"),
 ];
 
@@ -215,11 +212,12 @@ pub(crate) enum Metric {
         resource: &'static str,
     },
     /// The `AWS/Usage` resource usage of a quota published as a count over a WINDOW — the
-    /// usage SUMMED over the window rather than the largest count seen in it — whose
-    /// `Resource` SERIES no source available here states: the row publishes the dimensions
-    /// the class states and names no series, rather than a series this emulator invents
-    /// for it.
-    ResourceRateWithoutSeries { usage_service: &'static str },
+    /// usage SUMMED over the window rather than the largest count seen in it — under the
+    /// `Resource` SERIES that usage is published on.
+    ResourceRate {
+        usage_service: &'static str,
+        resource: &'static str,
+    },
 }
 
 /// One published row, with every member AWS publishes for it.
@@ -296,12 +294,11 @@ const ROWS: &[Row] = &[
     Row {
         service_code: "sqs",
         quota_code: "L-E8A9C91E",
-        quota_name: "Visibility Timeout",
-        value: 43_200.0,
-        unit: "Seconds",
+        quota_name: "Queue Name Length",
+        value: 80.0,
+        unit: "None",
         adjustable: false,
-        description: "The time, in seconds, that a received message is hidden from the other \
-                      consumers of the queue.",
+        description: "The number of characters in a queue name.",
         period: None,
         metric: Metric::None,
         resource_plane: None,
@@ -309,11 +306,11 @@ const ROWS: &[Row] = &[
     Row {
         service_code: "sso",
         quota_code: "L-B44C7A29",
-        quota_name: "Permission sets",
-        value: 500.0,
+        quota_name: "Number of permission sets allowed in IAM Identity Center",
+        value: 3500.0,
         unit: "None",
         adjustable: true,
-        description: "The maximum number of permission sets in an IAM Identity Center instance.",
+        description: "",
         period: None,
         metric: Metric::None,
         resource_plane: None,
@@ -333,11 +330,11 @@ const ROWS: &[Row] = &[
     Row {
         service_code: "storagegateway",
         quota_code: "L-14F83003",
-        quota_name: "Gateways per Region",
-        value: 100.0,
+        quota_name: "Cached volume gateway Cache Maximum in TiB",
+        value: 64.0,
         unit: "None",
-        adjustable: true,
-        description: "The maximum number of gateways in this account in the current Region.",
+        adjustable: false,
+        description: "Maximum cache size for Cached Volume Gateway",
         period: None,
         metric: Metric::None,
         resource_plane: None,
@@ -536,13 +533,17 @@ pub(crate) fn metric_json(metric: &Metric) -> Value {
                 "Type": "API",
             },
         }),
-        Metric::ResourceRateWithoutSeries { usage_service } => json!({
+        Metric::ResourceRate {
+            usage_service,
+            resource,
+        } => json!({
             "MetricNamespace": "AWS/Usage",
             "MetricName": "ResourceCount",
             "MetricStatisticRecommendation": "Sum",
             "MetricDimensions": {
                 "Service": usage_service,
                 "Class": "None",
+                "Resource": resource,
                 "Type": "Resource",
             },
         }),
@@ -1297,9 +1298,13 @@ const UNPUBLISHED: &[(&str, &str)] = &[
     ("sqs", "In Flight Messages per FIFO Queue"),
     ("sqs", "Tags per Queue"),
     ("sqs", "Batch Entries per Batch Request"),
+    ("sqs", "Message Deduplication ID Length"),
     ("sso", "AWS managed policies per permission set"),
     ("sso", "Trusted token issuers per instance"),
     ("sso", "Inline policy size per permission set"),
+    ("sso", "Applications per instance"),
+    ("sso", "Permission sets"),
+    ("sso", "Groups per instance"),
     ("storagegateway", "Maximum size of a stored volume"),
     ("storagegateway", "Virtual tapes per gateway"),
     ("storagegateway", "Cache disks per gateway"),
@@ -1307,17 +1312,24 @@ const UNPUBLISHED: &[(&str, &str)] = &[
     ("storagegateway", "Volumes per snapshot schedule"),
     ("storagegateway", "Total cached volume storage per gateway"),
     ("storagegateway", "Automatic tape creation policies per gateway"),
+    ("storagegateway", "Clients per NFS file share"),
+    ("storagegateway", "Bandwidth rate limit schedule intervals per gateway"),
+    ("storagegateway", "Maximum size of a file"),
     ("timestream", "Query timeout"),
     ("timestream", "Magnetic store retention"),
     ("vpc", "Entries per customer-managed prefix list"),
     ("vpc", "Customer-managed prefix lists per Region"),
     ("vpc", "Peered Network Address Usage"),
     ("vpc", "References to a prefix list per resource type"),
+    ("vpc", "Traffic mirror filters per Region"),
     ("vpc-lattice", "Service networks per account"),
     ("vpc-lattice", "Header match conditions per rule"),
     ("vpc-lattice", "Auth policies per resource"),
     ("vpc-lattice", "Listeners per service"),
     ("vpc-lattice", "Target groups per account"),
+    ("vpc-lattice", "Rules per listener"),
+    ("vpc-lattice", "Service network associations per service"),
+    ("vpc-lattice", "Services per service network"),
     ("wafv2", "Web ACL capacity units (WCU) per rule group"),
     ("wafv2", "Rate of GetSampledRequests requests"),
     ("wafv2", "IP sets per Region"),
@@ -1327,12 +1339,15 @@ const UNPUBLISHED: &[(&str, &str)] = &[
     ("workspaces", "Rate of DescribeAccount requests"),
     ("workspaces", "Rate of CreateTags requests"),
     ("workspaces", "Certificate-based authentication certificates per directory"),
+    ("workspaces", "Rate of StartWorkspaces requests"),
     ("xray", "Sampling rules"),
     ("xray", "Rate of BatchGetTraces requests"),
     ("xray", "Rate of PutTraceSegments requests"),
     ("xray", "Rate of GetTraceSummaries requests"),
     ("xray", "Rate of PutTelemetryRecords requests"),
     ("xray", "Trace retention"),
+    ("xray", "Groups"),
+    ("xray", "Rate of GetServiceGraph requests"),
 ];
 
 /// Every member of the row published under a code is the one the service publishes for

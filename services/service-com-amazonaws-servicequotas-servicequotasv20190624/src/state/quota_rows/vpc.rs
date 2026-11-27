@@ -26,19 +26,26 @@ use super::*;
 /// The recorded listing states the quota published under `L-5F53652F` (the Elastic IP
 /// addresses of one NAT gateway, 2), under `L-42B9C2CA` (the VPC Block Public Access
 /// exclusions of the Region, 50, NOT adjustable), under `L-CA6CC422` (the `resource` VPC
-/// endpoints of one VPC, 500) and under `L-8312C5BB` (the expiry of an unaccepted VPC
+/// endpoints of one VPC, 500), under `L-8312C5BB` (the expiry of an unaccepted VPC
 /// peering connection request, NOT adjustable, published as `VPC peering connection
-/// expiry hours` with the hours in the quota's own text rather than in `Unit`). It also
+/// expiry hours` with the hours in the quota's own text rather than in `Unit`), under
+/// `L-A272D574` (the VPCs one security group may be associated with, 100) and under
+/// `L-DFA99DE7` (the private IP addresses of one NAT gateway, 8). It also
 /// states the sentence the service publishes for the gateway-endpoint plane of a Region,
-/// the Network Address Usage of one VPC, the security groups of a Region and the network
-/// interfaces of an Availability Zone. The prefix-list entry count, the prefix-list count, the peered
-/// Network Address Usage and the prefix-list reference count this catalog used to key on
-/// those four codes are NOT published here, and neither is the code it used to key the
-/// peering-request expiry on (`L-2C462E13`): no source available here states AWS's code
-/// for the first four or AWS's quota for the last one, so they are left to the
-/// default-quota-set gap rather than served under another quota's code. A row whose
-/// published `Description` no source available here states carries none, rather than a
-/// sentence this emulator words itself.
+/// the Network Address Usage of one VPC, the security groups of a Region, the network
+/// interfaces of an Availability Zone and the active peering connections of one VPC (whose
+/// sentence names the maximum the quota may be raised to). The prefix-list entry count, the
+/// prefix-list count, the peered Network Address Usage, the prefix-list reference count and
+/// the per-Region traffic-mirror-filter count this catalog used to key on those codes are
+/// NOT published here: no source available here states AWS's code for them, so they are
+/// left to the default-quota-set gap rather than served under another quota's code. A row
+/// whose published `Description` no source available here states carries none, rather than
+/// a sentence this emulator words itself.
+///
+/// THE CODE NO SOURCE BINDS. `L-2C462E13` is a code this catalog publishes whose own quota
+/// no source available here names, so it carries the plane one of the bindings above
+/// displaced — the Gateway Load Balancer endpoints of one VPC — as the module header says
+/// such a row does. That is not a claim that AWS publishes that plane under that code.
 pub(in crate::state) fn vpc_quotas() -> Vec<QuotaRow> {
     vec![
         // AWS publishes the IPv6 block plane of a VPC as adjustable, like the IPv4 one,
@@ -74,6 +81,11 @@ pub(in crate::state) fn vpc_quotas() -> Vec<QuotaRow> {
                 "The maximum number of outstanding VPC peering connection requests in this \
                  account in the current Region.",
             ),
+        // A code whose own published quota no source available here states, carrying the
+        // plane the `L-A272D574` binding displaced (see the header).
+        quota("Gateway Load Balancer endpoints per VPC", 50.0)
+            .code("L-2C462E13")
+            .describe("The maximum number of Gateway Load Balancer endpoints per VPC."),
         quota("Gateway VPC endpoints per Region", 20.0)
             .code("L-1B52E74A")
             .describe(
@@ -133,9 +145,14 @@ pub(in crate::state) fn vpc_quotas() -> Vec<QuotaRow> {
                  toward this quota.",
             ),
         quota("Elastic IP address quota per NAT gateway", 2.0).code("L-5F53652F"),
+        // The active peering connections of ONE VPC, whose published sentence names the
+        // maximum an increase may take the quota to as well as the plane it counts.
         quota("Active VPC peering connections per VPC", 50.0)
             .code("L-7E9ECCDB")
-            .describe("The maximum number of active VPC peering connections per VPC."),
+            .describe(
+                "The maximum number of active VPC peering connections per VPC. This quota \
+                 can be increased up to a maximum of 125.",
+            ),
         quota("VPC peering connection request expiry hours", 168.0)
             .code("L-8312C5BB")
             .fixed()
@@ -166,9 +183,7 @@ pub(in crate::state) fn vpc_quotas() -> Vec<QuotaRow> {
                  can be increased up to a maximum of 1000; however, network performance \
                  might be impacted.",
             ),
-        quota("Gateway Load Balancer endpoints per VPC", 50.0)
-            .code("L-A272D574")
-            .describe("The maximum number of Gateway Load Balancer endpoints per VPC."),
+        quota("VPC associations per security group", 100.0).code("L-A272D574"),
         quota("Internet gateways per Region", 5.0)
             .code("L-A4707A72")
             .describe(
@@ -201,12 +216,7 @@ pub(in crate::state) fn vpc_quotas() -> Vec<QuotaRow> {
                 "The maximum number of network interfaces per Availability Zone in a \
                  Region.",
             ),
-        quota("Traffic mirror filters per Region", 10_000.0)
-            .code("L-DFA99DE7")
-            .describe(
-                "The maximum number of traffic mirror filters in this account in the \
-                 current Region.",
-            ),
+        quota("Private IP address quota per NAT gateway", 8.0).code("L-DFA99DE7"),
         quota("VPC security groups per Region", 2500.0)
             .code("L-E79EC296")
             .describe("The maximum number of VPC security groups per Region."),

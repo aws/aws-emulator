@@ -36,8 +36,12 @@ fn timestream_request_rate(code: &str, api_name: &str, per_second: f64) -> Quota
 /// `timestream` states which API's rate is published under `L-F07A9AB4` (`ListBatchLoadTasks`,
 /// 5 per second), under `L-798CB19D` (`CreateScheduledQuery`, 1 per second), under
 /// `L-C49D398A` (`CreateBatchLoadTask`), under `L-C0E9F2ED` (`ExecuteScheduledQuery`, 5 per
-/// second) and under `L-8DFD99E7` (`UpdateAccountSettings`, 1 per second), beside the
-/// wording and the adjustability of the whole rate class ([`timestream_request_rate`]).
+/// second), under `L-8DFD99E7` (`UpdateAccountSettings`, 1 per second), under `L-AE604CE2`
+/// (`ListTables`, 5 per second) and under `L-00158752` (`ListScheduledQueries`), beside the
+/// wording and the adjustability of the whole rate class ([`timestream_request_rate`]). It
+/// also states the quota published under `L-1222731D`: the TABLES of an account, 50000,
+/// metered by the `AWS/Usage` resource count of the service's `Table` series rather than by
+/// a call count.
 ///
 /// Timestream publishes the planes of its data model — the databases, the tables, the
 /// shape of one record and the retention of each store — beside the request rate of each
@@ -52,17 +56,41 @@ fn timestream_request_rate(code: &str, api_name: &str, per_second: f64) -> Quota
 /// listing publishes the batch-load, scheduled-query and account-settings rates under, and
 /// no source available here states AWS's code for them, so they are left to the
 /// default-quota-set gap rather than served under another quota's code.
+///
+/// THE CODES NO SOURCE BINDS. `L-0C6E4BCB`, `L-16B72159` and `L-89E3B36D` are codes this
+/// catalog publishes whose own quota no source available here names, so each carries a
+/// plane one of the bindings above displaced — the `CreateDatabase` rate, the account's
+/// concurrent queries and the `Query` rate — as the module header says such a row does.
+/// That is not a claim that AWS publishes those quotas under those codes.
 pub(in crate::state) fn timestream_quotas() -> Vec<QuotaRow> {
     let rate = timestream_request_rate;
     vec![
+        rate("L-00158752", "ListScheduledQueries", 5.0),
+        rate("L-05CF2F29", "CancelQuery", 10.0),
+        // A code whose own published quota no source available here states, carrying the
+        // plane the `L-1222731D` binding displaced (see the header).
+        rate("L-0C6E4BCB", "CreateDatabase", 1.0),
+        // The TABLES of the account: a counted plane rather than a rate, so the listing
+        // publishes it metered by the `AWS/Usage` resource count of the service's table
+        // series, over the window those counts are published over.
+        quota("Tables per account", 50_000.0)
+            .code("L-1222731D")
+            .metric(usage_metric(
+                TIMESTREAM_USAGE_SERVICE,
+                &[
+                    ("Class", "None"),
+                    ("Resource", "Table"),
+                    ("Type", "Resource"),
+                ],
+            )),
+        // A code whose own published quota no source available here states, carrying the
+        // plane the `L-00158752` binding displaced (see the header).
         quota("Active queries per account", 1000.0)
-            .code("L-00158752")
+            .code("L-16B72159")
             .describe(
                 "The maximum number of queries running at once in this account in the \
                  current Region.",
             ),
-        rate("L-05CF2F29", "CancelQuery", 10.0),
-        rate("L-1222731D", "CreateDatabase", 1.0),
         rate("L-279D7B08", "CreateTable", 1.0),
         quota("Databases per account", 500.0)
             .code("L-3F031494")
@@ -84,7 +112,9 @@ pub(in crate::state) fn timestream_quotas() -> Vec<QuotaRow> {
             .fixed()
             .describe("The maximum number of dimensions of one time series."),
         rate("L-8892F7F6", "ListDatabases", 10.0),
-        rate("L-89E3B36D", "ListTables", 10.0),
+        // A code whose own published quota no source available here states, carrying the
+        // plane the `L-AE604CE2` binding displaced (see the header).
+        rate("L-89E3B36D", "Query", 10.0),
         rate("L-8BF444C0", "ListTagsForResource", 10.0),
         rate("L-8DFD99E7", "UpdateAccountSettings", 1.0),
         quota("Measure name length", 256.0)
@@ -102,7 +132,7 @@ pub(in crate::state) fn timestream_quotas() -> Vec<QuotaRow> {
             .describe(
                 "The maximum time, in hours, that a table retains data in its memory store.",
             ),
-        rate("L-AE604CE2", "Query", 10.0),
+        rate("L-AE604CE2", "ListTables", 5.0),
         quota("Query string length", 262_144.0)
             .code("L-BFCD0C9E")
             .unit("Bytes")

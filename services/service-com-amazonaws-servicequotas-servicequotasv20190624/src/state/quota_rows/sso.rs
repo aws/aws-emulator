@@ -25,22 +25,24 @@ use super::*;
 /// be assigned to a permission set per account or to an application, 100, with the sentence
 /// the service words it with), under `L-D519A297` (the Regions IAM Identity Center may be
 /// enabled in, 6, with its own sentence), under `L-89954265` (the permission sets one AWS
-/// account may have provisioned, 500, adjustable, in `Unit` `None`) and under `L-C4FCA052`
+/// account may have provisioned, 500, adjustable, in `Unit` `None`), under `L-C4FCA052`
 /// (the file size of the service provider's SAML 2.0 certificates, 2 Kilobytes, NOT
-/// adjustable). The managed-policy count, the trusted-token-issuer count and the
-/// permission-set inline-policy size this catalog used to key on those codes are NOT
-/// published here: no source available here states AWS's code for them, so they are left
-/// to the default-quota-set gap rather than served under another quota's code. A row whose
-/// published `Description` no source available here states carries none, rather than a
-/// sentence this emulator words itself.
+/// adjustable, with the sentence it states for it), under `L-0299121C` (the AWS accounts
+/// or applications an instance may have configured, 7000), under `L-B44C7A29` (the
+/// permission sets of an instance, 3500) and under `L-7E1D4E33` (the groups the instance's
+/// identity store supports). It also publishes `L-3C8D41A0` as ADJUSTABLE. The
+/// managed-policy count, the trusted-token-issuer count and the permission-set inline-policy
+/// size this catalog used to key on those codes are NOT published here: no source available
+/// here states AWS's code for them, so they are left to the default-quota-set gap rather
+/// than served under another quota's code. A row whose published `Description` no source
+/// available here states carries none, rather than a sentence this emulator words itself.
 pub(in crate::state) fn sso_quotas() -> Vec<QuotaRow> {
     vec![
-        quota("Applications per instance", 50.0)
-            .code("L-0299121C")
-            .describe(
-                "The maximum number of applications that you can configure in an IAM \
-                 Identity Center instance.",
-            ),
+        quota(
+            "Total number of AWS accounts or applications that can be configured",
+            7000.0,
+        )
+        .code("L-0299121C"),
         quota(
             "Total number of groups that can be assigned to a permission set per AWS \
              account, or to an application",
@@ -54,33 +56,30 @@ pub(in crate::state) fn sso_quotas() -> Vec<QuotaRow> {
         ),
         quota("Customer managed policies per permission set", 20.0)
             .code("L-3C8D41A0")
-            .fixed()
             .describe(
                 "The maximum number of customer managed policies that you can attach to a \
                  permission set.",
             ),
-        quota("Groups per instance", 100_000.0)
-            .code("L-7E1D4E33")
-            .describe(
-                "The maximum number of groups in the identity store of an IAM Identity \
-                 Center instance.",
-            ),
+        quota("Number of groups supported in IAM Identity Center", 100_000.0)
+            .code("L-7E1D4E33"),
         quota("Number of permission sets allowed per AWS account", 500.0)
             .code("L-89954265"),
-        quota("Permission sets", 500.0)
-            .code("L-B44C7A29")
-            .describe(
-                "The maximum number of permission sets in an IAM Identity Center instance.",
-            ),
+        quota("Number of permission sets allowed in IAM Identity Center", 3500.0)
+            .code("L-B44C7A29"),
         // The SAML 2.0 metadata the service provider publishes: a file SIZE in Kilobytes,
-        // which the service publishes as NOT adjustable.
+        // which the service publishes as NOT adjustable, with the sentence the recorded
+        // listing states for it.
         quota(
             "File size of service provider SAML 2.0 certificates (in PEM format)",
             2.0,
         )
         .code("L-C4FCA052")
         .unit("Kilobytes")
-        .fixed(),
+        .fixed()
+        .describe(
+            "The maximum file size (in KB) of service provider SAML 2.0 certificates (in \
+             PEM format).",
+        ),
         quota("Total number of regions for IAM Identity Center", 6.0)
             .code("L-D519A297")
             .describe(

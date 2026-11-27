@@ -26,21 +26,24 @@ use super::*;
 /// `L-5B2F9B11` (the AWS AppSync GraphQL API associations of one regional web ACL, 100,
 /// scoped to the web ACL the same way), under `L-71C2E81B` (the custom response bodies of
 /// one regional web ACL or rule group, published as ADJUSTABLE and as a quota of the web
-/// ACL, adjustable at the `ALL` level) and under `L-D95DED7E` (the inspectable
-/// request-body size, in kilobytes, of the protections it names, 64, NOT adjustable). The
-/// rule-group capacity, the `GetSampledRequests` rate, the web ACL's capacity units and
-/// the retained managed-rule-group versions this catalog used to key on those codes are
-/// NOT published here, and neither is the code it used to key the account's IP sets on
-/// (`L-08788A4E`): no source available here states AWS's code for the first group or AWS's
-/// quota for the last one, so they are left to the default-quota-set gap rather than
-/// served under another quota's code. A row whose published `Description` no source
-/// available here states carries none, rather than a sentence this emulator words itself.
+/// ACL, adjustable at the `ALL` level, under the name it states for it), under `L-D95DED7E`
+/// (the inspectable request-body size, in kilobytes, of the protections it names, 64, NOT
+/// adjustable) and under `L-BF0029B0` (the account's regional REGEX PATTERN SETS, published
+/// as adjustable and metered by the `AWS/Usage` `ResourceCount` of that plane's own series
+/// over the window those counts are published over). The rule-group capacity, the
+/// `GetSampledRequests` rate, the web ACL's capacity units and the retained
+/// managed-rule-group versions this catalog used to key on those codes are NOT published
+/// here: no source available here states AWS's code for them, so they are left to the
+/// default-quota-set gap rather than served under another quota's code. A row whose
+/// published `Description` no source available here states carries none, rather than a
+/// sentence this emulator words itself.
 ///
 /// The statement nesting depth of one rule, which this catalog used to key on
 /// `L-71C2E81B`, is the plane that binding displaced: it is carried by `L-0224FEE0`, whose
-/// own published quota no source available here states. That is not a claim that AWS
-/// publishes the nesting depth under `L-0224FEE0`, and it is replaced the moment the quota
-/// that code publishes can be sourced.
+/// own published quota no source available here states. The per-web-ACL IP set references,
+/// which this catalog used to key on `L-BF0029B0`, are carried by `L-08788A4E` the same way.
+/// Neither is a claim that AWS publishes that plane under that code, and each is replaced
+/// the moment the quota that code publishes can be sourced.
 pub(in crate::state) fn wafv2_quotas() -> Vec<QuotaRow> {
     vec![
         // A code whose own published quota no source available here states, carrying the
@@ -57,6 +60,12 @@ pub(in crate::state) fn wafv2_quotas() -> Vec<QuotaRow> {
             .code("L-041DD6D3")
             .fixed()
             .describe("The maximum number of text transformations in one rule."),
+        // A code whose own published quota no source available here states, carrying the
+        // plane the `L-BF0029B0` binding displaced (see the header).
+        quota("IP set references per web ACL", 50.0)
+            .code("L-08788A4E")
+            .fixed()
+            .describe("The maximum number of IP set references in one web ACL."),
         quota("IP addresses per IP set", 10_000.0)
             .code("L-0A8A309C")
             .describe("The maximum number of IP address ranges in one IP set."),
@@ -111,15 +120,11 @@ pub(in crate::state) fn wafv2_quotas() -> Vec<QuotaRow> {
             .describe("The maximum number of labels added by one rule."),
         // The custom response bodies of one regional web ACL or rule group, which the
         // recorded listing publishes under this code as ADJUSTABLE and as a quota OF the
-        // web ACL — so the row carries that level and that resource type. Those are the
-        // members a source states for this code. Its limit is the plane's published
-        // default, the exact wording of its published NAME is reconstructed from the way
-        // the recorded listing words the two sibling rows of this class (`L-5B2F9B11` and
-        // `L-B32E8672`) rather than quoted, and the sentence AWS publishes for it no
-        // source available here states, so the row carries none: name and value are
-        // replaced the moment the recorded row can be read.
+        // web ACL — so the row carries that level and that resource type — under the name
+        // it states for it. Its limit is the plane's published default and the sentence AWS
+        // publishes for it no source available here states, so the row carries none.
         quota(
-            "Maximum number of custom response bodies per web ACL or rule group in WAF for \
+            "Maximum number of custom response bodies per web ACL or rule group for \
              regional",
             50.0,
         )
@@ -182,10 +187,19 @@ pub(in crate::state) fn wafv2_quotas() -> Vec<QuotaRow> {
         .code("L-B32E8672")
         .adjustable_at(LEVEL_ALL, "AWS::WAFv2::WebACL")
         .counted_per_resource(),
-        quota("IP set references per web ACL", 50.0)
+        // The account's regional REGEX PATTERN SETS, metered by the `AWS/Usage`
+        // `ResourceCount` of that plane: naming the metric also carries the window those
+        // counts are published over.
+        quota("Maximum regex pattern sets per account in WAF for regional", 10.0)
             .code("L-BF0029B0")
-            .fixed()
-            .describe("The maximum number of IP set references in one web ACL."),
+            .metric(usage_metric(
+                WAF_USAGE_METRIC_SERVICE,
+                &[
+                    ("Class", "None"),
+                    ("Resource", "RegexPatternSetsPerAccountRegional"),
+                    ("Type", "Resource"),
+                ],
+            )),
         quota("Scope-down statements per managed rule group", 1.0)
             .code("L-C5BCD850")
             .fixed()
