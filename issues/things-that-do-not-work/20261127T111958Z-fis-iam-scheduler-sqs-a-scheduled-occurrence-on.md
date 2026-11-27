@@ -1,0 +1,35 @@
+Issue-Severity: HIGH
+Issue-Corpus: simparity-behavioral-aws-v1
+Issue-Corpus-Kind: behavioral
+Issue-Trace-Ids: fis__iam__scheduler__sqs.schedule-role-without-fis-start-permission-dead-letters-and-starts-no-experiment
+Issue-Key: fis__iam__scheduler__sqs.schedule-role-without-fis-start-permission-dead-letters-and-starts-no-experiment|run#16|AssertionError|raise AssertionError(
+Issue-Commit: 7e5e0efa347a2e327a9b3588e8ef7ff7fc53eee8
+
+# fis__iam__scheduler__sqs: a scheduled occurrence on a universal FIS target is never delivered — neither the permitted fis:TagResource leg fires nor does the fis:StartExperiment leg denied by its role produce an AccessDeniedException dead letter in Target.DeadLetterConfig
+
+> _Note: this issue was identified against the code base at commit `7e5e0efa347a2e327a9b3588e8ef7ff7fc53eee8`. If you are an issue fixer working on this, the code base you are currently working in can have drifted, so you might need to trace the issue back to the current code base._
+
+## Operation
+CreateSchedule
+
+## Description
+Cause 1 of 1: EventBridge Scheduler stores schedules whose Target.Arn is a universal FIS target but never executes the occurrence, so both the authorized and the unauthorized leg of the same invoker role are indistinguishable from "nothing happened".
+AWS: an ENABLED at() schedule invokes its universal target once under Target.RoleArn (https://docs.aws.amazon.com/fis/latest/userguide/getting-started.html). Two consequences are required and both are observable. (a) Authorized leg: Target.Arn arn:aws:scheduler:::aws-sdk:fis:tagResource with Input {"ResourceArn": <template arn>, "Tags": {"fired": <marker>}} calls fis.TagResource, so fis.GetExperimentTemplate reports experimentTemplate.tags['fired'] == <marker> (key and value taken verbatim from Target.Input). (b) Unauthorized leg: Target.Arn arn:aws:scheduler:::aws-sdk:fis:startExperiment under the SAME role, which holds fis:TagResource but not fis:StartExperiment, is refused by FIS with AccessDeniedException; Scheduler exhausts the RetryPolicy (MaximumRetryAttempts 0 here) and sends the occurrence to Target.DeadLetterConfig.Arn. Exactly one SQS message arrives, whose Body is the Target.Input JSON unchanged, and whose message attributes carry ERROR_CODE = 'AccessDeniedException', ERROR_MESSAGE containing the IAM denial text 'not authorized to perform: fis:StartExperiment' naming the denied resource ARN, TARGET_ARN = 'arn:aws:scheduler:::aws-sdk:fis:startExperiment' and SCHEDULE_ARN = arn:aws:scheduler:<region>:<account>:schedule/default/<schedule name> (fixed template; region, account and schedule name come from the request and the caller's identity). No experiment is started on the denied template, and the authorized leg's own DLQ stays empty. Smithy fis: StartExperiment is a modeled operation guarded by IAM; the dead-letter attribute set is recorded behavior only.
+Emulator: both schedules are created and accepted, but after the full 300 s budget the authorized leg's template carries no 'fired' tag AND the denied leg's dead-letter queue is empty — the replay reports fired=None, denied dead letters=[], control dead letters=[]. Nothing was invoked, so neither the success path nor the IAM-denial-to-dead-letter path ran.
+Why: this is the canonical way users validate that a scheduled experiment's invoker role is correctly scoped. Against the emulator a correctly-permissioned schedule and a misconfigured one behave identically (both silent), so a user cannot tell a working integration from a broken one, gets no dead letter to alert on, and any monitoring or runbook built on the dead-letter attributes (ERROR_CODE/ERROR_MESSAGE/TARGET_ARN/SCHEDULE_ARN) has nothing to consume. The missing dead letter overlaps in symptom with the open issue 20261111T160016Z-scheduler-sns-an-sns-target-occurrence-whose-target.md (an SNS-target occurrence denied sns:Publish is neither refused nor dead-lettered), but that issue covers an SNS target and does not carry this check's replay key; here the authorized FIS leg does not fire either, which that issue does not describe.
+Fix: the Scheduler service's occurrence-delivery component — the due-time executor plus the universal-target (arn:aws:scheduler:::aws-sdk:<service>:<operation>) invoker, including the authorization result it gets back from the called service and the retry/dead-letter path that must serialize a failed occurrence into Target.DeadLetterConfig.Arn with the error attributes above.
+Traces: fis__iam__scheduler__sqs.schedule-role-without-fis-start-permission-dead-letters-and-starts-no-experiment.
+
+## Evidence
+fis__iam__scheduler__sqs.schedule-role-without-fis-start-permission-dead-letters-and-starts-no-experiment:
+Expected (AWS): one invoker role (trusted by scheduler.amazonaws.com) allowing fis:TagResource on both templates and sqs:SendMessage on both DLQs, but NOT fis:StartExperiment. Control schedule -> arn:aws:scheduler:::aws-sdk:fis:tagResource tags the control template with fired=<marker>. Denied schedule -> arn:aws:scheduler:::aws-sdk:fis:startExperiment yields exactly one SQS dead letter whose Body equals the Target.Input JSON and whose attributes are ERROR_CODE='AccessDeniedException', ERROR_MESSAGE containing 'not authorized to perform: fis:StartExperiment' plus the denied template ARN, TARGET_ARN='arn:aws:scheduler:::aws-sdk:fis:startExperiment', SCHEDULE_ARN='arn:aws:scheduler:<region>:<account>:schedule/default/<denied schedule name>'. ListExperiments for the denied template is empty and the control DLQ is empty.
+Actual (emulator): nothing was delivered on either leg within the budget. Replay output:
+  AssertionError: control tag fired=None, denied leg dead letters=[], control leg dead letters=[]
+
+## Steps to Reproduce
+1. Create an IAM role trusted by fis.amazonaws.com and two FIS experiment templates holding one aws:fis:wait action (duration PT1M).
+2. Create two SQS queues to serve as dead-letter queues.
+3. Create one IAM role trusted by scheduler.amazonaws.com whose inline policy allows fis:TagResource on both template ARNs and sqs:SendMessage on both queue ARNs, and nothing else (no fis:StartExperiment).
+4. scheduler.CreateSchedule for the control leg: State='ENABLED', ScheduleExpression='at(<utc now + 45s>)', FlexibleTimeWindow={'Mode':'OFF'}, Target={'Arn':'arn:aws:scheduler:::aws-sdk:fis:tagResource','RoleArn':<invoker>,'Input':'{"ResourceArn":"<control template arn>","Tags":{"fired":"<marker>"}}','RetryPolicy':{'MaximumRetryAttempts':0,'MaximumEventAgeInSeconds':300},'DeadLetterConfig':{'Arn':<control dlq arn>}}.
+5. scheduler.CreateSchedule for the denied leg, identically but Target.Arn='arn:aws:scheduler:::aws-sdk:fis:startExperiment', Input='{"ExperimentTemplateId":"<denied template id>","ClientToken":"..."}' and DeadLetterConfig pointing at the second queue.
+6. Poll fis.GetExperimentTemplate(id=<control template>) for tags['fired'] and sqs.ReceiveMessage on the denied DLQ. Both stay empty; AWS produces the tag and exactly one dead letter with the attributes listed in the evidence.
