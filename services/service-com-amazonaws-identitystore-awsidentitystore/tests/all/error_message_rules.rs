@@ -53,10 +53,23 @@ const USER_NAME_PATTERN: &str = r"[\p{L}\p{M}\p{S}\p{N}\p{P}]+";
 const EXTENSION_NAME_PATTERN: &str = r"aws:identitystore:[a-z]{1,20}";
 const NEXT_TOKEN_PATTERN: &str = r"[-a-zA-Z0-9+=/:_]*";
 
+/// The same for the two interchangeable sensitive text shapes, `GroupDisplayName` and
+/// `SensitiveStringType`, which declare one `@pattern`
+/// (`smithy_query(query="shape",shape="GroupDisplayName,SensitiveStringType")`). The model's
+/// text spells the three space characters it admits LITERALLY — U+0020, U+00A0 (no-break
+/// space) and U+3000 (ideographic space) — so they are written here as escapes the compiler
+/// turns back into those characters, and the class names keep the single backslash the model
+/// gives them.
+const SENSITIVE_TEXT_PATTERN: &str = "[\\p{L}\\p{M}\\p{S}\\p{N}\\p{P}\\t\\n\\r \u{a0}\u{3000}]+";
+
 /// The modelled `UserName` length maximum (1..128) and the `GroupDisplayName` /
 /// `SensitiveStringType` maximum (1..1024).
 const USER_NAME_MAX_LEN: usize = 128;
 const DISPLAY_NAME_MAX_LEN: usize = 1024;
+
+/// The length MINIMUM every constrained text shape of this model declares: 1, so the empty
+/// string is a value none of them admits.
+const TEXT_MIN_LEN: usize = 1;
 
 /// The separator the validation envelope puts between a clause's two halves. A test
 /// value spells it to prove the renderer never parses its own rendered sentence.
@@ -315,6 +328,220 @@ async fn a_constraint_violation_reports_the_expression_the_service_applies() {
         assert!(
             !message.contains(&value),
             "case {case:?}: expected the sensitive value to stay out of the message, got {message:?}"
+        );
+    }
+}
+
+/// The requirement a `@length` maximum states.
+fn max_length_requirement(max_len: usize) -> String {
+    format!("Member must have length less than or equal to {max_len}")
+}
+
+/// The requirement a `@length` minimum states.
+fn min_length_requirement(min_len: usize) -> String {
+    format!("Member must have length greater than or equal to {min_len}")
+}
+
+/// The envelope for the clauses one refused value produced, counting the CLAUSES: a value
+/// that fails two of its member's constraints is two errors.
+fn errors(clauses: &[String]) -> String {
+    match clauses.len() {
+        1 => one_error(&clauses[0]),
+        n => format!("{n} validation errors detected: {}", clauses.join("; ")),
+    }
+}
+
+/// Rule 1 and rule 2 hold for a violation whichever CODE PATH noticed it.
+///
+/// An `AttributeOperation`'s `AttributeValue` is modelled as a `document`
+/// (`smithy_query(query="shape",shape="AttributeOperation")`), so the request boundary
+/// applies no modelled constraint to it: the `@length` and the `@pattern` of the member an
+/// operation WRITES are applied where the value is decoded, inside the operation. That
+/// refusal is still this service's `ValidationException`, so it is worded by the service's
+/// one renderer — the clause names the member the value was written to and the constraint
+/// class it failed, reports a `@pattern` as the expression the service APPLIES (unanchored),
+/// and states no value fragment at all for a member the model marks `@sensitive`.
+///
+/// The rows differ along the operation, the attribute written, the modelled shape it
+/// targets, the constraint class the value fails, and the value's form and size.
+#[tokio::test]
+async fn an_attribute_value_is_refused_in_the_same_words_as_the_member_it_writes() {
+    let router = emulator();
+    let case = "the resources an attribute-value case needs";
+    let group = create_group(&router, STORE, "attribute value wording", case).await;
+    let user = create_user(&router, STORE, "attribute-value-wording", case).await;
+
+    // U+0007 BELL is a control character neither class admits; U+2000 EN QUAD is a space
+    // character, but not one of the three the sensitive text class lists.
+    let bell = format!("bell{}value", '\u{7}');
+    let en_quad = format!("en{}quad", '\u{2000}');
+    let long_text = "d".repeat(DISPLAY_NAME_MAX_LEN + 1);
+    let long_user_name = "u".repeat(USER_NAME_MAX_LEN + 1);
+
+    // (case, operation, attribute path, value, the requirements the value fails). The
+    // empty string fails two of its member's constraints — the length minimum and the
+    // pattern, which admits no empty value — so those rows carry two.
+    let rows: Vec<(&str, &str, &str, String, Vec<String>)> = vec![
+        (
+            "a group description outside the sensitive text class",
+            "UpdateGroup",
+            "description",
+            bell.clone(),
+            vec![pattern_requirement(SENSITIVE_TEXT_PATTERN)],
+        ),
+        (
+            "a group display name carrying a space the class omits",
+            "UpdateGroup",
+            "displayName",
+            en_quad,
+            vec![pattern_requirement(SENSITIVE_TEXT_PATTERN)],
+        ),
+        (
+            "a group description past the modelled maximum length",
+            "UpdateGroup",
+            "description",
+            long_text.clone(),
+            vec![max_length_requirement(DISPLAY_NAME_MAX_LEN)],
+        ),
+        (
+            "a group display name below the modelled minimum length",
+            "UpdateGroup",
+            "displayName",
+            String::new(),
+            vec![
+                min_length_requirement(TEXT_MIN_LEN),
+                pattern_requirement(SENSITIVE_TEXT_PATTERN),
+            ],
+        ),
+        (
+            "a user name carrying a space, which its own class excludes",
+            "UpdateUser",
+            "userName",
+            "ada lovelace".to_string(),
+            vec![pattern_requirement(USER_NAME_PATTERN)],
+        ),
+        (
+            "a user name past its own, shorter maximum length",
+            "UpdateUser",
+            "userName",
+            long_user_name,
+            vec![max_length_requirement(USER_NAME_MAX_LEN)],
+        ),
+        (
+            "a user locale outside the sensitive text class",
+            "UpdateUser",
+            "locale",
+            bell.clone(),
+            vec![pattern_requirement(SENSITIVE_TEXT_PATTERN)],
+        ),
+        (
+            "a sub-attribute of a user's name past the modelled maximum length",
+            "UpdateUser",
+            "name.familyName",
+            long_text.clone(),
+            vec![max_length_requirement(DISPLAY_NAME_MAX_LEN)],
+        ),
+        (
+            "a user title below the modelled minimum length",
+            "UpdateUser",
+            "title",
+            String::new(),
+            vec![
+                min_length_requirement(TEXT_MIN_LEN),
+                pattern_requirement(SENSITIVE_TEXT_PATTERN),
+            ],
+        ),
+    ];
+
+    for (case, operation, path, value, requirements) in rows {
+        let mut request = json!({
+            "IdentityStoreId": STORE,
+            "Operations": [{ "AttributePath": path, "AttributeValue": value }],
+        });
+        if operation == "UpdateGroup" {
+            request["GroupId"] = json!(group);
+        } else {
+            request["UserId"] = json!(user);
+        }
+        let message =
+            refusal_message(&router, operation, request, 400, "ValidationException", case).await;
+        let clauses: Vec<String> = requirements
+            .iter()
+            .map(|requirement| redacted_clause(path, requirement))
+            .collect();
+        let expected = errors(&clauses);
+        assert_eq!(
+            message, expected,
+            "case {case:?}: expected message {expected:?}, got {message:?}"
+        );
+        assert!(
+            !message.contains("pattern: ^") && !message.ends_with('$'),
+            "case {case:?}: expected the reported pattern to be unanchored, got {message:?}"
+        );
+        // Every attribute either update writes targets a `@sensitive` shape, so no clause
+        // of theirs opens with a value fragment — neither the value nor a stand-in for it.
+        assert!(
+            !message.contains("Value '"),
+            "case {case:?}: expected no value fragment for a sensitive member, got {message:?}"
+        );
+        assert!(
+            value.is_empty() || !message.contains(value.as_str()),
+            "case {case:?}: expected the rejected value to stay out of the message, \
+             got {message:?}"
+        );
+    }
+
+    // The same wording from the other side: a value an attribute operation is refused for
+    // is refused in the SAME words when a create carries it in that member's modelled
+    // string, which is the path the boundary validator walks.
+    for (index, (case, member, path, value)) in [
+        (
+            "a user name outside its class",
+            "UserName",
+            "userName",
+            "ada lovelace".to_string(),
+        ),
+        ("a locale outside its class", "Locale", "locale", bell),
+        (
+            "a title past the modelled maximum length",
+            "Title",
+            "title",
+            long_text,
+        ),
+        (
+            "a nick name below the modelled minimum length",
+            "NickName",
+            "nickName",
+            String::new(),
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut created = json!({
+            "IdentityStoreId": STORE,
+            "UserName": format!("wording-parity-{index}"),
+        });
+        created[member] = json!(value);
+        let on_create =
+            refusal_message(&router, "CreateUser", created, 400, "ValidationException", case).await;
+        let on_update = refusal_message(
+            &router,
+            "UpdateUser",
+            json!({
+                "IdentityStoreId": STORE,
+                "UserId": user,
+                "Operations": [{ "AttributePath": path, "AttributeValue": value }],
+            }),
+            400,
+            "ValidationException",
+            case,
+        )
+        .await;
+        assert_eq!(
+            on_update, on_create,
+            "case {case:?}: expected the update to be refused in the create's words, \
+             {on_create:?}, got {on_update:?}"
         );
     }
 }
