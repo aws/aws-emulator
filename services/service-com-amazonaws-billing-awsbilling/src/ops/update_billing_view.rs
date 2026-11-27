@@ -289,7 +289,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             // an update that already landed — changes no definition, exactly as
             // re-associating a source view the view already draws from changes
             // none (`AssociateSourceViews`).
-            let changed = view.data_filter_expression.as_ref() != Some(&expression);
+            let changed = view
+                .data_filter_expression
+                .as_ref()
+                .is_none_or(|stored| !crate::state::same_data_filter_expression(stored, &expression));
             view.data_filter_expression = Some(expression);
             if changed {
                 view.view_definition_last_updated_at = Some(updated_at);

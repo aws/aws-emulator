@@ -61,7 +61,7 @@ pub use ::service_common::page_tokens::PageTokenKey;
 
 use crate::ops::types::{
     AccessDeniedException, BillingViewHealthStatusException, Expression, ResourceNotFoundException,
-    ResourceTag, ValidationException, ValidationExceptionField, BILLING_FEATURE_VALUES,
+    ResourceTag, TimeRange, ValidationException, ValidationExceptionField, BILLING_FEATURE_VALUES,
 };
 
 /// The Support-eligible spend `ListBusinessSupportAccountCharges` prices.
@@ -1779,6 +1779,95 @@ pub fn check_data_filter_expression(expression: &Expression) -> Result<(), &'sta
         return Err(INVERTED_TIME_RANGE);
     }
     Ok(())
+}
+
+/// Whether two data filter expressions hold the same filter — the comparison a
+/// writer of [`BillingView::data_filter_expression`] decides whether a request
+/// CHANGES the view's definition by.
+///
+/// An `Expression` is the three filter members a billing view may select on
+/// (`dimensions`, `tags`, `costCategories`) and the `timeRange` it covers, so
+/// two expressions are the same filter when each of those members is absent in
+/// both or present in both holding the same contents. Values compare in the
+/// order they arrived, because a stored expression is handed back as stored:
+/// reordering one changes what every later read of the view reports, so it is a
+/// change of the definition like any other.
+///
+/// Stated here rather than derived on the shape: the type is rendered from the
+/// model and carries only the derives the generator emits, so the equality this
+/// service's rule needs is the service's to define, next to the other rule
+/// about the same member ([`check_data_filter_expression`]).
+pub fn same_data_filter_expression(left: &Expression, right: &Expression) -> bool {
+    same_filter_values(
+        left.dimensions
+            .as_ref()
+            .map(|values| (values.key.as_str(), values.values.as_slice())),
+        right
+            .dimensions
+            .as_ref()
+            .map(|values| (values.key.as_str(), values.values.as_slice())),
+    ) && same_filter_values(
+        left.tags
+            .as_ref()
+            .map(|values| (values.key.as_str(), values.values.as_slice())),
+        right
+            .tags
+            .as_ref()
+            .map(|values| (values.key.as_str(), values.values.as_slice())),
+    ) && same_filter_values(
+        left.cost_categories
+            .as_ref()
+            .map(|values| (values.key.as_str(), values.values.as_slice())),
+        right
+            .cost_categories
+            .as_ref()
+            .map(|values| (values.key.as_str(), values.values.as_slice())),
+    ) && same_time_range(left.time_range.as_ref(), right.time_range.as_ref())
+}
+
+/// One filter member of an [`Expression`] — the key it filters on and the
+/// values it admits — against another: the same member when both are absent, or
+/// both present carrying the same key and the same values.
+fn same_filter_values(left: Option<(&str, &[String])>, right: Option<(&str, &[String])>) -> bool {
+    match (left, right) {
+        (Some(left), Some(right)) => left == right,
+        (None, None) => true,
+        _ => false,
+    }
+}
+
+/// Two of an [`Expression`]'s periods: the same period when both are absent, or
+/// both present with the same two bounds.
+fn same_time_range(left: Option<&TimeRange>, right: Option<&TimeRange>) -> bool {
+    match (left, right) {
+        (Some(left), Some(right)) => {
+            same_bound(
+                left.begin_date_inclusive.as_ref(),
+                right.begin_date_inclusive.as_ref(),
+            ) && same_bound(
+                left.end_date_inclusive.as_ref(),
+                right.end_date_inclusive.as_ref(),
+            )
+        }
+        (None, None) => true,
+        _ => false,
+    }
+}
+
+/// One bound of a [`TimeRange`] against another: the same bound when both are
+/// absent — the period is open on that side in both — or both name the same
+/// instant, to the nanosecond the modeled `Timestamp` carries.
+fn same_bound(
+    left: Option<&::aws_smithy_types::DateTime>,
+    right: Option<&::aws_smithy_types::DateTime>,
+) -> bool {
+    match (left, right) {
+        (Some(left), Some(right)) => {
+            left.secs() == right.secs() && left.subsec_nanos() == right.subsec_nanos()
+        }
+        (None, None) => true,
+        _ => false,
+    }
 }
 
 /// The sentence [`check_data_filter_expression`] refuses an inverted period

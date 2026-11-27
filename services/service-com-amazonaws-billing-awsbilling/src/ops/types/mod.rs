@@ -13,13 +13,27 @@
 //! `pub mod <operation>;` per operation and glob-re-exports both, so a submodule
 //! here named after an operation would make that operation's own module name
 //! ambiguous inside `ops` (`E0659`).
+//!
+//! Two shapes are NOT rendered from the model: `ValidationExceptionField` and
+//! `BillingViewHealthStatus` reach the wire with members the model does not
+//! declare — a `__type` discriminator on a `fieldList` entry, and a second
+//! spelling of each health-status member — so each is hand-written in its own
+//! module beside the rendered ones (`validation_exception_field_types`,
+//! `view_health_status_types`), which is where the reason for each is written
+//! down. `shared_types` declares neither, so every `use super::types::*`
+//! resolves one declaration of each as before.
 
+pub mod associate_contract_types;
 pub mod associate_source_views_types;
+pub mod cancel_contractual_investment_attestation_types;
 pub mod create_billing_view_types;
+pub mod create_contractual_investment_attestation_types;
 pub mod delete_billing_view_types;
+pub mod disassociate_contract_types;
 pub mod disassociate_source_views_types;
 pub mod get_billing_preferences_types;
 pub mod get_billing_view_types;
+pub mod get_contract_information_types;
 pub mod get_credit_allocation_history_types;
 pub mod get_credits_types;
 pub mod get_enterprise_support_charge_summary_types;
@@ -29,28 +43,46 @@ pub mod list_billing_view_segments_types;
 pub mod list_billing_views_types;
 pub mod list_business_support_account_charges_types;
 pub mod list_business_support_subscription_history_types;
+pub mod list_contracts_types;
+pub mod list_contractual_investment_attestations_types;
+pub mod list_contractual_investment_summaries_types;
+pub mod list_contractual_investments_types;
 pub mod list_enterprise_support_linked_account_charges_types;
 pub mod list_source_views_for_billing_view_types;
 pub mod list_tags_for_resource_types;
 pub mod redeem_credits_types;
 pub mod shared_types;
+pub mod split_credit_types;
 pub mod tag_resource_types;
+pub mod transfer_credit_types;
 pub mod untag_resource_types;
 pub mod update_billing_preferences_types;
 pub mod update_billing_view_types;
+pub mod validation_exception_field_types;
+pub mod view_health_status_types;
 
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use associate_contract_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use associate_source_views_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use cancel_contractual_investment_attestation_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use create_billing_view_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use create_contractual_investment_attestation_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use delete_billing_view_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use disassociate_contract_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use disassociate_source_views_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use get_billing_preferences_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use get_billing_view_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use get_contract_information_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use get_credit_allocation_history_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
@@ -70,6 +102,14 @@ pub use list_business_support_account_charges_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use list_business_support_subscription_history_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use list_contracts_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use list_contractual_investment_attestations_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use list_contractual_investment_summaries_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use list_contractual_investments_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use list_enterprise_support_linked_account_charges_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use list_source_views_for_billing_view_types::*;
@@ -80,11 +120,19 @@ pub use redeem_credits_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use shared_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use split_credit_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use tag_resource_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use transfer_credit_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use untag_resource_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use update_billing_preferences_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use update_billing_view_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use validation_exception_field_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use view_health_status_types::*;
 

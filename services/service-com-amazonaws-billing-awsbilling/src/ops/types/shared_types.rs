@@ -17,12 +17,6 @@ pub struct AccessDeniedException {
     pub message: String,
 }
 
-#[smithy_macros::smithy(shape = "com.amazonaws.billing#BillingViewHealthStatusException")]
-#[derive(Debug, Clone, Default)]
-pub struct BillingViewHealthStatusException {
-    pub message: String,
-}
-
 #[smithy_macros::smithy(shape = "com.amazonaws.billing#ConflictException")]
 #[derive(Debug, Clone, Default)]
 pub struct ConflictException {
@@ -45,16 +39,6 @@ pub struct ResourceNotFoundException {
     pub resource_type: String,
 }
 
-#[smithy_macros::smithy(shape = "com.amazonaws.billing#ServiceQuotaExceededException")]
-#[derive(Debug, Clone, Default)]
-pub struct ServiceQuotaExceededException {
-    pub message: String,
-    pub resource_id: String,
-    pub resource_type: String,
-    pub service_code: String,
-    pub quota_code: String,
-}
-
 #[smithy_macros::smithy(shape = "com.amazonaws.billing#ThrottlingException")]
 #[derive(Debug, Clone, Default)]
 pub struct ThrottlingException {
@@ -69,118 +53,28 @@ pub struct ValidationException {
     pub field_list: Option<Vec<ValidationExceptionField>>,
 }
 
-/// `ValidationExceptionField`, in the wire shape this service's refusals carry.
-///
-/// Hand-written rather than derived from the model by
-/// `#[smithy_macros::smithy]` for one reason: each entry on the wire carries a
-/// `__type` discriminator naming its own shape, which the protocol writes only
-/// for the error at the TOP of the body. The two modelled members are otherwise
-/// exactly the model's.
+// `ValidationExceptionField` is NOT declared here: an element of a `fieldList`
+// carries a wire member the model does not declare, so the shape is
+// hand-written in `validation_exception_field_types`.
+
+#[smithy_macros::smithy(shape = "com.amazonaws.billing#BillingViewHealthStatusException")]
 #[derive(Debug, Clone, Default)]
-pub struct ValidationExceptionField {
-    pub name: String,
+pub struct BillingViewHealthStatusException {
     pub message: String,
 }
 
-/// The shape id a `ValidationExceptionField` entry names itself with on the
-/// wire.
-///
-/// The endpoint that serves this surface declares its error shapes in its own
-/// namespace, not this model's, and that is the id a client deserializing the
-/// response reads off the entry. The recorded wire is the requirement for it, so
-/// it is reproduced as recorded rather than rebuilt from the local shape id.
-const VALIDATION_EXCEPTION_FIELD_WIRE_TYPE: &str =
-    "com.amazonaws.awsinsightsindexservice.v0#ValidationExceptionField";
-
-#[allow(non_upper_case_globals)]
-impl ValidationExceptionField {
-    /// `name`, the modelled member: the request member that was rejected.
-    const M_NAME: ::aws_smithy_schema::Schema = ::aws_smithy_schema::Schema::new_member(
-        ::aws_smithy_schema::ShapeId::from_static(
-            "com.amazonaws.billing#ValidationExceptionField$name",
-            "com.amazonaws.billing",
-            "name",
-        ),
-        ::aws_smithy_schema::ShapeType::String,
-        "name",
-        0,
-    );
-
-    /// `message`, the modelled member: why that member failed validation.
-    const M_MESSAGE: ::aws_smithy_schema::Schema = ::aws_smithy_schema::Schema::new_member(
-        ::aws_smithy_schema::ShapeId::from_static(
-            "com.amazonaws.billing#ValidationExceptionField$message",
-            "com.amazonaws.billing",
-            "message",
-        ),
-        ::aws_smithy_schema::ShapeType::String,
-        "message",
-        1,
-    );
-
-    /// The `__type` discriminator the wire carries on each entry. Not a modelled
-    /// member — it is the JSON protocol's own shape tag, so it stays out of
-    /// [`Self::SCHEMA`] and is written by the serializer below.
-    const M_WIRE_TYPE: ::aws_smithy_schema::Schema = ::aws_smithy_schema::Schema::new_member(
-        ::aws_smithy_schema::ShapeId::from_static("smithy.api#__type", "smithy.api", "__type"),
-        ::aws_smithy_schema::ShapeType::String,
-        "__type",
-        2,
-    );
-
-    pub const SCHEMA: ::aws_smithy_schema::Schema = ::aws_smithy_schema::Schema::new_struct(
-        ::aws_smithy_schema::ShapeId::from_static(
-            "com.amazonaws.billing#ValidationExceptionField",
-            "com.amazonaws.billing",
-            "ValidationExceptionField",
-        ),
-        ::aws_smithy_schema::ShapeType::Structure,
-        &[&Self::M_NAME, &Self::M_MESSAGE],
-    );
+#[smithy_macros::smithy(shape = "com.amazonaws.billing#ServiceQuotaExceededException")]
+#[derive(Debug, Clone, Default)]
+pub struct ServiceQuotaExceededException {
+    pub message: String,
+    pub resource_id: String,
+    pub resource_type: String,
+    pub service_code: String,
+    pub quota_code: String,
 }
 
-pub static VALIDATION_EXCEPTION_FIELD_SCHEMA: &::aws_smithy_schema::Schema =
-    &ValidationExceptionField::SCHEMA;
-
-impl ::aws_smithy_schema::serde::SerializableStruct for ValidationExceptionField {
-    fn serialize_members(
-        &self,
-        serializer: &mut dyn ::aws_smithy_schema::serde::ShapeSerializer,
-    ) -> ::std::result::Result<(), ::aws_smithy_schema::serde::SerdeError> {
-        serializer.write_string(&Self::M_NAME, self.name.as_str())?;
-        serializer.write_string(&Self::M_MESSAGE, self.message.as_str())?;
-        serializer.write_string(&Self::M_WIRE_TYPE, VALIDATION_EXCEPTION_FIELD_WIRE_TYPE)?;
-        Ok(())
-    }
-}
-
-impl ::aws_smithy_schema_server::DeserializableStruct for ValidationExceptionField {
-    fn deserialize(
-        deserializer: &mut dyn ::aws_smithy_schema::serde::ShapeDeserializer,
-    ) -> ::std::result::Result<Self, ::aws_smithy_schema::serde::SerdeError> {
-        let mut name = String::new();
-        let mut message = String::new();
-        deserializer.read_struct(&Self::SCHEMA, &mut |member, value| {
-            match member.member_index() {
-                Some(0) => name = value.read_string(member)?,
-                Some(1) => message = value.read_string(member)?,
-                _ => {}
-            }
-            Ok(())
-        })?;
-        Ok(Self { name, message })
-    }
-}
-
-/// `Expression`, the data filter a billing view's definition carries.
-///
-/// Compares by value (`PartialEq`), because a writer of a view's definition has
-/// to tell a request that CHANGES the filter from one that re-sends the filter
-/// the view already holds: only the former moves
-/// `viewDefinitionLastUpdatedAt`. Two expressions are the same filter when every
-/// modelled member matches, nested lists included.
 #[smithy_macros::smithy(shape = "com.amazonaws.billing#Expression")]
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default)]
 pub struct Expression {
     pub dimensions: Option<DimensionValues>,
     pub tags: Option<TagValues>,
@@ -189,28 +83,28 @@ pub struct Expression {
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.billing#DimensionValues")]
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default)]
 pub struct DimensionValues {
     pub key: String,
     pub values: Vec<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.billing#TagValues")]
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default)]
 pub struct TagValues {
     pub key: String,
     pub values: Vec<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.billing#CostCategoryValues")]
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default)]
 pub struct CostCategoryValues {
     pub key: String,
     pub values: Vec<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.billing#TimeRange")]
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default)]
 pub struct TimeRange {
     pub begin_date_inclusive: Option<::aws_smithy_types::DateTime>,
     pub end_date_inclusive: Option<::aws_smithy_types::DateTime>,
@@ -223,149 +117,29 @@ pub struct ResourceTag {
     pub value: Option<String>,
 }
 
-/// `BillingViewHealthStatus`, in the wire shape the billing-view surface
-/// answers with.
-///
-/// Hand-written rather than derived from the model by
-/// `#[smithy_macros::smithy]`, because that emits exactly one JSON key per
-/// modelled member and this surface carries each health-status member TWICE:
-/// once under the modelled member name and once under its PascalCase spelling
-/// (`statusCode` beside `StatusCode`, `statusReasons` beside `StatusReasons`),
-/// so a client keyed on either spelling reads the same value. The Rust struct
-/// still holds the two modelled members once — the second spelling is a wire
-/// alias of the same value, not a second datum — and [`Self::SCHEMA`] stays the
-/// modelled shape, so nothing but the serializer sees the aliases.
-#[derive(Debug, Clone, Default)]
-pub struct BillingViewHealthStatus {
-    pub status_code: Option<String>,
-    pub status_reasons: Option<Vec<String>>,
-}
-
-#[allow(non_upper_case_globals)]
-impl BillingViewHealthStatus {
-    /// `statusCode`, the modelled member: a `BillingViewStatus` value
-    /// (`BILLING_VIEW_STATUS_VALUES`).
-    const M_STATUS_CODE: ::aws_smithy_schema::Schema = ::aws_smithy_schema::Schema::new_member(
-        ::aws_smithy_schema::ShapeId::from_static(
-            "com.amazonaws.billing#BillingViewHealthStatus$statusCode",
-            "com.amazonaws.billing",
-            "statusCode",
-        ),
-        ::aws_smithy_schema::ShapeType::String,
-        "statusCode",
-        0,
-    );
-
-    /// `statusReasons`, the modelled member: a list of
-    /// `BillingViewStatusReason` values.
-    const M_STATUS_REASONS: ::aws_smithy_schema::Schema = ::aws_smithy_schema::Schema::new_member(
-        ::aws_smithy_schema::ShapeId::from_static(
-            "com.amazonaws.billing#BillingViewHealthStatus$statusReasons",
-            "com.amazonaws.billing",
-            "statusReasons",
-        ),
-        ::aws_smithy_schema::ShapeType::List,
-        "statusReasons",
-        1,
-    );
-
-    /// The second wire spelling of [`Self::M_STATUS_CODE`]. Same value, same
-    /// shape; only the member name the JSON key is taken from differs.
-    const M_STATUS_CODE_ALIAS: ::aws_smithy_schema::Schema =
-        ::aws_smithy_schema::Schema::new_member(
-            ::aws_smithy_schema::ShapeId::from_static(
-                "com.amazonaws.billing#BillingViewHealthStatus$StatusCode",
-                "com.amazonaws.billing",
-                "StatusCode",
-            ),
-            ::aws_smithy_schema::ShapeType::String,
-            "StatusCode",
-            2,
-        );
-
-    /// The second wire spelling of [`Self::M_STATUS_REASONS`].
-    const M_STATUS_REASONS_ALIAS: ::aws_smithy_schema::Schema =
-        ::aws_smithy_schema::Schema::new_member(
-            ::aws_smithy_schema::ShapeId::from_static(
-                "com.amazonaws.billing#BillingViewHealthStatus$StatusReasons",
-                "com.amazonaws.billing",
-                "StatusReasons",
-            ),
-            ::aws_smithy_schema::ShapeType::List,
-            "StatusReasons",
-            3,
-        );
-
-    pub const SCHEMA: ::aws_smithy_schema::Schema = ::aws_smithy_schema::Schema::new_struct(
-        ::aws_smithy_schema::ShapeId::from_static(
-            "com.amazonaws.billing#BillingViewHealthStatus",
-            "com.amazonaws.billing",
-            "BillingViewHealthStatus",
-        ),
-        ::aws_smithy_schema::ShapeType::Structure,
-        &[&Self::M_STATUS_CODE, &Self::M_STATUS_REASONS],
-    );
-}
-
-pub static BILLING_VIEW_HEALTH_STATUS_SCHEMA: &::aws_smithy_schema::Schema =
-    &BillingViewHealthStatus::SCHEMA;
-
-impl ::aws_smithy_schema::serde::SerializableStruct for BillingViewHealthStatus {
-    fn serialize_members(
-        &self,
-        serializer: &mut dyn ::aws_smithy_schema::serde::ShapeSerializer,
-    ) -> ::std::result::Result<(), ::aws_smithy_schema::serde::SerdeError> {
-        if let Some(status_code) = &self.status_code {
-            serializer.write_string(&Self::M_STATUS_CODE, status_code.as_str())?;
-            serializer.write_string(&Self::M_STATUS_CODE_ALIAS, status_code.as_str())?;
-        }
-        if let Some(status_reasons) = &self.status_reasons {
-            for member in [&Self::M_STATUS_REASONS, &Self::M_STATUS_REASONS_ALIAS] {
-                serializer.write_list(member, &|elements| {
-                    for reason in status_reasons {
-                        elements.write_string(member, reason.as_str())?;
-                    }
-                    Ok(())
-                })?;
-            }
-        }
-        Ok(())
-    }
-}
-
-impl ::aws_smithy_schema_server::DeserializableStruct for BillingViewHealthStatus {
-    fn deserialize(
-        deserializer: &mut dyn ::aws_smithy_schema::serde::ShapeDeserializer,
-    ) -> ::std::result::Result<Self, ::aws_smithy_schema::serde::SerdeError> {
-        let mut status_code: Option<String> = None;
-        let mut status_reasons: Option<Vec<String>> = None;
-        deserializer.read_struct(&Self::SCHEMA, &mut |member, value| {
-            match member.member_index() {
-                Some(0) => status_code = Some(value.read_string(member)?),
-                Some(1) => {
-                    let mut reasons: Vec<String> = Vec::new();
-                    value.read_list(member, &mut |element| {
-                        reasons.push(element.read_string(member)?);
-                        Ok(())
-                    })?;
-                    status_reasons = Some(reasons);
-                }
-                _ => {}
-            }
-            Ok(())
-        })?;
-        Ok(Self {
-            status_code,
-            status_reasons,
-        })
-    }
-}
-
 #[smithy_macros::smithy(shape = "com.amazonaws.billing#Amount")]
 #[derive(Debug, Clone, Default)]
 pub struct Amount {
     pub currency_code: String,
     pub currency_amount: String,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.billing#InvestmentDistribution")]
+#[derive(Debug, Clone, Default)]
+pub struct InvestmentDistribution {
+    pub account_id: String,
+    pub investment_amount: Amount,
+}
+
+// `BillingViewHealthStatus` is NOT declared here: each of its members reaches
+// the wire under two spellings, so the shape is hand-written in
+// `view_health_status_types`.
+
+#[smithy_macros::smithy(shape = "com.amazonaws.billing#Interval")]
+#[derive(Debug, Clone)]
+pub struct Interval {
+    pub start_date_inclusive: ::aws_smithy_types::DateTime,
+    pub end_date_inclusive: ::aws_smithy_types::DateTime,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.billing#PricingPlan")]
@@ -400,12 +174,16 @@ pub struct PricingPlanTier {
 pub const APPLICATION_TYPE_VALUES: &[&str] = &["AFTER_DISCOUNTS", "BEFORE_CROSS_SERVICE_DISCOUNTS"];
 
 
+/// The values `AssociationStatus` accepts on the wire.
+pub const ASSOCIATION_STATUS_VALUES: &[&str] = &["ASSOCIATED", "NOT_ASSOCIATED"];
+
+
 /// The values `BillingDomain` accepts on the wire.
 pub const BILLING_DOMAIN_VALUES: &[&str] = &["BILLABLE", "PRO_FORMA"];
 
 
 /// The values `BillingFeature` accepts on the wire.
-pub const BILLING_FEATURE_VALUES: &[&str] = &["BILLING_ALERTS", "CREDIT_LEVEL_SHARING", "CREDIT_PREFERENCE_OPTIONS", "CREDIT_SHARING", "CREDIT_SHARING_HISTORY", "RI_SHARING", "RI_SHARING_HISTORY"];
+pub const BILLING_FEATURE_VALUES: &[&str] = &["BENEFIT_LEVEL_SHARING", "BILLING_ALERTS", "CREDIT_LEVEL_SHARING", "CREDIT_PREFERENCE_OPTIONS", "CREDIT_SHARING", "CREDIT_SHARING_HISTORY", "RI_SHARING", "RI_SHARING_HISTORY"];
 
 
 /// The values `BillingFeatureFilterName` accepts on the wire.
@@ -424,6 +202,14 @@ pub const BILLING_VIEW_STATUS_REASON_VALUES: &[&str] = &["AGGREGATE_SOURCE", "CY
 pub const BILLING_VIEW_TYPE_VALUES: &[&str] = &["BILLING_GROUP", "BILLING_TRANSFER", "BILLING_TRANSFER_SHOWBACK", "CUSTOM", "PRIMARY"];
 
 
+/// The values `ContractRestriction` accepts on the wire.
+pub const CONTRACT_RESTRICTION_VALUES: &[&str] = &["ATTESTATION_SELF_SERVICE_BLOCKED"];
+
+
+/// The values `ContractType` accepts on the wire.
+pub const CONTRACT_TYPE_VALUES: &[&str] = &["Cross-Service", "Other", "Service-Specific"];
+
+
 /// The values `CreditSharingType` accepts on the wire.
 pub const CREDIT_SHARING_TYPE_VALUES: &[&str] = &["COST_CATEGORY_RULE", "CUSTOM", "DEFAULT", "DISABLED"];
 
@@ -434,6 +220,18 @@ pub const CREDIT_STATUS_VALUES: &[&str] = &["DISABLED", "ENABLED"];
 
 /// The values `Dimension` accepts on the wire.
 pub const DIMENSION_VALUES: &[&str] = &["LINKED_ACCOUNT"];
+
+
+/// The values `InvestmentAttestationStatus` accepts on the wire.
+pub const INVESTMENT_ATTESTATION_STATUS_VALUES: &[&str] = &["CANCELLED", "DISBURSED", "PENDING_CANCELLATION", "PENDING_C_LEVEL_APPROVAL", "PENDING_REVIEW", "REJECTED"];
+
+
+/// The values `InvestmentType` accepts on the wire.
+pub const INVESTMENT_TYPE_VALUES: &[&str] = &["MILESTONE_BASED", "OUTCOME_BASED"];
+
+
+/// The values `MultiplierType` accepts on the wire.
+pub const MULTIPLIER_TYPE_VALUES: &[&str] = &["CURRENCY_AMOUNT", "PERCENTAGE"];
 
 
 /// The values `PreferenceValue` accepts on the wire.

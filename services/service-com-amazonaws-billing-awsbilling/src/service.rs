@@ -367,12 +367,23 @@ impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
     /// operation's behaviour lives in that operation's own `impl Operation`.
     pub fn new(engine: Arc<Eng>) -> Self {
         let constrained: Vec<(&'static str, Box<dyn ErasedOperation>)> = vec![
+            constrained!(&engine, associate_contract::AssociateContract),
             constrained!(&engine, associate_source_views::AssociateSourceViews),
+            constrained!(
+                &engine,
+                cancel_contractual_investment_attestation::CancelContractualInvestmentAttestation
+            ),
             constrained!(&engine, create_billing_view::CreateBillingView),
+            constrained!(
+                &engine,
+                create_contractual_investment_attestation::CreateContractualInvestmentAttestation
+            ),
             constrained!(&engine, delete_billing_view::DeleteBillingView),
+            constrained!(&engine, disassociate_contract::DisassociateContract),
             constrained!(&engine, disassociate_source_views::DisassociateSourceViews),
             constrained!(&engine, get_billing_preferences::GetBillingPreferences),
             constrained!(&engine, get_billing_view::GetBillingView),
+            constrained!(&engine, get_contract_information::GetContractInformation),
             constrained!(&engine, get_credit_allocation_history::GetCreditAllocationHistory),
             constrained!(&engine, get_credits::GetCredits),
             constrained!(
@@ -394,6 +405,16 @@ impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
                 &engine,
                 list_business_support_subscription_history::ListBusinessSupportSubscriptionHistory
             ),
+            constrained!(&engine, list_contracts::ListContracts),
+            constrained!(
+                &engine,
+                list_contractual_investment_attestations::ListContractualInvestmentAttestations
+            ),
+            constrained!(
+                &engine,
+                list_contractual_investment_summaries::ListContractualInvestmentSummaries
+            ),
+            constrained!(&engine, list_contractual_investments::ListContractualInvestments),
             constrained!(
                 &engine,
                 list_enterprise_support_linked_account_charges::ListEnterpriseSupportLinkedAccountCharges
@@ -404,7 +425,9 @@ impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
             ),
             constrained!(&engine, list_tags_for_resource::ListTagsForResource),
             constrained!(&engine, redeem_credits::RedeemCredits),
+            constrained!(&engine, split_credit::SplitCredit),
             constrained!(&engine, tag_resource::TagResource),
+            constrained!(&engine, transfer_credit::TransferCredit),
             constrained!(&engine, untag_resource::UntagResource),
             constrained!(&engine, update_billing_preferences::UpdateBillingPreferences),
             constrained!(&engine, update_billing_view::UpdateBillingView),
