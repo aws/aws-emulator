@@ -18,6 +18,7 @@ service-com-amazonaws-accountaccess-awsaccountaccess = { workspace = true }
 service-com-amazonaws-accountaccessruntime-awsaccountaccessruntime = { workspace = true }
 service-com-amazonaws-acm-certificatemanager = { workspace = true }
 service-com-amazonaws-acmpca-acmprivateca = { workspace = true }
+service-com-amazonaws-agentdiscovery-belfryglobaldp = { workspace = true }
 service-com-amazonaws-agentregistry-agentregistry = { workspace = true }
 service-com-amazonaws-agentregistrycontrol-agentregistrycontrol = { workspace = true }
 service-com-amazonaws-aiops-aiops = { workspace = true }

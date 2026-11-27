@@ -29,6 +29,10 @@
       "spec_url": "https://raw.githubusercontent.com/aws/api-models-aws/refs/heads/main/models/acm-pca/service/2017-08-22/acm-pca-2017-08-22.json"
     },
     {
+      "shape_id": "com.amazonaws.agentdiscovery#BelfryGlobalDP",
+      "spec_url": "https://raw.githubusercontent.com/aws/api-models-aws/d504436b2739873d202b10a26bdecb620fa1e4f0/models/agent-discovery/service/2022-07-26/agent-discovery-2022-07-26.json"
+    },
+    {
       "shape_id": "com.amazonaws.agentregistry#AgentRegistry",
       "spec_url": "https://raw.githubusercontent.com/aws/api-models-aws/refs/heads/main/models/agent-registry/service/2025-12-01/agent-registry-2025-12-01.json"
     },

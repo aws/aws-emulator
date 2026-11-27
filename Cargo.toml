@@ -7,6 +7,7 @@ members = [
     "services/service-com-amazonaws-accountaccessruntime-awsaccountaccessruntime",
     "services/service-com-amazonaws-acm-certificatemanager",
     "services/service-com-amazonaws-acmpca-acmprivateca",
+    "services/service-com-amazonaws-agentdiscovery-belfryglobaldp",
     "services/service-com-amazonaws-agentregistry-agentregistry",
     "services/service-com-amazonaws-agentregistrycontrol-agentregistrycontrol",
     "services/service-com-amazonaws-aiops-aiops",
@@ -479,6 +480,7 @@ service-com-amazonaws-accountaccess-awsaccountaccess = { path = "services/servic
 service-com-amazonaws-accountaccessruntime-awsaccountaccessruntime = { path = "services/service-com-amazonaws-accountaccessruntime-awsaccountaccessruntime" }
 service-com-amazonaws-acm-certificatemanager = { path = "services/service-com-amazonaws-acm-certificatemanager" }
 service-com-amazonaws-acmpca-acmprivateca = { path = "services/service-com-amazonaws-acmpca-acmprivateca" }
+service-com-amazonaws-agentdiscovery-belfryglobaldp = { path = "services/service-com-amazonaws-agentdiscovery-belfryglobaldp" }
 service-com-amazonaws-agentregistry-agentregistry = { path = "services/service-com-amazonaws-agentregistry-agentregistry" }
 service-com-amazonaws-agentregistrycontrol-agentregistrycontrol = { path = "services/service-com-amazonaws-agentregistrycontrol-agentregistrycontrol" }
 service-com-amazonaws-aiops-aiops = { path = "services/service-com-amazonaws-aiops-aiops" }
