@@ -49,6 +49,11 @@ use crate::ops::types::{
 mod media_endpoints;
 pub use media_endpoints::*;
 
+/// The verdict the three generic tagging operations share: whether a `ResourceARN` may be
+/// addressed at all, and which refusal it earns when it may not.
+mod tagging;
+pub use tagging::*;
+
 /// The `arnNamespace` this service's ARNs carry (`OPERATIONS.md`, `## Wire protocol`).
 pub const ARN_NAMESPACE: &str = "chime";
 

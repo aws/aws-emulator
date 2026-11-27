@@ -155,37 +155,22 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let state = crate::state::service_state(&*self.engine).ok_or_else(|| {
             TagResourceErrorModeled::ServiceFailureException(crate::state::store_unavailable())
         })?;
-        if let Some(refusal) = state.lock().tagging_refusal(&input.resource_arn) {
+        // WHICH ARNs the three generic tagging routes serve, and how one they do not serve
+        // is refused, is decided in `crate::state::tagging_address_refusal` for all three:
+        // this handler only lifts the class it answers into the variant THIS operation's
+        // model declares for it.
+        if let Some(refusal) =
+            crate::state::tagging_address_refusal(&state, &directory, &input.resource_arn)
+        {
             return Err(match refusal {
-                // A meeting's tags live exactly as long as the meeting, so an ARN of this
-                // service whose meeting the store does not hold carries an id that is not
-                // one of this service's.
-                crate::state::TaggingRefusal::InvalidMeetingId => {
-                    TagResourceErrorModeled::BadRequestException(crate::state::invalid_meeting_id())
+                crate::state::TaggingAddressRefusal::BadRequest(payload) => {
+                    TagResourceErrorModeled::BadRequestException(payload)
                 }
-                crate::state::TaggingRefusal::UnresolvedResource => {
-                    TagResourceErrorModeled::ResourceNotFoundException(
-                        crate::state::tagged_resource_not_found(&input.resource_arn),
-                    )
+                crate::state::TaggingAddressRefusal::Forbidden(payload) => {
+                    TagResourceErrorModeled::ForbiddenException(payload)
                 }
-            }
-            .into());
-        }
-        // An ARN another family member has WITHDRAWN — the resource it named was deleted
-        // by the service that owns it — is refused with that owner's class and wording,
-        // read from the shared directory because this store cannot see a sibling's
-        // resources.
-        let withdrawn = directory
-            .lock()
-            .withdrawn_refusal(&input.resource_arn)
-            .map(|refusal| (refusal.class, refusal.message.to_string()));
-        if let Some((class, message)) = withdrawn {
-            return Err(match class {
-                ::service_common::chime_tags::WithdrawnClass::InvalidRequest => {
-                    TagResourceErrorModeled::BadRequestException(crate::state::bad_request(message))
-                }
-                ::service_common::chime_tags::WithdrawnClass::Forbidden => {
-                    TagResourceErrorModeled::ForbiddenException(crate::state::forbidden(message))
+                crate::state::TaggingAddressRefusal::ResourceNotFound(payload) => {
+                    TagResourceErrorModeled::ResourceNotFoundException(payload)
                 }
             }
             .into());

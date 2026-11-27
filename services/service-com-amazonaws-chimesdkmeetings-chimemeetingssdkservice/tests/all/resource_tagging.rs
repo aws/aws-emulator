@@ -14,6 +14,11 @@
 //! `ResourceNotFoundException`, and one that would take a resource past the modelled
 //! maximum number of tags per resource with the modelled `TooManyTagsException`.
 //!
+//! `ListTagsForResource`, `TagResource` and `UntagResource` also answer ONE verdict for one
+//! ARN: whether the call may be served at all, and which refusal it earns when it may not,
+//! is one decision the three routes share, so none of them can refuse an ARN the other two
+//! serve — pinned by `every_tagging_route_answers_one_arn_with_one_verdict`.
+//!
 //! The tables span what the rule generalises over: how many pairs one call carries (one,
 //! several, the modelled maximum, one past it), the form of a key and a value (short, an
 //! EMPTY value, at the modelled length bounds), which create minted the resource
@@ -28,6 +33,7 @@ use service_com_amazonaws_chimesdkmeetings_chimemeetingssdkservice::state::{
     INVALID_MEETING_ID_MESSAGE as INVALID_MEETING_ID, MAX_TAGS_PER_RESOURCE,
 };
 use service_com_amazonaws_chimesdkmeetings_chimemeetingssdkservice::EmulatedService;
+use service_common::chime_tags::{ChimeTagDirectory, WithdrawnClass};
 use smithy_server_runtime::MultiServiceRouter;
 
 /// A SigV4 `Authorization` header whose credential scope names the `chime` signing name
@@ -39,6 +45,10 @@ const SIGNED_FOR_CHIME: &str = "AWS4-HMAC-SHA256 \
 /// The emulator under test: ONE shared engine with this service mounted on it.
 struct Emulator {
     router: MultiServiceRouter,
+    /// The same engine the service is mounted on, kept so a test can act as the family
+    /// member that OWNS a sibling's resource — the only way an ARN of another member
+    /// reaches this service's tagging routes as a withdrawn one.
+    engine: Arc<engine::InMemoryEngine>,
 }
 
 impl Emulator {
@@ -46,8 +56,32 @@ impl Emulator {
         let engine: Arc<engine::InMemoryEngine> = Arc::new(engine::InMemoryEngine::new());
         let mut router = MultiServiceRouter::new();
         router.set_request_authentication(false);
-        router.register_service(EmulatedService::new(engine));
-        Self { router }
+        router.register_service(EmulatedService::new(Arc::clone(&engine)));
+        Self { router, engine }
+    }
+
+    /// Record in the family's shared ARN-keyed directory that the member OWNING
+    /// `resource_arn` has deleted the resource, with the class and wording that member
+    /// serves — exactly what that sibling's own delete writes there.
+    fn withdraw(&self, resource_arn: &str, class: WithdrawnClass, message: &str) {
+        self.engine
+            .state::<ChimeTagDirectory>()
+            .lock()
+            .withdraw(resource_arn, class, message);
+    }
+
+    /// What each of the three generic tagging routes answers for `arn`, with the status
+    /// that route's model declares for a SERVED call: one call site, so a table states one
+    /// expectation for the three routes instead of three.
+    async fn tagging_routes(&self, arn: &str) -> Vec<(&'static str, u16, u16, Value)> {
+        let (list_status, list_body) = self.list_raw(arn).await;
+        let (tag_status, tag_body) = self.tag(arn, &owned(&[("env", "dev")])).await;
+        let (untag_status, untag_body) = self.untag(arn, &keys(&["env"])).await;
+        vec![
+            ("ListTagsForResource", 200, list_status, list_body),
+            ("TagResource", 204, tag_status, tag_body),
+            ("UntagResource", 204, untag_status, untag_body),
+        ]
     }
 
     async fn call(&self, method: &str, path: &str, body: Option<&Value>) -> (u16, Value) {
@@ -585,4 +619,167 @@ async fn a_tagging_call_this_service_cannot_serve_is_refused_and_writes_nothing(
         (200, Some("re-valued")),
         "case re-valuing a key at the maximum: expected the new value, got {listed:?}"
     );
+}
+
+/// What the three tagging routes must answer for one ARN.
+enum Verdict {
+    /// The call may be addressed to the ARN, so each route answers the success status its
+    /// own model declares.
+    Served,
+    /// The call may not, so each route answers this status with this `Code` and `Message` —
+    /// the same refusal, worded once, whichever route read the ARN.
+    Refused {
+        status: u16,
+        code: &'static str,
+        message: String,
+    },
+}
+
+/// One row of the verdict table: the ARN a tagging call names and the one answer every
+/// route owes it.
+struct VerdictCase {
+    case: &'static str,
+    arn: String,
+    verdict: Verdict,
+}
+
+/// RULE: whether a generic tagging call may address the `ResourceARN` it named — and, when
+/// it may not, the class and the wording of the refusal — is ONE verdict resolved from this
+/// service's own store and the family's shared ARN-keyed directory, so `TagResource`,
+/// `UntagResource` and `ListTagsForResource` answer the same ARN the same way and none of
+/// them refuses one the other two serve.
+///
+/// The rows span every answer that verdict has: served, an ARN of this service naming a
+/// meeting the store does not hold, an ARN that names no resource of this family at all, and
+/// an ARN whose OWNING family member has withdrawn the resource under each class that owner
+/// may choose.
+#[tokio::test]
+async fn every_tagging_route_answers_one_arn_with_one_verdict() {
+    let emulator = Emulator::new();
+    let (_, live) = emulator.meeting("tok-verdict", "ext-verdict", &[]).await;
+    let (ended_id, ended) = emulator
+        .meeting("tok-verdict-ended", "ext-verdict-ended", &[])
+        .await;
+    let (status, body) = emulator
+        .call("DELETE", &format!("/meetings/{ended_id}"), None)
+        .await;
+    assert_eq!(
+        status, 204,
+        "DeleteMeeting on the meeting the table ends: got {status} {body:?}"
+    );
+
+    // ARNs of SIBLING members of the family: resource types this service does not mint, so
+    // its own store cannot resolve them and the shared directory is what says whether the
+    // member that owns them still holds them.
+    let sibling_live = "arn:aws:chime:us-east-1:000000000000:app-instance/ai-live".to_string();
+    let sibling_invalid = "arn:aws:chime:us-east-1:000000000000:app-instance/ai-gone".to_string();
+    let sibling_forbidden =
+        "arn:aws:chime:us-east-1:000000000000:media-pipeline/mp-gone".to_string();
+    // The wording is the OWNER's, so each withdrawal carries its own sentence and the
+    // assertions below show the serving route passed that owner's words through rather than
+    // picking one of its own.
+    let invalid_request_wording = "Invalid app instance id";
+    let forbidden_wording = "The media pipeline is no longer available";
+    emulator.withdraw(
+        &sibling_invalid,
+        WithdrawnClass::InvalidRequest,
+        invalid_request_wording,
+    );
+    emulator.withdraw(
+        &sibling_forbidden,
+        WithdrawnClass::Forbidden,
+        forbidden_wording,
+    );
+
+    let rows = vec![
+        VerdictCase {
+            case: "a live meeting of this service",
+            arn: live.clone(),
+            verdict: Verdict::Served,
+        },
+        VerdictCase {
+            case: "a live resource of a sibling member, which this store cannot check",
+            arn: sibling_live,
+            verdict: Verdict::Served,
+        },
+        VerdictCase {
+            case: "a meeting of this service that was never created",
+            arn: format!("{live}x"),
+            verdict: Verdict::Refused {
+                status: 400,
+                code: "BadRequest",
+                message: INVALID_MEETING_ID.to_string(),
+            },
+        },
+        VerdictCase {
+            case: "a meeting of this service that has been deleted",
+            arn: ended,
+            verdict: Verdict::Refused {
+                status: 400,
+                code: "BadRequest",
+                message: INVALID_MEETING_ID.to_string(),
+            },
+        },
+        VerdictCase {
+            case: "a value that begins like an ARN but names no resource",
+            arn: "arn:aws:chime:us-east-1:000000000000".to_string(),
+            verdict: Verdict::Refused {
+                status: 404,
+                code: "NotFound",
+                message: "resource arn:aws:chime:us-east-1:000000000000 does not exist"
+                    .to_string(),
+            },
+        },
+        VerdictCase {
+            case: "another vendor's resource ARN",
+            arn: "arn:aws:sqs:us-east-1:000000000000:queue/q1".to_string(),
+            verdict: Verdict::Refused {
+                status: 404,
+                code: "NotFound",
+                message: "resource arn:aws:sqs:us-east-1:000000000000:queue/q1 does not exist"
+                    .to_string(),
+            },
+        },
+        VerdictCase {
+            case: "a sibling's resource its owner withdrew as an invalid request",
+            arn: sibling_invalid,
+            verdict: Verdict::Refused {
+                status: 400,
+                code: "BadRequest",
+                message: invalid_request_wording.to_string(),
+            },
+        },
+        VerdictCase {
+            case: "a sibling's resource its owner withdrew as forbidden",
+            arn: sibling_forbidden,
+            verdict: Verdict::Refused {
+                status: 403,
+                code: "Forbidden",
+                message: forbidden_wording.to_string(),
+            },
+        },
+    ];
+
+    for row in rows {
+        let VerdictCase { case, arn, verdict } = row;
+        for (route, served_status, status, body) in emulator.tagging_routes(&arn).await {
+            match &verdict {
+                Verdict::Served => assert_eq!(
+                    status, served_status,
+                    "case {case:?} ({route} on {arn}): expected the call served with \
+                     {served_status}, got {status} {body:?}"
+                ),
+                Verdict::Refused {
+                    status: expected_status,
+                    code,
+                    message,
+                } => assert_eq!(
+                    (status, body["Code"].as_str(), body["Message"].as_str()),
+                    (*expected_status, Some(*code), Some(message.as_str())),
+                    "case {case:?} ({route} on {arn}): expected every tagging route to answer \
+                     {expected_status} {code} {message:?}, got {status} {body:?}"
+                ),
+            }
+        }
+    }
 }
