@@ -162,6 +162,10 @@ pub enum EngineErrorKind {
     /// A row the statement asked for is held by another transaction and the statement asked
     /// not to wait for it.
     LockNotAvailable,
+    /// The statement WAITED for a row another transaction holds for as long as the session
+    /// permits a wait for one, and the row was still held: see
+    /// [`super::row_locks::lock_wait_limit`].
+    LockWaitTimeout,
     /// Waiting for a row would close a cycle of transactions each waiting for the other, so
     /// the engine ended this one.
     Deadlock,
@@ -466,6 +470,15 @@ pub struct ServerView {
     /// functions the statement may call ([`super::engine_time`]). `None` for one of the
     /// server's own statements, which runs under no session.
     pub wire: Option<super::EngineWire>,
+    /// Whether the transaction the session running this statement has open reads a snapshot
+    /// per STATEMENT rather than one per transaction — the READ COMMITTED levels, where "a
+    /// statement can only see rows committed before it began"
+    /// ([`super::wire_session::SessionFacts::snapshot_per_statement`]).
+    ///
+    /// `false` for one of the server's own statements, which runs inside whatever snapshot
+    /// the session's own statement is reading: a catalog the server rebuilds for a statement
+    /// is part of that statement, not a statement of its own.
+    pub snapshot_per_statement: bool,
     /// When the statement running now must be cancelled, which is what `pg_sleep` waits
     /// against.
     pub deadline: Option<Instant>,
@@ -793,6 +806,12 @@ impl InstanceDatabase {
     ) -> Result<ResultSet, EngineError> {
         let mut databases = self.lock();
         self.take_the_sessions_snapshot(&mut databases, session, database)?;
+        // ... and, for a transaction that reads a snapshot per STATEMENT, a snapshot taken
+        // now: what READ COMMITTED means is that this statement reads what is committed when
+        // it runs ([`Self::take_this_statements_snapshot`]).
+        if view.snapshot_per_statement {
+            self.take_this_statements_snapshot(&mut databases, session, database)?;
+        }
         self.transactions.recording_for(session);
         let (deadline, timeout_first) = statement_deadline(view);
         {
@@ -860,16 +879,7 @@ impl InstanceDatabase {
         {
             return Ok(());
         }
-        if self.transactions.charged_pages() >= MAX_UNCOMMITTED_COPY_PAGES {
-            return Err(EngineError::new(
-                EngineErrorKind::LimitExceeded,
-                format!(
-                    "this endpoint holds at most {} MiB of uncommitted state across its open \
-                     transactions",
-                    MAX_UNCOMMITTED_COPY_PAGES * i64::from(PAGE_BYTES) / (1024 * 1024)
-                ),
-            ));
-        }
+        self.admit_another_copy()?;
         let deadline = Instant::now() + COPY_DEADLINE;
         // The copy records the rows it changes against the transactions of this endpoint,
         // exactly as the shared database does: the rows the transaction writes in its own
@@ -885,13 +895,162 @@ impl InstanceDatabase {
             self.volume.as_ref(),
             &key,
         )?;
+        let read_at = changes_mark(conn);
         let pages = copy_database(conn, &mut copy, deadline)?;
         // The SCHEMA the copy declares right now, which is what its commit carries its own
         // changes over against ([`session_transactions::apply_schema`]).
         let schema = session_transactions::schema_objects(&copy)?;
         databases.working.insert((session, key.clone()), copy);
-        self.transactions.note_copy(session, &key, pages, schema);
+        self.transactions
+            .note_copy(session, &key, pages, schema, read_at);
         Ok(())
+    }
+
+    /// Whether this endpoint has room for one more copy of a database, which is the budget
+    /// every snapshot — a first one and one taken again — is checked against.
+    fn admit_another_copy(&self) -> Result<(), EngineError> {
+        if self.transactions.charged_pages() >= MAX_UNCOMMITTED_COPY_PAGES {
+            return Err(EngineError::new(
+                EngineErrorKind::LimitExceeded,
+                format!(
+                    "this endpoint holds at most {} MiB of uncommitted state across its open \
+                     transactions",
+                    MAX_UNCOMMITTED_COPY_PAGES * i64::from(PAGE_BYTES) / (1024 * 1024)
+                ),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Give `session`'s transaction a snapshot of the database `database` taken NOW, where it
+    /// reads one per statement and the shared database has changed since the copy it holds
+    /// was taken.
+    ///
+    /// This is what READ COMMITTED means: "a statement can only see rows committed before it
+    /// began", so each statement of such a transaction reads what is committed when IT runs —
+    /// alongside the transaction's own uncommitted rows, which nobody else can see yet. The
+    /// copy taken again is therefore the shared database as it stands plus this transaction's
+    /// own work put back onto it ([`Self::carry_the_work_over`], the same carry a commit
+    /// makes), and the rows the transaction had created come back under whatever row ids the
+    /// fresh copy gives them ([`session_transactions::RemappedRow`]).
+    ///
+    /// Nothing is taken again for a transaction at REPEATABLE READ or SERIALIZABLE, which is
+    /// what reading one snapshot throughout means, nor while the shared database stands where
+    /// it stood when the copy was taken — so a transaction whose neighbours commit nothing
+    /// pays for no copy at all.
+    ///
+    /// The transaction keeps the copy it has on every failure here: a snapshot that could not
+    /// be taken leaves the statement refused, never the transaction's own work dropped.
+    fn take_this_statements_snapshot(
+        &self,
+        databases: &mut Databases,
+        session: Option<u32>,
+        database: &str,
+    ) -> Result<(), EngineError> {
+        let Some(session) = session else {
+            return Ok(());
+        };
+        let key = resolve(&databases.open, database).unwrap_or_else(|| database.to_string());
+        let Some(read_at) = databases.open.get(&key).map(changes_mark) else {
+            return Ok(());
+        };
+        if !self.transactions.copy_is_stale(session, &key, read_at) {
+            return Ok(());
+        }
+        let Some(own) = self.transactions.own_work_in(session, &key) else {
+            return Ok(());
+        };
+        self.admit_another_copy()?;
+        let deadline = Instant::now() + COPY_DEADLINE;
+        let mut fresh = open_confined_database(&self.view, None)?;
+        session_transactions::record_changes_of(&mut fresh, &key, &self.transactions)
+            .map_err(unavailable)?;
+        let pages = match databases.open.get(&key) {
+            Some(live) => copy_database(live, &mut fresh, deadline)?,
+            None => return Ok(()),
+        };
+        // The rows the carry below writes belong to the statements that wrote them in the
+        // first place and are already recorded against this transaction, so nothing of it is
+        // recorded again — as a commit's own carry records nothing.
+        self.transactions.recording_for(None);
+        let Some(held) = databases.working.get(&(session, key.clone())) else {
+            return Ok(());
+        };
+        let remapped = Self::carry_the_work_over(
+            &mut fresh,
+            held,
+            &own.schema,
+            &own.changed,
+            &own.created,
+            deadline,
+        )?;
+        let schema = session_transactions::schema_objects(&fresh)?;
+        databases.working.insert((session, key.clone()), fresh);
+        self.transactions
+            .note_recopy(session, &key, pages, schema, read_at);
+        self.transactions.remap_rows(session, &key, &remapped);
+        Ok(())
+    }
+
+    /// Carry the work ONE transaction did to ONE database — the schema it declared and the
+    /// rows it changed — out of `source`, its own copy of that database, and into
+    /// `destination`.
+    ///
+    /// The destination is the SHARED database when a transaction commits
+    /// ([`Self::carry_the_rows_over`]) and a copy taken again when a statement of it reads its
+    /// own snapshot ([`Self::take_this_statements_snapshot`]): one carry either way, so the
+    /// two cannot disagree about what a transaction has done.
+    ///
+    /// The SCHEMA the transaction declared comes first: a row of a table it created has
+    /// nowhere to go until that table is there, and a table whose declaration it CHANGED is
+    /// carried over whole, because its rows no longer have the columns the destination held
+    /// them under. What is carried over is the transaction's OWN delta, against the schema
+    /// `before` — the schema its copy declared when the copy was taken.
+    ///
+    /// The authorizer is lifted for the duration: carrying a row over is the SERVER's own work
+    /// on the session's behalf, and it needs the one thing a session may not ask for — the
+    /// engine's `defer_foreign_keys`, so the constraints are checked once the whole
+    /// transaction is in rather than between its rows. No statement of the client's runs under
+    /// it: what runs is built from the rows the engine itself reported changed and the values
+    /// the transaction's own copy holds for them. The lift is a GUARD, so the connection is
+    /// confined again on every path out, an unwind included.
+    ///
+    /// Bounded by `deadline` twice over: the engine's own progress handler is installed on the
+    /// destination for the duration, so no single statement of the carry can run past it, and
+    /// the deadline is checked between rows.
+    fn carry_the_work_over(
+        destination: &mut Connection,
+        source: &Connection,
+        before: &session_transactions::SchemaObjects,
+        changed: &std::collections::BTreeSet<session_transactions::ChangedRow>,
+        created: &std::collections::BTreeSet<session_transactions::ChangedRow>,
+        deadline: Instant,
+    ) -> Result<Vec<session_transactions::RemappedRow>, EngineError> {
+        let mut unconfined = Unconfined::of(destination);
+        let destination = unconfined.connection();
+        destination
+            .progress_handler(
+                PROGRESS_HANDLER_OPS,
+                Some(move || Instant::now() >= deadline),
+            )
+            .map_err(from_engine)?;
+        let carried = session_transactions::apply_schema(destination, source, before, deadline)
+            .and_then(|redeclared| {
+                for table in &redeclared {
+                    session_transactions::copy_table(destination, source, table, deadline)?;
+                }
+                let rest: std::collections::BTreeSet<_> = changed
+                    .iter()
+                    .filter(|(table, _)| !redeclared.contains(table))
+                    .cloned()
+                    .collect();
+                session_transactions::apply_rows(destination, source, &rest, created, deadline)
+            });
+        // The bound is removed once the carry is over. The next statement on this connection
+        // installs its own, so a failure to remove this one cannot leave anything running
+        // unbounded.
+        let _ = destination.progress_handler(PROGRESS_HANDLER_OPS, None::<fn() -> bool>);
+        carried
     }
 
     /// Record the rows `rows` as changed by `session`'s transaction, where it has one open.
@@ -1037,16 +1196,10 @@ impl InstanceDatabase {
     ///
     /// Bounded by [`COMMIT_DEADLINE`] twice over: the engine's own progress handler is
     /// installed for the duration, so no single statement of it can run past it, and the
-    /// deadline is checked between rows. A commit the deadline cuts short is reported as the
-    /// cancellation it is rather than left to run.
+    /// Bounded by [`COMMIT_DEADLINE`] twice over, as every carry is
+    /// ([`Self::carry_the_work_over`], which this hands each database's work to). A commit the
+    /// deadline cuts short is reported as the cancellation it is rather than left to run.
     ///
-    /// The authorizer is lifted for the duration: carrying a row over is the SERVER's own
-    /// work on the session's behalf, and it needs the one thing a session may not ask for —
-    /// the engine's `defer_foreign_keys`, so the constraints are checked once the whole
-    /// transaction is in rather than between its rows. No statement of the client's runs
-    /// under it: what runs is built from the rows the engine itself reported changed and the
-    /// values the transaction's own copy of the database holds for them. The lift is a GUARD,
-    /// so the connection is confined again on every path out, an unwind included.
     /// `copies` is the transaction's own copy of each database it touched, taken out of the
     /// store by the caller ([`Self::take_the_sessions_copies`]) so that no path out of a
     /// commit can leave one behind.
@@ -1079,6 +1232,7 @@ impl InstanceDatabase {
             // database rather than installs over
             // ([`session_transactions::apply_rows`]).
             let created = closed.created.get(name).unwrap_or(&empty);
+            let before = closed.copies.get(name).cloned().unwrap_or_default();
             let live = connection(
                 &mut databases,
                 &self.view,
@@ -1086,39 +1240,10 @@ impl InstanceDatabase {
                 self.volume.as_ref(),
                 name,
             )?;
-            carried = {
-                let mut unconfined = Unconfined::of(live);
-                let live = unconfined.connection();
-                live.progress_handler(
-                    PROGRESS_HANDLER_OPS,
-                    Some(move || Instant::now() >= deadline),
-                )
-                .map_err(from_engine)?;
-                // The SCHEMA the transaction declared comes first: a row of a table it
-                // created has nowhere to go until that table is there, and a table whose
-                // declaration it CHANGED is carried over whole, because its rows no longer
-                // have the columns the shared database held them under. What is carried over
-                // is the transaction's OWN delta, against the schema its copy declared when
-                // the copy was taken.
-                let before = closed.copies.get(name).cloned().unwrap_or_default();
-                let applied = session_transactions::apply_schema(live, copy, &before, deadline)
-                    .and_then(|redeclared| {
-                        for table in &redeclared {
-                            session_transactions::copy_table(live, copy, table, deadline)?;
-                        }
-                        let rest: std::collections::BTreeSet<_> = rows
-                            .iter()
-                            .filter(|(table, _)| !redeclared.contains(table))
-                            .cloned()
-                            .collect();
-                        session_transactions::apply_rows(live, copy, &rest, created, deadline)
-                    });
-                // The bound is removed once the commit is over. The next statement on this
-                // connection installs its own, so a failure to remove this one cannot leave
-                // anything running unbounded.
-                let _ = live.progress_handler(PROGRESS_HANDLER_OPS, None::<fn() -> bool>);
-                applied
-            };
+            // Where a row the transaction created came back at another row id, the
+            // transaction is over: nothing names those rows any more.
+            carried =
+                Self::carry_the_work_over(live, copy, &before, rows, created, deadline).map(drop);
         }
         carried
     }
@@ -1157,6 +1282,13 @@ impl InstanceDatabase {
     ) -> Option<Vec<i64>> {
         let (deadline, _) = statement_deadline(view);
         let mut databases = self.lock();
+        // The rows the statement will lock are the rows the statement will SEE, so the
+        // snapshot it reads them off is the one its own statement reads: a transaction that
+        // takes one per statement has it taken here, before the predicate runs.
+        if view.snapshot_per_statement {
+            self.take_this_statements_snapshot(&mut databases, Some(session), database)
+                .ok()?;
+        }
         {
             let mut current = self.view.lock().unwrap_or_else(PoisonError::into_inner);
             *current = view.clone();
@@ -1694,6 +1826,19 @@ fn open_confined_database(
     super::mysql_insert_id::register_insert_id_function(&conn, view)?;
     super::pg_numeric::register_numeric_functions(&conn)?;
     Ok(conn)
+}
+
+/// WHERE the shared database stood when it was last looked at: the engine's own count of the
+/// rows changed on the connection this endpoint holds that database open on.
+///
+/// Every write any session of this endpoint has committed into the shared database goes
+/// through that one connection — a statement outside a transaction, the rows a commit carries
+/// over, the catalog rows the server rebuilds — so a mark that has MOVED says the database a
+/// transaction's copy was taken from is no longer the database it was. What it does not say is
+/// how much changed or when: it is a mark to compare, never a count to report
+/// ([`InstanceDatabase::take_this_statements_snapshot`]).
+fn changes_mark(conn: &Connection) -> i64 {
+    i64::try_from(conn.total_changes()).unwrap_or_default()
 }
 
 /// Copy `source` over `destination` with the engine's own page-level copy.

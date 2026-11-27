@@ -328,7 +328,7 @@ async fn serve_session(
         &mut conn,
         sequence.wrapping_add(1),
         &database_handle,
-        session_facts.connection_id,
+        &session_facts,
         0,
         0,
     )
@@ -382,7 +382,7 @@ async fn serve_session(
                         &mut conn,
                         sequence.wrapping_add(1),
                         &database_handle,
-                        session_facts.connection_id,
+                        &session_facts,
                         0,
                         0,
                     )
@@ -418,7 +418,7 @@ async fn serve_session(
                     &mut conn,
                     sequence.wrapping_add(1),
                     &database_handle,
-                    session_facts.connection_id,
+                    &session_facts,
                     0,
                     0,
                 )
@@ -652,21 +652,13 @@ async fn serve_query(
             conn,
             sequence,
             database,
-            facts.connection_id,
+            facts,
             answer.result.affected,
             answer.result.last_insert_id,
         )
         .await;
     }
-    write_result_set(
-        conn,
-        sequence,
-        database,
-        facts.connection_id,
-        &answer.result,
-        deprecate_eof,
-    )
-    .await
+    write_result_set(conn, sequence, database, facts, &answer.result, deprecate_eof).await
 }
 
 /// Serve one `LOAD DATA FROM S3`: read the objects it names out of Amazon S3 under the
@@ -699,7 +691,7 @@ async fn serve_s3_load(
         .map_err(|error| std::io::Error::other(error.to_string()))?
     };
     match loaded {
-        Ok(loaded) => write_ok(conn, sequence, database, facts.connection_id, loaded, 0).await,
+        Ok(loaded) => write_ok(conn, sequence, database, facts, loaded, 0).await,
         Err(error) => write_engine_error(conn, sequence, &error).await,
     }
 }
@@ -710,7 +702,7 @@ async fn write_result_set(
     conn: &mut ::emulator_server::ListenerConn,
     sequence: u8,
     database: &Arc<InstanceDatabase>,
-    session: u32,
+    facts: &SessionFacts,
     result: &super::sql_engine::ResultSet,
     deprecate_eof: bool,
 ) -> std::io::Result<()> {
@@ -728,7 +720,7 @@ async fn write_result_set(
     }
     if !deprecate_eof {
         sequence = sequence.wrapping_add(1);
-        write_packet(conn, sequence, &eof_packet(database, session)).await?;
+        write_packet(conn, sequence, &eof_packet(database, facts)).await?;
     }
     for row in &result.rows {
         let mut payload = Vec::new();
@@ -743,10 +735,10 @@ async fn write_result_set(
     }
     sequence = sequence.wrapping_add(1);
     if deprecate_eof {
-        let payload = ok_payload(database, session, 0, 0, true);
+        let payload = ok_payload(database, facts, 0, 0, true);
         write_packet(conn, sequence, &payload).await?;
     } else {
-        write_packet(conn, sequence, &eof_packet(database, session)).await?;
+        write_packet(conn, sequence, &eof_packet(database, facts)).await?;
     }
     conn.flush().await
 }
@@ -934,6 +926,9 @@ pub fn statement_error(kind: EngineErrorKind) -> (u16, &'static str) {
         // `NOWAIT` statement is refused for and which a cycle of waiting transactions is
         // broken with.
         EngineErrorKind::LockNotAvailable => (3572, "HY000"),
+        // `ER_LOCK_WAIT_TIMEOUT`: the wait for such a row ran out, which is the condition a
+        // statement that waited for it earns and the one a client retries on.
+        EngineErrorKind::LockWaitTimeout => (1205, "HY000"),
         EngineErrorKind::Deadlock => (1213, "40001"),
         // `ER_WARN_DATA_OUT_OF_RANGE` and `ER_DIVISION_BY_ZERO`: the two conditions the
         // exact decimal arithmetic reports (`super::pg_numeric`).
@@ -996,11 +991,11 @@ async fn write_ok(
     conn: &mut ::emulator_server::ListenerConn,
     sequence: u8,
     database: &Arc<InstanceDatabase>,
-    session: u32,
+    facts: &SessionFacts,
     affected: u64,
     last_insert_id: i64,
 ) -> std::io::Result<()> {
-    let payload = ok_payload(database, session, affected, last_insert_id, false);
+    let payload = ok_payload(database, facts, affected, last_insert_id, false);
     write_packet(conn, sequence, &payload).await?;
     conn.flush().await
 }
@@ -1009,7 +1004,7 @@ async fn write_ok(
 /// `CLIENT_DEPRECATE_EOF`.
 fn ok_payload(
     database: &Arc<InstanceDatabase>,
-    session: u32,
+    facts: &SessionFacts,
     affected: u64,
     last_insert_id: i64,
     ends_result_set: bool,
@@ -1017,25 +1012,36 @@ fn ok_payload(
     let mut payload = vec![if ends_result_set { 0xfe } else { 0x00 }];
     put_length_encoded(&mut payload, affected);
     put_length_encoded(&mut payload, last_insert_id.max(0).unsigned_abs());
-    payload.extend_from_slice(&status_flags(database, session).to_le_bytes());
+    payload.extend_from_slice(&status_flags(database, facts).to_le_bytes());
     payload.extend_from_slice(&0u16.to_le_bytes());
     payload
 }
 
 /// One `EOF` packet, for a client that did not ask for `CLIENT_DEPRECATE_EOF`.
-fn eof_packet(database: &Arc<InstanceDatabase>, session: u32) -> Vec<u8> {
+fn eof_packet(database: &Arc<InstanceDatabase>, facts: &SessionFacts) -> Vec<u8> {
     let mut payload = vec![0xfeu8];
     payload.extend_from_slice(&0u16.to_le_bytes());
-    payload.extend_from_slice(&status_flags(database, session).to_le_bytes());
+    payload.extend_from_slice(&status_flags(database, facts).to_le_bytes());
     payload
 }
 
-/// The session's status flags: autocommit, and whether THIS SESSION has a transaction open.
-fn status_flags(database: &Arc<InstanceDatabase>, session: u32) -> u16 {
-    if database.in_transaction(session) {
-        SERVER_STATUS_AUTOCOMMIT | SERVER_STATUS_IN_TRANS
+/// The session's status flags: whether it is in AUTOCOMMIT mode, and whether THIS SESSION has
+/// a transaction open.
+///
+/// The autocommit flag is the session's own mode, which is what a client reads it for: a
+/// driver asks for a transaction by turning autocommit off (`SET autocommit = 0`) and then
+/// reads this flag back to see that the server is in that mode, so it has to report the mode
+/// the session is really in ([`SessionFacts::inside_an_implicit_transaction`]).
+fn status_flags(database: &Arc<InstanceDatabase>, facts: &SessionFacts) -> u16 {
+    let autocommit = if facts.inside_an_implicit_transaction() {
+        0
     } else {
         SERVER_STATUS_AUTOCOMMIT
+    };
+    if database.in_transaction(facts.connection_id) {
+        autocommit | SERVER_STATUS_IN_TRANS
+    } else {
+        autocommit
     }
 }
 

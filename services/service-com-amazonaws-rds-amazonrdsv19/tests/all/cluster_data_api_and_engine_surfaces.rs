@@ -34,25 +34,30 @@ use crate::db_instances::{call, expect_ok, optional_text, text, REGION};
 use crate::lifecycle_poll_loops::poll_until;
 
 /// Which wire a row's cluster publishes, and so which client this suite dials it with.
+///
+/// `pub(crate)` here and below so the sibling suite whose subject is the ISOLATION the two
+/// doors read one another's writes under
+/// ([`crate::engine_statement_snapshots_and_lock_conditions`]) provisions its cluster with
+/// this one's harness rather than standing up a second one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Wire {
+pub(crate) enum Wire {
     Postgres,
     MySql,
 }
 
 /// One cluster this suite provisions and then writes to through both of its doors.
-struct Row {
-    case: &'static str,
-    identifier: &'static str,
-    engine: &'static str,
-    master_username: &'static str,
+pub(crate) struct Row {
+    pub(crate) case: &'static str,
+    pub(crate) identifier: &'static str,
+    pub(crate) engine: &'static str,
+    pub(crate) master_username: &'static str,
     /// The `DatabaseName` the create names, which is the database BOTH doors address.
-    database: &'static str,
-    wire: Wire,
+    pub(crate) database: &'static str,
+    pub(crate) wire: Wire,
     /// A statement over the SERVER's own catalogs of that database, asked after both doors
     /// have written to it: the catalogs of a database are served inside it, so a database
     /// both doors write must leave them readable.
-    catalog_query: &'static str,
+    pub(crate) catalog_query: &'static str,
 }
 
 const ROWS: &[Row] = &[
@@ -82,7 +87,7 @@ const ROWS: &[Row] = &[
 /// The same mounting as [`crate::managed_master_user_password::emulator`] — which the
 /// managed master password needs — plus the Data API's own service, because the crossing
 /// under test needs both of a cluster's doors on one engine.
-fn emulator() -> MultiServiceRouter {
+pub(crate) fn emulator() -> MultiServiceRouter {
     let engine: Arc<engine::InMemoryEngine> = Arc::new(engine::InMemoryEngine::new());
     let mut router = MultiServiceRouter::new();
     // Verifying signatures is the emulator's concern, not this service's; these tests sign
@@ -107,17 +112,17 @@ fn emulator() -> MultiServiceRouter {
 
 /// What one provisioned cluster offers its two doors: where its engine endpoint answers, the
 /// password its master user logs in with, and the ARNs the Data API addresses it by.
-struct Cluster {
-    address: String,
-    port: u16,
-    password: String,
-    arn: String,
-    secret_arn: String,
+pub(crate) struct Cluster {
+    pub(crate) address: String,
+    pub(crate) port: u16,
+    pub(crate) password: String,
+    pub(crate) arn: String,
+    pub(crate) secret_arn: String,
 }
 
 /// Create the row's cluster with its Data API door turned on and RDS managing its master
 /// password, wait for it to report `available`, and read back what both doors need.
-async fn available_cluster(router: &MultiServiceRouter, row: &Row) -> Cluster {
+pub(crate) async fn available_cluster(router: &MultiServiceRouter, row: &Row) -> Cluster {
     let created = the_cluster(
         row.case,
         &expect_ok(
@@ -187,7 +192,7 @@ async fn available_cluster(router: &MultiServiceRouter, row: &Row) -> Cluster {
 }
 
 /// One Data API call through the router, the way an SDK client sends it.
-async fn data_api(router: &MultiServiceRouter, path: &str, body: Value) -> (u16, Value) {
+pub(crate) async fn data_api(router: &MultiServiceRouter, path: &str, body: Value) -> (u16, Value) {
     let request = http::Request::builder()
         .method("POST")
         .uri(format!("https://rds-data.{REGION}.amazonaws.com{path}"))
@@ -202,7 +207,7 @@ async fn data_api(router: &MultiServiceRouter, path: &str, body: Value) -> (u16,
 }
 
 /// `ExecuteStatement` on the cluster's Data API door, which must succeed.
-async fn execute(
+pub(crate) async fn execute(
     router: &MultiServiceRouter,
     case: &str,
     cluster: &Cluster,
@@ -228,7 +233,7 @@ async fn execute(
 }
 
 /// The rows a `SELECT` through the Data API answered, as `(id, label)` pairs.
-fn data_api_rows(body: &Value) -> Vec<(i64, String)> {
+pub(crate) fn data_api_rows(body: &Value) -> Vec<(i64, String)> {
     body["records"]
         .as_array()
         .cloned()

@@ -1490,6 +1490,9 @@ fn sqlstate(kind: EngineErrorKind) -> &'static str {
         // which a `NOWAIT` statement is refused for and which a cycle of waiting
         // transactions is broken with.
         EngineErrorKind::LockNotAvailable => "55P03",
+        // `lock_not_available` is also the condition a statement whose `lock_timeout` ran out
+        // while it waited for such a row is cancelled under.
+        EngineErrorKind::LockWaitTimeout => "55P03",
         EngineErrorKind::Deadlock => "40P01",
         // `numeric_value_out_of_range` and `division_by_zero`: the two conditions the exact
         // decimal arithmetic reports (`super::pg_numeric`).

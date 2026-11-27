@@ -7,8 +7,12 @@
 //!
 //! * a row a transaction has written and not committed is invisible to every other session
 //!   until it commits: another session reads the rows as they stood before;
-//! * a transaction reads the same rows throughout: a value another session commits while it
-//!   is open does not move under it;
+//! * a transaction at REPEATABLE READ reads the same rows throughout: a value another session
+//!   commits while it is open does not move under it — while at READ COMMITTED, the level a
+//!   PostgreSQL session runs at by default, its next statement reads that commit, which is
+//!   what the level means and what the sibling suite
+//!   ([`crate::engine_statement_snapshots_and_lock_conditions`]) asserts over every level and
+//!   both wires;
 //! * once a transaction commits, every session that reads afterwards reads what it wrote,
 //!   and a `ROLLBACK` leaves the shared database exactly as the transaction found it;
 //! * two transactions that write DIFFERENT rows both commit, and each row ends up holding
@@ -218,7 +222,16 @@ async fn a_transaction_reads_the_rows_as_they_stood_when_it_began() {
     run(case, &mut writer, "INSERT INTO notes VALUES (1, 'first')").await;
 
     let select = "SELECT body FROM notes WHERE id = 1";
-    run(case, &mut reader, "BEGIN").await;
+    // The level that reads ONE snapshot: "all statements of the current transaction can only
+    // see rows committed before the first query ... of this transaction". A transaction at the
+    // session's default level (READ COMMITTED) reads each statement's own snapshot instead,
+    // which the sibling suite asserts.
+    run(
+        case,
+        &mut reader,
+        "BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ",
+    )
+    .await;
     let first = column(case, &mut reader, select).await;
     assert_eq!(
         first,

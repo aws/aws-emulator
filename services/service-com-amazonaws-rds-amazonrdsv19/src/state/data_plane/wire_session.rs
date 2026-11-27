@@ -1656,8 +1656,58 @@ impl SessionFacts {
     /// ([`transaction_isolation`]).
     #[must_use]
     pub fn serializable(&self) -> bool {
+        self.isolation_level() == "serializable"
+    }
+
+    /// The ISOLATION LEVEL this session's transaction runs at, in the one spelling both
+    /// engines' own can be read as: lower case, with a space between the two words
+    /// (PostgreSQL reports `read committed`, MySQL `READ-COMMITTED`,
+    /// [`transaction_isolation`]).
+    #[must_use]
+    pub fn isolation_level(&self) -> String {
         self.setting("transaction_isolation")
-            .is_some_and(|level| level.eq_ignore_ascii_case("serializable"))
+            .unwrap_or_default()
+            .replace('-', " ")
+            .trim()
+            .to_ascii_lowercase()
+    }
+
+    /// Whether each STATEMENT of this session's transaction reads what is committed when IT
+    /// runs, rather than the transaction reading one snapshot throughout.
+    ///
+    /// That is what the two READ levels mean and the two higher ones do not: under READ
+    /// COMMITTED — the level a PostgreSQL session runs at by default — "a statement can only
+    /// see rows committed before it began", so a statement after another transaction's commit
+    /// sees that commit, while REPEATABLE READ and SERIALIZABLE hold every statement of the
+    /// transaction to the snapshot it started with. READ UNCOMMITTED is read as READ
+    /// COMMITTED, which is what MySQL's own documentation allows for ("SELECT statements are
+    /// performed in a nonlocking fashion") and the strongest this endpoint can give it: no
+    /// statement of this emulator can read another transaction's uncommitted rows, because
+    /// those rows are in that transaction's own copy of the database
+    /// ([`super::session_transactions`]).
+    #[must_use]
+    pub fn snapshot_per_statement(&self) -> bool {
+        matches!(
+            self.isolation_level().as_str(),
+            "read committed" | "read uncommitted"
+        )
+    }
+
+    /// Whether this session is inside a transaction WITHOUT having opened one: a MySQL
+    /// session whose `autocommit` is off.
+    ///
+    /// "If autocommit mode is disabled within a session with SET autocommit = 0, the session
+    /// always has a transaction open" — a driver that asks for a transaction by turning
+    /// autocommit off (which is what every MySQL driver's `autocommit=False` does) therefore
+    /// writes inside a transaction from its first statement, and nothing it writes is another
+    /// session's to read until it commits. The PostgreSQL protocol has no such mode: a
+    /// session there opens a transaction with `BEGIN`, which its driver sends.
+    #[must_use]
+    pub fn inside_an_implicit_transaction(&self) -> bool {
+        self.wire == EngineWire::MySql
+            && self
+                .setting("autocommit")
+                .is_some_and(|value| !read_only::setting_is_on(&value))
     }
 
     /// Every setting this session can read, by lowercased name: the engine's parameters,
@@ -2234,6 +2284,15 @@ pub(super) fn run_statement_at(
         }
     }
     let verb = statement_verb(&words);
+    // A session that asked for a transaction by turning `autocommit` off is INSIDE one from
+    // here on, without having sent a statement that opens one
+    // ([`SessionFacts::inside_an_implicit_transaction`]): what it writes is its own until it
+    // commits, which is what makes the rows it has not committed invisible to every other
+    // session and to every other surface of this resource's storage. Opened before anything
+    // of the statement runs, so no write of it reaches the shared database first.
+    if facts.inside_an_implicit_transaction() && !database.in_transaction(facts.connection_id) {
+        database.begin_transaction(facts.connection_id);
+    }
     // The system catalogs the statement READS are rebuilt from this service's state first,
     // so the rows the engine then plans over are the instance as it is at this instant.
     let named = catalogs_named(&tokens);
@@ -2475,7 +2534,17 @@ fn take_the_rows_it_locks(
         .into_iter()
         .map(|rowid| (in_database.clone(), table.clone(), rowid))
         .collect();
-    let deadline = super::sql_engine::statement_deadline(&server_view(facts)).0;
+    let (statement_deadline, timeout_first) =
+        super::sql_engine::statement_deadline(&server_view(facts));
+    // How long the statement may WAIT for a row, which is not how long it may RUN: each
+    // engine bounds a row-lock wait by a parameter of its own
+    // ([`row_locks::lock_wait_limit`]), and a wait that outlasts the statement's own budget is
+    // bounded by that budget instead — this endpoint cannot hold a request open for the fifty
+    // seconds MySQL's own default would allow.
+    let waits_until = row_locks::lock_wait_limit(facts)
+        .and_then(|limit| ::std::time::Instant::now().checked_add(limit))
+        .filter(|until| *until < statement_deadline);
+    let deadline = waits_until.unwrap_or(statement_deadline);
     // Taking the rows is where a statement WAITS: the time spent here is the time the
     // session was blocked on a row another transaction held, which the sampler files under
     // the engine's own row-lock wait event ([`super::activity_samples`]) — and for as long as
@@ -2506,23 +2575,31 @@ fn take_the_rows_it_locks(
                 writes: plan.writes,
             })
         }
-        row_locks::LockOutcome::Unavailable => Err(EngineError::new(
-            EngineErrorKind::LockNotAvailable,
-            format!("could not obtain lock on row in relation \"{}\"", plan.table),
+        row_locks::LockOutcome::Unavailable => Err(row_locks::held_by_another_transaction(
+            facts.wire,
+            &plan.table,
         )),
         row_locks::LockOutcome::Deadlocked => {
             // The engine that detects a deadlock ends ONE of the transactions in the cycle,
             // and this is the one: its rows go back and its locks are let go, which is what
             // lets the transactions it was waiting for finish.
             let _ = database.rollback_transaction(facts.connection_id);
-            Err(EngineError::new(
-                EngineErrorKind::Deadlock,
-                "deadlock detected",
-            ))
+            Err(row_locks::the_cycle_was_broken(facts.wire))
+        }
+        // The wait ran out. Which condition that is depends on WHOSE limit ended it: the
+        // session's own wait for a row is that engine's lock-wait timeout, and a wait this
+        // endpoint cut short because the STATEMENT's budget ran out is the cancellation of the
+        // statement, worded by whichever budget came first.
+        row_locks::LockOutcome::TimedOut if waits_until.is_some() => {
+            Err(row_locks::the_wait_ran_out(facts.wire))
         }
         row_locks::LockOutcome::TimedOut => Err(EngineError::new(
             EngineErrorKind::Cancelled,
-            super::sql_engine::ENDPOINT_DEADLINE_CANCELLATION,
+            if timeout_first {
+                super::sql_engine::STATEMENT_TIMEOUT_CANCELLATION
+            } else {
+                super::sql_engine::ENDPOINT_DEADLINE_CANCELLATION
+            },
         )),
         row_locks::LockOutcome::TooMany => Err(EngineError::new(
             EngineErrorKind::LimitExceeded,
@@ -2557,22 +2634,21 @@ fn transaction_isolation(
     if !opens && !ends {
         return None;
     }
-    // The level the session is back to once no transaction names one of its own.
+    // The level the session is back to once no transaction names one of its own: the
+    // SESSION's default, which is what it set for itself where it did (a MySQL
+    // `SET SESSION transaction_isolation`, a PostgreSQL `SET default_transaction_isolation`)
+    // and the instance's own configuration otherwise.
     let default = || {
         let named = match facts.wire {
             EngineWire::Postgres => "default_transaction_isolation",
             EngineWire::MySql => "transaction_isolation",
         };
-        facts
-            .runtime
-            .parameter(named)
-            .map(str::to_string)
-            .unwrap_or_else(|| match facts.wire {
-                // Each engine's own default, for an instance whose parameter group and
-                // family catalogue carry no value for it.
-                EngineWire::Postgres => "read committed".to_string(),
-                EngineWire::MySql => "REPEATABLE-READ".to_string(),
-            })
+        facts.setting(named).unwrap_or_else(|| match facts.wire {
+            // Each engine's own default, for an instance whose parameter group and
+            // family catalogue carry no value for it.
+            EngineWire::Postgres => "read committed".to_string(),
+            EngineWire::MySql => "REPEATABLE-READ".to_string(),
+        })
     };
     if ends {
         return Some(default());
@@ -2654,6 +2730,7 @@ pub fn server_view(facts: &SessionFacts) -> super::sql_engine::ServerView {
             .and_then(|value| value.trim().parse().ok())
             .unwrap_or(0),
         wire: Some(facts.wire),
+        snapshot_per_statement: facts.snapshot_per_statement(),
         deadline: None,
         insert_id: Some(facts.insert_id.clone()),
     }
