@@ -12,6 +12,11 @@
 //! `DescribeOrderableDBInstanceOptions` are reference reads of the door's own published
 //! catalog, so the answer a client gets cannot depend on how it addressed the door.
 //!
+//! What a view answers is still the members ITS OWN model declares: the shared catalog is the
+//! rows, their order, and the members both models declare. A member only the Amazon RDS
+//! model declares is reported by that view and left out by the DocumentDB one rather than
+//! invented there — the per-member tables below say which is which.
+//!
 //! The expectations below are written out rather than read back from the catalog the handlers
 //! answer from, so a change to that catalog has to be made here too. Their source is the
 //! published Amazon DocumentDB engine catalog and the published Amazon RDS event-category
@@ -191,27 +196,37 @@ const DOCDB_VERSIONS: &[DocdbVersion] = &[
 /// upgrade target onto one: the product's own full name.
 const DOCDB_DESCRIPTION: &str = "Amazon DocumentDB (with MongoDB compatibility)";
 
-/// The capability flags the front door reports on every engine VERSION of this engine. A
+/// The capability flag BOTH views' models declare on an engine VERSION of this engine. A
 /// DocumentDB cluster — not its member instance — owns the storage, the readers and the
 /// Regions, and the Aurora and Amazon RDS features belong to other engines of the same door,
 /// so the one capability a version of this engine publishes is the certificate rotation.
-const VERSION_CAPABILITIES: &[(&str, bool)] = &[
-    ("SupportsReadReplica", false),
-    ("SupportsCluster", false),
-    ("SupportsGlobalDatabases", false),
-    ("SupportsRDSProxy", false),
-    ("SupportsParallelQuery", false),
-    ("SupportsBabelfish", false),
-    ("SupportsLimitlessDatabase", false),
-    ("SupportsDataGroups", false),
-    ("SupportsCertificateRotationWithoutRestart", true),
+const SHARED_VERSION_CAPABILITIES: &[(&str, bool)] =
+    &[("SupportsCertificateRotationWithoutRestart", true)];
+
+/// The engine-version members only the Amazon RDS view's model declares, each with the value
+/// that view reports for this engine.
+///
+/// A view answers the members ITS model declares, so the catalog the views SHARE is the rows
+/// and the members both declare: the Amazon DocumentDB model's own `DBEngineVersion` declares
+/// none of these, and that view reports none of them rather than inventing one.
+const RDS_ONLY_VERSION_MEMBERS: &[(&str, &str)] = &[
+    ("SupportsReadReplica", "false"),
+    ("SupportsCluster", "false"),
+    ("SupportsGlobalDatabases", "false"),
+    ("SupportsRDSProxy", "false"),
+    ("SupportsParallelQuery", "false"),
+    ("SupportsBabelfish", "false"),
+    ("SupportsLimitlessDatabase", "false"),
+    ("SupportsDataGroups", "false"),
 ];
 
-/// The capability members the front door reports on every ORDERABLE OPTION of this engine:
-/// the instance takes no Multi-AZ standby, no read replica and no Enhanced Monitoring of its
-/// own, while the cluster it joins is what makes the class part of a cluster and able to join
-/// a global cluster.
-const OPTION_CAPABILITIES: &[(&str, bool)] = &[
+/// The capability members only the Amazon RDS view's model declares on an ORDERABLE OPTION
+/// of this engine, each with the value that view reports: the instance takes no Multi-AZ
+/// standby, no read replica and no Enhanced Monitoring of its own, while the cluster it joins
+/// is what makes the class part of a cluster and able to join a global cluster. The Amazon
+/// DocumentDB model's own `OrderableDBInstanceOption` declares none of them; see
+/// [`RDS_ONLY_VERSION_MEMBERS`].
+const RDS_ONLY_OPTION_MEMBERS: &[(&str, bool)] = &[
     ("MultiAZCapable", false),
     ("ReadReplicaCapable", false),
     ("SupportsEnhancedMonitoring", false),
@@ -231,7 +246,9 @@ const OPTION_CAPABILITIES: &[(&str, bool)] = &[
 ];
 
 /// The engine modes and network types an option of this engine is offered with, in the order
-/// the report publishes them. Both are unnamed `<member>` lists, so they read as one sequence.
+/// the report publishes them. Both are unnamed `<member>` lists, so they read as one sequence,
+/// and both are members only the Amazon RDS view's model declares; see
+/// [`RDS_ONLY_VERSION_MEMBERS`].
 const OPTION_LIST_MEMBERS: [&str; 3] = ["provisioned", "IPV4", "DUAL"];
 
 /// The storage types an option of this engine is offered with, in the order its own
@@ -415,10 +432,9 @@ fn every_view_of_the_rds_front_door_publishes_one_catalog() {
                 );
                 for (row, expected) in rows.iter().zip(DOCDB_VERSIONS) {
                     let case = format!("{key} {}", expected.version);
+                    let rds_only = key == "rds";
                     let got = (
                         text(row, "Engine"),
-                        text(row, "MajorEngineVersion"),
-                        text(row, "MinorEngineVersion"),
                         text(row, "DBParameterGroupFamily"),
                         text(row, "DBEngineVersionDescription"),
                     );
@@ -426,20 +442,39 @@ fn every_view_of_the_rds_front_door_publishes_one_catalog() {
                         got,
                         (
                             Some("docdb".to_string()),
-                            Some(expected.major.to_string()),
-                            Some(expected.minor.to_string()),
                             Some(expected.family.to_string()),
                             Some(DOCDB_DESCRIPTION.to_string()),
                         ),
-                        "case {case:?}: expected the published version split, family and \
-                         description, got {got:?}"
+                        "case {case:?}: expected the published family and description, got \
+                         {got:?}"
                     );
-                    for (member, flag) in VERSION_CAPABILITIES {
+                    // The version split is a member only the Amazon RDS view's model
+                    // declares; see `RDS_ONLY_VERSION_MEMBERS`.
+                    for (member, value) in [
+                        ("MajorEngineVersion", expected.major),
+                        ("MinorEngineVersion", expected.minor),
+                    ] {
+                        let got = text(row, member);
+                        let want = rds_only.then(|| value.to_string());
+                        assert_eq!(
+                            got, want,
+                            "case {case:?}: expected {member} {want:?}, got {got:?}"
+                        );
+                    }
+                    for (member, flag) in SHARED_VERSION_CAPABILITIES {
                         let got = text(row, member);
                         assert_eq!(
                             got,
                             Some(flag.to_string()),
                             "case {case:?}: expected {member} {flag}, got {got:?}"
+                        );
+                    }
+                    for (member, value) in RDS_ONLY_VERSION_MEMBERS {
+                        let got = text(row, member);
+                        let want = rds_only.then(|| (*value).to_string());
+                        assert_eq!(
+                            got, want,
+                            "case {case:?}: expected {member} {want:?}, got {got:?}"
                         );
                     }
                     let targets = subtrees(row, "UpgradeTarget");
@@ -461,19 +496,26 @@ fn every_view_of_the_rds_front_door_publishes_one_catalog() {
                         let crosses_a_line = !version.starts_with(&format!("{}.", expected.major));
                         let got = (
                             text(target, "IsMajorVersionUpgrade"),
-                            text(target, "SupportsSnapshotUpgrade"),
                             text(target, "Description"),
                         );
                         assert_eq!(
                             got,
                             (
                                 Some(crosses_a_line.to_string()),
-                                Some(crosses_a_line.to_string()),
                                 Some(DOCDB_DESCRIPTION.to_string()),
                             ),
                             "case {case:?} -> {version}: a target that leaves the version's \
-                             line is a major-version upgrade a snapshot can take straight, \
-                             got {got:?}"
+                             line is a major-version upgrade, got {got:?}"
+                        );
+                        // Whether a snapshot can be upgraded straight to the target is a
+                        // member only the Amazon RDS view's model declares; see
+                        // `RDS_ONLY_VERSION_MEMBERS`.
+                        let got = text(target, "SupportsSnapshotUpgrade");
+                        let want = rds_only.then(|| crosses_a_line.to_string());
+                        assert_eq!(
+                            got, want,
+                            "case {case:?} -> {version}: expected SupportsSnapshotUpgrade \
+                             {want:?}, got {got:?}"
                         );
                     }
                 }
@@ -519,23 +561,25 @@ fn every_view_of_the_rds_front_door_publishes_one_catalog() {
                         "case {key:?}: an option is offered in the Region's published zones, \
                          got {zones:?}"
                     );
-                    for (member, flag) in OPTION_CAPABILITIES {
+                    for (member, flag) in RDS_ONLY_OPTION_MEMBERS {
                         let got = text(option, member);
+                        let want = (key == "rds").then(|| flag.to_string());
                         assert_eq!(
-                            got,
-                            Some(flag.to_string()),
-                            "case {key:?}: expected {member} {flag}, got {got:?}"
+                            got, want,
+                            "case {key:?}: expected {member} {want:?}, got {got:?}"
                         );
                     }
                     let list_members = texts(option, "member");
-                    assert_eq!(
-                        list_members,
-                        OPTION_LIST_MEMBERS
+                    let want: Vec<String> = match key {
+                        "rds" => OPTION_LIST_MEMBERS
                             .iter()
                             .map(|value| (*value).to_string())
-                            .collect::<Vec<_>>(),
-                        "case {key:?}: expected the published engine modes and network types, \
-                         got {list_members:?}"
+                            .collect(),
+                        _ => Vec::new(),
+                    };
+                    assert_eq!(
+                        list_members, want,
+                        "case {key:?}: expected {want:?}, got {list_members:?}"
                     );
                 }
             }

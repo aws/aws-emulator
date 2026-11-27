@@ -572,17 +572,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> CreateDBCluster<E
             network_type: input.network_type,
             copy_tags_to_snapshot: input.copy_tags_to_snapshot.unwrap_or(false),
             serverless_v2_scaling,
-            // No input member of this operation carries any of the flags AWS's cluster
-            // envelope always reports, so each is born at the default the service
-            // reports for a cluster created without it; the constants cite them. The
-            // hosted zone is the one the Region's Amazon DocumentDB endpoints live in,
+            // The hosted zone is the one the Region's Amazon DocumentDB endpoints live in,
             // minted once here so every later read reports the same id.
-            auto_minor_version_upgrade: docdb::DEFAULT_CLUSTER_AUTO_MINOR_VERSION_UPGRADE,
-            activity_stream_status: docdb::ACTIVITY_STREAM_STOPPED.to_string(),
-            docdb_analytics_enabled: docdb::DEFAULT_DOCDB_ANALYTICS_ENABLED,
-            custom_data_group_present: docdb::DEFAULT_CUSTOM_DATA_GROUP_PRESENT,
-            vpc_networking_enabled: docdb::DEFAULT_VPC_NETWORKING_ENABLED,
-            internet_access_gateway_enabled: docdb::DEFAULT_INTERNET_ACCESS_GATEWAY_ENABLED,
             hosted_zone_id,
             members: Vec::new(),
             tags: docdb::tag_pairs(input.tags),

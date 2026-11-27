@@ -1,23 +1,22 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! End-to-end tests for the members Amazon DocumentDB's cluster and instance envelopes
-//! ALWAYS carry beyond what the shipped model shape declares: on the cluster
-//! `AutoMinorVersionUpgrade`, `ActivityStreamStatus`, `DBActivityStreamStatus`,
-//! `DocdbAnalyticsEnabled`, `CustomDataGroupPresent`, `VPCNetworkingEnabled` and
-//! `InternetAccessGatewayEnabled`; on the instance the attribute set at the end of this
-//! file.
+//! carry whatever the request that made the resource asked for: on the cluster the
+//! Serverless platform version it runs on, on the instance the attribute set at the end of
+//! this file.
 //!
-//! The rule: every member the cluster envelope always carries is projected
-//! unconditionally, out of the cluster record, by the one projection every path shares
-//! (`crate::state::cluster_to_shape`) — and where no input member of this service can set
-//! one, the record is born at the value the service reports for a cluster created without
-//! it: automatic minor version upgrade on, the DocumentDB-only capability flags off, VPC
-//! networking on (a cluster is reachable only from inside a virtual private cloud) with no
-//! internet access gateway, and the database activity stream in its stopped steady state.
-//! The constants in `src/state.rs` cite each one.
+//! The rule: a cluster reports a `ServerlessV2PlatformVersion` exactly where it HAS
+//! Serverless capacity configured — "the version of the Amazon DocumentDB Serverless
+//! platform used by the cluster" — and that version is the one the published catalogue
+//! designates the engine's default, "the version used for new DB clusters"
+//! (`state::default_serverless_v2_platform_version`, the same catalogue
+//! `DescribeServerlessV2PlatformVersions` reports from). A cluster with no Serverless
+//! capacity runs on no Serverless platform and reports none. It is projected out of the
+//! cluster record by the one projection every path shares
+//! (`crate::state::cluster_to_shape`).
 //!
-//! The rule generalises over the cluster's inputs (none of them touches these seven
-//! members) and over the operation whose envelope carries the cluster, so the table below
+//! The rule generalises over the cluster's other inputs (none of them touches the platform
+//! version) and over the operation whose envelope carries the cluster, so the table below
 //! spans BOTH: each row is a differently shaped `CreateDBCluster`, and every row is read
 //! through the create, describe, modify and delete envelopes in turn.
 //!
@@ -26,39 +25,33 @@
 //! the production router uses, with the wire harness this target shares
 //! (`tests/all/cluster_lifecycle.rs`).
 
+use service_com_amazonaws_docdb_amazonrdsv19::state;
+
 use crate::cluster_lifecycle::{
     count, let_the_clock_catch_up, opt_text, text, texts, Docdb, REGION,
 };
 
-/// The members and the value each must carry for a cluster created without any input that
-/// could change it. Source: the `DBCluster` members of this service's on-disk model (added
-/// there from the recorded AWS responses) and the defaults cited on
-/// `state::DEFAULT_CLUSTER_AUTO_MINOR_VERSION_UPGRADE`, `state::ACTIVITY_STREAM_STOPPED`,
-/// `state::DEFAULT_DOCDB_ANALYTICS_ENABLED`, `state::DEFAULT_CUSTOM_DATA_GROUP_PRESENT`,
-/// `state::DEFAULT_VPC_NETWORKING_ENABLED` and
-/// `state::DEFAULT_INTERNET_ACCESS_GATEWAY_ENABLED`.
-const ENVELOPE_FLAGS: [(&str, &str); 7] = [
-    ("AutoMinorVersionUpgrade", "true"),
-    ("ActivityStreamStatus", "stopped"),
-    ("DBActivityStreamStatus", "stopped"),
-    ("DocdbAnalyticsEnabled", "false"),
-    ("CustomDataGroupPresent", "false"),
-    ("VPCNetworkingEnabled", "true"),
-    ("InternetAccessGatewayEnabled", "false"),
-];
+/// The platform version a Serverless cluster of this engine runs on: the row the published
+/// catalogue designates the engine's default, read from the catalogue itself so this
+/// assertion and `DescribeServerlessV2PlatformVersions` cannot name different versions.
+fn published_platform_version() -> &'static str {
+    state::default_serverless_v2_platform_version()
+        .map(|platform| platform.version)
+        .expect("the published catalogue designates a default platform version")
+}
 
-/// Assert that `xml` carries every element of [`ENVELOPE_FLAGS`] with its value — asserted
-/// on the raw XML, so a member the serializer omits fails rather than reading as a default.
-fn assert_envelope_flags(case: &str, xml: &str) {
-    for (member, expected) in ENVELOPE_FLAGS {
-        let actual = opt_text(xml, member);
-        assert_eq!(
-            actual.as_deref(),
-            Some(expected),
-            "case {case:?}: the cluster envelope must carry {member}={expected}, \
-             got {actual:?} in {xml}"
-        );
-    }
+/// Assert that `xml` reports `ServerlessV2PlatformVersion` exactly where the cluster was
+/// created with Serverless capacity, and nothing where it was not — asserted on the raw
+/// XML, so a member the serializer omits fails rather than reading as a default.
+fn assert_platform_version(case: &str, xml: &str, serverless: bool) {
+    let actual = opt_text(xml, "ServerlessV2PlatformVersion");
+    let expected = serverless.then(published_platform_version);
+    assert_eq!(
+        actual.as_deref(),
+        expected,
+        "case {case:?}: the cluster envelope must report \
+         ServerlessV2PlatformVersion={expected:?}, got {actual:?} in {xml}"
+    );
 }
 
 /// One row of the table: a case name and the extra parameters its `CreateDBCluster` sends
@@ -69,10 +62,20 @@ struct CreateCase {
     params: Vec<(&'static str, &'static str)>,
 }
 
+impl CreateCase {
+    /// Whether this row's create configures Serverless capacity, which is the one input the
+    /// platform version follows.
+    fn configures_serverless(&self) -> bool {
+        self.params
+            .iter()
+            .any(|(name, _)| name.starts_with("ServerlessV2ScalingConfiguration"))
+    }
+}
+
 /// The table: clusters differing in the inputs `CreateDBCluster` takes — credentials,
 /// port, retention, encryption, protection, logs exports, storage type, scaling, network
-/// type, tags and availability zones. None of them is an input to the members under test,
-/// which is exactly the rule.
+/// type, tags and availability zones. Only the scaling configuration is an input to the
+/// member under test, which is exactly the rule.
 fn create_cases() -> Vec<CreateCase> {
     vec![
         CreateCase {
@@ -124,21 +127,33 @@ fn create_cases() -> Vec<CreateCase> {
                 ("NetworkType", "IPV4"),
             ],
         },
+        CreateCase {
+            label: "serverless at a wider capacity range, encrypted, with credentials",
+            identifier: "flags-serverless-wide",
+            params: vec![
+                ("ServerlessV2ScalingConfiguration.MinCapacity", "2"),
+                ("ServerlessV2ScalingConfiguration.MaxCapacity", "32.5"),
+                ("StorageEncrypted", "true"),
+                ("MasterUsername", "admin"),
+                ("MasterUserPassword", "secret99"),
+            ],
+        },
     ]
 }
 
 #[tokio::test]
-async fn every_cluster_envelope_carries_the_added_members_whatever_the_create_asked_for() {
+async fn every_cluster_envelope_reports_the_platform_version_the_create_configured() {
     let docdb = Docdb::new();
 
     for case in create_cases() {
+        let serverless = case.configures_serverless();
         let mut params: Vec<(&str, &str)> =
             vec![("DBClusterIdentifier", case.identifier), ("Engine", "docdb")];
         params.extend(case.params.iter().copied());
 
         // 1. The create envelope.
         let created = docdb.ok(case.label, "CreateDBCluster", &params).await;
-        assert_envelope_flags(&format!("{} / create", case.label), &created);
+        assert_platform_version(&format!("{} / create", case.label), &created, serverless);
 
         let_the_clock_catch_up();
 
@@ -150,10 +165,10 @@ async fn every_cluster_envelope_carries_the_added_members_whatever_the_create_as
                 &[("DBClusterIdentifier", case.identifier)],
             )
             .await;
-        assert_envelope_flags(&format!("{} / describe", case.label), &described);
+        assert_platform_version(&format!("{} / describe", case.label), &described, serverless);
 
-        // 3. The modify envelope — and a modify that changes something else must leave
-        //    every one of them alone.
+        // 3. The modify envelope — and a modify that changes something else must leave the
+        //    platform version alone.
         let modified = docdb
             .ok(
                 case.label,
@@ -171,7 +186,7 @@ async fn every_cluster_envelope_carries_the_added_members_whatever_the_create_as
             "case {:?}: the modify must really have been applied, got {modified}",
             case.label
         );
-        assert_envelope_flags(&format!("{} / modify", case.label), &modified);
+        assert_platform_version(&format!("{} / modify", case.label), &modified, serverless);
 
         // 4. The delete envelope, the last path that reports a cluster.
         let deleted = docdb
@@ -190,15 +205,32 @@ async fn every_cluster_envelope_carries_the_added_members_whatever_the_create_as
             "case {:?}: the delete must report the deleting status, got {deleted}",
             case.label
         );
-        assert_envelope_flags(&format!("{} / delete", case.label), &deleted);
+        assert_platform_version(&format!("{} / delete", case.label), &deleted, serverless);
     }
 }
 
 #[tokio::test]
-async fn a_multi_cluster_page_carries_the_flags_on_every_cluster_it_lists() {
+async fn a_multi_cluster_page_reports_the_platform_version_of_every_cluster_it_lists() {
     let docdb = Docdb::new();
-    let identifiers = ["page-one", "page-two", "page-three"];
-    for identifier in identifiers {
+    // Two Serverless clusters and one provisioned one, so the page carries the member on
+    // exactly the clusters that run on a Serverless platform.
+    let serverless = ["page-one", "page-two"];
+    let provisioned = ["page-three"];
+    for identifier in serverless {
+        docdb
+            .ok(
+                identifier,
+                "CreateDBCluster",
+                &[
+                    ("DBClusterIdentifier", identifier),
+                    ("Engine", "docdb"),
+                    ("ServerlessV2ScalingConfiguration.MinCapacity", "0.5"),
+                    ("ServerlessV2ScalingConfiguration.MaxCapacity", "8"),
+                ],
+            )
+            .await;
+    }
+    for identifier in provisioned {
         docdb
             .ok(
                 identifier,
@@ -212,31 +244,33 @@ async fn a_multi_cluster_page_carries_the_flags_on_every_cluster_it_lists() {
     let page = docdb.ok("whole page", "DescribeDBClusters", &[]).await;
     assert_eq!(
         count(&page, "DBCluster"),
-        identifiers.len(),
+        serverless.len() + provisioned.len(),
         "case \"whole page\": expected every cluster, got {page}"
     );
-    for (member, expected) in ENVELOPE_FLAGS {
+    assert_eq!(
+        count(&page, "ServerlessV2PlatformVersion"),
+        serverless.len(),
+        "case \"whole page\": only the Serverless clusters report a platform version, \
+         got {page}"
+    );
+    let expected = published_platform_version();
+    for (index, value) in texts(&page, "ServerlessV2PlatformVersion")
+        .into_iter()
+        .enumerate()
+    {
         assert_eq!(
-            count(&page, member),
-            identifiers.len(),
-            "case \"whole page\": every listed cluster must carry one {member}, got {page}"
+            value, expected,
+            "case \"whole page\" (cluster {index}): expected the published platform version \
+             {expected:?}, got {value:?} in {page}"
         );
-        for (index, value) in texts(&page, member).into_iter().enumerate() {
-            assert_eq!(
-                value, expected,
-                "case \"whole page\" (cluster {index}): expected {member}={expected}, \
-                 got {value:?} in {page}"
-            );
-        }
     }
 }
 
 #[tokio::test]
 async fn an_instance_keeps_its_own_documented_minor_version_upgrade_default() {
-    // The cluster-level flag is a different member from the instance-level one:
-    // `CreateDBInstanceMessage$AutoMinorVersionUpgrade` documents "Default: false" and is
-    // a real input, so an instance created without it reports false while its cluster
-    // reports true.
+    // `CreateDBInstanceMessage$AutoMinorVersionUpgrade` documents "Default: false" and is a
+    // real input, so an instance reports the flag it was created with and nothing else
+    // chooses it for it.
     let docdb = Docdb::new();
     docdb
         .ok(
@@ -280,7 +314,9 @@ async fn an_instance_keeps_its_own_documented_minor_version_upgrade_default() {
             &[("DBClusterIdentifier", "flags-host")],
         )
         .await;
-    assert_envelope_flags("host cluster describe", &cluster);
+    // The host cluster was created with no Serverless capacity, so it runs on no Serverless
+    // platform however many members it gained.
+    assert_platform_version("host cluster describe", &cluster, false);
 }
 
 // ---------------------------------------------------------------------------
@@ -291,20 +327,11 @@ async fn an_instance_keeps_its_own_documented_minor_version_upgrade_default() {
 /// and the value each one has for this engine.
 ///
 /// Sources: `DBInstance$PubliclyAccessible` states "Amazon DocumentDB does not currently
-/// support public endpoints. The value of `PubliclyAccessible` is always `false`"; the
-/// others are what the shared Amazon RDS wire API this control plane is fronted by reports
-/// for an instance whose storage, port and master user belong to its CLUSTER — no storage
-/// size, no provisioned throughput and no port of the instance's own, the one license
-/// model this engine publishes, VPC-only networking, and no HTTP endpoint — each cited on
-/// the constant in `src/state.rs` that projects it.
-const INSTANCE_ATTRIBUTES: [(&str, &str); 8] = [
-    ("AllocatedStorage", "1"),
-    ("StorageThroughput", "0"),
-    ("DbInstancePort", "0"),
+/// support public endpoints. The value of `PubliclyAccessible` is always `false`" (cited on
+/// the constant in `src/state.rs` that projects it); `DBInstance$PendingModifiedValues` is
+/// "specifies that changes to the instance are pending", one subelement per pending change.
+const INSTANCE_ATTRIBUTES: [(&str, &str); 2] = [
     ("PubliclyAccessible", "false"),
-    ("VPCNetworkingEnabled", "true"),
-    ("HttpEndpointEnabled", "false"),
-    ("LicenseModel", "na"),
     // Reported on every instance, one subelement per pending change: an instance with
     // nothing pending carries the element with nothing inside it.
     ("PendingModifiedValues", ""),
@@ -322,10 +349,6 @@ struct InstanceCase {
     storage_type: Option<&'static str>,
     /// The `PromotionTier` the instance asked for, when it asked for one.
     promotion_tier: Option<&'static str>,
-    /// The storage type the instance must report: the one its cluster manages its storage
-    /// on, which is `standard` for a cluster that named none
-    /// (`state::DEFAULT_STORAGE_TYPE`).
-    expected_storage_type: &'static str,
     /// The promotion tier the instance must report; `CreateDBInstanceMessage$PromotionTier`
     /// documents "Default: 1 Valid values: 0-15" for one that asked for none.
     expected_promotion_tier: &'static str,
@@ -344,7 +367,6 @@ fn instance_cases() -> [InstanceCase; 4] {
             master_username: Some("probeadmin"),
             storage_type: None,
             promotion_tier: Some("1"),
-            expected_storage_type: "standard",
             expected_promotion_tier: "1",
         },
         InstanceCase {
@@ -354,7 +376,6 @@ fn instance_cases() -> [InstanceCase; 4] {
             master_username: Some("dbadmin"),
             storage_type: Some("standard"),
             promotion_tier: None,
-            expected_storage_type: "standard",
             expected_promotion_tier: "1",
         },
         InstanceCase {
@@ -364,7 +385,6 @@ fn instance_cases() -> [InstanceCase; 4] {
             master_username: Some("ioadmin"),
             storage_type: Some("iopt1"),
             promotion_tier: Some("15"),
-            expected_storage_type: "iopt1",
             expected_promotion_tier: "15",
         },
         InstanceCase {
@@ -374,7 +394,6 @@ fn instance_cases() -> [InstanceCase; 4] {
             master_username: None,
             storage_type: None,
             promotion_tier: Some("0"),
-            expected_storage_type: "standard",
             expected_promotion_tier: "0",
         },
     ]
@@ -394,9 +413,11 @@ fn assert_instance_attributes(case: &str, row: &InstanceCase, xml: &str) {
         );
     }
     for (member, expected) in [
-        ("StorageType", Some(row.expected_storage_type)),
         ("PromotionTier", Some(row.expected_promotion_tier)),
-        ("MasterUsername", row.master_username),
+        // The master user belongs to the CLUSTER: this model's `DBInstance` declares no
+        // `MasterUsername`, so the instance envelope reports none whatever its cluster was
+        // created with.
+        ("MasterUsername", None),
     ] {
         let actual = opt_text(xml, member);
         assert_eq!(
@@ -528,8 +549,9 @@ async fn a_multi_instance_page_carries_the_attribute_set_on_every_instance_it_li
     for member in ["MasterUsername", "StorageType"] {
         assert_eq!(
             count(&page, member),
-            identifiers.len(),
-            "case \"whole page\": every listed instance must carry one {member}, got {page}"
+            0,
+            "case \"whole page\": this model's DBInstance declares no {member}, so no listed \
+             instance may carry one, got {page}"
         );
     }
 }

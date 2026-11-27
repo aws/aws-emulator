@@ -47,7 +47,8 @@ use crate::ops::types::{
     DBClusterSnapshot, DBClusterSnapshotAttribute, DBClusterSnapshotAttributesResult,
     DBEngineVersion, DBInstance, DBSubnetGroup, Endpoint, EventCategoriesMap,
     OrderableDBInstanceOption, Parameter, PendingModifiedValues,
-    ServerlessV2ScalingConfigurationInfo, Subnet, Tag, UpgradeTarget, VpcSecurityGroupMembership,
+    ServerlessV2PlatformVersionInfo, ServerlessV2ScalingConfigurationInfo, Subnet, Tag,
+    UpgradeTarget, VpcSecurityGroupMembership,
 };
 
 /// The ARN namespace and sigv4 signing name DocumentDB shares with RDS, so a cluster ARN
@@ -148,63 +149,10 @@ pub const STATUS_DELETING: &str = "deleting";
 /// the one its cluster carries.
 pub const PARAMETER_GROUP_IN_SYNC: &str = "in-sync";
 
-/// `DBCluster$AutoMinorVersionUpgrade` for a cluster created without any
-/// minor-version-upgrade input: neither `CreateDBClusterMessage` nor
-/// `ModifyDBClusterMessage` models such a member, and the member was added to the
-/// `DBCluster` shape from the recorded responses, where automatic minor version upgrade is
-/// on for a cluster nothing asked to pin.
-pub const DEFAULT_CLUSTER_AUTO_MINOR_VERSION_UPGRADE: bool = true;
-
-/// `DBCluster$DBActivityStreamStatus` for a cluster that has never started a database
-/// activity stream: the steady state AWS reports, and the only one this service can reach
-/// (the model binds no activity-stream operation to start or stop one).
-pub const ACTIVITY_STREAM_STOPPED: &str = "stopped";
-
-/// `DBCluster$DocdbAnalyticsEnabled` for a cluster created without the Amazon DocumentDB
-/// analytics capability: no input member in this model turns it on.
-pub const DEFAULT_DOCDB_ANALYTICS_ENABLED: bool = false;
-
-/// `DBCluster$CustomDataGroupPresent` for a cluster created without a custom data group:
-/// no input member in this model supplies one.
-pub const DEFAULT_CUSTOM_DATA_GROUP_PRESENT: bool = false;
-
-/// `DBCluster$VPCNetworkingEnabled` for every cluster this service can create: an Amazon
-/// DocumentDB cluster is reachable only from inside a virtual private cloud, whose
-/// protocols its subnet group fixes (`DBCluster$NetworkType`: "The network type is
-/// determined by the `DBSubnetGroup` specified for the cluster"), so VPC networking is on
-/// for every one of them and no input member turns it off.
-pub const DEFAULT_VPC_NETWORKING_ENABLED: bool = true;
-
-/// `DBCluster$InternetAccessGatewayEnabled` for a cluster created without an internet
-/// access gateway: no input member in this model attaches one.
-pub const DEFAULT_INTERNET_ACCESS_GATEWAY_ENABLED: bool = false;
-
 /// `DBInstance$PubliclyAccessible` for every instance of this engine:
 /// "Not supported. Amazon DocumentDB does not currently support public endpoints. The
 /// value of `PubliclyAccessible` is always `false`."
 pub const INSTANCE_PUBLICLY_ACCESSIBLE: bool = false;
-
-/// `DBInstance$AllocatedStorage`, in gibibytes: an Amazon DocumentDB instance stores its
-/// data on the storage its CLUSTER manages ("Amazon DocumentDB manages the storage of your
-/// cluster automatically", Amazon DocumentDB Developer Guide), so no storage is allocated
-/// to the instance itself and it reports the single-unit size AWS reports for
-/// cluster-managed storage.
-pub const INSTANCE_ALLOCATED_STORAGE: i32 = 1;
-
-/// `DBInstance$StorageThroughput` for an instance of this engine: throughput is a property
-/// of provisioned instance storage, which cluster-managed storage
-/// ([`INSTANCE_ALLOCATED_STORAGE`]) provisions none of.
-pub const INSTANCE_STORAGE_THROUGHPUT: i32 = 0;
-
-/// `DBInstance$DbInstancePort` for an instance of this engine: the instance is reached at
-/// its cluster's port, which `DBInstance$Endpoint$Port` and `DBCluster$Port` report, so it
-/// carries no port of its own.
-pub const INSTANCE_PORT_UNSET: i32 = 0;
-
-/// `DBInstance$HttpEndpointEnabled` for an instance of this engine: the model binds no
-/// operation and no input member that enables an HTTP endpoint on an Amazon DocumentDB
-/// resource, so none of them has one.
-pub const INSTANCE_HTTP_ENDPOINT_ENABLED: bool = false;
 
 /// Seconds in the day `BackupRetentionPeriod` is counted in
 /// (`CreateDBClusterMessage$BackupRetentionPeriod`: "The number of days for which
@@ -531,18 +479,6 @@ pub struct DbClusterRecord {
     pub copy_tags_to_snapshot: bool,
     /// `ServerlessV2ScalingConfiguration` as (min capacity, max capacity).
     pub serverless_v2_scaling: Option<(f64, f64)>,
-    /// `AutoMinorVersionUpgrade`; see [`DEFAULT_CLUSTER_AUTO_MINOR_VERSION_UPGRADE`].
-    pub auto_minor_version_upgrade: bool,
-    /// `DBActivityStreamStatus`; see [`ACTIVITY_STREAM_STOPPED`].
-    pub activity_stream_status: String,
-    /// `DocdbAnalyticsEnabled`; see [`DEFAULT_DOCDB_ANALYTICS_ENABLED`].
-    pub docdb_analytics_enabled: bool,
-    /// `CustomDataGroupPresent`; see [`DEFAULT_CUSTOM_DATA_GROUP_PRESENT`].
-    pub custom_data_group_present: bool,
-    /// `VPCNetworkingEnabled`; see [`DEFAULT_VPC_NETWORKING_ENABLED`].
-    pub vpc_networking_enabled: bool,
-    /// `InternetAccessGatewayEnabled`; see [`DEFAULT_INTERNET_ACCESS_GATEWAY_ENABLED`].
-    pub internet_access_gateway_enabled: bool,
     /// `HostedZoneId`: the Route 53 hosted zone this cluster's endpoints live in, minted
     /// once from the cluster's Region; see [`hosted_zone_id`].
     pub hosted_zone_id: String,
@@ -1738,18 +1674,6 @@ pub fn cluster_to_shape(
         .collect();
     let restore_window = cluster_restore_window(record, now());
     DBCluster {
-        // The members AWS's cluster envelope always carries, each read from the record so
-        // one projection reports what every path stored; see
-        // [`DEFAULT_CLUSTER_AUTO_MINOR_VERSION_UPGRADE`] and its neighbours. The
-        // activity-stream status is carried under both of the names the envelope reports
-        // it under, out of the one stored status.
-        activity_stream_status: Some(record.activity_stream_status.clone()),
-        auto_minor_version_upgrade: Some(record.auto_minor_version_upgrade),
-        db_activity_stream_status: Some(record.activity_stream_status.clone()),
-        docdb_analytics_enabled: Some(record.docdb_analytics_enabled),
-        custom_data_group_present: Some(record.custom_data_group_present),
-        vpc_networking_enabled: Some(record.vpc_networking_enabled),
-        internet_access_gateway_enabled: Some(record.internet_access_gateway_enabled),
         availability_zones: Some(record.availability_zones.clone()),
         backup_retention_period: Some(record.backup_retention_period),
         db_cluster_identifier: Some(record.identifier.clone()),
@@ -1811,6 +1735,17 @@ pub fn cluster_to_shape(
                 max_capacity: Some(max),
             }
         }),
+        // "The version of the Amazon DocumentDB Serverless platform used by the cluster":
+        // reported for a cluster that HAS Serverless capacity configured, and for one only
+        // — a cluster with no such capacity runs on no Serverless platform at all, which is
+        // what reporting nothing says. The version is the one this service publishes as the
+        // default of the engine ([`default_serverless_v2_platform_version`]), the version
+        // `DescribeServerlessV2PlatformVersions` designates as "the version used for new DB
+        // clusters".
+        serverless_v2_platform_version: record
+            .serverless_v2_scaling
+            .and_then(|_| default_serverless_v2_platform_version())
+            .map(|platform| platform.version.to_string()),
         master_user_secret: None,
         network_type: record.network_type.clone(),
         copy_tags_to_snapshot: Some(record.copy_tags_to_snapshot),
@@ -1821,16 +1756,13 @@ pub fn cluster_to_shape(
 ///
 /// `cluster` is the instance's cluster, when it is still in state: the members that a
 /// cluster owns (port, backup settings, encryption, security groups, engine version, the
-/// master user name, the storage its data sits on, whether it runs in a virtual private
-/// cloud, the Route 53 hosted zone its endpoints live in, and the point-in-time-restore
-/// window its continuous backup covers) are read from it rather than copied at create
-/// time, so a later `ModifyDBCluster` shows up on its instances too.
+/// Route 53 hosted zone its endpoints live in, and the point-in-time-restore window its
+/// continuous backup covers) are read from it rather than copied at create time, so a
+/// later `ModifyDBCluster` shows up on its instances too.
 ///
-/// The members this engine fixes for every instance — it supports no public endpoint, no
-/// HTTP endpoint, no instance-level port and no instance-level storage — are projected
-/// from the constants that state each rule ([`INSTANCE_PUBLICLY_ACCESSIBLE`] and its
-/// neighbours), so no path can report an instance as reachable from the internet or as
-/// carrying provisioned storage of its own.
+/// What this engine fixes for every instance — it supports no public endpoint — is
+/// projected from the constant that states the rule ([`INSTANCE_PUBLICLY_ACCESSIBLE`]), so
+/// no path can report an instance as reachable from the internet.
 pub fn instance_to_shape(
     record: &DbInstanceRecord,
     cluster: Option<&DbClusterRecord>,
@@ -1840,26 +1772,6 @@ pub fn instance_to_shape(
         db_instance_class: Some(record.instance_class.clone()),
         engine: Some(record.engine.clone()),
         db_instance_status: Some(record.status.clone()),
-        // The storage the instance's data sits on is its CLUSTER's, so the type is the
-        // cluster's own and the instance has neither a size nor a throughput of its own.
-        allocated_storage: Some(INSTANCE_ALLOCATED_STORAGE),
-        storage_type: Some(
-            cluster
-                .and_then(|owner| owner.storage_type.clone())
-                .unwrap_or_else(|| DEFAULT_STORAGE_TYPE.to_string()),
-        ),
-        storage_throughput: Some(INSTANCE_STORAGE_THROUGHPUT),
-        // The master user is the CLUSTER's: `CreateDBInstanceMessage` models no master-user
-        // member at all, so an instance reports the user its cluster was created with.
-        master_username: cluster.and_then(|owner| owner.master_username.clone()),
-        license_model: Some(DOCDB_LICENSE_MODEL.to_string()),
-        db_instance_port: Some(INSTANCE_PORT_UNSET),
-        vpc_networking_enabled: Some(
-            cluster.map_or(DEFAULT_VPC_NETWORKING_ENABLED, |owner| {
-                owner.vpc_networking_enabled
-            }),
-        ),
-        http_endpoint_enabled: Some(INSTANCE_HTTP_ENDPOINT_ENABLED),
         endpoint: Some(Endpoint {
             address: Some(record.endpoint_address()),
             port: Some(record.endpoint_port(cluster.map_or(DEFAULT_PORT, |owner| owner.port))),
@@ -2296,8 +2208,6 @@ pub fn valid_upgrade_targets(version: &str) -> Vec<UpgradeTarget> {
             UpgradeTarget {
                 engine: Some(DOCDB_ENGINE.to_string()),
                 engine_version: Some(target.version.to_string()),
-                major_engine_version: Some(target.major.to_string()),
-                minor_engine_version: Some(target.minor.to_string()),
                 description: Some(engine_version_description(target.version)),
                 // `AutoUpgrade` is whether the target is applied to a resource with
                 // `AutoMinorVersionUpgrade` set, which moves a cluster onto the DEFAULT
@@ -2311,10 +2221,6 @@ pub fn valid_upgrade_targets(version: &str) -> Vec<UpgradeTarget> {
                         ),
                 ),
                 is_major_version_upgrade: Some(major_upgrade),
-                supports_snapshot_upgrade: Some(major_upgrade),
-                supports_data_groups: Some(
-                    ::service_common::docdb_engine_catalog::VERSION_CAPABILITIES.data_groups,
-                ),
             }
         })
         .collect()
@@ -2333,31 +2239,29 @@ pub fn engine_version_description(version: &str) -> String {
 
 /// One published engine version as the modelled `DBEngineVersion`.
 ///
-/// Every member is DERIVED: the version split and the parameter-group family from the shared
-/// engine catalog of the front door this service is a view of
+/// Every member is DERIVED: the parameter-group family from the shared engine catalog of
+/// the front door this service is a view of
 /// ([`::service_common::docdb_engine_catalog`]), the exportable log types from the parameter
 /// catalogue ([`exportable_log_types`]), the supported authorities from the certificate
 /// catalogue ([`supported_ca_certificate_identifiers`]) and the upgrade targets from the
 /// published version list ([`valid_upgrade_targets`]).
 ///
-/// The capability members are the ones that front door reports on EVERY engine version,
-/// whichever of its views answers — this engine publishes none of them but the certificate
-/// rotation ([`::service_common::docdb_engine_catalog::VERSION_CAPABILITIES`]) — so a client
-/// that gates on one reads the same answer from this view as from the Amazon RDS view of the
-/// same door, rather than reading it as absent.
+/// The capability member this model's `DBEngineVersion` declares — certificate rotation
+/// without a restart — is answered for this engine from the one catalog both views of that
+/// front door read ([`::service_common::docdb_engine_catalog::VERSION_CAPABILITIES`]), so a
+/// client that gates on it reads the same answer from this view as from the Amazon RDS view
+/// of the same door, rather than reading it as absent.
 ///
 /// `ServerlessV2FeaturesSupport` reports "any Amazon DocumentDB Serverless properties or
-/// limits that differ between Amazon DocumentDB engine versions"; this emulator publishes
-/// no serverless capacity limits, so the member is left absent rather than invented.
+/// limits that differ between Amazon DocumentDB engine versions"; no limit this emulator
+/// publishes differs between the versions of this engine, so the member is left absent
+/// rather than invented.
 pub fn engine_version_to_shape(version: &str) -> DBEngineVersion {
     let exportable = exportable_log_types(version);
     let capabilities = ::service_common::docdb_engine_catalog::VERSION_CAPABILITIES;
-    let published = ::service_common::docdb_engine_catalog::engine_version(version);
     DBEngineVersion {
         engine: Some(DOCDB_ENGINE.to_string()),
         engine_version: Some(version.to_string()),
-        major_engine_version: published.map(|row| row.major.to_string()),
-        minor_engine_version: published.map(|row| row.minor.to_string()),
         db_parameter_group_family: Some(parameter_group_family(version)),
         db_engine_description: Some(DOCDB_ENGINE_DESCRIPTION.to_string()),
         db_engine_version_description: Some(engine_version_description(version)),
@@ -2368,14 +2272,6 @@ pub fn engine_version_to_shape(version: &str) -> DBEngineVersion {
         supports_certificate_rotation_without_restart: Some(
             capabilities.certificate_rotation_without_restart,
         ),
-        supports_read_replica: Some(capabilities.read_replica),
-        supports_cluster: Some(capabilities.cluster),
-        supports_global_databases: Some(capabilities.global_databases),
-        supports_rds_proxy: Some(capabilities.rds_proxy),
-        supports_parallel_query: Some(capabilities.parallel_query),
-        supports_babelfish: Some(capabilities.babelfish),
-        supports_limitless_database: Some(capabilities.limitless_database),
-        supports_data_groups: Some(capabilities.data_groups),
         serverless_v2_features_support: None,
     }
 }
@@ -2459,7 +2355,7 @@ pub fn instance_classes() -> Vec<String> {
 /// is the type a create without a `StorageType` gets ([`DEFAULT_STORAGE_TYPE`]).
 pub use ::service_common::docdb_engine_catalog::STORAGE_TYPES;
 
-/// `OrderableDBInstanceOption$LicenseModel` and `DBInstance$LicenseModel` for this engine.
+/// `OrderableDBInstanceOption$LicenseModel` for this engine.
 ///
 /// The licence setting does not apply to Amazon DocumentDB — the model declares no
 /// `LicenseModel` on `CreateDBInstance` at all — and an engine AWS licenses itself carries
@@ -2483,20 +2379,12 @@ pub const DOCDB_LICENSE_MODEL: &str = ::service_common::docdb_engine_catalog::LI
 /// values a create picks between
 /// ([`::service_common::docdb_engine_catalog::STORAGE_TYPES`]) and each of them is its own
 /// option.
-///
-/// The capability members are the ones the shared front door reports on EVERY orderable
-/// option, answered for this engine from the one catalog both of its views read
-/// ([`::service_common::docdb_engine_catalog::OPTION_CAPABILITIES`]): this is the call a
-/// client makes before a create to decide what it may order, so a capability its cluster
-/// member does not have is reported false rather than left absent, and one it does have is
-/// reported rather than hidden.
 pub fn orderable_option_to_shape(
     version: &str,
     instance_class: &str,
     storage_type: &str,
     region: &str,
 ) -> OrderableDBInstanceOption {
-    let capabilities = ::service_common::docdb_engine_catalog::OPTION_CAPABILITIES;
     OrderableDBInstanceOption {
         engine: Some(DOCDB_ENGINE.to_string()),
         engine_version: Some(version.to_string()),
@@ -2510,39 +2398,128 @@ pub fn orderable_option_to_shape(
         ),
         vpc: Some(true),
         storage_type: Some(storage_type.to_string()),
-        multi_az_capable: Some(capabilities.multi_az_capable),
-        read_replica_capable: Some(capabilities.read_replica_capable),
-        supports_storage_encryption: Some(capabilities.storage_encryption),
-        supports_iops: Some(capabilities.iops),
-        supports_storage_throughput: Some(capabilities.storage_throughput),
-        supports_enhanced_monitoring: Some(capabilities.enhanced_monitoring),
-        supports_iam_database_authentication: Some(capabilities.iam_database_authentication),
-        supports_performance_insights: Some(capabilities.performance_insights),
-        outpost_capable: Some(capabilities.outpost_capable),
-        supports_clusters: Some(capabilities.clusters),
-        supports_global_databases: Some(capabilities.global_databases),
-        supports_http_endpoint: Some(capabilities.http_endpoint),
-        supports_optimized_reads: Some(capabilities.optimized_reads),
-        supports_optimized_writes: Some(capabilities.optimized_writes),
-        supports_kerberos_authentication: Some(capabilities.kerberos_authentication),
-        supports_dedicated_log_volume: Some(capabilities.dedicated_log_volume),
-        supports_additional_storage_volumes: Some(capabilities.additional_storage_volumes),
-        requires_custom_processor_features: Some(
-            capabilities.requires_custom_processor_features,
-        ),
-        supported_engine_modes: Some(strings(
-            ::service_common::docdb_engine_catalog::ENGINE_MODES,
-        )),
-        supported_activity_stream_modes: Some(strings(
-            ::service_common::docdb_engine_catalog::ACTIVITY_STREAM_MODES,
-        )),
-        supported_network_types: Some(strings(
-            ::service_common::docdb_engine_catalog::NETWORK_TYPES,
-        )),
     }
 }
 
-/// A published list of literals as the owned strings a wire shape's list member takes.
-fn strings(values: &[&str]) -> Vec<String> {
-    values.iter().map(|value| (*value).to_string()).collect()
+// ---------------------------------------------------------------------------
+// Serverless platform versions
+//
+// `DescribeServerlessV2PlatformVersions` reports the platform versions Amazon DocumentDB
+// Serverless runs on, and `DBCluster$ServerlessV2PlatformVersion` names the one a cluster
+// runs on. Both answer from the ONE published catalogue below, so the version a cluster
+// reports is always a version the report publishes. Reference data, like the engine-version
+// catalogue: no request names a platform version and no path writes one.
+// ---------------------------------------------------------------------------
+
+/// `ServerlessV2PlatformVersionInfo$Status` for a platform version that is in use. The
+/// member states both statuses: "enabled - The platform version is in use" and "disabled -
+/// The platform version is not in use".
+pub const PLATFORM_VERSION_ENABLED: &str = "enabled";
+
+/// `ServerlessV2PlatformVersionInfo$Status` for a platform version that is no longer in
+/// use — the rows `DescribeServerlessV2PlatformVersionsMessage$IncludeAll` asks for as
+/// well ("whether to also include platform versions that are no longer in use"); see
+/// [`PLATFORM_VERSION_ENABLED`].
+pub const PLATFORM_VERSION_DISABLED: &str = "disabled";
+
+/// One Amazon DocumentDB Serverless platform version this service publishes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ServerlessPlatformVersion {
+    /// `ServerlessV2PlatformVersionInfo$ServerlessV2PlatformVersion`, a whole number
+    /// (`DescribeServerlessV2PlatformVersionsMessage$ServerlessV2PlatformVersion`:
+    /// "Example: 3").
+    pub version: &'static str,
+    /// Whether this version is still in use, which is the `Status` it reports; see
+    /// [`PLATFORM_VERSION_ENABLED`].
+    pub in_use: bool,
+    /// Whether this is the engine's default platform version, "the version used for new DB
+    /// clusters" (`ServerlessV2PlatformVersionInfo$IsDefault`).
+    pub is_default: bool,
+}
+
+/// The Serverless platform versions this service publishes, OLDEST FIRST — the catalogue's
+/// own order, which is the order the report publishes its records in.
+///
+/// The platform is SERVICE-MANAGED: no operation of this model takes a platform version as
+/// an input, so nothing a caller sends chooses one and the catalogue is reference data. A
+/// version is a whole number, and the number the model's own example names
+/// ([`ServerlessPlatformVersion::version`]: "Example: 3") is the one the front door serves
+/// now — so it is the version this catalogue designates the default, the one every
+/// Serverless cluster it holds runs on, and the lower numbers it counted up from are the
+/// versions it has already moved off, published as no longer in use.
+pub const SERVERLESS_V2_PLATFORM_VERSIONS: &[ServerlessPlatformVersion] = &[
+    platform_version("1", false, false),
+    platform_version("2", false, false),
+    platform_version("3", true, true),
+];
+
+/// One catalogue row, so the table above reads as a table. Columns, in order: the platform
+/// version, whether it is still in use, whether it is the engine's default.
+const fn platform_version(
+    version: &'static str,
+    in_use: bool,
+    is_default: bool,
+) -> ServerlessPlatformVersion {
+    ServerlessPlatformVersion {
+        version,
+        in_use,
+        is_default,
+    }
+}
+
+/// Every published Serverless platform version, oldest first; see
+/// [`SERVERLESS_V2_PLATFORM_VERSIONS`].
+pub fn serverless_v2_platform_versions() -> impl Iterator<Item = &'static ServerlessPlatformVersion>
+{
+    SERVERLESS_V2_PLATFORM_VERSIONS.iter()
+}
+
+/// The platform version this catalogue designates the engine's default — "the version used
+/// for new DB clusters" — or `None` when it designates none.
+///
+/// It is the one accessor for "which platform does a Serverless cluster run on": the
+/// cluster envelope ([`cluster_to_shape`]) and the platform-version report answer from
+/// here, so neither can name a version the other does not publish.
+pub fn default_serverless_v2_platform_version() -> Option<&'static ServerlessPlatformVersion> {
+    SERVERLESS_V2_PLATFORM_VERSIONS
+        .iter()
+        .find(|row| row.is_default)
+}
+
+/// `ServerlessV2PlatformVersionInfo$ServerlessV2PlatformVersionDescription` for `version`:
+/// "the description of the serverless platform", which names the product's own Serverless
+/// platform and the version it describes.
+pub fn serverless_platform_version_description(version: &str) -> String {
+    format!("{DOCDB_PRODUCT} Serverless platform version {version}")
+}
+
+/// One published platform version as the modelled `ServerlessV2PlatformVersionInfo`.
+///
+/// Every member is the ROW's own or derived from it: the description from the version
+/// ([`serverless_platform_version_description`]) and the status from whether the version is
+/// still in use ([`PLATFORM_VERSION_ENABLED`]).
+///
+/// `ServerlessV2FeaturesSupport` reports "any Amazon DocumentDB Serverless v2 properties or
+/// limits that DIFFER between platform versions"; no limit this emulator publishes differs
+/// between the versions of this catalogue, so the member is left absent rather than
+/// invented.
+pub fn serverless_platform_version_to_shape(
+    row: &ServerlessPlatformVersion,
+) -> ServerlessV2PlatformVersionInfo {
+    ServerlessV2PlatformVersionInfo {
+        serverless_v2_platform_version: Some(row.version.to_string()),
+        serverless_v2_platform_version_description: Some(
+            serverless_platform_version_description(row.version),
+        ),
+        engine: Some(DOCDB_ENGINE.to_string()),
+        serverless_v2_features_support: None,
+        status: Some(
+            match row.in_use {
+                true => PLATFORM_VERSION_ENABLED,
+                false => PLATFORM_VERSION_DISABLED,
+            }
+            .to_string(),
+        ),
+        is_default: Some(row.is_default),
+    }
 }

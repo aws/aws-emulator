@@ -37,8 +37,6 @@ pub struct DescribeDBEngineVersionsOutput {
 pub struct DBEngineVersion {
     pub engine: Option<String>,
     pub engine_version: Option<String>,
-    pub major_engine_version: Option<String>,
-    pub minor_engine_version: Option<String>,
     pub db_parameter_group_family: Option<String>,
     pub db_engine_description: Option<String>,
     pub db_engine_version_description: Option<String>,
@@ -47,14 +45,6 @@ pub struct DBEngineVersion {
     pub supports_log_exports_to_cloudwatch_logs: Option<bool>,
     pub supported_ca_certificate_identifiers: Option<Vec<String>>,
     pub supports_certificate_rotation_without_restart: Option<bool>,
-    pub supports_read_replica: Option<bool>,
-    pub supports_cluster: Option<bool>,
-    pub supports_global_databases: Option<bool>,
-    pub supports_rds_proxy: Option<bool>,
-    pub supports_parallel_query: Option<bool>,
-    pub supports_babelfish: Option<bool>,
-    pub supports_limitless_database: Option<bool>,
-    pub supports_data_groups: Option<bool>,
     pub serverless_v2_features_support: Option<ServerlessV2FeaturesSupport>,
 }
 
@@ -63,19 +53,8 @@ pub struct DBEngineVersion {
 pub struct UpgradeTarget {
     pub engine: Option<String>,
     pub engine_version: Option<String>,
-    pub major_engine_version: Option<String>,
-    pub minor_engine_version: Option<String>,
     pub description: Option<String>,
     pub auto_upgrade: Option<bool>,
     pub is_major_version_upgrade: Option<bool>,
-    pub supports_snapshot_upgrade: Option<bool>,
-    pub supports_data_groups: Option<bool>,
-}
-
-#[smithy_macros::smithy(shape = "com.amazonaws.docdb#ServerlessV2FeaturesSupport")]
-#[derive(Debug, Clone, Default)]
-pub struct ServerlessV2FeaturesSupport {
-    pub min_capacity: Option<f64>,
-    pub max_capacity: Option<f64>,
 }
 

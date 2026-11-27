@@ -189,37 +189,6 @@ pub struct ServerlessV2ScalingConfiguration {
 #[smithy_macros::smithy(shape = "com.amazonaws.docdb#DBCluster")]
 #[derive(Debug, Clone, Default)]
 pub struct DBCluster {
-    /// The cluster's database-activity-stream status. The member was added to this
-    /// service's on-disk model from the recorded AWS responses — the shipped model
-    /// snapshot carries no such member on this shape, while AWS reports the status on a
-    /// cluster it returns under this name and under
-    /// [`DBCluster::db_activity_stream_status`] both.
-    pub activity_stream_status: Option<String>,
-    /// Whether automatic minor engine version upgrades are applied to this cluster. The
-    /// member was added to this service's on-disk model from the recorded AWS responses —
-    /// the shipped model snapshot carries no such member on this shape, while AWS always
-    /// reports the flag on a cluster it returns — and its value is projected by
-    /// [`crate::state::cluster_to_shape`], the one place a stored cluster becomes this
-    /// shape.
-    pub auto_minor_version_upgrade: Option<bool>,
-    /// The cluster's database-activity-stream status under the second of the two names
-    /// the envelope carries it under; see [`DBCluster::activity_stream_status`].
-    pub db_activity_stream_status: Option<String>,
-    /// Whether the Amazon DocumentDB analytics capability is enabled for this cluster;
-    /// added to the on-disk model from the recorded AWS responses, like
-    /// [`DBCluster::auto_minor_version_upgrade`].
-    pub docdb_analytics_enabled: Option<bool>,
-    /// Whether this cluster carries a custom data group; added to the on-disk model from
-    /// the recorded AWS responses, like [`DBCluster::auto_minor_version_upgrade`].
-    pub custom_data_group_present: Option<bool>,
-    /// Whether this cluster runs inside a virtual private cloud; added to the on-disk
-    /// model from the recorded AWS responses, like
-    /// [`DBCluster::auto_minor_version_upgrade`].
-    pub vpc_networking_enabled: Option<bool>,
-    /// Whether an internet access gateway is attached to this cluster; added to the
-    /// on-disk model from the recorded AWS responses, like
-    /// [`DBCluster::auto_minor_version_upgrade`].
-    pub internet_access_gateway_enabled: Option<bool>,
     pub availability_zones: Option<Vec<String>>,
     pub backup_retention_period: Option<i32>,
     pub db_cluster_identifier: Option<String>,
@@ -255,6 +224,7 @@ pub struct DBCluster {
     pub io_optimized_next_allowed_modification_time: Option<::aws_smithy_types::DateTime>,
     pub storage_type: Option<String>,
     pub serverless_v2_scaling_configuration: Option<ServerlessV2ScalingConfigurationInfo>,
+    pub serverless_v2_platform_version: Option<String>,
     pub master_user_secret: Option<ClusterMasterUserSecret>,
     pub network_type: Option<String>,
     pub copy_tags_to_snapshot: Option<bool>,
@@ -379,36 +349,6 @@ pub struct StorageQuotaExceededFault {
 #[smithy_macros::smithy(shape = "com.amazonaws.docdb#DBInstance")]
 #[derive(Debug, Clone, Default)]
 pub struct DBInstance {
-    /// The storage, in gibibytes, the instance stores its data on. The member was added to
-    /// this service's on-disk model from the recorded AWS responses — the shipped model
-    /// snapshot carries no such member on this shape, while the shared Amazon RDS wire API
-    /// Amazon DocumentDB is fronted by reports it on every instance — and its value is
-    /// projected by [`crate::state::instance_to_shape`], the one place a stored instance
-    /// becomes this shape.
-    pub allocated_storage: Option<i32>,
-    /// The master user name of the cluster the instance belongs to; added to the on-disk
-    /// model from the recorded AWS responses, like [`DBInstance::allocated_storage`].
-    pub master_username: Option<String>,
-    /// The license model the instance's engine is licensed under; added to the on-disk
-    /// model from the recorded AWS responses, like [`DBInstance::allocated_storage`].
-    pub license_model: Option<String>,
-    /// The storage type the instance's data sits on, which its cluster manages; added to
-    /// the on-disk model from the recorded AWS responses, like
-    /// [`DBInstance::allocated_storage`].
-    pub storage_type: Option<String>,
-    /// The storage throughput provisioned for the instance; added to the on-disk model
-    /// from the recorded AWS responses, like [`DBInstance::allocated_storage`].
-    pub storage_throughput: Option<i32>,
-    /// The instance's own port, as opposed to the one its cluster's endpoint publishes;
-    /// added to the on-disk model from the recorded AWS responses, like
-    /// [`DBInstance::allocated_storage`].
-    pub db_instance_port: Option<i32>,
-    /// Whether the instance runs inside a virtual private cloud; added to the on-disk
-    /// model from the recorded AWS responses, like [`DBInstance::allocated_storage`].
-    pub vpc_networking_enabled: Option<bool>,
-    /// Whether an HTTP endpoint is enabled for the instance; added to the on-disk model
-    /// from the recorded AWS responses, like [`DBInstance::allocated_storage`].
-    pub http_endpoint_enabled: Option<bool>,
     pub db_instance_identifier: Option<String>,
     pub db_instance_class: Option<String>,
     pub engine: Option<String>,
@@ -664,6 +604,13 @@ pub struct DBClusterSnapshotAttributesResult {
 pub struct DBClusterSnapshotAttribute {
     pub attribute_name: Option<String>,
     pub attribute_values: Option<Vec<String>>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.docdb#ServerlessV2FeaturesSupport")]
+#[derive(Debug, Clone, Default)]
+pub struct ServerlessV2FeaturesSupport {
+    pub min_capacity: Option<f64>,
+    pub max_capacity: Option<f64>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.docdb#InvalidDBSecurityGroupStateFault")]

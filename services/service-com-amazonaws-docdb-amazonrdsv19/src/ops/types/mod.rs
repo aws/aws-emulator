@@ -49,6 +49,7 @@ pub mod describe_events_types;
 pub mod describe_global_clusters_types;
 pub mod describe_orderable_db_instance_options_types;
 pub mod describe_pending_maintenance_actions_types;
+pub mod describe_serverless_v2_platform_versions_types;
 pub mod failover_db_cluster_types;
 pub mod failover_global_cluster_types;
 pub mod list_tags_for_resource_types;
@@ -141,6 +142,8 @@ pub use describe_global_clusters_types::*;
 pub use describe_orderable_db_instance_options_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use describe_pending_maintenance_actions_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use describe_serverless_v2_platform_versions_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use failover_db_cluster_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
