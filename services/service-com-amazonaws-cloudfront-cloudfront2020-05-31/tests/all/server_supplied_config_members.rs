@@ -22,13 +22,12 @@
 //!   `FieldLevelEncryptionProfileConfig$Comment`, `PublicKeyConfig$Comment`), and
 //!   `FieldLevelEncryptionConfig$QueryArgProfileConfig`, the mapping every stored
 //!   configuration carries (an update of one cannot leave it out), is the mapping that maps
-//!   nothing: `ForwardWhenQueryArgProfileIsUnknown` true beside a `QueryArgProfiles`
-//!   wrapper stating `Quantity` 0;
+//!   nothing: a `QueryArgProfiles` wrapper stating `Quantity` 0, which forwards a request
+//!   naming a profile it cannot resolve since it designates none;
 //! * one the service DECIDES from the rest of the configuration takes that value whatever
-//!   the request stated — `QueryArgProfileConfig$ForwardWhenQueryArgProfileIsUnknown` is
-//!   true wherever the mapping maps a query argument to a profile, since the mapping names
-//!   the profiles the configuration encrypts for and a request naming any other is one it
-//!   has nothing to do with.
+//!   the request stated — `QueryArgProfileConfig$ForwardWhenQueryArgProfileIsUnknown` says of
+//!   the stored configuration whether its mapping maps NO query argument to a profile
+//!   (`field_level_encryption_query_arg_forwarding.rs` states that rule over its own table).
 //!
 //! Each table spans what the rule generalises over: which members the request states at all,
 //! the magnitude of each TTL (zero, one, each documented bound and one past it), both
@@ -459,16 +458,16 @@ impl FleRow {
         self.comment.unwrap_or_default().to_string()
     }
 
-    /// The `ForwardWhenQueryArgProfileIsUnknown` the stored configuration carries: the one
-    /// the request stated, the forwarding setting the service supplies for a configuration
-    /// that states no mapping at all, or — for a section whose wrapper carries a mapping —
-    /// the forwarding setting the service supplies for a mapping that maps a query argument
-    /// to a profile, whatever the request stated.
+    /// The `ForwardWhenQueryArgProfileIsUnknown` the stored configuration carries: whether
+    /// its mapping maps NO query argument to a profile — the value the stored configuration
+    /// answers from its own mapping rather than from the request
+    /// (`field_level_encryption_query_arg_forwarding.rs` states that rule), which for a
+    /// configuration that states no section at all is the mapping that maps nothing.
     fn expected_flag(&self) -> bool {
         match (self.query_arg_flag, self.query_arg_mappings) {
             (None, _) => true,
-            (Some(_), Some(mapped)) if mapped > 0 => true,
-            (Some(stated), _) => stated,
+            (Some(_), Some(mapped)) => mapped == 0,
+            (Some(_), None) => true,
         }
     }
 

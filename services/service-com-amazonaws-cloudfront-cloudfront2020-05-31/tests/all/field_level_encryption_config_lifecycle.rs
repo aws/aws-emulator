@@ -63,6 +63,12 @@ use crate::response_headers_policy_lifecycle::escape;
 /// (`smithy_query(query="shape",shape="Format")` lists `URLEncoded` and nothing else).
 const URL_ENCODED: &str = "URLEncoded";
 
+/// The content type whose body layout `URLEncoded` names: the one content type field-level
+/// encryption reads fields out of, and so the one the content type-profile mapping CloudFront
+/// supplies for a configuration that states none covers. Spelled out here rather than taken
+/// from the crate, so a changed mapping fails this suite.
+pub(crate) const FORM_CONTENT_TYPE: &str = "application/x-www-form-urlencoded";
+
 /// The sentences CloudFront sends on the wire for these refusals, spelled out here rather
 /// than taken from the crate, so a reworded refusal fails this suite.
 const NO_SUCH_CONFIG_MESSAGE: &str = "The specified field level encryption config does not exist.";
@@ -389,36 +395,32 @@ impl Config {
             );
         }
 
-        match &self.content_type {
-            None => assert!(
-                config.at("ContentTypeProfileConfig").is_none(),
-                "case {case:?} ({context}): expected no ContentTypeProfileConfig, got {raw}"
-            ),
-            Some(section) => {
-                let node = config.at("ContentTypeProfileConfig").unwrap_or_else(|| {
-                    panic!(
-                        "case {case:?} ({context}): expected a ContentTypeProfileConfig in {raw}"
-                    )
-                });
-                let flag = node.text_at("ForwardWhenContentTypeIsUnknown");
-                assert_eq!(
-                    flag,
-                    Some(section.forward_when_unknown.to_string().as_str()),
-                    "case {case:?} ({context}): expected ForwardWhenContentTypeIsUnknown {}, got \
-                     {flag:?} in {raw}",
-                    section.forward_when_unknown
-                );
-                assert_section(
-                    node,
-                    "ContentTypeProfiles",
-                    "ContentTypeProfile",
-                    section,
-                    case,
-                    context,
-                    raw,
-                    |mapping, element| mapping.assert_matches(element, case, context, raw),
-                );
-            }
+        {
+            // `ContentTypeProfileConfig` is the content type-profile mapping every stored
+            // configuration carries, so a configuration that states none is reported with the
+            // mapping the service supplies for it.
+            let section = self.effective_content_type();
+            let node = config.at("ContentTypeProfileConfig").unwrap_or_else(|| {
+                panic!("case {case:?} ({context}): expected a ContentTypeProfileConfig in {raw}")
+            });
+            let flag = node.text_at("ForwardWhenContentTypeIsUnknown");
+            assert_eq!(
+                flag,
+                Some(section.forward_when_unknown.to_string().as_str()),
+                "case {case:?} ({context}): expected ForwardWhenContentTypeIsUnknown {}, got \
+                 {flag:?} in {raw}",
+                section.forward_when_unknown
+            );
+            assert_section(
+                node,
+                "ContentTypeProfiles",
+                "ContentTypeProfile",
+                &section,
+                case,
+                context,
+                raw,
+                |mapping, element| mapping.assert_matches(element, case, context, raw),
+            );
         }
     }
 
@@ -428,30 +430,42 @@ impl Config {
         self.comment.clone().unwrap_or_default()
     }
 
-    /// The `QueryArgProfileConfig` the stored configuration carries: the section this
-    /// request submits with the forwarding flag the SERVICE supplies for its mapping, or —
-    /// for a request that states no section at all — the mapping that maps nothing, under the
-    /// forwarding flag the service supplies for it.
-    ///
-    /// `ForwardWhenQueryArgProfileIsUnknown` is the service's wherever the mapping maps a
-    /// query argument to a profile: such a configuration is stored forwarding a request whose
-    /// `fle-profile` it cannot resolve, whatever the request submitted (recorded behaviour,
-    /// `state::forwards_an_unknown_query_arg_profile`). A mapping that maps NOTHING keeps the
-    /// submitted value.
+    /// The `QueryArgProfileConfig` the stored configuration carries: the section this request
+    /// submits, with the forwarding flag the stored configuration answers from its own
+    /// mapping — whether it maps NO query argument to a profile — or, for a request that
+    /// states no section at all, the mapping that maps nothing.
     pub(crate) fn effective_query_arg(&self) -> Section<QueryArgMapping> {
         let mut section = match &self.query_arg {
             Some(section) => section.clone(),
             None => Section::new(true, Some(Vec::new())),
         };
-        if section
+        section.forward_when_unknown = section
             .mappings
             .as_ref()
-            .is_some_and(|mappings| !mappings.is_empty())
-        {
-            section.forward_when_unknown = true;
-        }
+            .is_none_or(|mappings| mappings.is_empty());
         section
     }
+
+    /// The `ContentTypeProfileConfig` the stored configuration carries: the section this
+    /// request submits, or — for a request that states none — the mapping the service
+    /// supplies ([`supplied_content_type`]).
+    pub(crate) fn effective_content_type(&self) -> Section<ContentTypeMapping> {
+        self.content_type
+            .clone()
+            .unwrap_or_else(supplied_content_type)
+    }
+}
+
+/// The content type-profile mapping a configuration that states none is stored with: the one
+/// content type field-level encryption reads fields from ([`FORM_CONTENT_TYPE`]) under the one
+/// `Format` the model admits, naming no profile of its own — which it carries as the empty
+/// text rather than as an absent member — and not forwarding a body whose content type it
+/// does not cover.
+pub(crate) fn supplied_content_type() -> Section<ContentTypeMapping> {
+    Section::new(
+        false,
+        Some(vec![ContentTypeMapping::new(FORM_CONTENT_TYPE, Some(""))]),
+    )
 }
 
 /// Assert that the `wrapper` of one serialised section reports the mappings `section`

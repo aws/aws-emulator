@@ -351,14 +351,17 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // Both mapping kinds name the PROFILE whose encryption entities the matching fields are
         // encrypted under, so an id no stored profile carries names no profile to encrypt with —
         // the same resolution the create path makes. `ContentTypeProfile$ProfileId` is optional,
-        // and a mapping that names none selects no profile at all rather than an unknown one.
+        // and a mapping that names none — the member left out, or carried empty, as the mapping
+        // CloudFront supplies for a configuration stating no content type section carries it —
+        // selects no profile at all rather than an unknown one.
         let names_unknown_profile = query_arg_profiles
             .iter()
             .map(|profile| profile.profile_id.as_str())
             .chain(
                 content_type_profiles
                     .iter()
-                    .filter_map(|profile| profile.profile_id.as_deref()),
+                    .filter_map(|profile| profile.profile_id.as_deref())
+                    .filter(|profile_id| !profile_id.trim().is_empty()),
             )
             .any(|profile_id| store.field_level_encryption_profile(profile_id).is_none());
         if names_unknown_profile {

@@ -306,7 +306,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // selects, `ContentTypeProfile$ProfileId` for the one a content type is encrypted
         // under — so an id no stored profile carries names no profile to encrypt with and no
         // configuration can be built from it. `ContentTypeProfile$ProfileId` is optional, and
-        // a mapping that names none selects no profile at all rather than an unknown one.
+        // a mapping that names none — the member left out, or carried empty, as the mapping
+        // CloudFront supplies for a configuration stating no content type section carries it —
+        // selects no profile at all rather than an unknown one.
         //
         // Checked AFTER the caller reference above, because the replay that reference answers
         // creates nothing: it reports the configuration the first create already stored, whose
@@ -318,7 +320,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .chain(
                 content_type_profiles
                     .iter()
-                    .filter_map(|profile| profile.profile_id.as_deref()),
+                    .filter_map(|profile| profile.profile_id.as_deref())
+                    .filter(|profile_id| !profile_id.trim().is_empty()),
             )
             .any(|profile_id| store.field_level_encryption_profile(profile_id).is_none());
         if names_unknown_profile {

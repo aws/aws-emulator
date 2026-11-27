@@ -16,7 +16,10 @@
 //!   `FieldLevelEncryption$FieldLevelEncryptionConfig`, and the members a listing's summary
 //!   repeats — reports the document the request supplied and nothing else: a REQUIRED member
 //!   carries the value submitted for it, and an OPTIONAL member the request left out stays
-//!   absent rather than being filled in by the read;
+//!   absent rather than being filled in by the read, save for the members the SERVICE itself
+//!   supplies for a configuration that states none (`server_supplied_config_members.rs`
+//!   states that rule, and `field_level_encryption_query_arg_forwarding.rs` the one member a
+//!   field-level encryption configuration answers from its own mapping);
 //! * `Paths$Items` (`PathList`), `FieldPatterns$Items` (`FieldPatternList`) and
 //!   `EncryptionEntities$Items` (`EncryptionEntityList`) are Smithy LISTS, i.e. ordered
 //!   sequences, so the SEQUENCE is part of the value: the entries are reported at the
@@ -316,10 +319,11 @@ async fn a_profile_reports_its_field_patterns_in_the_order_submitted() {
 
 /// `QueryArgProfileConfig$ForwardWhenQueryArgProfileIsUnknown` and
 /// `ContentTypeProfileConfig$ForwardWhenContentTypeIsUnknown` are REQUIRED booleans, and both
-/// sections are OPTIONAL on `FieldLevelEncryptionConfig`: so each flag is reported with the
-/// value the request submitted for it, and a section the request left out is reported absent
-/// rather than invented by the read — on the create, on both reads, and in the summary a
-/// listing carries.
+/// sections are OPTIONAL on `FieldLevelEncryptionConfig`: so the content type section's flag
+/// and its mappings are reported with the values the request submitted for them, the query
+/// argument section's flag with the value that section's own mapping decides, and a section
+/// the request left out is reported as the mapping the service supplies for it — on the
+/// create, on both reads, and in the summary a listing carries.
 #[tokio::test]
 async fn a_configuration_reports_the_values_submitted() {
     let router = emulator();
@@ -434,9 +438,10 @@ async fn a_configuration_reports_the_values_submitted() {
 
 /// Assert that one serialised element reports each section as the stored configuration
 /// carries it: `QueryArgProfileConfig` always — a configuration that submits none carries
-/// the mapping that maps nothing, under the forwarding flag the service supplies —
-/// `ContentTypeProfileConfig` only when the request carried it, each required flag at the
-/// submitted value, and each content type mapping's members as submitted.
+/// the mapping that maps nothing — `ContentTypeProfileConfig` always too, the section the
+/// request carried or the mapping the service supplies for a request that carried none, each
+/// required flag at the value the stored configuration carries, and each content type
+/// mapping's members as submitted.
 fn assert_sections(row: &Config, node: &Node, case: &str, context: &str, raw: &str) {
     let query_arg = row.effective_query_arg();
     let flag = node.text_at("QueryArgProfileConfig/ForwardWhenQueryArgProfileIsUnknown");
@@ -448,48 +453,40 @@ fn assert_sections(row: &Config, node: &Node, case: &str, context: &str, raw: &s
         query_arg.forward_when_unknown
     );
 
-    match &row.content_type {
-        None => assert!(
-            node.at("ContentTypeProfileConfig").is_none(),
-            "case {case:?} ({context}): expected no ContentTypeProfileConfig, got {raw}"
-        ),
-        Some(section) => {
-            let flag = node.text_at("ContentTypeProfileConfig/ForwardWhenContentTypeIsUnknown");
+    let section = row.effective_content_type();
+    let flag = node.text_at("ContentTypeProfileConfig/ForwardWhenContentTypeIsUnknown");
+    assert_eq!(
+        flag,
+        Some(section.forward_when_unknown.to_string().as_str()),
+        "case {case:?} ({context}): expected ForwardWhenContentTypeIsUnknown {}, got \
+         {flag:?} in {raw}",
+        section.forward_when_unknown
+    );
+    let mappings = section.mappings.as_deref().unwrap_or_default();
+    let elements = node
+        .at("ContentTypeProfileConfig/ContentTypeProfiles/Items")
+        .map(|items| items.children_named("ContentTypeProfile"))
+        .unwrap_or_default();
+    assert_eq!(
+        elements.len(),
+        mappings.len(),
+        "case {case:?} ({context}): expected {} ContentTypeProfile entries, got {} in {raw}",
+        mappings.len(),
+        elements.len()
+    );
+    for (expected, element) in mappings.iter().zip(elements) {
+        for (member, want) in [
+            ("Format", Some(URL_ENCODED.to_string())),
+            ("ContentType", Some(expected.content_type.clone())),
+            // An optional member the create left out stays absent.
+            ("ProfileId", expected.profile_id.clone()),
+        ] {
+            let actual = element.text_at(member).map(str::to_string);
             assert_eq!(
-                flag,
-                Some(section.forward_when_unknown.to_string().as_str()),
-                "case {case:?} ({context}): expected ForwardWhenContentTypeIsUnknown {}, got \
-                 {flag:?} in {raw}",
-                section.forward_when_unknown
+                actual, want,
+                "case {case:?} ({context}): expected ContentTypeProfile {member} \
+                 {want:?}, got {actual:?} in {raw}"
             );
-            let mappings = section.mappings.as_deref().unwrap_or_default();
-            let elements = node
-                .at("ContentTypeProfileConfig/ContentTypeProfiles/Items")
-                .map(|items| items.children_named("ContentTypeProfile"))
-                .unwrap_or_default();
-            assert_eq!(
-                elements.len(),
-                mappings.len(),
-                "case {case:?} ({context}): expected {} ContentTypeProfile entries, got {} in \
-                 {raw}",
-                mappings.len(),
-                elements.len()
-            );
-            for (expected, element) in mappings.iter().zip(elements) {
-                for (member, want) in [
-                    ("Format", Some(URL_ENCODED.to_string())),
-                    ("ContentType", Some(expected.content_type.clone())),
-                    // An optional member the create left out stays absent.
-                    ("ProfileId", expected.profile_id.clone()),
-                ] {
-                    let actual = element.text_at(member).map(str::to_string);
-                    assert_eq!(
-                        actual, want,
-                        "case {case:?} ({context}): expected ContentTypeProfile {member} \
-                         {want:?}, got {actual:?} in {raw}"
-                    );
-                }
-            }
         }
     }
 }

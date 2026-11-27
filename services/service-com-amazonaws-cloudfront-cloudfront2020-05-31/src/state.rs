@@ -79,6 +79,7 @@ use crate::ops::types::{
     CachedMethods, CloudFrontOriginAccessIdentity, CloudFrontOriginAccessIdentityConfig,
     CloudFrontOriginAccessIdentitySummary,
     CNAMEAlreadyExists, ConnectionGroup, ConnectionGroupSummary, ContentTypeProfile,
+    ContentTypeProfileConfig, ContentTypeProfiles,
     ContinuousDeploymentPolicy,
     ContinuousDeploymentPolicyConfig,
     ContinuousDeploymentSingleHeaderConfig, ContinuousDeploymentSingleWeightConfig,

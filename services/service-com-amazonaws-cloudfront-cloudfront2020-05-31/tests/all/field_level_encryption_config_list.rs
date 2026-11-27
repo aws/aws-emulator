@@ -44,6 +44,7 @@ use service_com_amazonaws_cloudfront_cloudfront2020_05_31::state::{
 use smithy_server_runtime::MultiServiceRouter;
 
 use crate::distribution_lifecycle::{call, emulator, Answer, Node, API_VERSION};
+use crate::field_level_encryption_config_lifecycle::FORM_CONTENT_TYPE;
 use crate::field_level_encryption_profile_lifecycle::store_profile;
 use crate::public_key_lifecycle::is_wire_timestamp;
 use crate::response_headers_policy_lifecycle::escape;
@@ -109,6 +110,10 @@ struct Section {
     /// Whether each mapping names the profile at all — `ContentTypeProfile$ProfileId` is
     /// optional, so a mapping may select no profile.
     names_profile: bool,
+    /// Whether this is the content type-profile mapping the SERVICE supplies rather than one
+    /// the request stated: its mapping names no profile of its own, which it carries as the
+    /// empty text rather than as an absent member.
+    supplied: bool,
 }
 
 impl Section {
@@ -117,6 +122,17 @@ impl Section {
             forward_when_unknown,
             selectors: selectors.iter().map(|value| value.to_string()).collect(),
             names_profile,
+            supplied: false,
+        }
+    }
+
+    /// The content type-profile mapping a configuration that states none is stored with: the
+    /// one content type field-level encryption reads fields from, naming no profile, not
+    /// forwarding a content type it does not cover.
+    fn supplied() -> Self {
+        Self {
+            supplied: true,
+            ..Self::new(false, &[FORM_CONTENT_TYPE], false)
         }
     }
 
@@ -257,7 +273,7 @@ impl Row {
 
         // `QueryArgProfileConfig` is the mapping every stored configuration carries, so a
         // configuration created without one is summarised with the mapping that maps
-        // nothing, under the forwarding flag the service supplies for it.
+        // nothing, under its flag's own unset position.
         let query_arg = self.effective_query_arg();
         self.assert_section(
             summary,
@@ -276,26 +292,28 @@ impl Row {
             "ContentTypeProfiles",
             "ContentTypeProfile",
             "ContentType",
-            self.content_type.as_ref(),
+            Some(&self.effective_content_type()),
             raw,
         );
     }
 
     /// The `QueryArgProfileConfig` the stored configuration carries: the section this row
-    /// submits, with the forwarding flag the SERVICE supplies for a mapping that maps a query
-    /// argument to a profile, or — for a row that states none — the mapping that maps
-    /// nothing, under the forwarding flag the service supplies for it.
+    /// submits, with the forwarding flag the stored configuration answers from its own
+    /// mapping — whether it maps NO query argument to a profile — or, for a row that states
+    /// no section, the mapping that maps nothing.
     fn effective_query_arg(&self) -> Section {
-        let Some(mut section) = self.query_arg.clone() else {
-            return Section::new(true, &[], false);
-        };
-        // Recorded behaviour (`state::forwards_an_unknown_query_arg_profile`): a mapping that
-        // maps anything at all is stored forwarding the requests whose profile it cannot
-        // resolve, whatever the request submitted.
-        if !section.selectors.is_empty() {
-            section.forward_when_unknown = true;
-        }
+        let mut section = self
+            .query_arg
+            .clone()
+            .unwrap_or_else(|| Section::new(true, &[], false));
+        section.forward_when_unknown = section.selectors.is_empty();
         section
+    }
+
+    /// The `ContentTypeProfileConfig` the stored configuration carries: the section this row
+    /// submits, or the mapping the service supplies for a row that states none.
+    fn effective_content_type(&self) -> Section {
+        self.content_type.clone().unwrap_or_else(Section::supplied)
     }
 
     /// Assert that one mapping section of a serialised document reports the section this row
@@ -361,7 +379,11 @@ impl Row {
             // content type mapping that named none is reported with none rather than with a
             // member invented by the read.
             let profile = mapping.text_at("ProfileId").map(str::to_string);
-            let expected = section.names_profile.then(|| self.profile.clone());
+            let expected = if section.supplied {
+                Some(String::new())
+            } else {
+                section.names_profile.then(|| self.profile.clone())
+            };
             assert_eq!(
                 profile, expected,
                 "case {case:?}: expected {mapping_member} ProfileId {expected:?}, got \
@@ -653,7 +675,7 @@ async fn a_listing_reports_every_stored_configuration_and_pages_through_them() {
             "ContentTypeProfiles",
             "ContentTypeProfile",
             "ContentType",
-            row.content_type.as_ref(),
+            Some(&row.effective_content_type()),
             &read.raw,
         );
     }

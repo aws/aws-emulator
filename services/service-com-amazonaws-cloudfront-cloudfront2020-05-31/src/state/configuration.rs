@@ -4799,25 +4799,20 @@ pub const DEFAULT_ENABLE_ACCEPT_ENCODING_BROTLI: bool = false;
 ///   of one cannot leave it out ([`QUERY_ARG_PROFILE_CONFIG_REQUIRED_MESSAGE`]) — so a
 ///   configuration created without one carries the mapping that maps nothing
 ///   ([`default_query_arg_profile_config`]);
-/// * `QueryArgProfileConfig$ForwardWhenQueryArgProfileIsUnknown` is the SERVICE's where the
-///   mapping maps anything at all ([`forwards_an_unknown_query_arg_profile`]): a
-///   configuration that maps at least one query argument to a profile is stored forwarding
-///   the requests whose profile it cannot resolve, whatever the request asked for. Recorded
-///   behaviour.
 /// * `QueryArgProfileConfig$QueryArgProfiles$Items` is the list that wrapper's `Quantity`
 ///   counts, carried by every mapping this service stores — empty where the wrapper maps
 ///   nothing ([`resolve_query_arg_profiles`]), so a read reports the empty list beside the
-///   quantity rather than leaving the member out.
+///   quantity rather than leaving the member out;
+/// * `QueryArgProfileConfig$ForwardWhenQueryArgProfileIsUnknown` says of the STORED
+///   configuration whether it maps no query argument to a profile at all
+///   ([`forwards_an_unknown_query_arg_profile`]);
+/// * `ContentTypeProfileConfig` is the content type-profile mapping every stored
+///   configuration carries, so a configuration created without one carries the mapping
+///   CloudFront supplies for it ([`default_content_type_profile_config`]).
 ///
-/// `ContentTypeProfileConfig` is left exactly as submitted: it is a CHOICE a configuration
-/// either made or did not, and neither the model nor the update rule makes it a member of
-/// every stored configuration — `ForwardWhenContentTypeIsUnknown` inside one it DID state is
-/// stored as stated, since the rules above are the query-argument mapping's own. A
-/// `QueryArgProfileConfig` the request DID state is otherwise stored as stated, down to
-/// whether it states a `QueryArgProfiles` wrapper at all: what the service supplies for a
-/// configuration that states no mapping is the whole mapping, and inside a wrapper the
-/// request DID state only that wrapper's `Items` list
-/// ([`resolve_query_arg_profiles`]).
+/// Nothing else is supplied: a section the request DID state is stored as stated, down to
+/// whether it states its wrapper at all and to its own `ForwardWhenContentTypeIsUnknown`,
+/// with only that wrapper's `Items` list filled in ([`resolve_query_arg_profiles`]).
 pub fn resolve_field_level_encryption_config(
     mut config: FieldLevelEncryptionConfig,
 ) -> FieldLevelEncryptionConfig {
@@ -4828,19 +4823,75 @@ pub fn resolve_field_level_encryption_config(
             .map(resolve_query_arg_profile_config)
             .unwrap_or_else(default_query_arg_profile_config),
     );
+    config.content_type_profile_config = Some(
+        config
+            .content_type_profile_config
+            .unwrap_or_else(default_content_type_profile_config),
+    );
     config
 }
 
-/// Resolve the members of a submitted `QueryArgProfileConfig` the SERVICE supplies:
-/// `ForwardWhenQueryArgProfileIsUnknown` where the mapping maps a query argument to a profile
-/// ([`forwards_an_unknown_query_arg_profile`]), and the `Items` list of the wrapper the
-/// section states ([`resolve_query_arg_profiles`]). Which query arguments the mapping maps is
-/// stored as submitted.
+/// The content type-profile mapping a field-level encryption configuration that states none
+/// carries.
+///
+/// Field-level encryption reads the fields it encrypts out of a request BODY, and the one
+/// body layout it can read them from is the one the model's `Format` enum admits a single
+/// value for — `URLEncoded`, the layout of an `application/x-www-form-urlencoded` body
+/// (`smithy_query(query="shape",shape="Format,ContentTypeProfile")`). So the mapping
+/// CloudFront supplies covers that one content type under that one format, names no profile
+/// of its own — `ContentTypeProfile$ProfileId` is "the profile ID for a field-level
+/// encryption content type-profile mapping", and a supplied mapping designates none, leaving
+/// the profile to the query argument-profile mapping beside it — and does not forward a body
+/// whose content type it does not cover.
+pub fn default_content_type_profile_config() -> ContentTypeProfileConfig {
+    ContentTypeProfileConfig {
+        forward_when_content_type_is_unknown: false,
+        content_type_profiles: Some(ContentTypeProfiles {
+            quantity: 1,
+            items: Some(vec![ContentTypeProfile {
+                format: URL_ENCODED_FORMAT.to_string(),
+                profile_id: Some(String::new()),
+                content_type: FORM_URLENCODED_CONTENT_TYPE.to_string(),
+            }]),
+        }),
+    }
+}
+
+/// The only value the model's `Format` enum admits for a content type-profile mapping
+/// (`smithy_query(query="shape",shape="Format")` lists it and nothing else).
+pub const URL_ENCODED_FORMAT: &str = "URLEncoded";
+
+/// The content type whose body layout `URL_ENCODED_FORMAT` names, and the one the mapping
+/// CloudFront supplies covers.
+pub const FORM_URLENCODED_CONTENT_TYPE: &str = "application/x-www-form-urlencoded";
+
+/// Resolve the members of a submitted `QueryArgProfileConfig` the SERVICE decides:
+/// `ForwardWhenQueryArgProfileIsUnknown` ([`forwards_an_unknown_query_arg_profile`]) and the
+/// `Items` list of the wrapper the section states ([`resolve_query_arg_profiles`]). Which
+/// query arguments the mapping maps is stored as submitted.
 fn resolve_query_arg_profile_config(mut config: QueryArgProfileConfig) -> QueryArgProfileConfig {
+    config.query_arg_profiles = config.query_arg_profiles.map(resolve_query_arg_profiles);
     config.forward_when_query_arg_profile_is_unknown =
         forwards_an_unknown_query_arg_profile(&config);
-    config.query_arg_profiles = config.query_arg_profiles.map(resolve_query_arg_profiles);
     config
+}
+
+/// What `ForwardWhenQueryArgProfileIsUnknown` is STORED as for the mapping `config`
+/// describes: whether that mapping maps NO query argument to a profile.
+///
+/// The flag is "Flag to set if you want a request to be forwarded to the origin even if the
+/// profile specified by the field-level encryption query argument, fle-profile, is unknown",
+/// and the stored configuration answers it from its own mapping rather than from the request:
+/// a configuration that maps no query argument to a profile designates nothing to encrypt by
+/// query argument, so a request naming one is nothing to do with it and travels on to the
+/// origin, while one that DOES map query arguments is a configuration a request naming a
+/// profile it does not carry asks for encryption it cannot give, which CloudFront does not
+/// forward. Recorded behaviour, and the same value every reader of the configuration reports.
+pub fn forwards_an_unknown_query_arg_profile(config: &QueryArgProfileConfig) -> bool {
+    config
+        .query_arg_profiles
+        .as_ref()
+        .is_none_or(|profiles| items_len(&profiles.items) == 0)
 }
 
 /// Resolve the `Items` list of a `QueryArgProfiles` wrapper a request states: the mapping
@@ -4859,27 +4910,6 @@ fn resolve_query_arg_profiles(mut profiles: QueryArgProfiles) -> QueryArgProfile
     profiles
 }
 
-/// What `ForwardWhenQueryArgProfileIsUnknown` is STORED as for the mapping `config`
-/// describes.
-///
-/// The flag is "Flag to set if you want a request to be forwarded to the origin even if the
-/// profile specified by the field-level encryption query argument, fle-profile, is unknown",
-/// and a mapping that maps at least one query argument to a profile is stored forwarding such
-/// a request whatever the request submitted: the mapping names the profiles this
-/// configuration encrypts for, so a request naming any OTHER profile is one the configuration
-/// has nothing to do with rather than one it means to drop. Recorded behaviour. A mapping
-/// that maps NOTHING carries the value the request stated — the configuration states nothing
-/// about any profile, so there is no mapping for the flag to follow — and the mapping this
-/// service supplies for a configuration that states none forwards too
-/// ([`default_query_arg_profile_config`]).
-pub fn forwards_an_unknown_query_arg_profile(config: &QueryArgProfileConfig) -> bool {
-    config.forward_when_query_arg_profile_is_unknown
-        || config
-            .query_arg_profiles
-            .as_ref()
-            .is_some_and(|profiles| items_len(&profiles.items) > 0)
-}
-
 /// The `QueryArgProfiles` wrapper of a mapping that maps no query argument to a profile:
 /// `Quantity` 0 beside no entries.
 fn empty_query_arg_profiles() -> QueryArgProfiles {
@@ -4890,16 +4920,16 @@ fn empty_query_arg_profiles() -> QueryArgProfiles {
 }
 
 /// The query argument-profile mapping a field-level encryption configuration that states
-/// none carries: a mapping of no query argument to any profile, under which a request
-/// naming a profile CloudFront cannot resolve is still forwarded to the origin.
+/// none carries: a mapping of no query argument to any profile, under which a request naming
+/// a profile CloudFront cannot resolve is still forwarded to the origin
+/// ([`forwards_an_unknown_query_arg_profile`] states that rule, which this mapping is the
+/// `maps nothing` case of).
 ///
 /// `QueryArgProfileConfig$ForwardWhenQueryArgProfileIsUnknown` is REQUIRED by the model, so
-/// the mapping cannot be half-present: a configuration that leaves the whole block out
-/// still carries the flag, and the value it carries is the one that forwards — "Flag to set
-/// if you want a request to be forwarded to the origin even if the profile specified by the
-/// field-level encryption query argument, fle-profile, is unknown" — since a configuration
-/// that maps no query argument to a profile cannot have meant to drop the requests it does
-/// not recognise.
+/// the mapping cannot be half-present: a configuration that leaves the whole block out still
+/// carries the flag, and an update of one cannot leave the block out either
+/// ([`QUERY_ARG_PROFILE_CONFIG_REQUIRED_MESSAGE`]), so every reader reports this mapping and
+/// a read-modify-write round trip of the configuration stores it again unchanged.
 pub fn default_query_arg_profile_config() -> QueryArgProfileConfig {
     QueryArgProfileConfig {
         forward_when_query_arg_profile_is_unknown: true,

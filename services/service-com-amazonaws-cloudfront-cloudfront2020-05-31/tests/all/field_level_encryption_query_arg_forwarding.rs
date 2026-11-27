@@ -10,14 +10,15 @@
 //! RULE: `QueryArgProfileConfig$ForwardWhenQueryArgProfileIsUnknown` is "Flag to set if you
 //! want a request to be forwarded to the origin even if the profile specified by the
 //! field-level encryption query argument, fle-profile, is unknown"
-//! (`smithy_query(query="shape",shape="QueryArgProfileConfig")`), and a configuration whose
-//! `QueryArgProfiles` maps at least one query argument to a profile is STORED forwarding such
-//! a request whatever the request submitted: the mapping names the profiles that
-//! configuration encrypts for, so a request naming any other profile is one the configuration
-//! has nothing to do with rather than one it means to drop. A mapping that maps NOTHING keeps
-//! the submitted value — the configuration states nothing about any profile, so there is no
-//! mapping for the flag to follow. `ContentTypeProfileConfig$ForwardWhenContentTypeIsUnknown`
-//! is the other section's own member and is stored exactly as submitted either way.
+//! (`smithy_query(query="shape",shape="QueryArgProfileConfig")`), and the STORED configuration
+//! answers it from its own mapping rather than from the request: a configuration whose
+//! `QueryArgProfiles` maps NO query argument to a profile designates nothing to encrypt by
+//! query argument, so a request naming a profile is nothing to do with it and is forwarded,
+//! while one that DOES map query arguments does not forward a request naming a profile it does
+//! not carry — such a request asks for encryption the configuration cannot give.
+//! `ContentTypeProfileConfig$ForwardWhenContentTypeIsUnknown` is the other section's own
+//! member and is stored exactly as submitted, and a configuration that states no content type
+//! section at all carries the mapping the service supplies for it.
 //!
 //! The rule holds of the STORED configuration, so every reader reports it: the create's own
 //! answer, `GetFieldLevelEncryption`, `GetFieldLevelEncryptionConfig`, the listing's summary,
@@ -66,7 +67,7 @@ fn rows(profile: &str) -> Vec<Row> {
                 Some(Section::new(true, Some(vec![mapped("fle-profile")]))),
                 None,
             ),
-            forwards: true,
+            forwards: false,
         },
         Row {
             config: Config::new(
@@ -76,7 +77,7 @@ fn rows(profile: &str) -> Vec<Row> {
                 Some(Section::new(false, Some(vec![mapped("fle-profile")]))),
                 None,
             ),
-            forwards: true,
+            forwards: false,
         },
         Row {
             config: Config::new(
@@ -93,7 +94,7 @@ fn rows(profile: &str) -> Vec<Row> {
                 )),
                 None,
             ),
-            forwards: true,
+            forwards: false,
         },
         Row {
             config: Config::new(
@@ -104,7 +105,7 @@ fn rows(profile: &str) -> Vec<Row> {
                 Some(Section::new(false, Some(vec![mapped("fle-profile")]))),
                 Some(Section::new(false, Some(Vec::new()))),
             ),
-            forwards: true,
+            forwards: false,
         },
         Row {
             config: Config::new(
@@ -118,7 +119,7 @@ fn rows(profile: &str) -> Vec<Row> {
                     Some(vec![ContentTypeMapping::new("text/html", Some(profile))]),
                 )),
             ),
-            forwards: false,
+            forwards: true,
         },
         Row {
             config: Config::new(
@@ -149,7 +150,7 @@ fn rows(profile: &str) -> Vec<Row> {
                     Some(vec![ContentTypeMapping::new("text/plain", Some(profile))]),
                 )),
             ),
-            forwards: false,
+            forwards: true,
         },
     ]
 }
@@ -186,11 +187,12 @@ fn assert_flags(answer: &Answer, row: &Row, context: &str) {
         row.forwards,
         answer.raw
     );
-    let submitted = row
-        .config
-        .content_type
-        .as_ref()
-        .map(|section| section.forward_when_unknown.to_string());
+    let submitted = Some(
+        row.config
+            .effective_content_type()
+            .forward_when_unknown
+            .to_string(),
+    );
     assert_eq!(
         content_type, submitted,
         "case {case:?} ({context}): expected ForwardWhenContentTypeIsUnknown {submitted:?}, got \
@@ -225,11 +227,10 @@ async fn created(router: &MultiServiceRouter, row: &Row) -> (String, String, Ans
     (id, etag, answer)
 }
 
-/// A configuration whose mapping maps a query argument is stored forwarding an unknown
-/// profile whatever the create submitted, and every reader of the stored configuration
-/// reports that value.
+/// A configuration reports the forwarding flag its own mapping decides, and every reader of
+/// the stored configuration reports that value.
 #[tokio::test]
-async fn a_mapping_that_maps_a_query_argument_is_stored_forwarding() {
+async fn a_configuration_is_stored_with_the_forwarding_flag_its_mapping_decides() {
     let router = emulator();
     let profile = store_profile(&router, "fle-forwarding-suite-profile").await;
 
@@ -276,7 +277,7 @@ async fn an_update_stores_the_same_flag_and_the_readback_is_a_fixed_point() {
         let (id, etag, _) = created(&router, &row).await;
 
         // The same document again, through the update: the flag the update stores is the one
-        // the rule decides, not the one the request carried.
+        // the stored mapping decides, as on the create.
         let updated = update_config(&router, &id, &row.config.xml(), Some(&etag)).await;
         assert_eq!(
             updated.status, 200,
