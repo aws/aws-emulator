@@ -11,9 +11,9 @@
 //! adds or replaces only the keys it names, `UntagResource` removes only the keys
 //! it names, a successful mutation answers 204 (it reports no content), and an ARN
 //! the store does not hold is the modelled 404 for all three.
-//! Every test asserts that over a SET of inputs — both taggable resource types
-//! (scope, monitor) and tag sets differing in count, key and value — so no row is
-//! privileged.
+//! Every test asserts that over a SET of inputs — every taggable resource type
+//! (scope, monitor, performance monitor) and tag sets differing in count, key and
+//! value — so no row is privileged.
 //!
 //! The harness (`Emulator`, `Answer`, `targets`, `client_token`) is the one
 //! `tests/all/harness.rs` owns and every suite in this crate dispatches through;
@@ -86,34 +86,43 @@ impl Emulator {
 pub(crate) enum Resource {
     Scope { arn: String, scope_id: String },
     Monitor { arn: String, name: String },
+    PerformanceMonitor { arn: String, name: String },
 }
 
 impl Resource {
     pub(crate) fn arn(&self) -> &str {
         match self {
-            Self::Scope { arn, .. } | Self::Monitor { arn, .. } => arn.as_str(),
+            Self::Scope { arn, .. }
+            | Self::Monitor { arn, .. }
+            | Self::PerformanceMonitor { arn, .. } => arn.as_str(),
         }
     }
 
-    /// The record itself, through `GetScope`/`GetMonitor` — so a tag write is
-    /// proved to have landed on the resource and not in a store of its own.
+    /// The record itself, through `GetScope`/`GetMonitor`/`GetPerformanceMonitor` —
+    /// so a tag write is proved to have landed on the resource and not in a store
+    /// of its own.
     pub(crate) async fn read(&self, emulator: &Emulator) -> Answer {
         match self {
             Self::Scope { scope_id, .. } => emulator.get_scope(scope_id).await,
             Self::Monitor { name, .. } => emulator.get_monitor(name).await,
+            Self::PerformanceMonitor { name, .. } => {
+                emulator.get_performance_monitor(name).await
+            }
         }
     }
 }
 
-/// The two taggable resource types this service mints, as a table dimension: every
-/// rule below holds for both, because both are reached through `resourceArn`.
+/// The taggable resource types this service mints, as a table dimension: every
+/// rule below holds for all of them, because all of them are reached through
+/// `resourceArn`.
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum Kind {
     Scope,
     Monitor,
+    PerformanceMonitor,
 }
 
-pub(crate) const KINDS: &[Kind] = &[Kind::Scope, Kind::Monitor];
+pub(crate) const KINDS: &[Kind] = &[Kind::Scope, Kind::Monitor, Kind::PerformanceMonitor];
 
 /// Create a resource of `kind` carrying `tags` (absent when `None`), and answer
 /// with what addresses and reads it.
@@ -167,6 +176,36 @@ pub(crate) async fn create(
                 created.status, created.body
             );
             Resource::Monitor {
+                arn: created.text("monitorArn"),
+                name,
+            }
+        }
+        Kind::PerformanceMonitor => {
+            // A performance monitor names NO scope: `CreatePerformanceMonitor`'s
+            // `scopeArn` is optional, so this resource needs no parent to be
+            // taggable.
+            let name = format!("performance-monitor-{seed}");
+            let mut body = json!({
+                "monitorName": name,
+                "targets": [{
+                    "type": "AWS::EC2::VPC",
+                    "identifier": format!(
+                        "arn:aws:ec2:{REGION}:123456789012:vpc/vpc-{seed:017x}"
+                    ),
+                }],
+                "clientToken": client_token(seed),
+            });
+            if let Some(tags) = tags {
+                body["tags"] = tags.clone();
+            }
+            let created = emulator.create_performance_monitor(body).await;
+            assert_eq!(
+                created.status, 201,
+                "case performance-monitor/{seed}: the monitor must be created, got {} with \
+                 body {}",
+                created.status, created.body
+            );
+            Resource::PerformanceMonitor {
                 arn: created.text("monitorArn"),
                 name,
             }

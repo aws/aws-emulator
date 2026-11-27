@@ -56,6 +56,7 @@ pub struct MonitorTopContributorsRow {
     pub remote_instance_arn: Option<String>,
     pub remote_subnet_arn: Option<String>,
     pub remote_vpc_arn: Option<String>,
+    pub additional_flow_info: Option<AdditionalFlowInfo>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.networkflowmonitor#TraversedComponent")]
@@ -76,5 +77,27 @@ pub struct KubernetesMetadata {
     pub remote_service_name: Option<String>,
     pub remote_pod_name: Option<String>,
     pub remote_pod_namespace: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.networkflowmonitor#AdditionalFlowInfo")]
+#[derive(Debug, Clone, Default)]
+pub struct AdditionalFlowInfo {
+    pub network: Option<Network>,
+    pub client_location: Option<ClientLocation>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.networkflowmonitor#Network")]
+#[derive(Debug, Clone, Default)]
+pub struct Network {
+    pub as_name: Option<String>,
+    pub as_number: Option<i64>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.networkflowmonitor#ClientLocation")]
+#[derive(Debug, Clone, Default)]
+pub struct ClientLocation {
+    pub city: Option<String>,
+    pub subdivision: Option<String>,
+    pub country: Option<String>,
 }
 

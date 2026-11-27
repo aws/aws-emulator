@@ -241,8 +241,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let query_id = state.start_query(
             crate::state::QueryKind::WorkloadInsightsTopContributors,
             &input.scope_id,
-            &input.metric_name,
-            &input.destination_category,
+            crate::state::QueryTerms::TopContributors {
+                metric_name: input.metric_name,
+                destination_category: input.destination_category,
+            },
             input.start_time,
             input.end_time,
             input.limit,

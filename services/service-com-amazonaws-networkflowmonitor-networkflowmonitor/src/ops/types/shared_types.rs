@@ -17,12 +17,6 @@ pub struct AccessDeniedException {
     pub message: Option<String>,
 }
 
-#[smithy_macros::smithy(shape = "com.amazonaws.networkflowmonitor#ConflictException")]
-#[derive(Debug, Clone, Default)]
-pub struct ConflictException {
-    pub message: Option<String>,
-}
-
 #[smithy_macros::smithy(shape = "com.amazonaws.networkflowmonitor#InternalServerException")]
 #[derive(Debug, Clone, Default)]
 pub struct InternalServerException {
@@ -47,6 +41,12 @@ pub struct ValidationException {
     pub message: Option<String>,
 }
 
+#[smithy_macros::smithy(shape = "com.amazonaws.networkflowmonitor#ConflictException")]
+#[derive(Debug, Clone, Default)]
+pub struct ConflictException {
+    pub message: Option<String>,
+}
+
 #[smithy_macros::smithy(shape = "com.amazonaws.networkflowmonitor#MonitorLocalResource")]
 #[derive(Debug, Clone, Default)]
 pub struct MonitorLocalResource {
@@ -65,6 +65,13 @@ pub struct MonitorRemoteResource {
 #[derive(Debug, Clone, Default)]
 pub struct ServiceQuotaExceededException {
     pub message: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.networkflowmonitor#PerformanceMonitorTarget")]
+#[derive(Debug, Clone, Default)]
+pub struct PerformanceMonitorTarget {
+    pub r#type: String,
+    pub identifier: String,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.networkflowmonitor#TargetResource")]
@@ -89,7 +96,11 @@ pub enum TargetId {
 }
 
 /// The values `DestinationCategory` accepts on the wire.
-pub const DESTINATION_CATEGORY_VALUES: &[&str] = &["AMAZON_DYNAMODB", "AMAZON_S3", "INTER_AZ", "INTER_REGION", "INTER_VPC", "INTRA_AZ", "UNCLASSIFIED"];
+pub const DESTINATION_CATEGORY_VALUES: &[&str] = &["AMAZON_DYNAMODB", "AMAZON_S3", "AWS_SERVICE", "INTERNET", "INTER_AZ", "INTER_REGION", "INTER_VPC", "INTRA_AZ", "LOCAL_ZONE", "TRANSIT_GATEWAY", "UNCLASSIFIED"];
+
+
+/// The values `FilterOperator` accepts on the wire.
+pub const FILTER_OPERATOR_VALUES: &[&str] = &["CONTAINS", "EQUALS", "IN", "NOT_EQUALS"];
 
 
 /// The values `MetricUnit` accepts on the wire.
@@ -112,8 +123,28 @@ pub const MONITOR_REMOTE_RESOURCE_TYPE_VALUES: &[&str] = &["AWS::AWSService", "A
 pub const MONITOR_STATUS_VALUES: &[&str] = &["ACTIVE", "DELETING", "ERROR", "INACTIVE", "PENDING"];
 
 
+/// The values `OrgMembershipStatus` accepts on the wire.
+pub const ORG_MEMBERSHIP_STATUS_VALUES: &[&str] = &["IN_ORG", "NOT_IN_ORG", "UNKNOWN"];
+
+
+/// The values `PerformanceMonitorQueryType` accepts on the wire.
+pub const PERFORMANCE_MONITOR_QUERY_TYPE_VALUES: &[&str] = &["TOP_PATHS"];
+
+
+/// The values `PerformanceMonitorTargetType` accepts on the wire.
+pub const PERFORMANCE_MONITOR_TARGET_TYPE_VALUES: &[&str] = &["AWS::EC2::VPC"];
+
+
+/// The values `PerformanceMonitorType` accepts on the wire.
+pub const PERFORMANCE_MONITOR_TYPE_VALUES: &[&str] = &["VPC"];
+
+
 /// The values `QueryStatus` accepts on the wire.
 pub const QUERY_STATUS_VALUES: &[&str] = &["CANCELED", "FAILED", "QUEUED", "RUNNING", "SUCCEEDED"];
+
+
+/// The values `ScopeCoverageStatus` accepts on the wire.
+pub const SCOPE_COVERAGE_STATUS_VALUES: &[&str] = &["COMPLETE", "INCOMPLETE", "PENDING", "STALE"];
 
 
 /// The values `ScopeStatus` accepts on the wire.

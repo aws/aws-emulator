@@ -24,10 +24,16 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::time::{Duration, SystemTime};
 
 use crate::ops::types::{
-    AccessDeniedException, ConflictException, CreateMonitorInput, CreateScopeInput,
+    AccessDeniedException, ConflictException, CreateMonitorInput, CreateScopeInput, FilterParameter,
     InternalServerException, MonitorLocalResource, MonitorRemoteResource, ResourceNotFoundException,
     ServiceQuotaExceededException, TargetId, TargetResource, UpdateMonitorInput, ValidationException,
 };
+
+mod performance_monitors;
+mod update_tokens;
+
+pub use performance_monitors::*;
+pub use update_tokens::*;
 
 /// The Region an ARN carries when the request is unsigned, so no SigV4 credential
 /// scope names one.
@@ -40,7 +46,8 @@ pub const ARN_SERVICE: &str = "networkflowmonitor";
 /// The ARN resource type of a scope.
 pub const SCOPE_RESOURCE: &str = "scope";
 
-/// The ARN resource type of a monitor.
+/// The ARN resource type of a monitor. A PERFORMANCE monitor carries its own
+/// ([`PERFORMANCE_MONITOR_RESOURCE`]).
 pub const MONITOR_RESOURCE: &str = "monitor";
 
 /// How long a freshly created resource stays in the non-terminal status the model
@@ -248,6 +255,9 @@ pub enum ResourceRef {
     Scope(String),
     /// A monitor, by `monitorName`.
     Monitor(String),
+    /// A performance monitor, by `monitorName`. Its own variant because a monitor
+    /// and a performance monitor of one name are two resources in two stores.
+    PerformanceMonitor(String),
 }
 
 /// A Network Flow Monitor scope, as this emulator holds it.
@@ -326,22 +336,6 @@ pub struct Monitor {
     pub update_tokens: VecDeque<(String, String)>,
 }
 
-/// What a `clientToken` on an `UpdateMonitor` request means for the monitor it
-/// addresses.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum UpdateReplay {
-    /// No token, or a token this monitor has not applied: the request is a new
-    /// update and is applied.
-    New,
-    /// The token already applied THIS change: the request is a replay, answered
-    /// with the record as it stands without applying anything again.
-    Replay,
-    /// The token already applied a DIFFERENT change ("Don't reuse the same client
-    /// token for other API requests"), so the request is refused rather than
-    /// answered with a success for a write that was discarded.
-    Mismatch,
-}
-
 impl Monitor {
     /// The monitor counterpart of [`Scope::settle`]. Reaching `ACTIVE` is a change
     /// to the monitor, so `modifiedAt` moves to the instant that change fell due —
@@ -354,39 +348,17 @@ impl Monitor {
     }
 
     /// What `token` means for this monitor, given the change `fingerprint` the
-    /// request carries ([`update_fingerprint`]) — the check an `@idempotent`
-    /// replay makes before anything is changed, so a retried update neither
-    /// applies twice nor moves `modifiedAt` again. It compares the REQUEST against
-    /// the remembered update, the way [`Monitor::matches_create`] does for a
-    /// create, so a token reused for a different change is not answered with a
-    /// success for a write nothing applied. A request without a `clientToken` is
-    /// never a replay.
+    /// request carries ([`update_fingerprint`]) — the one replay rule every update
+    /// of this service follows ([`replay_of`]), so a retried update neither applies
+    /// twice nor moves `modifiedAt` again.
     pub fn update_replay(&self, token: Option<&str>, fingerprint: &str) -> UpdateReplay {
-        let Some(token) = token else {
-            return UpdateReplay::New;
-        };
-        match self
-            .update_tokens
-            .iter()
-            .find(|(seen, _)| seen == token)
-            .map(|(_, applied)| applied == fingerprint)
-        {
-            None => UpdateReplay::New,
-            Some(true) => UpdateReplay::Replay,
-            Some(false) => UpdateReplay::Mismatch,
-        }
+        replay_of(&self.update_tokens, token, fingerprint)
     }
 
     /// Remember `token` as having applied the change `fingerprint` describes,
-    /// forgetting the oldest once the window is full.
+    /// forgetting the oldest once the window is full ([`remember`]).
     pub fn remember_update(&mut self, token: String, fingerprint: String) {
-        if self.update_tokens.iter().any(|(seen, _)| seen == &token) {
-            return;
-        }
-        if self.update_tokens.len() >= MAX_UPDATE_TOKENS {
-            self.update_tokens.pop_front();
-        }
-        self.update_tokens.push_back((token, fingerprint));
+        remember(&mut self.update_tokens, token, fingerprint);
     }
 
     /// Apply an `UpdateMonitor` request's additions and removals to this monitor's
@@ -471,6 +443,8 @@ pub enum QueryKind {
     WorkloadInsightsTopContributors,
     /// `POST /workloadInsights/{scopeId}/topContributorsDataQueries`.
     WorkloadInsightsTopContributorsData,
+    /// `POST /performance-monitors/{monitorName}/queries`.
+    PerformanceMonitor,
 }
 
 /// `QueryStatus`, the lifecycle status of a query. The wire values are the model's
@@ -507,7 +481,57 @@ impl QueryStatus {
     }
 }
 
-/// A top-contributors query, as this emulator holds it.
+/// What a query was started WITH: the members of its own `StartQuery*` request that
+/// its results are reported from.
+///
+/// The two query planes of this service name different ones — the three
+/// top-contributors families name a metric and a destination category, and the
+/// performance-monitor family names a query type and its filters — so a record
+/// holds whichever its own plane carries rather than an empty member standing in
+/// for the other's.
+#[derive(Debug, Clone)]
+pub enum QueryTerms {
+    /// A top-contributors query: the `metricName` whose unit its rows are reported
+    /// in, and the `destinationCategory` it was started for.
+    TopContributors {
+        /// `metricName`.
+        metric_name: String,
+        /// `destinationCategory`.
+        destination_category: String,
+    },
+    /// A performance-monitor query: the `queryType` whose schema its results are
+    /// reported under, and the `filterParameters` the request carried.
+    Paths {
+        /// `queryType`.
+        query_type: String,
+        /// `filterParameters`, in request order and empty when the request carried
+        /// none.
+        filters: Vec<FilterParameter>,
+    },
+}
+
+impl QueryTerms {
+    /// The `metricName` this query was started with, or `None` for a plane that
+    /// names no metric: what decides the `unit` a top-contributors result set is
+    /// reported in ([`metric_unit`]).
+    pub fn metric_name(&self) -> Option<&str> {
+        match self {
+            Self::TopContributors { metric_name, .. } => Some(metric_name.as_str()),
+            Self::Paths { .. } => None,
+        }
+    }
+
+    /// The `queryType` this query was started with, or `None` for a plane that
+    /// names no query type.
+    pub fn query_type(&self) -> Option<&str> {
+        match self {
+            Self::TopContributors { .. } => None,
+            Self::Paths { query_type, .. } => Some(query_type.as_str()),
+        }
+    }
+}
+
+/// A query of either of this service's query planes, as this emulator holds it.
 ///
 /// The record is everything the `StartQuery*` request asked for plus the lifecycle
 /// the clock drives, so `GetQueryStatus*` and `GetQueryResults*` answer from what
@@ -518,15 +542,12 @@ pub struct Query {
     pub query_id: String,
     /// Which query lifecycle this record belongs to.
     pub kind: QueryKind,
-    /// The resource the query was started for: the `monitorName` of a monitor
-    /// query, the `scopeId` of a workload-insights one. A query is only reachable
-    /// under the resource it was started for.
+    /// The resource the query was started for: the `monitorName` of a monitor or
+    /// performance-monitor query, the `scopeId` of a workload-insights one. A query
+    /// is only reachable under the resource it was started for.
     pub owner: String,
-    /// The `metricName` the query was started with, which is what decides the
-    /// `unit` its results are reported in.
-    pub metric_name: String,
-    /// The `destinationCategory` the query was started with.
-    pub destination_category: String,
+    /// What the query was started with, as its own plane names it.
+    pub terms: QueryTerms,
     /// `startTime` — the beginning of the window the query covers, kept exactly as
     /// the request carried it.
     pub start_time: ::aws_smithy_types::DateTime,
@@ -973,6 +994,10 @@ pub struct ComAmazonawsNetworkflowmonitorNetworkflowmonitorState {
     /// key because the API addresses a monitor by it (`GET /monitors/{monitorName}`),
     /// which is also what makes a second create of one name a conflict.
     pub monitors: BTreeMap<String, Monitor>,
+    /// Every performance monitor, keyed by `monitorName` — its own store, because a
+    /// performance monitor is its own resource with its own collection (`GET
+    /// /performance-monitors/{monitorName}`) and its own name space.
+    pub performance_monitors: BTreeMap<String, PerformanceMonitor>,
     /// `clientToken` -> `scopeId`, so an `@idempotent` `CreateScope` replayed with
     /// the same token answers with the scope that token already minted.
     pub scope_idempotency: HashMap<String, String>,
@@ -980,6 +1005,10 @@ pub struct ComAmazonawsNetworkflowmonitorNetworkflowmonitorState {
     /// `scope_idempotency` because the two creates are different operations: one
     /// token reused across both must not make `CreateMonitor` answer with a scope.
     pub monitor_idempotency: HashMap<String, String>,
+    /// `clientToken` -> `monitorName` of a PERFORMANCE monitor, for the same reason
+    /// and kept separate for the same one: one token reused across the two creates
+    /// must not make either answer with the other's resource.
+    pub performance_monitor_idempotency: HashMap<String, String>,
     /// Every minted ARN -> the record it names, so an operation handed a
     /// `scopeArn` or a `resourceArn` resolves it without scanning the store. This
     /// is how `CreateMonitor` refuses a `scopeArn` that is not a stored scope.
@@ -1001,6 +1030,9 @@ impl ComAmazonawsNetworkflowmonitorNetworkflowmonitorState {
             scope.settle(now);
         }
         for monitor in self.monitors.values_mut() {
+            monitor.settle(now);
+        }
+        for monitor in self.performance_monitors.values_mut() {
             monitor.settle(now);
         }
         for query in self.queries.values_mut() {
@@ -1034,6 +1066,15 @@ impl ComAmazonawsNetworkflowmonitorNetworkflowmonitorState {
         }
     }
 
+    /// The monitor an ARN names, or `None` when the ARN names nothing in this store
+    /// (or names a resource of this service that is not a monitor).
+    pub fn monitor_by_arn(&self, arn: &str) -> Option<&Monitor> {
+        match self.arn_index.get(arn) {
+            Some(ResourceRef::Monitor(monitor_name)) => self.monitors.get(monitor_name),
+            _ => None,
+        }
+    }
+
     /// Whether any monitor this store holds was created under the scope `scope_arn`
     /// names.
     ///
@@ -1059,6 +1100,10 @@ impl ComAmazonawsNetworkflowmonitorNetworkflowmonitorState {
         match self.arn_index.get(arn)? {
             ResourceRef::Scope(scope_id) => self.scopes.get(scope_id).map(|scope| &scope.tags),
             ResourceRef::Monitor(name) => self.monitors.get(name).map(|monitor| &monitor.tags),
+            ResourceRef::PerformanceMonitor(name) => self
+                .performance_monitors
+                .get(name)
+                .map(|monitor| &monitor.tags),
         }
     }
 
@@ -1071,6 +1116,10 @@ impl ComAmazonawsNetworkflowmonitorNetworkflowmonitorState {
             }
             ResourceRef::Monitor(name) => self
                 .monitors
+                .get_mut(&name)
+                .map(|monitor| &mut monitor.tags),
+            ResourceRef::PerformanceMonitor(name) => self
+                .performance_monitors
                 .get_mut(&name)
                 .map(|monitor| &mut monitor.tags),
         }
@@ -1111,8 +1160,7 @@ impl ComAmazonawsNetworkflowmonitorNetworkflowmonitorState {
         &mut self,
         kind: QueryKind,
         owner: &str,
-        metric_name: &str,
-        destination_category: &str,
+        terms: QueryTerms,
         start_time: ::aws_smithy_types::DateTime,
         end_time: ::aws_smithy_types::DateTime,
         limit: Option<i32>,
@@ -1125,8 +1173,7 @@ impl ComAmazonawsNetworkflowmonitorNetworkflowmonitorState {
                 query_id: id.clone(),
                 kind,
                 owner: owner.to_string(),
-                metric_name: metric_name.to_string(),
-                destination_category: destination_category.to_string(),
+                terms,
                 start_time,
                 end_time,
                 limit,
@@ -1136,6 +1183,19 @@ impl ComAmazonawsNetworkflowmonitorNetworkflowmonitorState {
             },
         );
         id
+    }
+
+    /// Forget every query started under `owner` in the `kind` lifecycle.
+    ///
+    /// A query is only reachable under the resource it was started for, so the
+    /// queries of a resource that is being deleted are reachable by nobody
+    /// afterwards: dropping them with the resource is what keeps the store bounded
+    /// by what is still live, the way a deleted resource's ARN and idempotency
+    /// records go with it. It changes no answer — every lookup of one of those
+    /// queries already fails on the missing owner.
+    pub fn drop_queries(&mut self, kind: QueryKind, owner: &str) {
+        self.queries
+            .retain(|_, query| !(query.kind == kind && query.owner == owner));
     }
 }
 
@@ -1281,10 +1341,21 @@ fn capitalized(word: &str) -> String {
 /// why the two are separate renderers rather than one template parameterized by a
 /// resource type.
 pub fn monitor_not_found(region: &str, monitor_name: &str) -> ResourceNotFoundException {
+    missing_monitor(region, MONITOR_RESOURCE, monitor_name)
+}
+
+/// The sentence a monitor of either kind is reported missing with, over the ARN its
+/// own resource type gives it: one wording for the condition, one ARN builder for
+/// the resource ([`performance_monitor_not_found`] is the other caller).
+pub fn missing_monitor(
+    region: &str,
+    resource_type: &str,
+    monitor_name: &str,
+) -> ResourceNotFoundException {
     ResourceNotFoundException {
         message: Some(refusal_message(format!(
             "Monitor [{}] doesn't exist",
-            resource_arn(region, MONITOR_RESOURCE, monitor_name)
+            resource_arn(region, resource_type, monitor_name)
         ))),
     }
 }

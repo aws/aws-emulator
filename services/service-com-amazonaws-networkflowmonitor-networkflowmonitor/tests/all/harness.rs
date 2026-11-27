@@ -281,6 +281,95 @@ impl Emulator {
         self.call("DELETE", &format!("/monitors/{name}"), None).await
     }
 
+    /// `CreatePerformanceMonitor`: `POST /performance-monitors`, from the
+    /// operation's `@http` trait in the model.
+    pub async fn create_performance_monitor(&self, body: Value) -> Answer {
+        self.call("POST", "/performance-monitors", Some(body)).await
+    }
+
+    /// `GetPerformanceMonitor`: `GET /performance-monitors/{monitorName}`.
+    pub async fn get_performance_monitor(&self, name: &str) -> Answer {
+        self.call("GET", &format!("/performance-monitors/{name}"), None)
+            .await
+    }
+
+    /// `UpdatePerformanceMonitor`: `PATCH /performance-monitors/{monitorName}`.
+    pub async fn update_performance_monitor(&self, name: &str, body: Value) -> Answer {
+        self.call(
+            "PATCH",
+            &format!("/performance-monitors/{name}"),
+            Some(body),
+        )
+        .await
+    }
+
+    /// `DeletePerformanceMonitor`: `DELETE /performance-monitors/{monitorName}`.
+    pub async fn delete_performance_monitor(&self, name: &str) -> Answer {
+        self.call("DELETE", &format!("/performance-monitors/{name}"), None)
+            .await
+    }
+
+    /// `ListPerformanceMonitors`: `GET /performance-monitors`, with `query`
+    /// carrying the `@httpQuery` members or empty for none.
+    pub async fn list_performance_monitors(&self, query: &str) -> Answer {
+        self.call("GET", &format!("/performance-monitors{query}"), None)
+            .await
+    }
+
+    /// `StartQueryPerformanceMonitor`: `POST
+    /// /performance-monitors/{monitorName}/queries`.
+    pub async fn start_performance_query(&self, name: &str, body: Value) -> Answer {
+        self.call(
+            "POST",
+            &format!("/performance-monitors/{name}/queries"),
+            Some(body),
+        )
+        .await
+    }
+
+    /// `GetQueryStatusPerformanceMonitor`.
+    pub async fn performance_query_status(&self, name: &str, query_id: &str) -> Answer {
+        self.call(
+            "GET",
+            &format!("/performance-monitors/{name}/queries/{query_id}/status"),
+            None,
+        )
+        .await
+    }
+
+    /// `GetQueryResultsPerformanceMonitor`, with `query` carrying the
+    /// `@httpQuery` members or empty for none.
+    pub async fn performance_query_results(
+        &self,
+        name: &str,
+        query_id: &str,
+        query: &str,
+    ) -> Answer {
+        self.call(
+            "GET",
+            &format!("/performance-monitors/{name}/queries/{query_id}/results{query}"),
+            None,
+        )
+        .await
+    }
+
+    /// `StopQueryPerformanceMonitor`.
+    pub async fn stop_performance_query(&self, name: &str, query_id: &str) -> Answer {
+        self.call(
+            "DELETE",
+            &format!("/performance-monitors/{name}/queries/{query_id}"),
+            None,
+        )
+        .await
+    }
+
+    /// `GetMonitorScopeSuggestions`: `GET /monitor-scope-suggestions`, with `query`
+    /// carrying the `@httpQuery` members (`monitorArn` is `@required`).
+    pub async fn monitor_scope_suggestions(&self, query: &str) -> Answer {
+        self.call("GET", &format!("/monitor-scope-suggestions{query}"), None)
+            .await
+    }
+
     /// A scope holding one target, and the `scopeArn` it was minted with — the
     /// parent every monitor test needs.
     ///

@@ -263,7 +263,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         }
 
         Ok(GetQueryResultsWorkloadInsightsTopContributorsDataOutput {
-            unit: crate::state::metric_unit(&query.metric_name).to_string(),
+            unit: crate::state::metric_unit(query.terms.metric_name().unwrap_or_default())
+                .to_string(),
             datapoints: Vec::new(),
             next_token: None,
         })

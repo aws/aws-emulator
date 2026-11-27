@@ -163,13 +163,19 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         };
 
         // The records that named the monitor go with it: its ARN, so no later
-        // operation resolves an ARN to a monitor that is gone, and the idempotency
+        // operation resolves an ARN to a monitor that is gone, the idempotency
         // record, so a replayed create mints a new monitor rather than naming a dead
-        // one and the store stays bounded by the monitors that are still live.
+        // one and the store stays bounded by the monitors that are still live, and
+        // the queries started under it, which no call can reach once their owner is
+        // gone.
         state.arn_index.remove(&monitor.monitor_arn);
         state
             .monitor_idempotency
             .retain(|_, name| name != &monitor.monitor_name);
+        state.drop_queries(
+            crate::state::QueryKind::MonitorTopContributors,
+            &monitor.monitor_name,
+        );
 
         // `DeleteMonitorOutput` models no members: the answer is the 200 itself.
         Ok(DeleteMonitorOutput {})

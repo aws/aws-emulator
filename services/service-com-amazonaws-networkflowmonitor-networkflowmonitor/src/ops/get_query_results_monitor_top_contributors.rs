@@ -254,8 +254,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // are no rows, so a caller can tell "no data in the window" from "data
         // measured in bytes" by whether `unit` is there at all.
         let top_contributors: Vec<MonitorTopContributorsRow> = Vec::new();
-        let unit = (!top_contributors.is_empty())
-            .then(|| crate::state::metric_unit(&query.metric_name).to_string());
+        let unit = (!top_contributors.is_empty()).then(|| {
+            crate::state::metric_unit(query.terms.metric_name().unwrap_or_default()).to_string()
+        });
 
         Ok(GetQueryResultsMonitorTopContributorsOutput {
             unit,

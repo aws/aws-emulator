@@ -15,50 +15,72 @@
 //! ambiguous inside `ops` (`E0659`).
 
 pub mod create_monitor_types;
+pub mod create_performance_monitor_types;
 pub mod create_scope_types;
 pub mod delete_monitor_types;
+pub mod delete_performance_monitor_types;
 pub mod delete_scope_types;
+pub mod get_monitor_scope_suggestions_types;
 pub mod get_monitor_types;
+pub mod get_performance_monitor_types;
 pub mod get_query_results_monitor_top_contributors_types;
+pub mod get_query_results_performance_monitor_types;
 pub mod get_query_results_workload_insights_top_contributors_data_types;
 pub mod get_query_results_workload_insights_top_contributors_types;
 pub mod get_query_status_monitor_top_contributors_types;
+pub mod get_query_status_performance_monitor_types;
 pub mod get_query_status_workload_insights_top_contributors_data_types;
 pub mod get_query_status_workload_insights_top_contributors_types;
 pub mod get_scope_types;
 pub mod list_monitors_types;
+pub mod list_performance_monitors_types;
 pub mod list_scopes_types;
 pub mod list_tags_for_resource_types;
 pub mod shared_types;
 pub mod start_query_monitor_top_contributors_types;
+pub mod start_query_performance_monitor_types;
 pub mod start_query_workload_insights_top_contributors_data_types;
 pub mod start_query_workload_insights_top_contributors_types;
 pub mod stop_query_monitor_top_contributors_types;
+pub mod stop_query_performance_monitor_types;
 pub mod stop_query_workload_insights_top_contributors_data_types;
 pub mod stop_query_workload_insights_top_contributors_types;
 pub mod tag_resource_types;
 pub mod untag_resource_types;
 pub mod update_monitor_types;
+pub mod update_performance_monitor_types;
 pub mod update_scope_types;
 
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use create_monitor_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use create_performance_monitor_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use create_scope_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use delete_monitor_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use delete_performance_monitor_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use delete_scope_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use get_monitor_scope_suggestions_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use get_monitor_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use get_performance_monitor_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use get_query_results_monitor_top_contributors_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use get_query_results_performance_monitor_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use get_query_results_workload_insights_top_contributors_data_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use get_query_results_workload_insights_top_contributors_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use get_query_status_monitor_top_contributors_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use get_query_status_performance_monitor_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use get_query_status_workload_insights_top_contributors_data_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
@@ -68,6 +90,8 @@ pub use get_scope_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use list_monitors_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use list_performance_monitors_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use list_scopes_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use list_tags_for_resource_types::*;
@@ -76,11 +100,15 @@ pub use shared_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use start_query_monitor_top_contributors_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use start_query_performance_monitor_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use start_query_workload_insights_top_contributors_data_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use start_query_workload_insights_top_contributors_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use stop_query_monitor_top_contributors_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use stop_query_performance_monitor_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use stop_query_workload_insights_top_contributors_data_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
@@ -91,6 +119,8 @@ pub use tag_resource_types::*;
 pub use untag_resource_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use update_monitor_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use update_performance_monitor_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use update_scope_types::*;
 
