@@ -25,7 +25,10 @@
 //!   ([`issue_service_account_token`]), because the plane that answers for a
 //!   presented token is the one that must hold the record of what was issued.
 //!   There is therefore ONE registry of issued tokens rather than a copy on each
-//!   side.
+//!   side. The same minting records the issuance in the shared registry a
+//!   redeemer of a WEB IDENTITY reads ([`record_redeemable_identity`]), because a
+//!   projected service account token is also the web identity
+//!   `sts:AssumeRoleWithWebIdentity` exchanges for a role session.
 //!
 //! Nothing travels the other way: this service reads no decision of that plane.
 
@@ -64,23 +67,52 @@ pub fn auth_plane<Eng: Send + Sync + 'static>(engine: &Eng) -> Option<AuthPlane>
 }
 
 /// Register the cluster `name` in `region` on the plane, so a token its API server
-/// issues names a cluster that plane knows.
-pub fn register_cluster(plane: &AuthPlane, region: &str, name: &str) {
-    if plane.lock().register_cluster(name, region).is_none() {
-        // A name EKS Auth itself refuses can reach no request there, so nothing is
-        // registered for it; the cluster is still this service's.
-        ::tracing::warn!(
-            cluster = %name,
-            "the EKS Auth plane holds no cluster of this name, so no pod identity token can \
-             be exchanged for it"
-        );
+/// issues names a cluster that plane knows, publishing `oidc_issuer` — the issuer
+/// URL the control plane announced for it — as the issuer those tokens carry.
+pub fn register_cluster(plane: &AuthPlane, region: &str, name: &str, oidc_issuer: Option<&str>) {
+    let mut store = plane.lock();
+    match store.register_cluster(name, region) {
+        // The issuer a cluster's tokens name is the one its control plane PUBLISHES
+        // (`Cluster$identity.oidc.issuer`): that is the URL an account registers an IAM
+        // OpenID Connect provider for, so a token naming anything else could be federated
+        // against no provider at all.
+        Some(cluster) => {
+            if let Some(issuer) = oidc_issuer {
+                cluster.publish_oidc_issuer(issuer);
+            }
+        }
+        None => {
+            // A name EKS Auth itself refuses can reach no request there, so nothing is
+            // registered for it; the cluster is still this service's.
+            ::tracing::warn!(
+                cluster = %name,
+                "the EKS Auth plane holds no cluster of this name, so no pod identity token can \
+                 be exchanged for it"
+            );
+        }
     }
 }
 
 /// Forget the cluster `name` on the plane — what deleting the cluster does to it:
-/// the tokens its API server issued and the associations it held go with it.
-pub fn forget_cluster(plane: &AuthPlane, name: &str) {
-    plane.lock().forget_cluster(name);
+/// the tokens its API server issued and the associations it held go with it. The
+/// issuances recorded for a redeemer of those tokens go too, because a token of an
+/// issuer that no longer exists can be verified against no key set at all.
+pub fn forget_cluster(
+    plane: &AuthPlane,
+    name: &str,
+    redeemers: Option<&WebIdentityRedeemers>,
+) {
+    let announced = {
+        let mut store = plane.lock();
+        // Read before the cluster goes, because the issuer it announced is held on its
+        // own record there.
+        let announced = store.cluster(name).map(|cluster| cluster.oidc_issuer.clone());
+        store.forget_cluster(name);
+        announced
+    };
+    if let (Some(issuer), Some(redeemers)) = (announced, redeemers) {
+        redeemers.lock().forget_issuer(&issuer);
+    }
 }
 
 /// Program the pod identity associations this service holds for the cluster keyed
@@ -139,7 +171,8 @@ pub fn program_cluster_associations_on<Eng: Send + Sync + 'static>(
 
 /// Mint the projected service account token the plan resolved, through the EKS
 /// Auth plane's own issuer — so the record of what was issued lives where a
-/// presented token is resolved.
+/// presented token is resolved — and record the issuance in `redeemers`, the
+/// registry the service that REDEEMS a web identity token reads.
 ///
 /// `None` when this emulator carries no such plane, when the cluster is not
 /// registered there, and when the plan names an identity or a window that plane
@@ -150,6 +183,7 @@ pub fn issue_service_account_token(
     plane: Option<&AuthPlane>,
     cluster_name: &str,
     plan: &TokenPlan,
+    redeemers: Option<&WebIdentityRedeemers>,
 ) -> Option<String> {
     let plane = plane?;
     let mut request = ServiceAccountTokenRequest::for_pod(
@@ -179,8 +213,88 @@ pub fn issue_service_account_token(
     if !audiences.is_empty() {
         request = request.for_audience(&audiences);
     }
-    let mut store = plane.lock();
-    store
-        .cluster_mut(cluster_name)?
-        .issue_service_account_token(&request)
+    let (token, issuer) = {
+        let mut store = plane.lock();
+        let cluster = store.cluster_mut(cluster_name)?;
+        let token = cluster.issue_service_account_token(&request)?;
+        (token, cluster.oidc_issuer.clone())
+    };
+    record_redeemable_identity(redeemers, &token, &issuer, &request);
+    Some(token)
+}
+
+/// The registry of web identity tokens this emulator ITSELF issued, as this service
+/// reaches it: one store in the shared engine, written by the service that issues
+/// such a token and read by the service that redeems it
+/// (`sts:AssumeRoleWithWebIdentity`).
+pub type WebIdentityRedeemers =
+    ::engine::ServiceState<::service_common::web_identity_tokens::IssuedWebIdentityTokens>;
+
+/// That registry in `engine`, or `None` for an engine carrying none — on which a
+/// cluster still issues its tokens, and no redeemer can establish that this
+/// emulator issued one.
+#[must_use]
+pub fn web_identity_redeemers<Eng: Send + Sync + 'static>(
+    engine: &Eng,
+) -> Option<WebIdentityRedeemers> {
+    (engine as &dyn ::std::any::Any)
+        .downcast_ref::<::engine::InMemoryEngine>()
+        .map(::engine::InMemoryEngine::state::<
+            ::service_common::web_identity_tokens::IssuedWebIdentityTokens,
+        >)
+}
+
+/// Record, in the registry the REDEEMER of a web identity token reads, that this
+/// cluster's Kubernetes API server issued `token` for the identity `request` names.
+///
+/// A projected service account token is the web identity an IAM role is assumed
+/// with: a client hands it to `sts:AssumeRoleWithWebIdentity`, which "validates
+/// the identity of the caller by using a token from the web identity provider".
+/// That redeemer cannot verify a signature against the key set the issuer
+/// publishes — this emulator fetches nothing from outside itself — so what it CAN
+/// establish is that the token is one this emulator issued, and that is what this
+/// record says: the issuer the cluster publishes, the audience the token was issued
+/// to, the service account username it names and the window it was issued for,
+/// exactly the claims the minted token carries.
+///
+/// Best-effort, as every recorder in this tree is: an engine carrying no registry
+/// still gets its token, because failing a `TokenRequest` because the redemption
+/// registry is unreachable would be a worse answer than issuing it unrecorded.
+fn record_redeemable_identity(
+    redeemers: Option<&WebIdentityRedeemers>,
+    token: &str,
+    issuer: &str,
+    request: &ServiceAccountTokenRequest,
+) {
+    let Some(redeemers) = redeemers else {
+        ::tracing::warn!(
+            "the engine carries no issued-web-identity registry: the service account token \
+             was issued unrecorded, so no redeemer can establish that this emulator issued it"
+        );
+        return;
+    };
+    redeemers.lock().record(
+        token.to_string(),
+        ::service_common::web_identity_tokens::IssuedWebIdentity {
+            issuer: issuer.to_string(),
+            // RFC 7519 §4.1.3 writes `aud` as a string or an array of them, and a token
+            // issued to one consumer carries that one value either way, so the first
+            // audience it was issued to is the audience its redemption reports.
+            audience: request.audience.first().cloned().unwrap_or_default(),
+            // The `sub` of a projected token: the username Kubernetes authenticates that
+            // service account as, in this service's one spelling of it.
+            subject: super::kubernetes_rbac::service_account_username(
+                &request.namespace,
+                &request.service_account,
+            ),
+            // A projected service account token states no authentication method of its
+            // own, so the provider publishes no such condition key for it.
+            authentication_methods: Vec::new(),
+            expires_at: request.expires_at,
+            // A Kubernetes API server tags no identity: the claim an issuer carries
+            // session tags in is not one a projected token has.
+            principal_tags: Vec::new(),
+        },
+        request.issued_at,
+    );
 }

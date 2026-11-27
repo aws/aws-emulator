@@ -348,9 +348,16 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         }
         // The EKS Auth plane loses the cluster with the cluster: the tokens its
         // API server issued and the associations it held name nobody once there is
-        // no cluster to exchange them for.
+        // no cluster to exchange them for — and nor does a web identity minted
+        // against the issuer that cluster announced.
         if let Some(plane) = crate::state::pod_identity_plane::auth_plane(&*self.engine) {
-            crate::state::pod_identity_plane::forget_cluster(&plane, &key.1);
+            let redeemers =
+                crate::state::pod_identity_plane::web_identity_redeemers(&*self.engine);
+            crate::state::pod_identity_plane::forget_cluster(
+                &plane,
+                &key.1,
+                redeemers.as_ref(),
+            );
         }
 
         // Every piece of work this delete carries has run, so the transition it was

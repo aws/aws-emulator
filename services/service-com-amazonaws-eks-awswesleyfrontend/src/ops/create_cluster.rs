@@ -795,6 +795,19 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             provisioned.data.clone(),
         );
 
+        // The issuer is an address a relying party FETCHES, so it is the endpoint
+        // of this emulator the create was made through
+        // ([`state::oidc_issuer_authority`]) under the path EKS publishes a
+        // cluster's issuer at, settled here and stored on the record so one cluster
+        // announces one issuer. It is also what the tokens this cluster's
+        // Kubernetes API server issues name, which is why it is published onto the
+        // EKS Auth plane below.
+        let oidc_issuer = state::derive_oidc_issuer(
+            &resource_id,
+            &region,
+            state::oidc_issuer_authority(ctx.parts(), ctx.endpoint().as_str()).as_deref(),
+        );
+
         let record = ClusterRecord {
             name: input.name.clone(),
             // The address the cluster's Kubernetes API server answers on, which is
@@ -803,17 +816,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             endpoint: None,
             identity: Some(Identity {
                 oidc: Some(OIDC {
-                    // The issuer is an address a relying party FETCHES, so it is
-                    // the endpoint of this emulator the create was made through
-                    // ([`state::oidc_issuer_authority`]) under the path EKS
-                    // publishes a cluster's issuer at, settled here and stored on
-                    // the record so one cluster announces one issuer.
-                    issuer: Some(state::derive_oidc_issuer(
-                        &resource_id,
-                        &region,
-                        state::oidc_issuer_authority(ctx.parts(), ctx.endpoint().as_str())
-                            .as_deref(),
-                    )),
+                    issuer: Some(oidc_issuer.clone()),
                 }),
             }),
             certificate_authority: Some(Certificate {
@@ -1080,8 +1083,16 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // The cluster is registered on the EKS Auth plane, which is what answers
         // `AssumeRoleForPodIdentity` for the tokens this cluster's API server
         // issues: a cluster that plane does not hold can exchange none of them.
+        // The issuer this cluster ANNOUNCES is published with it, so a token its
+        // API server issues names the URL an account registers an OpenID Connect
+        // provider for.
         if let Some(plane) = state::pod_identity_plane::auth_plane(&*self.engine) {
-            state::pod_identity_plane::register_cluster(&plane, &region, &key.1);
+            state::pod_identity_plane::register_cluster(
+                &plane,
+                &region,
+                &key.1,
+                Some(oidc_issuer.as_str()),
+            );
         }
 
         // A log type this create enabled exports its control plane logs to CloudWatch Logs

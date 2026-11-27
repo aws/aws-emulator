@@ -252,7 +252,7 @@ pub struct Subject {
 
 /// The username a `ServiceAccount` subject stands for, which is the username
 /// Kubernetes authenticates a service account as.
-fn service_account_username(namespace: &str, name: &str) -> String {
+pub(super) fn service_account_username(namespace: &str, name: &str) -> String {
     format!("system:serviceaccount:{namespace}:{name}")
 }
 

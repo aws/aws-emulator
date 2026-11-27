@@ -27,9 +27,12 @@
 //!   retrieved for it and the answer is the key-retrieval refusal AWS words for exactly
 //!   that condition;
 //! * a token this emulator ITSELF issued is resolved from the registry
-//!   `service_common::web_identity_tokens` holds (written by the Amazon Cognito Identity
-//!   `GetOpenIdToken` / `GetOpenIdTokenForDeveloperIdentity` that minted it), which is the
-//!   evidence it has in place of a signature of its own;
+//!   `service_common::web_identity_tokens` holds (written by whichever service minted it:
+//!   the Amazon Cognito Identity `GetOpenIdToken` /
+//!   `GetOpenIdTokenForDeveloperIdentity`, or the projected service account token an
+//!   Amazon EKS cluster's Kubernetes API server issues), which is the evidence it has in
+//!   place of a signature of its own — and is exchanged while the account still resolves
+//!   the issuer that issuance names, as a signed token's issuer must be;
 //! * a token it accepts is exchanged, provided the role's trust policy admits the issuer
 //!   for `sts:AssumeRoleWithWebIdentity` with the audience and subject the token carries;
 //!   otherwise `AccessDenied`.

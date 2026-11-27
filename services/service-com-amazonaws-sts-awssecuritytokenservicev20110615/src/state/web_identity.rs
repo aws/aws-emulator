@@ -13,10 +13,11 @@
 //! Two kinds of issuer are resolvable without leaving this process, and they are the only
 //! kinds whose tokens can be federated:
 //!
-//! * a token this emulator ITSELF issued (the Amazon Cognito Identity
-//!   `GetOpenIdToken` / `GetOpenIdTokenForDeveloperIdentity` registry,
-//!   [`::service_common::web_identity_tokens`]), which is evidence of the issuance in place
-//!   of a signature; and
+//! * a token this emulator ITSELF issued ([`::service_common::web_identity_tokens`], the
+//!   registry every service that mints one records it in — the Amazon Cognito Identity
+//!   `GetOpenIdToken` / `GetOpenIdTokenForDeveloperIdentity` issuance, and the projected
+//!   service account token an Amazon EKS cluster's Kubernetes API server issues), which is
+//!   evidence of the issuance in place of a signature; and
 //! * a token signed by an issuer this emulator HOSTS — an Amazon Cognito user pool, which
 //!   publishes its key set in this same process ([`published_key_set`]) at the location the
 //!   token's own `iss` claim leads a verifier to — whose signature is therefore checked
@@ -305,7 +306,11 @@ fn scalar_values(value: &::serde_json::Value) -> Vec<String> {
 /// before it established:
 ///
 /// 1. a token THIS emulator issued resolves to the issuance it recorded — the evidence it
-///    holds in place of a signature, because it publishes no verification key of its own;
+///    holds in place of a signature, because it publishes no verification key of its own,
+///    and it is federated only while the ACCOUNT can still resolve its issuer as an
+///    identity provider (step 6's rule, which is a fact about the account rather than
+///    about the token, so it holds for an issuance of this emulator's own as much as for a
+///    signed token);
 /// 2. a value that is not a compact JSON Web Token, or that carries no readable `exp` or
 ///    `iss`, is [`TokenDefect::Unreadable`];
 /// 3. a token whose `exp` has passed is [`TokenDefect::Expired`] — an expired token is
@@ -331,6 +336,16 @@ pub fn resolve<Eng: Send + Sync + 'static>(
     if let Some(issued) = super::issued_web_identity_tokens(engine)
         .and_then(|registry| registry.lock().issued(presented, now).cloned())
     {
+        // WHICH providers the account can federate is the account's own record, not the
+        // token's: an issuance this emulator made is exchanged only while the issuer it
+        // names is one the account resolves — the provider it registered for that issuer,
+        // or Amazon Cognito Identity's own, which every account resolves. So a token
+        // minted by an issuer this emulator hosts (an Amazon EKS cluster's Kubernetes API
+        // server) is federated once `iam:CreateOpenIDConnectProvider` registered that
+        // cluster's issuer, and named as unregistered until it was.
+        if !registered_issuer(engine, &issued.issuer) {
+            return Err(TokenDefect::UnregisteredIssuer(issued.issuer));
+        }
         return Ok(WebIdentity {
             identity: issued,
             claims: ::serde_json::Map::new(),

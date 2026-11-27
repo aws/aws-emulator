@@ -447,6 +447,26 @@ impl Cluster {
         }
     }
 
+    /// Publish `issuer` as the OIDC issuer URL this cluster's tokens name, replacing the
+    /// one minted with the registration.
+    ///
+    /// WHICH issuer a cluster announces belongs to its control plane: that is the value
+    /// `Cluster$identity.oidc.issuer` reports and the one an account registers an IAM
+    /// OpenID Connect provider for, so a token this cluster's Kubernetes API server issues
+    /// has to name the very URL the control plane published — otherwise the provider
+    /// registered for the announced issuer resolves none of its tokens. The registration
+    /// mints an issuer of its own only so that a caller with no control plane behind it
+    /// still gets a cluster whose tokens name one.
+    ///
+    /// An empty value publishes nothing: a cluster that announces no issuer keeps the one
+    /// it was registered with rather than issuing tokens naming nobody.
+    pub fn publish_oidc_issuer(&mut self, issuer: &str) {
+        let issuer = issuer.trim();
+        if !issuer.is_empty() {
+            self.oidc_issuer = issuer.to_string();
+        }
+    }
+
     /// Record the association binding `namespace`/`service_account` in this cluster to
     /// `role_arn`, whose IAM role id is `role_id`.
     ///

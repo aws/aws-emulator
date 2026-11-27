@@ -186,6 +186,11 @@ pub struct KubernetesApiPlane {
     /// elastic network interface
     /// ([`kubernetes_pod_addressing::settle_due_pod_addresses`]).
     addressing: kubernetes_pod_addressing::PodAddressPlane,
+    /// The registry the service that REDEEMS a web identity token reads, where a
+    /// projected service account token this API server issues is recorded: such a
+    /// token is the web identity `sts:AssumeRoleWithWebIdentity` exchanges for a
+    /// role session ([`super::pod_identity_plane::issue_service_account_token`]).
+    web_identity: Option<super::pod_identity_plane::WebIdentityRedeemers>,
     /// The TLS server this address answers a `https://` client with: the
     /// certificate the cluster's own certificate authority issued, and its key.
     /// `None` when the material could not be loaded, in which case a client that
@@ -306,6 +311,10 @@ pub async fn publish<Eng: Send + Sync + 'static>(
         // The records the cluster's networking plugin takes a pod's address out
         // of, taken over the same seam and held for the same reason.
         addressing: kubernetes_pod_addressing::PodAddressPlane::of(engine),
+        // The registry a redeemer of a web identity reads, so a token this API
+        // server issues can be exchanged for the role session a service account's
+        // annotated IAM role vends.
+        web_identity: super::pod_identity_plane::web_identity_redeemers(engine),
         tls,
         _listener: listener,
     };
@@ -1141,17 +1150,28 @@ fn route(
             return Err(ApiRefusal::method_not_allowed(method, path));
         }
         let document = read_manifest(content_type, body)?;
-        let plan = {
+        // The plan and the registry a redeemer reads are both taken while the store
+        // is locked, and the lock is RELEASED before the token is minted: minting
+        // takes the EKS Auth plane's lock, and this service's store is never held
+        // across it.
+        let (plan, redeemers) = {
             let store = state.lock();
-            plane(&store, key)?
-                .objects
-                .plan_token(namespace, account, &document, now)?
+            let cluster = plane(&store, key)?;
+            let redeemers = cluster.web_identity.clone();
+            (
+                cluster
+                    .objects
+                    .plan_token(namespace, account, &document, now)?,
+                redeemers,
+            )
         };
-        let token =
-            super::pod_identity_plane::issue_service_account_token(auth, &key.1, &plan)
-                .ok_or_else(|| {
-                    ApiRefusal::internal("the service account token could not be issued")
-                })?;
+        let token = super::pod_identity_plane::issue_service_account_token(
+            auth,
+            &key.1,
+            &plan,
+            redeemers.as_ref(),
+        )
+        .ok_or_else(|| ApiRefusal::internal("the service account token could not be issued"))?;
         return Ok((201, plan.to_response(&token)));
     }
 

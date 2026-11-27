@@ -148,6 +148,19 @@ impl IssuedWebIdentityTokens {
         self.issued.retain(|_, held| held.audience != audience);
     }
 
+    /// Drop every issuance made BY `issuer` — the issuing authority the issuance recorded —
+    /// because that issuer no longer exists.
+    ///
+    /// The same judgement [`Self::forget_audience`] makes, one issuer rather than one
+    /// audience: an issuer this emulator HOSTS goes away when the resource publishing it is
+    /// deleted (an Amazon EKS cluster and the OIDC issuer it announced), and a token it
+    /// signed can be verified against no key set afterwards — so the record that would still
+    /// resolve it to a role goes with the issuer. The comparison is on the issuer as
+    /// recorded, which is the `iss` the token itself carries.
+    pub fn forget_issuer(&mut self, issuer: &str) {
+        self.issued.retain(|_, held| held.issuer != issuer);
+    }
+
     /// Drop every issuance made for `subject` — the identity the issuing call recorded —
     /// because that identity no longer exists.
     ///
@@ -295,6 +308,37 @@ mod tests {
             assert_eq!(
                 resolves, expected,
                 "case {token:?} issued for {subject:?}: expected resolvable == {expected}, got \
+                 {resolves}"
+            );
+        }
+    }
+
+    /// RULE: an issuance whose ISSUER no longer exists stops resolving, and an issuance of
+    /// any other issuer does not.
+    #[test]
+    fn an_issuance_of_an_issuer_that_no_longer_exists_stops_resolving() {
+        let mut registry = IssuedWebIdentityTokens::default();
+        let now = SystemTime::now();
+        // (the token, the issuer that minted it)
+        let rows: Vec<(&str, &str)> = vec![
+            ("of-the-gone-issuer", "https://127.0.0.1:9297/id/AAAA"),
+            ("of-another-issuer", "https://127.0.0.1:9297/id/BBBB"),
+            ("of-the-gone-issuer-again", "https://127.0.0.1:9297/id/AAAA"),
+            ("of-a-third-party", "https://accounts.google.com"),
+        ];
+        for (token, issuer) in &rows {
+            let mut held = issuance("identity-1", now + Duration::from_secs(600));
+            held.issuer = (*issuer).to_string();
+            registry.record((*token).to_string(), held, now);
+        }
+
+        registry.forget_issuer("https://127.0.0.1:9297/id/AAAA");
+        for (token, issuer) in &rows {
+            let resolves = registry.issued(token, now).is_some();
+            let expected = *issuer != "https://127.0.0.1:9297/id/AAAA";
+            assert_eq!(
+                resolves, expected,
+                "case {token:?} issued by {issuer:?}: expected resolvable == {expected}, got \
                  {resolves}"
             );
         }

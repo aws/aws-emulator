@@ -30,6 +30,9 @@ const IAM_API_VERSION: &str = "2010-05-08";
 /// The Auto Scaling API version a client sends in an awsQuery body.
 const AUTOSCALING_API_VERSION: &str = "2011-01-01";
 
+/// The STS API version a client sends in an awsQuery body.
+const STS_API_VERSION: &str = "2011-06-15";
+
 /// The error code EC2 answers for a subnet id no subnet of the account carries, which is
 /// what an Amazon EKS refusal carries through.
 pub(crate) const EC2_NOT_FOUND_CODE: &str = "InvalidSubnetID.NotFound";
@@ -237,6 +240,38 @@ pub(crate) fn autoscaling(
 /// A role ARN of the account this emulator serves, under the default path.
 pub(crate) fn role_arn(name: &str) -> String {
     format!("arn:aws:iam::{}:role/{name}", engine::emulator_account_id())
+}
+
+/// Drive one awsQuery STS action — the service a projected service account token is
+/// exchanged for a role session at.
+pub(crate) fn sts(
+    router: &MultiServiceRouter,
+    runtime: &tokio::runtime::Runtime,
+    action: &str,
+    params: &[(&str, &str)],
+) -> Answer {
+    sts_as(router, runtime, DEFAULT_ACCESS_KEY_ID, action, params)
+}
+
+/// [`sts`] as the holder of `access_key_id` — for a key a session was minted under, that
+/// session.
+pub(crate) fn sts_as(
+    router: &MultiServiceRouter,
+    runtime: &tokio::runtime::Runtime,
+    access_key_id: &str,
+    action: &str,
+    params: &[(&str, &str)],
+) -> Answer {
+    send_as(
+        router,
+        runtime,
+        access_key_id,
+        "sts",
+        "POST",
+        "/",
+        "application/x-www-form-urlencoded",
+        form_body(action, STS_API_VERSION, params),
+    )
 }
 
 /// The base64url form of `text`: the two alphabet substitutions and the dropped

@@ -350,7 +350,7 @@ pub(crate) fn served_origin(config: &Kubeconfig) -> String {
 /// It presents the ACCOUNT's own credential as the bearer token a kubeconfig's credential
 /// plugin builds: an API server authenticates every request, so a client of one presents a
 /// token.
-fn kubernetes(
+pub(crate) fn kubernetes(
     client: &reqwest::blocking::Client,
     origin: &str,
     case: &str,
