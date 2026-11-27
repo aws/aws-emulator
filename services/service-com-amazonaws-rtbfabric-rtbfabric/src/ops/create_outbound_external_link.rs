@@ -267,17 +267,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         }
 
         // The tags the create assigns are held in the record it writes, so the
-        // same per-resource bound `TagResource` enforces is enforced here: a
-        // resource holds at most that many tags whichever call assigned them.
-        let tag_count = input.tags.as_ref().map_or(0, std::collections::HashMap::len);
-        if tag_count > crate::state::TAGS_PER_RESOURCE_QUOTA {
+        // same per-resource bound `TagResource` enforces is enforced here, through
+        // the crate's one application of it: a resource holds at most that many
+        // tags whichever call assigned them.
+        if let Err(message) = crate::state::created_tags_within_quota(input.tags.as_ref()) {
             return Err(CreateOutboundExternalLinkErrorModeled::ValidationException(
-                ValidationException {
-                    message: format!(
-                        "a resource holds at most {} tags",
-                        crate::state::TAGS_PER_RESOURCE_QUOTA
-                    ),
-                },
+                ValidationException { message },
             )
             .into());
         }

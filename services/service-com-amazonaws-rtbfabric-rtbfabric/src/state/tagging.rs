@@ -51,6 +51,31 @@ const ROUTING_RULE_SEGMENT: &str = "routing-rule";
 /// record without end, since the keys and values are caller-chosen.
 pub const TAGS_PER_RESOURCE_QUOTA: usize = 50;
 
+/// The one application of [`TAGS_PER_RESOURCE_QUOTA`]: `Ok(())` when a record holding
+/// `resulting_tags` tags is within the bound, otherwise the message the refusal states.
+///
+/// The bound is a property of the RESOURCE rather than of one operation, so every call
+/// that writes a record's `tags` map is held to it — the creates that mint a record
+/// carrying the caller's map, and `TagResource` on a record that already holds one.
+/// Checked against how many tags the record would hold AFTERWARDS and BEFORE anything
+/// is written, so a refused call leaves the record as it was and no record is ever
+/// persisted holding more tags than can be assigned to it.
+pub fn tag_count_within_quota(resulting_tags: usize) -> Result<(), String> {
+    if resulting_tags > TAGS_PER_RESOURCE_QUOTA {
+        return Err(format!(
+            "a resource holds at most {TAGS_PER_RESOURCE_QUOTA} tags"
+        ));
+    }
+    Ok(())
+}
+
+/// [`tag_count_within_quota`] for the optional `tags` map a create carries: the record
+/// a create mints holds no tags of its own beforehand, so the map the call sent is the
+/// whole of what that record would hold.
+pub fn created_tags_within_quota(tags: Option<&HashMap<String, String>>) -> Result<(), String> {
+    tag_count_within_quota(tags.map_or(0, HashMap::len))
+}
+
 /// The wire error code a tagging call whose `resourceArn` names no resource of this
 /// service is answered with.
 ///

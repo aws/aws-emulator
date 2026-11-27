@@ -54,9 +54,9 @@ pub use routing_rules::{
     RULE_STATUS_DELETED, RULE_STATUS_DELETION_IN_PROGRESS, RULE_STATUS_UPDATE_IN_PROGRESS,
 };
 pub use tagging::{
-    resource_tags, resource_tags_mut, tagged_resource, tagging_unresolved, TaggedResource,
-    ARN_VENDOR, TAGGING_UNRESOLVED_CODE, TAGGING_UNRESOLVED_MESSAGE, TAGGING_UNRESOLVED_STATUS,
-    TAGS_PER_RESOURCE_QUOTA,
+    created_tags_within_quota, resource_tags, resource_tags_mut, tag_count_within_quota,
+    tagged_resource, tagging_unresolved, TaggedResource, ARN_VENDOR, TAGGING_UNRESOLVED_CODE,
+    TAGGING_UNRESOLVED_MESSAGE, TAGGING_UNRESOLVED_STATUS, TAGS_PER_RESOURCE_QUOTA,
 };
 
 use crate::ops::types::{

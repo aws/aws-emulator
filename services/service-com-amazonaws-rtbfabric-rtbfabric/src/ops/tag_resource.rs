@@ -166,20 +166,17 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // Assigning a tag whose key the resource already carries REPLACES that tag's
         // value rather than adding a second one, so what the bound is checked against
         // is how many keys the record would hold afterwards. Checked BEFORE anything is
-        // written: a refused call leaves the resource's tags exactly as they were.
+        // written, through the crate's one application of the bound: a refused call
+        // leaves the resource's tags exactly as they were.
         let added = input
             .tags
             .keys()
             .filter(|key| !tags.contains_key(key.as_str()))
             .count();
-        if tags.len() + added > crate::state::TAGS_PER_RESOURCE_QUOTA {
-            return Err(TagResourceErrorModeled::ValidationException(ValidationException {
-                message: format!(
-                    "a resource holds at most {} tags",
-                    crate::state::TAGS_PER_RESOURCE_QUOTA
-                ),
-            })
-            .into());
+        if let Err(message) = crate::state::tag_count_within_quota(tags.len() + added) {
+            return Err(
+                TagResourceErrorModeled::ValidationException(ValidationException { message }).into(),
+            );
         }
 
         for (key, value) in input.tags {

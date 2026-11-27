@@ -253,6 +253,16 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .into());
         }
 
+        // The tags the create assigns are held in the record it writes, so the
+        // same per-resource bound `TagResource` enforces is enforced here, through
+        // the crate's one application of it: a resource holds at most that many
+        // tags whichever call assigned them.
+        if let Err(message) = crate::state::created_tags_within_quota(input.tags.as_ref()) {
+            return Err(
+                CreateLinkErrorModeled::ValidationException(ValidationException { message }).into(),
+            );
+        }
+
         let link_id = store.mint_link_id();
         let link = crate::state::Link {
             link_id: link_id.clone(),
