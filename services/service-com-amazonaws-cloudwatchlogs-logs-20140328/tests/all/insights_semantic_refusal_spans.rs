@@ -72,12 +72,14 @@ async fn refused(
         code, MALFORMED,
         "case {case:?}: expected {MALFORMED}, got {code} with {body}"
     );
-    // The compile failure's own text is the WHOLE message: nothing of the SDK's exception
-    // rendering is serialized after it.
-    let sentence = body["message"]
+    // The compile failure's own text is the SENTENCE of the message, which the SDK envelope
+    // this service closes every refusal with follows — reporting the status, the code and this
+    // response's own request id.
+    let said = body["message"]
         .as_str()
         .unwrap_or_else(|| panic!("case {case:?}: a refusal carries a message, got {body}"))
         .to_string();
+    let sentence = crate::harness::without_sdk_envelope(case, &said, 400, MALFORMED);
     let location = &body["queryCompileError"]["location"];
     (
         sentence,

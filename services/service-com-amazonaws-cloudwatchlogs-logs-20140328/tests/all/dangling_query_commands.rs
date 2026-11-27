@@ -71,10 +71,12 @@ fn message(case: &str, body: &Value) -> String {
         .to_string()
 }
 
-/// The message of a refusal, which for a compile failure is the compiler's diagnostic and
-/// nothing else: no SDK exception rendering follows it on the wire.
+/// The diagnostic a refusal states: the SENTENCE of its message, with the SDK envelope this
+/// service closes a refusal with stripped off, having asserted that envelope reports the
+/// status, the code and the request id of this very response
+/// ([`crate::harness::without_sdk_envelope`]).
 fn diagnostic(case: &str, body: &Value) -> String {
-    message(case, body)
+    crate::harness::without_sdk_envelope(case, &message(case, body), 400, MALFORMED)
 }
 
 /// The place a parser states for the end of `query`: the line it ran out on, counted from

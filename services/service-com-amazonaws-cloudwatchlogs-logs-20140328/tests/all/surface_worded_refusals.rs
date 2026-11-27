@@ -651,9 +651,11 @@ async fn a_query_that_selects_no_log_group_is_a_malformed_query() {
             code, MALFORMED_QUERY,
             "case {case:?}: a query selecting no log group is malformed, got {code} {said:?}"
         );
-        // The diagnostic is the WHOLE message: the syntax that was being read, then the symbol
-        // the compiler stopped on and where in the submitted string it sits.
-        let message = said;
+        // The diagnostic is the SENTENCE of the message: the syntax that was being read, then
+        // the symbol the compiler stopped on and where in the submitted string it sits — and
+        // then the envelope clause every refusal of this service closes with.
+        let message =
+            crate::harness::without_sdk_envelope(case, &said, 400, MALFORMED_QUERY);
         let expected = format!(
             "Invalid syntax while using query definition snippets: unexpected symbol found \
              {symbol} at line {line} and position {position}"

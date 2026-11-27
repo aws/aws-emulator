@@ -14,11 +14,10 @@
 //!   that reads the id out of an SDK's error message and a client that reads the response
 //!   header see the same value for one call, whichever refusal class answered.
 //! * A refusal this service RELAYS rather than decides — the query compiler's account of a
-//!   query that does not compile — carries the compiler's text and NOTHING else: the clause an
-//!   SDK writes when it renders an exception is assembled client-side out of the status line,
-//!   the error code and the request-id header, so none of it is serialized in that message.
-//!   The sentence is the compiler's diagnostic: the symbol the compiler stopped on and the
-//!   place that symbol occupies in the SUBMITTED query string.
+//!   query that does not compile — carries the compiler's text as its SENTENCE, and then that
+//!   same envelope: the sentence is the compiler's diagnostic, the symbol it stopped on and the
+//!   place that symbol occupies in the SUBMITTED query string, and the modelled
+//!   `queryCompileError` detail beside it carries that diagnostic alone.
 //!
 //! The rows span what the rules generalise over: which error class the refusal is (so the
 //! status and code stated in the clause differ), which operation answers it, whether the
@@ -291,19 +290,23 @@ async fn a_quoted_symbol_carrying_the_marker_is_reported_as_submitted() {
         let position = query_string
             .find(symbol)
             .unwrap_or_else(|| panic!("case {case}: the row's query carries {symbol:?}"));
+        // The clause the message closes with is the service's own; the SENTENCE in front of it
+        // is where the submitted symbol is quoted, and the marker inside the quoted symbol is
+        // left exactly as it was submitted.
+        let sentence =
+            crate::harness::without_sdk_envelope(case, &said, REFUSAL_STATUS, MALFORMED_QUERY);
         assert_eq!(
-            said,
+            sentence,
             format!("unexpected symbol found {symbol} at line 1 and position {position}"),
-            "case {case}: expected the submitted symbol quoted and nothing after the \
-             diagnostic, got {said:?}"
+            "case {case}: expected the submitted symbol quoted in the diagnostic, got {said:?}"
         );
     }
 }
 
 /// The WHOLE message of a query that does not compile: the parser diagnostic — the symbol the
 /// compiler stopped on and the place that symbol occupies in the SUBMITTED query string — and
-/// nothing after it, because the diagnostic is the compiler's own rendering rather than a
-/// sentence this service words inside its own envelope.
+/// then the envelope clause every refusal of this service closes with, naming the request this
+/// response answers.
 ///
 /// The rows span what the message's variable parts generalise over: where the offending token
 /// sits (so the position moves with it, by exactly as many characters as the token moved), what
@@ -312,7 +315,7 @@ async fn a_quoted_symbol_carrying_the_marker_is_reported_as_submitted() {
 /// off the submitted string in each row rather than restated, so a diagnostic that did not read
 /// the query cannot pass.
 #[tokio::test]
-async fn a_relayed_compile_failure_states_the_place_in_the_submitted_query_and_nothing_else() {
+async fn a_relayed_compile_failure_states_the_place_in_the_submitted_query() {
     let logs = Logs::new();
     const GROUP: &str = "/envelope/diagnostic";
     logs.ok("CreateLogGroup", &json!({"logGroupName": GROUP}))
@@ -394,24 +397,19 @@ async fn a_relayed_compile_failure_states_the_place_in_the_submitted_query_and_n
             .map_or(before, |(_, last_line)| last_line)
             .chars()
             .count();
+        let said = message(case, &body);
         assert_eq!(
-            message(case, &body),
+            crate::harness::without_sdk_envelope(case, &said, REFUSAL_STATUS, MALFORMED_QUERY),
             format!("unexpected symbol found {symbol} at line {line} and position {position}"),
-            "case {case}: expected the diagnostic for {query_string:?} and nothing after it, \
+            "case {case}: expected the diagnostic for {query_string:?} before the envelope, \
              got {text}"
         );
-        // The response still names the request it answers, in the header this protocol names
-        // one in: the message states no id at all, so the two can never name two requests.
+        // The envelope names the request THIS response reports, and no other: the id is in the
+        // clause and nowhere else in the sentence.
         assert!(
-            !message(case, &body).contains(&request_id),
-            "case {case}: expected the message to name no request, got {text}"
+            said.ends_with(&expected_clause(MALFORMED_QUERY, &request_id)),
+            "case {case}: expected the clause stating the reported id, got {text}"
         );
-        for framing in ["(Service:", "Status Code:", "Error Code:", "Request ID:", "Proxy:"] {
-            assert!(
-                !message(case, &body).contains(framing),
-                "case {case}: expected no {framing:?} framing in the message, got {text}"
-            );
-        }
         // "Details about this error are displayed in a QueryCompileError object": the detail
         // locates the same text, as the character range it occupies in the submitted string.
         let location = &body["queryCompileError"]["location"];

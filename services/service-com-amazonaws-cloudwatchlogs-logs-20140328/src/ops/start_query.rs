@@ -201,8 +201,9 @@ fn invalid_parameter(message: String) -> StartQueryError {
 /// two different faults in two different queries cannot read alike. Both variable parts come
 /// from the request: the symbol is the text the compiler stopped on, taken out of the query
 /// string itself, and the position is that text's place in it. A fault the compiler states a
-/// RULE for states that rule instead, and either way the text is the COMPILER's and the WHOLE
-/// message ([`unexpected_symbol_message`]). The accompanying
+/// RULE for states that rule instead, and either way the text is the COMPILER's
+/// ([`unexpected_symbol_message`]), stated inside the envelope this service relays a query
+/// refusal in ([`malformed_query_refusal`]). The accompanying
 /// `QueryCompileError` carries the compiler's own account of WHAT is wrong plus the character
 /// range it stopped in, which is the structure the model declares for the detail.
 fn malformed_query(
@@ -210,12 +211,12 @@ fn malformed_query(
     failure: &crate::state::query_compile::QueryCompileFailure,
 ) -> StartQueryError {
     StartQueryErrorModeled::MalformedQueryException(MalformedQueryException {
-        message: Some(
-            failure
+        message: Some(malformed_query_refusal(
+            &failure
                 .refusal
                 .clone()
                 .unwrap_or_else(|| unexpected_symbol_message(query, failure)),
-        ),
+        )),
         query_compile_error: Some(QueryCompileError {
             message: Some(failure.message.clone()),
             location: Some(QueryCompileErrorLocation {
@@ -229,17 +230,33 @@ fn malformed_query(
     .into()
 }
 
+/// The body of a refusal for a query the compiler would not build, inside the SDK envelope
+/// CloudWatch Logs states such a refusal in — the clause
+/// ` (Service: AWSLogs; Status Code: 400; Error Code: MalformedQueryException; Request ID:
+/// <id>; Proxy: null)`, whose status and code are the ones this response answers with and
+/// whose id is the one the response reports for the request it answers
+/// ([`crate::state::with_sdk_error_envelope`], [`crate::service::stated_request_id`]).
+///
+/// Every refusal this service answers carries that clause in its message, the recorded
+/// refusals of a query that does not compile among them: the compiler's diagnostic is RELAYED
+/// into the message, clause and all, so a client reading the message of a compile failure
+/// reads the same framing it reads after every other refusal here. Only the modelled
+/// `QueryCompileError` detail beside it carries the diagnostic alone.
+fn malformed_query_refusal(body: &str) -> String {
+    crate::state::with_sdk_error_envelope(body, crate::state::ENVELOPE_MALFORMED_QUERY)
+}
+
 /// The diagnostic a query that does not compile is refused with: the symbol the compiler
 /// stopped on, and where in the submitted query string that symbol sits.
 ///
-/// It is the WHOLE message such a refusal carries. The
+/// It is the whole of the SENTENCE such a refusal states, which the envelope clause follows
+/// ([`malformed_query_refusal`]). The
 /// ` (Service: …; Status Code: …; Error Code: …; Request ID: …; Proxy: …)` clause a client
-/// reads after many of this service's refusals is what an AWS SDK writes when it RENDERS an
-/// exception, out of the status line, the error code and the request-id header the response
-/// already carries; the recorded body of a refusal for a query that does not compile carries
-/// the diagnostic alone, so nothing of that framing is serialized here. The status travels in
-/// the status line, the code in the error-type member, and the request this response answers in
-/// the header this protocol names one in ([`crate::service::stated_request_id`]).
+/// reads after every refusal of this service closes this one too: the recorded refusal of a
+/// query that does not compile states the diagnostic and then that clause, which is what the
+/// service RELAYS to its caller. Only the modelled `QueryCompileError` beside it carries the
+/// diagnostic alone, and the request the clause names is the one the response reports in the
+/// header this protocol names one in ([`crate::service::stated_request_id`]).
 ///
 /// The symbol is the text the failure spans, read out of `query` — so it is the caller's own
 /// token and never a word of this emulator's. A span that holds no text is the end of the
@@ -326,15 +343,17 @@ const LEGACY_LOG_GROUP_MEMBERS: [&str; 2] = ["logGroupName", "logGroupNames"];
 /// compiler stopped on and where in the submitted string it sits
 /// ([`unexpected_symbol_at`]) — both taken from the query string itself, which is the whole
 /// value of the refusal, since a caller has to be able to tell WHERE its query is wrong. It is
-/// the compiler's own text, so it is the whole message the way every compile failure of this
-/// operation is ([`unexpected_symbol_message`]), and it carries the
+/// the compiler's own text, stated inside the envelope every compile failure of this operation
+/// is relayed in ([`malformed_query_refusal`]), and it carries the
 /// `QueryCompileError` the model declares for the detail: the same account of what is wrong
 /// and the character range the offending symbol occupies.
 fn log_groups_unnamed(query: &str) -> StartQueryError {
     let (start_char_offset, end_char_offset) = first_symbol_span(query);
     let detail = unexpected_symbol_at(query, start_char_offset, end_char_offset);
     StartQueryErrorModeled::MalformedQueryException(MalformedQueryException {
-        message: Some(format!("{SNIPPET_SYNTAX_PREFIX}{detail}")),
+        message: Some(malformed_query_refusal(&format!(
+            "{SNIPPET_SYNTAX_PREFIX}{detail}"
+        ))),
         query_compile_error: Some(QueryCompileError {
             message: Some(detail),
             location: Some(QueryCompileErrorLocation {
@@ -413,12 +432,12 @@ fn query_results_key_unusable(message: String) -> StartQueryError {
 /// states a compile failure (recorded: a refusal for a query the compiler could not build
 /// opens `Compile Error - `), with the submitted statement as the text at fault — which is the
 /// structure the model declares for the detail (`QueryCompileError`). The compiler's text is
-/// the whole message, as it is for every compile failure of this operation
-/// ([`unexpected_symbol_message`]).
+/// the sentence, inside the envelope every compile failure of this operation is relayed in
+/// ([`malformed_query_refusal`]).
 fn malformed_statement(query: &str, detail: &str) -> StartQueryError {
     let rule = format!("{COMPILE_ERROR_PREFIX}{detail}");
     StartQueryErrorModeled::MalformedQueryException(MalformedQueryException {
-        message: Some(rule.clone()),
+        message: Some(malformed_query_refusal(&rule)),
         query_compile_error: Some(QueryCompileError {
             message: Some(detail.to_string()),
             location: Some(QueryCompileErrorLocation {
@@ -446,7 +465,8 @@ const COMPILE_ERROR_PREFIX: &str = crate::state::query_compile::COMPILE_ERROR_PR
 /// diagnostics state a span with. The detail carries the same place in the structure the model
 /// declares for it (`QueryCompileError`/`QueryCompileErrorLocation`), where the second offset
 /// is one PAST the last character, the way every compile failure of this service reports one.
-/// The compiler's text is the whole message ([`unexpected_symbol_message`]).
+/// The compiler's text is the sentence, inside the envelope every compile failure of this
+/// operation is relayed in ([`malformed_query_refusal`]).
 fn malformed_filter_on_aggregate(
     fault: &crate::state::insights::sql::HavingFault,
 ) -> StartQueryError {
@@ -456,11 +476,11 @@ fn malformed_filter_on_aggregate(
         fault.predicate
     );
     StartQueryErrorModeled::MalformedQueryException(MalformedQueryException {
-        message: Some(format!(
+        message: Some(malformed_query_refusal(&format!(
             "{rule} ([{},{}])",
             fault.start_char_offset,
             fault.end_char_offset.saturating_sub(1)
-        )),
+        ))),
         query_compile_error: Some(QueryCompileError {
             message: Some(rule),
             location: Some(QueryCompileErrorLocation {

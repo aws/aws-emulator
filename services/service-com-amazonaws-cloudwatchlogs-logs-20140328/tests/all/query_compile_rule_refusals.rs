@@ -101,8 +101,9 @@ async fn refused_with(logs: &Logs, case: &str, group: &str, window: (i64, i64), 
         .unwrap_or_else(|| panic!("case {case}: a refusal carries a message, got {body}"))
         .to_string();
     (
-        // The compile failure's text is the WHOLE message a client reads.
-        message,
+        // The compile failure's text is the SENTENCE of the message, which the envelope this
+        // service closes every refusal with follows.
+        crate::harness::without_sdk_envelope(case, &message, REFUSAL_STATUS, MALFORMED),
         body,
     )
 }
