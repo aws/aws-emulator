@@ -32,11 +32,13 @@
 //! ([`channel_delivery`]), the layout an expiry refusal spells the instant it names in
 //! ([`expiry_instant`]), and the `AWS/Kinesis` series a stream's data plane publishes about
 //! itself ([`stream_metrics`]), and the resolution every instant it reports and every
-//! instant a request hands it are taken at ([`reported_instants`]).
+//! instant a request hands it are taken at ([`reported_instants`]), and the data-freshness
+//! window every channel destination delivers on ([`data_freshness`]).
 
 pub mod channel_delivery;
 mod channel_key_access;
 mod channels;
+mod data_freshness;
 mod expiry_instant;
 mod kms_key;
 mod reported_instants;
@@ -51,6 +53,7 @@ pub use subscriptions::*;
 
 pub use channel_key_access::*;
 pub use channels::*;
+pub use data_freshness::*;
 pub use expiry_instant::*;
 pub use kms_key::*;
 pub use reported_instants::*;
@@ -481,12 +484,6 @@ pub const S3_TABLES_RECORD_FORMAT_TYPES: &[&str] = &["GSR_JSON", "JSON"];
 /// channel" (`CreateChannelInput$StreamConfigurationList`), narrower than that member's
 /// modelled `@length` of 1..10000, which the boundary validator enforces.
 pub const MAX_STREAMS_PER_CHANNEL: usize = 1;
-
-/// The maximum age of undelivered data a destination gets when the request names none: "The
-/// maximum age, in seconds, of undelivered data before the channel delivers it to the
-/// destination. The default value is 300 seconds"
-/// (`S3DestinationConfiguration$DataFreshnessInSeconds`).
-pub const DEFAULT_DATA_FRESHNESS_SECONDS: i32 = 300;
 
 /// The storage class delivered objects get when the request names none: "STANDARD - The
 /// default storage class, for frequently accessed data"

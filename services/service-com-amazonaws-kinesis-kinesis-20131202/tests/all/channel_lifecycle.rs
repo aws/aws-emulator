@@ -81,18 +81,37 @@ pub(crate) fn past_channel_activation() -> Duration {
     CHANNEL_ACTIVATION_DELAY + Duration::from_millis(400)
 }
 
-/// Look at the channel `arn` until it reports `ACTIVE` — the state its create or its last
-/// accepted change owes it — through the crate's one poll loop
+/// Look at the channel `arn` through `region`'s endpoint until it reports `ACTIVE` — the state
+/// its create or its last accepted change owes it — through the crate's one poll loop
 /// ([`crate::stream_tags::poll_until`]).
-pub(crate) async fn poll_until_channel_active(emulator: &Emulator, case: &str, arn: &str) {
-    crate::stream_tags::poll_until(case, &format!("the channel {arn} reports {CHANNEL_ACTIVE}"), || async {
-        let (status, response) = emulator
-            .call("DescribeChannel", &json!({ "ChannelARN": arn }))
-            .await;
-        status == 200
-            && response["ChannelDescription"]["ChannelStatus"].as_str() == Some(CHANNEL_ACTIVE)
-    })
+///
+/// A channel "is unique within your Amazon Web Services account and Amazon Web Services Region"
+/// (`CreateChannelInput$ChannelName`), so the endpoint a case waits on is part of what it waits
+/// for; the region split follows the stream helpers' own idiom
+/// ([`crate::stream_tags::poll_until_active_in`] and its default-region wrapper).
+pub(crate) async fn poll_until_channel_active_in(
+    emulator: &Emulator,
+    case: &str,
+    region: &str,
+    arn: &str,
+) {
+    crate::stream_tags::poll_until(
+        case,
+        &format!("the channel {arn} in {region} reports {CHANNEL_ACTIVE}"),
+        || async {
+            let (status, response) = emulator
+                .call_in(region, "DescribeChannel", &json!({ "ChannelARN": arn }))
+                .await;
+            status == 200
+                && response["ChannelDescription"]["ChannelStatus"].as_str() == Some(CHANNEL_ACTIVE)
+        },
+    )
     .await;
+}
+
+/// [`poll_until_channel_active_in`] in the default test region.
+pub(crate) async fn poll_until_channel_active(emulator: &Emulator, case: &str, arn: &str) {
+    poll_until_channel_active_in(emulator, case, REGION, arn).await;
 }
 
 /// The ARN of an IAM role inside the `RoleARN` pattern
@@ -296,7 +315,7 @@ async fn a_created_channel_is_what_a_describe_reports() {
                 "ServiceExecutionRoleARN": role_arn("channel/delivery.role-2"),
                 "StreamConfigurationList": [stream_configuration(&source, "STRING", None)],
                 "S3DestinationConfiguration": {
-                    "DataFreshnessInSeconds": 60,
+                    "DataFreshnessInSeconds": 450,
                     "DeadLetterQueueS3Configuration": dead_letter_queue("channel-dlq", "failed/"),
                     "StorageConfiguration": {
                         "BucketARN": bucket_arn("channel-bucket-two"),
@@ -311,7 +330,7 @@ async fn a_created_channel_is_what_a_describe_reports() {
             }),
             destination_member: "S3DestinationConfiguration",
             destination: json!({
-                "DataFreshnessInSeconds": 60,
+                "DataFreshnessInSeconds": 450,
                 "DeadLetterQueueS3Configuration": dead_letter_queue("channel-dlq", "failed/"),
                 "StorageConfiguration": {
                     "BucketARN": bucket_arn("channel-bucket-two"),

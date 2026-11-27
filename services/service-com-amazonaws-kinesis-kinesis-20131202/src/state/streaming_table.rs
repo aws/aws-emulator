@@ -63,46 +63,6 @@ pub fn managing_service_principal() -> String {
 /// value, since what it reports is that the specification itself is missing.
 pub const PARTITION_SPEC_REQUIRED_MESSAGE: &str = "PartitionSpec is required.";
 
-/// The shortest maximum age of undelivered data a streaming table destination delivers on.
-///
-/// The model states no bound — `S3TablesDestinationConfiguration$DataFreshnessInSeconds`
-/// targets a plain integer and its documentation names only the default — but a streaming
-/// table destination delivers on a window the service documents as 300 to 900 seconds, and a
-/// value outside it names a window the destination has no delivery behaviour for, so the
-/// service refuses it instead of storing it.
-pub const MIN_STREAMING_TABLE_FRESHNESS_SECONDS: i32 = 300;
-
-/// The longest maximum age of undelivered data a streaming table destination delivers on: the
-/// upper end of the same documented window as [`MIN_STREAMING_TABLE_FRESHNESS_SECONDS`].
-pub const MAX_STREAMING_TABLE_FRESHNESS_SECONDS: i32 = 900;
-
-/// How a create or an update refuses a streaming table destination whose data-freshness window
-/// falls outside the one the destination delivers on.
-///
-/// FIXED text around the two bounds of the member: what it reports is which window the
-/// destination admits, so the values interpolated are
-/// [`MIN_STREAMING_TABLE_FRESHNESS_SECONDS`] and [`MAX_STREAMING_TABLE_FRESHNESS_SECONDS`] —
-/// the member's own bounds — and never the value the refused request carried.
-pub fn streaming_table_freshness_message() -> String {
-    format!(
-        "DataFreshnessInSeconds must be between {MIN_STREAMING_TABLE_FRESHNESS_SECONDS} and \
-         {MAX_STREAMING_TABLE_FRESHNESS_SECONDS}."
-    )
-}
-
-/// The refusal `seconds` earns as a streaming table destination's data-freshness window, or
-/// `None` for a window the destination delivers on. Both bounds are INCLUSIVE: the window the
-/// destination admits is closed at each end, so the ends themselves are served.
-///
-/// One reading of that window for every operation that sets it — the create that names a
-/// destination and the update that moves its window — so neither can leave a stored channel
-/// delivering on a window the other refuses.
-pub fn streaming_table_freshness_refusal(seconds: i32) -> Option<String> {
-    (!(MIN_STREAMING_TABLE_FRESHNESS_SECONDS..=MAX_STREAMING_TABLE_FRESHNESS_SECONDS)
-        .contains(&seconds))
-    .then(streaming_table_freshness_message)
-}
-
 /// Whether `configurations` describes a destination table this service cannot create for want
 /// of a partitioning specification. EVERY configuration in the list carries its own table, so
 /// one of them naming no specification is enough: the request is refused whole and no table

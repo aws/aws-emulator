@@ -23,10 +23,15 @@
 //! `PartitionSpec`), so a streaming table configuration naming no partitioning specification
 //! describes no table this service can create and is refused with the modelled
 //! `ValidationException` ([`crate::state::PARTITION_SPEC_REQUIRED_MESSAGE`]), before any
-//! channel is stored and any table provisioned. Such a destination also delivers on a
-//! data-freshness window the service documents a range for, so a window outside it is refused
-//! the same way, with the sentence naming that range's bounds
-//! ([`crate::state::streaming_table_freshness_refusal`]).
+//! channel is stored and any table provisioned. A destination of EITHER kind also delivers on
+//! the data-freshness window the service documents for `DataFreshnessInSeconds` — the member
+//! both destination configurations carry — so a window outside that one is refused the same
+//! way, with the sentence naming the window's bounds
+//! ([`crate::state::data_freshness_refusal`]), before any channel is stored. That window is
+//! read FIRST of the faults a destination can carry, so a destination that is wrong in more
+//! than one way is reported on its window before its object key template or its partitioning
+//! specification; AWS states no order between them, and one order stated here is what keeps
+//! the refusal a given request earns the same on every call.
 //!
 //! The `ServiceExecutionRoleARN` is resolved against this account's IAM records
 //! SYNCHRONOUSLY, before any channel state is written and before anything the request says
@@ -283,6 +288,17 @@ fn limit_exceeded(message: String) -> CreateChannelError {
     .into()
 }
 
+/// The refusal the data-freshness window `seconds` earns, if any: the window belongs to the
+/// `DataFreshnessInSeconds` member rather than to one destination kind
+/// ([`crate::state::data_freshness_refusal`]), so whichever destination configuration carried
+/// it is judged against the same bounds and refused with the same sentence. A create naming no
+/// window takes the documented default, which is inside them.
+fn freshness_refusal(seconds: Option<i32>) -> Option<CreateChannelError> {
+    seconds
+        .and_then(crate::state::data_freshness_refusal)
+        .map(validation)
+}
+
 /// The destination a create names, as the channel will report it.
 struct Destination {
     /// `ChannelDestinationType`, which decides the record formats the source streams may
@@ -359,6 +375,12 @@ fn destination(input: &CreateChannelInput) -> Result<Destination, CreateChannelE
         input.s3_tables_destination_configuration.as_ref(),
     ) {
         (Some(s3), None) => {
+            // A destination delivers on the data-freshness window the service documents for the
+            // member, so a window outside it is refused here — before any channel is stored —
+            // whichever destination kind named it ([`freshness_refusal`]).
+            if let Some(error) = freshness_refusal(s3.data_freshness_in_seconds) {
+                return Err(error);
+            }
             if let Some(refusal) = s3
                 .storage_configuration
                 .output_key_template
@@ -374,17 +396,11 @@ fn destination(input: &CreateChannelInput) -> Result<Destination, CreateChannelE
             })
         }
         (None, Some(tables)) => {
-            // A streaming table destination delivers on the data-freshness window the service
-            // documents for it, so a window outside that one is refused here — before any
-            // channel is stored and before any table is provisioned — with the sentence that
-            // names the window's own bounds
-            // ([`crate::state::streaming_table_freshness_message`]). A create naming no window
-            // takes the documented default, which is inside it.
-            if let Some(refusal) = tables
-                .data_freshness_in_seconds
-                .and_then(crate::state::streaming_table_freshness_refusal)
-            {
-                return Err(validation(refusal));
+            // The same member, the same window, the same sentence: a streaming table
+            // destination is judged before any channel is stored and before any table is
+            // provisioned.
+            if let Some(error) = freshness_refusal(tables.data_freshness_in_seconds) {
+                return Err(error);
             }
             // A streaming table destination is a table this service CREATES, partitioned the
             // way the configuration asks for ("Specifies how the destination table is

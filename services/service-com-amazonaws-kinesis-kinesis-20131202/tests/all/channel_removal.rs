@@ -153,7 +153,7 @@ fn rows(source_here: &str, source_there: &str) -> Vec<Row> {
                 "ServiceExecutionRoleARN": role_arn("channel-delivery"),
                 "StreamConfigurationList": [stream_configuration(source_here, "STRING", None)],
                 "S3DestinationConfiguration": {
-                    "DataFreshnessInSeconds": 60,
+                    "DataFreshnessInSeconds": 450,
                     "DeadLetterQueueS3Configuration": dead_letter_queue("removal-dlq", "failed/"),
                     "StorageConfiguration": storage_configuration("removal-bucket-two"),
                 },
@@ -360,7 +360,7 @@ async fn a_channel_inside_a_transition_is_deleted_too() {
                     "UpdateChannel",
                     &json!({
                         "ChannelARN": arn,
-                        "S3DestinationConfiguration": { "DataFreshnessInSeconds": 120 },
+                        "S3DestinationConfiguration": { "DataFreshnessInSeconds": 420 },
                     }),
                 )
                 .await;

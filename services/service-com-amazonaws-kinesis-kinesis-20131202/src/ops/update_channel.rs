@@ -17,7 +17,9 @@
 //! Only what the update names changes: the data-freshness window of the destination the
 //! channel already delivers to, and the CloudWatch Logs settings. A request naming the
 //! destination the channel does not deliver to is refused, since "You cannot change the
-//! destination ... of an existing channel".
+//! destination ... of an existing channel", and so is one moving a destination of either kind
+//! to a data-freshness window outside the one the service delivers on, with the sentence the
+//! create refuses that window with ([`crate::state::data_freshness_refusal`]).
 //!
 //! ## Shape of an operation
 //!
@@ -273,16 +275,22 @@ fn update_channel(
         ));
     }
 
-    // Still what the request says on its own: a streaming table destination delivers on the
-    // data-freshness window the service documents for it, so an update moving that window
-    // outside it is refused before the store is read, with the same sentence the create
-    // refuses such a window with ([`crate::state::streaming_table_freshness_refusal`]).
+    // Still what the request says on its own: a channel destination delivers on the
+    // data-freshness window the service documents for `DataFreshnessInSeconds`, the member
+    // both destination updates carry, so an update moving that window outside it is refused
+    // before the store is read — whichever destination kind it names — with the same sentence
+    // the create refuses such a window with ([`crate::state::data_freshness_refusal`]).
     if let Some(refusal) = input
-        .s3_tables_destination_configuration
+        .s3_destination_configuration
         .as_ref()
-        .and_then(|update| {
-            crate::state::streaming_table_freshness_refusal(update.data_freshness_in_seconds)
+        .map(|update| update.data_freshness_in_seconds)
+        .or_else(|| {
+            input
+                .s3_tables_destination_configuration
+                .as_ref()
+                .map(|update| update.data_freshness_in_seconds)
         })
+        .and_then(crate::state::data_freshness_refusal)
     {
         return Err(validation(refusal));
     }
@@ -323,9 +331,8 @@ fn update_channel(
     }
 
     // Only the members the update names change. `DataFreshnessInSeconds` is modelled required
-    // on both update inputs and carries no `@range`, so a general purpose bucket destination's
-    // window is stored as submitted, and a streaming table destination's is the one the check
-    // above already admitted.
+    // on both update inputs, and the window it names is the one the check above already
+    // admitted, so a destination of either kind is moved to a window the service delivers on.
     if let (Some(update), Some(destination)) = (
         input.s3_destination_configuration.as_ref(),
         channel.s3_destination.as_mut(),

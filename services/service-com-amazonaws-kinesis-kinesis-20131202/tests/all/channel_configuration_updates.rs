@@ -39,8 +39,8 @@ use service_com_amazonaws_kinesis_kinesis_20131202::state::{
 
 use crate::channel_lifecycle::{
     dead_letter_queue, description, description_without_status, member, on_demand_stream,
-    on_demand_stream_in, past_channel_activation, role_arn, schema_arn, storage_configuration,
-    stream_configuration, table_bucket_arn,
+    on_demand_stream_in, past_channel_activation, poll_until_channel_active_in, role_arn,
+    schema_arn, storage_configuration, stream_configuration, table_bucket_arn,
 };
 use crate::stream_tags::{error_code, error_message, Emulator, REGION};
 
@@ -159,9 +159,9 @@ fn rows(source: &str) -> Vec<Row> {
             }),
         },
         Row {
-            case: "freshness-to-60",
+            case: "freshness-to-300",
             create: s3_create(
-                "freshness-to-60",
+                "freshness-to-300",
                 source,
                 json!({
                     "DataFreshnessInSeconds": 600,
@@ -169,22 +169,22 @@ fn rows(source: &str) -> Vec<Row> {
                 }),
                 None,
             ),
-            update: json!({ "S3DestinationConfiguration": { "DataFreshnessInSeconds": 60 } }),
+            update: json!({ "S3DestinationConfiguration": { "DataFreshnessInSeconds": 300 } }),
             patch: Box::new(|expected| {
-                expected["S3DestinationConfiguration"]["DataFreshnessInSeconds"] = json!(60);
+                expected["S3DestinationConfiguration"]["DataFreshnessInSeconds"] = json!(300);
             }),
         },
         Row {
-            case: "freshness-to-1",
+            case: "freshness-to-450",
             create: s3_create(
-                "freshness-to-1",
+                "freshness-to-450",
                 source,
                 json!({ "StorageConfiguration": storage_configuration("update-bucket") }),
                 None,
             ),
-            update: json!({ "S3DestinationConfiguration": { "DataFreshnessInSeconds": 1 } }),
+            update: json!({ "S3DestinationConfiguration": { "DataFreshnessInSeconds": 450 } }),
             patch: Box::new(|expected| {
-                expected["S3DestinationConfiguration"]["DataFreshnessInSeconds"] = json!(1);
+                expected["S3DestinationConfiguration"]["DataFreshnessInSeconds"] = json!(450);
             }),
         },
         Row {
@@ -820,7 +820,7 @@ async fn a_change_reaches_only_the_channels_of_the_region_it_was_signed_for() {
 
     // ONE channel name in two regions, each starting on its own freshness window — so a change
     // that reached the wrong region's record would be visible as that region's value moving.
-    let created: [(&str, i64); 2] = [(REGION, 120), (OTHER_REGION, 240)];
+    let created: [(&str, i64); 2] = [(REGION, 320), (OTHER_REGION, 480)];
     for (region, seconds) in created {
         let source = on_demand_stream_in(&emulator, region, "region-scope-source").await;
         emulator
@@ -840,7 +840,11 @@ async fn a_change_reaches_only_the_channels_of_the_region_it_was_signed_for() {
             )
             .await;
     }
-    tokio::time::sleep(past_channel_activation()).await;
+    // Each channel is waited for by LOOKING at it until it reports the `ACTIVE` its create owes
+    // it, so a loaded host only makes the case look again.
+    for (region, _) in created {
+        poll_until_channel_active_in(&emulator, case, region, &channel_arn(region, case)).await;
+    }
 
     // A change signed for one region naming the OTHER region's channel, in both directions.
     for (region, elsewhere) in [(REGION, OTHER_REGION), (OTHER_REGION, REGION)] {
@@ -928,9 +932,11 @@ async fn a_change_reaches_only_the_channels_of_the_region_it_was_signed_for() {
         );
     }
 
-    // ONE wait covers both accepted changes' transitions back to `ACTIVE`, and each region's
-    // channel settles on the value ITS caller submitted.
-    tokio::time::sleep(past_channel_update()).await;
+    // Each region's channel is looked at until it reports the `ACTIVE` its accepted change owes
+    // it, and each settles on the value ITS caller submitted.
+    for (region, _) in changed {
+        poll_until_channel_active_in(&emulator, case, region, &channel_arn(region, case)).await;
+    }
     for (region, seconds) in changed {
         let settled = describe_channel_in(&emulator, case, region).await;
         assert_eq!(
