@@ -73,6 +73,10 @@
 //!
 //! ## Errors
 //!
+//! * `AccessDeniedException` (HTTP 403) — You do not have sufficient access to perform this
+//!   action.
+//! * `ConflictException` (HTTP 409) — The request conflicts with the current state of the
+//!   resource. Verify the resource's current state and retry the request.
 //! * `InternalServiceError` (HTTP 500) — Request processing failed due to an error or failure
 //!   with the service.
 //! * `InvalidRequestException` (HTTP 400) — The request is not valid.
@@ -96,6 +100,8 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-appintegrations-amazona
 #[smithy_macros::operation_error("com.amazonaws.appintegrations#UntagResource")]
 #[derive(Debug)]
 pub enum UntagResourceErrorModeled {
+    AccessDeniedException(AccessDeniedException),
+    ConflictException(ConflictException),
     InternalServiceError(InternalServiceError),
     InvalidRequestException(InvalidRequestException),
     ResourceNotFoundException(ResourceNotFoundException),

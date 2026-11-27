@@ -7,7 +7,8 @@
 //! list arrives whole and is stored whole, never merged with the list already there —
 //! and a member the request omits leaves its stored value as it was. The identity the
 //! create minted (`Id`, `Arn`, `Namespace`, `CreatedTime`) is not an input here and is
-//! never touched; `LastModifiedTime` moves only when a member actually changed.
+//! never touched; `LastModifiedTime` and `LastModifiedRegion` move only when a member
+//! actually changed — the region to the one this call was made in.
 //!
 //! ## Shape of an operation
 //!
@@ -92,6 +93,11 @@
 #[allow(unused_imports)]
 use super::types::*;
 
+// The member-by-member comparison the modelled configuration shapes are compared with:
+// the generated type modules derive no `PartialEq`, and whether a member actually
+// changed is what decides whether this resource's clock moves.
+use crate::state::SameValue;
+
 // `#[operation_error]` below expands to an invocation of the LOCAL declarative
 // `smithy!` macro, which this line is what emits into the module. Without it the
 // expansion fails with `cannot find macro 'smithy' in this scope` and the
@@ -166,7 +172,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        let _ = ctx;
+        let region = crate::state::request_region(ctx.parts());
         let state = crate::state::service_state(&*self.engine).ok_or_else(|| {
             UpdateApplicationErrorModeled::InternalServiceError(InternalServiceError {
                 message: Some("the AppIntegrations store is unavailable".to_string()),
@@ -236,17 +242,17 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         }
         if let Some(source_config) = input.application_source_config {
             applied += 1;
-            changed |= record.application_source_config != source_config;
+            changed |= !record.application_source_config.same_value(&source_config);
             record.application_source_config = source_config;
         }
         if let Some(subscriptions) = input.subscriptions {
             applied += 1;
-            changed |= record.subscriptions != subscriptions;
+            changed |= !record.subscriptions.same_value(&subscriptions);
             record.subscriptions = subscriptions;
         }
         if let Some(publications) = input.publications {
             applied += 1;
-            changed |= record.publications != publications;
+            changed |= !record.publications.same_value(&publications);
             record.publications = publications;
         }
         if let Some(permissions) = input.permissions {
@@ -266,12 +272,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         }
         if let Some(application_config) = input.application_config {
             applied += 1;
-            changed |= record.application_config.as_ref() != Some(&application_config);
+            changed |= record
+                .application_config
+                .as_ref()
+                .is_none_or(|stored| !stored.same_value(&application_config));
             record.application_config = Some(application_config);
         }
         if let Some(iframe_config) = input.iframe_config {
             applied += 1;
-            changed |= record.iframe_config != iframe_config;
+            changed |= !record.iframe_config.same_value(&iframe_config);
             record.iframe_config = iframe_config;
         }
         if let Some(application_type) = input.application_type {
@@ -281,7 +290,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         }
         if let Some(auth_config) = input.auth_config {
             applied += 1;
-            changed |= record.auth_config.as_ref() != Some(&auth_config);
+            changed |= record
+                .auth_config
+                .as_ref()
+                .is_none_or(|stored| !stored.same_value(&auth_config));
             record.auth_config = Some(auth_config);
         }
         // The resource's own clock moves only when the resource did: a request that
@@ -289,6 +301,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // accepted and leaves the record, timestamp included, as it was.
         if changed {
             record.last_modified_time = ::std::time::SystemTime::now();
+            // The application was last modified HERE, so the region this call was made
+            // in is the one a read reports from now on; an update that changed nothing
+            // leaves the region it was last modified in alone, exactly as it leaves the
+            // timestamp.
+            record.last_modified_region = region;
         }
         // An operator's record that this call changed state: the operation, the resource
         // it touched (the id this service minted, never a value the request supplied), how

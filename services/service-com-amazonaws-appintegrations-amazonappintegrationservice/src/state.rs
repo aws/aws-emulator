@@ -14,9 +14,9 @@ use std::time::SystemTime;
 
 use crate::ops::types::{
     ApplicationAssociationSummary, ApplicationConfig, ApplicationSourceConfig, AuthConfig,
-    DataIntegrationAssociationSummary, DataIntegrationSummary, EventFilter, EventIntegration,
-    EventIntegrationAssociation, ExecutionConfiguration, FileConfiguration, IframeConfig,
-    Publication, ScheduleConfiguration, Subscription,
+    ContactHandling, DataIntegrationAssociationSummary, DataIntegrationSummary, EventFilter,
+    EventIntegration, EventIntegrationAssociation, ExecutionConfiguration, ExternalUrlConfig,
+    FileConfiguration, IframeConfig, Publication, ScheduleConfiguration, Subscription,
 };
 
 /// The region an emulated request is treated as having been made in when its
@@ -289,6 +289,98 @@ pub const APPLICATION_TYPE_SERVICE: &str = "SERVICE";
 /// integrations the corpus creates.
 pub const INTEGRATION_TYPE_IMPORT: &str = "IMPORT";
 
+/// Whether two values of a modelled shape this service stores carry the same data.
+///
+/// The modules under [`crate::ops::types`] are rendered from the service's Smithy model
+/// and derive `Debug`, `Clone` and `Default` only, so a stored configuration shape
+/// cannot be compared with `==`. An update has to tell a member that actually CHANGED
+/// from one re-sent exactly as it is already stored — that is what decides whether the
+/// resource's own clock moves — so the comparison lives here, member by member, and is
+/// written once for every handler instead of once per operation file.
+///
+/// Two values are the same when every member is: a member this service keeps as a plain
+/// `String`, number or boolean compares with `==`, a nested shape compares through this
+/// trait, and an absent member equals only an absent one.
+pub trait SameValue {
+    /// Whether `self` and `other` carry the same data.
+    fn same_value(&self, other: &Self) -> bool;
+}
+
+impl<T: SameValue> SameValue for Option<T> {
+    fn same_value(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Some(left), Some(right)) => left.same_value(right),
+            (None, None) => true,
+            _ => false,
+        }
+    }
+}
+
+/// A list is the same as another when it holds the same entries in the same ORDER: the
+/// model's lists are sequences, so a reordering is a change.
+impl<T: SameValue> SameValue for Vec<T> {
+    fn same_value(&self, other: &Self) -> bool {
+        self.len() == other.len()
+            && self
+                .iter()
+                .zip(other.iter())
+                .all(|(left, right)| left.same_value(right))
+    }
+}
+
+impl SameValue for ApplicationSourceConfig {
+    fn same_value(&self, other: &Self) -> bool {
+        self.external_url_config
+            .same_value(&other.external_url_config)
+    }
+}
+
+impl SameValue for ExternalUrlConfig {
+    fn same_value(&self, other: &Self) -> bool {
+        self.access_url == other.access_url && self.approved_origins == other.approved_origins
+    }
+}
+
+impl SameValue for Subscription {
+    fn same_value(&self, other: &Self) -> bool {
+        self.event == other.event && self.description == other.description
+    }
+}
+
+impl SameValue for Publication {
+    fn same_value(&self, other: &Self) -> bool {
+        self.event == other.event
+            && self.schema == other.schema
+            && self.description == other.description
+    }
+}
+
+impl SameValue for ApplicationConfig {
+    fn same_value(&self, other: &Self) -> bool {
+        self.contact_handling.same_value(&other.contact_handling)
+    }
+}
+
+impl SameValue for ContactHandling {
+    fn same_value(&self, other: &Self) -> bool {
+        self.scope == other.scope
+    }
+}
+
+impl SameValue for IframeConfig {
+    fn same_value(&self, other: &Self) -> bool {
+        self.allow == other.allow && self.sandbox == other.sandbox
+    }
+}
+
+impl SameValue for AuthConfig {
+    fn same_value(&self, other: &Self) -> bool {
+        self.auth_type == other.auth_type
+            && self.credential_provider_identifier == other.credential_provider_identifier
+            && self.audience_override == other.audience_override
+    }
+}
+
 /// The persisted `EventFilter` of an event integration.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EventFilterRecord {
@@ -373,6 +465,13 @@ pub struct ApplicationRecord {
     pub client_token: Option<String>,
     pub created_time: SystemTime,
     pub last_modified_time: SystemTime,
+    /// The region the call that last changed this application was made in — the create's
+    /// own region until an update actually changes a member, and that update's region
+    /// afterwards (model: `GetApplicationResponse.LastModifiedRegion` and
+    /// `ApplicationSummary.LastModifiedRegion`, "The Amazon Web Services Region where
+    /// the application was last modified"). It moves with
+    /// [`ApplicationRecord::last_modified_time`] and stays put whenever that does.
+    pub last_modified_region: String,
 }
 
 impl ApplicationRecord {
@@ -393,7 +492,11 @@ pub struct DataIntegrationRecord {
     pub description: Option<String>,
     pub kms_key: String,
     /// How this service classifies the integration — a value it assigns, not one the
-    /// create carries (see [`INTEGRATION_TYPE_IMPORT`]).
+    /// create carries (see [`INTEGRATION_TYPE_IMPORT`]). No `Create`/`Get`/`List`
+    /// output of the shipped model declares a member for it
+    /// (`smithy_query(query="operation", operation="GetDataIntegration")`), so no
+    /// operation reports it today; it is persisted because the classification belongs
+    /// to the record rather than to one operation's response.
     pub integration_type: String,
     pub source_uri: Option<String>,
     pub schedule_configuration: Option<ScheduleConfiguration>,

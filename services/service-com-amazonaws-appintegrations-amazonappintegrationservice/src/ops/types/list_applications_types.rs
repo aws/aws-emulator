@@ -35,6 +35,7 @@ pub struct ApplicationSummary {
     pub namespace: Option<String>,
     pub created_time: Option<::aws_smithy_types::DateTime>,
     pub last_modified_time: Option<::aws_smithy_types::DateTime>,
+    pub last_modified_region: Option<String>,
     pub is_service: bool,
     pub application_type: Option<String>,
 }

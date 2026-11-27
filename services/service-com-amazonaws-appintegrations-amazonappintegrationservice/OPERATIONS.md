@@ -33,14 +33,14 @@ contents — read that shape in the model above when you need its own members.
 ## CreateDataIntegration
 
 - **Route:** `POST /dataIntegrations -> 200`
-- **Input:** `Name` (string, len 1..255, pattern ^[a-zA-Z0-9\/\._\-]+$, required), `Description` (string, len 0..1000, pattern .*), `KmsKey` (string, len 1..255, pattern \S, required), `SourceURI` (string, len 1..1000, pattern ^(\w+\:\/\/[\w.-]+[\w/!@#+=.-]+$)|(\w+\:\/\/[\w.-]+[\w/!@#+=.-]+[\w/!@#+=.-]+[\w/!@#+=.,-]+$)$), `ScheduleConfig` (ScheduleConfiguration), `Tags` (map<string,string>, len 1..200), `ClientToken` (string, len 1..2048, pattern .*, @idempotencyToken), `FileConfiguration` (FileConfiguration), `ObjectConfiguration` (map<string,map<string,list<string>>>)
-- **Output:** `Arn` (string, len 1..2048, pattern ^arn:aws:[A-Za-z0-9][A-Za-z0-9_/.-]{0,62}:[A-Za-z0-9_/.-]{0,63}:[A-Za-z0-9_/.-]{0,63}:[A-Za-z0-9][A-Za-z0-9:_/+=,@.-]{0, …), `Id` (string, pattern ^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$), `Name` (string, len 1..255, pattern ^[a-zA-Z0-9\/\._\-]+$), `Description` (string, len 0..1000, pattern .*), `KmsKey` (string, len 1..255, pattern \S), `SourceURI` (string, len 1..1000, pattern ^(\w+\:\/\/[\w.-]+[\w/!@#+=.-]+$)|(\w+\:\/\/[\w.-]+[\w/!@#+=.-]+[\w/!@#+=.-]+[\w/!@#+=.,-]+$)$), `ScheduleConfiguration` (ScheduleConfiguration), `Tags` (map<string,string>, len 1..200), `ClientToken` (string, len 1..2048, pattern .*), `FileConfiguration` (FileConfiguration), `ObjectConfiguration` (map<string,map<string,list<string>>>)
+- **Input:** `Name` (string, len 1..255, pattern ^[a-zA-Z0-9\/\._\-]+$, required), `Description` (string, len 0..1000, pattern .*), `KmsKey` (string, len 1..255, pattern \S, required), `SourceURI` (string, len 1..1000, pattern ^((\w+\:\/\/[\w.-]+[\w/!@#+=.-]+)|(\w+\:\/\/[\w.-]+[\w/!@#+=.-]+[\w/!@#+=.-]+[\w/!@#+=.,-]+))$), `ScheduleConfig` (ScheduleConfiguration), `Tags` (map<string,string>, len 1..200), `ClientToken` (string, len 1..2048, pattern .*, @idempotencyToken), `FileConfiguration` (FileConfiguration), `ObjectConfiguration` (map<string,map<string,list<string>>>)
+- **Output:** `Arn` (string, len 1..2048, pattern ^arn:aws:[A-Za-z0-9][A-Za-z0-9_/.-]{0,62}:[A-Za-z0-9_/.-]{0,63}:[A-Za-z0-9_/.-]{0,63}:[A-Za-z0-9][A-Za-z0-9:_/+=,@.-]{0, …), `Id` (string, pattern ^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$), `Name` (string, len 1..255, pattern ^[a-zA-Z0-9\/\._\-]+$), `Description` (string, len 0..1000, pattern .*), `KmsKey` (string, len 1..255, pattern \S), `SourceURI` (string, len 1..1000, pattern ^((\w+\:\/\/[\w.-]+[\w/!@#+=.-]+)|(\w+\:\/\/[\w.-]+[\w/!@#+=.-]+[\w/!@#+=.-]+[\w/!@#+=.,-]+))$), `ScheduleConfiguration` (ScheduleConfiguration), `Tags` (map<string,string>, len 1..200), `ClientToken` (string, len 1..2048, pattern .*), `FileConfiguration` (FileConfiguration), `ObjectConfiguration` (map<string,map<string,list<string>>>)
 - **Errors:** `AccessDeniedException (HTTP 403)`, `DuplicateResourceException (HTTP 409)`, `InternalServiceError (HTTP 500)`, `InvalidRequestException (HTTP 400)`, `ResourceQuotaExceededException (HTTP 429)`, `ThrottlingException (HTTP 429)`
 
 ## CreateDataIntegrationAssociation
 
 - **Route:** `POST /dataIntegrations/{DataIntegrationIdentifier}/associations -> 200`
-- **Input:** `DataIntegrationIdentifier` (string, len 1..255, pattern \S, @httpLabel, required), `ClientId` (string, len 1..255, pattern .*), `ObjectConfiguration` (map<string,map<string,list<string>>>), `DestinationURI` (string, len 1..1000, pattern ^(\w+\:\/\/[\w.-]+[\w/!@#+=.-]+$)|(\w+\:\/\/[\w.-]+[\w/!@#+=.-]+[\w/!@#+=.-]+[\w/!@#+=.,-]+$)$), `ClientAssociationMetadata` (map<string,string>), `ClientToken` (string, len 1..2048, pattern .*, @idempotencyToken), `ExecutionConfiguration` (ExecutionConfiguration)
+- **Input:** `DataIntegrationIdentifier` (string, len 1..255, pattern \S, @httpLabel, required), `ClientId` (string, len 1..255, pattern .*), `ObjectConfiguration` (map<string,map<string,list<string>>>), `DestinationURI` (string, len 1..1000, pattern ^((\w+\:\/\/[\w.-]+[\w/!@#+=.-]+)|(\w+\:\/\/[\w.-]+[\w/!@#+=.-]+[\w/!@#+=.-]+[\w/!@#+=.,-]+))$), `ClientAssociationMetadata` (map<string,string>), `ClientToken` (string, len 1..2048, pattern .*, @idempotencyToken), `ExecutionConfiguration` (ExecutionConfiguration)
 - **Output:** `DataIntegrationAssociationId` (string, pattern ^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$), `DataIntegrationArn` (string, len 1..2048, pattern ^arn:aws:[A-Za-z0-9][A-Za-z0-9_/.-]{0,62}:[A-Za-z0-9_/.-]{0,63}:[A-Za-z0-9_/.-]{0,63}:[A-Za-z0-9][A-Za-z0-9:_/+=,@.-]{0, …)
 - **Errors:** `AccessDeniedException (HTTP 403)`, `InternalServiceError (HTTP 500)`, `InvalidRequestException (HTTP 400)`, `ResourceNotFoundException (HTTP 404)`, `ResourceQuotaExceededException (HTTP 429)`, `ThrottlingException (HTTP 429)`
 
@@ -76,14 +76,14 @@ contents — read that shape in the model above when you need its own members.
 
 - **Route:** `GET /applications/{Arn} -> 200`
 - **Input:** `Arn` (string, len 1..2048, pattern ^(arn:aws:[A-Za-z0-9][A-Za-z0-9_/.-]{0,62}:[A-Za-z0-9_/.-]{0,63}:[A-Za-z0-9_/.-]{0,63}:[A-Za-z0-9][A-Za-z0-9:_/+=,@.-]{0 …, @httpLabel, required)
-- **Output:** `Arn` (string, len 1..2048, pattern ^arn:aws:[A-Za-z0-9][A-Za-z0-9_/.-]{0,62}:[A-Za-z0-9_/.-]{0,63}:[A-Za-z0-9_/.-]{0,63}:[A-Za-z0-9][A-Za-z0-9:_/+=,@.-]{0, …), `Id` (string, pattern ^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$), `Name` (string, len 1..255, pattern ^[a-zA-Z0-9\/\._ \-]+$), `Namespace` (string, len 1..211, pattern ^[a-zA-Z0-9\/\._\-]+$), `Description` (string, len 0..1000, pattern .*), `ApplicationSourceConfig` (ApplicationSourceConfig), `Subscriptions` (list<Subscription>, len 0..50), `Publications` (list<Publication>, len 0..50), `CreatedTime` (timestamp), `LastModifiedTime` (timestamp), `Tags` (map<string,string>, len 1..200), `Permissions` (list<string>, len 0..150), `IsService` (boolean, default false, required), `InitializationTimeout` (integer, range 1..600000), `ApplicationConfig` (ApplicationConfig), `IframeConfig` (IframeConfig), `ApplicationType` (ApplicationType, one of: A2A_SERVER | MCP_SERVER | SERVICE | STANDARD), `AuthConfig` (AuthConfig)
+- **Output:** `Arn` (string, len 1..2048, pattern ^arn:aws:[A-Za-z0-9][A-Za-z0-9_/.-]{0,62}:[A-Za-z0-9_/.-]{0,63}:[A-Za-z0-9_/.-]{0,63}:[A-Za-z0-9][A-Za-z0-9:_/+=,@.-]{0, …), `Id` (string, pattern ^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$), `Name` (string, len 1..255, pattern ^[a-zA-Z0-9\/\._ \-]+$), `Namespace` (string, len 1..211, pattern ^[a-zA-Z0-9\/\._\-]+$), `Description` (string, len 0..1000, pattern .*), `ApplicationSourceConfig` (ApplicationSourceConfig), `Subscriptions` (list<Subscription>, len 0..50), `Publications` (list<Publication>, len 0..50), `CreatedTime` (timestamp), `LastModifiedTime` (timestamp), `LastModifiedRegion` (string, len 1..25, pattern ^[a-z]{2,4}(-[a-z0-9]+){1,3}$), `Tags` (map<string,string>, len 1..200), `Permissions` (list<string>, len 0..150), `IsService` (boolean, default false, required), `InitializationTimeout` (integer, range 1..600000), `ApplicationConfig` (ApplicationConfig), `IframeConfig` (IframeConfig), `ApplicationType` (ApplicationType, one of: A2A_SERVER | MCP_SERVER | SERVICE | STANDARD), `AuthConfig` (AuthConfig)
 - **Errors:** `AccessDeniedException (HTTP 403)`, `InternalServiceError (HTTP 500)`, `InvalidRequestException (HTTP 400)`, `ResourceNotFoundException (HTTP 404)`, `ThrottlingException (HTTP 429)`
 
 ## GetDataIntegration
 
 - **Route:** `GET /dataIntegrations/{Identifier} -> 200`
 - **Input:** `Identifier` (string, len 1..255, pattern \S, @httpLabel, required)
-- **Output:** `IntegrationType` (string, len 1..255, pattern \S — a member ADDED to this service's model; see `src/ops/get_data_integration.rs`), `Arn` (string, len 1..2048, pattern ^arn:aws:[A-Za-z0-9][A-Za-z0-9_/.-]{0,62}:[A-Za-z0-9_/.-]{0,63}:[A-Za-z0-9_/.-]{0,63}:[A-Za-z0-9][A-Za-z0-9:_/+=,@.-]{0, …), `Id` (string, pattern ^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$), `Name` (string, len 1..255, pattern ^[a-zA-Z0-9\/\._\-]+$), `Description` (string, len 0..1000, pattern .*), `KmsKey` (string, len 1..255, pattern \S), `SourceURI` (string, len 1..1000, pattern ^(\w+\:\/\/[\w.-]+[\w/!@#+=.-]+$)|(\w+\:\/\/[\w.-]+[\w/!@#+=.-]+[\w/!@#+=.-]+[\w/!@#+=.,-]+$)$), `ScheduleConfiguration` (ScheduleConfiguration), `Tags` (map<string,string>, len 1..200), `FileConfiguration` (FileConfiguration), `ObjectConfiguration` (map<string,map<string,list<string>>>)
+- **Output:** `Arn` (string, len 1..2048, pattern ^arn:aws:[A-Za-z0-9][A-Za-z0-9_/.-]{0,62}:[A-Za-z0-9_/.-]{0,63}:[A-Za-z0-9_/.-]{0,63}:[A-Za-z0-9][A-Za-z0-9:_/+=,@.-]{0, …), `Id` (string, pattern ^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$), `Name` (string, len 1..255, pattern ^[a-zA-Z0-9\/\._\-]+$), `Description` (string, len 0..1000, pattern .*), `KmsKey` (string, len 1..255, pattern \S), `SourceURI` (string, len 1..1000, pattern ^((\w+\:\/\/[\w.-]+[\w/!@#+=.-]+)|(\w+\:\/\/[\w.-]+[\w/!@#+=.-]+[\w/!@#+=.-]+[\w/!@#+=.,-]+))$), `ScheduleConfiguration` (ScheduleConfiguration), `Tags` (map<string,string>, len 1..200), `FileConfiguration` (FileConfiguration), `ObjectConfiguration` (map<string,map<string,list<string>>>)
 - **Errors:** `AccessDeniedException (HTTP 403)`, `InternalServiceError (HTTP 500)`, `InvalidRequestException (HTTP 400)`, `ResourceNotFoundException (HTTP 404)`, `ThrottlingException (HTTP 429)`
 
 ## GetEventIntegration
@@ -146,21 +146,21 @@ contents — read that shape in the model above when you need its own members.
 - **Route:** `GET /tags/{resourceArn} -> 200`
 - **Input:** `resourceArn` (string, len 1..2048, pattern ^arn:aws:[A-Za-z0-9][A-Za-z0-9_/.-]{0,62}:[A-Za-z0-9_/.-]{0,63}:[A-Za-z0-9_/.-]{0,63}:[A-Za-z0-9][A-Za-z0-9:_/+=,@.-]{0, …, @httpLabel, required)
 - **Output:** `tags` (map<string,string>, len 1..200)
-- **Errors:** `InternalServiceError (HTTP 500)`, `InvalidRequestException (HTTP 400)`, `ResourceNotFoundException (HTTP 404)`, `ThrottlingException (HTTP 429)`
+- **Errors:** `AccessDeniedException (HTTP 403)`, `InternalServiceError (HTTP 500)`, `InvalidRequestException (HTTP 400)`, `ResourceNotFoundException (HTTP 404)`, `ThrottlingException (HTTP 429)`
 
 ## TagResource
 
-- **Route:** `POST /tags/{resourceArn} -> 204` (the model states no explicit success code, so it falls back to the protocol default 200; AWS answers this tagging mutation with 204 No Content)
+- **Route:** `POST /tags/{resourceArn} -> 200`
 - **Input:** `resourceArn` (string, len 1..2048, pattern ^arn:aws:[A-Za-z0-9][A-Za-z0-9_/.-]{0,62}:[A-Za-z0-9_/.-]{0,63}:[A-Za-z0-9_/.-]{0,63}:[A-Za-z0-9][A-Za-z0-9:_/+=,@.-]{0, …, @httpLabel, required), `tags` (map<string,string>, len 1..200, required)
 - **Output:** (no members)
-- **Errors:** `InternalServiceError (HTTP 500)`, `InvalidRequestException (HTTP 400)`, `ResourceNotFoundException (HTTP 404)`, `ThrottlingException (HTTP 429)`
+- **Errors:** `AccessDeniedException (HTTP 403)`, `ConflictException (HTTP 409)`, `InternalServiceError (HTTP 500)`, `InvalidRequestException (HTTP 400)`, `ResourceNotFoundException (HTTP 404)`, `ThrottlingException (HTTP 429)`
 
 ## UntagResource
 
-- **Route:** `DELETE /tags/{resourceArn} -> 204` (the model states no explicit success code, so it falls back to the protocol default 200; AWS answers this tagging mutation with 204 No Content)
+- **Route:** `DELETE /tags/{resourceArn} -> 200`
 - **Input:** `resourceArn` (string, len 1..2048, pattern ^arn:aws:[A-Za-z0-9][A-Za-z0-9_/.-]{0,62}:[A-Za-z0-9_/.-]{0,63}:[A-Za-z0-9_/.-]{0,63}:[A-Za-z0-9][A-Za-z0-9:_/+=,@.-]{0, …, @httpLabel, required), `tagKeys` (list<string>, len 1..200, @httpQuery(tagKeys), required)
 - **Output:** (no members)
-- **Errors:** `InternalServiceError (HTTP 500)`, `InvalidRequestException (HTTP 400)`, `ResourceNotFoundException (HTTP 404)`, `ThrottlingException (HTTP 429)`
+- **Errors:** `AccessDeniedException (HTTP 403)`, `ConflictException (HTTP 409)`, `InternalServiceError (HTTP 500)`, `InvalidRequestException (HTTP 400)`, `ResourceNotFoundException (HTTP 404)`, `ThrottlingException (HTTP 429)`
 
 ## UpdateApplication
 

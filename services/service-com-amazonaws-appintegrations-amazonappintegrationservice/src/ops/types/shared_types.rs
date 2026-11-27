@@ -11,31 +11,28 @@ use super::*;
 
 smithy_macros::smithy_model!("smithy-model/com-amazonaws-appintegrations-amazonappintegrationservice.json");
 
-// The application shapes below compare by value (`PartialEq`) so an update can tell a
-// request that really changes a stored member from one that re-sends what is already
-// there, and move `LastModifiedTime` only for the former.
 #[smithy_macros::smithy(shape = "com.amazonaws.appintegrations#ApplicationSourceConfig")]
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default)]
 pub struct ApplicationSourceConfig {
     pub external_url_config: Option<ExternalUrlConfig>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.appintegrations#ExternalUrlConfig")]
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default)]
 pub struct ExternalUrlConfig {
     pub access_url: String,
     pub approved_origins: Option<Vec<String>>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.appintegrations#Subscription")]
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default)]
 pub struct Subscription {
     pub event: String,
     pub description: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.appintegrations#Publication")]
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default)]
 pub struct Publication {
     pub event: String,
     pub schema: String,
@@ -43,26 +40,26 @@ pub struct Publication {
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.appintegrations#ApplicationConfig")]
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default)]
 pub struct ApplicationConfig {
     pub contact_handling: Option<ContactHandling>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.appintegrations#ContactHandling")]
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default)]
 pub struct ContactHandling {
     pub scope: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.appintegrations#IframeConfig")]
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default)]
 pub struct IframeConfig {
     pub allow: Option<Vec<String>>,
     pub sandbox: Option<Vec<String>>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.appintegrations#AuthConfig")]
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default)]
 pub struct AuthConfig {
     pub auth_type: Option<String>,
     pub credential_provider_identifier: Option<String>,
@@ -151,6 +148,12 @@ pub struct ResourceNotFoundException {
 #[derive(Debug, Clone, Default)]
 pub struct EventFilter {
     pub source: String,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.appintegrations#ConflictException")]
+#[derive(Debug, Clone, Default)]
+pub struct ConflictException {
+    pub message: Option<String>,
 }
 
 /// The values `ApplicationType` accepts on the wire.

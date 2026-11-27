@@ -237,12 +237,16 @@ async fn a_created_data_integration_is_reported_by_get_and_list_exactly_as_store
                 fetched.status, fetched.body
             );
             assert_reports_request(&format!("{label} (get {form})"), &fetched, &case, &kms_key);
-            // The kind of integration is reported by the read, from what the create
-            // persisted: `CreateDataIntegration` mints an import integration.
+            // A read reports the members the model declares and no others: the kind of
+            // integration this service assigns is persisted, but
+            // `GetDataIntegrationResponse` declares no member for it
+            // (`smithy_query(query="operation", operation="GetDataIntegration")`), so a
+            // schema-driven response carries none.
             assert_eq!(
-                fetched.string("IntegrationType").as_deref(),
-                Some("IMPORT"),
-                "case {label:?} {form}: expected the service-assigned IntegrationType, got {:?}",
+                fetched.field("IntegrationType"),
+                None,
+                "case {label:?} {form}: GetDataIntegrationResponse models no \
+                 IntegrationType, got {:?}",
                 fetched.field("IntegrationType")
             );
             assert_eq!(

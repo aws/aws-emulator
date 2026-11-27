@@ -30,6 +30,7 @@ pub struct GetApplicationOutput {
     pub publications: Option<Vec<Publication>>,
     pub created_time: Option<::aws_smithy_types::DateTime>,
     pub last_modified_time: Option<::aws_smithy_types::DateTime>,
+    pub last_modified_region: Option<String>,
     pub tags: Option<std::collections::HashMap<String, String>>,
     pub permissions: Option<Vec<String>>,
     pub is_service: bool,

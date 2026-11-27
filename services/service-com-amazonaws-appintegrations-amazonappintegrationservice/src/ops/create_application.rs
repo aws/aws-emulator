@@ -299,6 +299,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             client_token: input.client_token.clone(),
             created_time: now,
             last_modified_time: now,
+            // Nothing has modified the application yet, so the region it was last
+            // modified in is the one this create was made in.
+            last_modified_region: region,
         };
         if let Some(token) = input.client_token {
             state.remember_application_client_token(token, id.clone());

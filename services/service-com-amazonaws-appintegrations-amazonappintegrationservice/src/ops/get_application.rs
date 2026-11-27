@@ -91,6 +91,8 @@
 //!   milliseconds allowed to establish a connection with the workspace.
 //! * `IsService` (Boolean, default false) **required** — Indicates whether the application is
 //!   a service.
+//! * `LastModifiedRegion` (RegionName, len 1..25, pattern ^[a-z]{2,4}(-[a-z0-9]+){1,3}$) —
+//!   The Amazon Web Services Region where the application was last modified.
 //! * `LastModifiedTime` (Timestamp) — The last modified time of the Application.
 //! * `Name` (ApplicationName, len 1..255, pattern ^[a-zA-Z0-9\/\._ \-]+$) — The name of the
 //!   application.
@@ -225,6 +227,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             last_modified_time: Some(::aws_smithy_types::DateTime::from(
                 record.last_modified_time,
             )),
+            // The region the application was last modified in, as the record holds it:
+            // the create's region until an update changed a member, and that update's
+            // region afterwards.
+            last_modified_region: Some(record.last_modified_region.clone()),
             tags: Some(record.modeled_tags()),
             permissions: Some(record.permissions.clone()),
             is_service: record.is_service,

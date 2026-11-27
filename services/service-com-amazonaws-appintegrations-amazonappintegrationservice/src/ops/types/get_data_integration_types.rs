@@ -25,9 +25,6 @@ pub struct GetDataIntegrationOutput {
     pub name: Option<String>,
     pub description: Option<String>,
     pub kms_key: Option<String>,
-    /// `IntegrationType` is a member ADDED to this service's model — see the module doc
-    /// of `crate::ops::get_data_integration`.
-    pub integration_type: Option<String>,
     pub source_uri: Option<String>,
     pub schedule_configuration: Option<ScheduleConfiguration>,
     pub tags: Option<std::collections::HashMap<String, String>>,

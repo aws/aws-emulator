@@ -34,9 +34,3 @@ pub struct UpdateApplicationInput {
 pub struct UpdateApplicationOutput {
 }
 
-#[smithy_macros::smithy(shape = "com.amazonaws.appintegrations#ConflictException")]
-#[derive(Debug, Clone, Default)]
-pub struct ConflictException {
-    pub message: Option<String>,
-}
-

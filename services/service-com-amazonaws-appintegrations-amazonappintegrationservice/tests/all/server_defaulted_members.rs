@@ -5,11 +5,11 @@
 //! The rule under test: a read reports every member the SERVICE assigns a value to,
 //! whether or not the create named it — a collection the caller left unset reads back
 //! EMPTY (`Publications`, `Subscriptions`, `Permissions`, `Tags`), an unset
-//! `IframeConfig` reads back as the empty structure, `ApplicationType` reads back as the
-//! type the service assigned the application, and a data integration reads back with the
-//! kind of integration the service classified it as. A member the service assigns no
+//! `IframeConfig` reads back as the empty structure, and `ApplicationType` reads back as
+//! the type the service assigned the application. A member the service assigns no
 //! default to (`Description`, `InitializationTimeout`, `ApplicationConfig`,
-//! `AuthConfig`) stays absent until a caller sets it.
+//! `AuthConfig`) stays absent until a caller sets it, and a member the model does not
+//! declare on a response is never reported at all.
 //!
 //! Every assertion goes over the wire through the same [`MultiServiceRouter`] the
 //! production emulator mounts (see `harness.rs`), so a member that is not computed from
@@ -427,7 +427,7 @@ fn data_integration_cases() -> Vec<(&'static str, Value)> {
 }
 
 #[tokio::test]
-async fn get_data_integration_reports_the_assigned_type_and_an_empty_tag_map() {
+async fn get_data_integration_reports_an_empty_tag_map_and_only_modelled_members() {
     let emulator = Emulator::new();
     let kms_key = emulator.create_kms_key(REGION).await;
 
@@ -452,13 +452,15 @@ async fn get_data_integration_reports_the_assigned_type_and_an_empty_tag_map() {
                 "case {label:?} {form}: expected HTTP 200, got {} with body {}",
                 fetched.status, fetched.body
             );
-            // `CreateDataIntegration` models no member for the kind of integration, so
-            // the type a read reports is one the service assigned: an integration that
-            // pulls data from a source into the service is an import.
+            // Only the members `GetDataIntegrationResponse` declares are reported:
+            // this service assigns and persists a kind for the integration, and the
+            // model declares no member for it (`smithy_query(query="operation",
+            // operation="GetDataIntegration")`), so none travels on the wire.
             assert_eq!(
-                fetched.string("IntegrationType").as_deref(),
-                Some("IMPORT"),
-                "case {label:?} {form}: expected the assigned IntegrationType, got {:?}",
+                fetched.field("IntegrationType"),
+                None,
+                "case {label:?} {form}: GetDataIntegrationResponse models no \
+                 IntegrationType, got {:?}",
                 fetched.field("IntegrationType")
             );
             let expected_tags = body.get("Tags").cloned().unwrap_or_else(|| json!({}));

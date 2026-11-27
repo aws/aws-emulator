@@ -75,6 +75,8 @@
 //!
 //! ## Errors
 //!
+//! * `AccessDeniedException` (HTTP 403) — You do not have sufficient access to perform this
+//!   action.
 //! * `InternalServiceError` (HTTP 500) — Request processing failed due to an error or failure
 //!   with the service.
 //! * `InvalidRequestException` (HTTP 400) — The request is not valid.
@@ -98,6 +100,7 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-appintegrations-amazona
 #[smithy_macros::operation_error("com.amazonaws.appintegrations#ListTagsForResource")]
 #[derive(Debug)]
 pub enum ListTagsForResourceErrorModeled {
+    AccessDeniedException(AccessDeniedException),
     InternalServiceError(InternalServiceError),
     InvalidRequestException(InvalidRequestException),
     ResourceNotFoundException(ResourceNotFoundException),

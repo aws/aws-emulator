@@ -54,17 +54,29 @@ const UPDATABLE: &[&str] = &[
 ];
 
 async fn create(emulator: &Emulator, body: Value) -> Reply {
-    emulator.send("POST", "/applications", REGION, Some(body)).await
+    create_in(emulator, REGION, body).await
+}
+
+/// `POST /applications` signed for `region`, which is the region the call is made in.
+async fn create_in(emulator: &Emulator, region: &str, body: Value) -> Reply {
+    emulator
+        .send("POST", "/applications", region, Some(body))
+        .await
 }
 
 /// `GET /applications/{Arn}`: the identifier travels in a `@httpLabel`, so its `:` and
 /// `/` are percent-encoded.
 async fn get(emulator: &Emulator, identifier: &str) -> Reply {
+    get_in(emulator, REGION, identifier).await
+}
+
+/// The same read, made in `region`.
+async fn get_in(emulator: &Emulator, region: &str, identifier: &str) -> Reply {
     emulator
         .send(
             "GET",
             &format!("/applications/{}", encode_label(identifier)),
-            REGION,
+            region,
             None,
         )
         .await
@@ -72,11 +84,21 @@ async fn get(emulator: &Emulator, identifier: &str) -> Reply {
 
 /// `PATCH /applications/{Arn}` with `body`.
 async fn update(emulator: &Emulator, identifier: &str, body: Value) -> Reply {
+    update_in(emulator, REGION, identifier, body).await
+}
+
+/// The same update, made in `region`.
+async fn update_in(
+    emulator: &Emulator,
+    region: &str,
+    identifier: &str,
+    body: Value,
+) -> Reply {
     emulator
         .send(
             "PATCH",
             &format!("/applications/{}", encode_label(identifier)),
-            REGION,
+            region,
             Some(body),
         )
         .await
@@ -575,6 +597,141 @@ async fn a_rename_onto_a_name_taken_in_the_same_namespace_is_refused() {
             moved.status, 200,
             "case {taken:?}: expected a free name to be accepted, got {} / {}",
             moved.status, moved.body
+        );
+    }
+}
+
+/// One row of the `LastModifiedRegion` table: the region the create is made in, the
+/// region the changing update is made in, and the region the updates that change
+/// nothing are made in.
+///
+/// Every value is a `RegionName` (model: `GetApplicationResponse.LastModifiedRegion`,
+/// `len 1..25`, pattern `^[a-z]{2,4}(-[a-z0-9]+){1,3}$`), and the rows differ along what
+/// the rule generalises over: how many segments the region name carries, and whether the
+/// modifying call lands in the region the create did.
+const REGION_ROWS: &[(&str, &str, &str)] = &[
+    ("us-east-1", "us-east-1", "eu-west-1"),
+    ("eu-west-2", "us-west-2", "ap-south-1"),
+    ("ap-southeast-3", "eu-central-1", "us-east-2"),
+    ("us-gov-west-1", "cn-north-1", "me-south-1"),
+];
+
+#[tokio::test]
+async fn last_modified_region_is_the_region_of_the_call_that_last_changed_the_application() {
+    for (index, (created_in, changed_in, elsewhere)) in REGION_ROWS.iter().enumerate() {
+        let label = format!("created in {created_in}, changed in {changed_in}");
+        // A fresh store per row, so the (Namespace, Name) pair below is free and no
+        // other row's application is in the way.
+        let emulator = Emulator::new();
+        let created = create_in(
+            &emulator,
+            created_in,
+            populated_application(
+                &format!("regional-app-{index}"),
+                &format!("regional-ns-{index}"),
+            ),
+        )
+        .await;
+        assert_eq!(
+            created.status, 200,
+            "case {label:?}: expected the create to answer HTTP 200, got {} / {}",
+            created.status, created.body
+        );
+        let id = created.string("Id").expect("the create reported an Id");
+
+        // Nothing has modified the application yet, so it was last modified where it was
+        // created — and reading it from another region reports the same thing, because
+        // the member comes from the record and not from the request.
+        for read_in in [created_in, elsewhere] {
+            let fetched = get_in(&emulator, read_in, &id).await;
+            assert_eq!(
+                fetched.string("LastModifiedRegion").as_deref(),
+                Some(*created_in),
+                "case {label:?}: a read made in {read_in} must report the create's \
+                 region, got {:?}",
+                fetched.field("LastModifiedRegion")
+            );
+        }
+
+        // An update that changes nothing (it re-sends the stored description) leaves the
+        // region it was last modified in exactly where the timestamp stays.
+        let no_op = update_in(
+            &emulator,
+            elsewhere,
+            &id,
+            json!({ "Description": "the description the create stored" }),
+        )
+        .await;
+        assert_eq!(
+            no_op.status, 200,
+            "case {label:?}: expected HTTP 200 from an update that changes nothing, got {} / {}",
+            no_op.status, no_op.body
+        );
+        let fetched = get_in(&emulator, created_in, &id).await;
+        assert_eq!(
+            fetched.string("LastModifiedRegion").as_deref(),
+            Some(*created_in),
+            "case {label:?}: an update that changed nothing must leave LastModifiedRegion \
+             at {created_in}, got {:?}",
+            fetched.field("LastModifiedRegion")
+        );
+        assert_eq!(
+            seconds(&fetched, "LastModifiedTime"),
+            seconds(&fetched, "CreatedTime"),
+            "case {label:?}: an update that changed nothing must leave LastModifiedTime \
+             at CreatedTime, got body {}",
+            fetched.body
+        );
+
+        // An update that DOES change a member moves the region to the one that call was
+        // made in, alongside the timestamp.
+        let patched = update_in(
+            &emulator,
+            changed_in,
+            &id,
+            json!({ "Description": format!("changed from {changed_in}") }),
+        )
+        .await;
+        assert_eq!(
+            patched.status, 200,
+            "case {label:?}: expected HTTP 200 from UpdateApplication, got {} / {}",
+            patched.status, patched.body
+        );
+        let fetched = get_in(&emulator, created_in, &id).await;
+        assert_eq!(
+            fetched.string("LastModifiedRegion").as_deref(),
+            Some(*changed_in),
+            "case {label:?}: expected LastModifiedRegion to be the updating call's \
+             region, got {:?}",
+            fetched.field("LastModifiedRegion")
+        );
+        assert!(
+            seconds(&fetched, "LastModifiedTime") > seconds(&fetched, "CreatedTime"),
+            "case {label:?}: expected LastModifiedTime past CreatedTime, got body {}",
+            fetched.body
+        );
+
+        // And a later update that changes nothing, made from a third region, leaves the
+        // region of the call that did change something.
+        let no_op_again = update_in(
+            &emulator,
+            elsewhere,
+            &id,
+            json!({ "Description": format!("changed from {changed_in}") }),
+        )
+        .await;
+        assert_eq!(
+            no_op_again.status, 200,
+            "case {label:?}: expected HTTP 200 from the second no-op update, got {} / {}",
+            no_op_again.status, no_op_again.body
+        );
+        let fetched = get_in(&emulator, created_in, &id).await;
+        assert_eq!(
+            fetched.string("LastModifiedRegion").as_deref(),
+            Some(*changed_in),
+            "case {label:?}: an update that changed nothing must leave LastModifiedRegion \
+             at {changed_in}, got {:?}",
+            fetched.field("LastModifiedRegion")
         );
     }
 }
