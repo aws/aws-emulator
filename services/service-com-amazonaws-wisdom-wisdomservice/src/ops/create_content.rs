@@ -332,7 +332,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             // `overrideLinkOutUri` is the URI the article is reached at, overriding the
             // knowledge base's `templateUri` for this content when the create names one.
             link_out_uri: input.override_link_out_uri.clone(),
-            url: crate::state::content_asset_url(&host, &knowledge_base_id, &content_id),
+            url: crate::state::content_asset_url(
+                ctx,
+                &host,
+                &knowledge_base_id,
+                &content_id,
+                ::std::time::Duration::from_secs(
+                    crate::state::DEFAULT_PRESIGNED_URL_TIME_TO_LIVE_MINUTES * 60,
+                ),
+            ),
             url_expiry: now
                 + ::std::time::Duration::from_secs(
                     crate::state::DEFAULT_PRESIGNED_URL_TIME_TO_LIVE_MINUTES * 60,

@@ -781,6 +781,10 @@ pub mod cloudwatch_client;
 /// The ONE construction of the in-process Amazon SNS client a service publishing a
 /// notification drives, so no two services configure that hop differently.
 pub mod sns_client;
+/// The ONE provisioning and release of the Amazon SNS topic an assistant streams its chat
+/// messages through, so the services that report such a topic cannot name it, create it or
+/// reclaim it differently.
+pub mod assistant_streaming_topic;
 /// The ONE construction of the in-process Amazon SQS client a service delivering a message
 /// drives, so no two services configure that hop differently — and the ONE reading of the
 /// ARN of the queue a URL addresses.

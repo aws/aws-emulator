@@ -27,7 +27,9 @@ tracing = { workspace = true }
 # position is an ordering key rather than a bare id.
 hex = { workspace = true }
 # `service-common` carries the workspace's ONE rendering of a `@pattern` as the service
-# publishes it, which this crate's constraint-violation messages state.
+# publishes it, which this crate's constraint-violation messages state, and the ONE
+# provisioning of the Amazon SNS topic an assistant streams chat messages through, which
+# `CreateAssistant` and `DeleteAssistant` drive over the in-process callback.
 service-common = { path = "../common" }
 
 [build-dependencies]
@@ -38,6 +40,14 @@ sha2 = { workspace = true }
 # `automod` roots the one integration-test target at `tests/all/main.rs`, declaring a
 # module per suite file under `tests/all/`.
 automod = { workspace = true }
+# Amazon SNS is mounted beside this service on ONE engine wherever a suite asserts the
+# chat-streaming topic an assistant reports: the topic belongs to that service, so the
+# assertion resolves it there rather than trusting this service's own answer.
+service-com-amazonaws-sns-amazonsimplenotificationservice = { workspace = true }
+# ... and those suites ASK that service for the topic through its own API, with the AWS SDK
+# for Amazon SNS over the in-process callback. DEV-ONLY: the provisioning this service does
+# drives that hop through `service-common`, so no handler here builds a client.
+aws-sdk-sns = { version = "1", default-features = false }
 
 [lints]
 workspace = true

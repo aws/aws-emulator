@@ -179,6 +179,23 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         })?;
 
         let region = crate::state::request_region(&ctx.parts().headers);
+
+        // The tags the create persists, read once from the request: the same map goes
+        // into the fingerprint below and onto the stored record.
+        let tags = input.tags.clone().unwrap_or_default();
+
+        // What this create's `@idempotencyToken` identifies: every member the record
+        // below is built from, with the tag map fingerprinted in key order
+        // (`crate::state::tags_fingerprint`) so the same tag set written in another
+        // order is one request.
+        let fingerprint = crate::state::request_fingerprint(&[
+            input.name.clone(),
+            input.r#type.clone(),
+            input.description.clone().unwrap_or_default(),
+            format!("{:?}", input.server_side_encryption_configuration),
+            crate::state::tags_fingerprint(&tags),
+        ]);
+
         // Everything this create decides and writes happens under the store's lock, in
         // this one critical section: the section ENDS before the hop into Amazon SNS
         // below, because that is a call into another mounted service and no in-process
@@ -186,22 +203,6 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // assistant it inserted.
         let assistant_id = {
             let mut store = state.lock();
-
-            // The tags the create persists, read once from the request: the same map goes
-            // into the fingerprint below and onto the stored record.
-            let tags = input.tags.clone().unwrap_or_default();
-
-            // What this create's `@idempotencyToken` identifies: every member the record
-            // below is built from, with the tag map fingerprinted in key order
-            // (`crate::state::tags_fingerprint`) so the same tag set written in another
-            // order is one request.
-            let fingerprint = crate::state::request_fingerprint(&[
-                input.name.clone(),
-                input.r#type.clone(),
-                input.description.clone().unwrap_or_default(),
-                format!("{:?}", input.server_side_encryption_configuration),
-                crate::state::tags_fingerprint(&tags),
-            ]);
 
             // A replayed `@idempotencyToken` answers with the assistant it already created
             // rather than creating a second one, while the same token carrying a DIFFERENT
@@ -315,12 +316,6 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 )]),
             };
             store.insert_assistant(assistant);
-            store.remember_create(
-                Self::NAME,
-                input.client_token.as_deref(),
-                &fingerprint,
-                &assistant_id,
-            );
             assistant_id
         };
 
@@ -331,20 +326,45 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let topic_integration_arn =
             crate::state::provision_assistant_streaming_topic(ctx, &region, &assistant_id)
                 .await;
-        let mut store = state.lock();
-        if let Some(assistant) = store.assistant_mut(&assistant_id) {
-            assistant.topic_integration_arn = topic_integration_arn;
-        }
 
-        // Render out of the INSERTED record rather than out of the request: what this
-        // call answers is what a later read of the assistant answers.
-        let Some(stored) = store.assistant(&assistant_id) else {
+        // The second critical section completes the record: the topic goes onto it, and
+        // only then is the `@idempotencyToken` remembered, so a replay that arrives while
+        // the topic is being provisioned is the create still in flight — the conflicting
+        // state `ConflictException` describes — rather than a read of a record whose topic
+        // is not on it yet.
+        let (answered, orphaned_topic) = {
+            let mut store = state.lock();
+            match store.assistant_mut(&assistant_id) {
+                Some(assistant) => {
+                    assistant.topic_integration_arn = topic_integration_arn;
+                    // Render out of the INSERTED record rather than out of the request:
+                    // what this call answers is what a later read of the assistant answers.
+                    let data = assistant.to_assistant_data();
+                    store.remember_create(
+                        Self::NAME,
+                        input.client_token.as_deref(),
+                        &fingerprint,
+                        &assistant_id,
+                    );
+                    (Some(data), None)
+                }
+                // The assistant was deleted while its topic was being provisioned, so
+                // there is no record to report and no owner for the topic either: it is
+                // released below, the way `DeleteAssistant` releases the topic of the
+                // assistant it removed.
+                None => (None, topic_integration_arn),
+            }
+        };
+        if let Some(topic_arn) = orphaned_topic {
+            crate::state::release_assistant_streaming_topic(ctx, &region, &topic_arn).await;
+        }
+        let Some(assistant) = answered else {
             // Reachable only if the assistant was deleted between the insert above and
             // this read, which leaves nothing to report it with.
             return Err(crate::scaffolded::Scaffolded::not_implemented("CreateAssistant"));
         };
         Ok(CreateAssistantOutput {
-            assistant: Some(stored.to_assistant_data()),
+            assistant: Some(assistant),
         })
     }
 }

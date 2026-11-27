@@ -228,6 +228,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         let session_id = crate::state::new_resource_id();
         let session_arn = crate::state::session_arn(&region, &assistant_id, &session_id);
+        // A session runs inside its assistant, so it streams through the assistant's own
+        // chat-message topic: the ARN is copied from the parent record rather than
+        // composed here, so a session and its assistant cannot report two streams.
+        let topic_integration_arn = state
+            .assistants
+            .get(&assistant_id)
+            .and_then(|assistant| assistant.topic_integration_arn.clone());
         match state.insert_session(crate::state::Session {
             session_id: session_id.clone(),
             session_arn,
@@ -235,6 +242,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             name: input.name,
             description: input.description,
             tags,
+            topic_integration_arn,
             created_at: ::std::time::SystemTime::now(),
             // A new session has nothing available yet: `GetRecommendations`
             // reports this feed, and only a publish fills it.

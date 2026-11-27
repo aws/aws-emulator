@@ -43,24 +43,28 @@
 //! ## The content-upload plane
 //!
 //! `StartContentUpload` hands out a URL, and a URL is a promise that it can be
-//! FOLLOWED. The URL it mints (`crate::state::content_upload_url`) addresses the
-//! endpoint the caller reached, under the upload's own path
-//! (`/knowledgeBases/<knowledgeBaseId>/uploads/<uploadId>`) — a path the model binds no
+//! FOLLOWED. The URL it mints (`crate::state::content_upload_url`) is SigV4
+//! query-presigned against the base URL this emulator is reached on, under the upload's own
+//! path (`/knowledgeBases/<knowledgeBaseId>/uploads/<uploadId>`) — a path the model binds no
 //! operation to, so it reaches this file twice:
 //!
 //! - [`Service::can_handle`] also claims a request to an upload path naming an upload
 //!   THIS store holds, so following the URL routes back here even when nothing else in
-//!   the request names a service (an upload URL is followed WITHOUT a signature, as a
-//!   presigned URL is, and a loopback endpoint host names no service at all).
-//! - [`Service::override_routing_error`] serves it: that seam is reached BEFORE
-//!   authentication precisely for requests that name no modelled operation, which is
-//!   what makes an unsigned `PUT` to a minted URL work.
+//!   the request names a service (a presigned URL is followed with no `Authorization`
+//!   header, and a loopback endpoint host names no service at all).
+//! - [`Service::override_operation`] names [`ContentPlane`] as the operation that serves
+//!   it. Naming an operation is what puts the request through the emulator's own front
+//!   door, so the credential the presigned URL carries is verified — and a request
+//!   carrying none is refused — before the plane runs. (The routing-error seam is reached
+//!   BEFORE authentication, which is why the plane is not served from there.)
 //!
 //! The plane writes ONLY the upload the URL names — the bytes, bounded both per body
 //! (`crate::state::MAX_CONTENT_UPLOAD_BYTES`) and across every written body this store
 //! holds (`crate::state::MAX_PENDING_UPLOAD_BYTES`) — and refuses a `PUT` that is late (the
 //! URL's `urlExpiry` has passed) or that does not carry the headers the start call
-//! published. Nothing else about the service is reachable through it.
+//! published. Nothing else about the service is reachable through it. The content-asset
+//! location every read of a content reports is published, presigned and served the same
+//! way, and it only READS.
 
 use aws_smithy_runtime_api::http::{Request as RtRequest, Response as RtResponse, StatusCode};
 use aws_smithy_types::body::SdkBody;
@@ -189,13 +193,16 @@ fn claims_own_registration_key(parts: &http::request::Parts) -> bool {
 /// router builds one shared engine and hands it to `new`.
 pub struct EmulatedService<Eng: Send + Sync + 'static> {
     entry: crate::ServiceDefinition<Eng>,
-    /// The SAME shared engine the generated entry threads into every operation.
+    /// The data plane that serves a request FOLLOWING one of the URLs this service hands
+    /// out — an upload destination or a content asset — named by
+    /// [`Service::override_operation`] so the emulator's front door holds that request to
+    /// the credential the presigned URL carries.
     ///
-    /// Held here because the content-upload plane is served from
-    /// [`Service::can_handle`] and [`Service::override_routing_error`], neither of which
-    /// is an operation with a `self.engine` of its own; both must read the one store
-    /// `StartContentUpload` writes, not a second copy.
-    engine: Arc<Eng>,
+    /// It holds the SAME shared engine the generated entry threads into every operation,
+    /// because neither [`Service::can_handle`] nor the plane itself is an operation with a
+    /// `self.engine` of its own, and both must read the one store `StartContentUpload`
+    /// writes rather than a second copy.
+    content_plane: ContentPlane<Eng>,
 }
 
 impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
@@ -205,9 +212,26 @@ impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
     pub fn new(engine: Arc<Eng>) -> Self {
         Self {
             entry: crate::ServiceDefinition::new(Arc::clone(&engine)),
-            engine,
+            content_plane: ContentPlane { engine },
         }
     }
+}
+
+/// The two data planes behind the URLs this service hands out: the upload destination
+/// `StartContentUpload` publishes, and the asset location every read of a content reports.
+///
+/// Neither is a modelled operation — the model binds no route to either path — so the
+/// service NAMES this plane for such a request ([`Service::override_operation`]), which is
+/// what routes it through the emulator's own front door: the presigned credential the URL
+/// carries is verified there, before anything is written or served.
+///
+/// It holds the SAME shared engine every operation of this service does, so the upload a
+/// `PUT` writes is the one `CreateContent` finalizes.
+struct ContentPlane<Eng> {
+    engine: Arc<Eng>,
+}
+
+impl<Eng: Send + Sync + 'static> ContentPlane<Eng> {
 
     /// Whether this request FOLLOWS an upload URL this service handed out: its path is
     /// one the upload plane publishes and it names an upload THIS store holds.
@@ -385,8 +409,7 @@ impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
         // The media type is a STORED value that came from a request, so it is written
         // with the fallible insert: a stored string no header may carry (a byte outside
         // visible ASCII, a line break) falls back to the generic binary type rather than
-        // unwinding this request, which arrives with no credential and is served before
-        // authentication. The length is this process's own number.
+        // unwinding this request. The length is this process's own number.
         if resp
             .headers_mut()
             .try_insert("content-type", content.content_type.clone())
@@ -398,6 +421,36 @@ impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
         resp.headers_mut()
             .insert("content-length", content.body.len().to_string());
         resp
+    }
+}
+
+/// The plane runs as the OPERATION the service named for the request, which is what the
+/// front door authenticated before it got here: a `PUT` to an upload destination and a `GET`
+/// of a content asset both carry the credential their presigned URL was minted with.
+///
+/// No `auth_schemes` answer of its own, so this plane declares nothing about its own
+/// authentication and the emulator's front door holds the request to the credential the
+/// announced URL carries — a presigned request carries it in the QUERY rather than in an
+/// `Authorization` header, and the emulator verifies every request signature itself.
+impl<Eng: Send + Sync + 'static> ErasedOperation for ContentPlane<Eng> {
+    fn run<'r>(
+        &'r self,
+        _svc: &'r dyn Service,
+        req: &'r RtRequest,
+        _ctx: &'r smithy_server_runtime::OperationContext<'r>,
+    ) -> smithy_server_runtime::BoxFuture<'r, RtResponse> {
+        Box::pin(async move {
+            let path = request_path(req.uri());
+            if let Some(target) = crate::state::parse_content_upload_path(path) {
+                return self.serve_content_upload(req, &target);
+            }
+            if let Some(target) = crate::state::parse_content_asset_path(path) {
+                return self.serve_content_asset(req, &target);
+            }
+            // Unreachable: the service names this plane only for a request on one of those
+            // two paths, and the reading of the path is the same one.
+            upload_error(404, "NoSuchKey", ASSET_NOT_FOUND_MESSAGE)
+        })
     }
 }
 
@@ -419,19 +472,20 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
         // and the superset — and this service answers under its own registration key
         // instead, so exactly one service claims every request.
         // A request that FOLLOWS an upload URL this service handed out is claimed by
-        // the store that minted it, whatever else the request carries: it has no
-        // signature and its endpoint host may name no service at all, so the route key
-        // cannot route it. The upload path binds no modelled operation, so nothing
-        // modelled is diverted here. See [`Self::holds_content_upload`].
+        // the store that minted it, whatever else the request carries: its credential
+        // travels in the URL's own query rather than in a header, and its endpoint host
+        // may name no service at all, so the route key cannot route it. The upload path
+        // binds no modelled operation, so nothing modelled is diverted here. See
+        // [`ContentPlane::holds_content_upload`].
         if let Some(target) = crate::state::parse_content_upload_path(parts.uri.path()) {
-            return self.holds_content_upload(&target);
+            return self.content_plane.holds_content_upload(&target);
         }
         // A request that follows a content-asset URL this service handed out is claimed
         // the same way, by the store that minted the content id in its path. That path
         // binds no modelled operation either — it is one segment deeper than the modelled
         // read of the content — so nothing modelled is diverted here.
         if let Some(target) = crate::state::parse_content_asset_path(parts.uri.path()) {
-            return self.holds_content(&target);
+            return self.content_plane.holds_content(&target);
         }
         claims_own_registration_key(parts)
     }
@@ -444,7 +498,26 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
         // correctly; `None` (the default) lets the generated routing table resolve
         // it. `req` is the whole request, so a decision that depends on the body —
         // the `Action` form field on a query protocol, say — is reachable here.
-        let _ = req;
+        //
+        // The two planes behind the URLs this service hands out are exactly that case by
+        // construction: the model binds no operation to either path (see
+        // `crate::state::content_upload_path` and `crate::state::content_asset_path`), so
+        // the request would otherwise name no operation at all. Naming the plane that
+        // serves it HERE is what puts the request through the emulator's own front door,
+        // where the credential the presigned URL carries is verified before a byte is
+        // written or served — a plane served from the routing-error seam instead is
+        // reached BEFORE authentication, which would serve a caller presenting no
+        // credential at all.
+        //
+        // The PATH alone decides, so a URL naming an upload or a content this store no
+        // longer holds is answered by the plane as the thing it does not hold rather than
+        // by the router as a request naming no operation.
+        let path = request_path(req.uri());
+        if crate::state::parse_content_upload_path(path).is_some()
+            || crate::state::parse_content_asset_path(path).is_some()
+        {
+            return Some(&self.content_plane);
+        }
         None
     }
 
@@ -503,16 +576,13 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
         // default for this service's envelope (query -> 400 InvalidAction text/xml,
         // awsJson -> 404, rpcv2Cbor -> 404, rest -> 501).
         //
-        // A request to an upload URL this service handed out is exactly that case by
-        // construction — the model binds no operation to the upload path — so this is
-        // where `StartContentUpload`'s URL is served, and the content-asset path the same
-        // way. Anything else keeps the framework's default.
-        let path = request_path(req.uri());
-        if let Some(target) = crate::state::parse_content_upload_path(path) {
-            return Some(self.serve_content_upload(req, &target));
-        }
-        let target = crate::state::parse_content_asset_path(path)?;
-        Some(self.serve_content_asset(req, &target))
+        // The two planes behind the URLs this service hands out are NOT served here: this
+        // seam is reached BEFORE authentication, so anything served from it is served to a
+        // caller presenting no credential at all. They are named as this service's own
+        // operation instead ([`Self::override_operation`]), which is what holds a request
+        // following one of those URLs to the credential the URL carries.
+        let _ = req;
+        None
     }
 
     fn override_framework_error(

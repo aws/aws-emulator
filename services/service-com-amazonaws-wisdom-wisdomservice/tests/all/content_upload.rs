@@ -56,9 +56,17 @@ const REGION: &str = "eu-west-3";
 /// `OWN_REGISTRATION_KEY`).
 const ROUTE_KEY: &str = "com-amazonaws-wisdom-wisdomservice";
 
-/// The endpoint host the modelled requests address, and so the host the upload URLs
-/// this suite follows are minted on.
+/// The endpoint host the modelled requests address.
 const ENDPOINT_HOST: &str = "com-amazonaws-wisdom-wisdomservice.eu-west-3.amazonaws.com";
+
+/// The base URL this emulator is reached on while the router is not served on a port
+/// (`smithy_server_runtime::endpoint::UNSERVED_URL_BASE`), which is the base the URLs this
+/// suite follows are presigned against.
+const EMULATOR_BASE_URL: &str = "https://emulator.invalid";
+
+/// The SigV4 signing name this endpoint is addressed under, which a presigned URL it hands
+/// out is scoped to.
+const SIGNING_NAME: &str = "wisdom";
 
 /// Every value the modelled `ContentType` pattern admits
 /// (`smithy_query(query="operation",operation="StartContentUpload")`:
@@ -419,15 +427,50 @@ async fn a_start_persists_an_upload_and_its_url_can_be_followed() {
             "case {label:?}: uploadId {upload_id:?} was handed out twice"
         );
 
-        // The URL names THIS upload under THIS knowledge base, at the endpoint the
-        // caller reached — whichever label form the start addressed.
+        // The URL names THIS upload under THIS knowledge base, on the base URL this
+        // emulator is reached on, and it is PRESIGNED: the credential a write is held to
+        // travels in the URL's own query (SigV4's `X-Amz-*` fields), scoped to the service
+        // this endpoint is signed as and good for exactly the window the start published.
         let url = reply
             .string("/url")
             .unwrap_or_else(|| panic!("case {label:?}: no url in {reply:?}"));
+        let (address, query) = url
+            .split_once('?')
+            .unwrap_or_else(|| panic!("case {label:?}: the url carries no signature: {url:?}"));
         assert_eq!(
-            url,
-            format!("https://{ENDPOINT_HOST}/knowledgeBases/{knowledge_base_id}/uploads/{upload_id}"),
+            address,
+            format!("{EMULATOR_BASE_URL}/knowledgeBases/{knowledge_base_id}/uploads/{upload_id}"),
             "case {label:?}: the url must name the upload under its knowledge base"
+        );
+        let fields: BTreeMap<&str, &str> = query
+            .split('&')
+            .filter_map(|field| field.split_once('='))
+            .collect();
+        let seconds = case
+            .time_to_live
+            .unwrap_or(DEFAULT_PRESIGNED_URL_TIME_TO_LIVE_MINUTES as i64)
+            * 60;
+        for (field, expected) in [
+            ("X-Amz-Algorithm", "AWS4-HMAC-SHA256".to_string()),
+            ("X-Amz-Expires", seconds.to_string()),
+        ] {
+            assert_eq!(
+                fields.get(field).copied(),
+                Some(expected.as_str()),
+                "case {label:?}: the presigned url must carry {field}={expected}, got {url:?}"
+            );
+        }
+        assert!(
+            fields
+                .get("X-Amz-Credential")
+                .is_some_and(|credential| credential.contains(&format!("%2F{SIGNING_NAME}%2F"))),
+            "case {label:?}: the presigned url must be scoped to {SIGNING_NAME}, got {url:?}"
+        );
+        assert!(
+            fields
+                .get("X-Amz-Signature")
+                .is_some_and(|signature| !signature.is_empty()),
+            "case {label:?}: the presigned url must carry a signature, got {url:?}"
         );
 
         // `urlExpiry` is the call's instant plus the time to live asked for, and this

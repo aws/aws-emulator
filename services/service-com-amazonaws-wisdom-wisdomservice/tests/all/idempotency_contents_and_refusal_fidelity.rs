@@ -50,9 +50,13 @@ use smithy_server_runtime::MultiServiceRouter;
 /// The region every modelled request in this suite is signed for.
 const REGION: &str = "eu-west-1";
 
-/// The endpoint host those requests address, and so the host the URLs this suite
-/// follows are minted on.
+/// The endpoint host those requests address.
 const ENDPOINT_HOST: &str = "wisdom.eu-west-1.amazonaws.com";
+
+/// The base URL this emulator is reached on while the router is not served on a port
+/// (`smithy_server_runtime::endpoint::UNSERVED_URL_BASE`), which is the base the asset URLs
+/// this suite follows are presigned against.
+const EMULATOR_BASE_URL: &str = "https://emulator.invalid";
 
 /// The routing key this service answers under (`src/service.rs`'s
 /// `OWN_REGISTRATION_KEY`): the shared `wisdom` endpoint identity is served by the
@@ -902,16 +906,23 @@ async fn a_created_content_round_trips_and_its_asset_url_is_followable() {
             );
         }
 
-        // The asset URL is followable, unsigned, and answers the bytes the upload
-        // received.
+        // The asset URL is followable and answers the bytes the upload received, and it is
+        // PRESIGNED: the credential a fetch is held to travels in the URL's own query.
         let url = created.string("/content/url");
+        let (address, query) = url
+            .split_once('?')
+            .unwrap_or_else(|| panic!("case {case:?}: the asset URL carries no signature: {url:?}"));
         assert_eq!(
-            url,
+            address,
             format!(
-                "https://{ENDPOINT_HOST}/knowledgeBases/{knowledge_base_id}/contents/{content_id}/asset"
+                "{EMULATOR_BASE_URL}/knowledgeBases/{knowledge_base_id}/contents/{content_id}/asset"
             ),
-            "case {case:?}: the asset URL must address this endpoint under the content's own \
+            "case {case:?}: the asset URL must address this emulator under the content's own \
              path, got {url:?}"
+        );
+        assert!(
+            query.contains("X-Amz-Algorithm=AWS4-HMAC-SHA256") && query.contains("X-Amz-Signature="),
+            "case {case:?}: the asset URL must be SigV4 query-presigned, got {url:?}"
         );
         let followed = emulator.follow("GET", &url, &[], b"").await;
         assert_eq!(

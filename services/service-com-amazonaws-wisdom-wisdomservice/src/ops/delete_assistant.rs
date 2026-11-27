@@ -3,7 +3,9 @@
 //! @op DeleteAssistant
 //! Implemented: removes the assistant a `UuidOrArn` path label names, together
 //! with the sessions it owns, and answers HTTP 204 with an empty body. An id
-//! the service does not know is a 404.
+//! the service does not know is a 404. The chat-streaming topic the assistant was
+//! provisioned with is released with it
+//! (`service_common::assistant_streaming_topic`).
 //!
 //! ## Shape of an operation
 //!
@@ -133,25 +135,45 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        let _ = ctx;
-        let Some(state) = crate::state::service_state(&*self.engine) else {
+        let Some(store) = crate::state::service_state(&*self.engine) else {
             // Mounted on an engine that holds no state: nothing can be deleted,
             // and this operation models no error that says so.
             return Err(crate::scaffolded::Scaffolded::not_implemented("DeleteAssistant"));
         };
-        let mut state = state.lock();
-        let Some(assistant_id) = state.resolve_assistant_id(&input.assistant_id) else {
-            return Err(DeleteAssistantErrorModeled::ResourceNotFoundException(
-                ResourceNotFoundException {
-                    message: Some(format!("No assistant {} found.", input.assistant_id)),
-                    resource_name: Some(input.assistant_id.clone()),
-                },
-            )
-            .into());
+        let region = crate::state::request_region(&ctx.parts().headers);
+        // The removal happens in this one critical section, which ENDS before the hop into
+        // Amazon SNS below: that is a call into another mounted service and no in-process
+        // request may run under this service's lock. What it yields is the streaming topic
+        // the removed assistant was provisioned with.
+        let streaming_topic = {
+            let mut state = store.lock();
+            let Some(assistant_id) = state.resolve_assistant_id(&input.assistant_id) else {
+                return Err(DeleteAssistantErrorModeled::ResourceNotFoundException(
+                    ResourceNotFoundException {
+                        message: Some(format!("No assistant {} found.", input.assistant_id)),
+                        resource_name: Some(input.assistant_id.clone()),
+                    },
+                )
+                .into());
+            };
+            // The assistant and the sessions it owns go away together: a session
+            // cannot outlive its parent.
+            state
+                .remove_assistant(&assistant_id)
+                .and_then(|removed| removed.topic_integration_arn)
         };
-        // The assistant and the sessions it owns go away together: a session
-        // cannot outlive its parent.
-        state.remove_assistant(&assistant_id);
+
+        // The streaming topic was provisioned WITH the assistant and is reachable only
+        // through it, so it goes with it: the account is not left holding the topic of an
+        // assistant that no longer exists.
+        if let Some(topic_arn) = streaming_topic {
+            ::service_common::assistant_streaming_topic::release(
+                ctx.callback(),
+                &region,
+                &topic_arn,
+            )
+            .await;
+        }
         Ok(DeleteAssistantOutput {})
     }
 }

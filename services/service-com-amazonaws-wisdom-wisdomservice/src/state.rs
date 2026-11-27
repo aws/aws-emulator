@@ -14,13 +14,14 @@ use std::time::SystemTime;
 
 use crate::ops::types::{
     AssistantAssociationData, AssistantAssociationOutputData, AssistantAssociationSummary,
-    AssistantData, AssistantSummary,
+    AssistantData, AssistantIntegrationConfiguration, AssistantSummary,
     ContentData, ContentSummary,
     GroupingConfiguration, KnowledgeBaseAssociationData, KnowledgeBaseData,
     QuickResponseContentProvider, QuickResponseContents, QuickResponseData,
     QuickResponseSearchResultData, QuickResponseSummary,
     RecommendationData, RecommendationTrigger, RenderingConfiguration,
-    ServerSideEncryptionConfiguration, SessionData, SourceConfiguration,
+    ServerSideEncryptionConfiguration, SessionData, SessionIntegrationConfiguration,
+    SourceConfiguration,
 };
 
 /// The ARN namespace Wisdom resources carry (`awsService.arnNamespace` in the
@@ -741,6 +742,14 @@ pub struct Assistant {
     pub sessions: HashMap<String, Session>,
     /// Session ids in creation order, so a session listing is stable.
     pub session_order: Vec<String>,
+    /// The ARN Amazon SNS answered for the topic this assistant streams chat messages
+    /// through, provisioned WITH the assistant
+    /// (`service_common::assistant_streaming_topic`). Stored, so the create's own answer
+    /// and every later read of the assistant — and of the sessions opened under it —
+    /// report the one topic rather than each composing a name of their own. `None` only
+    /// when Amazon SNS answered with no topic at all, in which case the assistant is
+    /// integrated with none and reports none.
+    pub topic_integration_arn: Option<String>,
     /// When this record was created. Kept as the record's own creation instant —
     /// `AssistantData`/`AssistantSummary` model no timestamp member, so nothing
     /// renders it; it is what a later operation that needs an age (an expiry, a
@@ -757,6 +766,10 @@ pub struct Session {
     pub name: String,
     pub description: Option<String>,
     pub tags: BTreeMap<String, String>,
+    /// The topic the session streams chat messages through: the one its assistant was
+    /// provisioned with ([`Assistant::topic_integration_arn`]), copied onto the session
+    /// when it is opened, so a session and its assistant report the same stream.
+    pub topic_integration_arn: Option<String>,
     /// When this session was created. `SessionData` models no timestamp member,
     /// so nothing renders it; see [`Assistant::created_at`].
     pub created_at: SystemTime,
@@ -915,6 +928,24 @@ pub fn wire_tags(tags: &BTreeMap<String, String>) -> Option<HashMap<String, Stri
 }
 
 impl Assistant {
+    /// The integration configuration this assistant reports: the Amazon SNS topic it
+    /// streams chat messages through, as the service that owns topics answered for it.
+    ///
+    /// The member carries "the Amazon Resource Name (ARN) of the integrated Amazon SNS
+    /// topic used for streaming chat messages"
+    /// (`smithy_query(query="shape",shape="AssistantIntegrationConfiguration")`), so what
+    /// it reports is the stored topic of THIS assistant and nothing composed per call: the
+    /// data shape and the summary render it through here, which is what keeps a create, a
+    /// read and a listing of one assistant naming one topic. An assistant that holds no
+    /// topic reports no configuration at all rather than one with an empty ARN.
+    fn integration_configuration(&self) -> Option<AssistantIntegrationConfiguration> {
+        self.topic_integration_arn
+            .as_ref()
+            .map(|topic| AssistantIntegrationConfiguration {
+                topic_integration_arn: Some(topic.clone()),
+            })
+    }
+
     /// This assistant as the `AssistantData` shape `CreateAssistant` and
     /// `GetAssistant` return.
     pub fn to_data(&self) -> AssistantData {
@@ -929,9 +960,7 @@ impl Assistant {
             server_side_encryption_configuration: self
                 .server_side_encryption_configuration
                 .clone(),
-            // Only an assistant wired to a Connect topic carries one; this
-            // emulator never creates that wiring, so the member stays absent.
-            integration_configuration: None,
+            integration_configuration: self.integration_configuration(),
         }
     }
 
@@ -948,7 +977,7 @@ impl Assistant {
             server_side_encryption_configuration: self
                 .server_side_encryption_configuration
                 .clone(),
-            integration_configuration: None,
+            integration_configuration: self.integration_configuration(),
         }
     }
 }
@@ -956,6 +985,11 @@ impl Assistant {
 impl Session {
     /// This session as the `SessionData` shape `CreateSession` and `GetSession`
     /// return.
+    ///
+    /// `integrationConfiguration` reports the topic the session's assistant streams chat
+    /// messages through ("the configuration information for the session integration",
+    /// whose `topicIntegrationArn` is the integrated Amazon SNS topic), taken from the
+    /// stored session, so a session and its assistant cannot name two streams.
     pub fn to_data(&self) -> SessionData {
         SessionData {
             session_arn: self.session_arn.clone(),
@@ -963,7 +997,11 @@ impl Session {
             name: self.name.clone(),
             description: self.description.clone(),
             tags: wire_tags(&self.tags),
-            integration_configuration: None,
+            integration_configuration: self.topic_integration_arn.as_ref().map(|topic| {
+                SessionIntegrationConfiguration {
+                    topic_integration_arn: Some(topic.clone()),
+                }
+            }),
         }
     }
 }
@@ -1314,8 +1352,9 @@ pub enum UploadWrite {
 ///
 /// It sits under the knowledge base the upload belongs to — the same `/knowledgeBases`
 /// space the modelled routes use — and names no modelled operation (the model's own
-/// upload route is `POST /knowledgeBases/{knowledgeBaseId}/upload`), which is what lets
-/// the service serve it from its routing-error seam.
+/// upload route is `POST /knowledgeBases/{knowledgeBaseId}/upload`), which is why the
+/// service names the plane that serves it itself (`crate::service`'s operation-routing
+/// seam), so the request is authenticated the way every other request of this process is.
 pub fn content_upload_path(knowledge_base_id: &str, upload_id: &str) -> String {
     format!("/knowledgeBases/{knowledge_base_id}/uploads/{upload_id}")
 }
@@ -1342,17 +1381,50 @@ pub fn parse_content_upload_path(path: &str) -> Option<ContentUploadTarget> {
     })
 }
 
-/// The URL an upload is written to: the endpoint the caller reached, plus the upload's
-/// own path.
+/// The URL an upload is written to: the upload's own path, SigV4 query-presigned against
+/// the base URL this emulator is reached on.
 ///
-/// NO SigV4 signature is attached — this emulator does not sign URLs, and a fabricated
-/// signature would claim a computation nothing performed. The upload id is the receipt
-/// that names the slot, and it is minted, unguessable and expiring.
-pub fn content_upload_url(host: &str, knowledge_base_id: &str, upload_id: &str) -> String {
-    format!(
-        "https://{host}{}",
-        content_upload_path(knowledge_base_id, upload_id)
-    )
+/// An upload destination is a PRESIGNED `PUT` target — AWS hands out a presigned URL, which
+/// carries its own authorisation in the query and is why it is followed with no
+/// `Authorization` header — so the destination announced here is signed through the
+/// framework's URL signer. That is what makes it both presigned and an address of THIS
+/// emulator: the signer signs for the emulator's own base URL, never for a host only AWS
+/// serves, and the emulator's own verifier then holds a write to the credential the URL
+/// carries. `valid_for` is the window the start call published, so the signature stops being
+/// usable exactly when the upload's `urlExpiry` does.
+///
+/// What the SIGNATURE covers is the method, the path, the window and the host, plus the
+/// unsigned-payload declaration the framework's presigner requires of a presigned write
+/// outside the Amazon S3 family (`x-amz-content-sha256`, which every AWS SDK sends on such a
+/// request) — the URL is minted before the body exists, so the body cannot be signed. The
+/// headers the UPLOAD requires are not bound into it: they are what `headersToInclude`
+/// publishes, and the plane holds a write to them itself
+/// ([`ContentUpload::headers_satisfied`]), so a write that omits one is refused there for
+/// exactly what it is rather than as a signature that does not verify.
+///
+/// A destination that could not be signed is announced at the same address on
+/// `fallback_host`, the endpoint the starting caller reached: `url` is a required member, so
+/// there is no "no destination" to report, and that address is served by an emulator that
+/// verifies no signature. The signer refuses only what cannot be signed at all — a window
+/// longer than the seven days SigV4 allows, or a Region label that is not one — neither of
+/// which the modelled input admits.
+pub fn content_upload_url(
+    ctx: &::smithy_server_runtime::OperationContext<'_>,
+    fallback_host: &str,
+    knowledge_base_id: &str,
+    upload_id: &str,
+    valid_for: ::std::time::Duration,
+) -> String {
+    let path = content_upload_path(knowledge_base_id, upload_id);
+    let request = ::smithy_server_runtime::SignedUrlRequest::new(
+        ::smithy_server_runtime::http::Method::PUT,
+        ctx.identity().signing_name(),
+        &path,
+    );
+    match ctx.url_signer().sign(request, valid_for) {
+        Ok(signed) => signed.as_str().to_string(),
+        Err(_) => format!("https://{fallback_host}{path}"),
+    }
 }
 
 /// The endpoint host a request addressed, so a URL this service hands out is reachable
@@ -1392,8 +1464,8 @@ pub struct ContentAssetTarget {
 ///
 /// It sits under the content it belongs to, one segment deeper than the modelled read of
 /// that content (`GET /knowledgeBases/{knowledgeBaseId}/contents/{contentId}`), so it
-/// names no modelled operation and the service serves it from its routing-error seam the
-/// way [`content_upload_path`] is served.
+/// names no modelled operation and the service names the plane that serves it the way
+/// [`content_upload_path`] is served.
 pub fn content_asset_path(knowledge_base_id: &str, content_id: &str) -> String {
     format!("/knowledgeBases/{knowledge_base_id}/contents/{content_id}/asset")
 }
@@ -1421,17 +1493,33 @@ pub fn parse_content_asset_path(path: &str) -> Option<ContentAssetTarget> {
     })
 }
 
-/// The URL a content's asset is read from: the endpoint the caller reached, plus the
-/// content's own asset path.
+/// The URL a content's asset is read from: the content's own asset path, SigV4
+/// query-presigned the way [`content_upload_url`] presigns the write.
 ///
-/// NO SigV4 signature is attached, for the reason [`content_upload_url`] states: the
-/// content id is the receipt that names the asset, and the URL stops being usable at the
-/// `urlExpiry` the same record carries.
-pub fn content_asset_url(host: &str, knowledge_base_id: &str, content_id: &str) -> String {
-    format!(
-        "https://{host}{}",
-        content_asset_path(knowledge_base_id, content_id)
-    )
+/// A download location is a presigned `GET` target for the same reason, so the credential
+/// a fetch is held to travels in the URL's own query and the emulator's verifier checks it
+/// before any byte is served. A `GET` sends no body, so its signature needs no payload
+/// declaration either. `valid_for` is the window the content's `urlExpiry` publishes, so the
+/// signature and that instant stop being usable together; a location that could not be
+/// signed is announced at the same address on `fallback_host` (see [`content_upload_url`] for
+/// when the signer refuses at all).
+pub fn content_asset_url(
+    ctx: &::smithy_server_runtime::OperationContext<'_>,
+    fallback_host: &str,
+    knowledge_base_id: &str,
+    content_id: &str,
+    valid_for: ::std::time::Duration,
+) -> String {
+    let path = content_asset_path(knowledge_base_id, content_id);
+    let request = ::smithy_server_runtime::SignedUrlRequest::new(
+        ::smithy_server_runtime::http::Method::GET,
+        ctx.identity().signing_name(),
+        &path,
+    );
+    match ctx.url_signer().sign(request, valid_for) {
+        Ok(signed) => signed.as_str().to_string(),
+        Err(_) => format!("https://{fallback_host}{path}"),
+    }
 }
 
 /// One content of a knowledge base, as this emulator persists it.

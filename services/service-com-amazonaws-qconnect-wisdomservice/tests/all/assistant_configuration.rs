@@ -234,13 +234,14 @@ fn rows() -> Vec<Row> {
 }
 
 /// The ARN of the SNS topic an assistant streams through, written out here rather than
-/// taken from the handler's helper, so the test pins the format:
-/// `arn:aws:sns:<region>:<account>:qconnect-assistant-<assistantId>`.
+/// taken from the handler's helper, so the test pins the format: the topic is named after
+/// the endpoint this service answers for and the assistant it belongs to,
+/// `arn:aws:sns:<region>:<account>:wisdom-assistant-<assistantId>`.
 /// `tests/all/assistant_chat_streaming_topic.rs` is where that ARN is resolved in Amazon
 /// SNS itself.
 fn expected_topic_arn(region: &str, assistant_id: &str) -> String {
     format!(
-        "arn:aws:sns:{region}:{account}:qconnect-assistant-{assistant_id}",
+        "arn:aws:sns:{region}:{account}:wisdom-assistant-{assistant_id}",
         account = engine::EMULATOR_ACCOUNT_ID
     )
 }

@@ -249,7 +249,17 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .and_then(|minutes| u64::try_from(minutes).ok())
             .unwrap_or(crate::state::DEFAULT_PRESIGNED_URL_TIME_TO_LIVE_MINUTES);
         let url_expiry = now + ::std::time::Duration::from_secs(time_to_live_minutes * 60);
-        let url = crate::state::content_upload_url(&host, &knowledge_base_id, &upload_id);
+        // The destination is PRESIGNED for exactly the window just computed, so the
+        // credential a write is held to travels in the URL and stops being usable when the
+        // upload's `urlExpiry` does. `headersToInclude` stays what the UPLOAD requires —
+        // the plane holds a write to those itself.
+        let url = crate::state::content_upload_url(
+            ctx,
+            &host,
+            &knowledge_base_id,
+            &upload_id,
+            ::std::time::Duration::from_secs(time_to_live_minutes * 60),
+        );
         let stored = store.insert_content_upload(crate::state::ContentUpload {
             upload_id: upload_id.clone(),
             knowledge_base_id,

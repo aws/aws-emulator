@@ -3,7 +3,11 @@
 //! @op CreateAssistant
 //! Implemented: mints an assistant — a fresh v4 uuid `assistantId`, the matching
 //! `assistant/<id>` ARN, and the record every later `GetAssistant`,
-//! `ListAssistants`, `CreateSession` and `DeleteAssistant` reads.
+//! `ListAssistants`, `CreateSession` and `DeleteAssistant` reads. The topic it reports
+//! as the assistant's chat-message stream is a topic Amazon SNS — which owns topics —
+//! really holds: the create provisions it there
+//! (`service_common::assistant_streaming_topic`) and stores the ARN that service
+//! answered, so every later read of the assistant reports the same one.
 //!
 //! ## Shape of an operation
 //!
@@ -158,13 +162,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        let Some(state) = crate::state::service_state(&*self.engine) else {
+        let Some(store) = crate::state::service_state(&*self.engine) else {
             // Mounted on an engine that holds no state: nothing can be persisted,
             // and this operation models no error that says so.
             return Err(crate::scaffolded::Scaffolded::not_implemented("CreateAssistant"));
         };
         let region = crate::state::request_region(&ctx.parts().headers);
-        let mut state = state.lock();
 
         // The model puts no bound on the `tags` map, so the store does: AWS's
         // tagging restrictions allow at most 50 tags on a resource, and a
@@ -196,90 +199,156 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             crate::state::tags_fingerprint(&tags),
         ]);
 
-        // A retried create carrying the same `clientToken` answers with the
-        // resource the first call created, rather than minting a second one — while the
-        // same token carrying a DIFFERENT request is the modelled idempotency conflict
-        // rather than a record the caller did not ask for. An assistant is an
-        // account-level resource, so the token's scope is the account the whole store
-        // represents.
-        match state.replayed_create(Self::NAME, "", input.client_token.as_deref(), &fingerprint) {
-            crate::state::Replay::Conflict => {
-                return Err(CreateAssistantErrorModeled::ConflictException(ConflictException {
-                    message: Some(crate::state::MESSAGE_IDEMPOTENCY_CONFLICT.to_string()),
-                })
-                .into())
-            }
-            crate::state::Replay::Retry(created) => {
-                if let Some(assistant) = state
-                    .assistants
-                    .get(&created)
-                    .map(crate::state::Assistant::to_data)
-                {
-                    return Ok(CreateAssistantOutput {
-                        assistant: Some(assistant),
-                    });
+        // The record is minted in this first critical section, which ENDS before the hop
+        // into Amazon SNS below: that is a call into another mounted service and no
+        // in-process request may run under this service's lock.
+        let assistant_id = {
+            let mut state = store.lock();
+
+            // A retried create carrying the same `clientToken` answers with the
+            // resource the first call created, rather than minting a second one — while the
+            // same token carrying a DIFFERENT request is the modelled idempotency conflict
+            // rather than a record the caller did not ask for. An assistant is an
+            // account-level resource, so the token's scope is the account the whole store
+            // represents.
+            match state.replayed_create(Self::NAME, "", input.client_token.as_deref(), &fingerprint)
+            {
+                crate::state::Replay::Conflict => {
+                    return Err(CreateAssistantErrorModeled::ConflictException(
+                        ConflictException {
+                            message: Some(crate::state::MESSAGE_IDEMPOTENCY_CONFLICT.to_string()),
+                        },
+                    )
+                    .into())
                 }
+                crate::state::Replay::Retry(created) => {
+                    // The assistant that token already created, with the streaming topic it
+                    // was provisioned with: a retry reports the first call's answer rather
+                    // than provisioning a second topic. The token is remembered only once
+                    // that topic is on the record (below), so a retry can never read the
+                    // record half-built.
+                    if let Some(assistant) = state
+                        .assistants
+                        .get(&created)
+                        .map(crate::state::Assistant::to_data)
+                    {
+                        return Ok(CreateAssistantOutput {
+                            assistant: Some(assistant),
+                        });
+                    }
+                }
+                crate::state::Replay::Fresh => {}
             }
-            crate::state::Replay::Fresh => {}
-        }
 
-        // `name` identifies an assistant within the account, so a second
-        // assistant claiming a live name conflicts with the first.
-        if state.assistant_name_index.contains_key(&input.name) {
-            return Err(CreateAssistantErrorModeled::ConflictException(ConflictException {
-                message: Some(format!(
-                    "An assistant with the name {} already exists.",
-                    input.name
-                )),
-            })
-            .into());
-        }
-
-        let assistant_id = crate::state::new_resource_id();
-        let assistant_arn = crate::state::assistant_arn(&region, &assistant_id);
-        let stored = state.insert_assistant(crate::state::Assistant {
-            assistant_id: assistant_id.clone(),
-            assistant_arn,
-            name: input.name,
-            assistant_type: input.r#type,
-            // An assistant is usable the moment it is created, so it is created
-            // in the terminal `ACTIVE` status, not a transient one.
-            status: "ACTIVE".to_string(),
-            description: input.description,
-            tags,
-            server_side_encryption_configuration: input.server_side_encryption_configuration,
-            sessions: ::std::collections::HashMap::new(),
-            session_order: Vec::new(),
-            created_at: ::std::time::SystemTime::now(),
-        });
-        if !stored {
-            // The store holds as many assistants as this emulator keeps
-            // (`state::MAX_ASSISTANTS`); the service models this refusal.
-            return Err(CreateAssistantErrorModeled::ServiceQuotaExceededException(
-                ServiceQuotaExceededException {
+            // `name` identifies an assistant within the account, so a second
+            // assistant claiming a live name conflicts with the first.
+            if state.assistant_name_index.contains_key(&input.name) {
+                return Err(CreateAssistantErrorModeled::ConflictException(ConflictException {
                     message: Some(format!(
-                        "The maximum number of assistants ({}) has been reached. Delete an \
-                         assistant before creating another.",
-                        crate::state::MAX_ASSISTANTS
+                        "An assistant with the name {} already exists.",
+                        input.name
                     )),
-                },
-            )
-            .into());
-        }
-        state.remember_client_token(
-            Self::NAME,
-            "",
-            input.client_token.as_deref(),
-            &fingerprint,
-            &assistant_id,
-        );
+                })
+                .into());
+            }
 
-        // Answer from what was just persisted, so this response and a later
-        // `GetAssistant` cannot disagree.
-        let assistant = state
-            .assistants
-            .get(&assistant_id)
-            .map(crate::state::Assistant::to_data);
-        Ok(CreateAssistantOutput { assistant })
+            let assistant_id = crate::state::new_resource_id();
+            let assistant_arn = crate::state::assistant_arn(&region, &assistant_id);
+            let stored = state.insert_assistant(crate::state::Assistant {
+                assistant_id: assistant_id.clone(),
+                assistant_arn,
+                name: input.name,
+                assistant_type: input.r#type,
+                // An assistant is usable the moment it is created, so it is created
+                // in the terminal `ACTIVE` status, not a transient one.
+                status: "ACTIVE".to_string(),
+                description: input.description,
+                tags,
+                server_side_encryption_configuration: input.server_side_encryption_configuration,
+                sessions: ::std::collections::HashMap::new(),
+                session_order: Vec::new(),
+                // The topic the assistant streams chat messages through is an Amazon SNS
+                // resource, so this service does not compose its ARN: it is provisioned in
+                // that service below, once this critical section has ended, and the ARN
+                // Amazon SNS answered is written onto this record.
+                topic_integration_arn: None,
+                created_at: ::std::time::SystemTime::now(),
+            });
+            if !stored {
+                // The store holds as many assistants as this emulator keeps
+                // (`state::MAX_ASSISTANTS`); the service models this refusal.
+                return Err(CreateAssistantErrorModeled::ServiceQuotaExceededException(
+                    ServiceQuotaExceededException {
+                        message: Some(format!(
+                            "The maximum number of assistants ({}) has been reached. Delete an \
+                             assistant before creating another.",
+                            crate::state::MAX_ASSISTANTS
+                        )),
+                    },
+                )
+                .into());
+            }
+            assistant_id
+        };
+
+        // The streaming topic of the assistant just created, as the service that OWNS
+        // topics reports it. An assistant whose topic could not be created there is
+        // integrated with no topic and reports none, rather than reporting an ARN that
+        // resolves to nothing.
+        let topic_integration_arn = ::service_common::assistant_streaming_topic::provision(
+            ctx.callback(),
+            &region,
+            crate::state::ARN_NAMESPACE,
+            &assistant_id,
+        )
+        .await;
+
+        // The second critical section completes the record: the topic goes onto it, and
+        // only then is the `clientToken` remembered, so a retry that arrives while the
+        // topic is being provisioned is the create still in flight — the conflicting state
+        // `ConflictException` describes — rather than a read of a record with no topic yet.
+        let (assistant, orphaned_topic) = {
+            let mut state = store.lock();
+            match state.assistants.get_mut(&assistant_id) {
+                Some(assistant) => {
+                    assistant.topic_integration_arn = topic_integration_arn;
+                    let data = assistant.to_data();
+                    state.remember_client_token(
+                        Self::NAME,
+                        "",
+                        input.client_token.as_deref(),
+                        &fingerprint,
+                        &assistant_id,
+                    );
+                    // Answer from what was just persisted, so this response and a later
+                    // `GetAssistant` cannot disagree.
+                    (Some(data), None)
+                }
+                // The assistant was deleted while its topic was being provisioned, so
+                // there is no record to report and no owner for the topic either: it is
+                // released below, the way `DeleteAssistant` releases the topic of the
+                // assistant it removed.
+                None => (None, topic_integration_arn),
+            }
+        };
+        if let Some(topic_arn) = orphaned_topic {
+            ::service_common::assistant_streaming_topic::release(
+                ctx.callback(),
+                &region,
+                &topic_arn,
+            )
+            .await;
+        }
+        let Some(assistant) = assistant else {
+            // Reachable only if the assistant was deleted between the insert above and
+            // this read, which leaves nothing to report it with: a success envelope
+            // carrying no assistant would be indistinguishable from one that created
+            // something, so the operation answers that it could not be served. The Amazon
+            // Q in Connect view of this endpoint answers the same race the same way.
+            return Err(crate::scaffolded::Scaffolded::not_implemented("CreateAssistant"));
+        };
+        Ok(CreateAssistantOutput {
+            assistant: Some(assistant),
+        })
     }
 }
