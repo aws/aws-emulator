@@ -297,6 +297,7 @@ members = [
     "services/service-com-amazonaws-odb-odb",
     "services/service-com-amazonaws-omics-omics",
     "services/service-com-amazonaws-opensearch-amazonopensearchservice",
+    "services/service-com-amazonaws-opensearchmemory-opensearchmemory",
     "services/service-com-amazonaws-opensearchserverless-opensearchserverless",
     "services/service-com-amazonaws-organizations-awsorganizationsv20161128",
     "services/service-com-amazonaws-osis-amazonopensearchingestionservice",
@@ -773,6 +774,7 @@ service-com-amazonaws-observabilityadmin-observabilityadmin = { path = "services
 service-com-amazonaws-odb-odb = { path = "services/service-com-amazonaws-odb-odb" }
 service-com-amazonaws-omics-omics = { path = "services/service-com-amazonaws-omics-omics" }
 service-com-amazonaws-opensearch-amazonopensearchservice = { path = "services/service-com-amazonaws-opensearch-amazonopensearchservice" }
+service-com-amazonaws-opensearchmemory-opensearchmemory = { path = "services/service-com-amazonaws-opensearchmemory-opensearchmemory" }
 service-com-amazonaws-opensearchserverless-opensearchserverless = { path = "services/service-com-amazonaws-opensearchserverless-opensearchserverless" }
 service-com-amazonaws-organizations-awsorganizationsv20161128 = { path = "services/service-com-amazonaws-organizations-awsorganizationsv20161128" }
 service-com-amazonaws-osis-amazonopensearchingestionservice = { path = "services/service-com-amazonaws-osis-amazonopensearchingestionservice" }

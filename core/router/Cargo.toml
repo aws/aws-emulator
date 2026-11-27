@@ -308,6 +308,7 @@ service-com-amazonaws-observabilityadmin-observabilityadmin = { workspace = true
 service-com-amazonaws-odb-odb = { workspace = true }
 service-com-amazonaws-omics-omics = { workspace = true }
 service-com-amazonaws-opensearch-amazonopensearchservice = { workspace = true }
+service-com-amazonaws-opensearchmemory-opensearchmemory = { workspace = true }
 service-com-amazonaws-opensearchserverless-opensearchserverless = { workspace = true }
 service-com-amazonaws-organizations-awsorganizationsv20161128 = { workspace = true }
 service-com-amazonaws-osis-amazonopensearchingestionservice = { workspace = true }
