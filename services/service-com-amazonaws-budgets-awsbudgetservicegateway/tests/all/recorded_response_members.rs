@@ -26,6 +26,12 @@
 //!    reported empty: `ListTagsForResource` answers a resource holding no tags without the
 //!    `ResourceTags` member.
 //!
+//! The three members the model does not declare are declared from this crate's own overlay
+//! model (`smithy-model/local-additions.json`, see `smithy-model/LOCAL-ADDITIONS.md`)
+//! rather than by editing the shipped snapshot, so the last tests here pin that overlay
+//! against the snapshot it restates — shape by shape — and pin all three as members whose
+//! value the SERVICE owns: a request claiming one changes nothing a read reports.
+//!
 //! The harness (`router`, `call`, `caller_account`, `same`) is the one
 //! `tests/all/budget_lifecycle.rs` builds, and the budget, action, subscriber and tag
 //! builders are the sibling suites', so every suite in this target drives the service the
@@ -48,6 +54,75 @@ use super::budget_action_execution::{
 use super::budget_lifecycle::{call, caller_account, router, same};
 use super::budget_read_projection::month_start_offset;
 use super::resource_tags::{action_arn, budget_arn, list_tags, many_tags, reported, tag_list};
+
+/// The published model snapshot this crate is generated from, embedded at compile time so
+/// the local declarations are checked against the model rather than against a copy of it.
+const SNAPSHOT: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/smithy-model/com-amazonaws-budgets-awsbudgetservicegateway.json"
+));
+
+/// The overlay model the local `Budget` / `Notification` / `Subscriber` declarations are
+/// generated from, embedded for the same reason: what it restates of the snapshot must
+/// still match it.
+const OVERLAY: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/smithy-model/local-additions.json"
+));
+
+/// The three shapes the overlay restates with a member added, each paired with the member
+/// AWS carries on it and the snapshot does not declare.
+const RESTATED_WITH_LOCAL_MEMBER: &[(&str, &str)] = &[
+    ("com.amazonaws.budgets#Budget", "CreatedAt"),
+    (
+        "com.amazonaws.budgets#Notification",
+        "ConsecutiveBreachCount",
+    ),
+    ("com.amazonaws.budgets#Subscriber", "VerificationStatus"),
+];
+
+/// The shapes the overlay ADDS, which the snapshot declares nowhere — the targets of the
+/// three local members.
+const ADDED_SHAPES: &[&str] = &[
+    "com.amazonaws.budgets#ConsecutiveBreachCount",
+    "com.amazonaws.budgets#VerificationStatus",
+];
+
+/// `declaration` with every documentation trait dropped, recursively — and with a traits
+/// object left empty by that dropped too, so a member the snapshot documents and nothing
+/// else compares equal to the same member restated with no traits at all.
+///
+/// Documentation is prose: the overlay restates what codegen READS — targets, types, enum
+/// values and constraint traits — so comparing declarations has to ignore the one trait
+/// that carries no behaviour.
+fn without_docs(declaration: &Value) -> Value {
+    match declaration {
+        Value::Object(members) => Value::Object(
+            members
+                .iter()
+                .filter(|(key, _)| key.as_str() != "smithy.api#documentation")
+                .map(|(key, value)| (key.clone(), without_docs(value)))
+                .filter(|(key, value)| {
+                    key.as_str() != "traits"
+                        || !value.as_object().is_some_and(serde_json::Map::is_empty)
+                })
+                .collect(),
+        ),
+        Value::Array(items) => Value::Array(items.iter().map(without_docs).collect()),
+        other => other.clone(),
+    }
+}
+
+/// The `shapes` object of one model document.
+fn model_shapes(model: &str) -> Value {
+    let parsed: Value = serde_json::from_str(model).expect("a model document must be JSON");
+    Value::Object(
+        parsed["shapes"]
+            .as_object()
+            .expect("a model document must carry a shapes object")
+            .clone(),
+    )
+}
 
 /// `supplied` — a `Subscribers` list as a request sent it — as a read of a budget ACTION
 /// reports it: every subscriber carrying the verification state this service records for
@@ -1111,3 +1186,303 @@ async fn untagging_a_resource_leaves_it_reported_without_the_tag_member() {
         "expected an untagged resource to be reported without the tag member, got {body}"
     );
 }
+
+/// RULE: a member AWS answers with that the published snapshot does not declare is
+/// declared from this crate's OWN overlay model, never by editing the snapshot — so
+/// anything the overlay restates of the snapshot (a member's target, a shape's type, an
+/// enum's value set, a constraint trait) must still BE what the snapshot says, and the only
+/// difference is the member AWS carries on each of the three shapes.
+///
+/// A refreshed snapshot that declares one of the three, adds a member the overlay does not
+/// restate, or changes a target, value set or constraint fails here rather than silently
+/// narrowing or widening what the service accepts and reports.
+#[test]
+fn the_overlay_restates_the_snapshot_exactly_but_for_the_members_it_adds() {
+    let snapshot = model_shapes(SNAPSHOT);
+    let overlay = model_shapes(OVERLAY);
+    let restated = overlay
+        .as_object()
+        .expect("the overlay carries a shapes object");
+
+    for (shape_id, declared) in restated {
+        if ADDED_SHAPES.contains(&shape_id.as_str()) {
+            assert!(
+                snapshot[shape_id].is_null(),
+                "the snapshot now declares {shape_id}, so the local declaration should give \
+                 way to the modelled shape"
+            );
+            continue;
+        }
+        let modelled = &snapshot[shape_id];
+        assert!(
+            !modelled.is_null(),
+            "the overlay restates {shape_id}, which the snapshot no longer declares"
+        );
+
+        if let Some((_, local_member)) = RESTATED_WITH_LOCAL_MEMBER
+            .iter()
+            .find(|(restated_id, _)| *restated_id == shape_id.as_str())
+        {
+            // A shape that differs on purpose: the snapshot's members, restated as the
+            // snapshot declares them, plus the one member AWS carries and it does not.
+            let declared_members = declared["members"]
+                .as_object()
+                .unwrap_or_else(|| panic!("the overlay declares {shape_id}'s members"));
+            let modelled_members = modelled["members"]
+                .as_object()
+                .unwrap_or_else(|| panic!("the snapshot declares {shape_id}'s members"));
+            for (member, modelled_member) in modelled_members {
+                assert_eq!(
+                    without_docs(&declared_members[member]),
+                    without_docs(modelled_member),
+                    "member {member} of {shape_id} must be restated as the snapshot declares \
+                     it, got {:?}",
+                    declared_members.get(member)
+                );
+            }
+            let added: Vec<&String> = declared_members
+                .keys()
+                .filter(|member| !modelled_members.contains_key(*member))
+                .collect();
+            assert_eq!(
+                added,
+                vec![local_member],
+                "{shape_id} may add {local_member} and nothing else, added {added:?}"
+            );
+            continue;
+        }
+
+        if declared["members"]
+            .as_object()
+            .is_some_and(serde_json::Map::is_empty)
+        {
+            // A STRUCTURE restated for its type alone: codegen resolves a structure member
+            // through the Rust field's type (the modelled type in `shared_types`), reading
+            // only the shape's type from the model.
+            assert_eq!(
+                declared["type"],
+                json!("structure"),
+                "{shape_id} is restated without members, which only a structure may be"
+            );
+            assert_eq!(
+                declared["type"], modelled["type"],
+                "{shape_id} must be restated with the type the snapshot gives it"
+            );
+            continue;
+        }
+
+        assert_eq!(
+            without_docs(declared),
+            without_docs(modelled),
+            "{shape_id} must be restated exactly as the snapshot declares it"
+        );
+    }
+
+    // Every shape the overlay restates with a member added is covered above, so none of
+    // the three can fall out of the overlay unnoticed.
+    for (shape_id, local_member) in RESTATED_WITH_LOCAL_MEMBER {
+        assert!(
+            restated.contains_key(*shape_id),
+            "the overlay must declare {shape_id}, which carries {local_member}"
+        );
+    }
+}
+
+/// The instants a request may CLAIM a budget was created at. They differ along where the
+/// claim sits relative to the write that stores it — the epoch, a long-past instant and an
+/// instant in the future — none of which is the instant of the write, which is the only
+/// value the service may report.
+fn claimed_instants() -> Vec<(&'static str, Value)> {
+    vec![
+        ("the epoch", json!(0)),
+        ("a long-past instant", json!(1_000_000_000_i64)),
+        ("an instant in the future", json!(4_000_000_000_i64)),
+    ]
+}
+
+/// RULE: a member whose value the SERVICE owns is not settable by a request — a write
+/// stores what the service stamps and every later read reports that, whatever the request
+/// carried for it.
+///
+/// Asserted for `Budget$CreatedAt` on both write paths: the create stamps the instant of
+/// the write (which, for a budget nothing has updated yet, is also its `LastUpdatedTime`),
+/// and the update leaves it where it was however the request spells it.
+#[tokio::test]
+async fn a_request_cannot_set_the_instant_a_budget_was_created() {
+    for (index, (case, claimed)) in claimed_instants().into_iter().enumerate() {
+        let router = router();
+        let account_id = caller_account();
+        let name = format!("claimed-created-at-{index}");
+
+        let mut budget = cost_budget(&name, "MONTHLY", "100", None);
+        budget["CreatedAt"] = claimed.clone();
+        create(&router, case, &account_id, &budget).await;
+
+        let read = describe(&router, case, &account_id, &name).await;
+        assert_ne!(
+            read["CreatedAt"], claimed,
+            "case {case:?}: expected the claimed creation instant to be discarded, got {read}"
+        );
+        assert_eq!(
+            read["CreatedAt"], read["LastUpdatedTime"],
+            "case {case:?}: expected the create to stamp the instant of the write, got {read}"
+        );
+        let stamped = read["CreatedAt"].clone();
+
+        // The same claim on the update path, which does not create a budget at all.
+        for (update_case, update_claim) in claimed_instants() {
+            let mut new_budget = cost_budget(&name, "MONTHLY", "500", None);
+            new_budget["CreatedAt"] = update_claim.clone();
+            let (status, body) = call(
+                &router,
+                "UpdateBudget",
+                &json!({"AccountId": &account_id, "NewBudget": new_budget}),
+            )
+            .await;
+            assert_eq!(
+                status, 200,
+                "case {case:?} updated with {update_case:?}: expected UpdateBudget to answer \
+                 200, got {status} {body}"
+            );
+            let read = describe(&router, case, &account_id, &name).await;
+            assert_eq!(
+                read["CreatedAt"], stamped,
+                "case {case:?} updated with {update_case:?}: expected the creation instant to \
+                 be unchanged by an update, got {read}"
+            );
+        }
+    }
+}
+
+/// RULE, the same rule on the other two locally declared members: the count a read reports
+/// for a notification is the one the service counts off the budget's figures, so a notified
+/// request's claim changes nothing a read reports.
+///
+/// Each row writes the same notification twice — once with a claimed count and once without
+/// — on two budgets that are identical but for their name, so the figures behind them are
+/// the same. The reads must agree, on the create path and after an update.
+#[tokio::test]
+async fn a_request_cannot_set_the_breach_count_of_a_notification() {
+    // The claims differ along their size and whether they could be a real count at all:
+    // zero, a count inside the periods a budget retains, and one far beyond it.
+    for (index, (case, claimed)) in [
+        ("no breaches claimed", json!(0)),
+        ("a plausible count claimed", json!(2)),
+        ("a count beyond any budget's periods claimed", json!(9_999)),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let router = router();
+        let account_id = caller_account();
+        let claimed_on = format!("claimed-breaches-{index}");
+        let counted_on = format!("counted-breaches-{index}");
+        let start = Some(month_start_offset(-2));
+        for name in [&claimed_on, &counted_on] {
+            create(
+                &router,
+                case,
+                &account_id,
+                &cost_budget(name, "MONTHLY", "200", start),
+            )
+            .await;
+        }
+
+        let notification = json!({
+            "NotificationType": "ACTUAL",
+            "ComparisonOperator": "LESS_THAN",
+            "Threshold": 60.0
+        });
+        let mut with_claim = notification.clone();
+        with_claim["ConsecutiveBreachCount"] = claimed.clone();
+
+        for (name, sent) in [(&claimed_on, &with_claim), (&counted_on, &notification)] {
+            let (status, body) = call(
+                &router,
+                "CreateNotification",
+                &json!({
+                    "AccountId": &account_id,
+                    "BudgetName": name,
+                    "Notification": sent.clone(),
+                    "Subscribers": [email_subscriber(0)]
+                }),
+            )
+            .await;
+            assert_eq!(
+                status, 200,
+                "case {case:?} on {name}: expected CreateNotification to answer 200, got \
+                 {status} {body}"
+            );
+        }
+
+        let read_one = read_notification(&router, case, &account_id, &claimed_on).await;
+        let counted = read_notification(&router, case, &account_id, &counted_on).await;
+        assert!(
+            same(&read_one, &counted),
+            "case {case:?}: expected the claim to change nothing a read reports, got \
+             {read_one} beside {counted}"
+        );
+        assert!(
+            read_one["ConsecutiveBreachCount"].as_i64().is_some(),
+            "case {case:?}: expected every reported notification to carry the count, got \
+             {read_one}"
+        );
+
+        // The update path writes the member the same way: a replacement notification
+        // claiming a count is stored without it and read back counted.
+        let mut replacement = notification.clone();
+        replacement["Threshold"] = json!(80.0);
+        let mut claimed_replacement = replacement.clone();
+        claimed_replacement["ConsecutiveBreachCount"] = claimed.clone();
+        for (name, sent) in [
+            (&claimed_on, &claimed_replacement),
+            (&counted_on, &replacement),
+        ] {
+            let (status, body) = call(
+                &router,
+                "UpdateNotification",
+                &json!({
+                    "AccountId": &account_id,
+                    "BudgetName": name,
+                    "OldNotification": notification.clone(),
+                    "NewNotification": sent.clone()
+                }),
+            )
+            .await;
+            assert_eq!(
+                status, 200,
+                "case {case:?} on {name}: expected UpdateNotification to answer 200, got \
+                 {status} {body}"
+            );
+        }
+        let updated_claim = read_notification(&router, case, &account_id, &claimed_on).await;
+        let updated_counted = read_notification(&router, case, &account_id, &counted_on).await;
+        assert!(
+            same(&updated_claim, &updated_counted),
+            "case {case:?}: expected the replacement's claim to change nothing a read \
+             reports, got {updated_claim} beside {updated_counted}"
+        );
+    }
+}
+
+/// The one notification `DescribeNotificationsForBudget` reports for `name`.
+async fn read_notification(
+    router: &MultiServiceRouter,
+    case: &str,
+    account_id: &str,
+    name: &str,
+) -> Value {
+    let (status, body) = call(
+        router,
+        "DescribeNotificationsForBudget",
+        &json!({"AccountId": account_id, "BudgetName": name}),
+    )
+    .await;
+    assert_eq!(
+        status, 200,
+        "case {case:?}: expected DescribeNotificationsForBudget to answer 200, got \
+         {status} {body}"
+    );
+    body["Notifications"][0].clone()
+}
+

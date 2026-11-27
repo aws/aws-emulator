@@ -1034,7 +1034,7 @@ pub(crate) fn stamped_time_period(budget: &Budget, at: SystemTime) -> TimePeriod
 ///   this write replaces, if any: a write that edits a budget keeps the creation instant
 ///   that budget already carried, since editing a budget does not create one, and only a
 ///   write that establishes a budget stamps this instant. Recorded behaviour: the shipped
-///   model declared no such member, so it was added to this service's model (see
+///   model snapshot declares no such member, so this crate declares it itself (see
 ///   [`crate::ops::types::Budget`]).
 /// * `TimePeriod` — a budget always covers a period; an absent `Start` or `End` takes
 ///   its documented default (see [`stamped_time_period`]).
@@ -1202,8 +1202,8 @@ pub fn project_notification(
 /// `notification` watches has passed the threshold it alerts on — the count a read reports
 /// for `Notification$ConsecutiveBreachCount`.
 ///
-/// Recorded behaviour: the SHIPPED model declared no such member, so it was added to this
-/// service's model (see [`crate::ops::types::Notification`]). What it counts follows from
+/// Recorded behaviour: the SHIPPED model snapshot declares no such member, so this crate
+/// declares it itself (see [`crate::ops::types::Notification`]). What it counts follows from
 /// what a notification IS — one alert condition over the spend a budget tracks, evaluated
 /// per period of that budget — so it is counted over the periods the budget has actually
 /// been measured over ([`covered_periods`]), each judged on the figures that period ran
@@ -1567,8 +1567,8 @@ pub fn drop_subscriber_derived(subscriber: &mut Subscriber) {
 /// `VerificationStatus` for an address nobody has confirmed — the state a subscriber of a
 /// budget action is established in and the only one this service's records reach.
 ///
-/// Recorded behaviour: the SHIPPED model declared no such member, so it was added to this
-/// service's model (see [`crate::ops::types::Subscriber`]). An address is confirmed by
+/// Recorded behaviour: the SHIPPED model snapshot declares no such member, so this crate
+/// declares it itself (see [`crate::ops::types::Subscriber`]). An address is confirmed by
 /// whoever holds it, out of band: an email subscriber has to accept the subscription and
 /// an SNS topic subscription has to be confirmed on the topic, and no operation of this
 /// service — nor any call it makes — does either. So the status this service records for a

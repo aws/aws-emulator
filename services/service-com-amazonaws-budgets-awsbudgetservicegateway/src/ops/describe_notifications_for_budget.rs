@@ -7,7 +7,7 @@
 //!
 //! Each notification is reported with the two members the service counts off the budget's
 //! own figures — the `NotificationState` it is in and the
-//! `ConsecutiveBreachCount` added to this service's model (see
+//! `ConsecutiveBreachCount` this crate declares itself (see
 //! [`crate::ops::describe_budget_notifications_for_account`], which reports the same
 //! projection) — and without a `ThresholdType` that names the percentage thresholds always
 //! are.

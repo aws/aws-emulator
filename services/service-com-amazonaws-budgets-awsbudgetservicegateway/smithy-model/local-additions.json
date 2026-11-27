@@ -1,0 +1,235 @@
+{
+  "smithy": "2.0",
+  "shapes": {
+    "com.amazonaws.budgets#Budget": {
+      "type": "structure",
+      "members": {
+        "BudgetName": { "target": "com.amazonaws.budgets#BudgetName", "traits": { "smithy.api#required": {} } },
+        "BudgetLimit": { "target": "com.amazonaws.budgets#Spend" },
+        "PlannedBudgetLimits": { "target": "com.amazonaws.budgets#PlannedBudgetLimits" },
+        "CostFilters": {
+          "target": "com.amazonaws.budgets#CostFilters",
+          "traits": {
+            "smithy.api#deprecated": {
+              "message": "CostFilters lack support for newer dimensions and filtering options. Please consider using the new 'FilterExpression' field.",
+              "since": "2025-04-18"
+            }
+          }
+        },
+        "CostTypes": {
+          "target": "com.amazonaws.budgets#CostTypes",
+          "traits": {
+            "smithy.api#deprecated": {
+              "message": "CostTypes lack support for newer record type dimensions and filtering options. Please consider using the new 'Metrics' field.",
+              "since": "2025-04-18"
+            }
+          }
+        },
+        "TimeUnit": { "target": "com.amazonaws.budgets#TimeUnit", "traits": { "smithy.api#required": {} } },
+        "TimePeriod": { "target": "com.amazonaws.budgets#TimePeriod" },
+        "CalculatedSpend": { "target": "com.amazonaws.budgets#CalculatedSpend" },
+        "BudgetType": { "target": "com.amazonaws.budgets#BudgetType", "traits": { "smithy.api#required": {} } },
+        "LastUpdatedTime": { "target": "com.amazonaws.budgets#GenericTimestamp" },
+        "AutoAdjustData": { "target": "com.amazonaws.budgets#AutoAdjustData" },
+        "FilterExpression": { "target": "com.amazonaws.budgets#Expression" },
+        "Metrics": { "target": "com.amazonaws.budgets#Metrics" },
+        "BillingViewArn": { "target": "com.amazonaws.budgets#BillingViewArn" },
+        "HealthStatus": { "target": "com.amazonaws.budgets#HealthStatus" },
+        "CreatedAt": { "target": "com.amazonaws.budgets#GenericTimestamp" }
+      }
+    },
+    "com.amazonaws.budgets#Notification": {
+      "type": "structure",
+      "members": {
+        "NotificationType": { "target": "com.amazonaws.budgets#NotificationType", "traits": { "smithy.api#required": {} } },
+        "ComparisonOperator": { "target": "com.amazonaws.budgets#ComparisonOperator", "traits": { "smithy.api#required": {} } },
+        "Threshold": {
+          "target": "com.amazonaws.budgets#NotificationThreshold",
+          "traits": { "smithy.api#default": 0, "smithy.api#required": {} }
+        },
+        "ThresholdType": { "target": "com.amazonaws.budgets#ThresholdType" },
+        "NotificationState": { "target": "com.amazonaws.budgets#NotificationState" },
+        "ConsecutiveBreachCount": { "target": "com.amazonaws.budgets#ConsecutiveBreachCount" }
+      }
+    },
+    "com.amazonaws.budgets#Subscriber": {
+      "type": "structure",
+      "members": {
+        "SubscriptionType": { "target": "com.amazonaws.budgets#SubscriptionType", "traits": { "smithy.api#required": {} } },
+        "Address": { "target": "com.amazonaws.budgets#SubscriberAddress", "traits": { "smithy.api#required": {} } },
+        "VerificationStatus": { "target": "com.amazonaws.budgets#VerificationStatus" }
+      }
+    },
+    "com.amazonaws.budgets#ConsecutiveBreachCount": {
+      "type": "integer"
+    },
+    "com.amazonaws.budgets#VerificationStatus": {
+      "type": "string"
+    },
+    "com.amazonaws.budgets#BudgetName": {
+      "type": "string",
+      "traits": {
+        "smithy.api#length": { "min": 1, "max": 100 },
+        "smithy.api#pattern": "^(?![^:\\\\]*/action/|(?i).*<script>.*</script>.*)[^:\\\\]+$"
+      }
+    },
+    "com.amazonaws.budgets#BillingViewArn": {
+      "type": "string",
+      "traits": {
+        "smithy.api#length": { "min": 20, "max": 2048 },
+        "smithy.api#pattern": "^arn:aws[a-z-]*:(billing)::[0-9]{12}:billingview/[a-zA-Z0-9/:_\\+=\\.\\-@]{0,75}[a-zA-Z0-9]$"
+      }
+    },
+    "com.amazonaws.budgets#GenericString": {
+      "type": "string",
+      "traits": {
+        "smithy.api#length": { "min": 0, "max": 2147483647 },
+        "smithy.api#pattern": ".*"
+      }
+    },
+    "com.amazonaws.budgets#DimensionValue": {
+      "type": "string",
+      "traits": {
+        "smithy.api#length": { "min": 0, "max": 2147483647 },
+        "smithy.api#pattern": "^[\\S\\s]*$"
+      }
+    },
+    "com.amazonaws.budgets#SubscriberAddress": {
+      "type": "string",
+      "traits": {
+        "smithy.api#length": { "min": 1, "max": 2147483647 },
+        "smithy.api#pattern": "^(.*[\\n\\r\\t\\f\\ ]?)*$",
+        "smithy.api#sensitive": {}
+      }
+    },
+    "com.amazonaws.budgets#GenericTimestamp": {
+      "type": "timestamp"
+    },
+    "com.amazonaws.budgets#NotificationThreshold": {
+      "type": "double",
+      "traits": {
+        "smithy.api#default": 0,
+        "smithy.api#range": { "min": 0, "max": 15000000000000 }
+      }
+    },
+    "com.amazonaws.budgets#PlannedBudgetLimits": {
+      "type": "map",
+      "key": { "target": "com.amazonaws.budgets#GenericString" },
+      "value": { "target": "com.amazonaws.budgets#Spend" }
+    },
+    "com.amazonaws.budgets#CostFilters": {
+      "type": "map",
+      "key": { "target": "com.amazonaws.budgets#GenericString" },
+      "value": { "target": "com.amazonaws.budgets#DimensionValues" }
+    },
+    "com.amazonaws.budgets#DimensionValues": {
+      "type": "list",
+      "member": { "target": "com.amazonaws.budgets#DimensionValue" }
+    },
+    "com.amazonaws.budgets#Metrics": {
+      "type": "list",
+      "member": { "target": "com.amazonaws.budgets#Metric" },
+      "traits": {
+        "smithy.api#length": { "min": 0, "max": 1 }
+      }
+    },
+    "com.amazonaws.budgets#Metric": {
+      "type": "enum",
+      "members": {
+        "BLENDED_COST": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "BlendedCost" } },
+        "UNBLENDED_COST": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "UnblendedCost" } },
+        "AMORTIZED_COST": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "AmortizedCost" } },
+        "NET_UNBLENDED_COST": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "NetUnblendedCost" } },
+        "NET_AMORTIZED_COST": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "NetAmortizedCost" } },
+        "USAGE_QUANTITY": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "UsageQuantity" } },
+        "NORMALIZED_USAGE_AMOUNT": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "NormalizedUsageAmount" } },
+        "HOURS": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "Hours" } }
+      }
+    },
+    "com.amazonaws.budgets#TimeUnit": {
+      "type": "enum",
+      "members": {
+        "DAILY": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "DAILY" } },
+        "MONTHLY": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "MONTHLY" } },
+        "QUARTERLY": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "QUARTERLY" } },
+        "ANNUALLY": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "ANNUALLY" } },
+        "CUSTOM": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "CUSTOM" } }
+      }
+    },
+    "com.amazonaws.budgets#BudgetType": {
+      "type": "enum",
+      "members": {
+        "Usage": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "USAGE" } },
+        "Cost": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "COST" } },
+        "RIUtilization": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "RI_UTILIZATION" } },
+        "RICoverage": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "RI_COVERAGE" } },
+        "SPUtilization": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "SAVINGS_PLANS_UTILIZATION" } },
+        "SPCoverage": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "SAVINGS_PLANS_COVERAGE" } }
+      }
+    },
+    "com.amazonaws.budgets#NotificationType": {
+      "type": "enum",
+      "members": {
+        "ACTUAL": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "ACTUAL" } },
+        "FORECASTED": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "FORECASTED" } }
+      }
+    },
+    "com.amazonaws.budgets#ComparisonOperator": {
+      "type": "enum",
+      "members": {
+        "GREATER_THAN": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "GREATER_THAN" } },
+        "LESS_THAN": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "LESS_THAN" } },
+        "EQUAL_TO": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "EQUAL_TO" } }
+      }
+    },
+    "com.amazonaws.budgets#ThresholdType": {
+      "type": "enum",
+      "members": {
+        "PERCENTAGE": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "PERCENTAGE" } },
+        "ABSOLUTE_VALUE": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "ABSOLUTE_VALUE" } }
+      }
+    },
+    "com.amazonaws.budgets#NotificationState": {
+      "type": "enum",
+      "members": {
+        "OK": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "OK" } },
+        "ALARM": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "ALARM" } }
+      }
+    },
+    "com.amazonaws.budgets#SubscriptionType": {
+      "type": "enum",
+      "members": {
+        "SNS": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "SNS" } },
+        "EMAIL": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "EMAIL" } }
+      }
+    },
+    "com.amazonaws.budgets#Spend": {
+      "type": "structure",
+      "members": {}
+    },
+    "com.amazonaws.budgets#CostTypes": {
+      "type": "structure",
+      "members": {}
+    },
+    "com.amazonaws.budgets#TimePeriod": {
+      "type": "structure",
+      "members": {}
+    },
+    "com.amazonaws.budgets#CalculatedSpend": {
+      "type": "structure",
+      "members": {}
+    },
+    "com.amazonaws.budgets#AutoAdjustData": {
+      "type": "structure",
+      "members": {}
+    },
+    "com.amazonaws.budgets#Expression": {
+      "type": "structure",
+      "members": {}
+    },
+    "com.amazonaws.budgets#HealthStatus": {
+      "type": "structure",
+      "members": {}
+    }
+  }
+}

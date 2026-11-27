@@ -9,13 +9,14 @@
 //! with `MaxResults` / `NextToken`. A budget holding no notification contributes no
 //! notification, so it is not reported. Reporting only — nothing is written.
 //!
-//! ## `Notification$ConsecutiveBreachCount`, a member added to this service's model
+//! ## `Notification$ConsecutiveBreachCount`, a member this crate declares itself
 //!
 //! The shipped model declares `Notification` without it, while the recorded AWS answers
 //! carry on every notification they report how many budget periods in a row it has been in
 //! alarm for. A schema-driven serializer cannot emit a member the model does not declare,
-//! so `ConsecutiveBreachCount` was ADDED to
-//! `smithy-model/com-amazonaws-budgets-awsbudgetservicegateway.json`; the count is read
+//! so `ConsecutiveBreachCount` is declared from this crate's own overlay model
+//! `smithy-model/local-additions.json` (see `smithy-model/LOCAL-ADDITIONS.md`); the count is
+//! read
 //! off the budget's own figures ([`crate::state::consecutive_breach_count`]), like the
 //! `NotificationState` beside it. The recorded answers also leave `ThresholdType` out
 //! where it names the percentage thresholds always are, which is the one spelling the

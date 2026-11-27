@@ -11,7 +11,7 @@
 //!
 //! The same stored budget `DescribeBudget` reports, with two recorded differences this
 //! projection owns ([`crate::state::budget_as_listed`]): it carries the `CreatedAt` the
-//! model does not declare (see [`crate::ops::describe_budget`]) and it carries no
+//! model snapshot does not declare (see [`crate::ops::describe_budget`]) and it carries no
 //! `CalculatedSpend` — the recorded listing of a budget leaves that member out while the
 //! recorded single read of the same budget carries it.
 //!

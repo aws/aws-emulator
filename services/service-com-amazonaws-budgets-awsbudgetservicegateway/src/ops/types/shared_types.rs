@@ -11,32 +11,9 @@ use super::*;
 
 smithy_macros::smithy_model!("smithy-model/com-amazonaws-budgets-awsbudgetservicegateway.json");
 
-#[smithy_macros::smithy(shape = "com.amazonaws.budgets#Budget")]
-#[derive(Debug, Clone, Default)]
-pub struct Budget {
-    pub budget_name: String,
-    pub budget_limit: Option<Spend>,
-    pub planned_budget_limits: Option<std::collections::HashMap<String, Spend>>,
-    pub cost_filters: Option<std::collections::HashMap<String, Vec<String>>>,
-    pub cost_types: Option<CostTypes>,
-    pub time_unit: String,
-    pub time_period: Option<TimePeriod>,
-    pub calculated_spend: Option<CalculatedSpend>,
-    pub budget_type: String,
-    pub last_updated_time: Option<::aws_smithy_types::DateTime>,
-    pub auto_adjust_data: Option<AutoAdjustData>,
-    pub filter_expression: Option<Expression>,
-    pub metrics: Option<Vec<String>>,
-    pub billing_view_arn: Option<String>,
-    pub health_status: Option<HealthStatus>,
-    /// `Budget$CreatedAt` — the instant the budget was created. The SHIPPED model declares
-    /// no such member while the recorded AWS responses carry it on every `Budget`, and a
-    /// schema-driven serializer cannot emit a member the model does not declare, so
-    /// `CreatedAt` was ADDED to
-    /// `smithy-model/com-amazonaws-budgets-awsbudgetservicegateway.json`. The value is the
-    /// one the write path persists ([`crate::state::stamp_service_owned`]).
-    pub created_at: Option<::aws_smithy_types::DateTime>,
-}
+// `Budget` is in `budget_record_types`, with the `Notification` and `Subscriber` it owns:
+// AWS carries a member on each of them that the model snapshot does not declare, so they
+// are generated from the overlay model beside it.
 
 #[smithy_macros::smithy(shape = "com.amazonaws.budgets#Spend")]
 #[derive(Debug, Clone, Default)]
@@ -142,35 +119,8 @@ pub struct HealthStatus {
     pub last_updated_time: Option<::aws_smithy_types::DateTime>,
 }
 
-#[smithy_macros::smithy(shape = "com.amazonaws.budgets#Notification")]
-#[derive(Debug, Clone, Default)]
-pub struct Notification {
-    pub notification_type: String,
-    pub comparison_operator: String,
-    pub threshold: f64,
-    pub threshold_type: Option<String>,
-    pub notification_state: Option<String>,
-    /// `Notification$ConsecutiveBreachCount` — how many budget periods in a row the
-    /// notification has been in alarm for. Added to this service's model for the same
-    /// reason as `Budget$CreatedAt` above: the shipped model declares no such member and
-    /// the recorded AWS responses carry it on every notification a read reports. The value
-    /// is counted off the budget's own figures
-    /// ([`crate::state::consecutive_breach_count`]).
-    pub consecutive_breach_count: Option<i32>,
-}
-
-#[smithy_macros::smithy(shape = "com.amazonaws.budgets#Subscriber")]
-#[derive(Debug, Clone, Default)]
-pub struct Subscriber {
-    pub subscription_type: String,
-    pub address: String,
-    /// `Subscriber$VerificationStatus` — whether the address has been confirmed. Added to
-    /// this service's model for the same reason as `Budget$CreatedAt` above: the shipped
-    /// model declares no such member and the recorded AWS responses carry it on the
-    /// subscribers of a budget ACTION. The value is the one the action write paths stamp
-    /// ([`crate::state::action_subscribers`]).
-    pub verification_status: Option<String>,
-}
+// `Notification` and `Subscriber` are in `budget_record_types`, with the `Budget` that
+// owns them — see the note above.
 
 #[smithy_macros::smithy(shape = "com.amazonaws.budgets#ResourceTag")]
 #[derive(Debug, Clone, Default)]

@@ -14,6 +14,10 @@
 //! here named after an operation would make that operation's own module name
 //! ambiguous inside `ops` (`E0659`).
 
+/// The budget, its notifications and their subscribers, generated from the overlay model
+/// beside the snapshot: AWS carries three members on them that the snapshot does not
+/// declare (see `smithy-model/LOCAL-ADDITIONS.md`).
+pub mod budget_record_types;
 pub mod create_budget_action_types;
 pub mod create_budget_types;
 pub mod create_notification_types;
@@ -42,6 +46,8 @@ pub mod update_budget_types;
 pub mod update_notification_types;
 pub mod update_subscriber_types;
 
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use budget_record_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use create_budget_action_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
