@@ -32,7 +32,7 @@ use service_com_amazonaws_connectcampaignsv2_amazonconnectcampaignservicev2::sta
 };
 use smithy_server_runtime::MultiServiceRouter;
 
-use super::common::{call, error_code, router, stored_config, Harness};
+use super::common::{call, campaign_without, error_code, router, stored_config, Harness};
 
 // The fixtures below are this suite's own, as every suite in this crate keeps its own
 // (`campaign_communication_time_update`, `campaign_communication_limits`,
@@ -453,14 +453,8 @@ async fn an_update_replaces_the_whole_channel_subtype_config() {
 
         // The call changes the channel subtype config and NOTHING else about the
         // campaign.
-        let mut before_rest = before.clone();
-        let mut after_rest = repeated.clone();
-        for projection in [&mut before_rest, &mut after_rest] {
-            projection
-                .as_object_mut()
-                .expect("a campaign projection is an object")
-                .remove("channelSubtypeConfig");
-        }
+        let before_rest = campaign_without(&before, "channelSubtypeConfig");
+        let after_rest = campaign_without(&repeated, "channelSubtypeConfig");
         assert_eq!(
             before_rest, after_rest,
             "case {case:?}: expected every other member untouched, got {after_rest} \

@@ -25,7 +25,9 @@ use service_com_amazonaws_connectcampaignsv2_amazonconnectcampaignservicev2::ops
 };
 use smithy_server_runtime::MultiServiceRouter;
 
-use super::common::{call, create_campaign_with, describe_campaign, router, stored_config};
+use super::common::{
+    call, campaign_without, create_campaign_with, describe_campaign, router, stored_config,
+};
 
 /// One `CommunicationLimit` entry: every member of the shape is `@required`.
 fn limit(max_count_per_recipient: i64, frequency: i64, unit: &str) -> Value {
@@ -112,15 +114,14 @@ fn assert_member(campaign: &Value, member: &str, expected: &Value, case: &str) {
 }
 
 /// Assert `before` and `after` agree on every member except `member`.
+///
+/// The campaign's own `lastModifiedTime` is not one of those members: it is the
+/// record's server-maintained stamp, which every accepted write of the campaign's
+/// configuration moves, so [`campaign_without`] drops it from both sides for every
+/// suite that compares two projections this way.
 fn assert_everything_else_untouched(before: &Value, after: &Value, member: &str, case: &str) {
-    let mut before_rest = before.clone();
-    let mut after_rest = after.clone();
-    for projection in [&mut before_rest, &mut after_rest] {
-        projection
-            .as_object_mut()
-            .expect("a campaign projection is an object")
-            .remove(member);
-    }
+    let before_rest = campaign_without(before, member);
+    let after_rest = campaign_without(after, member);
     assert_eq!(
         before_rest, after_rest,
         "case {case:?}: expected every other member untouched, got {after_rest} \

@@ -38,6 +38,7 @@ pub struct Campaign {
     pub entry_limits_config: Option<EntryLimitsConfig>,
     pub communication_time_config: Option<CommunicationTimeConfig>,
     pub communication_limits_override: Option<CommunicationLimitsConfig>,
+    pub last_modified_time: Option<::aws_smithy_types::DateTime>,
     pub tags: Option<std::collections::HashMap<String, String>>,
 }
 

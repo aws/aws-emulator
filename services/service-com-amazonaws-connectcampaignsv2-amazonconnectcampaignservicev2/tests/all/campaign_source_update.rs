@@ -30,8 +30,8 @@ use service_com_amazonaws_connectcampaignsv2_amazonconnectcampaignservicev2::sta
 use smithy_server_runtime::MultiServiceRouter;
 
 use super::common::{
-    call, campaign_state, create_campaign_with, describe_campaign, drive_lifecycle, error_code,
-    instant, padded_arn, router, Harness,
+    call, campaign_state, campaign_without, create_campaign_with, describe_campaign,
+    drive_lifecycle, error_code, instant, padded_arn, router, Harness,
 };
 
 /// The `arn:<partition>:<service>:<region>:<account>:<resource-prefix>` head
@@ -219,14 +219,8 @@ async fn a_source_is_stored_and_every_read_projects_it() {
         );
 
         // The call changes the source and NOTHING else about the campaign.
-        let mut before_rest = before.clone();
-        let mut after_rest = after.clone();
-        for projection in [&mut before_rest, &mut after_rest] {
-            projection
-                .as_object_mut()
-                .expect("a campaign projection is an object")
-                .remove("source");
-        }
+        let before_rest = campaign_without(&before, "source");
+        let after_rest = campaign_without(&after, "source");
         assert_eq!(
             before_rest, after_rest,
             "case {case:?}: expected every other member untouched, got {after_rest} \

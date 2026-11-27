@@ -194,12 +194,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // variant its own model declares.
         let region = crate::state::request_region(ctx);
         let mut store = state.lock();
+        // One instant for the whole call: the state the campaign is judged at and the
+        // instant the write below is stamped with are the same one.
+        let now = ::std::time::SystemTime::now();
         let campaign = match store.configurable_campaign(
             crate::state::CampaignRef {
                 region: &region,
                 id: &input.id,
             },
-            ::std::time::SystemTime::now(),
+            now,
         ) {
             Ok(campaign) => campaign,
             Err(rejected) => {
@@ -235,7 +238,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // The whole of the operation's effect: the campaign is now associated with
         // the flow the request named. Writing the same ARN again is the same write,
         // which is what makes the operation idempotent, as the model declares.
-        campaign.connect_campaign_flow_arn = Some(input.connect_campaign_flow_arn);
+        campaign.set_connect_campaign_flow_arn(input.connect_campaign_flow_arn, now);
 
         Ok(UpdateCampaignFlowAssociationOutput)
     }

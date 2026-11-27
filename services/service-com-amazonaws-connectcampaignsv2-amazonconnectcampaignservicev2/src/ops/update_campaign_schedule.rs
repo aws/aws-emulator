@@ -200,12 +200,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // to the error variant its own model declares.
         let region = crate::state::request_region(ctx);
         let mut store = state.lock();
+        // One instant for the whole call: the state the campaign is judged at and the
+        // instant the write below is stamped with are the same one.
+        let now = ::std::time::SystemTime::now();
         let campaign = match store.configurable_campaign(
             crate::state::CampaignRef {
                 region: &region,
                 id: &input.id,
             },
-            ::std::time::SystemTime::now(),
+            now,
         ) {
             Ok(campaign) => campaign,
             Err(rejected) => {
@@ -246,7 +249,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // stored at the precision this service keeps a `date-time` to (see
         // `crate::state::stored_schedule`), so what a later read projects is what the
         // store holds and not the finer value the request happened to carry.
-        campaign.schedule = Some(crate::state::stored_schedule(input.schedule));
+        campaign.set_schedule(input.schedule, now);
 
         Ok(UpdateCampaignScheduleOutput)
     }

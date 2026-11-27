@@ -502,8 +502,16 @@ async fn an_emptied_config_is_the_same_record_whichever_call_emptied_it() {
                 );
             }
             // The server-owned identity differs between the two campaigns by
-            // construction; everything else must agree.
-            for identity in ["id", "arn", "name"] {
+            // construction; everything else must agree. The campaign's own
+            // last-modified stamp is server-owned in the same way: these are two
+            // records, written by two calls at two instants. It is read and asserted
+            // present rather than ignored, and which calls move it is pinned by
+            // `campaign_configuration_is_one_rule.rs`.
+            assert!(
+                members["lastModifiedTime"].is_string(),
+                "case {case:?}: expected a lastModifiedTime, got {members:?}"
+            );
+            for identity in ["id", "arn", "name", "lastModifiedTime"] {
                 members.remove(identity);
             }
         }

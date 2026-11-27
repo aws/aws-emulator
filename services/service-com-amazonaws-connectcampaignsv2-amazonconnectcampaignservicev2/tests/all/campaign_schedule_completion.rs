@@ -314,6 +314,9 @@ fn stored(lifecycle_state: CampaignState, window: Window) -> StoredCampaign {
         tags: std::collections::BTreeMap::new(),
         lifecycle_state,
         created_at: SystemTime::now(),
+        // A campaign's definition and configuration were last written by the create
+        // that stored it, until a later call writes one of them.
+        last_modified_time: SystemTime::now(),
         outbound_requests: std::collections::BTreeMap::new(),
         profile_outbound_requests: std::collections::BTreeMap::new(),
     }

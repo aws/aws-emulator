@@ -27,7 +27,9 @@ use service_com_amazonaws_connectcampaignsv2_amazonconnectcampaignservicev2::sta
 };
 use smithy_server_runtime::MultiServiceRouter;
 
-use super::common::{call, create_campaign, error_code, onboard_instance, router};
+use super::common::{
+    call, campaign_without, create_campaign, error_code, onboard_instance, router,
+};
 
 /// One `EntryLimitsConfig`: both its members are `@required`.
 fn entry_limits(max_entry_count: i64, min_entry_interval: &str) -> Value {
@@ -231,10 +233,12 @@ async fn deleting_the_entry_limits_leaves_every_other_part_of_the_campaign() {
         );
 
         // The call removes the entry limits and NOTHING else about the campaign.
+        let bare_rest = campaign_without(&bare, "entryLimitsConfig");
+        let repeated_rest = campaign_without(&repeated, "entryLimitsConfig");
         assert_eq!(
-            bare, repeated,
-            "case {case:?}: expected every other member untouched, got {repeated} \
-             (was {bare})"
+            bare_rest, repeated_rest,
+            "case {case:?}: expected every other member untouched, got {repeated_rest} \
+             (was {bare_rest})"
         );
     }
 }

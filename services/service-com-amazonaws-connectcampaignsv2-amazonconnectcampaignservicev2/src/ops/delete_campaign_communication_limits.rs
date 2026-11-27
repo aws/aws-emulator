@@ -223,12 +223,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // to the error variant its own model declares.
         let region = crate::state::request_region(ctx);
         let mut store = state.lock();
+        // One instant for the whole call: the state the campaign is judged at and the
+        // instant a removal below is stamped with are the same one.
+        let now = ::std::time::SystemTime::now();
         let campaign = match store.configurable_campaign(
             crate::state::CampaignRef {
                 region: &region,
                 id: &input.id,
             },
-            ::std::time::SystemTime::now(),
+            now,
         ) {
             Ok(campaign) => campaign,
             Err(rejected) => {
@@ -265,7 +268,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // communication-limits block for the config the request named. A campaign that
         // held none is left as it was, which is what makes the operation idempotent, as
         // the model declares.
-        campaign.clear_communication_limits(&input.config);
+        campaign.clear_communication_limits(&input.config, now);
 
         Ok(DeleteCampaignCommunicationLimitsOutput)
     }

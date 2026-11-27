@@ -215,12 +215,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // variant its own model declares.
         let region = crate::state::request_region(ctx);
         let mut store = state.lock();
+        // One instant for the whole call: the state the campaign is judged at and the
+        // instant the write below is stamped with are the same one.
+        let now = ::std::time::SystemTime::now();
         let campaign = match store.configurable_campaign(
             crate::state::CampaignRef {
                 region: &region,
                 id: &input.id,
             },
-            ::std::time::SystemTime::now(),
+            now,
         ) {
             Ok(campaign) => campaign,
             Err(rejected) => {
@@ -259,7 +262,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // overrides nothing at all; the record's one representation of that belongs to
         // the store, which is why the write goes through it rather than assigning the
         // member here.
-        campaign.set_communication_limits_override(input.communication_limits_override);
+        campaign.set_communication_limits_override(input.communication_limits_override, now);
 
         Ok(UpdateCampaignCommunicationLimitsOutput)
     }

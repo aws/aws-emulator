@@ -32,7 +32,9 @@ use service_com_amazonaws_connectcampaignsv2_amazonconnectcampaignservicev2::sta
 };
 use smithy_server_runtime::MultiServiceRouter;
 
-use super::common::{call, error_code, onboard_instance, router, stored_config, Harness};
+use super::common::{
+    call, campaign_without, error_code, onboard_instance, router, stored_config, Harness,
+};
 
 /// The `ChannelSubtypeConfig` member that carries the block of one `ChannelSubtype`
 /// value.
@@ -342,14 +344,8 @@ async fn deleting_one_channel_subtype_leaves_every_other_part_of_the_campaign() 
 
             // The call changes the channel subtype config and NOTHING else about the
             // campaign.
-            let mut before_rest = before.clone();
-            let mut after_rest = repeated.clone();
-            for projection in [&mut before_rest, &mut after_rest] {
-                projection
-                    .as_object_mut()
-                    .expect("a campaign projection is an object")
-                    .remove("channelSubtypeConfig");
-            }
+            let before_rest = campaign_without(&before, "channelSubtypeConfig");
+            let after_rest = campaign_without(&repeated, "channelSubtypeConfig");
             assert_eq!(
                 before_rest, after_rest,
                 "case {case:?}: expected every other member untouched, got {after_rest} \

@@ -326,6 +326,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         let id = store.next_campaign_id();
         let arn = crate::state::campaign_arn(&region, &id);
+        let created_at = std::time::SystemTime::now();
 
         let stored = store.insert_new_campaign(&region, crate::state::StoredCampaign {
             id,
@@ -345,7 +346,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             communication_limits_override: input.communication_limits_override,
             tags: input.tags.unwrap_or_default().into_iter().collect(),
             lifecycle_state: crate::state::CampaignState::Initialized,
-            created_at: std::time::SystemTime::now(),
+            created_at,
+            // The create is the write that put this campaign's definition and
+            // configuration in the store, so it is also the campaign's last
+            // modification until a later call writes one of them.
+            last_modified_time: created_at,
             outbound_requests: std::collections::BTreeMap::new(),
             profile_outbound_requests: std::collections::BTreeMap::new(),
         });

@@ -30,7 +30,7 @@ use service_com_amazonaws_connectcampaignsv2_amazonconnectcampaignservicev2::sta
 };
 use smithy_server_runtime::MultiServiceRouter;
 
-use super::common::{call, error_code, router, stored_config, Harness};
+use super::common::{call, campaign_without, error_code, router, stored_config, Harness};
 
 /// A minimal telephony `channelSubtypeConfig`: `outboundMode` and
 /// `defaultOutboundConfig` are both required by the model.
@@ -294,14 +294,8 @@ async fn a_communication_limits_config_is_stored_and_every_read_projects_it() {
         );
 
         // The call changes the override and NOTHING else about the campaign.
-        let mut before_rest = before.clone();
-        let mut after_rest = after.clone();
-        for projection in [&mut before_rest, &mut after_rest] {
-            projection
-                .as_object_mut()
-                .expect("a campaign projection is an object")
-                .remove("communicationLimitsOverride");
-        }
+        let before_rest = campaign_without(&before, "communicationLimitsOverride");
+        let after_rest = campaign_without(&after, "communicationLimitsOverride");
         assert_eq!(
             before_rest, after_rest,
             "case {case:?}: expected every other member untouched, got {after_rest} \

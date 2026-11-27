@@ -221,12 +221,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // to the error variant its own model declares.
         let region = crate::state::request_region(ctx);
         let mut store = state.lock();
+        // One instant for the whole call: the state the campaign is judged at and the
+        // instant the write below is stamped with are the same one.
+        let now = ::std::time::SystemTime::now();
         let campaign = match store.configurable_campaign(
             crate::state::CampaignRef {
                 region: &region,
                 id: &input.id,
             },
-            ::std::time::SystemTime::now(),
+            now,
         ) {
             Ok(campaign) => campaign,
             Err(rejected) => {
@@ -263,7 +266,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // config is now the one the request carried, replacing whatever it held. The
         // config is one structure, so this is a replacement and not a merge: a channel
         // the new config leaves out is a channel the campaign no longer opens.
-        campaign.communication_time_config = Some(input.communication_time_config);
+        campaign.set_communication_time_config(input.communication_time_config, now);
 
         Ok(UpdateCampaignCommunicationTimeOutput)
     }

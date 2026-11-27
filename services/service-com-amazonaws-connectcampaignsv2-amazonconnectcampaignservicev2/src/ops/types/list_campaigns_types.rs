@@ -51,5 +51,6 @@ pub struct CampaignSummary {
     pub schedule: Option<Schedule>,
     pub entry_limits_config: Option<EntryLimitsConfig>,
     pub connect_campaign_flow_arn: Option<String>,
+    pub last_modified_time: Option<::aws_smithy_types::DateTime>,
 }
 

@@ -231,7 +231,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // optional, so the request can carry one configuring no channel at all; the
         // record's one representation of that belongs to the store, which is why the
         // write goes through it rather than assigning the member here.
-        campaign.set_channel_subtype_config(input.channel_subtype_config);
+        campaign.set_channel_subtype_config(
+            input.channel_subtype_config,
+            ::std::time::SystemTime::now(),
+        );
 
         Ok(UpdateCampaignChannelSubtypeConfigOutput)
     }

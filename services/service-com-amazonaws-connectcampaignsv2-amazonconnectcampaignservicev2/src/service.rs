@@ -68,6 +68,19 @@
 //! One response is announced by the framework alone, because no author seam reaches it:
 //! the authentication refusal, which the router renders through
 //! `definition().refusal_response(..)` before this service is asked anything.
+//!
+//! ## The form a timestamp travels in
+//!
+//! Every timestamp member of this model targets one shape, `TimeStamp`, which carries
+//! `@timestampFormat("date-time")` (`smithy_query(query="shape", shape="TimeStamp")`), so an
+//! instant travels as an RFC 3339 STRING in both directions rather than as the
+//! epoch-seconds number `restJson1` defaults to. The generated member schemas drop that
+//! format, so the codec is taken from the workspace's shared
+//! [`service_common::date_time_json::DateTimeRestJson`], which supplies it at the protocol
+//! seam and is the model's own `restJson1` in every other respect. It never overrides a
+//! member that DOES declare a format, so the three shapes whose schemas this crate writes
+//! out by hand — `Schedule` and the two outbound-request batch inputs — keep answering and
+//! parsing exactly as before.
 
 use service_common::response_media_type::{ResponseMediaType, ResponseMediaTypeOperation};
 use smithy_server_runtime::{
@@ -160,6 +173,10 @@ pub struct EmulatedService<Eng: Send + Sync + 'static> {
     /// field, built once, because [`Service::override_operation`] hands back a borrow
     /// of it.
     media_type: ResponseMediaTypeOperation,
+    /// This service's wire protocol: its model's `restJson1` with every timestamp in the
+    /// `date-time` form that model declares (see the module header). Held in a field,
+    /// built once, because [`Service::override_protocol`] hands back a borrow of it.
+    protocol: ::service_common::date_time_json::DateTimeRestJson,
 }
 
 impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
@@ -173,6 +190,7 @@ impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
                 RESPONSE_MEDIA_TYPE,
                 announced_by_the_modelled_front_door,
             ),
+            protocol: ::service_common::date_time_json::DateTimeRestJson::new(),
         }
     }
 }
@@ -256,5 +274,14 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
             RESPONSE_MEDIA_TYPE,
             error,
         )
+    }
+
+    fn override_protocol(&self) -> Option<&dyn smithy_server_runtime::ServerHttpProtocol> {
+        // Every timestamp member of this model is a `date-time` one, which the generated
+        // member schemas do not say, so the codec that reads and writes a body is the
+        // shared one that supplies the declared format (see the module header). Nothing
+        // else about the wire changes: the routing, the envelopes and the media type above
+        // are the ones this service already answered with.
+        Some(&self.protocol)
     }
 }

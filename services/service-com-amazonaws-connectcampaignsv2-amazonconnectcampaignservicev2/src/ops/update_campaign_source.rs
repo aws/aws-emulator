@@ -220,12 +220,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // to the error variant its own model declares.
         let region = crate::state::request_region(ctx);
         let mut store = state.lock();
+        // One instant for the whole call: the state the campaign is judged at and the
+        // instant the write below is stamped with are the same one.
+        let now = ::std::time::SystemTime::now();
         let campaign = match store.configurable_campaign(
             crate::state::CampaignRef {
                 region: &region,
                 id: &input.id,
             },
-            ::std::time::SystemTime::now(),
+            now,
         ) {
             Ok(campaign) => campaign,
             Err(rejected) => {
@@ -259,11 +262,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         };
 
         // The whole of the operation's effect: the campaign is now sourced from what
-        // the request carried, replacing whatever it held. The source is one union, so
-        // this is a replacement and not a merge: exactly one member is in force, and
-        // the member the new value does not name is one the campaign is no longer
-        // sourced through.
-        campaign.source = Some(input.source);
+        // the request carried, replacing whatever it held, and the record carries the
+        // instant that write happened at — the replacement rule and the stamp live
+        // together on the record (`StoredCampaign::set_source`), so no writer of the
+        // campaign's definition can leave one without the other.
+        campaign.set_source(input.source, now);
 
         Ok(UpdateCampaignSourceOutput)
     }

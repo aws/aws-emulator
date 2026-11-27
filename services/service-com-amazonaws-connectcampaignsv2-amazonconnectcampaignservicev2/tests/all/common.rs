@@ -371,6 +371,44 @@ pub fn stored_config(config: &Value) -> Value {
     }
 }
 
+/// `campaign` with `member` taken out, and with the server's own `lastModifiedTime`
+/// stamp taken out beside it — the two projections a case compares when it is about
+/// WHICH members one write touched.
+///
+/// The stamp is left out of that comparison because it is not one of the campaign's
+/// configuration members: it is the record's own, and every accepted write of the
+/// campaign's definition or configuration moves it, which
+/// `campaign_configuration_is_one_rule.rs` pins on its own. The one place a suite
+/// drops it, so the suites of the write paths cannot disagree about what "every other
+/// member" means.
+pub fn campaign_without(campaign: &Value, member: &str) -> Value {
+    // Read and assert, rather than ignore: the stamp is left out of the comparison
+    // because every write moves it, not because a projection may omit it.
+    assert!(
+        campaign["lastModifiedTime"].is_string(),
+        "expected the projection to carry a lastModifiedTime, got {campaign}"
+    );
+    let mut rest = campaign.clone();
+    let members = rest
+        .as_object_mut()
+        .expect("a campaign projection is an object");
+    members.remove(member);
+    members.remove("lastModifiedTime");
+    rest
+}
+
+/// The `lastModifiedTime` a campaign projection carries, as the RFC 3339 text the wire
+/// states it in — asserted present, since every campaign this service mints is stamped
+/// by the create that minted it.
+pub fn last_modified_time(campaign: &Value, case: &str) -> String {
+    campaign["lastModifiedTime"]
+        .as_str()
+        .unwrap_or_else(|| {
+            panic!("case {case:?}: expected a lastModifiedTime, got {campaign}");
+        })
+        .to_string()
+}
+
 /// The state `GetCampaignState` reports for `id`, asserting the read succeeded.
 pub async fn campaign_state(
     router: &MultiServiceRouter,

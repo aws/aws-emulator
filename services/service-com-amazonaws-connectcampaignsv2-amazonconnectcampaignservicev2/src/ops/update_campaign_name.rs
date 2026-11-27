@@ -197,6 +197,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 id: &input.id,
             },
             &input.name,
+            ::std::time::SystemTime::now(),
         ) {
             // Renaming to the name the campaign already carries is the same write,
             // which is what makes the operation idempotent, as the model declares.

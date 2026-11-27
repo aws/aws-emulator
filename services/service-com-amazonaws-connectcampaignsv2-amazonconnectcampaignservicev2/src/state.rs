@@ -1294,6 +1294,16 @@ pub struct StoredCampaign {
     /// When this campaign was created. Part of the record, not of any response:
     /// no modelled member in this slice carries it.
     pub created_at: std::time::SystemTime,
+    /// When this campaign's definition or configuration was last WRITTEN, which
+    /// `Campaign$lastModifiedTime` and `CampaignSummary$lastModifiedTime` both
+    /// project (through [`Self::last_modified_time_for_response`]).
+    ///
+    /// It starts at [`Self::created_at`] — the create is the write that put this
+    /// campaign's definition and configuration in the store — and moves only when a
+    /// later call actually writes one of them, through the one writer of it,
+    /// [`Self::mark_modified`]. A refused call, and a call that writes nothing, leave
+    /// it exactly as it was.
+    pub last_modified_time: std::time::SystemTime,
     /// The outbound requests this campaign has pending, keyed by the `clientToken`
     /// each was submitted under — the idempotency token `PutOutboundRequestBatch`
     /// ("This API is idempotent", per the model's own documentation) resolves a
@@ -1417,6 +1427,36 @@ pub enum OutboundRequestOutcome {
 }
 
 impl StoredCampaign {
+    /// Record that the call running now has written this campaign's definition or its
+    /// configuration, at `now`.
+    ///
+    /// The ONE writer of [`Self::last_modified_time`], so every operation that changes
+    /// what a reader projects stamps the record the same way and no two of them can
+    /// disagree about when it was last modified. It is called from the record's own
+    /// writers below, which is what keeps a refusal, and a call that writes nothing,
+    /// from stamping anything: the stamp moves with the write, not with the call.
+    ///
+    /// The campaign's lifecycle state, its tag map and its outbound-request buffers are
+    /// neither its definition nor its configuration — the state is what
+    /// `GetCampaignState` reports and the lifecycle calls move, the tags are written by
+    /// the tagging operations, and the buffers hold submitted work — so none of their
+    /// writers comes through here.
+    pub fn mark_modified(&mut self, now: SystemTime) {
+        self.last_modified_time = now;
+    }
+
+    /// This campaign's `lastModifiedTime` as a response carries it, at the precision
+    /// this service keeps a `date-time` to ([`millisecond_precision`]).
+    ///
+    /// Always present: the member is optional because the real service holds no stamp
+    /// for a campaign created before it existed, and every campaign in this store was
+    /// stamped by the create that minted it.
+    pub fn last_modified_time_for_response(&self) -> Option<::aws_smithy_types::DateTime> {
+        Some(millisecond_precision(::aws_smithy_types::DateTime::from(
+            self.last_modified_time,
+        )))
+    }
+
     /// The stored tags as a response `TagMap`, absent when the campaign carries
     /// none (the member is optional, and AWS omits an empty map).
     pub fn tags_for_response(&self) -> Option<HashMap<String, String>> {
@@ -1553,8 +1593,9 @@ impl StoredCampaign {
     /// representation [`Self::clear_channel_subtype_config`] leaves behind when the last
     /// block goes, so neither writer of the member can leave a state the other never
     /// would.
-    pub fn set_channel_subtype_config(&mut self, config: ChannelSubtypeConfig) {
+    pub fn set_channel_subtype_config(&mut self, config: ChannelSubtypeConfig, now: SystemTime) {
         self.channel_subtype_config = configured(config);
+        self.mark_modified(now);
     }
 
     /// Replace this campaign's communication limits override with `config`.
@@ -1564,8 +1605,68 @@ impl StoredCampaign {
     /// overrides nothing, so the record carries no `communicationLimitsOverride` rather
     /// than an empty one — what [`Self::clear_communication_limits`] leaves behind when
     /// the last member goes.
-    pub fn set_communication_limits_override(&mut self, config: CommunicationLimitsConfig) {
+    pub fn set_communication_limits_override(
+        &mut self,
+        config: CommunicationLimitsConfig,
+        now: SystemTime,
+    ) {
         self.communication_limits_override = configured(config);
+        self.mark_modified(now);
+    }
+
+    /// Replace this campaign's communication-time config with `config`.
+    ///
+    /// The same replacement-and-not-merge rule as [`Self::set_channel_subtype_config`]:
+    /// the config is ONE structure, whose `localTimeZoneConfig` is `@required`, so a
+    /// channel the new config leaves out is a channel the campaign holds no window for.
+    pub fn set_communication_time_config(
+        &mut self,
+        config: CommunicationTimeConfig,
+        now: SystemTime,
+    ) {
+        self.communication_time_config = Some(config);
+        self.mark_modified(now);
+    }
+
+    /// Replace this campaign's entry-limits config with `config`.
+    pub fn set_entry_limits_config(&mut self, config: EntryLimitsConfig, now: SystemTime) {
+        self.entry_limits_config = Some(config);
+        self.mark_modified(now);
+    }
+
+    /// Replace this campaign's run window with `schedule`, at the precision this
+    /// service keeps a `date-time` to ([`stored_schedule`]).
+    pub fn set_schedule(&mut self, schedule: Schedule, now: SystemTime) {
+        self.schedule = Some(stored_schedule(schedule));
+        self.mark_modified(now);
+    }
+
+    /// Replace what this campaign is sourced from with `source`.
+    ///
+    /// The source is one union, so this is a replacement and not a merge: exactly one
+    /// member is in force, and the member the new value does not name is one the
+    /// campaign is no longer sourced through.
+    pub fn set_source(&mut self, source: Source, now: SystemTime) {
+        self.source = Some(source);
+        self.mark_modified(now);
+    }
+
+    /// Associate this campaign with the Connect campaign flow `arn` names, replacing
+    /// whatever flow it was associated with.
+    pub fn set_connect_campaign_flow_arn(&mut self, arn: String, now: SystemTime) {
+        self.connect_campaign_flow_arn = Some(arn);
+        self.mark_modified(now);
+    }
+
+    /// Remove this campaign's entry-limits config, so no reader projects one.
+    ///
+    /// A campaign that held none is left exactly as it was — nothing at all is written,
+    /// the stamp included — which is what makes the removal idempotent, as the model
+    /// declares.
+    pub fn clear_entry_limits(&mut self, now: SystemTime) {
+        if self.entry_limits_config.take().is_some() {
+            self.mark_modified(now);
+        }
     }
 
     /// Remove the channel-subtype config block this campaign holds for the channel
@@ -1591,6 +1692,7 @@ impl StoredCampaign {
     pub fn clear_channel_subtype_config(
         &mut self,
         channel_subtype: &str,
+        now: SystemTime,
     ) -> Result<(), LastChannelSubtype> {
         if self.channel_subtype_config.is_none() {
             return Ok(());
@@ -1603,20 +1705,25 @@ impl StoredCampaign {
         let Some(config) = self.channel_subtype_config.as_mut() else {
             return Ok(());
         };
-        match channel_subtype {
-            "EMAIL" => config.email = None,
-            "SMS" => config.sms = None,
-            "TELEPHONY" => config.telephony = None,
-            "WHATSAPP" => config.whats_app = None,
+        let removed = match channel_subtype {
+            "EMAIL" => config.email.take().is_some(),
+            "SMS" => config.sms.take().is_some(),
+            "TELEPHONY" => config.telephony.take().is_some(),
+            "WHATSAPP" => config.whats_app.take().is_some(),
             // A catalog value with no block on `ChannelSubtypeConfig` is a channel
             // this emulator cannot be configured for, so it holds nothing to remove.
-            _ => {}
-        }
+            _ => false,
+        };
         // The guard above leaves a removal with a channel still configured, so this
         // keeps the one representation of "configured for no channel" the writers of
         // the member share rather than ever being reached.
         if config.holds_no_member() {
             self.channel_subtype_config = None;
+        }
+        // Only a removal writes anything, so a call that found no block for the named
+        // channel leaves the record — the stamp included — exactly as it was.
+        if removed {
+            self.mark_modified(now);
         }
         Ok(())
     }
@@ -1634,7 +1741,7 @@ impl StoredCampaign {
     /// with the time zone it was configured with and the other channels keep their
     /// windows; a campaign carrying no communication-time config at all holds no
     /// window for any channel, so there is nothing to remove and nothing is written.
-    pub fn clear_communication_time_window(&mut self, config_type: &str) {
+    pub fn clear_communication_time_window(&mut self, config_type: &str, now: SystemTime) {
         let Some(config) = self.communication_time_config.as_mut() else {
             return;
         };
@@ -1648,7 +1755,11 @@ impl StoredCampaign {
             // remove.
             _ => return,
         };
-        *window = None;
+        // Only a removal writes anything, so a call that found no window for the named
+        // channel leaves the record — the stamp included — exactly as it was.
+        if window.take().is_some() {
+            self.mark_modified(now);
+        }
     }
 
     /// Remove the communication-limits block this campaign's override holds for the
@@ -1666,7 +1777,7 @@ impl StoredCampaign {
     /// than an empty one. A campaign with no override to begin with, and one whose
     /// override holds no block for the named config, are left exactly as they were —
     /// which is what makes the operation idempotent, as the model declares.
-    pub fn clear_communication_limits(&mut self, config_type: &str) {
+    pub fn clear_communication_limits(&mut self, config_type: &str, now: SystemTime) {
         let Some(config) = self.communication_limits_override.as_mut() else {
             return;
         };
@@ -1681,6 +1792,11 @@ impl StoredCampaign {
         // `clear_channel_subtype_config` and both update paths decide by.
         if removed && config.holds_no_member() {
             self.communication_limits_override = None;
+        }
+        // ...and only a removal stamps the record, so a call that removed nothing
+        // leaves the campaign's last-modified instant where it was.
+        if removed {
+            self.mark_modified(now);
         }
     }
 
@@ -1699,6 +1815,7 @@ impl StoredCampaign {
             entry_limits_config: self.entry_limits_config.clone(),
             communication_time_config: self.communication_time_config.clone(),
             communication_limits_override: self.communication_limits_override.clone(),
+            last_modified_time: self.last_modified_time_for_response(),
             tags: self.tags_for_response(),
         }
     }
@@ -1716,6 +1833,7 @@ impl StoredCampaign {
             schedule: self.schedule.clone(),
             entry_limits_config: self.entry_limits_config.clone(),
             connect_campaign_flow_arn: self.connect_campaign_flow_arn.clone(),
+            last_modified_time: self.last_modified_time_for_response(),
         }
     }
 }
@@ -2887,11 +3005,15 @@ impl ComAmazonawsConnectcampaignsv2Amazonconnectcampaignservicev2State {
         // for every create, so a campaign cannot be born carrying a config state the
         // update and removal paths would never leave behind.
         let mut campaign = campaign;
+        // Normalising the config the create was given is part of that same create, so
+        // it stamps the record at the create's own instant rather than moving the
+        // campaign's last-modified instant past its creation.
+        let created_at = campaign.created_at;
         if let Some(config) = campaign.channel_subtype_config.take() {
-            campaign.set_channel_subtype_config(config);
+            campaign.set_channel_subtype_config(config, created_at);
         }
         if let Some(config) = campaign.communication_limits_override.take() {
-            campaign.set_communication_limits_override(config);
+            campaign.set_communication_limits_override(config, created_at);
         }
         // A campaign name identifies a campaign within its Connect instance, so a
         // record whose (instance, name) pair is already held is refused before any
@@ -2986,6 +3108,7 @@ impl ComAmazonawsConnectcampaignsv2Amazonconnectcampaignservicev2State {
         &mut self,
         campaign: CampaignRef<'_>,
         name: &str,
+        now: SystemTime,
     ) -> Result<(), RenameRejected> {
         let Some(stored) = self.campaign(campaign.region, campaign.id) else {
             return Err(RenameRejected::NotFound);
@@ -3003,6 +3126,10 @@ impl ComAmazonawsConnectcampaignsv2Amazonconnectcampaignservicev2State {
         match self.campaign_mut(campaign.region, campaign.id) {
             Some(stored) => {
                 stored.name = name.to_string();
+                // The name is part of the campaign's definition, so the write stamps
+                // the record; the rename onto the name it already carries returned
+                // above, having written nothing at all.
+                stored.mark_modified(now);
                 Ok(())
             }
             // The lookup above succeeded under this same borrow, so this arm is

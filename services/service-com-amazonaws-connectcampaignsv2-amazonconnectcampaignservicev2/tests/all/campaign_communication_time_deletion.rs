@@ -30,7 +30,7 @@ use service_com_amazonaws_connectcampaignsv2_amazonconnectcampaignservicev2::sta
 };
 use smithy_server_runtime::MultiServiceRouter;
 
-use super::common::{call, error_code, router, Harness};
+use super::common::{call, campaign_without, error_code, router, Harness};
 
 /// The `CommunicationTimeConfig` member that carries the time window of one
 /// `CommunicationTimeConfigType` value.
@@ -264,14 +264,8 @@ async fn deleting_one_channel_leaves_every_other_part_of_the_config() {
 
             // The call changes the communication time config and NOTHING else about
             // the campaign.
-            let mut before_rest = before.clone();
-            let mut after_rest = repeated.clone();
-            for projection in [&mut before_rest, &mut after_rest] {
-                projection
-                    .as_object_mut()
-                    .expect("a campaign projection is an object")
-                    .remove("communicationTimeConfig");
-            }
+            let before_rest = campaign_without(&before, "communicationTimeConfig");
+            let after_rest = campaign_without(&repeated, "communicationTimeConfig");
             assert_eq!(
                 before_rest, after_rest,
                 "case {case:?}: expected every other member untouched, got {after_rest} \

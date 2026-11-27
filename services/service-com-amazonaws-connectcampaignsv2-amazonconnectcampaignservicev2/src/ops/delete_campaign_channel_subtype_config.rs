@@ -243,7 +243,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // one — which is a bad request, answered with the `ValidationException` this
         // operation's model declares and with nothing written.
         if campaign
-            .clear_channel_subtype_config(&input.channel_subtype)
+            .clear_channel_subtype_config(&input.channel_subtype, ::std::time::SystemTime::now())
             .is_err()
         {
             return Err(

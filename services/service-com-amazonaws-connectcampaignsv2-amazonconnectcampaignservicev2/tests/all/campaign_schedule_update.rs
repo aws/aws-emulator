@@ -35,8 +35,8 @@ use service_com_amazonaws_connectcampaignsv2_amazonconnectcampaignservicev2::sta
 };
 
 use super::common::{
-    call, campaign_state, create_campaign, describe_campaign, drive_lifecycle, error_code, instant,
-    router, Harness,
+    call, campaign_state, campaign_without, create_campaign, describe_campaign, drive_lifecycle,
+    error_code, instant, router, Harness,
 };
 
 /// A `schedule` request member: a window given as offsets in seconds from now, with
@@ -249,14 +249,8 @@ async fn an_update_replaces_the_whole_schedule() {
         assert_schedule_is(&repeated, updated, case, "the repeated update");
 
         // The call changes the schedule and NOTHING else about the campaign.
-        let mut before_rest = before.clone();
-        let mut after_rest = repeated.clone();
-        for projection in [&mut before_rest, &mut after_rest] {
-            projection
-                .as_object_mut()
-                .expect("a campaign projection is an object")
-                .remove("schedule");
-        }
+        let before_rest = campaign_without(&before, "schedule");
+        let after_rest = campaign_without(&repeated, "schedule");
         assert_eq!(
             before_rest, after_rest,
             "case {case:?}: expected every other member untouched, got {after_rest} \
