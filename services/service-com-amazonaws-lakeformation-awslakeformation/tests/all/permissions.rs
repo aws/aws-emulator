@@ -1154,7 +1154,7 @@ async fn a_grant_records_the_set_of_the_permissions_it_names_up_to_the_modelled_
     /// Every value of `Permission`
     /// (`smithy_query(query="shape",shape="Permission")`, rendered in this crate as
     /// `ops::types::PERMISSION_VALUES`).
-    const MODELLED: [&str; 16] = [
+    const MODELLED: [&str; 17] = [
         "ALL",
         "ALTER",
         "ASSOCIATE",
@@ -1167,6 +1167,7 @@ async fn a_grant_records_the_set_of_the_permissions_it_names_up_to_the_modelled_
         "DELETE",
         "DESCRIBE",
         "DROP",
+        "EXECUTE",
         "GRANT_WITH_LF_TAG_EXPRESSION",
         "INSERT",
         "SELECT",

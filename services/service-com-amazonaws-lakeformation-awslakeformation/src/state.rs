@@ -12,7 +12,7 @@ use std::time::SystemTime;
 use crate::ops::types::{
     AllRowsWildcard, ColumnWildcard, Condition, DataCellsFilter, DataLakePrincipal,
     DataLakeSettings, DatabaseResource, LFTag, PrincipalPermissions, PrincipalResourcePermissions,
-    Resource, RowFilter, TableResource, TableWithColumnsResource,
+    Resource, RowFilter, TableResource, TableWithColumnsResource, UserDefinedFunctionResource,
 };
 
 /// The Glue Data Catalog's own store, in the same shared engine.
@@ -28,6 +28,9 @@ use ::service_com_amazonaws_glue_awsglue::state as glue_state;
 /// Re-exported, so a handler reaches both under `crate::state::` like every other part of
 /// this store.
 mod creator_table_grants;
+/// Access to a Glue user-defined function: the ARN that names one, the permission a caller
+/// has to hold on it, and the session contexts and credentials vended for it.
+mod function_access;
 /// One grant, from the request that asks for it to the records it writes: the path
 /// `GrantPermissions` and `BatchGrantPermissions` share.
 mod grant_requests;
@@ -48,6 +51,7 @@ mod reported_grants;
 /// `RevokePermissions` and `BatchRevokePermissions` share.
 mod revoke_requests;
 pub use creator_table_grants::*;
+pub use function_access::*;
 pub use grant_requests::*;
 pub use implicit_table_grants::*;
 pub use permission_scopes::*;
@@ -254,7 +258,7 @@ impl PermissionGrant {
 /// an epoch-seconds number — and the resolution of a timestamp AWS's JSON APIs put on the
 /// wire is the millisecond, so the sub-millisecond part of the clock this emulator read is
 /// not part of the value a client gets back.
-fn reported_instant(at: SystemTime) -> ::aws_smithy_types::DateTime {
+pub fn reported_instant(at: SystemTime) -> ::aws_smithy_types::DateTime {
     let since = at
         .duration_since(SystemTime::UNIX_EPOCH)
         .unwrap_or_default();
@@ -333,6 +337,7 @@ pub const PERMISSION_DECLARATION_ORDER: &[&str] = &[
     "CREATE_LF_TAG_EXPRESSION",
     "CREATE_CATALOG",
     "SUPER_USER",
+    "EXECUTE",
 ];
 
 /// The UNION of the permissions several records hold, as the entry reporting them all
@@ -390,6 +395,12 @@ pub fn reported_permissions(held: &[String]) -> Vec<String> {
 /// `data_lake_settings` holds one record per Data Catalog, bounded by
 /// [`MAX_DATA_LAKE_SETTINGS_CATALOGS`] checked in `PutDataLakeSettings`, the single site
 /// that inserts into it — needed because the catalog id is request-supplied.
+///
+/// `glue_function_session_contexts` and `vended_function_credentials` are the two stores
+/// whose entries the CLOCK releases: each holds one record per call that minted one, every
+/// record carries the expiration its response advertised, and the operation that mints one
+/// drops the records that expiration has passed before it weighs its own ceiling
+/// ([`MAX_GLUE_FUNCTION_SESSION_CONTEXTS`] and [`MAX_VENDED_FUNCTION_CREDENTIALS`]).
 #[derive(Debug, Default)]
 pub struct ComAmazonawsLakeformationAwslakeformationState {
     /// Catalog id -> (tag key -> tag). Both levels are `BTreeMap`s so enumeration order
@@ -426,6 +437,24 @@ pub struct ComAmazonawsLakeformationAwslakeformationState {
     /// back [`default_data_lake_settings`]. A `BTreeMap` for the same reason as the stores
     /// above: a stable, sorted enumeration order.
     pub data_lake_settings: BTreeMap<String, DataLakeSettings>,
+    /// Session context id -> the session context `GetGlueFunctionSessionContext` handed
+    /// out under it.
+    ///
+    /// A context is spent when the clock passes its expiration, so this store releases
+    /// its own entries ([`Self::expire_session_contexts`]) and is bounded while they are
+    /// live by [`MAX_GLUE_FUNCTION_SESSION_CONTEXTS`], checked where the single site that
+    /// inserts one runs. A `BTreeMap` for the same reason as the stores above: a stable,
+    /// sorted enumeration order.
+    pub glue_function_session_contexts: BTreeMap<String, GlueFunctionSessionContext>,
+    /// Access key id -> the set of temporary credentials
+    /// `GetTemporaryGlueFunctionCredentials` vended under it.
+    ///
+    /// Bounded and released exactly as the session contexts are
+    /// ([`MAX_VENDED_FUNCTION_CREDENTIALS`],
+    /// [`expire_vended_function_credentials`]) — and the expiry also forgets the
+    /// credential in the emulator's credential store, so nothing stays signable that no
+    /// record accounts for. The SECRETS are not here: they are the credential store's.
+    pub vended_function_credentials: BTreeMap<String, VendedFunctionCredentials>,
 }
 
 impl ComAmazonawsLakeformationAwslakeformationState {
@@ -444,15 +473,14 @@ impl ComAmazonawsLakeformationAwslakeformationState {
 
     /// The data lake settings `catalog_id` reads back: the ones last written for it, else
     /// the settings a Data Catalog nobody has configured starts with
-    /// ([`default_data_lake_settings`]) — in both cases as a read REPORTS them
-    /// ([`reported_data_lake_settings`]).
+    /// ([`default_data_lake_settings`]).
+    ///
+    /// Reporting only: it derives a response and writes nothing.
     pub fn data_lake_settings_for(&self, catalog_id: &str) -> DataLakeSettings {
-        let stored = self
-            .data_lake_settings
+        self.data_lake_settings
             .get(catalog_id)
             .cloned()
-            .unwrap_or_else(default_data_lake_settings);
-        reported_data_lake_settings(&stored)
+            .unwrap_or_else(default_data_lake_settings)
     }
 }
 
@@ -779,13 +807,9 @@ pub fn iam_access_control_default_permissions() -> Vec<PrincipalPermissions> {
 /// Nothing has been designated yet, so the two administrator lists and the two list members
 /// that name accounts read back EMPTY, while every member whose absence the model gives a
 /// meaning of its own — the two nullable flags, and `Parameters` — is left absent rather
-/// than filled with a value nothing set. The three members the service reports for every
-/// catalog are left to [`reported_data_lake_settings`], the one place their defaults live.
+/// than filled with a value nothing set.
 pub fn default_data_lake_settings() -> DataLakeSettings {
     DataLakeSettings {
-        disallow_grant_on_iam_allowed_principals: None,
-        set_source_identity: None,
-        whitelisted_for_external_data_filtering: None,
         data_lake_admins: Some(Vec::new()),
         read_only_admins: Some(Vec::new()),
         create_database_default_permissions: Some(iam_access_control_default_permissions()),
@@ -805,8 +829,7 @@ pub fn default_data_lake_settings() -> DataLakeSettings {
 /// the S3 data event CloudTrail logs"
 /// (`smithy_query(query="doc",shape="DataLakeSettings",member="Parameters")`).
 ///
-/// The settings document reports that same setting as the `SetSourceIdentity` member, which
-/// is why the key is named here rather than spelled at each site that reads it.
+/// It is named here rather than spelled at each site that reads it.
 pub const SET_SOURCE_IDENTITY_PARAMETER: &str = "SET_SOURCE_IDENTITY";
 
 /// The `SET_SOURCE_IDENTITY` value that turns the setting on.
@@ -822,49 +845,6 @@ pub const DOCUMENTED_SETTINGS_PARAMETERS: [(&str, &[&str]); 2] = [
     ("CROSS_ACCOUNT_VERSION", &["1", "2", "3", "4", "5"]),
     (SET_SOURCE_IDENTITY_PARAMETER, &[PARAMETER_TRUE, "FALSE"]),
 ];
-
-/// `settings` as a read of a Data Catalog's data lake settings REPORTS them: the stored
-/// document, plus the three members the service reports for every catalog whether or not
-/// the write that configured it named them.
-///
-/// Those three are what a client needs to round-trip the document — the only supported way
-/// to change one field is to fetch the settings, change it and write the whole structure
-/// back — so a read that left them absent would lose them on the next write. The two
-/// nullable flags of the modelled structure are NOT among them: absence carries a meaning
-/// of its own there, so a flag nothing set stays absent.
-///
-/// `SetSourceIdentity` is the settings document's reading of the `SET_SOURCE_IDENTITY`
-/// parameter ([`SET_SOURCE_IDENTITY_PARAMETER`]) — one setting under two names, so a
-/// document that carries the parameter reports the member that agrees with it.
-///
-/// Reporting only: it derives a response and writes nothing.
-pub fn reported_data_lake_settings(settings: &DataLakeSettings) -> DataLakeSettings {
-    let from_parameters = settings
-        .parameters
-        .as_ref()
-        .and_then(|parameters| parameters.get(SET_SOURCE_IDENTITY_PARAMETER))
-        .map(|value| value.eq_ignore_ascii_case(PARAMETER_TRUE));
-    DataLakeSettings {
-        disallow_grant_on_iam_allowed_principals: Some(
-            settings
-                .disallow_grant_on_iam_allowed_principals
-                .unwrap_or(false),
-        ),
-        set_source_identity: Some(
-            settings
-                .set_source_identity
-                .or(from_parameters)
-                .unwrap_or(false),
-        ),
-        whitelisted_for_external_data_filtering: Some(
-            settings
-                .whitelisted_for_external_data_filtering
-                .clone()
-                .unwrap_or_default(),
-        ),
-        ..settings.clone()
-    }
-}
 
 /// Whether `entry` is the one create-default entry that selects "Use only IAM access
 /// control": [`DEFAULT_IAM_ACCESS_CONTROL_PERMISSION`] and nothing else, to
@@ -1382,10 +1362,11 @@ pub const MAX_PERMISSION_GRANTS: usize = 10_000;
 
 /// The `DataLakeResourceType` values that select `resource`.
 ///
-/// From the model: `DataLakeResourceType` is `CATALOG | DATABASE | DATA_LOCATION |
-/// LF_NAMED_TAG_EXPRESSION | LF_TAG | LF_TAG_POLICY | LF_TAG_POLICY_DATABASE |
-/// LF_TAG_POLICY_TABLE | TABLE` (`crate::ops::types::DATA_LAKE_RESOURCE_TYPE_VALUES`),
-/// while `Resource` carries ten members — so the mapping is not one-to-one:
+/// From the model: `DataLakeResourceType` is `ANY_RESOURCE | CATALOG | DATABASE |
+/// DATA_LOCATION | LF_NAMED_TAG_EXPRESSION | LF_TAG | LF_TAG_POLICY |
+/// LF_TAG_POLICY_DATABASE | LF_TAG_POLICY_TABLE | TABLE | USER_DEFINED_FUNCTION`
+/// (`crate::ops::types::DATA_LAKE_RESOURCE_TYPE_VALUES`), while `Resource` carries twelve
+/// members — so the mapping is not one-to-one:
 ///
 /// * a column-level grant (`TableWithColumns`) is a grant on a TABLE;
 /// * an LF-tag policy is selected both by the general `LF_TAG_POLICY` and by the
@@ -1394,7 +1375,9 @@ pub const MAX_PERMISSION_GRANTS: usize = 10_000;
 ///   `ResourceType` filter selects them (a listing that names no `ResourceType` still
 ///   does).
 pub fn resource_types(resource: &Resource) -> Vec<&'static str> {
-    if resource.catalog.is_some() {
+    if resource.any_resource.is_some() {
+        vec!["ANY_RESOURCE"]
+    } else if resource.catalog.is_some() {
         vec!["CATALOG"]
     } else if resource.database.is_some() {
         vec!["DATABASE"]
@@ -1412,6 +1395,8 @@ pub fn resource_types(resource: &Resource) -> Vec<&'static str> {
         }
     } else if resource.lf_tag_expression.is_some() {
         vec!["LF_NAMED_TAG_EXPRESSION"]
+    } else if resource.user_defined_function.is_some() {
+        vec!["USER_DEFINED_FUNCTION"]
     } else {
         Vec::new()
     }
@@ -1424,17 +1409,21 @@ pub const RESOURCE_NAMES_NO_TYPE: &str =
 
 /// Why `resource` cannot name a resource, or `Ok(())` when it names exactly one.
 ///
-/// `Resource` is modelled as a STRUCTURE whose ten members are all optional, but it
+/// `Resource` is modelled as a STRUCTURE whose twelve members are all optional, but it
 /// stands for a choice: every member is a different resource, so naming none leaves the
-/// grant with no target and naming two leaves it ambiguous. The two members that are
-/// themselves a choice — a table named by `Name` or by `TableWildcard`, and the columns
-/// of a `TableWithColumns` named by `ColumnNames` or by `ColumnWildcard` — are checked
+/// grant with no target and naming two leaves it ambiguous. The three members that are
+/// themselves a choice — a table named by `Name` or by `TableWildcard`, the columns of a
+/// `TableWithColumns` named by `ColumnNames` or by `ColumnWildcard`, and a user-defined
+/// function named by `Name` or by `UserDefinedFunctionWildcard` ("exactly one of
+/// `UserDefinedFunctionResource$Name` or
+/// `UserDefinedFunctionResource$UserDefinedFunctionWildcard` is required") — are checked
 /// the same way. The caller is refused with the modelled `InvalidInputException`; the
 /// message names the member wherever the service's own wording does not fix the sentence
 /// ([`TABLE_NAME_AND_WILDCARD`] does), which is the rule the boundary validator follows
 /// for the constraints the model CAN express.
 pub fn validate_resource(resource: &Resource) -> Result<(), String> {
     let named: Vec<&str> = [
+        ("AnyResource", resource.any_resource.is_some()),
         ("Catalog", resource.catalog.is_some()),
         ("Database", resource.database.is_some()),
         ("Table", resource.table.is_some()),
@@ -1445,6 +1434,10 @@ pub fn validate_resource(resource: &Resource) -> Result<(), String> {
         ("LFTagPolicy", resource.lf_tag_policy.is_some()),
         ("LFTagExpression", resource.lf_tag_expression.is_some()),
         ("RLSPolicy", resource.rls_policy.is_some()),
+        (
+            "UserDefinedFunction",
+            resource.user_defined_function.is_some(),
+        ),
     ]
     .into_iter()
     .filter_map(|(name, present)| present.then_some(name))
@@ -1481,6 +1474,24 @@ pub fn validate_resource(resource: &Resource) -> Result<(), String> {
             table.column_names.as_deref(),
             table.column_wildcard.is_some(),
         )?;
+    }
+
+    if let Some(function) = &resource.user_defined_function {
+        // One function, or every function of the database — never both and never neither,
+        // the same choice a table is named by.
+        match (
+            function.name.is_some(),
+            function.user_defined_function_wildcard.is_some(),
+        ) {
+            (true, true) | (false, false) => {
+                return Err(
+                    "Resource.UserDefinedFunction must name either Name or \
+                     UserDefinedFunctionWildcard"
+                        .to_string(),
+                )
+            }
+            _ => {}
+        }
     }
 
     Ok(())
@@ -1536,6 +1547,12 @@ pub fn normalize_resource(resource: &Resource, catalog_id: &str) -> Resource {
             fold(table_name);
         }
     }
+    if let Some(function) = normalized.user_defined_function.as_mut() {
+        // The DATABASE that contains the function is folded, like every other database
+        // name; the function's own name is not, because the catalog documents no folding
+        // for it (`UserDefinedFunctionInput$FunctionName` states none).
+        fold(&mut function.database_name);
+    }
     normalized
 }
 
@@ -1580,6 +1597,12 @@ pub fn resolve_resource_catalogs(resource: &Resource, catalog_id: &str) -> Resou
     }
     if let Some(policy) = resolved.rls_policy.as_mut() {
         default_catalog(&mut policy.catalog_id, catalog_id);
+    }
+    if let Some(function) = resolved.user_defined_function.as_mut() {
+        default_catalog(&mut function.catalog_id, catalog_id);
+    }
+    if let Some(any) = resolved.any_resource.as_mut() {
+        default_catalog(&mut any.catalog_id, catalog_id);
     }
     resolved
 }
@@ -1703,6 +1726,21 @@ pub fn resource_key(resource: &Resource) -> String {
         key.push_str("RLS_POLICY|");
         push_optional(&mut key, policy.catalog_id.as_deref());
         push_text(&mut key, &policy.name);
+    } else if let Some(function) = &resource.user_defined_function {
+        key.push_str("USER_DEFINED_FUNCTION|");
+        push_optional(&mut key, function.catalog_id.as_deref());
+        push_text(&mut key, &function.database_name);
+        // A function named by `UserDefinedFunctionWildcard` is its own resource ("every
+        // user-defined function in the database"), not the function whose name is absent,
+        // so it gets its own key — exactly as a `TableWildcard` does.
+        match &function.name {
+            Some(name) => push_text(&mut key, name),
+            None => key.push('*'),
+        }
+    } else if let Some(any) = &resource.any_resource {
+        key.push_str("ANY_RESOURCE|");
+        push_optional(&mut key, any.catalog_id.as_deref());
+        push_text(&mut key, &any.resource_type);
     } else {
         // Unreachable through a handler: `validate_resource` refuses a `Resource` naming
         // no member before a grant or a filter is keyed.
@@ -2141,8 +2179,9 @@ pub fn scoped_grant_records(
 ///
 /// Only the catalog's own entities are checked. A resource kind this emulator keeps no
 /// store of what EXISTS (a data location, a cell filter, a named tag expression, an RLS
-/// policy) cannot be reported absent, so nothing is claimed about it: a refusal has to be
-/// grounded in what a store says, never assumed. The same holds for a Data Catalog this
+/// policy, a user-defined function) cannot be reported absent, so nothing is claimed about
+/// it: a refusal has to be grounded in what a store says, never assumed. The same holds
+/// for a Data Catalog this
 /// emulator holds nothing for — an id naming a catalog in another account, or one no Glue
 /// in this process serves (Glue's own [`glue_state::is_known_catalog`] is that
 /// predicate): nothing is known about its contents, so no grant on it is refused. An
@@ -2180,6 +2219,16 @@ pub fn missing_grant_entity<Eng: Send + Sync + 'static>(
             in_catalog(table.catalog_id.as_ref()),
             table.database_name.clone(),
             Some(table.name.clone()),
+        )
+    } else if let Some(function) = &resource.user_defined_function {
+        (
+            in_catalog(function.catalog_id.as_ref()),
+            function.database_name.clone(),
+            // The DATABASE that contains the function is what the catalog can be asked
+            // about — the catalog this emulator serves keeps no store of the functions
+            // themselves — so that is all that is resolved here, whether the resource
+            // names one function or every function of the database.
+            None,
         )
     } else {
         return None;

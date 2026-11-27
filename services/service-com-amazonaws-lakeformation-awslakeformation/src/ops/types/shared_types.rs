@@ -14,6 +14,7 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-lakeformation-awslakefo
 #[smithy_macros::smithy(shape = "com.amazonaws.lakeformation#Resource")]
 #[derive(Debug, Clone, Default)]
 pub struct Resource {
+    pub any_resource: Option<AnyResource>,
     pub catalog: Option<CatalogResource>,
     pub database: Option<DatabaseResource>,
     pub table: Option<TableResource>,
@@ -24,6 +25,14 @@ pub struct Resource {
     pub lf_tag_policy: Option<LFTagPolicyResource>,
     pub lf_tag_expression: Option<LFTagExpressionResource>,
     pub rls_policy: Option<RLSPolicyResource>,
+    pub user_defined_function: Option<UserDefinedFunctionResource>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.lakeformation#AnyResource")]
+#[derive(Debug, Clone, Default)]
+pub struct AnyResource {
+    pub catalog_id: Option<String>,
+    pub resource_type: String,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.lakeformation#CatalogResource")]
@@ -121,6 +130,20 @@ pub struct LFTagExpressionResource {
 pub struct RLSPolicyResource {
     pub catalog_id: Option<String>,
     pub name: String,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.lakeformation#UserDefinedFunctionResource")]
+#[derive(Debug, Clone, Default)]
+pub struct UserDefinedFunctionResource {
+    pub catalog_id: Option<String>,
+    pub database_name: String,
+    pub name: Option<String>,
+    pub user_defined_function_wildcard: Option<UserDefinedFunctionWildcard>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.lakeformation#UserDefinedFunctionWildcard")]
+#[derive(Debug, Clone, Default)]
+pub struct UserDefinedFunctionWildcard {
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.lakeformation#LFTagPair")]
@@ -331,9 +354,6 @@ pub struct TransactionDescription {
 #[smithy_macros::smithy(shape = "com.amazonaws.lakeformation#DataLakeSettings")]
 #[derive(Debug, Clone, Default)]
 pub struct DataLakeSettings {
-    pub disallow_grant_on_iam_allowed_principals: Option<bool>,
-    pub set_source_identity: Option<bool>,
-    pub whitelisted_for_external_data_filtering: Option<Vec<DataLakePrincipal>>,
     pub data_lake_admins: Option<Vec<DataLakePrincipal>>,
     pub read_only_admins: Option<Vec<DataLakePrincipal>>,
     pub create_database_default_permissions: Option<Vec<PrincipalPermissions>>,
@@ -404,6 +424,8 @@ pub struct RLSPolicy {
     pub name: Option<String>,
     pub attachment_columns: Option<Vec<Column>>,
     pub filter_expression: Option<String>,
+    pub status: Option<String>,
+    pub status_reason: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.lakeformation#AuditContext")]
@@ -418,6 +440,10 @@ pub struct PermissionTypeMismatchException {
     pub message: Option<String>,
 }
 
+/// The values `AnyResourceSupportedTypes` accepts on the wire.
+pub const ANY_RESOURCE_SUPPORTED_TYPES_VALUES: &[&str] = &["TABLE"];
+
+
 /// The values `ApplicationStatus` accepts on the wire.
 pub const APPLICATION_STATUS_VALUES: &[&str] = &["DISABLED", "ENABLED"];
 
@@ -431,7 +457,7 @@ pub const CREDENTIALS_SCOPE_VALUES: &[&str] = &["READ", "READWRITE"];
 
 
 /// The values `DataLakeResourceType` accepts on the wire.
-pub const DATA_LAKE_RESOURCE_TYPE_VALUES: &[&str] = &["CATALOG", "DATABASE", "DATA_LOCATION", "LF_NAMED_TAG_EXPRESSION", "LF_TAG", "LF_TAG_POLICY", "LF_TAG_POLICY_DATABASE", "LF_TAG_POLICY_TABLE", "TABLE"];
+pub const DATA_LAKE_RESOURCE_TYPE_VALUES: &[&str] = &["ANY_RESOURCE", "CATALOG", "DATABASE", "DATA_LOCATION", "LF_NAMED_TAG_EXPRESSION", "LF_TAG", "LF_TAG_POLICY", "LF_TAG_POLICY_DATABASE", "LF_TAG_POLICY_TABLE", "TABLE", "USER_DEFINED_FUNCTION"];
 
 
 /// The values `EnableStatus` accepts on the wire.
@@ -447,7 +473,7 @@ pub const OPTIMIZER_TYPE_VALUES: &[&str] = &["ALL", "COMPACTION", "GARBAGE_COLLE
 
 
 /// The values `Permission` accepts on the wire.
-pub const PERMISSION_VALUES: &[&str] = &["ALL", "ALTER", "ASSOCIATE", "CREATE_CATALOG", "CREATE_DATABASE", "CREATE_LF_TAG", "CREATE_LF_TAG_EXPRESSION", "CREATE_TABLE", "DATA_LOCATION_ACCESS", "DELETE", "DESCRIBE", "DROP", "GRANT_WITH_LF_TAG_EXPRESSION", "INSERT", "SELECT", "SUPER_USER"];
+pub const PERMISSION_VALUES: &[&str] = &["ALL", "ALTER", "ASSOCIATE", "CREATE_CATALOG", "CREATE_DATABASE", "CREATE_LF_TAG", "CREATE_LF_TAG_EXPRESSION", "CREATE_TABLE", "DATA_LOCATION_ACCESS", "DELETE", "DESCRIBE", "DROP", "EXECUTE", "GRANT_WITH_LF_TAG_EXPRESSION", "INSERT", "SELECT", "SUPER_USER"];
 
 
 /// The values `PermissionType` accepts on the wire.
@@ -456,6 +482,14 @@ pub const PERMISSION_TYPE_VALUES: &[&str] = &["CELL_FILTER_PERMISSION", "COLUMN_
 
 /// The values `QueryStateString` accepts on the wire.
 pub const QUERY_STATE_STRING_VALUES: &[&str] = &["ERROR", "EXPIRED", "FINISHED", "PENDING", "WORKUNITS_AVAILABLE"];
+
+
+/// The values `RLSPolicyStatus` accepts on the wire.
+pub const R_L_S_POLICY_STATUS_VALUES: &[&str] = &["INVALID", "VALID"];
+
+
+/// The values `RLSPolicyStatusReason` accepts on the wire.
+pub const R_L_S_POLICY_STATUS_REASON_VALUES: &[&str] = &["REFERENCED_LOOKUP_TABLE_DELETED", "REFERENCED_UDF_DELETED"];
 
 
 /// The values `ResourceShareType` accepts on the wire.

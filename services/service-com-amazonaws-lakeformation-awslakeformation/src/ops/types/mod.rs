@@ -44,6 +44,7 @@ pub mod get_data_cells_filter_types;
 pub mod get_data_lake_principal_types;
 pub mod get_data_lake_settings_types;
 pub mod get_effective_permissions_for_path_types;
+pub mod get_glue_function_session_context_types;
 pub mod get_lf_tag_expression_types;
 pub mod get_lf_tag_types;
 pub mod get_query_state_types;
@@ -52,6 +53,7 @@ pub mod get_resource_lf_tags_types;
 pub mod get_rls_policy_types;
 pub mod get_table_objects_types;
 pub mod get_temporary_data_location_credentials_types;
+pub mod get_temporary_glue_function_credentials_types;
 pub mod get_temporary_glue_partition_credentials_types;
 pub mod get_temporary_glue_table_credentials_types;
 pub mod get_work_unit_results_types;
@@ -146,6 +148,8 @@ pub use get_data_lake_settings_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use get_effective_permissions_for_path_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use get_glue_function_session_context_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use get_lf_tag_expression_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use get_lf_tag_types::*;
@@ -161,6 +165,8 @@ pub use get_rls_policy_types::*;
 pub use get_table_objects_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use get_temporary_data_location_credentials_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use get_temporary_glue_function_credentials_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use get_temporary_glue_partition_credentials_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]

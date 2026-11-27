@@ -116,6 +116,23 @@ pub fn resource_order_key(resource: &Resource) -> String {
                 &policy.name,
             ],
         )
+    } else if let Some(function) = &resource.user_defined_function {
+        (
+            "UserDefinedFunction",
+            vec![
+                function.catalog_id.as_deref().unwrap_or_default(),
+                &function.database_name,
+                function.name.as_deref().unwrap_or_default(),
+            ],
+        )
+    } else if let Some(any) = &resource.any_resource {
+        (
+            "AnyResource",
+            vec![
+                any.catalog_id.as_deref().unwrap_or_default(),
+                &any.resource_type,
+            ],
+        )
     } else {
         // Unreachable through a handler: `validate_resource` refuses a `Resource` naming
         // no member before a grant or a filter is keyed.

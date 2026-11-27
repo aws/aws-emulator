@@ -48,11 +48,10 @@ fn iam_access_control_default() -> Value {
 }
 
 /// The settings a Data Catalog nothing has configured reads back: the two create-defaults
-/// under "Use only IAM access control", nothing designated, the three members the service
-/// reports for every catalog at their defaults, and every member whose absence carries a
-/// meaning of its own left absent.
+/// under "Use only IAM access control", nothing designated, and every member whose absence
+/// carries a meaning of its own left absent.
 fn unconfigured_settings() -> Value {
-    reported(&json!({
+    json!({
         "DataLakeAdmins": [],
         "ReadOnlyAdmins": [],
         "CreateDatabaseDefaultPermissions": iam_access_control_default(),
@@ -60,36 +59,7 @@ fn unconfigured_settings() -> Value {
         "TrustedResourceOwners": [],
         "ExternalDataFilteringAllowList": [],
         "AuthorizedSessionTagValueList": [],
-    }))
-}
-
-/// The settings document a read REPORTS for the settings `written`.
-///
-/// Three members come back for every catalog whether or not the write named them, because
-/// the only supported way to change one field is to fetch the whole document, change it and
-/// write it back — a read that dropped them would lose them on the next write:
-///
-/// * `DisallowGrantOnIAMAllowedPrincipals`, false unless the write set it;
-/// * `SetSourceIdentity`, which is the document's reading of the `SET_SOURCE_IDENTITY`
-///   parameter ("Accepted values are TRUE and FALSE"), false when neither names it;
-/// * `WhitelistedForExternalDataFiltering`, empty unless the write named accounts.
-fn reported(written: &Value) -> Value {
-    let mut expected = written.clone();
-    if expected.get("DisallowGrantOnIAMAllowedPrincipals").is_none() {
-        expected["DisallowGrantOnIAMAllowedPrincipals"] = json!(false);
-    }
-    if expected.get("SetSourceIdentity").is_none() {
-        let from_parameters = expected
-            .get("Parameters")
-            .and_then(|parameters| parameters.get("SET_SOURCE_IDENTITY"))
-            .and_then(Value::as_str)
-            .is_some_and(|value| value.eq_ignore_ascii_case("TRUE"));
-        expected["SetSourceIdentity"] = json!(from_parameters);
-    }
-    if expected.get("WhitelistedForExternalDataFiltering").is_none() {
-        expected["WhitelistedForExternalDataFiltering"] = json!([]);
-    }
-    expected
+    })
 }
 
 /// `GetDataLakeSettings`' `DataLakeSettings` for `catalog_id` (the account's catalog when
@@ -231,19 +201,8 @@ async fn put_then_get_reads_the_whole_settings_structure_back() {
             }),
         ),
         (
-            "the three members the document always reports, written explicitly",
-            "reported-members",
-            json!({
-                "DataLakeAdmins": [principal(&role("lake-admin"))],
-                "DisallowGrantOnIAMAllowedPrincipals": true,
-                "SetSourceIdentity": true,
-                "WhitelistedForExternalDataFiltering": [principal("111122223333")],
-            }),
-        ),
-        (
-            // `SET_SOURCE_IDENTITY` and `SetSourceIdentity` are one setting under two
-            // names, so a document that carries the parameter reports the member that
-            // agrees with it.
+            // The source-identity setting lives in `Parameters`, which a read answers with
+            // exactly as the write left it.
             "the source-identity setting named as a parameter",
             "source-identity-parameter",
             json!({ "Parameters": { "SET_SOURCE_IDENTITY": "TRUE" } }),
@@ -266,7 +225,7 @@ async fn put_then_get_reads_the_whole_settings_structure_back() {
 
     for (case, catalog_id, settings) in &cases {
         let read = get_settings(&router, case, Some(catalog_id)).await;
-        let expected = reported(settings);
+        let expected = (*settings).clone();
         assert_eq!(
             &read, &expected,
             "case {case:?}: expected the settings written for {catalog_id} to read back as \
@@ -326,7 +285,7 @@ async fn a_second_write_replaces_the_settings_rather_than_merging_them() {
         }
 
         let read = get_settings(&router, case, None).await;
-        let expected = reported(second);
+        let expected = (*second).clone();
         assert_eq!(
             &read, &expected,
             "case {case:?}: expected the second write to replace the settings with \
@@ -564,7 +523,7 @@ async fn a_principal_may_not_be_designated_in_both_administrator_lists() {
         );
 
         // The refused write left the catalog as it was: no administrator of either kind,
-        // and the members the document always reports at their defaults.
+        // and the catalog still under "Use only IAM access control".
         let read = get_settings(&router, case, None).await;
         assert_eq!(
             read,
@@ -581,7 +540,7 @@ async fn a_principal_may_not_be_designated_in_both_administrator_lists() {
             "case {case:?}: expected PutDataLakeSettings 200, got {status} {payload:?}"
         );
         let read = get_settings(&router, case, None).await;
-        let expected = reported(settings);
+        let expected = (*settings).clone();
         assert_eq!(
             read, expected,
             "case {case:?}: expected {expected:?}, got {read:?}"
@@ -623,7 +582,7 @@ async fn a_documented_parameter_value_is_stored_whatever_case_it_is_spelled_in()
         );
 
         let read = get_settings(&router, case, None).await;
-        let expected = reported(&settings);
+        let expected = settings.clone();
         assert_eq!(
             read, expected,
             "case {case:?}: expected the parameters to be stored as written ({expected:?}), \

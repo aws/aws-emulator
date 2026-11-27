@@ -3,9 +3,10 @@
 //! WHICH permissions a kind of Lake Formation resource can hold.
 //!
 //! `Permission` is ONE vocabulary (`smithy_query(query="shape",shape="Permission")`) shared
-//! by every member of `Resource` (`Catalog`, `Database`, `Table`, `TableWithColumns`,
-//! `DataLocation`, `DataCellsFilter`, `LFTag`, `LFTagPolicy`, `LFTagExpression`,
-//! `RLSPolicy`), and each of those members names a DIFFERENT kind of resource — so only a
+//! by every member of `Resource` (`AnyResource`, `Catalog`, `Database`, `Table`,
+//! `TableWithColumns`, `DataLocation`, `DataCellsFilter`, `LFTag`, `LFTagPolicy`,
+//! `LFTagExpression`, `RLSPolicy`, `UserDefinedFunction`), and each of those members names
+//! a DIFFERENT kind of resource — so only a
 //! subset of that vocabulary means anything on any one kind. A permission names a privilege
 //! over a thing that kind of resource does not have (creating a table under a table,
 //! reading rows of a database, reaching a data location that is not one) is not a
@@ -104,13 +105,31 @@ pub const LF_TAG_EXPRESSION_PERMISSIONS: &[&str] = &[
 pub const FILTERED_TABLE_PERMISSIONS: &[&str] =
     &["ALL", "ALTER", "DESCRIBE", "DROP", "SELECT"];
 
+/// The privileges a USER-DEFINED FUNCTION holds, which the model states outright: "you can
+/// grant the following permissions: EXECUTE – Use the function in a job, and get
+/// credentials to download its artifacts; DESCRIBE – View the function's definition; ALTER
+/// – Update the function; DROP – Delete the function; ALL – All of the preceding
+/// permissions." (`smithy_query(query="doc",shape="Resource",member="UserDefinedFunction")`).
+pub const USER_DEFINED_FUNCTION_PERMISSIONS: &[&str] =
+    &["ALL", "ALTER", "DESCRIBE", "DROP", "EXECUTE"];
+
 /// The permissions the kind of resource `resource` names can hold, or `None` when it names
 /// no kind at all (which [`super::validate_resource`] refuses first).
 ///
 /// The order the members are weighed in is [`super::validate_resource`]'s, which has
 /// already refused a `Resource` naming more than one.
 pub fn permissions_of_resource_kind(resource: &Resource) -> Option<&'static [&'static str]> {
-    if resource.catalog.is_some() {
+    if let Some(any) = &resource.any_resource {
+        // "All resources of the specified type in a Data Catalog", so it holds what that
+        // type holds. `ResourceType` is required and "the only supported value is TABLE"
+        // (`AnyResourceSupportedTypes`), which the request boundary holds the member to —
+        // so the other arm answers "nothing is known about this kind" rather than a
+        // privilege set this service invented for a value the model does not carry.
+        match any.resource_type.as_str() {
+            "TABLE" => Some(TABLE_PERMISSIONS),
+            _ => None,
+        }
+    } else if resource.catalog.is_some() {
         Some(CATALOG_PERMISSIONS)
     } else if resource.database.is_some() {
         Some(DATABASE_PERMISSIONS)
@@ -141,6 +160,8 @@ pub fn permissions_of_resource_kind(resource: &Resource) -> Option<&'static [&'s
         }
     } else if resource.lf_tag_expression.is_some() {
         Some(LF_TAG_EXPRESSION_PERMISSIONS)
+    } else if resource.user_defined_function.is_some() {
+        Some(USER_DEFINED_FUNCTION_PERMISSIONS)
     } else {
         None
     }

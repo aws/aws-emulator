@@ -119,6 +119,20 @@ pub fn permissions_not_held(named: &[String]) -> String {
 /// that does not belong there, so the same sentence answers every such grant.
 pub const PERMISSIONS_MODIFICATION_INVALID: &str = "Permissions modification is invalid.";
 
+/// The fixed text of the refusal a caller that does not hold the Lake Formation
+/// permissions an operation needs draws, which the resource it addressed follows.
+///
+/// NOT wholly fixed: an operation may address several resources and is refused for one of
+/// them, so the resource is the sentence's one variable part — named as the request named
+/// it, not as an ARN.
+pub const INSUFFICIENT_PERMISSIONS_PREFIX: &str = "Insufficient Lake Formation permission(s) on ";
+
+/// [`INSUFFICIENT_PERMISSIONS_PREFIX`] followed by `resource`: what a caller holding too
+/// little on the resource it addressed is refused with.
+pub fn insufficient_permissions(resource: &str) -> String {
+    format!("{INSUFFICIENT_PERMISSIONS_PREFIX}{resource}")
+}
+
 /// What a create of an LF-tag whose key the Data Catalog already holds answers.
 ///
 /// Wholly fixed text: neither the key nor the catalog is named.
