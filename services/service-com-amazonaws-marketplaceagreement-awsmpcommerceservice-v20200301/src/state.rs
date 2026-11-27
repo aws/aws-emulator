@@ -39,9 +39,11 @@
 //! ## Where the money comes from
 //!
 //! An agreement request names terms that live in an *agreement proposal* (an
-//! offer), which is a resource of a different AWS Marketplace API and is not in
-//! this service's model or state — so there is no per-proposal term document or
-//! rate card to read here. What this emulator holds instead is an offer of its
+//! offer), which is a resource of a different AWS Marketplace API: its
+//! EXISTENCE is resolved there, against the catalog that publishes it
+//! ([`agreement_proposals`]), while its term document and rate card are not in
+//! this service's model or state — so there is no per-proposal pricing to read
+//! here. What this emulator holds instead is an offer of its
 //! OWN, as DATA: [`RATE_CARD`] publishes the per-unit price of each product
 //! dimension it carries, at each contract length, [`TERM_PRICE_LIST`] the single
 //! price of each kind of term that carries one instead of a rate card,
@@ -113,6 +115,10 @@ mod store;
 /// Publishing the entitlements an accepted agreement grants into the services
 /// that OWN them — the Marketplace Entitlement Service and License Manager.
 pub mod granted_entitlements;
+
+/// Resolving the agreement proposal a quote names against the service that OWNS
+/// offers — the Marketplace Discovery catalog.
+pub mod agreement_proposals;
 
 /// The `agreementType` every agreement this slice mints carries.
 ///

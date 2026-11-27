@@ -12,11 +12,13 @@
 //! (`DescribeAgreement`, `GetAgreementTerms`, `SearchAgreements`) is computed
 //! from that one record — never echoed from the reporting call's own input.
 
+use std::cell::RefCell;
 use std::collections::BTreeSet;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 
 use bytes::Bytes;
 use serde_json::{json, Value};
+use service_com_amazonaws_marketplacediscovery_awsmarketplacediscovery::state as catalog;
 use service_com_amazonaws_marketplaceagreement_awsmpcommerceservice_v20200301::EmulatedService;
 use smithy_server_runtime::MultiServiceRouter;
 
@@ -102,7 +104,72 @@ pub(crate) fn emulator_over_engine() -> (MultiServiceRouter, Arc<engine::InMemor
     let mut router = MultiServiceRouter::new();
     router.set_request_authentication(false);
     router.register_service(EmulatedService::new(Arc::clone(&engine)));
+    remember_catalog(&engine);
     (router, engine)
+}
+
+thread_local! {
+    /// The catalogs the emulators of this test binary hold, so a case that buys
+    /// from an offer has that offer published before it quotes.
+    ///
+    /// `CreateAgreementRequest` resolves `agreementProposalIdentifier` against
+    /// the agreement proposals the AWS Marketplace catalog publishes
+    /// (`GetOffer$agreementProposalId`), so a case that quotes names a proposal
+    /// that has to exist: publishing the offer is the ARRANGE step of every
+    /// quote. Each case names its own proposal, so rather than each one
+    /// publishing its offer itself, [`call_as`] publishes the offer the request
+    /// it is about to send names — into the catalog of every emulator this
+    /// thread built, since a test runs on its own thread and a case that builds
+    /// several emulators quotes against any of them. What the resolution itself
+    /// ADMITS and REFUSES is the subject of
+    /// `core/router/tests/all/marketplace_agreement_proposal_resolution.rs`,
+    /// which drives both services over the catalog as it is published.
+    static CATALOGS: RefCell<Vec<Weak<engine::InMemoryEngine>>> =
+        const { RefCell::new(Vec::new()) };
+}
+
+/// How long before and after the instant it is published a published offer stays
+/// on sale, so no case of this binary is left outside that window however long
+/// the binary has been running.
+const PUBLISHED_OFFER_WINDOW: i64 = 365 * 24 * 60 * 60;
+
+/// Remember a freshly built emulator's engine, so [`publish_named_offer`] reaches
+/// the catalog it shares. Called by every harness of this suite that builds one.
+pub(crate) fn remember_catalog(engine: &Arc<engine::InMemoryEngine>) {
+    CATALOGS.with_borrow_mut(|catalogs| {
+        catalogs.retain(|held| held.strong_count() > 0);
+        catalogs.push(Arc::downgrade(engine));
+    });
+}
+
+/// Publish an offer whose agreement proposal is the one `body` names, so a
+/// request carrying it quotes against an offer that exists. A body naming no
+/// proposal publishes nothing, and an offer of that proposal already published
+/// stays as it was.
+pub(crate) fn publish_named_offer(body: &Value) {
+    let Some(proposal) = body["agreementProposalIdentifier"].as_str() else {
+        return;
+    };
+    let catalogs: Vec<Arc<engine::InMemoryEngine>> =
+        CATALOGS.with_borrow(|catalogs| catalogs.iter().filter_map(Weak::upgrade).collect());
+    for engine in catalogs {
+        let Some(state) = catalog::service_state(&*engine) else {
+            continue;
+        };
+        let now = catalog::now_secs();
+        let offer_id = format!("o-{proposal}");
+        state
+            .lock()
+            .offers
+            .entry(offer_id.clone())
+            .or_insert_with(|| catalog::Offer {
+                offer_id,
+                agreement_proposal_id: proposal.to_string(),
+                available_from_time: Some(now - PUBLISHED_OFFER_WINDOW),
+                expiration_time: Some(now + PUBLISHED_OFFER_WINDOW),
+                ..catalog::Offer::default()
+            });
+    }
 }
 
 /// What the emulator answered: the HTTP status and the JSON body.
@@ -146,6 +213,7 @@ pub(crate) async fn call_as(
     body: Value,
     authorization: &str,
 ) -> Answer {
+    publish_named_offer(&body);
     let payload = body.to_string();
     let request = ::http::Request::builder()
         .method("POST")

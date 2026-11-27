@@ -23,6 +23,11 @@ service-com-amazonaws-marketplaceentitlementservice-awsmpentitlementservice = { 
 # The License Manager store, which OWNS the licence `AgreementEntitlement$licenseArn`
 # names: the same publication creates it, so that ARN resolves to a licence.
 service-com-amazonaws-licensemanager-awslicensemanager = { workspace = true }
+# The Marketplace Discovery catalog, which OWNS the offers that publish the agreement
+# proposals a quote is created from (`GetOffer$agreementProposalId`): the proposal
+# `CreateAgreementRequest$agreementProposalIdentifier` names is resolved there
+# (`crate::state::agreement_proposals`).
+service-com-amazonaws-marketplacediscovery-awsmarketplacediscovery = { workspace = true }
 engine = { workspace = true }
 smithy-macros = { workspace = true }
 aws-smithy-schema = { workspace = true }

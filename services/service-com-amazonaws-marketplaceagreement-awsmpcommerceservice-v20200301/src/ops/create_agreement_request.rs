@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op CreateAgreementRequest
-//! Mints the quote: the agreement request is persisted in [`crate::state`] and the
+//! Mints the quote: the proposal the request names is resolved against the catalog that
+//! published it ([`crate::state::agreement_proposals`]) and a request naming no active
+//! proposal is refused, the agreement request is persisted in [`crate::state`] and the
 //! `chargeSummary` it answers with is computed from the requested terms it stored. A
 //! repeated call carrying the same `clientToken` AND the same content answers with the
 //! request that token already created; the same token carrying different content is
@@ -236,6 +238,25 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         }
 
         let now = ::std::time::SystemTime::now();
+
+        // The proposal itself: "the agreement proposal signed by the proposer",
+        // which is a resource of the catalog that published the offer rather
+        // than of this service, so the identifier is RESOLVED there before
+        // anything is minted from it
+        // (`crate::state::agreement_proposals`). An identifier naming no
+        // proposal that is active at this instant is refused as the input fault
+        // it is, and the quote, the id and the charges are never computed:
+        // whatever the request asked for, there is no proposal to create an
+        // agreement request from.
+        if let Some(identifier) = input.agreement_proposal_identifier.as_deref() {
+            if !crate::state::agreement_proposals::is_active(&*self.engine, identifier, now) {
+                return Err(CreateAgreementRequestErrorModeled::ValidationException(
+                    crate::state::inactive_agreement_proposal(),
+                )
+                .into());
+            }
+        }
+
         let mut store = state.lock();
 
         // `@idempotencyToken`: the same token names the same quote, so a retried

@@ -70,7 +70,11 @@ fn emulator() -> MultiServiceRouter {
     let engine: Arc<engine::InMemoryEngine> = Arc::new(engine::InMemoryEngine::new());
     let mut router = MultiServiceRouter::new();
     router.set_request_authentication(false);
-    router.register_service(EmulatedService::new(engine));
+    router.register_service(EmulatedService::new(Arc::clone(&engine)));
+    // The offers these cases quote against are published into this emulator's
+    // catalog by the wire helper below, as `agreement_lifecycle`'s harness
+    // documents: a quote resolves the proposal it names.
+    crate::agreement_lifecycle::remember_catalog(&engine);
     router
 }
 
@@ -117,6 +121,7 @@ impl Answer {
 }
 
 async fn call(router: &MultiServiceRouter, operation: &str, body: Value) -> Answer {
+    crate::agreement_lifecycle::publish_named_offer(&body);
     let request = ::http::Request::builder()
         .method("POST")
         .uri("/")

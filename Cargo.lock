@@ -17884,6 +17884,7 @@ dependencies = [
  "serde_json",
  "service-com-amazonaws-iam-awsidentitymanagementv20100508",
  "service-com-amazonaws-licensemanager-awslicensemanager",
+ "service-com-amazonaws-marketplacediscovery-awsmarketplacediscovery",
  "service-com-amazonaws-marketplaceentitlementservice-awsmpentitlementservice",
  "service-com-amazonaws-sts-awssecuritytokenservicev20110615",
  "service-common",

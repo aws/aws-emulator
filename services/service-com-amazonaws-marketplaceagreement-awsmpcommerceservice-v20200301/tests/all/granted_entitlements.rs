@@ -43,8 +43,8 @@ use smithy_server_runtime::MultiServiceRouter;
 
 use crate::agreement_expiry::signed_ago;
 use crate::agreement_lifecycle::{
-    accept, agreement_over, agreement_type_filter, call, cancel, create, describe, renewal_term,
-    search, term, upfront_term,
+    accept, agreement_over, agreement_type_filter, call, cancel, create, describe,
+    remember_catalog, renewal_term, search, term, upfront_term,
 };
 
 /// The products the offer this emulator publishes is for, as `(id, type)` — the
@@ -106,6 +106,10 @@ fn marketplace_emulator() -> (MultiServiceRouter, Arc<engine::InMemoryEngine>) {
             &engine,
         )),
     );
+    // The offers these cases quote against are published into this emulator's
+    // catalog by `agreement_lifecycle`'s wire helper, which this suite calls
+    // through: a quote resolves the proposal it names.
+    remember_catalog(&engine);
     (router, engine)
 }
 

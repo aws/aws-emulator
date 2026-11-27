@@ -123,7 +123,15 @@ pub const VISIBILITY_SCOPE_FILTER_VALUES: &[&str] = &["PRIVATE"];
 ///
 /// Source: `PurchaseOptionFilter$filterValues` documentation — "`AVAILABILITY_STATUS` –
 /// One or more availability statuses to filter by: `AVAILABLE` or `EXPIRED`".
-pub const AVAILABILITY_STATUS_VALUES: &[&str] = &["AVAILABLE", "EXPIRED"];
+pub const AVAILABILITY_STATUS_VALUES: &[&str] =
+    &[AVAILABILITY_STATUS_AVAILABLE, AVAILABILITY_STATUS_EXPIRED];
+
+/// The `AVAILABILITY_STATUS` of a purchase option still on sale
+/// ([`availability_status`]).
+pub const AVAILABILITY_STATUS_AVAILABLE: &str = "AVAILABLE";
+
+/// The `AVAILABILITY_STATUS` of a purchase option whose expiration instant has passed.
+pub const AVAILABILITY_STATUS_EXPIRED: &str = "EXPIRED";
 
 /// The visibility scope of a purchase option that only invited buyers see.
 pub const VISIBILITY_PRIVATE: &str = "PRIVATE";
@@ -1115,6 +1123,30 @@ impl ComAmazonawsMarketplacediscoveryAwsmarketplacediscoveryState {
         })
     }
 
+    /// Whether this catalog publishes `proposal_id` as an agreement proposal a buyer can
+    /// act on at `now_secs`.
+    ///
+    /// The proposal of an offer is what its acceptor passes on when it creates an
+    /// agreement (`GetOfferOutput$agreementProposalId`), so the proposal is live exactly
+    /// while the offer that published it is on sale: available from its
+    /// `availableFromTime` ("the date and time when the purchase option becomes
+    /// available") until its `expirationTime` passes ("when the purchase option expires
+    /// and is no longer available for procurement") — the same two facts this catalog
+    /// reports as a purchase option's `availabilityStatus` and its `FUTURE_DATED` badge,
+    /// read here through those one writers. An offer with no expiration never expires.
+    ///
+    /// This is the one place another service asks the catalog about a proposal, so a
+    /// proposal reachable here is one of an offer this catalog really holds rather than a
+    /// reference nothing backs.
+    pub fn holds_active_agreement_proposal(&self, proposal_id: &str, now_secs: i64) -> bool {
+        self.offers.values().any(|offer| {
+            offer.agreement_proposal_id == proposal_id
+                && availability_status(offer.expiration_time, now_secs)
+                    == AVAILABILITY_STATUS_AVAILABLE
+                && !future_dated(offer.available_from_time, now_secs)
+        })
+    }
+
     /// Summary information about a stored offer set, or `None` when no such set exists.
     pub fn offer_set_information(&self, offer_set_id: &str) -> Option<OfferSetInformation> {
         let offer_set = self.offer_sets.get(offer_set_id)?;
@@ -1267,8 +1299,8 @@ fn future_dated(available_from_time: Option<i64>, now_secs: i64) -> bool {
 /// time when the purchase option expires and is no longer available for procurement".
 pub fn availability_status(expiration_time: Option<i64>, now_secs: i64) -> &'static str {
     match expiration_time {
-        Some(expires_at) if expires_at <= now_secs => "EXPIRED",
-        _ => "AVAILABLE",
+        Some(expires_at) if expires_at <= now_secs => AVAILABILITY_STATUS_EXPIRED,
+        _ => AVAILABILITY_STATUS_AVAILABLE,
     }
 }
 
@@ -2680,6 +2712,21 @@ fn usage_based_term(id: &str, dimension: &str, display_name: &str, unit: &str, p
     })
 }
 
+/// The `agreementProposalId` the offer of catalog row `sequence`/`slug` publishes.
+///
+/// `GetOfferOutput$agreementProposalId` is "[a]n encoded string to be passed by the
+/// acceptor of the terms when creating an agreement", so the acceptor hands this value
+/// to the agreement API as its `agreementProposalIdentifier` — a member whose shape is
+/// `@pattern(^(at-|ap-)[A-Za-z0-9]+$)`, i.e. the `ap-` prefix followed by letters and
+/// digits only. The identifier is therefore the row's sequence and slug with the slug's
+/// separators dropped: an identifier a buyer reads out of this catalog is one the API it
+/// is to be passed to accepts, and the catalog's own shape (`AgreementResourceId`,
+/// `@pattern(^[A-Za-z0-9_/-]+$)`, `@length(1..64)`) admits it.
+pub(crate) fn agreement_proposal_id(sequence: usize, slug: &str) -> String {
+    let slug: String = slug.chars().filter(char::is_ascii_alphanumeric).collect();
+    format!("ap-{sequence:04}{slug}")
+}
+
 /// Build the catalog the emulator serves.
 ///
 /// Timestamps are relative to the instant the catalog is seeded, so the expired offer is
@@ -2858,7 +2905,7 @@ fn seed_catalog() -> ComAmazonawsMarketplacediscoveryAwsmarketplacediscoveryStat
             seller_of_record: acme.clone(),
             product_ids: vec!["p-0001-analytics-core".to_string()],
             offer_set_id: Some("os-0001-analytics".to_string()),
-            agreement_proposal_id: "ap-0001-analytics-annual".to_string(),
+            agreement_proposal_id: agreement_proposal_id(1, "analytics-annual"),
             replacement_agreement_id: None,
             pricing_model: pricing_model("CONTRACT"),
             // The dimension the contract is sized in: its free-trial grant and its
@@ -2901,7 +2948,7 @@ fn seed_catalog() -> ComAmazonawsMarketplacediscoveryAwsmarketplacediscoveryStat
             seller_of_record: acme.clone(),
             product_ids: vec!["p-0001-analytics-core".to_string()],
             offer_set_id: Some("os-0001-analytics".to_string()),
-            agreement_proposal_id: "ap-0002-analytics-usage".to_string(),
+            agreement_proposal_id: agreement_proposal_id(2, "analytics-usage"),
             replacement_agreement_id: Some("ag-0001-analytics-legacy".to_string()),
             pricing_model: pricing_model("USAGE"),
             // The dimension its rate card meters: active users.
@@ -3050,7 +3097,7 @@ fn seed_catalog() -> ComAmazonawsMarketplacediscoveryAwsmarketplacediscoveryStat
             seller_of_record: nimbus,
             product_ids: vec!["p-0002-firewall-appliance".to_string()],
             offer_set_id: None,
-            agreement_proposal_id: "ap-0003-firewall-hourly".to_string(),
+            agreement_proposal_id: agreement_proposal_id(3, "firewall-hourly"),
             replacement_agreement_id: None,
             pricing_model: pricing_model("USAGE"),
             // The dimension its rate card meters: protected hosts.
@@ -3147,7 +3194,7 @@ fn seed_catalog() -> ComAmazonawsMarketplacediscoveryAwsmarketplacediscoveryStat
             seller_of_record: orion,
             product_ids: vec!["p-0003-datafeed-equities".to_string()],
             offer_set_id: None,
-            agreement_proposal_id: "ap-0004-datafeed-contract".to_string(),
+            agreement_proposal_id: agreement_proposal_id(4, "datafeed-contract"),
             replacement_agreement_id: None,
             pricing_model: pricing_model("CONTRACT"),
             // A data subscription: the contract is sized by the data it covers.
@@ -3318,7 +3365,7 @@ fn seed_catalog() -> ComAmazonawsMarketplacediscoveryAwsmarketplacediscoveryStat
                 "p-0005-mlkit-nlp".to_string(),
             ],
             offer_set_id: None,
-            agreement_proposal_id: "ap-0005-mlkit-usage".to_string(),
+            agreement_proposal_id: agreement_proposal_id(5, "mlkit-usage"),
             replacement_agreement_id: None,
             pricing_model: pricing_model("USAGE"),
             // The dimension its rate card meters: inference requests.
@@ -3431,7 +3478,7 @@ fn seed_catalog() -> ComAmazonawsMarketplacediscoveryAwsmarketplacediscoveryStat
             seller_of_record: helios,
             product_ids: vec!["p-0006-devtools-pipeline".to_string()],
             offer_set_id: None,
-            agreement_proposal_id: "ap-0006-devtools-byol".to_string(),
+            agreement_proposal_id: agreement_proposal_id(6, "devtools-byol"),
             replacement_agreement_id: None,
             pricing_model: pricing_model("BYOL"),
             // The buyer brings licences it already owns, counted in units of them.
@@ -3539,7 +3586,7 @@ fn seed_catalog() -> ComAmazonawsMarketplacediscoveryAwsmarketplacediscoveryStat
             seller_of_record: vertex,
             product_ids: vec!["p-0007-backup-agent".to_string()],
             offer_set_id: None,
-            agreement_proposal_id: "ap-0007-backup-contract".to_string(),
+            agreement_proposal_id: agreement_proposal_id(7, "backup-contract"),
             replacement_agreement_id: None,
             pricing_model: pricing_model("CONTRACT"),
             // The dimension its free-trial grant and recurring payment are counted in:
@@ -4829,7 +4876,7 @@ fn seed_rows(
                 seller_of_record: publisher.clone(),
                 product_ids: vec![product_id],
                 offer_set_id: offer_set_id.clone(),
-                agreement_proposal_id: format!("ap-{sequence:04}-{slug}"),
+                agreement_proposal_id: agreement_proposal_id(sequence, slug),
                 replacement_agreement_id: None,
                 pricing_model: pricing_model(model_type),
                 // The dimension this offer's pricing is expressed in, which the listing it

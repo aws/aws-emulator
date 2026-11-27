@@ -397,9 +397,50 @@ pub fn inactive_agreement() -> ValidationException {
     validation_exception(REASON_INACTIVE_AGREEMENT, "agreementId")
 }
 
-/// Refuse a selector whose value lies outside the fixed set this service
-/// publishes for that member, BEFORE anything is selected.
+/// The `ValidationExceptionReason` a request whose `agreementProposalIdentifier`
+/// names no ACTIVE agreement proposal is refused under.
 ///
+/// `ValidationExceptionReason` publishes no value for the state of a proposal
+/// that cannot be resolved at all: of the proposal it names, only
+/// `EXPIRED_AGREEMENT_PROPOSAL` and `SUPERSEDED_AGREEMENT_PROPOSAL` — two
+/// particular states of a proposal this service would have to hold to tell apart
+/// ([`crate::state::agreement_proposals`] resolves one proposal, not its
+/// history). So the refusal reports the value the model does publish for this
+/// member, which is the one a client branches on for it
+/// (`smithy_query(query="shape", shape="ValidationExceptionReason")`).
+pub const REASON_INACTIVE_AGREEMENT_PROPOSAL: &str = "INVALID_AGREEMENT_PROPOSAL_IDENTIFIER";
+
+/// The sentence AWS states when the agreement proposal a quote names is not an
+/// active proposal.
+///
+/// Recorded behavior, and fixed text: it interpolates no value of the request,
+/// no identifier and no instant — the member that carried the identifier is
+/// named by the `fields` entry beside it. It is stated here rather than derived
+/// from [`REASON_INACTIVE_AGREEMENT_PROPOSAL`] ([`validation_message`]) because
+/// the class is about the PROPOSAL's state and that reason names the member: the
+/// same reason also reports an identifier that misses the member's own modelled
+/// pattern, which AWS words as the member being invalid.
+pub const INACTIVE_AGREEMENT_PROPOSAL_MESSAGE: &str = "Provided agreement proposal is inactive.";
+
+/// The refusal of an `agreementProposalIdentifier` that names no agreement
+/// proposal this emulator can resolve as active.
+///
+/// The envelope is the unresolved-reference one every other identifier of this
+/// service that resolves to nothing is refused in ([`unresolved_reference`]) —
+/// the member's modelled reason and one `fields` entry naming it — carrying the
+/// sentence AWS states for this class.
+pub fn inactive_agreement_proposal() -> ValidationException {
+    ValidationException {
+        message: Some(INACTIVE_AGREEMENT_PROPOSAL_MESSAGE.to_string()),
+        ..unresolved_reference(
+            REASON_INACTIVE_AGREEMENT_PROPOSAL,
+            "agreementProposalIdentifier",
+        )
+    }
+}
+
+/// Refuse a selector whose value lies outside the fixed set this service
+/// publishes for that member, BEFORE anything is selected.///
 /// A selector of this service is RESOLVED, not merely matched: `catalog` names a
 /// catalog AWS Marketplace exposes — it exposes exactly one, [`CATALOG`] — and
 /// `agreementType` one of the types the model documents

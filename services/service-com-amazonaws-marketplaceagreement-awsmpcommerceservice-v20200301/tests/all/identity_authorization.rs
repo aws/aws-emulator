@@ -85,9 +85,14 @@ impl Emulator {
         );
         router.register_service(
             service_com_amazonaws_sts_awssecuritytokenservicev20110615::EmulatedService::new(
-                engine,
+                Arc::clone(&engine),
             ),
         );
+        // The offers these cases quote against are published into this
+        // emulator's catalog by the call helper below, as
+        // `agreement_lifecycle`'s harness documents: a quote resolves the
+        // proposal it names.
+        crate::agreement_lifecycle::remember_catalog(&engine);
         Self { router }
     }
 
@@ -98,6 +103,7 @@ impl Emulator {
         operation: &str,
         body: &Value,
     ) -> (u16, Value) {
+        crate::agreement_lifecycle::publish_named_offer(body);
         let request = ::http::Request::builder()
             .method("POST")
             .uri("/")
