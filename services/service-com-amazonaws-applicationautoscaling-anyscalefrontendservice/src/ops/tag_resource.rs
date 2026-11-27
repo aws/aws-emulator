@@ -191,10 +191,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let mut state = state.lock();
 
         // `ResourceARN` "identifies the Application Auto Scaling scalable target that you want
-        // to apply tags to", so an ARN of this endpoint that identifies no REGISTERED target is
-        // the scalable target reported ABSENT — whether this service minted that ARN or not —
-        // and only an ARN addressed to another partition, account or Region names no resource
-        // this endpoint could hold at all. One resolution for the whole tagging family
+        // to apply tags to", so an ARN that names a scalable-target IDENTITY of this endpoint —
+        // its partition, account and Region, and an identifier of the form a scalable target's
+        // own takes — and that no REGISTERED target answers to is the scalable target reported
+        // ABSENT, whether this service minted that ARN or not. An ARN that names no such
+        // identity names no resource this endpoint could hold at all, and the tagging call
+        // itself is refused. One resolution for the whole tagging family
         // (`crate::state::tag_target_arns`). A scalable target is regional, so an ARN of
         // another Region is not one this endpoint answers for.
         let region = crate::state::request_region(ctx.parts());
@@ -248,10 +250,12 @@ fn validation(message: impl Into<String>) -> TagResourceError {
     .into()
 }
 
-/// The refusal of a `ResourceARN` of this endpoint that names no registered scalable target.
+/// The refusal of a `ResourceARN` naming an identity of this endpoint that no registered
+/// scalable target answers to.
 ///
-/// `ResourceARN` names the resource this call acts on, so an ARN of this endpoint's own
-/// account and Region that no registered target answers to is the resource reported ABSENT —
+/// `ResourceARN` names the resource this call acts on, so an ARN carrying a scalable target's
+/// identifier in this endpoint's own account and Region that no registered target answers to is
+/// the resource reported ABSENT —
 /// the modelled `ResourceNotFoundException` ("the specified resource doesn't exist") with the
 /// fixed sentence `crate::state::SCALABLE_TARGET_NOT_FOUND_MESSAGE` and the ARN asked about
 /// carried in the shape's own `ResourceName` member rather than spliced into the text. It is
@@ -263,7 +267,9 @@ fn target_not_found(resource_arn: &str) -> TagResourceError {
     crate::state::wire_refusals::WireRefusal::scalable_target_not_found(resource_arn).into()
 }
 
-/// The refusal of a `ResourceARN` addressed to another partition, account or Region.
+/// The refusal of a `ResourceARN` that names no scalable-target identity of this endpoint:
+/// another partition, account or Region, or an identifier in no form a scalable target's own
+/// takes.
 ///
 /// Such an ARN names no scalable target this endpoint could hold at all, so the tagging call
 /// is refused without the service speaking about the resource: the one fixed sentence, carrying

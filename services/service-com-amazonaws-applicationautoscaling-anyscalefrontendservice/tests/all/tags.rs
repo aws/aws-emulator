@@ -255,13 +255,22 @@ async fn list_tags_refuses_an_arn_no_registered_target_carries() {
     );
 
     // Every ARN below satisfies the modelled `ResourceARN` pattern, so each reaches the
-    // handler; none of them names a registered target. The flag is whether the ARN names THIS
-    // endpoint — its account and Region — which is what decides which refusal it earns.
+    // handler; none of them names a registered target. The flag is whether the ARN names a
+    // scalable-target IDENTITY of THIS endpoint — its account and Region, and an identifier of a
+    // scalable target — which is what decides which refusal it earns.
     let unknown: Vec<(&str, String, bool)> = vec![
         (
-            "an ARN this emulator never minted",
-            format!("arn:aws:application-autoscaling:{REGION}:{ACCOUNT}:scalable-target/0123456789abcdef"),
+            "an identifier this emulator never minted",
+            format!(
+                "arn:aws:application-autoscaling:{REGION}:{ACCOUNT}:scalable-target/\
+                 0123456789abcdef0123456789abcdef0123"
+            ),
             true,
+        ),
+        (
+            "an id in no form an identifier takes",
+            format!("arn:aws:application-autoscaling:{REGION}:{ACCOUNT}:scalable-target/0123456789abcdef"),
+            false,
         ),
         ("a deregistered target's ARN", removed, true),
         (

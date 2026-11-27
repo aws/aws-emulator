@@ -777,19 +777,27 @@ async fn a_tag_operation_on_an_unregistered_target_answers_in_its_own_terms() {
         "case \"deregister\": expected 200, got {status} {body:?}"
     );
 
-    // Every ARN that names no registered target now is answered by the ENDPOINT it names: one
-    // of this account and Region reports the resource absent, whether this service minted it or
-    // not, and one of another account or Region is
+    // Every ARN that names no registered target now is answered by whether it names a
+    // scalable-target IDENTITY of this endpoint: one of this account and Region carrying a
+    // scalable target's identifier reports the resource absent, whether this service minted it
+    // or not, and one that names no such identity is
     // refused without a report about the resource at all.
-    let never_minted =
-        format!("arn:aws:application-autoscaling:{REGION}:000000000000:scalable-target/0123456789abcdef");
+    let never_minted = format!(
+        "arn:aws:application-autoscaling:{REGION}:000000000000:scalable-target/\
+         0123456789abcdef0123456789abcdef0123"
+    );
     let another_account = format!(
-        "arn:aws:application-autoscaling:{REGION}:111122223333:scalable-target/0123456789abcdef"
+        "arn:aws:application-autoscaling:{REGION}:111122223333:scalable-target/\
+         0123456789abcdef0123456789abcdef0123"
+    );
+    let no_identifier = format!(
+        "arn:aws:application-autoscaling:{REGION}:000000000000:scalable-target/0123456789abcdef"
     );
     for (case, resource_arn, served_here) in [
         ("a deregistered target's ARN", arn.clone(), true),
-        ("an ARN this emulator never minted", never_minted, true),
+        ("an identifier this emulator never minted", never_minted, true),
         ("an ARN of another account", another_account, false),
+        ("an id in no form an identifier takes", no_identifier, false),
     ] {
         let (expected_code, expected_message) = if served_here {
             // `ResourceNotFoundException` ("the specified resource doesn't exist"), answered at
@@ -835,7 +843,7 @@ async fn a_tag_operation_on_an_unregistered_target_answers_in_its_own_terms() {
 
         // The two writes answer the same condition the same way the read does: `ResourceARN`
         // names the resource the call addresses, so whether the service reports that resource
-        // absent or refuses to speak about it at all is decided by the endpoint the ARN names
+        // absent or refuses to speak about it at all is decided by the identity the ARN names
         // and not by the operation. None of the three is the boundary validator's template.
         for (operation, request) in [
             (

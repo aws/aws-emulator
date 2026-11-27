@@ -5,10 +5,12 @@
 //!
 //! RULE under test: `ResourceARN` "identifies the Application Auto Scaling scalable target"
 //! the call addresses, and which refusal an ARN identifying no REGISTERED target earns is
-//! decided by WHICH ENDPOINT that ARN names — the same answer
+//! decided by whether it names a scalable-target IDENTITY of the endpoint serving the request —
+//! its account and Region, and a last segment of the form a scalable target's identifier takes —
+//! the same answer
 //! whichever of the three operations asked:
 //!
-//! * an ARN of the account and Region serving the request is the resource reported
+//! * an ARN naming such an identity is the resource reported
 //!   ABSENT — the modelled `ResourceNotFoundException`, which
 //!   `smithy_query(query="operation",operation="TagResource,UntagResource,ListTagsForResource")`
 //!   declares on all three operations, carrying the fixed sentence "Scalable Target not found"
@@ -17,32 +19,34 @@
 //!   `@httpError` declares. Whether this service ever minted that ARN does not enter into it:
 //!   what the caller asked about is a scalable target of this account and Region, and the
 //!   answer is that there is none;
-//! * an ARN of another account, Region or partition names no resource this endpoint could hold,
+//! * an ARN naming no such identity — another account, Region or partition, or an id in no form
+//!   an identifier takes — names no resource this endpoint could hold,
 //!   so the call is
 //!   refused without the service reporting on the resource at all: the modelled
 //!   `ValidationException` and the fixed sentence "Access Denied" (the
 //!   model says which error covers which condition for neither).
 //!
 //! The rows span what the rule generalises over: the OPERATION (the read and both mutations,
-//! each with its own payload) crossed with how the ARN fails to resolve (an id this service
-//! never minted, an id of another form, the shortest id the modelled pattern admits, another
-//! account, another Region, another partition, and the ARN of a target that WAS registered and
-//! has since been deregistered). A registered target stands beside them and round-trips a tag
-//! through the same three operations, so no row passes because the family refuses everything.
+//! each with its own payload) crossed with how the ARN fails to resolve (an identifier this
+//! service never minted, an id of another form, the shortest id the modelled pattern admits,
+//! another account, another Region, another partition, and the ARN of a target that WAS
+//! registered and has since been deregistered). A registered target stands beside them and
+//! round-trips a tag through the same three operations, so no row passes because the family
+//! refuses everything.
 
 use serde_json::{json, Value};
 
 use crate::emulator::{error_code, error_message, Emulator, ACCOUNT, REGION};
 
-/// The sentence the refusal of an ARN of this endpoint that names no registered target carries,
-/// written out here rather than read off the
+/// The sentence the refusal of an ARN naming an identity of this endpoint that no registered
+/// target answers to carries, written out here rather than read off the
 /// code under test: the WORDING is part of what this suite holds the family to.
 const TARGET_NOT_FOUND: &str = "Scalable Target not found";
 
 /// The code that refusal carries.
 const RESOURCE_NOT_FOUND: &str = "ResourceNotFoundException";
 
-/// The whole sentence the refusal of an ARN of another account, Region or partition carries.
+/// The whole sentence the refusal of an ARN that names no identity of this endpoint carries.
 const ACCESS_DENIED: &str = "Access Denied";
 
 /// The code that refusal carries.
@@ -84,7 +88,8 @@ fn family(resource_arn: &str) -> Vec<(&'static str, Value)> {
 /// reaches the handler rather than the boundary validator, and none of them names a registered
 /// target. `deregistered` is the ARN this service minted for a target that has since been
 /// deregistered, so the table carries an ARN that WAS real beside ones that never were — and
-/// each row states whether the ARN names THIS endpoint, which is what decides its refusal.
+/// each row states whether the ARN names an IDENTITY of this endpoint, which is what decides its
+/// refusal.
 fn unresolvable(deregistered: &str) -> Vec<(String, String, bool)> {
     vec![
         (
@@ -105,12 +110,12 @@ fn unresolvable(deregistered: &str) -> Vec<(String, String, bool)> {
             format!(
                 "arn:aws:application-autoscaling:{REGION}:{ACCOUNT}:scalable-target/nothing-here"
             ),
-            true,
+            false,
         ),
         (
             "the shortest id the pattern admits".to_string(),
             format!("arn:aws:application-autoscaling:{REGION}:{ACCOUNT}:scalable-target/a"),
-            true,
+            false,
         ),
         (
             "an ARN of another account".to_string(),
@@ -186,7 +191,7 @@ async fn every_tag_operation_answers_an_unresolvable_arn_by_the_endpoint_it_name
                     "case {case:?}: expected the ARN asked about in ResourceName, got {body:?}"
                 );
             } else {
-                // An ARN of another account, Region or partition names no resource this
+                // An ARN naming no identity of this endpoint names no resource this
                 // endpoint reports on, so the refusal states the access-denied sentence and
                 // names nothing.
                 assert_eq!(
@@ -282,14 +287,16 @@ fn arn_of_length(account: &str, chars: usize) -> String {
     arn
 }
 
-/// RULE: which refusal an unresolvable `ResourceARN` earns is decided by the ENDPOINT it names
-/// and by nothing else, so the length of the ARN does not enter into it — up to the published
+/// RULE: which refusal an unresolvable `ResourceARN` earns is decided by the IDENTITY it names,
+/// so the length of the ARN does not enter into it — up to the published
 /// `@length` maximum of the shape it targets, past which the request never reaches the handler
 /// and is refused at the protocol boundary instead.
 ///
 /// The rows walk the published bound: at the maximum, one character inside it and one character
-/// past it, each crossed with an ARN of this endpoint and one of another account, and each asked
-/// on all three operations of the family.
+/// past it, each crossed with an ARN of this endpoint's own account and one of another account,
+/// and each asked on all three operations of the family. An ARN this long carries an id far
+/// longer than a scalable target's identifier, so inside the bound every row names no identity
+/// the service could hold and earns the refusal that reports on no resource.
 #[tokio::test]
 async fn the_family_answers_an_unresolvable_arn_alike_up_to_the_published_length_bound() {
     let emulator = Emulator::empty();
@@ -314,9 +321,9 @@ async fn the_family_answers_an_unresolvable_arn_alike_up_to_the_published_length
     // Inside the bound the answer is the one the rest of this suite holds the family to, whether
     // the ARN is the longest one the model admits or one character shorter.
     for chars in [MAX_RESOURCE_ARN_CHARS, MAX_RESOURCE_ARN_CHARS - 1] {
-        for (reason, account, served_here) in [
-            ("an ARN of this endpoint", ACCOUNT, true),
-            ("an ARN of another account", "111122223333", false),
+        for (reason, account) in [
+            ("an ARN of this endpoint's account", ACCOUNT),
+            ("an ARN of another account", "111122223333"),
         ] {
             let arn = arn_of_length(account, chars);
             assert_eq!(
@@ -334,31 +341,18 @@ async fn the_family_answers_an_unresolvable_arn_alike_up_to_the_published_length
                 );
                 let code = error_code(&body);
                 let message = error_message(&body);
-                let (expected_code, expected_message) = if served_here {
-                    (RESOURCE_NOT_FOUND, TARGET_NOT_FOUND)
-                } else {
-                    (VALIDATION, ACCESS_DENIED)
-                };
                 assert_eq!(
-                    code, expected_code,
-                    "case {case:?}: expected {expected_code}, got {code:?} in {body:?}"
+                    code, VALIDATION,
+                    "case {case:?}: expected {VALIDATION}, got {code:?} in {body:?}"
                 );
                 assert_eq!(
-                    message, expected_message,
-                    "case {case:?}: expected {expected_message:?}, got {message:?}"
+                    message, ACCESS_DENIED,
+                    "case {case:?}: expected {ACCESS_DENIED:?}, got {message:?}"
                 );
-                if served_here {
-                    assert_eq!(
-                        body["ResourceName"],
-                        Value::String(arn.clone()),
-                        "case {case:?}: expected the ARN asked about in ResourceName, got {body:?}"
-                    );
-                } else {
-                    assert!(
-                        body.get("ResourceName").is_none(),
-                        "case {case:?}: expected no resource to be named, got {body:?}"
-                    );
-                }
+                assert!(
+                    body.get("ResourceName").is_none(),
+                    "case {case:?}: expected no resource to be named, got {body:?}"
+                );
             }
         }
     }
@@ -366,11 +360,11 @@ async fn the_family_answers_an_unresolvable_arn_alike_up_to_the_published_length
     // One character past the published maximum the request breaks a constraint the MODEL
     // declares, so it is refused at the protocol boundary — the framework's constraint envelope,
     // quoting the value submitted, the member it was submitted at and the bound it had to
-    // satisfy — rather than by the resolution that reports a resource absent. An ARN of another
-    // account is refused there too, so the over-long row is about the bound and not about the
-    // endpoint.
+    // satisfy — rather than by the resolution that answers an ARN the handler reads. An ARN of
+    // another account is refused there too, so the over-long row is about the bound and not
+    // about the ARN's own account.
     for (reason, account) in [
-        ("an ARN of this endpoint", ACCOUNT),
+        ("an ARN of this endpoint's account", ACCOUNT),
         ("an ARN of another account", "111122223333"),
     ] {
         let arn = arn_of_length(account, MAX_RESOURCE_ARN_CHARS + 1);

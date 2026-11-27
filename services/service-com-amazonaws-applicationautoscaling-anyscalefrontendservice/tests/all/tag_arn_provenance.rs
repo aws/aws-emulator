@@ -5,17 +5,19 @@
 //!
 //! RULE under test: `TagResource`, `UntagResource` and `ListTagsForResource` address a scalable
 //! target by the ARN this service minted for it, so what a `ResourceARN` naming no REGISTERED
-//! target earns is decided by WHICH ENDPOINT that ARN names, not by the lookup miss both cases
-//! share:
+//! target earns is decided by whether that ARN names a scalable-target IDENTITY of the endpoint
+//! serving the request — its partition, account and Region, and a last segment of the form a
+//! scalable target's identifier takes — not by the lookup miss both cases share:
 //!
-//! * an ARN of the partition, account and Region serving the request names a scalable target of
-//!   this endpoint, and the answer is that there is none — the resource is reported ABSENT, by
+//! * an ARN that names such an identity names a scalable target of this endpoint, and the answer
+//!   is that there is none — the resource is reported ABSENT, by
 //!   the modelled `ResourceNotFoundException`
 //!   (`smithy_query(query="operation",operation="TagResource,UntagResource,ListTagsForResource")`
 //!   declares it on all three), the fixed sentence "Scalable Target not found" and the ARN
 //!   asked about in the shape's own `ResourceName` member. Whether this service ever minted
 //!   that ARN does not enter into it;
-//! * an ARN of another partition, account or Region names no resource this endpoint could hold,
+//! * an ARN that names no such identity — another partition, account or Region, or a last
+//!   segment the identifier space does not contain — names no resource this endpoint could hold,
 //!   so the tagging
 //!   call is refused without the service speaking about the resource at all: the modelled
 //!   `ValidationException`'s code at its 400, and the fixed sentence "Access Denied", which
@@ -25,9 +27,9 @@
 //! neither.
 //!
 //! The rows span what the rule generalises over: the OPERATION (the read and both mutations,
-//! each with payloads of its own) crossed with the endpoint the ARN names — several ways an ARN
+//! each with payloads of its own) crossed with the identity the ARN names — several ways an ARN
 //! can name no registered target here (including one of exactly the form this service mints, so
-//! the rule cannot be read off an id's shape), and several targets whose ARNs this Region
+//! the rule is not keyed on an ARN's PROVENANCE), and several targets whose ARNs this Region
 //! minted and has since retired. A registered target stands beside every row and round-trips a
 //! tag through the same three operations, so no row passes because the family refuses
 //! everything.
@@ -92,11 +94,11 @@ fn family(resource_arn: &str) -> Vec<(&'static str, Value)> {
 /// reaches the handler rather than the boundary validator, and that name no registered target.
 ///
 /// `live` is the ARN of a target that IS registered here, which the last rows vary one field of.
-/// The flag is whether the ARN names THIS endpoint — its partition, account and Region — which
-/// is what decides which refusal it earns: an ARN of the very form this service mints, differing
-/// from a minted one only in not having been minted, earns the ABSENT answer just as a retired
-/// one does, which is what tells this rule apart from one keyed on an id's shape or on its
-/// provenance.
+/// The flag is whether the ARN names a scalable-target IDENTITY of this endpoint — its
+/// partition, account and Region, and an identifier of a scalable target — which is what decides
+/// which refusal it earns: an ARN of the very form this service mints, differing from a minted
+/// one only in not having been minted, earns the ABSENT answer just as a retired one does, which
+/// is what tells this rule apart from one keyed on an ARN's provenance.
 fn unresolvable(live: &str) -> Vec<(String, String, bool)> {
     let twin = {
         let mut twin = live.to_string();
@@ -119,12 +121,12 @@ fn unresolvable(live: &str) -> Vec<(String, String, bool)> {
                 "arn:aws:application-autoscaling:{REGION}:{ACCOUNT}:scalable-target/\
                  00000000-0000-0000-0000-000000000000"
             ),
-            true,
+            false,
         ),
         (
             "the shortest id the pattern admits".to_string(),
             format!("arn:aws:application-autoscaling:{REGION}:{ACCOUNT}:scalable-target/a"),
-            true,
+            false,
         ),
         (
             "an ARN of another account".to_string(),
@@ -240,9 +242,10 @@ async fn tags_of(emulator: &Emulator, arn: &str, case: &str) -> Value {
     body["Tags"].clone()
 }
 
-/// RULE: an ARN that names no registered scalable target is answered by the ENDPOINT it names:
-/// one of this account and Region is the resource reported absent, whether this service minted
-/// it or not, and one of another account, Region or partition is refused as a tagging call the
+/// RULE: an ARN that names no registered scalable target is answered by the IDENTITY it names:
+/// one of this account and Region carrying a scalable target's identifier is the resource
+/// reported absent, whether this service minted it or not, and one that names no such identity
+/// is refused as a tagging call the
 /// service will not serve — the access-denied sentence, disclosing nothing about whether such a
 /// resource exists. Every operation of the family answers alike, and neither refusal writes
 /// anything.
@@ -492,16 +495,26 @@ async fn an_arn_is_served_only_by_the_region_it_names() {
     }
 }
 
-/// RULE: what this endpoint HOLDS decides, so an id of this account and Region that no
-/// registered target answers to is the resource reported absent whatever form that id takes and
-/// whoever wrote it — the same answer an ARN this endpoint issued earns once the target it named
-/// is gone.
+/// The identifier a scalable-target ARN carries, as the modelled `ResourceARN` publishes one:
+/// `arn:aws:application-autoscaling:us-east-1:123456789012:scalable-target/1234abcd56ab78cd901ef1234567890ab123`
+/// (`smithy_query(query="doc",shape="com.amazonaws.applicationautoscaling#TagResourceRequest",member="ResourceARN")`)
+/// — 36 hexadecimal characters, which is also what this service's own mint hands back.
+const TARGET_ID_CHARS: usize = 36;
+
+/// RULE: a `ResourceARN` names the scalable target the call acts on by its identifier, so an id
+/// of this account and Region that IS an identifier of a scalable target
+/// ([`TARGET_ID_CHARS`] hexadecimal characters) and that no registered target answers to is the
+/// resource reported absent — whoever wrote it — while an id the identifier space does not
+/// contain names no scalable target at all, and the tagging call is refused without the service
+/// reporting on a resource.
 ///
-/// The rows differ along the id's FORM, which is what a rule keyed on an identifier's shape
-/// would split on: the form this service's own mint draws from, a UUID, the shortest id the
-/// modelled pattern admits, and a long hyphenated name.
+/// The rows differ along the id's FORM, which is what the rule turns on: identifiers of the
+/// published length drawn from the published alphabet in several spellings, against ids outside
+/// it — one character short of the length and one past it, a canonical UUID of exactly 36
+/// characters whose separators the alphabet does not admit, the shortest id the modelled
+/// `@pattern` admits, and a long hyphenated name.
 #[tokio::test]
-async fn an_id_this_endpoint_never_issued_reports_the_target_absent() {
+async fn which_refusal_an_unregistered_id_earns_follows_the_identifier_form() {
     let emulator = Emulator::empty();
 
     // A registered target stands beside the rows, so a refusal below is about the ARN it names
@@ -521,18 +534,56 @@ async fn an_id_this_endpoint_never_issued_reports_the_target_absent() {
         "case \"tag the resident target\": expected HTTP 200, got {status} with {body:?}"
     );
 
-    for (case, id) in [
+    let hex = "0123456789abcdef0123456789abcdef0123";
+    let rows: Vec<(String, String, bool)> = vec![
         (
-            "an id of the form this service mints",
-            "0123456789abcdef0123456789abcdef0123",
+            "an id of the form this service mints".to_string(),
+            hex.to_string(),
+            true,
         ),
-        ("a UUID", "00000000-0000-0000-0000-000000000000"),
-        ("the shortest id the pattern admits", "a"),
         (
-            "a long hyphenated name",
-            "probe-scalable-target-that-was-never-registered-0000",
+            "an identifier spelled with capitals".to_string(),
+            hex.to_uppercase(),
+            true,
         ),
-    ] {
+        (
+            "an identifier of digits only".to_string(),
+            "0".repeat(TARGET_ID_CHARS),
+            true,
+        ),
+        (
+            "an identifier of letters only".to_string(),
+            "abcdef".repeat(TARGET_ID_CHARS / 6),
+            true,
+        ),
+        (
+            "one character short of an identifier".to_string(),
+            hex[..TARGET_ID_CHARS - 1].to_string(),
+            false,
+        ),
+        (
+            "one character past an identifier".to_string(),
+            format!("{hex}a"),
+            false,
+        ),
+        (
+            "a UUID of exactly as many characters".to_string(),
+            "00000000-0000-0000-0000-000000000000".to_string(),
+            false,
+        ),
+        (
+            "the shortest id the pattern admits".to_string(),
+            "a".to_string(),
+            false,
+        ),
+        (
+            "a long hyphenated name".to_string(),
+            "probe-scalable-target-that-was-never-registered-0000".to_string(),
+            false,
+        ),
+    ];
+
+    for (case, id, is_identifier) in rows {
         let arn =
             format!("arn:aws:application-autoscaling:{REGION}:{ACCOUNT}:scalable-target/{id}");
         assert_ne!(
@@ -540,8 +591,13 @@ async fn an_id_this_endpoint_never_issued_reports_the_target_absent() {
             "case {case:?}: expected a row that is not the registered target's own ARN"
         );
         for (operation, request) in family(&arn) {
+            let case = format!("{case} on {operation}");
             let (status, body) = emulator.call(operation, request).await;
-            assert_target_not_found(&format!("{case} on {operation}"), status, &body, &arn);
+            if is_identifier {
+                assert_target_not_found(&case, status, &body, &arn);
+            } else {
+                assert_access_denied(&case, status, &body, &arn);
+            }
         }
     }
 

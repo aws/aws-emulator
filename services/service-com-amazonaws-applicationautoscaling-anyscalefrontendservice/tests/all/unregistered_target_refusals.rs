@@ -13,11 +13,13 @@
 //!   dimension belonging to another namespace is one such triple: nothing could have
 //!   registered it, so it names no target either.
 //! * the ARN-addressed tag operations answer an ARN that resolves to no registered scalable
-//!   target at the client-error status, all three alike, by WHICH ENDPOINT the ARN names: an ARN
-//!   of this account and Region is the resource reported ABSENT
+//!   target at the client-error status, all three alike, by whether the ARN names a
+//!   scalable-target IDENTITY of this endpoint — its account and Region, and a last segment of
+//!   the form a scalable target's identifier takes. An ARN naming such an identity is the
+//!   resource reported ABSENT
 //!   (`ResourceNotFoundException`, the fixed sentence "Scalable Target not found" and the ARN
-//!   asked about in `ResourceName`), whether this service minted it or not, and an ARN of
-//!   another account or Region is refused without a report
+//!   asked about in `ResourceName`), whether this service minted it or not, and an ARN naming
+//!   none is refused without a report
 //!   about the resource at all (`ValidationException` and the fixed sentence "Access Denied").
 //! * an operation this service does not offer for the namespace addressed is refused
 //!   outright, with `AccessDeniedException` and the fixed sentence naming the operation,
@@ -32,11 +34,12 @@ use service_com_amazonaws_applicationautoscaling_anyscalefrontendservice::ops::t
 
 use crate::emulator::{error_code, error_message, resource_id_for, Emulator, ACCOUNT, REGION};
 
-/// The sentence every operation of the tagging family carries for an ARN of this endpoint that
-/// names no registered target, spelled out here rather than read from the implementation.
+/// The sentence every operation of the tagging family carries for an ARN naming an identity of
+/// this endpoint that no registered target answers to, spelled out here rather than read from
+/// the implementation.
 const TARGET_NOT_FOUND: &str = "Scalable Target not found";
 
-/// The whole sentence they carry for an ARN of another account or Region.
+/// The whole sentence they carry for an ARN that names no identity of this endpoint.
 const ACCESS_DENIED: &str = "Access Denied";
 
 /// The status a refusal of this class answers with. Both rules below answer the client-error
@@ -226,15 +229,17 @@ fn tag_requests(resource_arn: &str) -> [(&'static str, Value); 3] {
 }
 
 /// RULE: every tag operation answers an ARN that resolves to no registered scalable target at
-/// the client-error status, by WHICH ENDPOINT that ARN belongs to — an ARN of this account and
+/// the client-error status, by whether that ARN names a scalable-target IDENTITY of this
+/// endpoint — an ARN carrying a scalable target's identifier in this account and
 /// Region is the resource reported absent, whether this service minted it or not
 /// (`ResourceNotFoundException`, the fixed sentence and the ARN asked about in `ResourceName`),
-/// and an ARN of another account or Region is a tagging call it refuses without reporting on the
+/// and an ARN that names no such identity is a tagging call it refuses without reporting on the
 /// resource (`ValidationException` and the fixed access-denied sentence, which carries nothing
 /// of the request).
 ///
-/// Rows differ along HOW the ARN fails to resolve — an id this service never minted, an id of
-/// another form, another account, another Region, and the ARN of a target that WAS registered
+/// Rows differ along HOW the ARN fails to resolve — an identifier this service never minted, an
+/// id in no form an identifier takes, another account, another Region, and the ARN of a target
+/// that WAS registered
 /// and has been deregistered — and along the operation, including both writes, so the two
 /// writes do not word the condition differently from each other.
 #[tokio::test]
@@ -266,7 +271,8 @@ async fn every_tag_operation_answers_an_unresolvable_arn_by_the_endpoint_it_name
     // Every ARN below satisfies the modelled `@pattern` on `ResourceARN`
     // (^arn:.+:application-autoscaling:.+:[0-9]+:scalable-target\/[a-zA-Z0-9-]+$), so each
     // reaches the handler rather than the boundary validator. The flag is whether the ARN names
-    // THIS endpoint — its account and Region — which is what decides which refusal it earns.
+    // a scalable-target IDENTITY of THIS endpoint — its account and Region, and an identifier of
+    // a scalable target — which is what decides which refusal it earns.
     let unresolvable: &[(&str, String, bool)] = &[
         (
             "the ARN of a target that has been deregistered",
@@ -284,7 +290,7 @@ async fn every_tag_operation_answers_an_unresolvable_arn_by_the_endpoint_it_name
         (
             "an id of another form",
             format!("arn:aws:application-autoscaling:{REGION}:{ACCOUNT}:scalable-target/nothing"),
-            true,
+            false,
         ),
         (
             "an ARN of another account",

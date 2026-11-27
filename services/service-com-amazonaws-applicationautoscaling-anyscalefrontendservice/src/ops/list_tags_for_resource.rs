@@ -169,10 +169,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // "Returns all the tags on the specified Application Auto Scaling scalable
         // target" — so an ARN no registered target carries is refused rather than answered
         // with an empty tag set: the two are different answers and a client tells them
-        // apart. An ARN of THIS endpoint that no registered target answers to is the resource
-        // reported ABSENT — `ResourceNotFoundException` ("the specified resource doesn't
-        // exist") with `crate::state::SCALABLE_TARGET_NOT_FOUND_MESSAGE` — and only an ARN of
-        // another partition, account or Region names no resource this endpoint could hold, so
+        // apart. An ARN naming a scalable-target identity of this endpoint that no registered
+        // target answers to is the resource reported ABSENT — `ResourceNotFoundException` ("the
+        // specified resource doesn't exist") with `crate::state::SCALABLE_TARGET_NOT_FOUND_MESSAGE`
+        // — and an ARN naming no such identity names no resource this endpoint could hold, so
         // that call is refused without the service speaking about the resource. Both come from
         // the one resolution the whole tagging family shares (see `tag_resource`), and both are
         // what the two tag MUTATIONS answer the same conditions with.

@@ -4,19 +4,21 @@
 //!
 //! The rule under test, one sentence: `ResourceARN` "identifies the Application Auto Scaling
 //! scalable target" the call addresses, and which refusal a well-formed ARN identifying no
-//! registered target earns is decided by WHICH ENDPOINT that ARN names — an ARN of the account
-//! and Region serving the request is the resource reported
+//! registered target earns is decided by whether that ARN names a scalable-target IDENTITY of
+//! the endpoint serving the request — its account and Region, and a last segment of the form a
+//! scalable target's identifier takes. An ARN naming such an identity is the resource reported
 //! ABSENT by every operation of the family (`ResourceNotFoundException`, which
 //! `smithy_query(query="operation",operation="TagResource,UntagResource,ListTagsForResource")`
 //! declares on all three, with the fixed sentence "Scalable Target not found" and the ARN asked
 //! about in the shape's `ResourceName` member), whether this service minted that ARN or not, and
-//! an ARN of another account, Region or partition is a tagging call it
+//! an ARN naming no such identity is a tagging call it
 //! refuses without reporting on the resource at all (`ValidationException` and the fixed
 //! sentence "Access Denied"). Both at the client-error status this service answers them on.
 //!
-//! Asserted over a TABLE whose rows differ along HOW the ARN fails to resolve (an id this
-//! service never minted, ids of other forms, another account, another Region, another
-//! partition, and the ARN of a target that WAS registered and has been deregistered) and
+//! Asserted over a TABLE whose rows differ along HOW the ARN fails to resolve (an identifier
+//! this service never minted, ids in no form an identifier takes, another account, another
+//! Region, another partition, and the ARN of a target that WAS registered and has been
+//! deregistered) and
 //! along the mutation's own payload (how many tags are written, how many keys are removed),
 //! with a registered target standing beside them so each row is a rule rather than a blanket
 //! refusal.
@@ -25,12 +27,12 @@ use serde_json::{json, Value};
 
 use crate::emulator::{error_code, error_message, Emulator, ACCOUNT, REGION};
 
-/// The sentence every operation of the tagging family carries for an ARN of this endpoint that
-/// names no registered target. Spelled out here rather than read from the implementation: the
-/// TEXT is what the rule owes a caller.
+/// The sentence every operation of the tagging family carries for an ARN naming an identity of
+/// this endpoint that no registered target answers to. Spelled out here rather than read from
+/// the implementation: the TEXT is what the rule owes a caller.
 const TARGET_NOT_FOUND: &str = "Scalable Target not found";
 
-/// The whole sentence they carry for an ARN of another account, Region or partition.
+/// The whole sentence they carry for an ARN that names no identity of this endpoint.
 const ACCESS_DENIED: &str = "Access Denied";
 
 /// The status both answer with: the client-error status a request that is not going to be
@@ -45,13 +47,14 @@ struct ArnRow {
     case: &'static str,
     /// The ARN itself.
     arn: String,
-    /// Whether the ARN names THIS endpoint — its account and Region — which is what decides
-    /// which refusal it earns.
+    /// Whether the ARN names a scalable-target IDENTITY of THIS endpoint — its account and
+    /// Region, and an identifier of a scalable target — which is what decides which refusal it
+    /// earns.
     served_here: bool,
 }
 
 impl ArnRow {
-    /// The code and the sentence this row's endpoint earns.
+    /// The code and the sentence this row's ARN earns.
     fn expected(&self) -> (&'static str, &'static str) {
         if self.served_here {
             ("ResourceNotFoundException", TARGET_NOT_FOUND)
@@ -75,21 +78,29 @@ fn unresolvable_arns(deregistered: &str) -> Vec<ArnRow> {
             case: "an id this service never minted",
             arn: format!(
                 "arn:aws:application-autoscaling:{REGION}:{ACCOUNT}:scalable-target/\
-                 00000000-0000-0000-0000-000000000000"
+                 0123456789abcdef0123456789abcdef0123"
             ),
             served_here: true,
+        },
+        ArnRow {
+            case: "an id in the form of a UUID",
+            arn: format!(
+                "arn:aws:application-autoscaling:{REGION}:{ACCOUNT}:scalable-target/\
+                 00000000-0000-0000-0000-000000000000"
+            ),
+            served_here: false,
         },
         ArnRow {
             case: "an id of another form",
             arn: format!(
                 "arn:aws:application-autoscaling:{REGION}:{ACCOUNT}:scalable-target/nothing-here"
             ),
-            served_here: true,
+            served_here: false,
         },
         ArnRow {
             case: "an id of a single character",
             arn: format!("arn:aws:application-autoscaling:{REGION}:{ACCOUNT}:scalable-target/a"),
-            served_here: true,
+            served_here: false,
         },
         ArnRow {
             case: "an ARN of another account",
@@ -156,9 +167,10 @@ fn mutations(resource_arn: &str) -> Vec<(&'static str, &'static str, Value)> {
 }
 
 /// RULE: a tag mutation whose `ResourceARN` names no registered scalable target answers by the
-/// ENDPOINT that ARN names — HTTP 400 either way: the RESOURCE reported absent, with the fixed
-/// sentence and the ARN asked about in `ResourceName`, for an ARN of this account and Region,
-/// and the access-denied sentence, naming nothing, for an ARN of another — exactly as the
+/// IDENTITY that ARN names — HTTP 400 either way: the RESOURCE reported absent, with the fixed
+/// sentence and the ARN asked about in `ResourceName`, for an ARN carrying a scalable target's
+/// identifier in this account and Region, and the access-denied sentence, naming nothing, for an
+/// ARN that names no such identity — exactly as the
 /// tag READ answers them.
 #[tokio::test]
 async fn a_tag_mutation_naming_no_registered_target_answers_by_the_endpoint_it_names() {
@@ -203,8 +215,8 @@ async fn a_tag_mutation_naming_no_registered_target_answers_by_the_endpoint_it_n
                 "case {case:?}: expected the message {expected_message:?}, got {message:?}"
             );
             // The ARN asked about is reported in the modelled member rather than spliced into
-            // the sentence, which states the condition and nothing else — and an ARN of another
-            // endpoint is not reported back at all.
+            // the sentence, which states the condition and nothing else — and an ARN naming no
+            // identity of this endpoint is not reported back at all.
             if row.served_here {
                 assert_eq!(
                     body["ResourceName"],
@@ -253,7 +265,7 @@ async fn a_tag_mutation_naming_no_registered_target_answers_by_the_endpoint_it_n
 }
 
 /// RULE: the tag READ answers the same ARNs the same way the two mutations do — each by the
-/// endpoint the ARN names — so one condition reads alike across the family.
+/// identity the ARN names — so one condition reads alike across the family.
 #[tokio::test]
 async fn the_tag_read_answers_the_same_arns_as_the_mutations() {
     let emulator = Emulator::empty();

@@ -37,10 +37,10 @@ const DIMENSION_WITHOUT_RESOURCE_ID: &str =
     "Scalable dimension cannot be provided without a resource ID.";
 /// A `NextToken` this service did not issue.
 const INVALID_NEXT_TOKEN: &str = "The NextToken value is not valid";
-/// A tag operation addressed to an ARN of this endpoint that names no registered scalable
-/// target.
+/// A tag operation addressed to an ARN naming a scalable-target identity of this endpoint that
+/// names no registered scalable target.
 const TARGET_NOT_FOUND: &str = "Scalable Target not found";
-/// A tag operation addressed to an ARN of another account, Region or partition.
+/// A tag operation addressed to an ARN that names no scalable-target identity of this endpoint.
 const ACCESS_DENIED: &str = "Access Denied";
 /// A write to the reserved tag namespace.
 const SYSTEM_TAG_KEY_REFUSED: &str = "Caller is an end user and not allowed to mutate system tags";
@@ -823,8 +823,9 @@ fn generated_tags(count: usize) -> Value {
     Value::Object(tags)
 }
 
-/// RULE: the tagging refusals each carry their own sentence — an ARN of this endpoint that
-/// names no registered target is reported absent, an ARN of another account or Region is refused
+/// RULE: the tagging refusals each carry their own sentence — an ARN naming a scalable-target
+/// identity of this endpoint that
+/// names no registered target is reported absent, an ARN naming no such identity is refused
 /// as a call
 /// about a resource the caller does not reach, a tag set over the per-resource maximum states
 /// that maximum, and a key in the reserved namespace is refused as a system tag — so a client
@@ -851,9 +852,10 @@ async fn the_tagging_refusals_are_distinct_sentences() {
         .expect("a ScalableTargetARN")
         .to_string();
 
-    // Every ARN below satisfies the modelled `@pattern`, so each reaches the handler. Each is
-    // addressed to another account, so none of them names a resource this endpoint could hold:
-    // the tagging call itself is refused.
+    // Every ARN below satisfies the modelled `@pattern`, so each reaches the handler. None of
+    // them names a scalable-target identity of this endpoint — two are addressed to another
+    // account or Region, and one carries an id in no form an identifier takes — so none names a
+    // resource this endpoint could hold: the tagging call itself is refused.
     let foreign: &[(&str, String)] = &[
         (
             "an ARN scoped to another account",
@@ -869,10 +871,14 @@ async fn the_tagging_refusals_are_distinct_sentences() {
                  0123456789abcdef0123456789abcdef0123"
             ),
         ),
+        (
+            "an ARN whose id is in no form this service mints",
+            format!("arn:aws:application-autoscaling:{REGION}:{ACCOUNT}:scalable-target/absent"),
+        ),
     ];
     for (case, unknown) in foreign {
-        // Every operation of the family refuses an ARN of another endpoint alike, at the
-        // same client-error status.
+        // Every operation of the family refuses an ARN that names no identity of this endpoint
+        // alike, at the same client-error status.
         for (operation, request) in [
             (
                 "TagResource",
@@ -897,21 +903,16 @@ async fn the_tagging_refusals_are_distinct_sentences() {
         }
     }
 
-    // An ARN of THIS endpoint that names no registered target carries the other
+    // An ARN carrying a scalable target's identifier in THIS account and Region that names no
+    // registered target carries the other
     // sentence, whether this service minted it or not: the resource it names is reported absent.
-    let absent_here: &[(&str, String)] = &[
-        (
-            "an ARN of a target that was never registered",
-            format!(
-                "arn:aws:application-autoscaling:{REGION}:{ACCOUNT}:scalable-target/\
-                 0123456789abcdef0123456789abcdef0123"
-            ),
+    let absent_here: &[(&str, String)] = &[(
+        "an ARN of a target that was never registered",
+        format!(
+            "arn:aws:application-autoscaling:{REGION}:{ACCOUNT}:scalable-target/\
+             0123456789abcdef0123456789abcdef0123"
         ),
-        (
-            "an ARN whose id is in no form this service mints",
-            format!("arn:aws:application-autoscaling:{REGION}:{ACCOUNT}:scalable-target/absent"),
-        ),
-    ];
+    )];
     for (case, unknown) in absent_here {
         for (operation, request) in [
             (

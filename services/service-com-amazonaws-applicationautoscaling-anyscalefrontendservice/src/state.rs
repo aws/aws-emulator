@@ -814,6 +814,28 @@ pub fn request_region(parts: &http::request::Parts) -> String {
 // ARNs
 // ---------------------------------------------------------------------------
 
+/// How many characters the identifier at the end of a scalable-target ARN carries.
+///
+/// The modelled `ResourceARN` publishes one:
+/// `arn:aws:application-autoscaling:us-east-1:123456789012:scalable-target/1234abcd56ab78cd901ef1234567890ab123`
+/// (`smithy_query(query="doc",shape="com.amazonaws.applicationautoscaling#TagResourceRequest",member="ResourceARN")`),
+/// whose last segment is 36 hexadecimal characters. Read by the mint below and by
+/// [`is_scalable_target_id`], so what this service ISSUES and what it RECOGNISES cannot drift
+/// apart.
+const SCALABLE_TARGET_ID_CHARS: usize = 36;
+
+/// Whether `id` is an identifier of the form every scalable-target ARN carries: the
+/// [`SCALABLE_TARGET_ID_CHARS`] hexadecimal characters of the identifier the service's own mint
+/// draws ([`scalable_target_arn`]) and the modelled example publishes.
+///
+/// What this decides is whether a `ResourceARN` names a scalable-target IDENTITY at all —
+/// separately from whether a target answers to it, which only the store knows
+/// (`tag_target_arns::TaggedTargetArn`). A string the identifier space does not contain names
+/// no scalable target of any account, so there is no resource for the service to report on.
+pub fn is_scalable_target_id(id: &str) -> bool {
+    id.len() == SCALABLE_TARGET_ID_CHARS && id.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
 /// A scalable target's ARN: `arn:aws:application-autoscaling:<region>:<account>:scalable-target/<id>`.
 ///
 /// The Region is the target's own, which its identity carries ([`TargetKey`]), so the ARN
@@ -840,7 +862,7 @@ pub fn scalable_target_arn(key: &TargetKey, registered_at: SystemTime) -> String
             &registered_nanos.to_string(),
         ]
         .join("\u{1f}"),
-        36,
+        SCALABLE_TARGET_ID_CHARS,
     );
     ::emulator_server::emulator_arn(
         "application-autoscaling",
@@ -1764,7 +1786,8 @@ pub const CAPACITY_RANGE_INVERTED_MESSAGE: &str =
 /// MINTED for a scalable target it no longer holds.
 ///
 /// The resource a tag operation addresses is the scalable target its `ResourceARN` names, so an
-/// ARN of this endpoint that no REGISTERED target answers to is the resource reported absent:
+/// ARN naming a scalable-target identity of this endpoint that no REGISTERED target answers to
+/// is the resource reported absent:
 /// the refusal states exactly that, and the ARN asked about is reported in the modelled
 /// `ResourceName` member rather than spliced into the sentence. Entirely fixed text — no ARN,
 /// Region, account or tag key is interpolated. It is answered by the READ and by the two
@@ -1773,8 +1796,8 @@ pub const CAPACITY_RANGE_INVERTED_MESSAGE: &str =
 /// a target this endpoint does not hold is the resource reported absent, not a permission
 /// failure: `ResourceNotFoundException` is modelled on all three operations, and a client
 /// branches on the code to tell "the target is gone" from "your request may not be made". Only
-/// an ARN addressed to another partition, account or Region earns the other refusal, since no
-/// resource this endpoint holds can be named by it (`tag_target_arns::TaggedTargetArn`).
+/// an ARN that names no scalable-target identity of this endpoint earns the other refusal, since
+/// no resource this endpoint holds can be named by it (`tag_target_arns::TaggedTargetArn`).
 pub const SCALABLE_TARGET_NOT_FOUND_MESSAGE: &str = "Scalable Target not found";
 
 // ---------------------------------------------------------------------------

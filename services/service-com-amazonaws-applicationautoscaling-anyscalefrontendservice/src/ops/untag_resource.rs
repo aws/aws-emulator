@@ -159,11 +159,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         };
         let mut state = state.lock();
 
-        // An ARN of this endpoint that names no REGISTERED target is the resource reported
-        // absent, and only an ARN of another partition, account or Region — a scalable target
-        // is regional — is a tagging call this endpoint refuses without speaking about the
-        // resource at all, by the one resolution the whole tagging family shares (see
-        // `tag_resource`).
+        // An ARN that names a scalable-target identity of this endpoint and no REGISTERED
+        // target is the resource reported absent, and an ARN that names no such identity —
+        // another partition, account or Region (a scalable target is regional), or an identifier
+        // in no form a scalable target's own takes — is a tagging call this endpoint refuses
+        // without speaking about the resource at all, by the one resolution the whole tagging
+        // family shares (see `tag_resource`).
         let region = crate::state::request_region(ctx.parts());
         let resolved = state.resolve_tagged_target_arn(&input.resource_arn, &region);
         let record = match resolved {
@@ -196,7 +197,8 @@ fn validation(message: impl Into<String>) -> UntagResourceError {
     .into()
 }
 
-/// The refusal of a `ResourceARN` of this endpoint that names no registered scalable target:
+/// The refusal of a `ResourceARN` naming an identity of this endpoint that no registered
+/// scalable target answers to:
 /// the ARN names the resource this call acts on, so one no registered target answers to is the
 /// resource reported ABSENT — the same modelled
 /// `ResourceNotFoundException`, with the same fixed sentence and the ARN in its `ResourceName`
@@ -206,7 +208,8 @@ fn target_not_found(resource_arn: &str) -> UntagResourceError {
     crate::state::wire_refusals::WireRefusal::scalable_target_not_found(resource_arn).into()
 }
 
-/// The refusal of a `ResourceARN` addressed to another partition, account or Region: the same
+/// The refusal of a `ResourceARN` that names no scalable-target identity of this endpoint: the
+/// same
 /// one fixed sentence, about the caller's reach rather than about the resource, that
 /// `TagResource` and the tag READ answer this condition with (see `tag_resource`).
 fn target_arn_never_minted() -> UntagResourceError {

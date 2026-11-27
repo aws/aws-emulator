@@ -447,12 +447,14 @@ async fn a_tag_operation_on_an_arn_naming_no_target_answers_the_recorded_refusal
         );
     }
 
-    // An ARN of THIS endpoint that no registered target answers to is the same answer the
+    // An ARN naming a scalable-target IDENTITY of THIS endpoint that no registered target
+    // answers to is the same answer the
     // deregistered ARN earns — the recorded answer for that class is HTTP 400
     // `ResourceNotFoundException` with the fixed sentence "Scalable Target not found" — while an
-    // ARN of another account or Region names no resource this endpoint could hold, so each
+    // ARN that names no such identity (another account or Region, or an id in no form an
+    // identifier takes) names no resource this endpoint could hold, so each
     // operation refuses the tagging call itself: HTTP 400 `ValidationException` with the fixed
-    // sentence "Access Denied". The flag says which endpoint the row's ARN names.
+    // sentence "Access Denied". The flag says which of the two the row's ARN names.
     const ACCESS_DENIED: &str = "Access Denied";
     let unresolvable: &[(&str, String, bool)] = &[
         (
@@ -466,7 +468,7 @@ async fn a_tag_operation_on_an_arn_naming_no_target_answers_the_recorded_refusal
         (
             "an id of another shape",
             format!("arn:aws:application-autoscaling:{REGION}:{ACCOUNT}:scalable-target/nothing"),
-            true,
+            false,
         ),
         (
             "an ARN of another account",
