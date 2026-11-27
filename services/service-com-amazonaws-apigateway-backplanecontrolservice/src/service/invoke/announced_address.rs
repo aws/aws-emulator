@@ -1,26 +1,38 @@
 // SPDX-License-Identifier: CC0-1.0
 
-//! The invoke address this emulator ANNOUNCES for a deployed stage: the address an artifact
-//! a caller downloads — an exported OpenAPI definition, a generated client SDK — names as the
+//! The invoke address an artifact of a deployed stage states: the address an artifact a
+//! caller downloads — an exported OpenAPI definition, a generated client SDK — names as the
 //! endpoint to call the stage at.
 //!
 //! AWS serves a deployed stage at `{rest-api-id}.execute-api.{region}.amazonaws.com`
 //! ("clients can invoke your API with the default
 //! https://{api_id}.execute-api.{region}.amazonaws.com endpoint",
-//! `RestApi$disableExecuteApiEndpoint`), and that is the address to announce a client that
-//! resolves AWS's own hosts. A client on the machine this emulator runs on resolves that name
-//! nowhere: it reached the emulator's own endpoint, and what it can call the stage at is that
-//! same endpoint — which serves every service's surface at one address, so the api travels in
-//! the PATH, behind the reserved prefix this data plane claims
+//! `RestApi$disableExecuteApiEndpoint`). A client on the machine this emulator runs on
+//! resolves that name nowhere: it reached the emulator's own endpoint, and what it can call
+//! the stage at is that same endpoint — which serves every service's surface at one address,
+//! so the api travels in the PATH, behind the reserved prefix this data plane claims
 //! (`/_aws/execute-api/{api-id}/{stage}/{resource-path}`, the prefixed path-style addressing
-//! `super::resolve` reads). An announced address a caller cannot reach is an artifact that
-//! points every client built from it away from the emulated API.
+//! `super::resolve` reads).
 //!
-//! ONE reading for every artifact that DIALS it, so a definition and a generated SDK of one
-//! stage cannot hand two unrelated addresses out: the exported 2.0 document's `host` is built
-//! on it, so is the ONE templated server URL of an exported 3.0 document, and so is the
-//! endpoint `GetSdk` binds its client to. [`execute_api_host`] states the api's own default
-//! host, which this reading announces to a client that resolves AWS's own hosts.
+//! TWO readings, because an artifact states one of two different things — and this data plane
+//! claims BOTH addressings, host-style on the api's own `execute-api` host as well as the
+//! prefixed path-style above, so either address reaches the stage:
+//!
+//! * the address a client of THAT artifact DIALS — the exported 2.0 document's `host` beside
+//!   the stage's `basePath`, and the endpoint `GetSdk` binds its generated client to — is the
+//!   endpoint the request reached ([`announced_invoke_address`]), and the api's own
+//!   `execute-api` host only for a client that addressed one of AWS's own hosts. An address
+//!   of that kind which the caller cannot reach is an artifact that points every client built
+//!   from it away from the emulated API, which is why it follows the request;
+//! * the API's OWN endpoint, which an artifact stating the API's CONTRACT names — the single
+//!   Server Object of an exported 3.0 document — is
+//!   `{api-id}.execute-api.{region}.amazonaws.com` with no path ahead of the stage
+//!   ([`AnnouncedInvokeAddress::execute_api`]), whatever address that export request reached:
+//!   such a document is read by client generators, contract tests and documentation pipelines,
+//!   which take the api id as the host's leading DNS label and re-point the definition by
+//!   substituting the host.
+//!
+//! [`execute_api_host`] states that default host once, for both readings.
 
 use super::{EMULATOR_PATH_NAMESPACE, EXECUTE_API_LABEL};
 
@@ -40,6 +52,26 @@ pub struct AnnouncedInvokeAddress {
 }
 
 impl AnnouncedInvokeAddress {
+    /// The API's OWN default invoke address: `{api-id}.execute-api.{region}.amazonaws.com`
+    /// with the whole path space of that host being this one api's invoke path, so nothing
+    /// names the api ahead of the stage.
+    ///
+    /// This is the address AWS publishes for a stage of an api with the default endpoint
+    /// ([`execute_api_host`]), and the address an artifact that states the API's own CONTRACT
+    /// — an exported OpenAPI/Swagger definition — names: a definition is read by SDK
+    /// generators, contract tests and documentation pipelines, which take the api id as the
+    /// leading DNS label of an `execute-api` host and the stage as the only path, so the
+    /// document carries that form whatever address the export request itself reached. This
+    /// data plane claims the host too (`super::resolve` reads it host-style), so the address
+    /// the document names is one this emulator answers for.
+    #[must_use]
+    pub fn execute_api(api_id: &str, region: &str) -> Self {
+        Self {
+            host: execute_api_host(api_id, region),
+            path_prefix: String::new(),
+        }
+    }
+
     /// The invoke URL of `stage_name`: the host, the api's own prefix and the stage, which is
     /// the URL a generated client calls.
     #[must_use]
@@ -50,16 +82,18 @@ impl AnnouncedInvokeAddress {
     /// The invoke URL of this address with `template` standing in for the stage segment —
     /// the form a 3.0 Server Object takes, whose `{basePath}` variable carries the stage.
     ///
-    /// The api is named ahead of the variable, so the ONE URL a 3.0 document carries
-    /// addresses this api's data plane whatever its stages are called.
+    /// Whatever names the api on this address — the host's leading DNS label on the api's own
+    /// endpoint, the reserved path prefix on the emulator's own — stands ahead of the
+    /// variable, so the ONE URL a 3.0 document carries addresses this api's data plane
+    /// whatever its stages are called.
     #[must_use]
     pub fn templated_invoke_url(&self, scheme: &str, template: &str) -> String {
         format!("{scheme}://{}{}/{template}", self.host, self.path_prefix)
     }
 }
 
-/// The address this emulator announces for `api_id`, for the request these `parts` came
-/// from:
+/// The address this emulator announces for `api_id` to a client that DIALS it, for the
+/// request these `parts` came from:
 ///
 /// * a request that addressed the EMULATOR'S OWN endpoint comes from a client that resolves
 ///   nothing else, so the stage is announced on that same endpoint with the api behind the

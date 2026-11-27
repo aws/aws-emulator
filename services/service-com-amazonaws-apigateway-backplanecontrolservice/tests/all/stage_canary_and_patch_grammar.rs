@@ -26,7 +26,6 @@
 
 use serde_json::{json, Value};
 
-use crate::patch_entry_precedence::stage_invalid_patch_path;
 use crate::rest_api_lifecycle::{assert_failure, create_api, Answer, Gateway};
 use crate::stage_lifecycle::{create_deployment, get_stage};
 
@@ -736,12 +735,14 @@ async fn an_add_names_one_entry_of_a_collection_a_stage_keys_by_name() {
         "UpdateStage",
     );
 
-    // The POINTER is judged first: one the stage has no member for is read as a method
-    // setting's path and refused as one, whichever op carried it.
+    // The POINTER is judged first where the stage HAS a member for it: a pointer it has none
+    // for at all is refused as the `add` itself, because an `add` puts nothing anywhere on
+    // such a pointer whether or not the stage could address it, while one reaching into a
+    // structure the stage does have keeps that structure's own sentence.
     for (path, expected) in [
         (
             "/sim2realNoSuchField",
-            stage_invalid_patch_path("/sim2realNoSuchField"),
+            "Invalid add operation with path: /sim2realNoSuchField".to_string(),
         ),
         (
             "/accessLogSettings/sim2realNoSuchField",
@@ -842,13 +843,16 @@ async fn a_stage_presents_only_a_client_certificate_the_account_has() {
         "UpdateStage",
     );
 
-    // A `remove` of the member leaves the stage with none and is not a lookup of one.
+    // A `remove` of the member names no part of a stage that can go away — a stage reports
+    // the member it was set, and the valueless `replace` above is how a caller takes it back
+    // off — so it is refused with the one pointer template a `remove` publishes, and the
+    // stage keeps what it had. The sibling `stage_remove_patch_grammar` suite holds the
+    // table of that rule.
     let case = "remove /clientCertificateId";
-    let updated = patch_ok(&gateway, &api, "prod", case, remove("/clientCertificateId")).await;
-    assert_members(
-        &updated,
-        &[("clientCertificateId", Value::Null)],
+    let answer = patch_stage(&gateway, &api, "prod", remove("/clientCertificateId")).await;
+    assert_refusal(
+        &answer,
+        &crate::stage_remove_patch_grammar::remove_outside_the_grammar("/clientCertificateId"),
         case,
-        "UpdateStage",
     );
 }

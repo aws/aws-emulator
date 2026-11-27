@@ -644,11 +644,13 @@ async fn a_certificate_a_stage_presents_cannot_be_deleted_until_the_stage_releas
     );
 
     // Rows differ along WHICH stage presents the certificate, and along HOW the reference
-    // is released: a `remove` of the member, and the empty value, which names no
-    // certificate and asks for none.
+    // is released: the two spellings of a `replace` that names no value — an empty one and
+    // no `value` member at all — each of which names no certificate and asks for none. A
+    // `remove` of the member is not one of them: a stage's single-valued member is no part
+    // of a stage a `remove` takes away, as `stage_remove_patch_grammar` pins.
     for (stage_name, release) in [
-        ("prod", op("remove", "/clientCertificateId", None)),
-        ("certstage", replace("/clientCertificateId", "")),
+        ("prod", replace("/clientCertificateId", "")),
+        ("certstage", op("replace", "/clientCertificateId", None)),
     ] {
         create_deployed_stage(&gateway, &api, stage_name).await;
         // The stage PRESENTS the certificate, which is the reference the delete is refused

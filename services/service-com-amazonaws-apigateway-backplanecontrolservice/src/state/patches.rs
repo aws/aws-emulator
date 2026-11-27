@@ -210,13 +210,11 @@ impl InvalidPathRefusal {
             Self::PathThenInvalidInput => invalid_request_input(path),
             Self::MethodSettingPath(paths) => invalid_method_setting_path(path, paths),
             Self::PathOpAndSupported(supported) => match supported.for_op(op) {
-                // The two spaces after `path` are the service's own, as is the bracketed,
-                // comma-separated list.
-                Some(paths) if !paths.is_empty() => format!(
-                    "Invalid patch path  '{path}' specified for op '{}'. Must be one of: [{}]",
-                    op.as_str(),
-                    paths.join(", ")
-                ),
+                // The bracketed, comma-separated list is the service's own, as are the two
+                // spaces the shared frame prints after `path`.
+                Some(paths) if !paths.is_empty() => {
+                    invalid_patch_path_for_op(path, op, &format!("[{}]", paths.join(", ")))
+                }
                 // An op the resource publishes NO path for: there is no list to offer, so
                 // the sentence sends the caller to an op the resource does support instead
                 // of enumerating nothing, as a recorded refusal under such an op shows.
@@ -265,6 +263,23 @@ impl UnsupportedOpRefusal {
             Self::Path => std::borrow::Cow::Owned(invalid_patch_path(path)),
         }
     }
+}
+
+/// The `BadRequestException` message for a patch `path` the `op` that named it cannot be
+/// applied on, stating the pointers that op CAN name as `supported`.
+///
+/// The frame is the service's own fixed text — the opening, the TWO spaces before the quoted
+/// path, the op quoted after it, and `Must be one of: ` — and the variable parts are the path
+/// and the op, both exactly as the request wrote them. What follows differs by resource: a
+/// resource that publishes a SET of pointers for the op prints it bracketed and
+/// comma-separated ([`InvalidPathRefusal::PathOpAndSupported`]), and one whose set for that op
+/// is a single pointer TEMPLATE prints that template alone — so one frame serves both and the
+/// two can never drift apart.
+pub fn invalid_patch_path_for_op(path: &str, op: PatchOpKind, supported: &str) -> String {
+    format!(
+        "Invalid patch path  '{path}' specified for op '{}'. Must be one of: {supported}",
+        op.as_str()
+    )
 }
 
 /// The `BadRequestException` message for a patch `path` named by an `op` the targeted

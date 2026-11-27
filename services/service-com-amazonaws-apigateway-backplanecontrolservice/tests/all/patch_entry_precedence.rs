@@ -53,8 +53,16 @@ const REST_API_INVALID_OP: &str =
     "Invalid patch operation specified. Must be one of: [add, replace, remove]";
 
 /// The pointers a STAGE publishes, which its own refusal of an unapplicable pointer
-/// enumerates — the stage's members, the per-method settings as the TEMPLATE the service
-/// publishes, and the collections it keys by name. Fixed text of that sentence.
+/// enumerates. FIXED TEXT of that sentence, reproduced as the service prints it: the two
+/// `accessLogSettings` pointers and the `/*/*` stage-wide method settings are named, the
+/// throttling/caching entries of each method-path family run TOGETHER inside one element
+/// (with no separator in the `{resourcePath}` family and a single space in the `/*/*` one),
+/// and no `/canarySettings` pointer or `/documentationVersion` appears — none of which
+/// follows from which pointers the operation can apply.
+///
+/// Stated here rather than read from the crate, so the assertion is independent of the
+/// constant under test (`STAGE_PATCH_PATHS` in src/ops/update_stage.rs, which carries a note
+/// back to this copy).
 const STAGE_PATCH_PATHS: &[&str] = &[
     "/deploymentId",
     "/description",
@@ -62,22 +70,33 @@ const STAGE_PATCH_PATHS: &[&str] = &[
     "/cacheClusterSize",
     "/clientCertificateId",
     "/accessLogSettings",
+    "/accessLogSettings/destinationArn",
+    "/accessLogSettings/format",
     "/{resourcePath}/{httpMethod}/metrics/enabled",
     "/{resourcePath}/{httpMethod}/logging/dataTrace",
     "/{resourcePath}/{httpMethod}/logging/loglevel",
-    "/{resourcePath}/{httpMethod}/throttling/burstLimit",
-    "/{resourcePath}/{httpMethod}/throttling/rateLimit",
-    "/{resourcePath}/{httpMethod}/caching/ttlInSeconds",
+    concat!(
+        "/{resourcePath}/{httpMethod}/throttling/burstLimit",
+        "/{resourcePath}/{httpMethod}/throttling/rateLimit",
+        "/{resourcePath}/{httpMethod}/caching/ttlInSeconds",
+    ),
     "/{resourcePath}/{httpMethod}/caching/enabled",
     "/{resourcePath}/{httpMethod}/caching/dataEncrypted",
     "/{resourcePath}/{httpMethod}/caching/requireAuthorizationForCacheControl",
     "/{resourcePath}/{httpMethod}/caching/unauthorizedCacheControlHeaderStrategy",
+    "/*/*/metrics/enabled",
+    "/*/*/logging/dataTrace",
+    "/*/*/logging/loglevel",
+    concat!(
+        "/*/*/throttling/burstLimit",
+        " /*/*/throttling/rateLimit",
+        " /*/*/caching/ttlInSeconds",
+    ),
+    "/*/*/caching/enabled",
+    "/*/*/caching/dataEncrypted",
+    "/*/*/caching/requireAuthorizationForCacheControl",
+    "/*/*/caching/unauthorizedCacheControlHeaderStrategy",
     "/variables/{variable_name}",
-    "/documentationVersion",
-    "/canarySettings/percentTraffic",
-    "/canarySettings/deploymentId",
-    "/canarySettings/stageVariableOverrides/{variable_name}",
-    "/canarySettings/useStageCache",
     "/tracingEnabled",
 ];
 
@@ -520,17 +539,23 @@ async fn a_stage_refuses_a_pointer_it_has_no_member_for_as_a_method_setting_path
             let answer = patch(&gateway, &uri, vec![op(kind, path, Some("1"))]).await;
             assert_failure(&answer, 400, "BadRequestException", &case);
             let message = answer.body["message"].as_str().unwrap_or_default();
-            // A `remove` of a pointer that is no removable part of a stage is read against
-            // the settings the stage carries, so it earns the remove sentence; the other
-            // two earn the path sentence. Both name the path the request sent.
-            let expected = if kind == "remove" {
-                format!(
+            // Which sentence such a pointer earns follows from the op: an `add` puts nothing
+            // anywhere on a pointer the stage has no applier for, so it is refused as the
+            // operation; a `remove` names a part of the stage that goes away, so a pointer
+            // that can spell a method path is read against the settings the stage carries
+            // and one that cannot (a single reference token) earns the one template a
+            // `remove` publishes; and a `replace` earns the path sentence with the whole
+            // published enumeration. Each names the path the request sent.
+            let spells_a_method_path = path.trim_start_matches('/').contains('/');
+            let expected = match kind {
+                "add" => format!("Invalid add operation with path: {path}"),
+                "remove" if spells_a_method_path => format!(
                     "Cannot remove method setting {} because there is no method setting for \
                      this method ",
                     path.trim_start_matches('/')
-                )
-            } else {
-                stage_invalid_patch_path(path)
+                ),
+                "remove" => crate::stage_remove_patch_grammar::remove_outside_the_grammar(path),
+                _ => stage_invalid_patch_path(path),
             };
             assert_eq!(
                 message, expected,

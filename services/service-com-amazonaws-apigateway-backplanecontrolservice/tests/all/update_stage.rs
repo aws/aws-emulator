@@ -117,9 +117,9 @@ async fn a_patch_sets_the_member_its_path_names_and_the_stage_reads_back() {
             vec![("description", json!("the production stage"))],
         ),
         (
-            "removing an optional string member",
+            "clearing an optional string member through a valueless replace",
             "s_undescribed",
-            json!([{ "op": "remove", "path": "/description" }]),
+            json!([{ "op": "replace", "path": "/description", "value": "" }]),
             vec![("description", Value::Null)],
         ),
         (
@@ -307,8 +307,8 @@ async fn a_patch_sets_the_member_its_path_names_and_the_stage_reads_back() {
         // without running into the per-API stage quota.
         let (api, deployment, _) =
             api_with_two_deployments(&gateway, &format!("update-stage-members-{index}")).await;
-        // Every row starts from a stage carrying a description, so the `remove` row has
-        // something to clear.
+        // Every row starts from a stage carrying a description, so the row that clears it
+        // has something to clear.
         create_stage(
             &gateway,
             &api,

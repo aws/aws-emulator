@@ -59,8 +59,12 @@
 //! An `add` names one entry of a collection the stage keys by name and nothing else: every
 //! other pointer of a stage names a member that is already there, which is `replace`d, so
 //! an `add` of one is refused — see [`add_names_an_entry`]. A `remove` takes away the parts
-//! of a stage that can go away; a pointer that is none of them is read as a method
-//! setting's path, so it is answered with that sentence — see [`remove_method_setting`].
+//! of a stage that can go away — a method's settings, a nested structure, an entry of a
+//! collection the stage keys by name — and the one pointer TEMPLATE it publishes is the
+//! method path, so a pointer that can name none of those parts is refused with that template
+//! and leaves the stage as it was; a pointer that names a method and no settings of it is
+//! read against the settings the stage carries — see [`remove_names_no_part_of_a_stage`] and
+//! [`remove_method_setting`].
 //! A patch `value` for a boolean member is READ rather than validated: see [`stage_bool`].
 //!
 //! Shared types live in `super::types`; the error channel in `crate::scaffolded`.
@@ -144,7 +148,7 @@ use super::types::*;
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::state::{
-    patch_enum_string, patch_enum_string_refused_with, patch_f64_checked,
+    patch_enum_string_refused_with, patch_f64_checked,
     patch_f64_refused_with, patch_i32_refused_with,
     patch_optional_string, patch_string_map, same_method, Patch, PatchFailure, PatchOpKind,
     StageEntry, EVERY_RESOURCE, MAX_COLLECTION_ENTRIES, MAX_STRING_CHARS,
@@ -231,6 +235,22 @@ const LOGGING_LEVEL_VALUES: &[&str] = &[LOGGING_LEVEL_OFF, "ERROR", "INFO"];
 fn invalid_logging_level(level: &str) -> String {
     format!("Invalid logging level specified: {level}")
 }
+
+/// The `BadRequestException` message API Gateway refuses a method setting's
+/// `unauthorizedCacheControlHeaderStrategy` outside its declared value set with.
+///
+/// The strategy says "how to handle unauthorized requests for cache invalidation"
+/// (`MethodSetting$unauthorizedCacheControlHeaderStrategy`), whose values the modelled
+/// `UnauthorizedCacheControlHeaderStrategy` enum declares
+/// ([`UNAUTHORIZED_CACHE_CONTROL_HEADER_STRATEGY_VALUES`]) — a patch `value` is a bare string
+/// on the wire, so the set is checked where the setting is written. API Gateway answers a
+/// value outside it with its own sentence for the SETTING: entirely fixed text, naming
+/// neither the rejected value, nor the method-setting path that carried it, nor the
+/// strategies it would have taken — the wording the method settings' other refusals of a
+/// value use ([`INVALID_THROTTLING_SETTING`]), rather than the generic out-of-set sentence a
+/// patch path earns.
+const INVALID_UNAUTHORIZED_CACHE_CONTROL_STRATEGY: &str =
+    "Invalid unauthorized cache control header strategy";
 
 /// The `BadRequestException` message API Gateway refuses a configuration that turns a
 /// stage's execution logging on with while the account has no CloudWatch Logs role.
@@ -404,13 +424,25 @@ const STAGE_INVALID_PATCH_OPERATION: &str =
     "Invalid patch operation specified. Must be one of: 'replace', 'remove', 'copy'";
 
 /// The pointers a STAGE publishes, in the order API Gateway's own refusal enumerates
-/// them: the stage's own members, the per-method settings spelled as the TEMPLATE the
-/// service publishes (`/{resourcePath}/{httpMethod}/<group>/<setting>`, placeholders and
-/// all), and the two collections it keys by name.
+/// them: the stage's own members, the two pointers of its access log settings, the
+/// per-method settings spelled as the TEMPLATE the service publishes
+/// (`/{resourcePath}/{httpMethod}/<group>/<setting>`, placeholders and all) and again for
+/// the `/*/*` scope that stands for every method of the stage, and the collection it keys
+/// by name.
 ///
-/// This is fixed text of the refusal below, not a table the dispatch reads: which pointer
-/// a stage applies is each arm of [`apply_stage_patch`] and of
-/// [`apply_method_setting_patch`], and the enumeration is what the SERVICE prints.
+/// This is FIXED TEXT of the refusal below, not a table the dispatch reads: which pointer a
+/// stage applies is each arm of [`apply_stage_patch`] and of [`apply_method_setting_patch`],
+/// and what the SERVICE prints is reproduced here as it prints it — quirks included. Two
+/// entries of the recorded sentence run several pointers TOGETHER, with no separator at all
+/// in the `{resourcePath}` family and a single space in the `/*/*` one, so each of those is
+/// one element of this list rather than three; and the list carries no `/documentationVersion`
+/// and no `/canarySettings` pointer, which this operation applies all the same
+/// ([`apply_canary_patch`]) — the printed list and the dispatch are separate things.
+/// and the enumeration is what the SERVICE prints.
+///
+/// Asserted end to end from a second statement of this text in
+/// `tests/all/patch_entry_precedence.rs`, which keeps the assertion independent of this
+/// constant; the two are edited together.
 const STAGE_PATCH_PATHS: &[&str] = &[
     "/deploymentId",
     "/description",
@@ -418,22 +450,33 @@ const STAGE_PATCH_PATHS: &[&str] = &[
     "/cacheClusterSize",
     "/clientCertificateId",
     "/accessLogSettings",
+    "/accessLogSettings/destinationArn",
+    "/accessLogSettings/format",
     "/{resourcePath}/{httpMethod}/metrics/enabled",
     "/{resourcePath}/{httpMethod}/logging/dataTrace",
     "/{resourcePath}/{httpMethod}/logging/loglevel",
-    "/{resourcePath}/{httpMethod}/throttling/burstLimit",
-    "/{resourcePath}/{httpMethod}/throttling/rateLimit",
-    "/{resourcePath}/{httpMethod}/caching/ttlInSeconds",
+    concat!(
+        "/{resourcePath}/{httpMethod}/throttling/burstLimit",
+        "/{resourcePath}/{httpMethod}/throttling/rateLimit",
+        "/{resourcePath}/{httpMethod}/caching/ttlInSeconds",
+    ),
     "/{resourcePath}/{httpMethod}/caching/enabled",
     "/{resourcePath}/{httpMethod}/caching/dataEncrypted",
     "/{resourcePath}/{httpMethod}/caching/requireAuthorizationForCacheControl",
     "/{resourcePath}/{httpMethod}/caching/unauthorizedCacheControlHeaderStrategy",
+    "/*/*/metrics/enabled",
+    "/*/*/logging/dataTrace",
+    "/*/*/logging/loglevel",
+    concat!(
+        "/*/*/throttling/burstLimit",
+        " /*/*/throttling/rateLimit",
+        " /*/*/caching/ttlInSeconds",
+    ),
+    "/*/*/caching/enabled",
+    "/*/*/caching/dataEncrypted",
+    "/*/*/caching/requireAuthorizationForCacheControl",
+    "/*/*/caching/unauthorizedCacheControlHeaderStrategy",
     "/variables/{variable_name}",
-    "/documentationVersion",
-    "/canarySettings/percentTraffic",
-    "/canarySettings/deploymentId",
-    "/canarySettings/stageVariableOverrides/{variable_name}",
-    "/canarySettings/useStageCache",
     "/tracingEnabled",
 ];
 
@@ -443,6 +486,54 @@ const STAGE_PATCH_PATHS: &[&str] = &[
 /// set, whichever `op` named the path.
 const STAGE_INVALID_PATCH_PATH: crate::state::InvalidPathRefusal =
     crate::state::InvalidPathRefusal::MethodSettingPath(STAGE_PATCH_PATHS);
+
+/// The one pointer TEMPLATE a stage publishes for a `remove`: a per-method settings path,
+/// `{resource_path}/{http_method}` as `Stage$methodSettings` states one, with the setting
+/// the `remove` takes away written after it.
+///
+/// A stage's own single-valued members are not among them — a stage reports every one of
+/// them, and a caller sets one to another value through the `replace` the pointer publishes
+/// instead — and neither is any other pointer that is no part of a stage a `remove` can take
+/// AWAY ([`remove_names_no_part_of_a_stage`]). Asserted end to end from a second statement of
+/// this text in `tests/all/stage_remove_patch_grammar.rs`.
+const METHOD_SETTINGS_PATH_TEMPLATE: &str = "/{resourcePath}/{httpMethod}";
+
+/// The one-token pointers of a stage a `remove` DOES name something to take away at: the
+/// nested settings structures, which a `remove` of the structure itself turns off
+/// ([`apply_access_log_patch`], [`apply_canary_patch`]).
+///
+/// Every other pointer a `remove` can apply names a method's settings, an entry of a
+/// collection the stage keys by name, or a member of one of these structures — all of which
+/// carry more reference tokens than the method path itself does ([`METHOD_PATH_TOKENS`]), so
+/// the removable parts of a stage that ONE token can name are exactly these two.
+const REMOVABLE_STAGE_STRUCTURES: &[&str] = &["accessLogSettings", "canarySettings"];
+
+/// Whether this `remove` names no part of a stage it could take AWAY.
+///
+/// A `remove` takes a part of the stage away, and the parts that can go away are a method's
+/// settings, the two structures above and the entries of the collections a stage keys by
+/// name. A pointer of a SINGLE reference token that is neither of those structures names
+/// none of them: it cannot spell a method path, which takes at least
+/// [`METHOD_PATH_TOKENS`] tokens, and every single-valued member of the `Stage` shape is
+/// such a pointer — so a `remove` of one is refused rather than clearing the member, and
+/// the stage is left exactly as it was.
+fn remove_names_no_part_of_a_stage(patch: &Patch) -> bool {
+    matches!(patch.op, PatchOpKind::Remove)
+        && patch.tokens.len() < METHOD_PATH_TOKENS
+        && !REMOVABLE_STAGE_STRUCTURES.contains(&patch.member())
+}
+
+/// How API Gateway refuses such a `remove`: the shared frame that quotes the rejected path
+/// and the `op` that named it, and then the one template a stage publishes for that op
+/// ([`METHOD_SETTINGS_PATH_TEMPLATE`]) — unbracketed, which is how the service prints a set
+/// of one.
+fn remove_outside_the_method_settings_grammar(patch: &Patch) -> PatchFailure {
+    PatchFailure::BadRequest(crate::state::invalid_patch_path_for_op(
+        &patch.path,
+        patch.op,
+        METHOD_SETTINGS_PATH_TEMPLATE,
+    ))
+}
 
 /// The pointers a patch may name inside a stage's `accessLogSettings`, spelled from the
 /// stage root: the two members the `AccessLogSettings` shape declares
@@ -545,24 +636,55 @@ struct StagePatchContext<'a> {
 /// Apply one patch to a COPY of a stored stage.
 ///
 /// An `add` is applied only where it names something to add ([`add_names_an_entry`]); on
-/// every other pointer of a stage it is refused as an op. The pointer and the VALUE are
-/// judged first, though — a pointer the stage could not apply at all, or a value the
-/// member would refuse, is refused on its own terms whichever op carried it — so such an
-/// `add` is run against a throwaway copy of the record and refused as an op only once that
-/// copy took it.
+/// every other pointer of a stage it is refused as the OPERATION it is, naming the path it
+/// rode in on ([`invalid_operation`]) — including a pointer this operation has no applier
+/// for at all ([`names_a_pointer_of_a_stage`]), for which an `add` puts nothing anywhere
+/// whether or not the stage could address it. What is judged ahead of that refusal is the
+/// VALUE: a value the member the pointer names would refuse is refused on its own terms
+/// whichever op carried it, so such an `add` is run against a throwaway copy of the record
+/// and refused as an op only once that copy took it.
 fn apply_patch(
     entry: &mut StageEntry,
     patch: &Patch,
     context: &StagePatchContext<'_>,
 ) -> Result<(), PatchFailure> {
     if matches!(patch.op, PatchOpKind::Add) && !add_names_an_entry(patch) {
-        apply_stage_patch(&mut entry.clone(), patch, context)?;
+        if names_a_pointer_of_a_stage(patch) {
+            apply_stage_patch(&mut entry.clone(), patch, context)?;
+        }
         return Err(PatchFailure::BadRequest(invalid_operation(
             patch.op,
             &patch.path,
         )));
     }
     apply_stage_patch(entry, patch, context)
+}
+
+/// The members of the `Stage` shape this operation applies a patch to — the arms
+/// [`apply_stage_patch`] dispatches on.
+///
+/// Read to answer an `add` WITHOUT applying anything: a pointer whose first reference token
+/// is none of these, and which names no method setting either ([`method_setting`]), is one
+/// this operation has no applier for, so there is no member to judge the op's `value`
+/// against and the `add` is refused as the operation. `stageName`, `cacheClusterStatus` and
+/// the timestamps are members of the shape that no patch writes, so they are not among them.
+const STAGE_PATCHED_MEMBERS: &[&str] = &[
+    "deploymentId",
+    "description",
+    "documentationVersion",
+    "clientCertificateId",
+    "tracingEnabled",
+    "cacheClusterEnabled",
+    "cacheClusterSize",
+    "variables",
+    "canarySettings",
+    "accessLogSettings",
+];
+
+/// Whether this pointer names a part of a stage this operation has an applier for: one of
+/// [`STAGE_PATCHED_MEMBERS`], or a setting of a method ([`method_setting`]).
+fn names_a_pointer_of_a_stage(patch: &Patch) -> bool {
+    STAGE_PATCHED_MEMBERS.contains(&patch.member()) || method_setting(patch).is_some()
 }
 
 /// Whether an `add` names a pointer of a stage it applies to.
@@ -604,6 +726,12 @@ fn apply_stage_patch(
     // refusal names both sides of the pair the request sent.
     if matches!(patch.op, PatchOpKind::Copy) {
         return apply_canary_promotion(entry, patch, context.deployments);
+    }
+    // A `remove` applies only where the stage has a part to take away: judged for the
+    // pointer as a whole, and before any member of the record is edited, so a `remove` of a
+    // member the stage reports is refused rather than clearing it.
+    if remove_names_no_part_of_a_stage(patch) {
+        return Err(remove_outside_the_method_settings_grammar(patch));
     }
     match patch.member() {
         "deploymentId" => apply_deployment_id(entry, patch, context.deployments),
@@ -1337,10 +1465,11 @@ fn apply_method_setting_patch(
             &mut settings.require_authorization_for_cache_control,
             &nested,
         ),
-        "caching/unauthorizedCacheControlHeaderStrategy" => patch_enum_string(
+        "caching/unauthorizedCacheControlHeaderStrategy" => patch_enum_string_refused_with(
             &mut settings.unauthorized_cache_control_header_strategy,
             &nested,
             UNAUTHORIZED_CACHE_CONTROL_HEADER_STRATEGY_VALUES,
+            |_| INVALID_UNAUTHORIZED_CACHE_CONTROL_STRATEGY.to_string(),
         ),
         _ => Err(patch.unsupported_path()),
     }

@@ -514,9 +514,12 @@ async fn export(
 /// A 3.0 document carries ONE server URL whose `{basePath}` variable stands where the stage
 /// goes, and a 2.0 document the `host` a client dials beside the stage's own `basePath`
 /// ("`{host}{basePath}` is the address a client of this document calls"), so resolving each
-/// gives the same kind of value: the base URL of the deployed stage. Both are built on the
-/// address this emulator announces for the stage, so both name the endpoint the reading
-/// client reached.
+/// gives the same kind of value: the base URL of the deployed stage. What each is built on
+/// differs, which is what the flag below records: the 2.0 `host` is the address this emulator
+/// announces for the stage, so it names the endpoint the reading client reached, while the one
+/// server URL of a 3.0 document states the api's OWN default invoke endpoint — the api id as
+/// the leading DNS label and no path ahead of the `{basePath}` variable — whatever endpoint
+/// the export was asked at. This data plane claims both addressings, so both are served.
 async fn published_addresses(
     router: &MultiServiceRouter,
     endpoint: &str,
@@ -548,7 +551,7 @@ async fn published_addresses(
         PublishedAddress {
             artifact: "the oas30 export's server URL",
             base_url: templated.replace("{basePath}", &base_path),
-            names_the_reached_endpoint: true,
+            names_the_reached_endpoint: false,
         },
         PublishedAddress {
             artifact: "the swagger export's host and basePath",

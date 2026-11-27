@@ -4,13 +4,19 @@
 //! `host` of a Swagger 2.0 export, the `servers[].url` of an OpenAPI 3.0 export, and the
 //! endpoint a generated client SDK is bound to.
 //!
-//! ONE rule, wherever an address is stated:
+//! Two rules, each where an address is stated:
 //!
 //! > An address an artifact advertises for a client to DIAL — the `host` a Swagger 2.0
-//! > document states beside the stage's `basePath`, the ONE templated server URL of an
-//! > OpenAPI 3.0 document, and the endpoint a generated client SDK is bound to — is an
-//! > address this emulator itself answers on: the endpoint the request reached, and the
-//! > api's own `execute-api` host for a client that resolves AWS's own hosts.
+//! > document states beside the stage's `basePath`, and the endpoint a generated client SDK
+//! > is bound to — is an address this emulator itself answers on: the endpoint the request
+//! > reached, and the api's own `execute-api` host for a client that resolves AWS's own
+//! > hosts.
+//!
+//! > The ONE Server Object of an OpenAPI 3.0 export states the endpoint of the API ITSELF —
+//! > the api id as the leading DNS label of `{api-id}.execute-api.{region}.amazonaws.com`
+//! > and the templated `{basePath}` as the whole path — whatever address the export request
+//! > reached, because that document is the API's published contract and is read by client
+//! > generators, contract tests and documentation pipelines.
 //!
 //! Both addresses are ones this data plane claims: it answers an invoke host-style on
 //! `{api-id}.execute-api.{region}.amazonaws.com` as well as on the emulator's own endpoint
@@ -48,6 +54,18 @@ const SCHEME: &str = "https";
 /// reaching it is what "the advertised address is served" means.
 const RESOURCE_PATH: &str = "items";
 const SERVED_BODY: &str = r#"{"at":"items"}"#;
+
+/// The Region this crate's wire harness creates a REST API in: the Region the shared
+/// `create_api` request names in its host. An api's own `execute-api` endpoint lives in the
+/// Region the api was CREATED in, so that is the Region an exported 3.0 document states
+/// whatever Region a later request is signed for.
+const API_CREATION_REGION: &str = "us-east-1";
+
+/// The api's OWN default invoke host: the api id as the leading DNS label of
+/// `{api-id}.execute-api.{region}.amazonaws.com`, in [`API_CREATION_REGION`].
+fn api_endpoint_authority(api: &str) -> String {
+    format!("{api}.execute-api.{API_CREATION_REGION}.amazonaws.com")
+}
 
 /// Which host a row's artifacts must advertise.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -150,10 +168,14 @@ impl Row {
     }
 
     /// The invoke URL a reader of the exported 3.0 document resolves once it fills the
-    /// `{basePath}` variable in: the advertised address and the stage, which is the same URL
-    /// a generated client calls.
+    /// `{basePath}` variable in: the API's OWN endpoint and the stage, which this data plane
+    /// claims host-style whichever endpoint the export request reached.
     fn exported_invoke_url(&self, api: &str) -> String {
-        self.invoke_url(api)
+        format!(
+            "{SCHEME}://{}{}",
+            api_endpoint_authority(api),
+            self.base_path()
+        )
     }
 }
 
@@ -331,14 +353,7 @@ async fn a_swagger_export_advertises_the_host_the_emulator_serves_the_stage_on()
         let document = export_document(&row, &gateway, &api, "swagger").await;
 
         let host = document["host"].as_str().unwrap_or_default();
-        assert_eq!(
-            host,
-            row.authority(&api),
-            "case {:?}: expected the swagger export to advertise the host the stage is \
-             served on, got {document}",
-            row.case
-        );
-        assert_reachable_authority(&row, host, "the swagger export's host");
+        assert_exported_authority(&row, &api, host, "the swagger export's host");
         assert_eq!(
             document["basePath"].as_str().unwrap_or_default(),
             row.base_path(),
@@ -363,7 +378,7 @@ async fn a_swagger_export_advertises_the_host_the_emulator_serves_the_stage_on()
 }
 
 #[tokio::test]
-async fn an_oas30_export_names_the_address_the_emulator_serves_the_stage_on() {
+async fn an_oas30_export_names_the_apis_own_endpoint_whatever_address_it_was_asked_at() {
     for row in rows() {
         let gateway = Gateway::new();
         let api = deployed_api(&row, &gateway).await;
@@ -372,16 +387,14 @@ async fn an_oas30_export_names_the_address_the_emulator_serves_the_stage_on() {
         let server = &document["servers"][0];
         let url = server["url"].as_str().unwrap_or_default();
         // The `{basePath}` variable stands where the stage goes, and carries the stage name
-        // as its default — so the URL a reader resolves is the stage's own invoke URL.
+        // as its default — so the URL a reader resolves is the stage's own invoke URL on the
+        // API's own endpoint, with the api id as the host's leading label and no path ahead
+        // of the variable.
         assert_eq!(
             url,
-            format!(
-                "{SCHEME}://{}{}/{{basePath}}",
-                row.authority(&api),
-                row.path_prefix(&api)
-            ),
-            "case {:?}: expected the oas30 export to name the address the stage is served \
-             at, got {document}",
+            format!("{SCHEME}://{}/{{basePath}}", api_endpoint_authority(&api)),
+            "case {:?}: expected the oas30 export to name the API's own endpoint, got \
+             {document}",
             row.case
         );
         assert_eq!(
@@ -396,30 +409,33 @@ async fn an_oas30_export_names_the_address_the_emulator_serves_the_stage_on() {
         assert_eq!(
             resolved,
             row.exported_invoke_url(&api),
-            // The resolved URL is the stage's own invoke URL, so a reader of the document
-            // dials exactly what a generated client does.
-            "case {:?}: expected the resolved server URL to be the stage's invoke URL, got \
-             {resolved:?}",
+            // The resolved URL is the stage's invoke URL on the api's own `execute-api`
+            // host, so a reader of the document dials the API's published address.
+            "case {:?}: expected the resolved server URL to be the stage's invoke URL on the \
+             API's own endpoint, got {resolved:?}",
             row.case
         );
-        assert_exported_authority(
-            &row,
-            &api,
-            url.trim_start_matches("https://")
-                .split('/')
-                .next()
-                .unwrap_or_default(),
-            "the oas30 export's server URL",
+        let authority = url
+            .trim_start_matches("https://")
+            .split('/')
+            .next()
+            .unwrap_or_default();
+        assert_eq!(
+            authority.split('.').next(),
+            Some(api.as_str()),
+            "case {:?}: expected the api id as the leading DNS label of the oas30 export's \
+             server URL, got {authority:?}",
+            row.case
         );
-        // The endpoint the document names is one this emulator answers for: the api is named
-        // ahead of the `{basePath}` variable, so the resolved URL reaches the deployed
+        // The endpoint the document names is one this emulator answers for: this data plane
+        // claims the api's own `execute-api` host, so the resolved URL reaches the deployed
         // method.
         assert_served(
             &row,
             &gateway,
-            &row.authority(&api),
+            &api_endpoint_authority(&api),
             "the oas30 export",
-            &format!("{}{}", row.path_prefix(&api), row.base_path()),
+            &row.base_path(),
         )
         .await;
     }

@@ -20,10 +20,11 @@
 //! invoke endpoint of the stage the dialect's own member names it in — the address this
 //! emulator ANNOUNCES for the stage
 //! (`crate::service::invoke::announced_invoke_address`, the endpoint the request reached,
-//! else the api's own `execute-api` host) for a 2.0 document's `host`/`basePath`/`schemes`
-//! and for the ONE templated server URL of a 3.0 document (`servers`), so every address a
-//! downloaded definition hands a client leads back to the emulator that served it. The
-//! vendor extensions that describe
+//! else the api's own `execute-api` host) for a 2.0 document's `host`/`basePath`/`schemes`,
+//! and the API's OWN endpoint template
+//! (`crate::service::invoke::AnnouncedInvokeAddress::execute_api`) for the ONE Server Object
+//! of a 3.0 document (`servers`), which states the endpoint of the API itself rather than the
+//! address one client reached. The vendor extensions that describe
 //! a CONFIGURATION a caller made — an integration, an authorizer, a customized gateway
 //! response, a documentation snapshot — are rendered only when the request's `parameters`
 //! ask for them, as that member documents: the integration and authorizer extensions for
@@ -787,10 +788,9 @@ fn content_disposition(
 /// ([`crate::service::invoke::announced_invoke_address`]), which a 2.0 document carries as
 /// its HOST beside the stage's own `basePath`: `{host}{basePath}` is the one address a
 /// client of a 2.0 document dials, so it is the address the caller reached this emulator at.
-/// A 3.0 document carries ONE server URL instead, a template naming the api ahead of its
-/// `{basePath}` variable — built on that SAME announced address, because the URL a 3.0
-/// document carries is dialled by its reader exactly as a 2.0 `host` is, so an export of
-/// one stage cannot hand two unrelated addresses out.
+/// A 3.0 document declares ONE Server Object instead, whose URL is the API's own endpoint
+/// TEMPLATE with a `{basePath}` variable for the stage — see [`server_object`], which states
+/// why that one is the API's own `execute-api` endpoint rather than the reached address.
 fn export_document(
     api: &RestApiEntry,
     stage: &StageEntry,
@@ -850,7 +850,7 @@ fn export_document(
             document.insert("info".to_string(), info_object(api, deployment));
             document.insert(
                 "servers".to_string(),
-                Value::Array(vec![server_object(address, &stage.stage_name)]),
+                Value::Array(vec![server_object(api, &stage.stage_name)]),
             );
             document.insert("paths".to_string(), Value::Object(paths));
             // A 3.0 document holds its reusable definitions in ONE Components Object,
@@ -901,9 +901,21 @@ fn export_document(
     Value::Object(document)
 }
 
-/// The one server of an `oas30` document: the stage's invoke URL on the announced address,
-/// with the stage name as the `{basePath}` variable's value.
-fn server_object(address: &AnnouncedInvokeAddress, stage_name: &str) -> Value {
+/// The one server of an `oas30` document: the API's own endpoint template, with the stage
+/// name as the `{basePath}` variable's value.
+///
+/// A 3.0 Server Object states the endpoint of the API ITSELF, so API Gateway writes the api's
+/// own default `execute-api` endpoint there — the api id as the leading DNS label of
+/// `{api-id}.execute-api.{region}.amazonaws.com`, in the Region the api was created in, and
+/// the templated `{basePath}` as the whole path
+/// ([`crate::service::invoke::AnnouncedInvokeAddress::execute_api`]). That template is what an
+/// exported definition is consumed for: a client generator, a contract test or a
+/// documentation pipeline reads it as the API's published address and re-points it by
+/// substituting the host, which an address carrying the api id in a PATH prefix cannot be.
+/// This data plane claims that host too, so the URL the document declares is one this
+/// emulator answers for.
+fn server_object(api: &RestApiEntry, stage_name: &str) -> Value {
+    let address = AnnouncedInvokeAddress::execute_api(&api.id, &api.region);
     let mut default = Map::new();
     default.insert("default".to_string(), Value::from(stage_name));
     let mut variables = Map::new();
@@ -1812,10 +1824,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             })
         })?;
 
-        // The address a client of this document dials is the address this emulator
-        // announces for the stage, whichever dialect states it: a 2.0 document carries it
-        // as its `host` beside the stage's `basePath`, a 3.0 document inside its ONE
-        // templated server URL.
+        // The address a client of a 2.0 document dials is the address this emulator
+        // announces for the stage, which that dialect carries as its `host` beside the
+        // stage's `basePath`. The ONE server a 3.0 document declares is the API's own
+        // endpoint TEMPLATE instead, built inside [`server_object`] from the api itself.
         let address = crate::service::invoke::announced_invoke_address(
             &api.id,
             &region,

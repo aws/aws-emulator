@@ -492,16 +492,19 @@ async fn an_op_a_stage_takes_no_path_for_is_refused_with_the_stages_own_op_list(
     let uri = format!("/restapis/{api}/stages/prod");
 
     // Rows differ in the stage member the pointer names — a single-valued optional member,
-    // a boolean one, an entry of a map member, the deployment the stage serves — and in the
-    // op that named it: an op the RESOURCE takes no path for is refused as an op, so the
-    // sentence is the stage's own enumeration whichever member the pointer named.
+    // a boolean one, an entry of a map member, the deployment the stage serves, the cache
+    // capacity — and in the op that named it: an op the RESOURCE takes no path for is
+    // refused as an op, so the sentence is the stage's own enumeration whichever member the
+    // pointer named. A `remove` is not one of those ops — a stage publishes the per-method
+    // settings path for it — so a `remove` the stage cannot apply is refused as that path
+    // instead, which the `stage_remove_patch_grammar` suite pins.
     let rows: [(&str, &str); 6] = [
         ("/description", "move"),
         ("/description", "test"),
-        ("/tracingEnabled", "remove"),
+        ("/tracingEnabled", "move"),
         ("/variables/color", "move"),
-        ("/deploymentId", "remove"),
         ("/deploymentId", "test"),
+        ("/cacheClusterSize", "move"),
     ];
 
     for (path, kind) in rows {
