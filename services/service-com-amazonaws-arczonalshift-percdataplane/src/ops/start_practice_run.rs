@@ -284,7 +284,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .into());
         }
 
-        let zonal_shift_id = store.next_zonal_shift_id();
+        let zonal_shift_id = crate::state::new_zonal_shift_id();
         let shift = ZonalShift {
             zonal_shift_id: zonal_shift_id.clone(),
             resource_identifier: input.resource_identifier,

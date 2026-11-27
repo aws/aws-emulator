@@ -102,7 +102,11 @@ fn unknown_resource_identifiers() -> Vec<(&'static str, &'static str)> {
 /// shape="ZonalShiftId")`), so each end of that range and each kind of character it
 /// admits is a row.
 pub(crate) const UNKNOWN_ZONAL_SHIFT_IDS: &[(&str, &str)] = &[
-    ("zs-0000009999", "an id of the form this service mints"),
+    (
+        "7f1b3c2d-4e5a-4b6c-8d9e-0a1b2c3d4e5f",
+        "a uuid-shaped id, the form this service mints",
+    ),
+    ("zs-0000009999", "a prefixed, zero-padded id"),
     ("abcdef", "the shortest id the model accepts"),
     (
         "A1b2C3d4E5f6A1b2C3d4E5f6A1b2C3d4E5f6",

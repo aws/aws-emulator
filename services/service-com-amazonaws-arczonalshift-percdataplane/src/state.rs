@@ -54,6 +54,11 @@ pub use practice_run_shifts::{
     UNSUPPORTED_PRACTICE_CANCEL_SHIFT_TYPE_MESSAGE, UNSUPPORTED_PRACTICE_CANCEL_SHIFT_TYPE_REASON,
 };
 
+/// The identifier ARC issues for a zonal shift, and the one site that mints one.
+mod shift_ids;
+
+pub use shift_ids::new_zonal_shift_id;
+
 /// The refusals every zonal-shift mutation answers, each worded once for the class it
 /// refuses.
 mod shift_refusals;
@@ -438,8 +443,6 @@ pub struct ComAmazonawsArczonalshiftPercdataplaneState {
     /// shift stays here: `ListZonalShifts` "lists all active and completed
     /// zonal shifts".
     pub zonal_shifts: BTreeMap<String, ZonalShift>,
-    /// The source of unique `zonalShiftId`s; see [`Self::next_zonal_shift_id`].
-    pub next_shift_seq: u64,
     /// The account-wide autoshift observer notification setting:
     /// `UpdateAutoshiftObserverNotificationStatus` writes it and
     /// `GetAutoshiftObserverNotificationStatus` reports it.
@@ -474,7 +477,6 @@ impl Default for ComAmazonawsArczonalshiftPercdataplaneState {
         Self {
             managed_resources,
             zonal_shifts: BTreeMap::new(),
-            next_shift_seq: 0,
             autoshift_observer_notification_status:
                 DEFAULT_AUTOSHIFT_OBSERVER_NOTIFICATION_STATUS,
             practice_run_configurations: BTreeMap::new(),
@@ -484,15 +486,6 @@ impl Default for ComAmazonawsArczonalshiftPercdataplaneState {
 }
 
 impl ComAmazonawsArczonalshiftPercdataplaneState {
-    /// Mint the next `zonalShiftId`.
-    ///
-    /// The model constrains `ZonalShiftId` to `^[A-Za-z0-9-]+$`, length 6..36;
-    /// every id this mints satisfies both and no two are equal.
-    pub fn next_zonal_shift_id(&mut self) -> String {
-        self.next_shift_seq += 1;
-        format!("zs-{:010}", self.next_shift_seq)
-    }
-
     /// Materialise the status change the clock has already made due: an `ACTIVE`
     /// shift whose `expiryTime` is in the past is `EXPIRED`, whether or not
     /// anybody called.
@@ -743,12 +736,27 @@ pub fn az_group_id(resource_identifier: &str) -> Option<String> {
 }
 
 /// A stored instant as the wire timestamp the model declares.
+///
+/// Every `timestamp` member of this model carries no `@timestampFormat`, so each is
+/// serialized in the default format of the service's protocol (`restJson1`): a JSON
+/// number of seconds since the epoch. AWS writes such a number to at most MILLISECOND
+/// resolution, so the stored instant is truncated to whole milliseconds here — the one
+/// conversion every site that reports an instant of this service goes through — rather
+/// than passed on with the sub-millisecond tail the host clock happens to carry, which
+/// is a precision no AWS response has and a fixed-precision client cannot read.
+///
+/// Truncating (rather than rounding) keeps the difference between two instants taken
+/// from one clock reading exactly the length of time between them, so an expiry a caller
+/// asked for in whole minutes still reads as one.
 #[must_use]
 pub fn as_date_time(time: SystemTime) -> ::aws_smithy_types::DateTime {
     let since_epoch = time
         .duration_since(UNIX_EPOCH)
         .unwrap_or(Duration::from_secs(0));
-    ::aws_smithy_types::DateTime::from_secs_f64(since_epoch.as_secs_f64())
+    // Saturating, so an instant beyond what the wire type represents is reported at that
+    // bound rather than wrapping to one in the past.
+    let millis = i64::try_from(since_epoch.as_millis()).unwrap_or(i64::MAX);
+    ::aws_smithy_types::DateTime::from_millis(millis)
 }
 
 /// Parse an `expiresIn` into the length of time it names.
