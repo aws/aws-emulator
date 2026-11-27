@@ -19,14 +19,20 @@
 //! An `AttendeeId` absent from a meeting that EXISTS is NOT this refusal: the meeting is
 //! live, so access to that attendee's record is revoked rather than unknown, and the
 //! answer is the modelled `ForbiddenException` (HTTP 403) naming both ids the request
-//! carried.
+//! carried. That is the recorded answer of this operation family for an `AttendeeId` the
+//! meeting holds no attendee under — whatever made it unresolvable — rather than a reading
+//! of `NotFoundException`'s generic documentation, which this service applies to the
+//! `MeetingId` half of the same request; see
+//! `issues/things-that-now-work/20261029T175426Z-chime-sdk-meetings-6-net-new-root-causes.md`
+//! (cause 5), which this suite keeps pinned.
 //!
 //! The table spans the class the rule generalises over: which operation refuses (reader,
-//! lister and writer, for both resource kinds), which resource is the absent one (the
-//! meeting, or an attendee inside a meeting that exists), whether the id was never created
-//! or was deleted, whether the id is caller-supplied or minted by this service, and the
-//! form of the `GuidString` itself (lower-case hex, upper-case hex, both numeric
-//! extremes). No row uses the id the issue recorded.
+//! lister, writer and deleter, for both resource kinds), which resource is the absent one
+//! (the meeting, or an attendee inside a meeting that exists), whether the id was never
+//! created, was created in ANOTHER meeting or was deleted, whether the id is
+//! caller-supplied or minted by this service, and the form of the `GuidString` itself
+//! (lower-case hex, upper-case hex, both numeric extremes). No row uses the id the issue
+//! recorded.
 
 use std::sync::Arc;
 
@@ -155,6 +161,72 @@ impl Emulator {
         self.call("DELETE", &format!("/meetings/{meeting_id}"), None)
             .await
     }
+
+    /// Create an attendee of `meeting_id` and return its minted `AttendeeId`.
+    async fn new_attendee_id(&self, meeting_id: &str, user: &str) -> String {
+        let reply = self
+            .call(
+                "POST",
+                &format!("/meetings/{meeting_id}/attendees"),
+                Some(&json!({ "ExternalUserId": user })),
+            )
+            .await;
+        assert_eq!(
+            reply.status, 200,
+            "CreateAttendee {user:?}: expected 200, got {} with {:?}",
+            reply.status, reply.body
+        );
+        reply
+            .body
+            .get("Attendee")
+            .and_then(|attendee| attendee.get("AttendeeId"))
+            .and_then(Value::as_str)
+            .unwrap_or_else(|| panic!("CreateAttendee {user:?} returned no AttendeeId"))
+            .to_string()
+    }
+
+    /// Every operation that resolves an `AttendeeId` inside a meeting, each called with the
+    /// pair of ids given: a reader, a writer and the deleter.
+    async fn attendee_calls(&self, meeting_id: &str, attendee_id: &str) -> Vec<(&str, Reply)> {
+        vec![
+            (
+                "GetAttendee",
+                self.call(
+                    "GET",
+                    &format!("/meetings/{meeting_id}/attendees/{attendee_id}"),
+                    None,
+                )
+                .await,
+            ),
+            (
+                "UpdateAttendeeCapabilities",
+                self.call(
+                    "PUT",
+                    &format!("/meetings/{meeting_id}/attendees/{attendee_id}/capabilities"),
+                    Some(&json!({ "Capabilities": admissible_capabilities() })),
+                )
+                .await,
+            ),
+            (
+                "DeleteAttendee",
+                self.call(
+                    "DELETE",
+                    &format!("/meetings/{meeting_id}/attendees/{attendee_id}"),
+                    None,
+                )
+                .await,
+            ),
+        ]
+    }
+}
+
+/// A capability set every meeting created with the documented default `MeetingFeatures`
+/// admits (`AttendeeCapabilities`' documented corner cases: content reception needs video
+/// reception, and neither member's maximum resolution is `None` by default), so an
+/// `UpdateAttendeeCapabilities` row below is refused for the id it names rather than for
+/// the set it carries.
+fn admissible_capabilities() -> Value {
+    json!({ "Audio": "SendReceive", "Video": "Receive", "Content": "Receive" })
 }
 
 /// How an absent resource of `kind` with id `id` is reported.
@@ -353,43 +425,46 @@ async fn an_absent_meeting_is_reported_by_the_situation_the_request_met() {
 /// `ForbiddenException` naming the ATTENDEE and the MEETING the request carried — so a
 /// caller that passed both ids can tell which of the two was the absent one, and knows the
 /// attendee is gone for good rather than mistyped.
+///
+/// The rows span the class the rule generalises over: WHICH operation resolves the
+/// `AttendeeId` (the reader, the writer and the deleter, all three of which declare both
+/// errors), HOW the id came to name no attendee of this meeting (never created in any
+/// meeting, created in ANOTHER live meeting, or held by this meeting until `DeleteAttendee`
+/// removed it), and the form of the `GuidString` itself. The 403 is a verdict about the
+/// attendee the request named and not about its caller, which the tail of the test pins:
+/// the SAME `Authorization` header is served HTTP 200 for the attendee of that meeting that
+/// does exist and for `ListAttendees` on it.
 #[tokio::test]
 async fn an_attendee_absent_from_a_live_meeting_is_permanently_refused() {
     let emulator = Emulator::new();
     let meeting_id = emulator.new_meeting_id("tok-attendees", "ext-attendees").await;
 
-    // An attendee that DOES exist in the same meeting, so the refusals below are about
-    // the id each one names rather than about an empty meeting.
-    let created = emulator
-        .call(
-            "POST",
-            &format!("/meetings/{meeting_id}/attendees"),
-            Some(&json!({ "ExternalUserId": "user-present" })),
-        )
+    // An attendee that DOES exist in the same meeting and survives every row, so the
+    // refusals below are about the id each one names rather than about an empty meeting.
+    let survivor = emulator.new_attendee_id(&meeting_id, "user-present").await;
+    // An attendee of ANOTHER live meeting: an id that names a real attendee, but not one of
+    // the meeting the refused calls name.
+    let other_meeting_id = emulator.new_meeting_id("tok-other", "ext-other").await;
+    let other_attendee = emulator
+        .new_attendee_id(&other_meeting_id, "user-other-meeting")
         .await;
-    assert_eq!(
-        created.status, 200,
-        "CreateAttendee: expected 200, got {} with {:?}",
-        created.status, created.body
-    );
-    let present_attendee = created
-        .body
-        .get("Attendee")
-        .and_then(|attendee| attendee.get("AttendeeId"))
-        .and_then(Value::as_str)
-        .expect("CreateAttendee returns an AttendeeId")
-        .to_string();
 
-    // (case, the absent AttendeeId) — every form the modelled pattern admits, plus the id
-    // of an attendee this service minted and then deleted.
+    // (case, the AttendeeId that names no attendee of `meeting_id`) — every form the
+    // modelled pattern admits, another meeting's attendee, and one this service minted here
+    // and then deleted.
     let mut rows: Vec<(String, String)> = ABSENT_IDS
         .iter()
         .map(|(case, id)| (format!("never created, {case}"), (*id).to_string()))
         .collect();
+    rows.push((
+        "created in another live meeting".to_string(),
+        other_attendee.clone(),
+    ));
+    let doomed = emulator.new_attendee_id(&meeting_id, "user-doomed").await;
     let deleted = emulator
         .call(
             "DELETE",
-            &format!("/meetings/{meeting_id}/attendees/{present_attendee}"),
+            &format!("/meetings/{meeting_id}/attendees/{doomed}"),
             None,
         )
         .await;
@@ -398,35 +473,10 @@ async fn an_attendee_absent_from_a_live_meeting_is_permanently_refused() {
         "DeleteAttendee on an attendee that exists: expected 204, got {} with {:?}",
         deleted.status, deleted.body
     );
-    rows.push((
-        "minted by the service, then deleted".to_string(),
-        present_attendee,
-    ));
+    rows.push(("minted by the service, then deleted".to_string(), doomed));
 
     for (case, attendee_id) in &rows {
-        let refusals: Vec<(&str, Reply)> = vec![
-            (
-                "GetAttendee",
-                emulator
-                    .call(
-                        "GET",
-                        &format!("/meetings/{meeting_id}/attendees/{attendee_id}"),
-                        None,
-                    )
-                    .await,
-            ),
-            (
-                "DeleteAttendee",
-                emulator
-                    .call(
-                        "DELETE",
-                        &format!("/meetings/{meeting_id}/attendees/{attendee_id}"),
-                        None,
-                    )
-                    .await,
-            ),
-        ];
-        for (operation, reply) in refusals {
+        for (operation, reply) in emulator.attendee_calls(&meeting_id, attendee_id).await {
             assert_forbidden(
                 &format!("{operation} on an attendee {case}"),
                 &reply,
@@ -443,5 +493,69 @@ async fn an_attendee_absent_from_a_live_meeting_is_permanently_refused() {
         intact.status, 200,
         "GetMeeting after the attendee refusals: expected 200, got {} with {:?}",
         intact.status, intact.body
+    );
+
+    // The same caller, with the same header every refused row carried, is served the
+    // attendee of that meeting that DOES exist and the list of them — so none of the 403s
+    // above says anything about the client's permission to make the request.
+    let served = emulator
+        .call(
+            "GET",
+            &format!("/meetings/{meeting_id}/attendees/{survivor}"),
+            None,
+        )
+        .await;
+    assert_eq!(
+        (
+            served.status,
+            served
+                .body
+                .get("Attendee")
+                .and_then(|attendee| attendee.get("AttendeeId"))
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        ),
+        (200, Some(survivor.clone())),
+        "GetAttendee on the attendee that exists: expected 200 for {survivor:?}, got {} with \
+         {:?}",
+        served.status,
+        served.body
+    );
+    let listed = emulator
+        .call("GET", &format!("/meetings/{meeting_id}/attendees"), None)
+        .await;
+    let remaining: Vec<String> = listed
+        .body
+        .get("Attendees")
+        .and_then(Value::as_array)
+        .map(|attendees| {
+            attendees
+                .iter()
+                .filter_map(|attendee| attendee.get("AttendeeId").and_then(Value::as_str))
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+    assert_eq!(
+        (listed.status, remaining.clone()),
+        (200, vec![survivor]),
+        "ListAttendees after the refusals: expected 200 listing only the surviving attendee, \
+         got {} with {:?}",
+        listed.status,
+        listed.body
+    );
+    // The other meeting's attendee the wrong-meeting row named is untouched too.
+    let untouched = emulator
+        .call(
+            "GET",
+            &format!("/meetings/{other_meeting_id}/attendees/{other_attendee}"),
+            None,
+        )
+        .await;
+    assert_eq!(
+        untouched.status, 200,
+        "GetAttendee through its own meeting: expected 200 for {other_attendee:?}, got {} with \
+         {:?}",
+        untouched.status, untouched.body
     );
 }

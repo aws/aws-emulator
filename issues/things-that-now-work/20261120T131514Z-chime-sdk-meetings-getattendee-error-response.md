@@ -9,6 +9,30 @@ _Operation: GetAttendee | Class: error-response_
 
 > _Note: this issue was identified against the code base at commit `1e28e5a4dc1c9cfc23bd395bc196ff785ea73c3a`. If you are an issue fixer working on this, the code base you are currently working in can have drifted, so you might need to trace the issue back to the current code base._
 
+## Resolution (DECLINED — the behaviour below is correct as it stands)
+
+The report's expectation is NOT what the service does: the body of this report, including its
+reading of `NotFoundException`'s documentation and its instruction that the existing 403
+assertions "must change with the fix", is contradicted by the RECORDED response for this
+operation family. For an `AttendeeId` that names no attendee of a LIVE meeting, the recorded
+answer is HTTP 403 `ForbiddenException`, `Code` `Forbidden`, `Message`
+`Attendee <AttendeeId> is not in the meeting <MeetingId>` — see
+`issues/things-that-now-work/20261029T175426Z-chime-sdk-meetings-6-net-new-root-causes.md`,
+cause 5, which was filed precisely because the emulator then answered 404 `NotFoundException`
+"Attendee <id> not found", the answer this report asks for, and was fixed to the recorded 403.
+Both errors are modelled on `GetAttendee`, `DeleteAttendee` and `UpdateAttendeeCapabilities`, so
+the model does not choose between them; which of the request's two ids failed to resolve does —
+an unresolvable `MeetingId` is the modelled 404, an `AttendeeId` the live meeting holds no
+attendee under is the modelled 403. The 403 is a verdict about the attendee the request named
+and not about its caller: the same credentials are served every call about an attendee that
+meeting does hold.
+
+No handler changed. The rule is now pinned end-to-end across all three operations and every form
+of an unresolvable `AttendeeId` in
+`services/service-com-amazonaws-chimesdkmeetings-chimemeetingssdkservice/tests/all/not_found_message.rs`,
+and the grounding is recorded on the shared refusal helper `attendee_not_in_meeting` in that
+crate's `src/state.rs`, so this does not get re-filed from the generic documentation sentence.
+
 ## Description
 
 When the meeting exists but the `AttendeeId` the request carries names no attendee of it (never created, or already deleted), the handler answers the modelled `ForbiddenException` (HTTP 403) instead of the modelled `NotFoundException` (HTTP 404).

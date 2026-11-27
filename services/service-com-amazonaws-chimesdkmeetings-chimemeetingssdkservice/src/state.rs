@@ -334,12 +334,16 @@ pub fn forbidden(message: impl Into<String>) -> ForbiddenException {
 /// meeting — one that was never created there, or one `DeleteAttendee` has removed.
 ///
 /// The refusal is the modelled `ForbiddenException` (HTTP 403, "The client is permanently
-/// forbidden from making the request") rather than a 404: the meeting the attendee was
-/// looked for in EXISTS, so access to that attendee's record is revoked rather than the
-/// request naming an unknown resource, and a client reading 403 stops retrying the id and
-/// re-joins instead. Every operation that resolves an `AttendeeId` inside a live meeting
-/// (`GetAttendee`, `DeleteAttendee`, `UpdateAttendeeCapabilities`) raises THIS payload, so
-/// the three cannot word one refusal three ways.
+/// forbidden from making the request") rather than a 404 because that is this operation
+/// family's RECORDED answer for an attendee the meeting does not hold, with this wording;
+/// `NotFoundException`'s broader documentation is served for the `MeetingId` half of the
+/// same request (see [`not_found`]), which is what keeps the two halves distinguishable.
+/// The 403 is a verdict about the attendee the request named and not about the caller: the
+/// same client is served every call about an attendee that meeting does hold. A client
+/// reading it stops retrying the id and re-joins instead. Every operation that resolves an
+/// `AttendeeId` inside a live meeting (`GetAttendee`, `DeleteAttendee`,
+/// `UpdateAttendeeCapabilities`) raises THIS payload, so the three cannot word one refusal
+/// three ways.
 ///
 /// Both ids come from the REQUEST — never from this store — so a client that logs the
 /// message sees the pair it asked about.
