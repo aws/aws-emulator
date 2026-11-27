@@ -19,9 +19,10 @@
 //! `ConflictException` (409) leaving the record untouched, while an omitted `EventTime`
 //! keeps the stored one. A `TtlDuration` replaces the record's TTL duration, from which
 //! `ExpiresAt = EventTime + TtlDuration` is re-derived; an omitted one leaves the
-//! record's TTL setting as it stands, and a record under no TTL setting of its own is
-//! under the default its feature group's `OnlineStoreConfig` configures. A request that
-//! states a `TtlDuration` of its own must also carry an `EventTime` — the two together
+//! record's TTL setting exactly as it stands — the duration the write that stored the
+//! record settled it under, which is no duration at all for a record written while its
+//! feature group configured no default, whatever default that group carries now. A request
+//! that states a `TtlDuration` of its own must also carry an `EventTime` — the two together
 //! state the instant `ExpiresAt` is — and one that does not is refused with
 //! `ValidationError` (400). A request that states no `TtlDuration` needs no `EventTime`,
 //! whatever TTL the record or its feature group already stands under, because the expiry
@@ -480,14 +481,18 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             }
             // "If you omit this parameter, the record's existing TTL setting remains
             // unchanged" (`TtlDuration`), so a request that names one replaces the
-            // record's duration and one that does not keeps it — and where neither the
-            // request nor the record states a duration, the record is under the DEFAULT
-            // its feature group configures, the same precedence an ingestion settles a
-            // record's TTL by (`crate::state::effective_ttl_seconds`). `ExpiresAt` is
-            // re-derived from the duration and the record's event time either way,
-            // because an update may have moved that event time.
-            updated.ttl_secs =
-                crate::state::effective_ttl_seconds(&definition, ttl_secs.or(updated.ttl_secs));
+            // record's duration ([`crate::state::StoredRecord::ttl_secs`], the setting
+            // itself) and one that does not leaves that setting exactly as it stands —
+            // including a record standing under NO duration at all, which stays under
+            // none however the feature group's default has moved since: a group's default
+            // is read where a record's TTL is SETTLED, by the write that stores the
+            // record (`crate::state::effective_ttl_seconds`), and an update stating no
+            // duration settles nothing. `ExpiresAt` is re-derived from the duration the
+            // record is left under and its event time either way, because an update may
+            // have moved that event time.
+            if let Some(secs) = ttl_secs {
+                updated.ttl_secs = Some(secs);
+            }
             updated.recompute_expiry();
 
             // "The target stores for the record update. By default, Amazon SageMaker

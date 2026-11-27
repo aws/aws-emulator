@@ -1461,3 +1461,300 @@ async fn one_ttl_duration_unit_rule_serves_every_member_that_carries_a_duration(
         }
     }
 }
+
+/// An instant years in the PAST, as the ISO-8601 string an event-time feature of type
+/// `String` carries.
+///
+/// A record's event time can be arbitrarily old, so `EventTime + TtlDuration` under a
+/// short duration states an expiry that already fell due — the instant at which a record
+/// is hard-deleted on the next call that reads its feature group.
+const LONG_PAST_EVENT_TIME: &str = "2020-03-05T06:07:08Z";
+
+/// How a row of the moved-default table spells the event time its record is written under.
+#[derive(Clone, Copy, Debug)]
+enum WrittenEventTime {
+    /// An ISO-8601 instant a day out, so every duration in the table is still in force.
+    Ahead,
+    /// The same instant in epoch seconds, the other spelling an event-time feature takes.
+    AheadEpoch,
+    /// An ISO-8601 instant years in the past ([`LONG_PAST_EVENT_TIME`]).
+    LongPast,
+    /// That past instant in epoch seconds.
+    LongPastEpoch,
+}
+
+impl WrittenEventTime {
+    /// The value the event-time feature carries for this spelling.
+    fn spelling(self) -> String {
+        match self {
+            Self::Ahead => tomorrow_iso(),
+            Self::AheadEpoch => tomorrow_epoch(),
+            Self::LongPast => LONG_PAST_EVENT_TIME.to_owned(),
+            Self::LongPastEpoch => format!("{}", secs(LONG_PAST_EVENT_TIME) as i64),
+        }
+    }
+}
+
+/// Re-register `group`'s definition with the default TTL `default_ttl_seconds`, the way
+/// the SageMaker control plane's `UpdateFeatureGroup` does: it re-registers the record of
+/// the ONE shared feature-group directory this data plane resolves names against, so a
+/// group's default is not fixed at creation ("To remove the default TtlDuration from an
+/// existing feature group, use the UpdateFeatureGroup API"). `None` leaves the group
+/// configured with no default at all.
+fn move_feature_group_default_ttl(
+    emulator: &Emulator,
+    group: &str,
+    default_ttl_seconds: Option<f64>,
+) {
+    let state = emulator.engine.state::<FeatureGroupDirectory>();
+    let mut directory = state.lock();
+    let mut definition = directory
+        .get(group)
+        .expect("the feature group the case created")
+        .clone();
+    definition.default_ttl_seconds = default_ttl_seconds;
+    directory.register(definition);
+}
+
+/// One row of the moved-default table: the case name, the group's default TTL in seconds
+/// when the record was WRITTEN, the `TtlDuration` that write stated and the span in
+/// seconds it denotes, the default the control plane moves the group to afterwards, the
+/// spelling of the record's event time, and the `TtlDuration` the update states together
+/// with the span it denotes — `None` for the partial update that states none.
+type MovedDefaultRow<'a> = (
+    &'a str,
+    Option<f64>,
+    Option<Value>,
+    Option<f64>,
+    Option<f64>,
+    WrittenEventTime,
+    Option<(Value, f64)>,
+);
+
+#[tokio::test]
+async fn an_update_leaves_the_ttl_setting_the_write_stored_the_record_under() {
+    // A record's TTL SETTING is the duration the write that stored it settled on — its own
+    // when that write stated one and otherwise the default its feature group configured AT
+    // THAT TIME — and "If you omit this parameter, the record's existing TTL setting
+    // remains unchanged" (`TtlDuration`,
+    // `smithy_query(query="doc", shape="UpdateRecordRequest", member="TtlDuration")`), so
+    // an update that states no duration re-derives `ExpiresAt` from the duration already
+    // stored and never from the default the group carries now, while one that states a
+    // duration replaces it.
+    //
+    // Rows span the ways a group's default can MOVE after the record was written — the
+    // control plane adding one, removing one, raising and lowering one, including to the
+    // published lower bound of `TtlDurationValue` (range 1..) — crossed with a record
+    // stored under its own duration and under none, with both spellings of an event time,
+    // and with an event time years in the past, where applying a short default would state
+    // an expiry already fallen due and hard-delete the record the update just merged into.
+    let rows: [MovedDefaultRow<'_>; 10] = [
+        (
+            "no default when the record was written, an hourly default added afterwards",
+            None,
+            None,
+            None,
+            Some(3_600.0),
+            WrittenEventTime::Ahead,
+            None,
+        ),
+        (
+            "no default when the record was written, a one-minute default added afterwards, \
+             an event time years past",
+            None,
+            None,
+            None,
+            Some(60.0),
+            WrittenEventTime::LongPast,
+            None,
+        ),
+        (
+            "no default when the record was written, a weekly default added afterwards, an \
+             epoch event time years past",
+            None,
+            None,
+            None,
+            Some(604_800.0),
+            WrittenEventTime::LongPastEpoch,
+            None,
+        ),
+        (
+            "a default when the record was written, removed afterwards",
+            Some(7_200.0),
+            None,
+            None,
+            None,
+            WrittenEventTime::Ahead,
+            None,
+        ),
+        (
+            "a default when the record was written, raised afterwards, an epoch event time",
+            Some(3_600.0),
+            None,
+            None,
+            Some(1_209_600.0),
+            WrittenEventTime::AheadEpoch,
+            None,
+        ),
+        (
+            "a default when the record was written, lowered afterwards to the lower bound \
+             of TtlDurationValue",
+            Some(172_800.0),
+            None,
+            None,
+            Some(1.0),
+            WrittenEventTime::Ahead,
+            None,
+        ),
+        (
+            "a record-level duration written under no default, a default added afterwards",
+            None,
+            Some(json!({ "Unit": "Days", "Value": 2 })),
+            Some(172_800.0),
+            Some(60.0),
+            WrittenEventTime::Ahead,
+            None,
+        ),
+        (
+            "a record-level duration over a default, the default raised afterwards",
+            Some(45.0),
+            Some(json!({ "Unit": "Weeks", "Value": 1 })),
+            Some(604_800.0),
+            Some(1_209_600.0),
+            WrittenEventTime::AheadEpoch,
+            None,
+        ),
+        (
+            "an update stating its own duration, over a default added afterwards",
+            None,
+            None,
+            None,
+            Some(60.0),
+            WrittenEventTime::Ahead,
+            Some((json!({ "Unit": "Hours", "Value": 3 }), 10_800.0)),
+        ),
+        (
+            "an update stating its own duration, over the record's duration and a moved \
+             default",
+            Some(3_600.0),
+            Some(json!({ "Unit": "Days", "Value": 1 })),
+            Some(86_400.0),
+            Some(604_800.0),
+            WrittenEventTime::AheadEpoch,
+            Some((json!({ "Unit": "Seconds", "Value": 90 }), 90.0)),
+        ),
+    ];
+
+    for (
+        index,
+        (case, default_at_write, write_ttl, write_ttl_secs, moved_default, written_at, update_ttl),
+    ) in rows.into_iter().enumerate()
+    {
+        // Each row needs its own feature group: the default TTL is the GROUP's.
+        let emulator = Emulator::new();
+        let group = format!("moveddefault{index}");
+        emulator.create_feature_group(&group, default_at_write);
+
+        // The record is written while the group carries the row's original default, so the
+        // TTL setting it is stored under is the one that write settles.
+        let event_time = written_at.spelling();
+        let mut seed = json!({ "Record": [
+            feature(IDENTIFIER_FEATURE, "C-moved"),
+            feature(EVENT_TIME_FEATURE, &event_time),
+            feature("city", "Seattle"),
+            feature("tier", "silver")
+        ] });
+        if let Some(ttl) = write_ttl {
+            seed["TtlDuration"] = ttl;
+        }
+        let (status, body) = emulator.put_record(&group, seed).await;
+        assert_eq!(
+            status, 200,
+            "case {case:?}: expected the seeding PutRecord to answer 200, got {status} ({body})"
+        );
+        let stored_ttl_secs = write_ttl_secs.or(default_at_write);
+
+        // Then the control plane moves the group's default, which changes what a later
+        // ingestion would settle on — and nothing about the record already stored.
+        move_feature_group_default_ttl(&emulator, &group, moved_default);
+
+        // The update posts the feature it changes, the event time beside it only where it
+        // states a `TtlDuration` of its own ("If you specify a TtlDuration, you must also
+        // provide an EventTime in the request").
+        let mut posted = vec![feature("city", "Portland")];
+        if update_ttl.is_some() {
+            posted.push(feature(EVENT_TIME_FEATURE, &event_time));
+        }
+        let mut request = json!({
+            "RecordIdentifierValueAsString": "C-moved",
+            "Features": posted
+        });
+        if let Some((ttl, _)) = update_ttl.clone() {
+            request["TtlDuration"] = ttl;
+        }
+        let (status, body) = emulator.update_record(&group, request).await;
+        assert_eq!(
+            status, 200,
+            "case {case:?}: expected the update to answer 200, got {status} ({body})"
+        );
+
+        let (status, served) = emulator.get_record(&group, "C-moved").await;
+        assert_eq!(
+            status, 200,
+            "case {case:?}: expected GetRecord 200, got {status} ({served})"
+        );
+
+        // The record the update merged into is still there: a moved default settles no
+        // expiry onto it, so nothing hard-deletes it out from under the merge.
+        let pairs = record_pairs(&served);
+        assert!(
+            !pairs.is_empty(),
+            "case {case:?}: expected the updated record to still be served, got {pairs:?}"
+        );
+        let city = served_value(&served, "city");
+        assert_eq!(
+            city.as_deref(),
+            Some("Portland"),
+            "case {case:?}: expected the merged feature to read back as \"Portland\", got \
+             {city:?}"
+        );
+        let tier = served_value(&served, "tier");
+        assert_eq!(
+            tier.as_deref(),
+            Some("silver"),
+            "case {case:?}: expected the unposted feature to keep \"silver\", got {tier:?}"
+        );
+        let kept = served_value(&served, EVENT_TIME_FEATURE);
+        assert_eq!(
+            kept.as_deref(),
+            Some(event_time.as_str()),
+            "case {case:?}: expected the record to keep its EventTime {event_time:?}, got \
+             {kept:?}"
+        );
+
+        // The expiry the update leaves is derived from the duration the record is UNDER:
+        // the one the update states where it states one, and otherwise the one the write
+        // stored it under — never the group's moved default.
+        let expected_ttl_secs = update_ttl
+            .as_ref()
+            .map(|(_, secs)| *secs)
+            .or(stored_ttl_secs);
+        assert_expiry(case, &served, &event_time, expected_ttl_secs);
+
+        // And the stored SETTING itself, the duration a later call re-derives from, is that
+        // same span.
+        let stored = emulator
+            .stored_record(&group, "C-moved")
+            .expect("the updated record in the group's online store");
+        let settled = stored.ttl_secs;
+        assert!(
+            match (expected_ttl_secs, settled) {
+                (None, actual) => actual.is_none(),
+                (Some(expected), Some(actual)) => (actual - expected).abs() < 0.001,
+                (Some(_), None) => false,
+            },
+            "case {case:?}: expected the record's stored TTL duration to be \
+             {expected_ttl_secs:?} s, got {settled:?}"
+        );
+    }
+}
