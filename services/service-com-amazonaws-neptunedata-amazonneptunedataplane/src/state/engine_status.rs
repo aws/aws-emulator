@@ -20,6 +20,9 @@
 //! * a feature's entry under `features` is the DOCUMENT the engine reports for it
 //!   ([`FeatureReport`]) — the status string itself for a feature whose status is all it
 //!   reports, and a document of its own for a feature that reports one;
+//! * a lab-mode parameter's entry under `labMode` is the value its own KIND states
+//!   ([`LabModeParameter`]) — the on/off word for a switch, and a quantity for a parameter
+//!   whose name states one;
 //! * an instant is rendered the way /status renders one ([`engine_timestamp`]).
 
 use std::collections::BTreeMap;
@@ -110,14 +113,22 @@ pub const STRICT_TIMEOUT_VALIDATION_SETTING: &str = "StrictTimeoutValidation";
 /// The lab-mode parameter naming the size, in MB as its own name states, a graph's table
 /// space extends itself by. `labMode` is a `StringValuedMap`
 /// (`smithy_query(query="shape", shape="GetEngineStatusOutput")`), so what it reports for
-/// this parameter is a string like every other lab-mode value.
+/// this parameter is a string like every other lab-mode value — but a string that states a
+/// SIZE, not one of the on/off words a switch-valued parameter states
+/// ([`LabModeParameter`]).
 pub const TABLE_SPACE_AUTO_EXTEND_SETTING: &str = "TableSpaceAutoExtendSizeInMB";
 
-/// What [`TABLE_SPACE_AUTO_EXTEND_SETTING`] reports for this engine: this emulator's graph
-/// is held in memory and extends its table space by no configured size, so the parameter
-/// reports the status a lab-mode parameter that is not in use reports, as its sibling
-/// lab-mode parameters do.
-pub const TABLE_SPACE_AUTO_EXTEND_SIZE_MB: &str = FEATURE_DISABLED;
+/// The lab-mode parameter whose status is whether the engine maintains an object index.
+pub const OBJECT_INDEX_SETTING: &str = "ObjectIndex";
+
+/// The lab-mode parameter whose status is whether the engine detects read/write conflicts.
+pub const READ_WRITE_CONFLICT_DETECTION_SETTING: &str = "ReadWriteConflictDetection";
+
+/// The auto-extend size [`TABLE_SPACE_AUTO_EXTEND_SETTING`] is in force with on this engine:
+/// none. This emulator's graph is held in memory and extends its table space by no
+/// configured number of megabytes, and a size-valued parameter with no size in force reports
+/// no size at all.
+pub const TABLE_SPACE_AUTO_EXTEND_SIZE_MB: Option<u64> = None;
 
 /// A feature, lab-mode parameter or setting that is ON.
 pub const FEATURE_ENABLED: &str = "enabled";
@@ -193,6 +204,33 @@ impl FeatureReport {
     }
 }
 
+/// What ONE lab-mode parameter is, and so what /status reports for it.
+///
+/// `labMode` is a map of strings, and the string a parameter carries is in the vocabulary
+/// that parameter's own kind has: a SWITCH carries the on/off word every other switch of the
+/// engine carries, and a parameter whose name states a quantity carries that quantity. The
+/// two vocabularies are not interchangeable — a size-valued parameter never reports an on/off
+/// word, and reports no value at all while no size is in force.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LabModeParameter {
+    /// A parameter that is a switch: whether it is on is all it reports.
+    Switch(bool),
+    /// A parameter that names a SIZE in the unit its own name states, and the number of those
+    /// units in force — `None` while the engine runs with no size configured for it.
+    Size(Option<u64>),
+}
+
+impl LabModeParameter {
+    /// What `labMode` reports for this parameter: the on/off word for a switch, the number of
+    /// units for a size that is in force, and the empty value for a size that is not.
+    pub fn reported(&self) -> String {
+        match self {
+            Self::Switch(on) => feature_status(*on).to_string(),
+            Self::Size(units) => units.map(|units| units.to_string()).unwrap_or_default(),
+        }
+    }
+}
+
 /// The word a status member carries for a switch that is on or off.
 pub fn feature_status(enabled: bool) -> &'static str {
     if enabled {
@@ -218,8 +256,9 @@ pub struct EngineStatusRecord {
     pub gremlin_version: String,
     pub sparql_version: String,
     pub opencypher_version: String,
-    /// The Lab Mode parameters this engine carries, by parameter name.
-    pub lab_mode: BTreeMap<String, String>,
+    /// The Lab Mode parameters this engine carries, by parameter name — each held as what it
+    /// IS, so what /status reports for it is rendered from its own kind.
+    pub lab_mode: BTreeMap<String, LabModeParameter>,
     /// How many transactions are being rolled back right now.
     pub rolling_back_trx_count: i32,
     /// When the earliest transaction being rolled back started. `None` while nothing is
@@ -242,18 +281,21 @@ impl Default for EngineStatusRecord {
             gremlin_version: gremlin_language_version(DEFAULT_DB_ENGINE_VERSION).to_string(),
             sparql_version: SPARQL_LANGUAGE_VERSION.to_string(),
             opencypher_version: OPENCYPHER_LANGUAGE_VERSION.to_string(),
-            // Neptune's engine-level Lab Mode parameters at their defaults: `ObjectIndex` is
-            // off unless a cluster turns it on, read/write conflict detection is on, and the
-            // table space extends itself by the engine's own step.
+            // Neptune's engine-level Lab Mode parameters at their defaults: the two switches
+            // are off and on respectively unless a cluster moves them, and the table-space
+            // auto-extend size is the size this engine runs with, which is none.
             lab_mode: BTreeMap::from([
-                ("ObjectIndex".to_string(), FEATURE_DISABLED.to_string()),
                 (
-                    "ReadWriteConflictDetection".to_string(),
-                    FEATURE_ENABLED.to_string(),
+                    OBJECT_INDEX_SETTING.to_string(),
+                    LabModeParameter::Switch(false),
+                ),
+                (
+                    READ_WRITE_CONFLICT_DETECTION_SETTING.to_string(),
+                    LabModeParameter::Switch(true),
                 ),
                 (
                     TABLE_SPACE_AUTO_EXTEND_SETTING.to_string(),
-                    TABLE_SPACE_AUTO_EXTEND_SIZE_MB.to_string(),
+                    LabModeParameter::Size(TABLE_SPACE_AUTO_EXTEND_SIZE_MB),
                 ),
             ]),
             // No transaction is rolling back in a freshly started engine, so the
@@ -566,6 +608,45 @@ mod tests {
             rendered, "Thu Jan 01 00:00:00 UTC 1970",
             "case \"a sub-second instant\": expected the whole second, got {rendered:?}"
         );
+    }
+
+    /// RULE: a lab-mode parameter reports the value its own KIND states — a switch reports
+    /// the on/off word, and a parameter whose name states a quantity reports that quantity,
+    /// or no value at all while none is in force.
+    #[test]
+    fn a_lab_mode_parameter_reports_the_value_its_kind_states() {
+        let rows: &[(&str, LabModeParameter, &str)] = &[
+            (
+                "a switch that is on",
+                LabModeParameter::Switch(true),
+                "enabled",
+            ),
+            (
+                "a switch that is off",
+                LabModeParameter::Switch(false),
+                "disabled",
+            ),
+            ("no size in force", LabModeParameter::Size(None), ""),
+            ("the smallest size", LabModeParameter::Size(Some(1)), "1"),
+            ("a size of no units", LabModeParameter::Size(Some(0)), "0"),
+            (
+                "a size in force",
+                LabModeParameter::Size(Some(1_024)),
+                "1024",
+            ),
+            (
+                "a size past every 32-bit one",
+                LabModeParameter::Size(Some(u64::from(u32::MAX) + 1)),
+                "4294967296",
+            ),
+        ];
+        for (case, parameter, expected) in rows {
+            let reported = parameter.reported();
+            assert_eq!(
+                reported, *expected,
+                "case {case:?}: expected {expected:?}, got {reported:?}"
+            );
+        }
     }
 
     /// A cluster configuration the control plane could have recorded.

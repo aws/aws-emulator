@@ -224,7 +224,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .iter()
             .map(|(name, report)| (name.clone(), report.document()))
             .collect();
-        let lab_mode = record.lab_mode.into_iter().collect();
+        // Each lab-mode parameter's value is what the parameter's own kind reports: the
+        // on/off word for a switch, and the quantity for a parameter whose name states one —
+        // which is no value at all while no quantity is in force (see
+        // `crate::state::LabModeParameter`).
+        let lab_mode = record
+            .lab_mode
+            .iter()
+            .map(|(name, parameter)| (name.clone(), parameter.reported()))
+            .collect();
         let settings = record.settings.into_iter().collect();
 
         Ok(GetEngineStatusOutput {

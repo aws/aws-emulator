@@ -34,7 +34,7 @@ use serde_json::Value;
 use service_com_amazonaws_neptunedata_amazonneptunedataplane::state;
 use service_com_amazonaws_neptunedata_amazonneptunedataplane::state::{
     ComAmazonawsNeptunedataAmazonneptunedataplaneState, GraphClusterConfiguration,
-    GremlinQueryRecord, QueryState,
+    GremlinQueryRecord, LabModeParameter, QueryState,
 };
 use service_com_amazonaws_neptunedata_amazonneptunedataplane::EmulatedService;
 use smithy_server_runtime::MultiServiceRouter;
@@ -64,8 +64,19 @@ const REPORTED_SETTINGS: &[(&str, &str, &str)] = &[
     ("settings", "StrictTimeoutValidation", "true"),
     ("labMode", "ObjectIndex", "disabled"),
     ("labMode", "ReadWriteConflictDetection", "enabled"),
-    ("labMode", "TableSpaceAutoExtendSizeInMB", "disabled"),
+    // A SIZE-valued lab-mode parameter, and this engine runs with no auto-extend size in
+    // force: it reports no size, not one of the on/off words its switch-valued siblings
+    // report.
+    ("labMode", "TableSpaceAutoExtendSizeInMB", ""),
 ];
+
+/// The lab-mode parameter whose name states a SIZE, in megabytes, rather than a switch
+/// position. Source: `GetEngineStatusOutput$labMode` is a `StringValuedMap` whose values the
+/// model does not constrain, and this parameter's own name states the unit it counts.
+const SIZE_VALUED_LAB_MODE_PARAMETER: &str = "TableSpaceAutoExtendSizeInMB";
+
+/// The lab-mode parameters that are SWITCHES: all each reports is whether it is on.
+const SWITCH_VALUED_LAB_MODE_PARAMETERS: [&str; 2] = ["ObjectIndex", "ReadWriteConflictDetection"];
 
 /// The features whose entry under `features` is a DOCUMENT of its own rather than the bare
 /// status string: the DFE result cache reports a record.
@@ -586,6 +597,124 @@ async fn engine_status_reports_the_provisioned_cluster_configuration() {
             Some("1.3.1.0.R1"),
             "case {case}: expected the cluster provisioned last, got {:?}",
             later.body["dbEngineVersion"]
+        );
+    }
+}
+
+/// RULE: every `labMode` entry carries the value its own parameter KIND states — a
+/// switch-valued parameter reports the engine's on/off word, and a parameter whose name
+/// states a quantity reports that quantity, or no value at all while none is in force. The
+/// two vocabularies are not interchangeable: a size-valued parameter never reports an on/off
+/// word.
+///
+/// Source for the kinds: `GetEngineStatusOutput$labMode` targets `StringValuedMap` and is
+/// documented only as "Contains Lab Mode settings being used by the engine"
+/// (`smithy_query(query="shape", shape="GetEngineStatusOutput")`), so each parameter's own
+/// name is what states what it counts — `TableSpaceAutoExtendSizeInMB` a number of
+/// megabytes, `ObjectIndex` and `ReadWriteConflictDetection` a switch position.
+#[tokio::test]
+async fn engine_status_reports_each_lab_mode_parameter_in_its_own_vocabulary() {
+    // The rows span what the rule generalises over: the parameter's kind, both switch
+    // positions, and a size that is absent, zero, the smallest one and one past every
+    // 32-bit size.
+    let rows: &[(&str, &str, LabModeParameter, &str)] = &[
+        (
+            "the auto-extend size with none in force",
+            SIZE_VALUED_LAB_MODE_PARAMETER,
+            LabModeParameter::Size(None),
+            "",
+        ),
+        (
+            "an auto-extend size of no megabytes",
+            SIZE_VALUED_LAB_MODE_PARAMETER,
+            LabModeParameter::Size(Some(0)),
+            "0",
+        ),
+        (
+            "the smallest auto-extend size",
+            SIZE_VALUED_LAB_MODE_PARAMETER,
+            LabModeParameter::Size(Some(1)),
+            "1",
+        ),
+        (
+            "an auto-extend size of a gibibyte",
+            SIZE_VALUED_LAB_MODE_PARAMETER,
+            LabModeParameter::Size(Some(1_024)),
+            "1024",
+        ),
+        (
+            "an auto-extend size past every 32-bit one",
+            SIZE_VALUED_LAB_MODE_PARAMETER,
+            LabModeParameter::Size(Some(u64::from(u32::MAX) + 1)),
+            "4294967296",
+        ),
+        (
+            "the object index off",
+            SWITCH_VALUED_LAB_MODE_PARAMETERS[0],
+            LabModeParameter::Switch(false),
+            "disabled",
+        ),
+        (
+            "the object index on",
+            SWITCH_VALUED_LAB_MODE_PARAMETERS[0],
+            LabModeParameter::Switch(true),
+            "enabled",
+        ),
+        (
+            "conflict detection off",
+            SWITCH_VALUED_LAB_MODE_PARAMETERS[1],
+            LabModeParameter::Switch(false),
+            "disabled",
+        ),
+        (
+            "conflict detection on",
+            SWITCH_VALUED_LAB_MODE_PARAMETERS[1],
+            LabModeParameter::Switch(true),
+            "enabled",
+        ),
+    ];
+    for (case, parameter_name, parameter, expected) in rows {
+        let Emulator { router, engine } = emulator();
+        {
+            let state = engine.state::<ComAmazonawsNeptunedataAmazonneptunedataplaneState>();
+            let mut store = state.lock();
+            store
+                .engine_status
+                .lab_mode
+                .insert((*parameter_name).to_string(), *parameter);
+        }
+
+        let answer = engine_status(&router).await;
+        assert_eq!(
+            answer.status, 200,
+            "case {case:?}: expected 200, got {} with body {:?}",
+            answer.status, answer.body
+        );
+        let reported = answer.body["labMode"][parameter_name].as_str();
+        assert_eq!(
+            reported,
+            Some(*expected),
+            "case {case:?}: expected labMode.{parameter_name} {expected:?}, got {:?}",
+            answer.body["labMode"]
+        );
+    }
+
+    // The engine's own defaults, over the wire: the size-valued parameter reports no size
+    // rather than a switch word, and each switch reports a switch word.
+    let Emulator { router, .. } = emulator();
+    let answer = engine_status(&router).await;
+    let reported = answer.body["labMode"][SIZE_VALUED_LAB_MODE_PARAMETER].as_str();
+    assert_eq!(
+        reported,
+        Some(""),
+        "case \"the engine's own defaults\": expected no auto-extend size in force, got \
+         {reported:?}"
+    );
+    for parameter in SWITCH_VALUED_LAB_MODE_PARAMETERS {
+        let reported = answer.body["labMode"][parameter].as_str().unwrap_or_default();
+        assert!(
+            ["enabled", "disabled"].contains(&reported),
+            "case {parameter:?}: expected a switch position, got {reported:?}"
         );
     }
 }
