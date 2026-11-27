@@ -271,11 +271,18 @@ pub(crate) fn return_values(
         // mints is the business of the open issue on service-assigned physical ids
         // (`20261023T114649Z-cloudformation-outputs-carry-no-outputvalue-failed-resources-never`).
         // "Ref returns the Amazon Resource Name (ARN) of the domain"; Fn::GetAtt: Arn,
-        // Name, Owner. This is the type `super::provisioning` creates in CodeArtifact
-        // itself, which then answers with the domain's own ARN and owning account — the same
-        // values this computes, since both are built from the one account id this emulator
-        // mints and the domain's name, which is how CodeArtifact keys a domain (`domain_arn`
-        // in that service's own state module).
+        // EncryptionKey, Name, Owner. This is the type `super::provisioning` creates in
+        // CodeArtifact itself, which then answers with the domain's own ARN and owning account
+        // — the same values this computes, since both are built from the one account id this
+        // emulator mints and the domain's name, which is how CodeArtifact keys a domain
+        // (`domain_arn` in that service's own state module).
+        //
+        // The ENCRYPTION KEY is the one published value that is not a function of the domain's
+        // identity: "the key used to encrypt the domain" is the key the declaration names, and
+        // for a declaration that names none it is the Amazon Web Services MANAGED key that
+        // service encrypts the domain with — which only CodeArtifact can answer, so such a
+        // declaration carries a stand-in until the create has reported it
+        // ([`service_assigned_document`]).
         CODEARTIFACT_DOMAIN => {
             let arn = ::emulator_server::emulator_arn(
                 CODEARTIFACT_ARN_NAMESPACE,
@@ -288,6 +295,11 @@ pub(crate) fn return_values(
                 "Owner".to_string(),
                 ::emulator_server::emulator_account_id().to_string(),
             );
+            let key = properties
+                .get("EncryptionKey")
+                .and_then(|value| text(value, scope, 0, budget))
+                .unwrap_or_else(|| service_assigned_document(name, "EncryptionKey"));
+            attributes.insert("EncryptionKey".to_string(), key);
             (arn, attributes)
         }
         // "Ref returns the Amazon Resource Name (ARN) of the repository"; Fn::GetAtt: Arn,

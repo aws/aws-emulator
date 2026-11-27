@@ -54,6 +54,15 @@ pub fn replacement_properties(resource_type: &str) -> &'static [&'static str] {
         // asks for a DIFFERENT application, which CloudFormation replaces. (The type declares no
         // name of its own, so [`name_is_create_only`] has nothing to catch here.)
         APPLICATION_INSIGHTS_APPLICATION => &["ResourceGroupName"],
+        // A CodeArtifact PACKAGE GROUP is identified by the PATTERN it matches, inside the
+        // domain that holds it: `CreatePackageGroup` fixes all three — `UpdatePackageGroup`
+        // takes a group's contact information and description and no member for any of them —
+        // so a declaration stating a different pattern, domain or domain owner asks for a
+        // DIFFERENT group, which CloudFormation replaces. (The type declares no name of its
+        // own, so [`name_is_create_only`] has nothing to catch here.)
+        crate::state::provisioner::codeartifact_package_groups::CODEARTIFACT_PACKAGE_GROUP => {
+            &["Pattern", "DomainName", "DomainOwner"]
+        }
         IAM_ACCESS_KEY => &["Serial", "UserName"],
         // A pull through cache rule keeps the UPSTREAM it caches from: `upstreamRegistry`,
         // `upstreamRegistryUrl` and `upstreamRepositoryPrefix` are members of

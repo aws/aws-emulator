@@ -222,6 +222,25 @@ pub(super) const SDK_SERVICE_NAMES: &[(&str, &str, SdkDiagnostic)] = &[
     // Every type this emulator provisions over this signing name is that service's
     // ([`provisioning::cloudfront_resources`] and the modules beside it).
     ("cloudfront", "CloudFront", SdkDiagnostic::Attempts),
+    // AWS CodeArtifact's SDK names it `Codeartifact` — that model's own
+    // `awsService.cloudFormationName` (`smithy_query(query="service_info")` on that service's
+    // model: `sdkId: "codeartifact"`, `cloudFormationName: Codeartifact`), the lower-cased
+    // `sdkId` with its initial capitalised. The shape is the ATTEMPT-counting one, as the
+    // recorded `ResourceStatusReason` of an `AWS::CodeArtifact::PackageGroup` whose declared
+    // `Pattern` that service does not accept as a package group's identifier carries it (in the
+    // behavioral corpus `simparity-behavioral-aws-v1`, check
+    // `cloudformation__codeartifact.deploy-codeartifact-packagegroup-invalid-pattern-rejected`,
+    // whose reason reads `Resource handler returned message: "<the service's sentence> (Service:
+    // Codeartifact, Status Code: 400, Request ID: …) (SDK Attempt Count: …)" (RequestToken: …,
+    // HandlerErrorCode: InvalidRequest)`). The three resource types this emulator provisions
+    // over this signing name are all that service's
+    // ([`crate::state::provisioner::codeartifact_package_groups`] and the domain and repository
+    // arms beside it).
+    (
+        crate::state::provisioner::CODEARTIFACT_SIGNING_NAME,
+        "Codeartifact",
+        SdkDiagnostic::Attempts,
+    ),
     // AWS CodePipeline's SDK names it by that model's own `sdkId` (`CodePipeline`,
     // `smithy_query(query="service_info")` on that service's model), which is also the
     // `cloudFormationName` the type names of its resources carry. The shape is the

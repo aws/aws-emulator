@@ -939,6 +939,19 @@ impl Provisioner {
             // ([`super::super::template::replacement_properties`]), and its tags travel
             // through [`Self::retag`].
             Self::BackupVault => update_backup_vault(ctx, region, resource, declared).await,
+            // `UpdatePackageGroup` takes a package group's contact information and its
+            // description, and `UpdatePackageGroupOriginConfiguration` its origin restrictions,
+            // so a changed declaration of any of them reaches the group CodeArtifact already
+            // holds rather than replacing it. The domain it lives in and the pattern that
+            // identifies it are members of neither call, so a declaration stating either
+            // differently is create-only
+            // ([`super::super::template::replacement_properties`]), and its tags travel
+            // separately, through [`Self::retag`].
+            Self::CodeArtifactPackageGroup => {
+                update_codeartifact_package_group(ctx, region, resource, declared)
+                    .await
+                    .map(Some)
+            }
             _ => Ok(None),
         }
     }
@@ -1001,6 +1014,14 @@ impl Provisioner {
             // A key's tags are KMS's own `TagResource`/`UntagResource`, which is why
             // [`update_kms_key`] does not carry them either.
             Self::KmsKey => retag_kms_key(ctx, region, resource, declared, propagated).await,
+            // A package group's tags are CodeArtifact's own `TagResource`/`UntagResource`:
+            // `CreatePackageGroup`'s `tags` list applies to the group that call creates, and
+            // `UpdatePackageGroup` carries no tag member at all, so this is where the set a
+            // group is to end up carrying is reconciled.
+            Self::CodeArtifactPackageGroup => {
+                retag_codeartifact_package_group(ctx, region, resource, declared, propagated)
+                    .await
+            }
             // A topic's tags are SNS's own `TagResource`/`UntagResource` — `Tags` is a
             // member of `CreateTopic` and no attribute of a topic — which is why
             // [`update_topic`] does not carry them.

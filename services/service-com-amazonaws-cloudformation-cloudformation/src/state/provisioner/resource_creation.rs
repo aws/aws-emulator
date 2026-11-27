@@ -920,6 +920,12 @@ impl Provisioner {
             Self::CodeArtifactRepository => {
                 create_codeartifact_repository(ctx, region, resource, propagated).await
             }
+            // `AWS::CodeArtifact::PackageGroup` publishes `Tags`, and `CreatePackageGroup`
+            // takes a tag list of its own, so a group a stack creates carries the tags
+            // CloudFormation gives it beside the ones the declaration asks for.
+            Self::CodeArtifactPackageGroup => {
+                create_codeartifact_package_group(ctx, region, resource, propagated).await
+            }
             Self::CodeBuildReportGroup => {
                 create_codebuild_report_group(ctx, region, resource, propagated).await
             }

@@ -85,6 +85,13 @@ pub(crate) fn identifying_return_value(resource_type: &str) -> Option<&'static s
         STEP_FUNCTIONS_ACTIVITY => "Arn",
         // The CodeArtifact types, each identified by the ARN its create answers.
         CODEARTIFACT_DOMAIN | CODEARTIFACT_REPOSITORY => "Arn",
+        // A package group of such a domain is identified by the ARN CodeArtifact minted for it
+        // too ("Ref returns the Amazon Resource Name (ARN) of the package group"); its own
+        // `Pattern` is what the group matches and what addresses it beside its domain, not a
+        // name the type declares.
+        crate::state::provisioner::codeartifact_package_groups::CODEARTIFACT_PACKAGE_GROUP => {
+            "Arn"
+        }
         // An Amazon Athena CAPACITY RESERVATION is identified by its own ARN, which is that
         // resource type's primary identifier and what its `Ref` returns; the reservation's
         // `Name` is what Athena's own calls take, and it is the ARN's last segment.

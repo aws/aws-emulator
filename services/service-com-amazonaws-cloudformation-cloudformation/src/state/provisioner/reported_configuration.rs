@@ -695,6 +695,10 @@ impl Provisioner {
             Self::CodeArtifactRepository => {
                 describe_codeartifact_repository(ctx, region, resource).await
             }
+            // Read back by the same domain and pattern the delete addresses the group by.
+            Self::CodeArtifactPackageGroup => {
+                describe_codeartifact_package_group(ctx, region, resource).await
+            }
             // Read back by the same ARN the delete addresses the group by.
             Self::CodeBuildReportGroup => {
                 describe_codebuild_report_group(ctx, region, resource).await

@@ -3382,13 +3382,20 @@ pub(crate) const CODEARTIFACT_DOMAIN_PROPERTY: &str = "DomainName";
 pub(crate) const CODEARTIFACT_DOMAIN_OWNER_PROPERTY: &str = "DomainOwner";
 
 /// The `DomainDescription` members CodeArtifact answers a create with, under the attribute
-/// names this type's published return values give them (`Arn`, `Name`, `Owner`).
+/// names this type's published return values give them (`Arn`, `EncryptionKey`, `Name`,
+/// `Owner`).
 ///
 /// They are reported back as the resource's attributes rather than kept as computed: the ARN
-/// is the one that service itself keyed the domain by, and the owner is the account it
-/// recorded for it.
-pub(crate) const CODEARTIFACT_DOMAIN_REPORTED_ATTRIBUTES: &[(&str, &str)] =
-    &[("Arn", "arn"), ("Name", "name"), ("Owner", "owner")];
+/// is the one that service itself keyed the domain by, the owner is the account it recorded
+/// for it, and the ENCRYPTION KEY is the key it encrypts the domain with — the one the
+/// declaration named, or the Amazon Web Services managed key that service assigned a domain
+/// declared without one, which no naming rule here could compute.
+pub(crate) const CODEARTIFACT_DOMAIN_REPORTED_ATTRIBUTES: &[(&str, &str)] = &[
+    ("Arn", "arn"),
+    ("EncryptionKey", "encryptionKey"),
+    ("Name", "name"),
+    ("Owner", "owner"),
+];
 
 /// The `RepositoryDescription` members it answers a repository create with, under that
 /// type's published attribute names (`Arn`, `DomainOwner`, `Name`).

@@ -579,7 +579,7 @@ pub fn published_attribute_names(resource_type: &str) -> &'static [&'static str]
         CODEBUILD_REPORT_GROUP => &["Arn"],
         CODEBUILD_PROJECT => &["Arn"],
         CLOUDWATCH_METRIC_STREAM => &["Arn"],
-        CODEARTIFACT_DOMAIN => &["Arn", "Name", "Owner"],
+        CODEARTIFACT_DOMAIN => &["Arn", "EncryptionKey", "Name", "Owner"],
         CODEARTIFACT_REPOSITORY => &["Arn", "DomainOwner", "Name"],
         COGNITO_USER_POOL => &["Arn", "ProviderName", "ProviderURL"],
         COGNITO_USER_POOL_CLIENT => &["ClientSecret"],
@@ -1530,6 +1530,18 @@ pub fn identity_is_service_assigned(resource_type: &str) -> bool {
         // identifier in force is the one that service answered with — the position
         // [`XRAY_GROUP`] is in.
         || resource_type == crate::state::provisioner::codebuild_fleets::CODEBUILD_FLEET
+        // A CodeArtifact PACKAGE GROUP is one more: "Ref returns the Amazon Resource Name
+        // (ARN) of the package group", and that ARN's resource path carries the group's
+        // PATTERN with every character an ARN does not hold literally escaped — a pattern
+        // admits wildcards and sigils (`PackageGroupPattern` is only "no control or
+        // whitespace characters"), so no naming rule here could compute it. The pattern the
+        // declaration states is what the group is CREATED under and what every CodeArtifact
+        // call on the group takes, while the identifier in force is the ARN that service
+        // answered with — the position [`CODEBUILD_FLEET`] is in. (The DOMAIN and the
+        // REPOSITORY are NOT: each of their ARNs is the plain `<type>/<name>` path the naming
+        // rules compute.)
+        || resource_type
+            == crate::state::provisioner::codeartifact_package_groups::CODEARTIFACT_PACKAGE_GROUP
         // An Amazon Cognito identity pool is one more: `CreateIdentityPool` takes only the
         // pool's NAME — "a string that you provide" — and answers the `IdentityPoolId` it
         // minted (modelled `@pattern ^[\w-]+:[0-9a-f-]+$`, the `REGION:GUID` form), and "Ref

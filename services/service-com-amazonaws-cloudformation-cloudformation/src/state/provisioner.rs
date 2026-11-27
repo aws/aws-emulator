@@ -1351,6 +1351,13 @@ pub(super) enum Provisioner {
     /// `CreateRepository` creates there and `DeleteRepository` removes — with every external
     /// connection its declaration asks for associated, which is a call of its own.
     CodeArtifactRepository,
+    /// `AWS::CodeArtifact::PackageGroup`: a package group of such a domain, which
+    /// `CreatePackageGroup` creates under the PATTERN that identifies it, `UpdatePackageGroup`
+    /// changes and `DeletePackageGroup` removes — with every origin restriction its
+    /// declaration asks for applied, which is a call of its own
+    /// ([`codeartifact_package_groups`]). CodeArtifact MINTS the ARN the type publishes, so it
+    /// is read off that create's own answer and is the identity a `Ref` resolves to.
+    CodeArtifactPackageGroup,
     SesConfigurationSet,
     /// `AWS::SES::EmailIdentity`: an email identity of Amazon SES — the domain or the address
     /// an account sends from — which `CreateEmailIdentity` creates under the text the
@@ -2069,6 +2076,9 @@ pub(super) fn provisioner_for(resource_type: &str) -> Option<Provisioner> {
         CODECOMMIT_REPOSITORY => Some(Provisioner::CodeCommitRepository),
         CODEARTIFACT_DOMAIN => Some(Provisioner::CodeArtifactDomain),
         CODEARTIFACT_REPOSITORY => Some(Provisioner::CodeArtifactRepository),
+        codeartifact_package_groups::CODEARTIFACT_PACKAGE_GROUP => {
+            Some(Provisioner::CodeArtifactPackageGroup)
+        }
         SES_CONFIGURATION_SET => Some(Provisioner::SesConfigurationSet),
         SES_EMAIL_IDENTITY => Some(Provisioner::SesEmailIdentity),
         SES_RECEIPT_RULE_SET => Some(Provisioner::SesReceiptRuleSet),
@@ -2948,6 +2958,12 @@ impl Provisioner {
                 )
                 .await
             }
+            // A package group is addressed by the domain and the PATTERN that identifies it,
+            // neither of which is its physical id (that is the ARN CodeArtifact minted), so
+            // both come off the resource's own record too.
+            Self::CodeArtifactPackageGroup => {
+                delete_declared_codeartifact_package_group(ctx, region, resource).await
+            }
             // The delete addresses the group by the ARN CodeBuild keyed it by, which the
             // resource's own record carries.
             Self::CodeBuildReportGroup => {
@@ -3618,6 +3634,13 @@ mod codepipeline_webhooks;
 /// the arms that provision it, and the naming rules and the identity catalogue key their
 /// entries for it by that name.
 pub(in crate::state) mod codebuild_fleets;
+/// The AWS CodeArtifact PACKAGE GROUP arms, beside the domain and repository arms the same
+/// owning service has in [`network_and_delivery`]: a package group is addressed by the PATTERN
+/// that identifies it rather than by a name, and its ARN is the one CodeArtifact minted, so its
+/// create, update, delete and read are their own concern. Visible to the rest of this service's
+/// state because the type's own NAME lives here, beside the arms that provision it, and the
+/// identity and replacement catalogues key their entries for it by that name.
+pub(in crate::state) mod codeartifact_package_groups;
 /// The per-type READ arm of every type here — what the owning service reports a
 /// provisioned resource's configuration to be now, which is what drift detection compares
 /// a stack's expected configuration against. One `impl Provisioner` of its own, so this
@@ -3630,6 +3653,7 @@ mod reported_configuration;
 /// the return-value catalogue key their entries for them by those names.
 pub(in crate::state) mod emr_resources;
 use codebuild_fleets::*;
+use codeartifact_package_groups::*;
 /// The catalogue entries of the Amazon Bedrock AgentCore family, beside that family's own
 /// resource-type NAMES. Visible to the rest of this service's state for the reason
 /// [`emr_resources`]' are: the registry of recognised types, the return-value catalogue and

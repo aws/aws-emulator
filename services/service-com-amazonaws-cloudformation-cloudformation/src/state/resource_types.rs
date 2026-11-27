@@ -476,6 +476,7 @@ pub const AWS_RESOURCE_TYPES: &[&str] = &[
     "AWS::CloudWatch::MetricStream",
     // AWS CodeArtifact
     "AWS::CodeArtifact::Domain",
+    crate::state::provisioner::codeartifact_package_groups::CODEARTIFACT_PACKAGE_GROUP,
     "AWS::CodeArtifact::Repository",
     // AWS CodeBuild
     "AWS::CodeBuild::Fleet",
