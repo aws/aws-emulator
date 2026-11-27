@@ -269,9 +269,10 @@ async fn create_api(router: &MultiServiceRouter, name: &str, configured: Value) 
              got {uri:?}"
         );
         assert_eq!(
-            Some(authority.as_str()),
+            Some(::service_common::data_plane_addressing::host_only(&authority)),
             api["dns"][GRAPHQL_ENDPOINT].as_str(),
-            "case {label:?}: the uri must be built over the endpoint's own dns record, got {api}"
+            "case {label:?}: the endpoint's own dns record must be the bare host of its uri, \
+             got {api}"
         );
         assert!(
             !uri.contains("amazonaws.com"),

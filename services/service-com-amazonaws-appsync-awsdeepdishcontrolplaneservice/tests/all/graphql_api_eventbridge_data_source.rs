@@ -1236,10 +1236,10 @@ async fn create_api(
         .as_str()
         .unwrap_or_default()
         .to_string();
-    let graphql = created["graphqlApi"]["dns"]["GRAPHQL"]
-        .as_str()
-        .unwrap_or_default()
-        .to_string();
+    let graphql = crate::graphql_api_endpoint_dns_records::published_authority(
+        &created["graphqlApi"],
+        "GRAPHQL",
+    );
     let (status, key) = appsync(
         router,
         "POST",

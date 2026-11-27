@@ -312,11 +312,15 @@ fn published_graphql_uri(case: &str, api: &Value) -> String {
         path, GRAPHQL_PATH,
         "case {case:?}: expected the path this endpoint is served on, got {published:?}"
     );
+    // The record is the bare HOST of that URI: the authority without the port of the socket
+    // the endpoint is served on, which is all a DNS record can hold.
     assert_eq!(
-        Some(authority.as_str()),
+        authority
+            .rsplit_once(':')
+            .map(|(host, _port)| host),
         api["dns"]["GRAPHQL"].as_str(),
-        "case {case:?}: expected the uri to be built over the endpoint's own dns record, got \
-         {api}"
+        "case {case:?}: expected the endpoint's own dns record to be the bare host of its uri, \
+         got {api}"
     );
     let (host, port) = authority
         .rsplit_once(':')

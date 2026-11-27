@@ -157,10 +157,10 @@ async fn the_published_graphql_endpoint_is_the_socket_this_emulator_serves_it_on
     // on the create and on every later read of the same API.
     let (status, fetched) = appsync(&router, "GET", &format!("/v1/apis/{}", api.api_id), None).await;
     assert_eq!(status, 200, "GetGraphqlApi must answer 200, got {fetched}");
-    let published = fetched["graphqlApi"]["dns"]["GRAPHQL"]
-        .as_str()
-        .unwrap_or_default()
-        .to_string();
+    let published = crate::graphql_api_endpoint_dns_records::published_authority(
+        &fetched["graphqlApi"],
+        "GRAPHQL",
+    );
     assert_eq!(
         published, api.graphql,
         "case {case:?}: every read must report the address the create published, got \
@@ -172,6 +172,11 @@ async fn the_published_graphql_endpoint_is_the_socket_this_emulator_serves_it_on
         Some(format!("https://{published}{GRAPHQL_PATH}").as_str()),
         "case {case:?}: uris.GRAPHQL must be the HTTPS URL over the published address, got \
          {fetched}"
+    );
+    assert_eq!(
+        fetched["graphqlApi"]["dns"]["GRAPHQL"].as_str(),
+        Some(::service_common::data_plane_addressing::host_only(&published)),
+        "case {case:?}: dns.GRAPHQL must be the bare host of that URL, got {fetched}"
     );
 
     // And a client that POSTs to it is served the result of the API's own resolvers.
@@ -696,10 +701,10 @@ async fn create_api(router: &MultiServiceRouter, name: &str) -> GraphqlApi {
     let api = &created["graphqlApi"];
     let api_id = api["apiId"].as_str().unwrap_or_default().to_string();
     let arn = api["arn"].as_str().unwrap_or_default().to_string();
-    let graphql = api["dns"]["GRAPHQL"].as_str().unwrap_or_default().to_string();
+    let graphql = crate::graphql_api_endpoint_dns_records::published_authority(api, "GRAPHQL");
     assert!(
         graphql.starts_with(&format!("{LOOPBACK_HOST}:")),
-        "dns.GRAPHQL must be an address this emulator serves, got {graphql:?}"
+        "uris.GRAPHQL must be published on an address this emulator serves, got {graphql:?}"
     );
     let (status, key) = appsync(
         router,

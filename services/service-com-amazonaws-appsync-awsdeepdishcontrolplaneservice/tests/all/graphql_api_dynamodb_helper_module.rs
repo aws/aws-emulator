@@ -367,10 +367,10 @@ async fn create_api(router: &MultiServiceRouter, role_arn: &str) -> (String, Str
     let api = &created["graphqlApi"];
     let api_id = api["apiId"].as_str().unwrap_or_default().to_string();
     let address = |key: &str| {
-        let published = api["dns"][key].as_str().unwrap_or_default().to_string();
+        let published = crate::graphql_api_endpoint_dns_records::published_authority(api, key);
         assert!(
             published.starts_with(&format!("{LOOPBACK_HOST}:")),
-            "dns.{key} must be an address this emulator serves, got {published:?}"
+            "uris.{key} must be published on an address this emulator serves, got {published:?}"
         );
         published
     };

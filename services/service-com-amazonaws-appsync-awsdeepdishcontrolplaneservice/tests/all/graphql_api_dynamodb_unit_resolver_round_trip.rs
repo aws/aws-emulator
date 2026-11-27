@@ -461,10 +461,10 @@ async fn given_api(router: &MultiServiceRouter, name: &str, auth: &str) -> Api {
         .as_str()
         .unwrap_or_default()
         .to_string();
-    let graphql = created["graphqlApi"]["dns"]["GRAPHQL"]
-        .as_str()
-        .unwrap_or_default()
-        .to_string();
+    let graphql = crate::graphql_api_endpoint_dns_records::published_authority(
+        &created["graphqlApi"],
+        "GRAPHQL",
+    );
     let mut api_key = String::new();
     if auth == "API_KEY" {
         let (status, key) = appsync(

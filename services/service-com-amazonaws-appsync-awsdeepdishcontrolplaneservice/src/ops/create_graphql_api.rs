@@ -328,9 +328,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 &region,
                 &crate::state::api_resource(&api_id),
             ),
-            // The endpoint records are the addresses the API's two endpoints are SERVED
-            // on (`crate::state::api_dns`), which `uris` is derived from.
-            dns: crate::state::api_dns(&graphql_authority, &realtime_authority),
+            // WHERE the API's two endpoints are published: the host the core bound the
+            // socket serving each endpoint on, which is the host that endpoint's `dns`
+            // record announces, and that socket's port, which the `uris` entry over the
+            // same host carries (`crate::state::api_endpoints`) — so the two members cannot
+            // disagree about where the API is served, and the pair a caller reads is this
+            // API's own GraphQL and real-time endpoint.
+            endpoints: crate::state::api_endpoints(&graphql_authority, &realtime_authority),
             api_id: api_id.clone(),
             name: input.name,
             authentication_type: input.authentication_type,

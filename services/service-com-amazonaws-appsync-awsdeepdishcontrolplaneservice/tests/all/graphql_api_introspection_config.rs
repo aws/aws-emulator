@@ -456,10 +456,7 @@ async fn create_api(
     assert_eq!(status, 200, "CreateGraphqlApi must answer 200, got {created}");
     let record = &created["graphqlApi"];
     let api_id = record["apiId"].as_str().unwrap_or_default().to_string();
-    let graphql = record["dns"]["GRAPHQL"]
-        .as_str()
-        .unwrap_or_default()
-        .to_string();
+    let graphql = crate::graphql_api_endpoint_dns_records::published_authority(record, "GRAPHQL");
     install_schema(router, &api_id).await;
     let (status, key) = appsync(
         router,

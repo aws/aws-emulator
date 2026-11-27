@@ -879,8 +879,8 @@ async fn create_api(
     let graphql = authority_of(&published);
     assert_eq!(
         api["dns"]["GRAPHQL"].as_str(),
-        Some(graphql.as_str()),
-        "the published URL addresses the endpoint the API's DNS record names, got {created}"
+        Some(::service_common::data_plane_addressing::host_only(&graphql)),
+        "the API's DNS record is the bare host of the URL it published, got {created}"
     );
     let (status, key) = appsync(
         router,

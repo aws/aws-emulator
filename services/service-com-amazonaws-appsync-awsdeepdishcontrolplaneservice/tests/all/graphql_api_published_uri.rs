@@ -6,11 +6,12 @@
 //! `uris.GRAPHQL` a check reads and then POSTs a mutation to):
 //!
 //! > Every address a GraphQL API publishes is an address of the server that published it: each
-//! > entry of `uris` is a URL over the `host:port` the `dns` record of the same endpoint names,
-//! > which is a socket THIS emulator answers on and never a host belonging to another server,
-//! > and every later read of the API publishes the same ones. So a client that parses the
-//! > published URI — its scheme, its host, its port and its path — and dials exactly that
-//! > reaches the API's endpoint.
+//! > entry of `uris` is a URL over the `host:port` of the socket that endpoint is served on,
+//! > which is a socket THIS emulator answers on and never a host belonging to another server;
+//! > the `dns` record of the same endpoint is the bare host of that URL; and every later read
+//! > of the API publishes the same ones. So a client that parses the published URI — its
+//! > scheme, its host, its port and its path — and dials exactly that reaches the API's
+//! > endpoint.
 //!
 //! The rows span what the rule generalises over: the API's authentication type, its visibility
 //! and both endpoints it publishes; and each case reaches the API by PARSING what was
@@ -112,10 +113,10 @@ async fn a_client_that_dials_what_the_api_published_reaches_this_emulator() {
                  got {published:?}"
             );
             assert_eq!(
-                Some(authority.as_str()),
+                Some(::service_common::data_plane_addressing::host_only(&authority)),
                 api["dns"][endpoint].as_str(),
-                "case {label:?}: the uri must be built over the endpoint's own dns record, \
-                 got {api}"
+                "case {label:?}: the endpoint's own dns record must be the bare host of its \
+                 uri, got {api}"
             );
             // The reading of an announced address is the data-plane suites' own
             // (`loopback_port`): it is the host the core binds on, and nothing else.

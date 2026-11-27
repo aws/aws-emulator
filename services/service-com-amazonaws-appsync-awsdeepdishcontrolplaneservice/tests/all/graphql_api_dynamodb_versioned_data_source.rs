@@ -1274,13 +1274,13 @@ async fn create_api(router: &MultiServiceRouter, name: &str, role_arn: &str) -> 
         .as_str()
         .unwrap_or_default()
         .to_string();
-    let graphql = created["graphqlApi"]["dns"]["GRAPHQL"]
-        .as_str()
-        .unwrap_or_default()
-        .to_string();
+    let graphql = crate::graphql_api_endpoint_dns_records::published_authority(
+        &created["graphqlApi"],
+        "GRAPHQL",
+    );
     assert!(
         graphql.starts_with(&format!("{LOOPBACK_HOST}:")),
-        "dns.GRAPHQL must be an address this emulator serves, got {graphql:?}"
+        "uris.GRAPHQL must be published on an address this emulator serves, got {graphql:?}"
     );
     let (status, key) = appsync(
         router,

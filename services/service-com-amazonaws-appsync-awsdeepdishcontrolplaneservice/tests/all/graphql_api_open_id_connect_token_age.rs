@@ -191,12 +191,10 @@ async fn create_api(router: &MultiServiceRouter, name: &str, configured: Value) 
         .as_str()
         .unwrap_or_else(|| panic!("case {name:?}: the create must mint an apiId, got {created}"))
         .to_string();
-    let graphql = created["graphqlApi"]["dns"]["GRAPHQL"]
-        .as_str()
-        .unwrap_or_else(|| {
-            panic!("case {name:?}: the API must publish a GraphQL endpoint, got {created}")
-        })
-        .to_string();
+    let graphql = crate::graphql_api_endpoint_dns_records::published_authority(
+        &created["graphqlApi"],
+        "GRAPHQL",
+    );
     install_schema(router, &api_id, SCHEMA).await;
     let (status, source) = appsync(
         router,

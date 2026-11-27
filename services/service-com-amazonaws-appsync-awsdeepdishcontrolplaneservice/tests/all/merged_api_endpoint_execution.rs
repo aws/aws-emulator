@@ -905,10 +905,7 @@ async fn create_api(router: &MultiServiceRouter, name: &str, extra: Option<Value
     );
     let api = &created["graphqlApi"];
     let api_id = api["apiId"].as_str().unwrap_or_default().to_string();
-    let graphql = api["dns"]["GRAPHQL"]
-        .as_str()
-        .unwrap_or_default()
-        .to_string();
+    let graphql = crate::graphql_api_endpoint_dns_records::published_authority(api, "GRAPHQL");
     assert!(
         !graphql.is_empty(),
         "setup: {name} must publish the address its GRAPHQL endpoint is served on, got {created}"

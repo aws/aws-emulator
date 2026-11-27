@@ -377,10 +377,13 @@ async fn given_api(router: &MultiServiceRouter) -> Api {
             .unwrap_or_else(|| panic!("case {case:?}: the api must publish this endpoint: {api}"));
         let (announced, authority, path) = split_uri(&case, published);
         assert_eq!(
-            (announced.as_str(), Some(authority.as_str())),
+            (
+                announced.as_str(),
+                Some(::service_common::data_plane_addressing::host_only(&authority))
+            ),
             (*scheme, api["dns"][endpoint].as_str()),
-            "case {case:?}: expected the scheme the endpoint is served over, over the \
-             endpoint's own dns record, got {published:?} and {api}"
+            "case {case:?}: expected the scheme the endpoint is served over, over a socket \
+             whose bare host is the endpoint's own dns record, got {published:?} and {api}"
         );
         assert!(
             loopback_port(&case, &authority) > 0 && !published.contains("amazonaws.com"),

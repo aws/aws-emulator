@@ -493,14 +493,8 @@ async fn create_api(router: &MultiServiceRouter, name: &str) -> GraphqlApi {
     }
     GraphqlApi {
         api_id,
-        graphql: api["dns"]["GRAPHQL"]
-            .as_str()
-            .unwrap_or_default()
-            .to_string(),
-        realtime: api["dns"]["REALTIME"]
-            .as_str()
-            .unwrap_or_default()
-            .to_string(),
+        graphql: crate::graphql_api_endpoint_dns_records::published_authority(api, "GRAPHQL"),
+        realtime: crate::graphql_api_endpoint_dns_records::published_authority(api, "REALTIME"),
         api_key: key["apiKey"]["id"].as_str().unwrap_or_default().to_string(),
     }
 }

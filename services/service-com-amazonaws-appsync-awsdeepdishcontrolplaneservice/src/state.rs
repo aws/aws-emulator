@@ -27,6 +27,12 @@ pub mod gauge_sampling;
 /// is one.
 pub mod graphql_data_plane;
 
+/// WHERE a `GraphqlApi`'s two endpoints are PUBLISHED: the name each is announced under
+/// (`GraphqlApi$dns`) and the URL a client dials it at (`GraphqlApi$uris`), both derived from
+/// the API's own identity so the two members cannot disagree about where the API is served.
+pub mod graphql_endpoints;
+pub use graphql_endpoints::{api_endpoints, PublishedEndpoint};
+
 /// The decisions a GraphQL API's `AWS_LAMBDA` authorizer has taken, for as long as each may
 /// be reused. A field of the store below for the same reason the planes are: the window a
 /// decision may be reused in is read under the same lock as the API that configured it.
@@ -233,10 +239,12 @@ pub struct GraphqlApiRecord {
     pub lambda_authorizer_config: Option<LambdaAuthorizerConfig>,
     pub additional_authentication_providers: Vec<AdditionalAuthenticationProvider>,
     pub enhanced_metrics_config: Option<EnhancedMetricsConfig>,
-    /// The API's DNS records — one hostname per endpoint, keyed as AppSync keys
-    /// them (`GRAPHQL`, `REALTIME`). `uris` is derived from these, so the two
-    /// members can never disagree about where the API is served.
-    pub dns: BTreeMap<String, String>,
+    /// WHERE the API's two endpoints are published, keyed as AppSync keys them
+    /// (`GRAPHQL`, `REALTIME`): the name each endpoint is announced under and the port
+    /// of the socket serving it ([`PublishedEndpoint`]). Both `dns` and `uris` are
+    /// derived from these, so the two members can never disagree about where the API is
+    /// served.
+    pub endpoints: BTreeMap<String, PublishedEndpoint>,
     pub tags: BTreeMap<String, String>,
     /// The API's environmental variables, the whole list the last write left
     /// behind: a write REPLACES this map rather than merging into it.
@@ -421,7 +429,10 @@ impl GraphqlApiRecord {
             user_pool_config: self.user_pool_config.clone(),
             open_id_connect_config: self.open_id_connect_config.clone(),
             arn: Some(self.arn.clone()),
-            uris: Some(uris_from_dns(&self.dns)),
+            // "The URIs." — the URL of each endpoint over the host its own `dns` record
+            // names, so a client that composes the host and the path lands where the URI
+            // already points ([`graphql_endpoints`]).
+            uris: Some(graphql_endpoints::uris_of(&self.endpoints)),
             // The tag map is reported whether or not it holds tags, so a caller
             // reads the same member on every API. `TagMap`'s modelled minimum
             // length of 1 is not the rule for the RESPONSE: the recorded creates
@@ -444,9 +455,10 @@ impl GraphqlApiRecord {
             // operation.
             waf_web_acl_arn: None,
             lambda_authorizer_config: self.lambda_authorizer_config.clone(),
-            // "The DNS records for the API" — the hostnames the endpoints in
-            // `uris` are served on.
-            dns: Some(map_out(&self.dns)),
+            // "The DNS records for the API" — the host NAME each endpoint in `uris` is
+            // published under, which is all a DNS record can hold: no scheme, no port and
+            // no path.
+            dns: Some(map_out(&graphql_endpoints::dns_of(&self.endpoints))),
             visibility: Some(self.visibility.clone()),
             api_type: Some(self.api_type.clone()),
             merged_api_execution_role_arn: self.merged_api_execution_role_arn.clone(),
@@ -3818,22 +3830,6 @@ where
     })
 }
 
-/// The API's endpoint URIs, built from the DNS record of each endpoint: the
-/// realtime endpoint is a WebSocket URL and every other endpoint an HTTPS one, both
-/// addressing the API's `/graphql` path on the hostname `dns` publishes.
-fn uris_from_dns(dns: &BTreeMap<String, String>) -> std::collections::HashMap<String, String> {
-    dns.iter()
-        .map(|(endpoint, host)| {
-            let scheme = if endpoint == REALTIME_ENDPOINT {
-                "wss"
-            } else {
-                "https"
-            };
-            (endpoint.clone(), format!("{scheme}://{host}/graphql"))
-        })
-        .collect()
-}
-
 /// The key AppSync gives the realtime (WebSocket) endpoint in `dns` and `uris`.
 pub const REALTIME_ENDPOINT: &str = "REALTIME";
 
@@ -3844,31 +3840,6 @@ pub const GRAPHQL_ENDPOINT: &str = "GRAPHQL";
 /// `Api$dns` "will include an HTTP and a real-time endpoint", the realtime one under
 /// [`REALTIME_ENDPOINT`].
 pub const HTTP_ENDPOINT: &str = "HTTP";
-
-/// The DNS records AppSync publishes for a GRAPHQL API it created: the address each of the
-/// API's two endpoints is SERVED on — the GraphQL one under [`GRAPHQL_ENDPOINT`] and the
-/// real-time one under [`REALTIME_ENDPOINT`] — which `uris` is derived from, so the two
-/// members can never disagree about where the API is served.
-///
-/// Both values are the `host:port` that endpoint is reached at
-/// ([`crate::service::graphql_api`]). AWS publishes the API's
-/// `<label>.appsync-api.<region>.amazonaws.com` and
-/// `<label>.appsync-realtime-api.<region>.amazonaws.com` hostnames there; this emulator
-/// publishes the addresses those endpoints are REACHED at, because the whole purpose of
-/// either value is that a client dials it — a client POSTs a GraphQL document to
-/// `https://<value>/graphql` and a subscriber completes a WebSocket handshake against
-/// `wss://<value>/graphql` — and no client on this machine resolves an AWS hostname
-/// (`service_common::data_plane_addressing`). An Event API publishes the addresses of both
-/// its endpoints the same way ([`event_api_dns`]).
-pub fn api_dns(graphql_authority: &str, realtime_authority: &str) -> BTreeMap<String, String> {
-    BTreeMap::from([
-        (GRAPHQL_ENDPOINT.to_string(), graphql_authority.to_string()),
-        (
-            REALTIME_ENDPOINT.to_string(),
-            realtime_authority.to_string(),
-        ),
-    ])
-}
 
 /// The DNS records an Event API publishes for the two endpoints it is SERVED on: the
 /// `host:port` of the API's own HTTP socket under [`HTTP_ENDPOINT`] and of its real-time
@@ -3883,6 +3854,11 @@ pub fn api_dns(graphql_authority: &str, realtime_authority: &str) -> BTreeMap<St
 /// (`service_common::data_plane_addressing`). The two endpoints stay distinct, by PORT
 /// rather than by host label, and each is a socket this emulator answers on
 /// ([`crate::service::event_api`]).
+///
+/// It differs from a GRAPHQL API's pair ([`graphql_endpoints`]) in what the member carries,
+/// because an `Api` has no `uris` member beside its `dns` records: the record is the ONLY
+/// address its caller is handed, so it carries the authority a publisher or a subscriber
+/// dials rather than a name whose port nothing else would report.
 pub fn event_api_dns(http_authority: &str, realtime_authority: &str) -> BTreeMap<String, String> {
     BTreeMap::from([
         (HTTP_ENDPOINT.to_string(), http_authority.to_string()),

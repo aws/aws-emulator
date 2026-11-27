@@ -15,8 +15,9 @@
 //!   which the refusal names by its 1-based position. The service words the
 //!   API-level refusal per configuration, so each configuration's sentence is a row
 //!   of the table rather than one template.
-//! * `GraphqlApi$dns` carries one hostname per endpoint and `GraphqlApi$uris` is
-//!   those same hostnames as URLs, so the two members never disagree.
+//! * `GraphqlApi$dns` carries one host per endpoint — the bare host of that endpoint's own
+//!   `GraphqlApi$uris` entry, which is the URL over the socket the endpoint is served on — so
+//!   the two members never disagree.
 //!
 //! The harness (`router`, `call`, `create_api`) is the lifecycle suite's.
 
@@ -626,8 +627,9 @@ fn create_body(member: &str, value: i64) -> Value {
     Value::Object(body)
 }
 
-/// `dns` reports one hostname per endpoint and `uris` is built from exactly those
-/// hostnames — on create, and on every later read of the same API.
+/// `dns` reports one host per endpoint — the bare host of that endpoint's own `uris` entry —
+/// and `uris` is the URL over the socket the endpoint is served on, on create and on every
+/// later read of the same API.
 #[tokio::test]
 async fn dns_records_and_uris_name_the_same_hosts() {
     let router = router();
@@ -655,41 +657,45 @@ async fn dns_records_and_uris_name_the_same_hosts() {
         .await;
         let api_id = created["apiId"].as_str().unwrap_or_default().to_string();
 
-        // The DNS records: the two endpoint keys AppSync publishes. Each is the address
-        // that endpoint is SERVED on — a `host:port` of this emulator — because the whole
-        // purpose of either value is that a client dials it: one POSTs GraphQL documents to
-        // the GraphQL endpoint and a subscriber dials the real-time one. Source:
-        // `GraphqlApi$dns`, "The DNS records for the API", keyed as `uris` is.
+        // The DNS records: the two endpoint keys AppSync publishes. Each is the HOST the
+        // endpoint is SERVED on — a host of this emulator's, with no port, which is all a DNS
+        // record can hold — while the port a client dials is carried by the `uris` entry over
+        // the same host. Source: `GraphqlApi$dns`, "The DNS records for the API", keyed as
+        // `uris` is.
         let dns = created["dns"].clone();
-        for endpoint in ["GRAPHQL", "REALTIME"] {
-            let published = dns[endpoint].as_str().unwrap_or_default().to_string();
+        let uris = created["uris"].clone();
+        for (endpoint, scheme) in [("GRAPHQL", "https"), ("REALTIME", "wss")] {
+            let authority = crate::graphql_api_endpoint_dns_records::published_authority(
+                &created, endpoint,
+            );
             // The reading of an announced address is the Event API plane suite's
             // (`loopback_port`): the host has to be the one the core binds a resource
             // listener on, so a value naming any other host — an AWS hostname among them —
             // fails here rather than passing as "some host:port".
-            let port = loopback_port(&format!("{case} {endpoint}"), &published);
+            let port = loopback_port(&format!("{case} {endpoint}"), &authority);
             assert!(
                 port > 0,
-                "case {case}: dns.{endpoint} must be the host:port the endpoint is served \
-                 on, got {published:?}"
+                "case {case}: uris.{endpoint} must name the port the endpoint is served on, \
+                 got {uris:?}"
             );
-        }
-        assert_ne!(
-            dns["GRAPHQL"], dns["REALTIME"],
-            "case {case}: the two endpoints are served on sockets of their own, got {dns:?}"
-        );
-
-        // And the URIs are those records: HTTPS for the GraphQL endpoint, a WebSocket URL
-        // for the realtime one, both at the API's /graphql path.
-        let uris = created["uris"].clone();
-        for (endpoint, scheme) in [("GRAPHQL", "https"), ("REALTIME", "wss")] {
-            let host = dns[endpoint].as_str().unwrap_or_default();
+            let published = dns[endpoint].as_str().unwrap_or_default().to_string();
+            assert_eq!(
+                published,
+                ::service_common::data_plane_addressing::host_only(&authority),
+                "case {case}: dns.{endpoint} must be the bare host of uris.{endpoint}, got \
+                 {dns:?} and {uris:?}"
+            );
             assert_eq!(
                 uris[endpoint].as_str(),
-                Some(format!("{scheme}://{host}/graphql").as_str()),
-                "case {case}: uris.{endpoint} must be built from dns.{endpoint}, got {uris:?}"
+                Some(format!("{scheme}://{authority}/graphql").as_str()),
+                "case {case}: uris.{endpoint} must be the {scheme} URL over the socket the \
+                 endpoint is served on, got {uris:?}"
             );
         }
+        assert_eq!(
+            dns["GRAPHQL"], dns["REALTIME"],
+            "case {case}: both endpoints of one API are announced on one host, got {dns:?}"
+        );
 
         // Every later read answers the same two members.
         let (status, fetched) = call(&router, "GET", &format!("/v1/apis/{api_id}"), None).await;

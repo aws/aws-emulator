@@ -41,19 +41,18 @@ use super::{caller, query};
 /// API of this account.
 ///
 /// `label` is the part of an AppSync GraphQL endpoint's ARN that names the API — the label
-/// of the host that endpoint is published at. AWS publishes an API's endpoint at
-/// `<label>.appsync-api.<region>.amazonaws.com`, where the label IS the API's id; this
-/// emulator publishes the address the endpoint is really SERVED at
-/// (`crate::state::api_dns`), because no client on this machine resolves an AWS hostname —
+/// of the host that endpoint is published at. AppSync publishes an API's endpoint at
+/// `<apiId>.appsync-api.<region>.<zone>`, where the label IS the API's id, and this emulator
+/// publishes the same name in a zone of its own (`crate::state::api_endpoints`) over the port
+/// of the socket that serves it, because no client on this machine resolves an AWS hostname —
 /// so a caller that read the label off the published address carries a part of THAT address
 /// instead. Both are the same question, "which API is served there", so every form of the
 /// answer is accepted: the API's own id, the whole published authority, its host, and the
 /// first label of that host.
 ///
-/// A label that names SEVERAL of this account's APIs (the host of a loopback address names
-/// every API served on that interface) names none of them in particular, so it resolves to
-/// nothing rather than to a guess, and a caller reports the target as one it could not
-/// address.
+/// A label that names SEVERAL of this account's APIs names none of them in particular, so it
+/// resolves to nothing rather than to a guess, and a caller reports the target as one it
+/// could not address.
 #[must_use]
 pub fn api_at_graphql_endpoint(
     state: &::engine::ServiceState<ServiceStore>,
@@ -68,12 +67,12 @@ pub fn api_at_graphql_endpoint(
     }
     let mut matched: Vec<String> = Vec::new();
     for (api_id, api) in store.graphql_apis.iter() {
-        let Some(authority) = api.dns.get(crate::state::GRAPHQL_ENDPOINT) else {
+        let Some(endpoint) = api.endpoints.get(crate::state::GRAPHQL_ENDPOINT) else {
             continue;
         };
-        let host = ::service_common::data_plane_addressing::host_only(authority);
+        let host = endpoint.host.as_str();
         let first_label = host.split('.').next().unwrap_or(host);
-        if authority == label || host == label || first_label == label {
+        if endpoint.authority() == label || host == label || first_label == label {
             matched.push(api_id.clone());
         }
     }

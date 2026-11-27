@@ -264,15 +264,12 @@ async fn create_persists_the_api_and_get_answers_the_same_body() {
             "case {auth}: expected the API's ARN, got {created:?}"
         );
         assert_eq!(
-            created["uris"]["GRAPHQL"].as_str(),
-            Some(
-                format!(
-                    "https://{}/graphql",
-                    created["dns"]["GRAPHQL"].as_str().unwrap_or_default()
-                )
-                .as_str()
-            ),
-            "case {auth}: expected the GRAPHQL endpoint on the host dns publishes, got {created:?}"
+            created["dns"]["GRAPHQL"].as_str(),
+            Some(::service_common::data_plane_addressing::host_only(
+                &crate::graphql_api_endpoint_dns_records::published_authority(&created, "GRAPHQL")
+            )),
+            "case {auth}: expected dns to publish the bare host of the GRAPHQL uri, got \
+             {created:?}"
         );
         assert_eq!(
             created["tags"]["team"].as_str(),

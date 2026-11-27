@@ -7,13 +7,14 @@
 //! `uris`/`dns` were read back from the create, a get, a listing and an update):
 //!
 //! > A GraphQL API announces its GraphQL and real-time endpoints as addresses THIS emulator
-//! > answers on: `GraphqlApi$dns` carries, per endpoint, the `host:port` of the socket that
-//! > endpoint is SERVED on, and `GraphqlApi$uris` is the URL over that same address — the
-//! > scheme its protocol dials (`https` for the GraphQL endpoint, `wss` for the real-time
-//! > one) and the API's `/graphql` path. The create, every read and every listing of one API
+//! > answers on: `GraphqlApi$uris` carries, per endpoint, the URL over the `host:port` of the
+//! > socket that endpoint is SERVED on — the scheme its protocol dials (`https` for the
+//! > GraphQL endpoint, `wss` for the real-time one) and the API's `/graphql` path — and
+//! > `GraphqlApi$dns` carries the bare HOST of that URL, with no scheme, no port and no path,
+//! > which is all a DNS record can hold. The create, every read and every listing of one API
 //! > announce the same pair; a client that dials what was announced reaches that API's
-//! > endpoint; no two APIs that exist at once announce the same socket; and the reply to an
-//! > UPDATE reports the API's `uris` while reporting no `dns` records at all.
+//! > endpoint; no two APIs that exist at once are served on the same socket; and the reply to
+//! > an UPDATE reports the API's `uris` while reporting no `dns` records at all.
 //!
 //! The rows span what the rule generalises over: every `authenticationType` the model
 //! declares, over both `apiType`s and both visibilities — the members the projection of a
@@ -104,7 +105,7 @@ fn announced_port(case: &str, endpoint: &str, authority: &str) -> u16 {
     let port = loopback_port(&format!("{case} {endpoint}"), authority);
     assert!(
         port > 0,
-        "case {case:?}: dns.{endpoint} must name the port its socket landed on, got \
+        "case {case:?}: uris.{endpoint} must name the port its socket landed on, got \
          {authority:?}"
     );
     port
@@ -181,22 +182,31 @@ async fn every_projection_announces_the_sockets_the_api_is_served_on() {
         let (dns, uris) = announced(&created);
 
         for (endpoint, scheme) in ENDPOINTS {
-            let authority = dns[endpoint].as_str().unwrap_or_default().to_string();
-
-            // The record is the address of a socket of this emulator, and the URI is the URL
-            // a client of that endpoint's protocol dials over exactly that address.
+            // The URI is the URL a client of that endpoint's protocol dials over the socket
+            // this emulator serves the endpoint on, and the DNS record is the bare HOST of
+            // that URL — no scheme, no port, no path.
+            let published = uris[endpoint].as_str().unwrap_or_default().to_string();
+            let authority = crate::graphql_api_endpoint_dns_records::published_authority(
+                &created, endpoint,
+            );
             announced_port(&case, endpoint, &authority);
             assert_eq!(
-                uris[endpoint].as_str(),
-                Some(format!("{scheme}://{authority}{GRAPHQL_PATH}").as_str()),
-                "case {case:?}: uris.{endpoint} must be the {scheme} URL over dns.{endpoint} \
-                 {authority:?}, got {uris:?}"
+                published,
+                format!("{scheme}://{authority}{GRAPHQL_PATH}"),
+                "case {case:?}: uris.{endpoint} must be the {scheme} URL over the socket the \
+                 endpoint is served on, got {uris:?}"
+            );
+            assert_eq!(
+                dns[endpoint].as_str(),
+                Some(::service_common::data_plane_addressing::host_only(&authority)),
+                "case {case:?}: dns.{endpoint} must be the bare host of uris.{endpoint} \
+                 {published:?}, got {dns:?}"
             );
 
             // And it is SERVED: a dial of the announced address reaches this emulator.
             drop(dialled(&case, endpoint, &authority).await);
 
-            // No other API of this account announces it.
+            // No other API of this account is served on it.
             let clash = seen
                 .iter()
                 .find(|(_, taken)| taken == &authority)
@@ -213,7 +223,8 @@ async fn every_projection_announces_the_sockets_the_api_is_served_on() {
         // The GraphQL endpoint announced for THIS API answers a query at that address: the
         // call is refused for presenting no material, which is this API's own endpoint
         // deciding it rather than another listener answering.
-        let graphql = dns["GRAPHQL"].as_str().unwrap_or_default().to_string();
+        let graphql =
+            crate::graphql_api_endpoint_dns_records::published_authority(&created, "GRAPHQL");
         let status = posted_query(&case, &graphql).await;
         assert_eq!(
             status, UNAUTHORIZED,

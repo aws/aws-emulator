@@ -100,10 +100,8 @@ async fn the_published_realtime_endpoint_is_the_socket_this_emulator_serves_it_o
     )
     .await;
     assert_eq!(status, 200, "GetGraphqlApi must answer 200, got {fetched}");
-    let published = fetched["graphqlApi"]["dns"]["REALTIME"]
-        .as_str()
-        .unwrap_or_default()
-        .to_string();
+    let published =
+        crate::graphql_api_endpoint_dns_records::published_authority(&fetched["graphqlApi"], "REALTIME");
     assert_eq!(
         published, api.realtime,
         "case {case:?}: every read must report the address the create published, got \
@@ -115,6 +113,11 @@ async fn the_published_realtime_endpoint_is_the_socket_this_emulator_serves_it_o
         Some(format!("wss://{published}{REALTIME_PATH}").as_str()),
         "case {case:?}: uris.REALTIME must be the WebSocket URL over the published \
          address, got {fetched}"
+    );
+    assert_eq!(
+        fetched["graphqlApi"]["dns"]["REALTIME"].as_str(),
+        Some(::service_common::data_plane_addressing::host_only(&published)),
+        "case {case:?}: dns.REALTIME must be the bare host of that URL, got {fetched}"
     );
 
     // And a client that dials it is served the conversation: the handshake completes, the
@@ -469,10 +472,10 @@ async fn create_api(router: &MultiServiceRouter, name: &str) -> GraphqlApi {
     );
     let api = &created["graphqlApi"];
     let api_id = api["apiId"].as_str().unwrap_or_default().to_string();
-    let realtime = api["dns"]["REALTIME"].as_str().unwrap_or_default().to_string();
+    let realtime = crate::graphql_api_endpoint_dns_records::published_authority(api, "REALTIME");
     assert!(
         realtime.starts_with(&format!("{LOOPBACK_HOST}:")),
-        "dns.REALTIME must be an address this emulator serves, got {realtime:?}"
+        "uris.REALTIME must be published on an address this emulator serves, got {realtime:?}"
     );
     let (status, key) = appsync(
         router,

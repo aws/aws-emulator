@@ -102,10 +102,16 @@ fn a_client_dialling_the_published_graphql_uri_round_trips_an_item_through_dynam
             "case {label:?}: expected the scheme and path this endpoint is served over, got \
              {uri:?}"
         );
+        // The record is the bare HOST of that URI: the authority without the port of the
+        // socket the endpoint is served on, which is all a DNS record can hold.
+        let host = authority
+            .rsplit_once(':')
+            .map_or(authority.as_str(), |(host, _port)| host);
         assert_eq!(
-            Some(authority.as_str()),
+            Some(host),
             api.api["dns"][endpoint].as_str(),
-            "case {label:?}: the uri must be built over the endpoint's own dns record, got {}",
+            "case {label:?}: the endpoint's own dns record must be the bare host of its uri, \
+             got {}",
             api.api
         );
         assert!(

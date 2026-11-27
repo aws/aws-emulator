@@ -151,10 +151,10 @@ async fn create_api(router: &MultiServiceRouter, name: &str, configured: Value) 
         .as_str()
         .unwrap_or_default()
         .to_string();
-    let graphql = created["graphqlApi"]["dns"]["GRAPHQL"]
-        .as_str()
-        .unwrap_or_default()
-        .to_string();
+    let graphql = crate::graphql_api_endpoint_dns_records::published_authority(
+        &created["graphqlApi"],
+        "GRAPHQL",
+    );
     assert!(
         graphql.starts_with(&format!("{LOOPBACK_HOST}:")),
         "an API's GraphQL endpoint must be published on an address this emulator serves, got \
@@ -834,10 +834,10 @@ async fn the_same_token_decision_guards_the_realtime_endpoint() {
     )
     .await;
     assert_eq!(status, 200, "CreateGraphqlApi must answer 200, got {created}");
-    let realtime = created["graphqlApi"]["dns"]["REALTIME"]
-        .as_str()
-        .unwrap_or_default()
-        .to_string();
+    let realtime = crate::graphql_api_endpoint_dns_records::published_authority(
+        &created["graphqlApi"],
+        "REALTIME",
+    );
 
     for (case, presented, acked) in [
         ("a freshly minted token", minted.clone(), true),
