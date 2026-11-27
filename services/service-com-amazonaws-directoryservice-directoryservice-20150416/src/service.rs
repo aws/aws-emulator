@@ -43,10 +43,18 @@
 //! One of those seams is taken here, for the reason named in [`request_id_header`]: a
 //! refusal of this service states the id of the call it answers in its document, and AWS
 //! reports that same id in the response's `x-amzn-requestid` header, which the framework's
-//! awsJson renderer does not write. `override_operation` wraps the operation the routing
+//! error renderers do not write. `override_operation` wraps the operation the routing
 //! table names, so the header reaches a handler-returned modelled error, the scaffold's
 //! 501 and a refusal raised while serving it. Everything else about those paths — status,
 //! `__type`, `Message`, the whole success path — stays with the framework.
+//!
+//! This service's model declares `awsJson1_1` and `rpcv2Cbor` side by side, so a client may
+//! call every operation in either and each request is served in the one it arrived in. The
+//! wrapper therefore resolves the route with the protocol the framework selected for THAT
+//! request rather than with the first the model declares: the two name their operation in
+//! different places (a header, the URI), so a key resolved with the other codec names no
+//! operation and the request would be served without the wrapper's header or the refusals
+//! below.
 //!
 //! A second seam is taken for the three things this service words differently from the
 //! framework when it refuses a request at its boundary: see the `override_refusal` body
@@ -224,11 +232,13 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
         // Every request the generated routing table can serve is served through the
         // header wrapper, which delegates to that same table entry and then reports the
         // answer's own request id in the header AWS carries it in (see
-        // [`request_id_header`]). The routing stays the model's: a request whose target
-        // names no modelled operation is declined here, so the framework answers it as
-        // the unroutable request it is.
+        // [`request_id_header`]). The routing stays the model's: the key is resolved with
+        // the protocol this request is served in — this service declares two — and a
+        // request whose key names no modelled operation is declined here, so the framework
+        // answers it as the unroutable request it is.
         let routes = self
             .entry
+            .wire_protocol(req)
             .protocol()
             .routing_key(req)
             .ok()
