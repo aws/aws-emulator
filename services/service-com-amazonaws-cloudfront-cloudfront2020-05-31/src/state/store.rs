@@ -1545,11 +1545,22 @@ impl ComAmazonawsCloudfrontCloudfront20200531State {
             ));
         }
 
+        // A multi-tenant distribution's configuration is a TEMPLATE: the members that
+        // address the origin may name one of the parameters its `TenantConfig` declares, and
+        // nothing else may. A reference to a parameter the configuration does not declare —
+        // or any reference at all in a configuration that serves traffic directly, into which
+        // nothing is ever substituted — names a value CloudFront could never substitute, so
+        // it is refused before any distribution is created carrying it, and BEFORE the
+        // `TenantConfig` member rule below: of a configuration that is wrong in both ways,
+        // the templated member is what the service answers.
+        if let Some(message) = tenant_parameter_refusal(&config) {
+            return Err(CreateRefusal::InvalidArgument(message));
+        }
+
         // `TenantConfig` is the member only a multi-tenant distribution's configuration
         // carries, and its parameter definitions are what a tenant's values are admitted by,
         // so whether the configuration may carry the member at all — and whether the schemas
-        // it declares admit anything — is decided BEFORE the references those definitions
-        // would resolve, and before anything is created.
+        // it declares admit anything — is decided before anything is created.
         if let Some(message) = tenant_config_refusal(&config) {
             return Err(CreateRefusal::InvalidArgument(message));
         }
@@ -1562,16 +1573,6 @@ impl ComAmazonawsCloudfrontCloudfront20200531State {
             return Err(CreateRefusal::InvalidArgument(
                 multi_tenant_direct_only_message(member),
             ));
-        }
-
-        // A multi-tenant distribution's configuration is a TEMPLATE: the members that
-        // address the origin may name one of the parameters its `TenantConfig` declares, and
-        // nothing else may. A reference to a parameter the configuration does not declare —
-        // or any reference at all in a configuration that serves traffic directly, which
-        // declares none — names a value CloudFront could never substitute, so it is refused
-        // before any distribution is created carrying it.
-        if let Some(message) = tenant_parameter_refusal(&config) {
-            return Err(CreateRefusal::InvalidArgument(message));
         }
 
         // A caller reference identifies ONE distribution for its whole life, and what it

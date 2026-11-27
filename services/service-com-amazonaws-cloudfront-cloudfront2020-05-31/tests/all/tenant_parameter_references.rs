@@ -25,9 +25,14 @@
 //! name differing from a declared one only in case, which `ParameterName`'s pattern
 //! `^[a-zA-Z0-9-_]+$` admits as a name of its own), and how many references one member
 //! carries. Every refusal is asserted to have left nothing behind, and every acceptance to
-//! have stored the members verbatim. A configuration that declares `direct` and carries a
-//! `TenantConfig` is refused for THAT member first, which is the rule
-//! [`crate::tenant_config_admission`] states.
+//! have stored the members verbatim.
+//!
+//! The rows also fix the PRECEDENCE between this rule and the one about the `TenantConfig`
+//! member itself ([`crate::tenant_config_admission`]): a configuration declaring `direct`
+//! that carries a `TenantConfig` AND references a parameter in a templated member is refused
+//! for the templated MEMBER — the reference is what a client has to change — whatever the
+//! definitions it also declares and however many references that member carries, while one
+//! carrying the member with no reference anywhere is refused for the member.
 //!
 //! The wire harness is the lifecycle suite's and the configuration builder the
 //! connection-mode suite's, reused rather than copied.
@@ -56,7 +61,8 @@ enum Expectation {
     /// Refused because the name is not among the configuration's parameter definitions.
     NotDeclared,
     /// Refused because a configuration that does not declare the tenant-only connection mode
-    /// may carry no `TenantConfig` at all, whatever its templated members reference.
+    /// may carry no `TenantConfig` at all, which is what it is told once no templated member
+    /// of it references a parameter.
     TenantConfigOnDirect,
 }
 
@@ -91,10 +97,10 @@ impl Row {
     /// refusal is the one under test.
     fn baseline(&self) -> TenancyConfig {
         TenancyConfig {
-            // A configuration that declares `direct` may carry no `TenantConfig` at all, so
-            // the baseline of a row whose refusal is about THAT member declares none either,
-            // and the update is what adds it.
-            parameters: (self.expected != Expectation::TenantConfigOnDirect)
+            // A configuration that does not declare the tenant-only mode may carry no
+            // `TenantConfig` at all, so the baseline of such a row declares none either and
+            // the update is what adds the member along with the references under test.
+            parameters: (self.connection_mode == Some(TENANT_ONLY))
                 .then(|| self.parameters.clone())
                 .flatten(),
             connection_mode: self.connection_mode,
@@ -133,6 +139,43 @@ fn rows() -> Vec<Row> {
             parameters: Some(vec!["TenantPath"]),
             domain_name: "origin.example.com",
             origin_path: Some("/{{TenantPath}}"),
+            expected: Expectation::Member("originPath"),
+        },
+        Row {
+            case: "direct with a declared reference in the origin domain name",
+            connection_mode: Some(DIRECT),
+            parameters: Some(vec!["tenantName"]),
+            domain_name: "{{tenantName}}.example.com",
+            origin_path: None,
+            expected: Expectation::Member("domainName"),
+        },
+        Row {
+            case: "direct with two declared references in one member",
+            connection_mode: Some(DIRECT),
+            parameters: Some(vec!["tenantName", "stage"]),
+            domain_name: "origin.example.com",
+            origin_path: Some("/{{tenantName}}/{{stage}}"),
+            expected: Expectation::Member("originPath"),
+        },
+        Row {
+            // Past the ceiling one member of a TEMPLATE may reference: no count of
+            // references is admissible in a configuration nothing is substituted into, so
+            // the member is still what the refusal names.
+            case: "direct with three declared references in one member",
+            connection_mode: Some(DIRECT),
+            parameters: Some(vec!["tenantName", "stage", "region-label"]),
+            domain_name: "origin.example.com",
+            origin_path: Some("/{{tenantName}}/{{stage}}/{{region-label}}"),
+            expected: Expectation::Member("originPath"),
+        },
+        Row {
+            // The other side of the precedence: with no reference in either templated
+            // member, the member a standard configuration may not carry is what is refused.
+            case: "direct carrying definitions with no reference anywhere",
+            connection_mode: Some(DIRECT),
+            parameters: Some(vec!["TenantPath"]),
+            domain_name: "origin.example.com",
+            origin_path: Some("/static"),
             expected: Expectation::TenantConfigOnDirect,
         },
         Row {

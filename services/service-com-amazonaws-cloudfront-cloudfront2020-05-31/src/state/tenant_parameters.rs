@@ -85,7 +85,8 @@ fn declared_parameters(config: &DistributionConfig) -> BTreeSet<&str> {
 ///   own traffic rather than a tenant's and has no parameter values substituted into it, so
 ///   any reference in one of its templated members is invalid and the refusal names that
 ///   member ([`unresolvable_parameter_member_message`]) — whatever definitions the
-///   configuration may also carry, since none of them is ever applied to it;
+///   configuration may also carry, since none of them is ever applied to it, and however
+///   many references the member carries, since no count of them is admissible;
 /// * a configuration declaring `tenant-only` may reference the parameters its
 ///   `TenantConfig$ParameterDefinitions` declares and no others, so a reference to a name
 ///   that list does not carry — including a configuration that declares no definitions at
@@ -109,16 +110,24 @@ pub fn tenant_parameter_refusal(config: &DistributionConfig) -> Option<String> {
         ];
         for (member, value) in members {
             let references = parameter_references(value);
-            // How MANY parameters one member references is a property of that member alone,
-            // so it is answered before the names are resolved: a field past the ceiling is
-            // refused whether or not every name in it is declared.
+            if references.is_empty() {
+                continue;
+            }
+            // Nothing is ever substituted into a configuration that serves its own traffic,
+            // so a reference in one of ITS members names a value that cannot exist: it is
+            // refused by the member that carries it, before anything about how many
+            // references that member states or which names a template would resolve — both
+            // of which are properties of a TEMPLATE, and this configuration is none.
+            if !multi_tenant {
+                return Some(unresolvable_parameter_member_message(member));
+            }
+            // How MANY parameters one member of a template references is a property of that
+            // member alone, so it is answered before the names are resolved: a field past
+            // the ceiling is refused whether or not every name in it is declared.
             if references.len() > MAX_PARAMETERS_PER_FIELD {
                 return Some(TOO_MANY_PARAMETERS_PER_FIELD_MESSAGE.to_string());
             }
             for name in references {
-                if !multi_tenant {
-                    return Some(unresolvable_parameter_member_message(member));
-                }
                 if !declared.contains(name) {
                     return Some(PARAMETER_NOT_DECLARED_MESSAGE.to_string());
                 }
@@ -149,8 +158,10 @@ pub const TOO_MANY_PARAMETERS_PER_FIELD_MESSAGE: &str =
 /// Why the `TenantConfig` of a submitted `DistributionConfig` is one CloudFront would not
 /// store, or `None` when the configuration carries none or carries a usable one.
 ///
-/// Two rules about the member itself, read before the references its definitions admit
-/// ([`tenant_parameter_refusal`]) are resolved:
+/// Two rules about the member itself, read AFTER the references its definitions would admit
+/// ([`tenant_parameter_refusal`]) are resolved — of a configuration that both carries the
+/// member and references a parameter in a templated one, the reference is what the service
+/// answers:
 ///
 /// * `TenantConfig` "only supports multi-tenant distributions. You can't specify this field
 ///   for standard distributions", so only a configuration DECLARING the tenant-only
