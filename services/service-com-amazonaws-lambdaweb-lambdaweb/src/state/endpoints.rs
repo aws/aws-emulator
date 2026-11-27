@@ -509,12 +509,20 @@ pub fn endpoint_arn(function_arn: &str, endpoint_name: &str) -> String {
 /// member="endpointName")`), so a value in the ARN form resolves to the name in its
 /// `/endpoint/<name>` segment. Anything else is already a name.
 pub fn resolve_endpoint_name(value: &str) -> &str {
-    if !value.starts_with("arn:") {
+    if !super::is_arn_form(value) {
         return value;
     }
     value
         .split_once("/endpoint/")
         .map_or(value, |(_, name)| name)
+}
+
+/// Why the `endpointName` a request addresses a stored endpoint by is outside the
+/// documented rule for the name form, or `None` when it is within it — the same rule
+/// [`super::addressed_function_name_violation`] states for a function, one member
+/// along. Every operation that resolves an endpoint applies it before the lookup.
+pub fn addressed_endpoint_name_violation(identifier: &str) -> Option<String> {
+    super::addressed_name_violation("endpointName", identifier, ENDPOINT_NAME_MAX_CHARS)
 }
 
 /// AWS's `ResourceNotFoundException` message for an endpoint a web function does not

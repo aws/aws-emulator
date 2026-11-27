@@ -150,6 +150,13 @@ impl From<DeleteWebFunctionRevisionErrorModeled> for DeleteWebFunctionRevisionEr
     }
 }
 
+/// One refusal of a request this operation models no other error for: a 400
+/// `ValidationException` carrying `message`.
+fn validation(message: String) -> DeleteWebFunctionRevisionError {
+    DeleteWebFunctionRevisionErrorModeled::ValidationException(ValidationException { message })
+        .into()
+}
+
 /// The modelled 404 for a resource this store does not hold, carrying `message`.
 fn not_found(message: String) -> DeleteWebFunctionRevisionError {
     DeleteWebFunctionRevisionErrorModeled::ResourceNotFoundException(ResourceNotFoundException {
@@ -218,6 +225,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
         let akid = ::engine::extract_akid(&ctx.parts().headers);
+        // The documented rule for the name form of an addressing member (see
+        // `crate::state::addressed_function_name_violation`), taken before the store
+        // is consulted.
+        if let Some(message) = crate::state::addressed_function_name_violation(&input.function_name)
+        {
+            return Err(validation(message));
+        }
+
         let state = crate::state::service_state(&*self.engine).ok_or_else(unavailable)?;
 
         // ONE guard decides and writes, so no endpoint can start serving the revision

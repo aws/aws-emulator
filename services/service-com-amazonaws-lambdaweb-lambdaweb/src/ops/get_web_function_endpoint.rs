@@ -193,6 +193,26 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
         let _ = ctx;
+        // The documented rule for the name form of an addressing member (see
+        // `crate::state::addressed_function_name_violation`), taken before the store
+        // is consulted.
+        if let Some(message) = crate::state::addressed_function_name_violation(&input.function_name)
+        {
+            return Err(GetWebFunctionEndpointErrorModeled::ValidationException(
+                ValidationException { message },
+            )
+            .into());
+        }
+        // The same rule, one member along: the endpoint the request addresses.
+        if let Some(message) =
+            crate::state::addressed_endpoint_name_violation(&input.endpoint_name)
+        {
+            return Err(GetWebFunctionEndpointErrorModeled::ValidationException(
+                ValidationException { message },
+            )
+            .into());
+        }
+
         let state = crate::state::service_state(&*self.engine).ok_or_else(|| {
             GetWebFunctionEndpointErrorModeled::InternalServerException(InternalServerException {
                 message: Some("the web function store is unavailable".to_string()),

@@ -674,12 +674,20 @@ pub fn revision_arn(function_arn: &str, revision_id: &str) -> String {
 /// member="functionName")`), so a value in the ARN form resolves to the name in
 /// its `web-function/<name>` resource segment. Anything else is already a name.
 pub fn resolve_function_name(value: &str) -> &str {
-    if !value.starts_with("arn:") {
+    if !is_arn_form(value) {
         return value;
     }
     value
         .split_once(":web-function/")
         .map_or(value, |(_, name)| name)
+}
+
+/// Whether `value` names a resource in the ARN form rather than by its bare name.
+///
+/// The one test every member that accepts both forms is read with, so the resolvers
+/// and the length rule below cannot disagree about which form a value arrived in.
+pub fn is_arn_form(value: &str) -> bool {
+    value.starts_with("arn:")
 }
 
 /// AWS's `ResourceNotFoundException` message for a web function this store does
@@ -709,6 +717,41 @@ pub fn function_name_violation(name: &str) -> Option<String> {
     resource_name_violation("functionName", name, FUNCTION_NAME_MAX_CHARS)
 }
 
+/// Why `identifier` is not a legal value for the `member` a request ADDRESSES an
+/// already-stored resource of this service by, or `None` when it is.
+///
+/// Such a member takes either form — "You can specify either of the following: The
+/// function name, for example my-function. The function ARN." — and states which
+/// length bound applies to which: "The length constraint applies only to the full
+/// ARN. If you specify only the function name, it is limited to 64 characters in
+/// length." (source: `smithy_query(query="doc", shape="GetWebFunctionRequest",
+/// member="functionName")`, worded identically for `endpointName`). So a value in
+/// the ARN form carries only the model's own 1..256 bound, which the boundary
+/// validator already enforces, while a value in the NAME form is bounded at
+/// `max_chars` here: past it the request named a malformed parameter, judged before
+/// the store is consulted, not a resource the store happens not to hold.
+///
+/// Only the length clause of [`resource_name_violation`] applies: the character and
+/// first/last-character clauses are documented by the members that NAME a resource
+/// being created, not by the ones that address a stored one.
+pub fn addressed_name_violation(
+    member: &str,
+    identifier: &str,
+    max_chars: usize,
+) -> Option<String> {
+    if is_arn_form(identifier) {
+        return None;
+    }
+    (identifier.chars().count() > max_chars).then(|| max_length_message(member, max_chars))
+}
+
+/// Why the `functionName` a request addresses a stored web function by is outside the
+/// documented rule for the name form, or `None` when it is within it. Every operation
+/// that resolves a function applies this before the store lookup.
+pub fn addressed_function_name_violation(identifier: &str) -> Option<String> {
+    addressed_name_violation("functionName", identifier, FUNCTION_NAME_MAX_CHARS)
+}
+
 /// Why `name` is not a legal value for the `member` that names a resource of this
 /// service, or `None` when it is.
 ///
@@ -724,9 +767,7 @@ pub fn resource_name_violation(member: &str, name: &str, max_chars: usize) -> Op
         ));
     }
     if name.chars().count() > max_chars {
-        return Some(format!(
-            "Member must have length less than or equal to {max_chars}: {member}"
-        ));
+        return Some(max_length_message(member, max_chars));
     }
     if !name
         .chars()
@@ -744,6 +785,12 @@ pub fn resource_name_violation(member: &str, name: &str, max_chars: usize) -> Op
         ));
     }
     None
+}
+
+/// The sentence a value longer than `max_chars` characters is refused with, worded
+/// once so the create paths and the addressing paths state one rule alike.
+fn max_length_message(member: &str, max_chars: usize) -> String {
+    format!("Member must have length less than or equal to {max_chars}: {member}")
 }
 
 /// 32 hex digits — `high` then `low`, 16 each — rendered in the 8-4-4-4-12 shape,

@@ -391,6 +391,16 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
         let akid = ::engine::extract_akid(&ctx.parts().headers);
+        // The documented rule for the name form of the member that ADDRESSES the
+        // function this endpoint is created on (see
+        // `crate::state::addressed_function_name_violation`), taken before anything
+        // is read. The `endpointName` this request NAMES is held to the create path's
+        // own rule further down, through `endpoint_config_violation`.
+        if let Some(message) = crate::state::addressed_function_name_violation(&input.function_name)
+        {
+            return Err(validation(message));
+        }
+
         // The Region the call was signed for, which is the one a function's own ARN
         // names when the endpoint is created in the Region the function was.
         let signed_for = crate::state::request_region(ctx.parts());

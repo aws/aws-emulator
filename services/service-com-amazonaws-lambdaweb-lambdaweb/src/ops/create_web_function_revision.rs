@@ -221,6 +221,18 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
         let akid = ::engine::extract_akid(&ctx.parts().headers);
+        // The documented rule for the name form of an addressing member (see
+        // `crate::state::addressed_function_name_violation`), taken before anything
+        // is read: a value past it is a malformed parameter rather than a function
+        // this store does not hold.
+        if let Some(message) = crate::state::addressed_function_name_violation(&input.function_name)
+        {
+            return Err(CreateWebFunctionRevisionErrorModeled::ValidationException(
+                ValidationException { message },
+            )
+            .into());
+        }
+
         let state = crate::state::service_state(&*self.engine).ok_or_else(|| {
             CreateWebFunctionRevisionErrorModeled::InternalServerException(
                 InternalServerException {

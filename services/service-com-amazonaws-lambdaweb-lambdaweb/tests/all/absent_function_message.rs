@@ -13,6 +13,13 @@
 //! created, differing only in case, extending or a prefix of a stored name), which
 //! form the request named it in (the name or the ARN), and which operation carried
 //! it — the deleted function of the cascade check is only one row.
+//!
+//! The suite also pins the rule that decides WHICH answer an addressed identifier
+//! earns: the documented length rule for the name form of an addressing member. A
+//! value past that bound is a malformed parameter (the modelled
+//! `ValidationException`), not a resource the store does not hold, and the bound
+//! applies to the name form only — the ARN form carries the modelled length bound
+//! alone and is resolved like any other.
 
 use serde_json::{json, Value};
 
@@ -389,5 +396,346 @@ async fn after_a_delete_the_sub_resource_readers_report_the_function_as_absent()
             &arn,
             &reply,
         );
+    }
+}
+
+/// The documented bound on the NAME form of a member that ADDRESSES a stored resource:
+/// "The length constraint applies only to the full ARN. If you specify only the
+/// function name, it is limited to 64 characters in length." (source:
+/// `smithy_query(query="doc", shape="GetWebFunctionRequest", member="functionName")`;
+/// the identical sentence is on `endpointName`). Written out here rather than taken from
+/// the service's own constant, so the test pins the bound.
+const ADDRESSED_NAME_MAX_CHARS: usize = 64;
+
+/// The sentence a value past that bound is refused with, naming the member that carried
+/// it — the sentence the create paths already state for the same clause of the same rule.
+fn too_long_message(member: &str) -> String {
+    format!("Member must have length less than or equal to {ADDRESSED_NAME_MAX_CHARS}: {member}")
+}
+
+/// A name of exactly `len` characters satisfying every OTHER clause of the naming rule
+/// (letters only, neither a leading nor a trailing hyphen or underscore), so length is
+/// the only thing a row varies.
+fn name_of_length(len: usize) -> String {
+    "n".repeat(len)
+}
+
+/// Every IMPLEMENTED operation that addresses a web function by `functionName`,
+/// addressing it with `identifier`: the not-found table's rows that take either form,
+/// plus the operations missing from it because an absent function earns them something
+/// other than that 404 (`DeleteWebFunction` settles as its idempotent success) or
+/// because they also write (`DeleteWebFunctionRevision`, `CreateWebFunctionEndpoint`,
+/// `UpdateWebFunctionEndpoint`).
+///
+/// `ListWebFunctionEndpoints` and `DeleteWebFunctionEndpoint` are not here: both are
+/// still scaffolded, so they answer 501 to every request.
+fn function_addressing_calls(identifier: &str) -> Vec<Call> {
+    let label = percent_encoded(identifier);
+    let mut calls: Vec<Call> = calls_for(identifier)
+        .into_iter()
+        .filter(|call| call.address == Address::NameOrArn)
+        .collect();
+    calls.push(Call {
+        operation: "DeleteWebFunction",
+        address: Address::NameOrArn,
+        method: "DELETE",
+        path: format!("/web-functions/{label}"),
+        body: None,
+    });
+    calls.push(Call {
+        operation: "DeleteWebFunctionRevision",
+        address: Address::NameOrArn,
+        method: "DELETE",
+        path: format!("/web-functions/{label}/revisions/{SOME_REVISION_ID}"),
+        body: None,
+    });
+    calls.push(Call {
+        operation: "CreateWebFunctionEndpoint",
+        address: Address::NameOrArn,
+        method: "PUT",
+        path: format!("/web-functions/{label}/endpoints"),
+        body: Some(json!({
+            "endpointName": SOME_ENDPOINT_NAME,
+            "endpointType": "HomeRegion",
+            "authType": "ApplicationManaged",
+        })),
+    });
+    calls.push(Call {
+        operation: "UpdateWebFunctionEndpoint",
+        address: Address::NameOrArn,
+        method: "PATCH",
+        path: format!("/web-functions/{label}/endpoints/{SOME_ENDPOINT_NAME}"),
+        body: Some(json!({})),
+    });
+    calls
+}
+
+/// Every IMPLEMENTED operation that addresses an ENDPOINT of `function` by
+/// `endpointName`, addressing it with `identifier`. `CreateWebFunctionEndpoint` is not
+/// here: its `endpointName` NAMES the endpoint it creates rather than addressing a
+/// stored one, so the create path's own naming rule holds it.
+fn endpoint_addressing_calls(function: &str, identifier: &str) -> Vec<Call> {
+    let function_label = percent_encoded(function);
+    let label = percent_encoded(identifier);
+    vec![
+        Call {
+            operation: "GetWebFunctionEndpoint",
+            address: Address::NameOrArn,
+            method: "GET",
+            path: format!("/web-functions/{function_label}/endpoints/{label}"),
+            body: None,
+        },
+        Call {
+            operation: "UpdateWebFunctionEndpoint",
+            address: Address::NameOrArn,
+            method: "PATCH",
+            path: format!("/web-functions/{function_label}/endpoints/{label}"),
+            body: Some(json!({})),
+        },
+    ]
+}
+
+/// Assert `reply` is the modelled refusal of a `member` value past the documented bound.
+fn assert_name_too_long(case: &str, member: &str, reply: &Reply) {
+    assert_eq!(
+        reply.status, 400,
+        "case {case}: expected HTTP 400, got {} with {:?}",
+        reply.status, reply.body
+    );
+    assert_eq!(
+        reply.error(),
+        "ValidationException",
+        "case {case}: expected ValidationException, got {:?}",
+        reply.body
+    );
+    let expected = too_long_message(member);
+    assert_eq!(
+        reply.string("message").as_deref(),
+        Some(expected.as_str()),
+        "case {case}: expected the message {expected:?}, got {:?}",
+        reply.body
+    );
+}
+
+#[tokio::test]
+async fn a_name_past_the_documented_bound_is_refused_by_every_operation_that_addresses_one() {
+    // RULE: a member that addresses an already-stored resource takes either the name or
+    // the ARN, and the documented length rule for the NAME form bounds it at 64
+    // characters; a value past that bound is a parameter outside the allowed range, so
+    // every operation that resolves such a value answers the modelled
+    // `ValidationException` (HTTP 400) BEFORE consulting the store, rather than the
+    // not-found of a resource the store does not hold. The rows walk how far past the
+    // bound the value is, up to the modelled maximum the boundary admits, and which
+    // operation carried it.
+    let emulator = Emulator::new();
+    let rows: [(&str, usize); 3] = [
+        ("one character past the documented bound", ADDRESSED_NAME_MAX_CHARS + 1),
+        ("well past the documented bound", 128),
+        ("at the modelled maximum for the member", 256),
+    ];
+
+    for (row, len) in rows {
+        let name = name_of_length(len);
+        for call in function_addressing_calls(&name) {
+            let reply = emulator
+                .send(call.method, &call.path, REGION, call.body.clone())
+                .await;
+            let case = format!(
+                "{row} ({len} characters), carried by {} as functionName",
+                call.operation
+            );
+            assert_name_too_long(&case, "functionName", &reply);
+        }
+    }
+
+    // The control: nothing was stored by any of those calls, so the refusals above are
+    // refusals and not writes.
+    let listed = emulator.send("POST", "/web-functions", REGION, Some(json!({}))).await;
+    assert_eq!(
+        listed.field("functions").and_then(Value::as_array).map(Vec::len),
+        Some(0),
+        "case the store after every refused call: expected no function, got {:?}",
+        listed.body
+    );
+}
+
+#[tokio::test]
+async fn the_documented_bound_itself_is_addressable() {
+    // RULE, the other side of the bound: a name OF the bound is within the rule, so it
+    // addresses a resource like any other — the function stored under it is read back,
+    // and one that is not stored earns the not-found rather than the refusal. This is
+    // what makes the rows of the test above "past the bound".
+    let emulator = Emulator::new();
+    let name = name_of_length(ADDRESSED_NAME_MAX_CHARS);
+    assert_eq!(
+        name.chars().count(),
+        ADDRESSED_NAME_MAX_CHARS,
+        "the bound row is the bound, got {} characters",
+        name.chars().count()
+    );
+
+    // Not stored yet: the not-found, from every operation that addresses it.
+    for call in calls_for(&name) {
+        if call.address != Address::NameOrArn {
+            continue;
+        }
+        let reply = emulator
+            .send(call.method, &call.path, REGION, call.body.clone())
+            .await;
+        assert_absent_function(
+            &format!(
+                "a name of the bound that is not stored, carried by {}",
+                call.operation
+            ),
+            &name,
+            &reply,
+        );
+    }
+
+    // Stored: the create accepts the same name, and the reader answers it.
+    let arn = create_function(&emulator, &name).await;
+    for (form, identifier) in [("the name", name.clone()), ("the ARN", arn)] {
+        let reply = emulator
+            .send(
+                "GET",
+                &format!("/web-functions/{}", percent_encoded(&identifier)),
+                REGION,
+                None,
+            )
+            .await;
+        assert_eq!(
+            reply.status, 200,
+            "case a function named at the bound, addressed by {form}: expected 200, got {} \
+             with {:?}",
+            reply.status, reply.body
+        );
+        assert_eq!(
+            reply.string("functionName").as_deref(),
+            Some(name.as_str()),
+            "case a function named at the bound, addressed by {form}: expected {name:?}, \
+             got {:?}",
+            reply.body
+        );
+    }
+}
+
+#[tokio::test]
+async fn the_bound_applies_to_the_name_form_only_and_never_to_the_arn_form() {
+    // RULE: "The length constraint applies only to the full ARN" — a value in the ARN
+    // form carries the member's modelled length bound alone, so an ARN longer than the
+    // name bound, one whose resource segment is itself past that bound included, is
+    // RESOLVED like any other and earns the not-found of the function it names, never
+    // the length refusal. The rows walk the length of the name inside the ARN, up to the
+    // one whose ARN is exactly the member's modelled maximum.
+    let emulator = Emulator::new();
+    let arn_overhead = expected_arn(REGION, "").chars().count();
+    let rows: [(&str, usize); 4] = [
+        ("a name within the bound", 8),
+        ("a name of the bound", ADDRESSED_NAME_MAX_CHARS),
+        ("a name past the bound", ADDRESSED_NAME_MAX_CHARS + 1),
+        ("a name whose ARN is the modelled maximum", 256 - arn_overhead),
+    ];
+
+    for (row, len) in rows {
+        let name = name_of_length(len);
+        let arn = expected_arn(REGION, &name);
+        assert!(
+            arn.chars().count() <= 256,
+            "case {row}: the ARN row has to be inside the modelled bound, got {} characters",
+            arn.chars().count()
+        );
+        for call in function_addressing_calls(&arn) {
+            let reply = emulator
+                .send(call.method, &call.path, REGION, call.body.clone())
+                .await;
+            let case = format!(
+                "{row} ({len} characters) addressed by its ARN, carried by {}",
+                call.operation
+            );
+            assert_ne!(
+                reply.string("message").as_deref(),
+                Some(too_long_message("functionName").as_str()),
+                "case {case}: the ARN form carries the modelled bound only, got {:?}",
+                reply.body
+            );
+            if call.operation == "DeleteWebFunction" {
+                // A delete of a function that is not stored asks for what already
+                // holds, so it settles as its modelled success.
+                assert_eq!(
+                    reply.status, 204,
+                    "case {case}: expected 204, got {} with {:?}",
+                    reply.status, reply.body
+                );
+                continue;
+            }
+            assert_absent_function(&case, &arn, &reply);
+        }
+    }
+}
+
+#[tokio::test]
+async fn the_endpoint_name_form_is_held_to_the_same_bound() {
+    // RULE, one member along: `endpointName` documents the same sentence, so an endpoint
+    // addressed by a name past the bound is the same malformed parameter, while a name of
+    // the bound and an endpoint ARN of any admitted length are resolved — the endpoint
+    // that is not stored on the function earns the endpoint's own not-found.
+    let emulator = Emulator::new();
+    let function = "endpoint-name-bound-fn";
+    let function_arn = create_function(&emulator, function).await;
+
+    for (row, len) in [
+        ("one character past the documented bound", ADDRESSED_NAME_MAX_CHARS + 1),
+        ("well past the documented bound", 200),
+    ] {
+        let endpoint = name_of_length(len);
+        for call in endpoint_addressing_calls(function, &endpoint) {
+            let reply = emulator
+                .send(call.method, &call.path, REGION, call.body.clone())
+                .await;
+            let case = format!(
+                "{row} ({len} characters), carried by {} as endpointName",
+                call.operation
+            );
+            assert_name_too_long(&case, "endpointName", &reply);
+        }
+    }
+
+    // A name of the bound, and the ARN form of a name past it, are both resolved: the
+    // answer is the endpoint's own not-found, not the length refusal.
+    let at_the_bound = name_of_length(ADDRESSED_NAME_MAX_CHARS);
+    let past_the_bound = name_of_length(ADDRESSED_NAME_MAX_CHARS + 1);
+    let resolved: [(&str, String); 2] = [
+        ("a name of the bound", at_the_bound),
+        (
+            "the ARN of a name past the bound",
+            format!("{function_arn}/endpoint/{past_the_bound}"),
+        ),
+    ];
+    for (row, identifier) in resolved {
+        for call in endpoint_addressing_calls(function, &identifier) {
+            let reply = emulator
+                .send(call.method, &call.path, REGION, call.body.clone())
+                .await;
+            let case = format!("{row}, carried by {}", call.operation);
+            assert_eq!(
+                reply.status, 404,
+                "case {case}: expected HTTP 404, got {} with {:?}",
+                reply.status, reply.body
+            );
+            assert_eq!(
+                reply.error(),
+                "ResourceNotFoundException",
+                "case {case}: expected ResourceNotFoundException, got {:?}",
+                reply.body
+            );
+            let expected =
+                format!("The endpoint {identifier} doesn't exist on web function {function}.");
+            assert_eq!(
+                reply.string("message").as_deref(),
+                Some(expected.as_str()),
+                "case {case}: expected the message {expected:?}, got {:?}",
+                reply.body
+            );
+        }
     }
 }

@@ -1537,7 +1537,7 @@ async fn a_configuration_outside_the_documented_rules_is_refused_on_this_path_to
         );
     }
     // Nothing above was stored: the function still carries no endpoint at all.
-    for endpoint_name in ["prod", "edge", "_prod", &long_name] {
+    for endpoint_name in ["prod", "edge", "_prod"] {
         let fetched = get_endpoint(&emulator, function_name, endpoint_name).await;
         assert_eq!(
             fetched.status, 404,
@@ -1545,6 +1545,21 @@ async fn a_configuration_outside_the_documented_rules_is_refused_on_this_path_to
             fetched.status, fetched.body
         );
     }
+    // The over-long name too, addressed by the ARN the endpoint would have carried:
+    // this reader applies the same documented length rule to the NAME form of
+    // `endpointName`, and the rule exempts the ARN form ("the length constraint
+    // applies only to the full ARN"), so the ARN is what still resolves to the
+    // endpoint and reports it absent.
+    let long_name_arn = format!(
+        "{}/endpoint/{long_name}",
+        expected_arn(REGION, function_name)
+    );
+    let fetched = get_endpoint(&emulator, function_name, &percent_encoded(&long_name_arn)).await;
+    assert_eq!(
+        fetched.status, 404,
+        "case {long_name:?}: a refused create stores nothing, got {} with {:?}",
+        fetched.status, fetched.body
+    );
 }
 
 /// RULE: a function carries at most the endpoints the account's

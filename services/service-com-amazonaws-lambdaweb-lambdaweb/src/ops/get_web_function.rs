@@ -158,6 +158,19 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
         let _ = ctx;
+        // The documented rule for the name form of an addressing member, which the
+        // model's own length bound is too wide to express — see
+        // `crate::state::addressed_function_name_violation`. Taken before the store
+        // is consulted: a value past it is a malformed parameter, not a function
+        // this store does not hold.
+        if let Some(message) = crate::state::addressed_function_name_violation(&input.function_name)
+        {
+            return Err(
+                GetWebFunctionErrorModeled::ValidationException(ValidationException { message })
+                    .into(),
+            );
+        }
+
         let state = crate::state::service_state(&*self.engine).ok_or_else(|| {
             GetWebFunctionErrorModeled::InternalServerException(InternalServerException {
                 message: Some("the web function store is unavailable".to_string()),

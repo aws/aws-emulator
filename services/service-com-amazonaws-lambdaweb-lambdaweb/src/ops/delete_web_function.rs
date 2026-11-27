@@ -180,6 +180,19 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
         let akid = ::engine::extract_akid(&ctx.parts().headers);
+        // The documented rule for the name form of an addressing member (see
+        // `crate::state::addressed_function_name_violation`), taken before the store
+        // is consulted: a value past it is a malformed parameter rather than a
+        // function that is already absent, so this delete is refused rather than
+        // settling as its idempotent success.
+        if let Some(message) = crate::state::addressed_function_name_violation(&input.function_name)
+        {
+            return Err(
+                DeleteWebFunctionErrorModeled::ValidationException(ValidationException { message })
+                    .into(),
+            );
+        }
+
         let state = crate::state::service_state(&*self.engine).ok_or_else(|| {
             DeleteWebFunctionErrorModeled::InternalServerException(InternalServerException {
                 message: Some("the web function store is unavailable".to_string()),

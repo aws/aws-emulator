@@ -161,6 +161,17 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         _ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
+        // The documented rule for the name form of an addressing member (see
+        // `crate::state::addressed_function_name_violation`), taken before the store
+        // is consulted.
+        if let Some(message) = crate::state::addressed_function_name_violation(&input.function_name)
+        {
+            return Err(ListWebFunctionRevisionsErrorModeled::ValidationException(
+                ValidationException { message },
+            )
+            .into());
+        }
+
         // The only filter name the service supports is `state`, and each of its values
         // must name a `RevisionState`; a revision matches when its state is among the
         // values of every filter supplied.
