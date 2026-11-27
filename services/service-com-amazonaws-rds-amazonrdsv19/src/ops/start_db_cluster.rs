@@ -280,8 +280,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // The answer is the cluster this call changed, projected the one way every
         // operation of this service projects one, so the start a caller is told about is
         // the start a following describe reports.
+        let db_cluster = store.cluster_to_wire(&accepted);
+        drop(store);
+        // Each member back in service publishes the connections it is serving again from the
+        // moment it is available, so an alarm over its connection load has a series to evaluate
+        // ([`crate::state::instance_metrics`]). The guard is released first — the publisher
+        // takes this same store.
+        crate::state::drive_instance_metrics(&self.engine);
         Ok(StartDBClusterOutput {
-            db_cluster: Some(store.cluster_to_wire(&accepted)),
+            db_cluster: Some(db_cluster),
         })
     }
 }

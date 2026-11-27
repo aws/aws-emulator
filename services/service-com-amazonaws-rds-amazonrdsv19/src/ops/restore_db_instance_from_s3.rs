@@ -1182,6 +1182,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             );
         };
 
+        // The restored instance publishes the connections it is serving from the moment it is
+        // available, exactly as a created one does, so an alarm over its connection load has a
+        // series to evaluate ([`crate::state::instance_metrics`]). The store guard is already
+        // released — the publisher takes this same store.
+        crate::state::drive_instance_metrics(&self.engine);
+
         Ok(RestoreDBInstanceFromS3Output {
             db_instance: Some(db_instance),
         })

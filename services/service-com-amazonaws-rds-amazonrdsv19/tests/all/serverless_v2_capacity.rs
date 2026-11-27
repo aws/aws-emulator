@@ -51,7 +51,10 @@ use service_com_amazonaws_rds_amazonrdsv19::state::serverless_capacity::{
 /// the assembled router mounts them — the capacity series is published into the metric store
 /// CloudWatch itself serves `GetMetricStatistics` from, so without that service mounted there is
 /// nothing to read it back through.
-fn emulator() -> (MultiServiceRouter, Arc<engine::InMemoryEngine>) {
+///
+/// `pub(crate)` so a sibling suite whose subject is another series of this namespace reads it
+/// back through the same two services rather than standing up a router of its own.
+pub(crate) fn emulator() -> (MultiServiceRouter, Arc<engine::InMemoryEngine>) {
     let engine: Arc<engine::InMemoryEngine> = Arc::new(engine::InMemoryEngine::new());
     let mut router = MultiServiceRouter::new();
     router.set_request_authentication(false);
@@ -72,7 +75,10 @@ fn emulator() -> (MultiServiceRouter, Arc<engine::InMemoryEngine>) {
 const CLOUDWATCH_TARGET_PREFIX: &str = "GraniteServiceVersion20100801";
 
 /// One CloudWatch call over the wire, answering the HTTP status and the parsed body.
-async fn cloudwatch_call(
+///
+/// `pub(crate)` beside the router above, so a sibling suite reading another series of this
+/// namespace frames its calls the one way rather than writing the framing again.
+pub(crate) async fn cloudwatch_call(
     router: &MultiServiceRouter,
     operation: &str,
     body: &Value,

@@ -360,6 +360,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // that module gives: a target of a matching rule may call back into this service.
         drop(store);
         crate::state::drive_due_lifecycle_events(&self.engine, ctx.callback(), &region);
+        // An instance back in service publishes the connections it is serving again from the
+        // moment it is available, so an alarm over its connection load has a series to evaluate
+        // ([`crate::state::instance_metrics`]).
+        crate::state::drive_instance_metrics(&self.engine);
         Ok(StartDBInstanceOutput {
             db_instance: Some(db_instance),
         })

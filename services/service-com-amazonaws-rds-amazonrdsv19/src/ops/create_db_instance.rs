@@ -1295,6 +1295,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // ([`crate::state::serverless_capacity`]). The guard is released first — the publisher
         // takes this same store.
         crate::state::serverless_capacity::drive_serverless_capacity(&self.engine);
+        // And the instance itself publishes the connections it is serving from the moment it is
+        // available, so an alarm over its connection load has a series to evaluate
+        // ([`crate::state::instance_metrics`]).
+        crate::state::drive_instance_metrics(&self.engine);
 
         Ok(CreateDBInstanceOutput {
             db_instance: Some(db_instance),

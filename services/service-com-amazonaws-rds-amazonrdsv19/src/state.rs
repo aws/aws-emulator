@@ -368,6 +368,15 @@ pub use instance_backup_replication::*;
 // reports under the `automated` snapshot type.
 mod automated_snapshots;
 pub use automated_snapshots::*;
+// The SCHEDULE and the one in-process clock every `AWS/RDS` series this service publishes
+// share: how a series is addressed, how far apart its datapoints are stamped, and where one
+// datapoint is appended to.
+pub mod metric_publisher;
+pub use metric_publisher::PublisherClock;
+// The instance-level `AWS/RDS` series a DB instance publishes while it is serving: the
+// CONNECTIONS it is holding, which an alarm over connection load is evaluated from.
+pub mod instance_metrics;
+pub use instance_metrics::{drive_instance_metrics, InstanceMetricPublisher};
 // The Aurora Serverless v2 CAPACITY a DB cluster runs on: the ACUs it holds, the auto-pause an
 // idle one is owed, and the CloudWatch series both are published as.
 pub mod serverless_capacity;
@@ -839,6 +848,13 @@ pub struct ComAmazonawsRdsAmazonrdsv19State {
     /// and [`MAX_REGIONS`] bound it; an entry is dropped by the publisher's own pass once the
     /// cluster it belongs to is gone.
     pub serverless_capacity: ServerlessCapacityPublisher,
+    /// Where the instance-level `AWS/RDS` series of each DB instance this store holds has got
+    /// to, and the one in-process clock that advances them ([`instance_metrics`]).
+    ///
+    /// One entry per DB instance that is publishing, so the per-region DB instance quota and
+    /// [`MAX_REGIONS`] bound it; an entry is dropped by the publisher's own pass once the
+    /// instance it belongs to is gone or has stopped serving.
+    pub instance_metrics: InstanceMetricPublisher,
     /// How long each DB instance that keeps STORAGE AUTOSCALING on has been low on storage,
     /// and when its storage was last raised ([`storage_autoscaling`]), by
     /// `(region, DbiResourceId)` — the instance's immutable id, so a rename cannot orphan a

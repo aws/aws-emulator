@@ -1172,6 +1172,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             );
             directory.record_monitoring(&dbi_resource_id, monitoring);
         }
+        drop(store);
+        // The restored instance publishes the connections it is serving from the moment it is
+        // available, exactly as a created one does, so an alarm over its connection load has a
+        // series to evaluate ([`crate::state::instance_metrics`]). The guard is released first —
+        // the publisher takes this same store.
+        crate::state::drive_instance_metrics(&self.engine);
 
         Ok(RestoreDBInstanceToPointInTimeOutput {
             db_instance: Some(db_instance),

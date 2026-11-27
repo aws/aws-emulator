@@ -1035,6 +1035,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             );
             directory.record_monitoring(&dbi_resource_id, monitoring);
         }
+        drop(store);
+        // The replica publishes the connections it is serving from the moment it is available,
+        // exactly as the instance it replicates does, so an alarm over its connection load has a
+        // series to evaluate ([`crate::state::instance_metrics`]). The guard is released first —
+        // the publisher takes this same store.
+        crate::state::drive_instance_metrics(&self.engine);
 
         Ok(CreateDBInstanceReadReplicaOutput {
             db_instance: Some(db_instance),
