@@ -445,6 +445,16 @@ impl ComAmazonawsEcsAmazonec2containerservicev20141113State {
         // daemon tasks" — so the placement an instance that joined is owed, and the stop a
         // task whose instance is gone earns, are materialised here.
         self.maintain_daemon_tasks(now);
+        // The placement a PARKED task is owed as soon as capacity it can run on exists: such
+        // a task has been accepted and not placed ([`TaskRecord::is_awaiting_placement`]), and
+        // the placement is the scheduler's own work — owed at the instant one of its cluster's
+        // container instances has room for it, whether or not anybody called, exactly as it is
+        // owed when that capacity first registers
+        // ([`Self::place_tasks_awaiting_capacity`], which the registration runs). Run AFTER
+        // the stops this pass materialised, so the capacity a task that has just reached
+        // `STOPPED` gave back is capacity a parked task is placed on, and BEFORE the
+        // shortfall below, so a task this pass placed is no longer capacity to acquire.
+        self.place_parked_tasks(now);
         // What ECS MANAGED SCALING now owes: a cluster that holds tasks it cannot place
         // through a provider whose Auto Scaling group Amazon ECS manages is one it acquires
         // capacity for, and the action that does it falls due one span from the instant the
@@ -1918,6 +1928,16 @@ impl ComAmazonawsEcsAmazonec2containerservicev20141113State {
     /// task whose infrastructure takes no container instance of this cluster — a Fargate
     /// placement parked for an interface — keeps the host it already had, which is none.
     ///
+    /// A task whose infrastructure IS the cluster's registered capacity and that no instance
+    /// of the cluster has room for is left exactly where it is: "The EC2 launch type runs your
+    /// tasks on Amazon EC2 instances registered to your cluster", so such a task has nowhere
+    /// to run and nothing of its lifecycle is owed yet — it stays accepted-but-not-placed
+    /// ([`TaskRecord::is_awaiting_placement`], which is also what keeps the capacity its
+    /// provider is acquiring on the shortfall managed scaling answers), and it is placed by a
+    /// later pass, once capacity that admits it is there. Scheduling its `PENDING` here would
+    /// run it on no container instance at all, which is a state Amazon ECS never reports for
+    /// that infrastructure.
+    ///
     /// The transition falls due [`TRANSITION_SPAN`] from `now` and
     /// [`Self::advance_clock`] materialises it, so nothing here moves a status that is not
     /// owed yet. A task that cannot be launched before the interface it was allocated is in
@@ -1953,6 +1973,12 @@ impl ComAmazonawsEcsAmazonec2containerservicev20141113State {
                 // the size its revision gave it ([`TaskReservation::of_task`]).
                 TaskReservation::of_task(task),
             );
+            // A task that runs on the cluster's own registered capacity and that none of
+            // that capacity has room for is not placed at all: it keeps waiting where it
+            // is, and a later pass places it once an instance that admits it is there.
+            if host.is_none() && needs_registered_capacity(placement_launch_type.as_deref()) {
+                continue;
+            }
             let mut containers = task.containers.clone();
             let subnets = task
                 .awsvpc_configuration
@@ -2008,6 +2034,28 @@ impl ComAmazonawsEcsAmazonec2containerservicev20141113State {
                 }
             }
             task.pending_due_at = Some(attached_at.unwrap_or(placed_at).max(placed_at));
+        }
+    }
+
+    /// Place every task PARKED in any cluster that now holds capacity it can run on
+    /// ([`Self::place_tasks_awaiting_capacity`], which is the one placement of such a task).
+    ///
+    /// Part of the clock pass: the placement is the scheduler's own work, owed from the
+    /// instant a container instance of the task's cluster has room for it — the capacity the
+    /// provider was acquiring having registered, or the room a task that stopped gave back —
+    /// so a task is placed at that instant whether or not anybody called. A cluster holding
+    /// no parked task is not looked at.
+    pub(super) fn place_parked_tasks(&mut self, now: SystemTime) {
+        let clusters: ::std::collections::BTreeSet<String> = self
+            .tasks
+            .values()
+            .filter(|task| {
+                task.desired_status == STATUS_RUNNING && task.is_awaiting_placement()
+            })
+            .map(|task| task.cluster_name.clone())
+            .collect();
+        for cluster_name in clusters {
+            self.place_tasks_awaiting_capacity(&cluster_name, now);
         }
     }
 
