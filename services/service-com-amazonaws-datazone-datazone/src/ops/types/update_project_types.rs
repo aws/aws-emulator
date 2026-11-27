@@ -24,6 +24,7 @@ pub struct UpdateProjectInput {
     pub environment_deployment_details: Option<EnvironmentDeploymentDetails>,
     pub user_parameters: Option<Vec<EnvironmentConfigurationUserParameter>>,
     pub project_profile_version: Option<String>,
+    pub project_profile_action: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.datazone#UpdateProjectOutput")]

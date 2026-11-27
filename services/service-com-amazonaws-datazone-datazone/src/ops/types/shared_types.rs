@@ -205,20 +205,6 @@ pub struct FormOutput {
     pub type_name: Option<String>,
     pub type_revision: Option<String>,
     pub content: Option<String>,
-    /// How the form is rendered, reported on every form output — see
-    /// [`crate::state::form_output`], which projects it from the stored form.
-    pub rendering_config: Option<FormRenderingConfig>,
-}
-
-/// How a metadata form is rendered, as a [`FormOutput`] reports it.
-///
-/// The service reports the member on every metadata form it answers with; no request
-/// member carries one, so its value is the service's own default
-/// ([`crate::state::FORM_RENDERED_COLLAPSED`]).
-#[smithy_macros::smithy(shape = "com.amazonaws.datazone#FormRenderingConfig")]
-#[derive(Debug, Clone, Default)]
-pub struct FormRenderingConfig {
-    pub collapse: Option<bool>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.datazone#ServiceQuotaExceededException")]
@@ -1040,6 +1026,7 @@ pub struct AwsConsoleLinkParameters {
 #[derive(Debug, Clone, Default)]
 pub struct EnvironmentConfigurationUserParameter {
     pub environment_id: Option<String>,
+    pub environment_blueprint_id: Option<String>,
     pub environment_resolved_account: Option<EnvironmentResolvedAccount>,
     pub environment_configuration_name: Option<String>,
     pub environment_parameters: Option<Vec<EnvironmentParameter>>,
@@ -1353,6 +1340,16 @@ pub struct BusinessNameGenerationConfiguration {
 pub struct AssetListingDetails {
     pub listing_id: String,
     pub listing_status: String,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.datazone#AssetOwnershipTransfer")]
+#[derive(Debug, Clone, Default)]
+pub struct AssetOwnershipTransfer {
+    pub status: String,
+    pub source_project_id: String,
+    pub target_project_id: String,
+    pub started_at: Option<::aws_smithy_types::DateTime>,
+    pub updated_at: Option<::aws_smithy_types::DateTime>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.datazone#DataProductItem")]
@@ -1735,6 +1732,10 @@ pub struct GlossaryTermEnforcementDetail {
 pub const ACCEPT_RULE_BEHAVIOR_VALUES: &[&str] = &["ALL", "NONE"];
 
 
+/// The values `AssetOwnershipTransferStatus` accepts on the wire.
+pub const ASSET_OWNERSHIP_TRANSFER_STATUS_VALUES: &[&str] = &["FAILED", "IN_PROGRESS", "SUCCEEDED"];
+
+
 /// The values `AttributeEntityType` accepts on the wire.
 pub const ATTRIBUTE_ENTITY_TYPE_VALUES: &[&str] = &["ASSET", "LISTING"];
 
@@ -1776,7 +1777,7 @@ pub const CONNECTION_STATUS_VALUES: &[&str] = &["CREATE_FAILED", "CREATING", "DE
 
 
 /// The values `ConnectionType` accepts on the wire.
-pub const CONNECTION_TYPE_VALUES: &[&str] = &["AMAZON_Q", "ATHENA", "BIGQUERY", "DATABRICKS", "DATABRICKSICEBERGRESTCATALOG", "DOCUMENTDB", "DYNAMODB", "GIT", "HYPERPOD", "IAM", "ICEBERGRESTCATALOG", "MLFLOW", "MYSQL", "OPENSEARCH", "ORACLE", "POSTGRESQL", "REDSHIFT", "S3", "SAPHANA", "SNOWFLAKE", "SNOWFLAKEICEBERGRESTCATALOG", "SPARK", "SQLSERVER", "TERADATA", "VERTICA", "VPC", "WORKFLOWS_MWAA"];
+pub const CONNECTION_TYPE_VALUES: &[&str] = &["AMAZON_Q", "ATHENA", "BIGQUERY", "DATABRICKS", "DATABRICKSICEBERGRESTCATALOG", "DOCUMENTDB", "DYNAMODB", "GIT", "HYPERPOD", "IAM", "ICEBERGRESTCATALOG", "MLFLOW", "MYSQL", "OPENSEARCH", "ORACLE", "POSTGRESQL", "REDSHIFT", "S3", "SAPHANA", "SNOWFLAKE", "SNOWFLAKEICEBERGRESTCATALOG", "SPARK", "SQLSERVER", "TERADATA", "VERTICA", "VPC", "WORKDAYICEBERGRESTCATALOG", "WORKDAYLDQ", "WORKFLOWS_MWAA"];
 
 
 /// The values `DataAssetActivityStatus` accepts on the wire.
@@ -1888,7 +1889,7 @@ pub const GLOSSARY_USAGE_RESTRICTION_VALUES: &[&str] = &["ASSET_GOVERNED_TERMS"]
 
 
 /// The values `GlueConnectionType` accepts on the wire.
-pub const GLUE_CONNECTION_TYPE_VALUES: &[&str] = &["BIGQUERY", "DATABRICKSICEBERGRESTCATALOG", "DOCUMENTDB", "DYNAMODB", "ICEBERGRESTCATALOG", "MYSQL", "OPENSEARCH", "ORACLE", "POSTGRESQL", "REDSHIFT", "SAPHANA", "SNOWFLAKE", "SNOWFLAKEICEBERGRESTCATALOG", "SQLSERVER", "TERADATA", "VERTICA"];
+pub const GLUE_CONNECTION_TYPE_VALUES: &[&str] = &["BIGQUERY", "DATABRICKSICEBERGRESTCATALOG", "DOCUMENTDB", "DYNAMODB", "ICEBERGRESTCATALOG", "MYSQL", "OPENSEARCH", "ORACLE", "POSTGRESQL", "REDSHIFT", "SAPHANA", "SNOWFLAKE", "SNOWFLAKEICEBERGRESTCATALOG", "SQLSERVER", "TERADATA", "VERTICA", "WORKDAYICEBERGRESTCATALOG", "WORKDAYLDQ"];
 
 
 /// The values `GovernanceType` accepts on the wire.
@@ -2013,6 +2014,10 @@ pub const PACKAGE_MANAGER_VALUES: &[&str] = &["UV"];
 
 /// The values `ProjectDesignation` accepts on the wire.
 pub const PROJECT_DESIGNATION_VALUES: &[&str] = &["CONTRIBUTOR", "OWNER", "PROJECT_CATALOG_STEWARD", "USER_CREATED_DESIGNATION"];
+
+
+/// The values `ProjectProfileAction` accepts on the wire.
+pub const PROJECT_PROFILE_ACTION_VALUES: &[&str] = &["DISASSOCIATE"];
 
 
 /// The values `ProjectStatus` accepts on the wire.

@@ -51,9 +51,6 @@ pub struct AssetListing {
     pub asset_type: Option<String>,
     pub created_at: Option<::aws_smithy_types::DateTime>,
     pub forms: Option<String>,
-    /// One entry per metadata form attached to the published asset, each carrying the
-    /// form's metadata and no content — see [`crate::state::form_metadata`].
-    pub asset_forms_metadata: Option<Vec<FormOutput>>,
     pub latest_time_series_data_point_forms: Option<Vec<TimeSeriesDataPointSummaryFormOutput>>,
     pub glossary_terms: Option<Vec<DetailedGlossaryTerm>>,
     pub governed_glossary_terms: Option<Vec<DetailedGlossaryTerm>>,

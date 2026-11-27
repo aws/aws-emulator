@@ -65,6 +65,16 @@ pub struct GlueConnectionPatch {
 pub struct AuthenticationConfigurationPatch {
     pub secret_arn: Option<String>,
     pub basic_authentication_credentials: Option<BasicAuthenticationCredentials>,
+    pub o_auth2_properties: Option<OAuth2PropertiesPatch>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.datazone#OAuth2PropertiesPatch")]
+#[derive(Debug, Clone, Default)]
+pub struct OAuth2PropertiesPatch {
+    pub o_auth2_grant_type: Option<String>,
+    pub o_auth2_client_application: Option<OAuth2ClientApplication>,
+    pub token_url: Option<String>,
+    pub token_url_parameters_map: Option<std::collections::HashMap<String, String>>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.datazone#IamPropertiesPatch")]

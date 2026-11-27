@@ -189,6 +189,7 @@ pub mod tag_resource_types;
 pub mod untag_resource_types;
 pub mod update_account_pool_types;
 pub mod update_asset_filter_types;
+pub mod update_asset_owner_types;
 pub mod update_connection_types;
 pub mod update_data_source_types;
 pub mod update_designation_types;
@@ -561,6 +562,8 @@ pub use untag_resource_types::*;
 pub use update_account_pool_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use update_asset_filter_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use update_asset_owner_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use update_connection_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]

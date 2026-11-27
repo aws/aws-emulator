@@ -283,6 +283,21 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 },
             )
         })?;
+        // "While a transfer is in progress, requests that change the asset or its listing
+        // fail with a ConflictException" (smithy_query query="doc"
+        // shape="UpdateAssetOwner"): a change set changes the entity's listing, so it
+        // waits for the transfer the clock owes to land.
+        if entity.transfer_in_progress() {
+            return Err(CreateListingChangeSetErrorModeled::ConflictException(
+                ConflictException {
+                    message: crate::state::transfer_in_progress_message(
+                        &entity.id,
+                        "published into the catalog or withdrawn from it",
+                    ),
+                },
+            )
+            .into());
+        }
         // A revision the entity does not have names no stored resource, so there is
         // nothing to record and nothing to take out of the catalog. A revision the
         // entity DOES have — including one a later revision superseded — is a record

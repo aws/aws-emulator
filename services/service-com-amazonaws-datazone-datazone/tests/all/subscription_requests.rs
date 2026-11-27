@@ -268,18 +268,14 @@ fn request_cases() -> Vec<RequestCase> {
                     "typeName": "amazon.datazone.JustificationFormType",
                     "typeRevision": "1",
                     "content": "{\"ticket\":\"DZ-42\"}",
-                    // Every form OUTPUT carries how the form renders, whichever
-                    // operation reports it.
-                    "renderingConfig": { "collapse": false },
                 },
                 // A form naming no type has no type revision either, by the rule
                 // `crate::state::stored_forms` states.
                 {
                     "formName": "ReviewNote",
                     "content": "needed for the quarterly report",
-                    "renderingConfig": { "collapse": false },
                 },
-                { "formName": "NoContent", "renderingConfig": { "collapse": false } },
+                { "formName": "NoContent" },
             ])),
         },
         RequestCase {

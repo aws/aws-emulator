@@ -26,10 +26,9 @@
 //!    with `ResourceNotFoundException`; an unsettled domain with `ConflictException`.
 //! 5. A repeated `clientToken` applies ONE change set, and a read changes nothing a
 //!    later caller sees.
-//! 6. A published asset's listing item reports the asset's metadata forms twice over —
-//!    their content as the `forms` string and one `assetFormsMetadata` entry per form —
-//!    and every other list member of the item as a list, empty where the published asset
-//!    has nothing of that kind.
+//! 6. A published asset's listing item reports the asset's metadata forms as the modelled
+//!    `forms` string, and every other list member of the item as a list, empty where the
+//!    published asset has nothing of that kind.
 
 use crate::harness::Emulator;
 use serde_json::{json, Value};
@@ -874,7 +873,7 @@ fn item_cases() -> Vec<ItemCase> {
 }
 
 #[tokio::test]
-async fn a_published_listing_item_reports_the_asset_s_form_metadata_and_its_empty_lists() {
+async fn a_published_listing_item_reports_the_asset_s_forms_and_its_empty_lists() {
     let dz = Emulator::new();
     let domain = dz.available_domain("listing-item-domain").await;
     let project = dz.project(&domain, "listing item owner").await;
@@ -1001,25 +1000,22 @@ async fn a_published_listing_item_reports_the_asset_s_form_metadata_and_its_empt
             .cloned()
             .unwrap_or(Value::Null);
 
-        // One `assetFormsMetadata` entry per metadata form the published asset carries,
-        // each naming the form, its type and that type's revision and how it renders,
-        // and carrying no content (the content is the item's `forms` string).
-        let expected_metadata: Vec<Value> = case
+        // The item's `forms` string reports the content of every metadata form the
+        // published asset carries, keyed by the name the form is addressed by on its
+        // entity; an asset carrying no form reports no `forms` member at all.
+        let expected_forms: serde_json::Map<String, Value> = case
             .forms
             .iter()
-            .map(|(form_name, type_name)| {
-                json!({
-                    "formName": form_name,
-                    "typeName": type_name,
-                    "typeRevision": "1",
-                    "renderingConfig": { "collapse": false },
-                })
-            })
+            .map(|(form_name, _)| (form_name.to_string(), json!({ "v": form_name })))
             .collect();
+        let reported_forms = item
+            .get("forms")
+            .and_then(Value::as_str)
+            .map(|forms| serde_json::from_str::<Value>(forms).unwrap_or_else(|_| json!(forms)));
         assert_eq!(
-            item.get("assetFormsMetadata"),
-            Some(&json!(expected_metadata)),
-            "case {:?}: the published asset's form metadata, got {item:?}",
+            reported_forms,
+            (!expected_forms.is_empty()).then_some(Value::Object(expected_forms)),
+            "case {:?}: the published asset's forms, got {item:?}",
             case.label
         );
 

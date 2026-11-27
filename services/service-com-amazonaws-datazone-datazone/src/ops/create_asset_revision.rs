@@ -282,6 +282,17 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             })
         })?;
 
+        // "While a transfer is in progress, requests that change the asset or its listing
+        // fail with a ConflictException" (smithy_query query="doc"
+        // shape="UpdateAssetOwner"): a revision is a change to the asset, so it waits for
+        // the transfer the clock owes to land.
+        if asset.transfer_in_progress() {
+            return Err(CreateAssetRevisionErrorModeled::ConflictException(ConflictException {
+                message: crate::state::transfer_in_progress_message(&asset.id, "revised"),
+            })
+            .into());
+        }
+
         // The `@idempotencyToken`: a repeat of the SAME request answers with the
         // revision the first one recorded, so a retry never records two revisions. The
         // token is remembered on the revision it recorded, so it is released with the

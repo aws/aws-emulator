@@ -831,10 +831,42 @@ fn form_report_cases() -> Vec<FormReportCase> {
     ]
 }
 
-/// Assert the rule on one answer: every entry of `formsOutput` carries the rendering
-/// configuration, and `readOnlyFormsOutput` is a list — empty for an asset that has no
-/// read-only form, never a missing member.
-fn assert_form_members(body: &Value, count: usize, case: &str, operation: &str) {
+/// The form outputs the responses must carry for `forms`, the `formsInput` entries a
+/// request listed: a form is reported with exactly the members `FormOutput` declares —
+/// `formName`/`typeName`/`typeRevision`/`content` (smithy_query shape="FormOutput") —
+/// projected from what the request set. A form that names a form type but pins no
+/// revision is bound to that type's FIRST revision; one that names no type reports
+/// neither a type name nor a type revision.
+fn expected_form_outputs(forms: &Value) -> Vec<Value> {
+    forms
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .iter()
+        .map(|form| {
+            let mut expected = serde_json::Map::new();
+            expected.insert("formName".to_string(), form["formName"].clone());
+            if let Some(type_name) = form.get("typeIdentifier") {
+                expected.insert("typeName".to_string(), type_name.clone());
+                expected.insert(
+                    "typeRevision".to_string(),
+                    form.get("typeRevision").cloned().unwrap_or(json!("1")),
+                );
+            }
+            if let Some(content) = form.get("content") {
+                expected.insert("content".to_string(), content.clone());
+            }
+            Value::Object(expected)
+        })
+        .collect()
+}
+
+/// Assert the rule on one answer: `formsOutput` reports every form the request attached,
+/// each with the members `FormOutput` declares and nothing else, and
+/// `readOnlyFormsOutput` is a list — empty for an asset that has no read-only form, never
+/// a missing member.
+fn assert_form_members(body: &Value, case: &FormReportCase, operation: &str) {
+    let expected = expected_form_outputs(&case.forms);
     let forms = body
         .get("formsOutput")
         .and_then(Value::as_array)
@@ -842,27 +874,30 @@ fn assert_form_members(body: &Value, count: usize, case: &str, operation: &str) 
         .unwrap_or_default();
     assert_eq!(
         forms.len(),
-        count,
-        "case {case:?} ({operation}): expected {count} form outputs, got {:?}",
+        case.count,
+        "case {:?} ({operation}): expected {} form outputs, got {:?}",
+        case.label,
+        case.count,
         body.get("formsOutput")
     );
-    for form in &forms {
-        assert_eq!(
-            form.get("renderingConfig"),
-            Some(&json!({ "collapse": false })),
-            "case {case:?} ({operation}): every form output carries how it renders, got {form:?}"
-        );
-    }
+    assert_eq!(
+        forms,
+        expected,
+        "case {:?} ({operation}): every form output carries exactly the modelled members, got {:?}",
+        case.label,
+        body.get("formsOutput")
+    );
     assert_eq!(
         body.get("readOnlyFormsOutput"),
         Some(&json!([])),
-        "case {case:?} ({operation}): readOnlyFormsOutput must be an empty list, got {:?}",
+        "case {:?} ({operation}): readOnlyFormsOutput must be an empty list, got {:?}",
+        case.label,
         body.get("readOnlyFormsOutput")
     );
 }
 
 #[tokio::test]
-async fn every_reported_form_carries_its_rendering_config_beside_an_empty_read_only_list() {
+async fn every_reported_form_carries_the_modelled_members_beside_an_empty_read_only_list() {
     let dz = Emulator::new();
     let domain = dz.available_domain("form-member-domain").await;
     let project = dz.project(&domain, "form member owner").await;
@@ -886,7 +921,7 @@ async fn every_reported_form_carries_its_rendering_config_beside_an_empty_read_o
             "case {:?}: CreateAsset expected 201, got {} {:?}",
             case.label, created.status, created.body
         );
-        assert_form_members(&created.body, case.count, case.label, "CreateAsset");
+        assert_form_members(&created.body, &case, "CreateAsset");
 
         let id = created.s("id");
         let read = dz.call("GET", &format!("{assets_uri}/{id}"), None).await;
@@ -895,7 +930,7 @@ async fn every_reported_form_carries_its_rendering_config_beside_an_empty_read_o
             "case {:?}: GetAsset expected 200, got {} {:?}",
             case.label, read.status, read.body
         );
-        assert_form_members(&read.body, case.count, case.label, "GetAsset");
+        assert_form_members(&read.body, &case, "GetAsset");
 
         // The same rule holds for the next revision of the same asset, which reports
         // the forms it carries through the same projection.
@@ -914,6 +949,6 @@ async fn every_reported_form_carries_its_rendering_config_beside_an_empty_read_o
             "case {:?}: CreateAssetRevision expected 200, got {} {:?}",
             case.label, revised.status, revised.body
         );
-        assert_form_members(&revised.body, case.count, case.label, "CreateAssetRevision");
+        assert_form_members(&revised.body, &case, "CreateAssetRevision");
     }
 }

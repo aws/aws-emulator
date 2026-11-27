@@ -208,6 +208,16 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 message: ResourceKind::Asset.not_found_message(),
             })
         })?;
+        // "While a transfer is in progress, requests that change the asset or its listing
+        // fail with a ConflictException" (smithy_query query="doc"
+        // shape="UpdateAssetOwner"): removing the asset is a change to it, so it waits
+        // for the transfer the clock owes to land.
+        if asset.transfer_in_progress() {
+            return Err(DeleteAssetErrorModeled::ConflictException(ConflictException {
+                message: crate::state::transfer_in_progress_message(&asset.id, "deleted"),
+            })
+            .into());
+        }
         // "Asset must not be referenced in any existing asset filters." A filter is a
         // view OF one asset, so every filter stored on this asset references it.
         // Checked BEFORE the removal, so a refused delete leaves the store exactly as it

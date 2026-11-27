@@ -399,6 +399,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             // A filter is a view of an asset, added by `CreateAssetFilter`; a freshly
             // created asset has none.
             filters: std::collections::BTreeMap::new(),
+            // Ownership is transferred by `UpdateAssetOwner`; a freshly created asset is
+            // owned by the project that created it and has had no transfer.
+            ownership_transfer: None,
         };
 
         // The domain was proved present above, but the lookup is answered rather than

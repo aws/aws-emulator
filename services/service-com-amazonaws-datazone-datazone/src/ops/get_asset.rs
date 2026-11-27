@@ -94,6 +94,9 @@
 //! * `name` (AssetName, len 1..256) **required** — The name of the asset.
 //! * `owningProjectId` (ProjectId, pattern ^[a-zA-Z0-9_-]{1,36}$) **required** — The ID of
 //!   the project that owns the asset.
+//! * `ownershipTransfer` (AssetOwnershipTransfer) — The most recent ownership transfer of
+//!   the asset. The response omits this member if the asset has never had an ownership
+//!   transfer.
 //! * `readOnlyFormsOutput` (FormOutputList, len 0..10) — The read-only metadata forms
 //!   attached to the asset.
 //! * `revision` (Revision, len 1..64) **required** — The revision of the asset.
@@ -277,6 +280,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             // Time series data points are imported by `PostTimeSeriesDataPoints`, which
             // is still a scaffold, so no stored asset has any.
             latest_time_series_data_point_forms_output: None,
+            // The asset's most recent ownership transfer, as the asset records it: the
+            // member is omitted for an asset that has never had one.
+            ownership_transfer: asset
+                .ownership_transfer
+                .as_ref()
+                .map(crate::state::OwnershipTransfer::view),
         })
     }
 }

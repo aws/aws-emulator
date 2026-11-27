@@ -15,8 +15,8 @@
 //!
 //! The `item` is built by [`crate::state::listing_item`]: every LIST member of a
 //! published asset's listing is reported as a list, empty where the published entity has
-//! nothing of that kind, and its metadata forms are reported twice over — their content
-//! as the modelled `forms` string and one `assetFormsMetadata` entry per form.
+//! nothing of that kind, and its metadata forms are reported as the modelled `forms`
+//! string.
 //!
 //! The listing's own members — when it was created and last changed, by whom, and its
 //! `status` — belong to the listing rather than to one snapshot of it, so they are the

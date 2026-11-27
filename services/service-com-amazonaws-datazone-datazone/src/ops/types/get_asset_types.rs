@@ -41,5 +41,6 @@ pub struct GetAssetOutput {
     pub forms_output: Vec<FormOutput>,
     pub read_only_forms_output: Option<Vec<FormOutput>>,
     pub latest_time_series_data_point_forms_output: Option<Vec<TimeSeriesDataPointSummaryFormOutput>>,
+    pub ownership_transfer: Option<AssetOwnershipTransfer>,
 }
 

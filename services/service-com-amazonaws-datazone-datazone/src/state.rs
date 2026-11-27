@@ -59,6 +59,13 @@ pub use domain_admission::*;
 mod requesters;
 pub use requesters::*;
 
+/// Asset ownership transfers: the record an asset keeps of a move of its ownership to
+/// another project, and the move the clock owes. A concern of its own, so it lives in its
+/// own module beside this one; everything it declares is re-exported here, so a handler
+/// reaches it as `crate::state::…` like the rest of the store.
+mod asset_ownership;
+pub use asset_ownership::*;
+
 /// The span the emulator takes to finish a domain lifecycle step AWS reports as
 /// in-progress (`CREATING` -> `AVAILABLE`, `DELETING` -> gone).
 ///
@@ -892,9 +899,8 @@ pub struct ListingRevision {
     /// `createdAt` reports (smithy_query shape="AssetListing" member="createdAt").
     pub entity_created_at_ms: i64,
     /// The entity's metadata forms AS THEY WERE when this revision was recorded: the
-    /// snapshot every form member of a listing item is projected from — the modelled
-    /// `Forms` string by [`listing_forms`] and the per-form metadata by
-    /// [`form_metadata`]. Empty when the entity had no form attached.
+    /// snapshot the modelled `Forms` string a listing item reports is projected from
+    /// ([`listing_forms`]). Empty when the entity had no form attached.
     pub forms: Vec<StoredForm>,
     /// The glossary terms attached to the published entity, resolved against the
     /// domain's stored terms when this revision was recorded
@@ -946,41 +952,19 @@ pub fn listing_forms(forms: &[StoredForm]) -> Option<String> {
     serde_json::to_string(&serde_json::Value::Object(rendered)).ok()
 }
 
-/// Whether a metadata form is shown collapsed, as a [`form_output`] reports it.
-///
-/// No request member carries a rendering configuration — a `FormInput` is
-/// `formName`/`typeIdentifier`/`typeRevision`/`content` (smithy_query shape="FormInput")
-/// — so every form this store holds is rendered the one way, expanded.
-pub const FORM_RENDERED_COLLAPSED: bool = false;
-
 /// One stored metadata form as the modelled `FormOutput`, shared by every operation that
 /// reports an entity's forms so no two of them can drift apart.
 ///
-/// `renderingConfig` is reported on EVERY form output — recorded behaviour, carrying the
-/// one value this store has for it ([`FORM_RENDERED_COLLAPSED`]) — so a client that
-/// renders metadata forms can always read whether a form is collapsed instead of finding
-/// nothing there.
+/// A `FormOutput` is `formName`/`typeName`/`typeRevision`/`content` (smithy_query
+/// shape="FormOutput"), so a form is reported with exactly what the request that attached
+/// it set: a form that named no form type reports neither a type name nor a type revision,
+/// and one that carried no content reports none.
 pub fn form_output(form: &StoredForm) -> crate::ops::types::FormOutput {
     crate::ops::types::FormOutput {
         form_name: form.form_name.clone(),
         type_name: form.type_name.clone(),
         type_revision: form.type_revision.clone(),
         content: form.content.clone(),
-        rendering_config: Some(crate::ops::types::FormRenderingConfig {
-            collapse: Some(FORM_RENDERED_COLLAPSED),
-        }),
-    }
-}
-
-/// [`form_output`] without the form's CONTENT: the metadata of one form — which form it
-/// is, of which form type at which revision, and how it renders.
-///
-/// What a published entity's `assetFormsMetadata` reports, where the content of the same
-/// forms is already reported once, as the `forms` string [`listing_forms`] renders.
-pub fn form_metadata(form: &StoredForm) -> crate::ops::types::FormOutput {
-    crate::ops::types::FormOutput {
-        content: None,
-        ..form_output(form)
     }
 }
 
@@ -1041,8 +1025,7 @@ pub fn detailed_glossary_terms(
 /// Every LIST member of an asset listing is reported as a list, empty where the
 /// published entity has nothing of that kind — recorded behaviour, and what lets a
 /// catalog consumer iterate zero times instead of finding nothing there. The forms are
-/// reported twice over, as the `forms` string [`listing_forms`] renders and as one
-/// `assetFormsMetadata` entry per form ([`form_metadata`]); the glossary terms are the
+/// reported as the `forms` string [`listing_forms`] renders; the glossary terms are the
 /// ones the change set resolved ([`listing_glossary_terms`]).
 pub fn listing_item(
     listing: &Listing,
@@ -1069,7 +1052,6 @@ pub fn listing_item(
         asset_type: Some(revision.entity_type_name.clone()),
         created_at: Some(date_time(revision.entity_created_at_ms)),
         forms: listing_forms(&revision.forms),
-        asset_forms_metadata: Some(revision.forms.iter().map(form_metadata).collect()),
         // Time series data points are imported by `PostTimeSeriesDataPoints`, which is
         // still a scaffold, so no published entity has any — an empty list, not a
         // missing one.
@@ -1751,6 +1733,13 @@ pub struct Asset {
     /// stable order and a pagination token can resume from a key. Bounded by
     /// [`MAX_FILTERS_PER_ASSET`].
     pub filters: BTreeMap<String, AssetFilter>,
+    /// The MOST RECENT transfer of this asset's ownership, which is the one `GetAsset`
+    /// reports ("The response omits this member if the asset has never had an ownership
+    /// transfer", smithy_query shape="GetAssetOutput" member="ownershipTransfer").
+    /// `None` until `UpdateAssetOwner` starts one. Kept on the ASSET rather than on a
+    /// revision: a transfer moves the asset itself, so adding a revision neither
+    /// duplicates nor drops it.
+    pub ownership_transfer: Option<OwnershipTransfer>,
 }
 
 impl Asset {
@@ -2945,8 +2934,9 @@ impl ComAmazonawsDatazoneDatazoneState {
 
     /// Materialise every domain lifecycle step the clock already owes at `now`: a
     /// `CREATING` domain whose span has elapsed becomes `AVAILABLE`, a `DELETING` one
-    /// disappears together with its projects, and a `CREATING` listing whose span has
-    /// elapsed becomes `ACTIVE`.
+    /// disappears together with its projects, a `CREATING` listing whose span has
+    /// elapsed becomes `ACTIVE`, and an asset ownership transfer whose span has elapsed
+    /// lands.
     ///
     /// This is the ONLY write a reporting operation makes, and it writes exactly what
     /// was already owed at this instant whether or not anybody called.
@@ -2979,15 +2969,21 @@ impl ComAmazonawsDatazoneDatazoneState {
         }
         // The publish a `CreateListingChangeSet` started has finished: the listing is
         // in the catalog, and the catalog's own record of the published entity is the
-        // next revision of it ([`Listing::complete_publish`]). Bounded by
-        // MAX_DOMAINS * MAX_LISTINGS_PER_DOMAIN, and run after the domain pass so a
-        // domain that has just disappeared is not walked.
+        // next revision of it ([`Listing::complete_publish`]). Then the ownership transfer
+        // an `UpdateAssetOwner` started has landed: the asset is owned by the target
+        // project and its catalog record moved with it ([`settle_asset_ownership`]), which
+        // is why the move is applied after that listing — a listing whose publish
+        // completes at this same instant is already in the catalog when the move reaches
+        // it. One walk of the store, bounded by MAX_DOMAINS * (MAX_LISTINGS_PER_DOMAIN +
+        // MAX_ASSETS_PER_DOMAIN), run after the domain pass so a domain that has just
+        // disappeared is not walked.
         for domain in self.domains.values_mut() {
             for listing in domain.listings.values_mut() {
                 if let Some(due_at) = listing.status_due_ms.filter(|due| *due <= now) {
                     listing.complete_publish(due_at);
                 }
             }
+            settle_asset_ownership(domain, now);
         }
         // A token naming a domain that has just disappeared can never be replayed
         // into anything, so it is released with the domain.
