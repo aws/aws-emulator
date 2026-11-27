@@ -226,6 +226,10 @@ pub use application_dpu_sizes::*;
 mod work_group_configuration;
 pub use work_group_configuration::*;
 
+/// Whether this account has Athena's system tables enabled, and under which key.
+mod system_tables;
+pub use system_tables::*;
+
 /// The resolution the instants in this service's responses are reported at.
 mod reported_timestamps;
 pub use reported_timestamps::*;
@@ -352,11 +356,16 @@ impl WorkGroupRecord {
     ///
     /// The configuration is reported through [`effective_work_group_configuration`], so a
     /// switch no write ever set is reported with the value it has rather than left out.
-    pub fn to_work_group(&self) -> WorkGroup {
+    /// `system_tables_enabled` is this ACCOUNT's system-table enablement, which that
+    /// configuration reports and no workgroup holds of its own (see [`system_tables`]).
+    pub fn to_work_group(&self, system_tables_enabled: bool) -> WorkGroup {
         WorkGroup {
             name: self.name.clone(),
             state: Some(self.state.clone()),
-            configuration: Some(effective_work_group_configuration(&self.configuration)),
+            configuration: Some(effective_work_group_configuration(
+                &self.configuration,
+                system_tables_enabled,
+            )),
             description: self.description.clone(),
             creation_time: Some(reported_time(self.created_at)),
             // Athena fills this only for an IAM Identity Center enabled workgroup,
@@ -824,6 +833,68 @@ pub fn to_database(database: &glue_state::DatabaseEntry) -> Database {
         name: database.name.clone(),
         description: database.description.clone(),
         parameters: database.parameters.clone(),
+    }
+}
+
+/// The attribute a listing names a table's TYPE under, one of `TABLE_ATTRIBUTES_VALUES` in
+/// [`crate::ops::types`] (the model's `TableAttributes` enum, whose documentation reads "A
+/// table property that can be requested in the `AttributesToGet` parameter of
+/// `ListTableMetadata`"). The other value of that enum is the NAME, which every answer
+/// carries whatever the request asked for; see [`narrowed_table_metadata`].
+pub const TABLE_ATTRIBUTE_TABLE_TYPE: &str = "TABLE_TYPE";
+
+/// `metadata` narrowed to the table properties a listing asked for.
+///
+/// `ListTableMetadataInput$AttributesToGet` is "A list of table properties to return. The
+/// list must contain `NAME` and can contain at most two values", so a listing that names it
+/// reports those properties and NO others — the point of asking for them being to be spared
+/// the rest. The name is always reported: it is the property the list must contain, and
+/// `TableMetadata$Name` is `@required`, so there is no answer without it. A listing that
+/// names no attributes at all asks for the whole metadata and gets it.
+///
+/// Narrowing only ever drops what the catalog holds; it never reports a value the catalog
+/// does not, so a property this answer carries is the catalog's own
+/// ([`to_table_metadata`]).
+#[must_use]
+pub fn narrowed_table_metadata(
+    metadata: TableMetadata,
+    attributes: Option<&[String]>,
+) -> TableMetadata {
+    let Some(attributes) = attributes else {
+        return metadata;
+    };
+    TableMetadata {
+        name: metadata.name,
+        table_type: attributes
+            .iter()
+            .any(|attribute| attribute == TABLE_ATTRIBUTE_TABLE_TYPE)
+            .then_some(metadata.table_type)
+            .flatten(),
+        create_time: None,
+        last_access_time: None,
+        columns: None,
+        partition_keys: None,
+        parameters: None,
+    }
+}
+
+/// `database` narrowed to the database properties a listing asked for.
+///
+/// `ListDatabasesInput$AttributesToGet` is "A list of database properties to return. The
+/// list can contain at most one value", and `DatabaseAttributes` has exactly one value —
+/// the NAME (`DATABASE_ATTRIBUTES_VALUES` in [`crate::ops::types`]) — so a listing that
+/// names the member at all reports the name and nothing else. `Database$Name` is
+/// `@required`, so that is an answer whatever the list carried. A listing that names no
+/// attributes asks for the whole database and gets it.
+#[must_use]
+pub fn narrowed_database(database: Database, attributes: Option<&[String]>) -> Database {
+    if attributes.is_none() {
+        return database;
+    }
+    Database {
+        name: database.name,
+        description: None,
+        parameters: None,
     }
 }
 
@@ -2845,6 +2916,11 @@ pub struct ComAmazonawsAthenaAmazonathenaState {
     /// `CreateNamedQuery` writes it and `GetNamedQuery` reads it; see
     /// [`NamedQueryRegistry`].
     pub named_queries: NamedQueryRegistry,
+    /// Whether this account has Athena's system tables enabled, and under which key.
+    /// `CreateSystemTableConfiguration` writes it, `GetSystemTableConfiguration`,
+    /// `ListSystemTableStatuses` and every read of a workgroup report out of it; see
+    /// [`SystemTableConfigurationRegistry`].
+    pub system_tables: SystemTableConfigurationRegistry,
     /// The secret this store's page tokens are authenticated under, so a `NextToken`
     /// this store did not mint names no page. Drawn from the system's randomness when
     /// the store is created and never reported.
@@ -2902,6 +2978,7 @@ impl Default for ComAmazonawsAthenaAmazonathenaState {
             capacity_reservations: CapacityReservationRegistry::default(),
             prepared_statements: PreparedStatementRegistry::default(),
             named_queries: NamedQueryRegistry::default(),
+            system_tables: SystemTableConfigurationRegistry::default(),
             page_token_key: PageTokenKey::new(),
             notebook_address_key: PageTokenKey::new(),
             session_endpoint_key: PageTokenKey::new(),

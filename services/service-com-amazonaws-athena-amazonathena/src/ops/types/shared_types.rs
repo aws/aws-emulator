@@ -64,16 +64,17 @@ pub struct QueryExecution {
     pub query_results_s3_access_grants_configuration: Option<QueryResultsS3AccessGrantsConfiguration>,
 }
 
-/// The configuration a workgroup keeps its query results in Athena-owned storage under.
+/// How a workgroup's query results are held in Athena-owned storage: the modelled switch and
+/// encryption, plus the RETENTION a read of an execution in such a workgroup reports beside
+/// them.
 ///
-/// Member set, order and requiredness from
-/// `smithy_query(query="shape", shape="ManagedQueryResultsConfiguration")`, plus
-/// `TimeToLive`, which is RECORDED BEHAVIOUR rather than modelled: a read of an execution
-/// whose results Athena holds in its own storage reports how long it keeps them. It is
-/// REPORTED and never read off the wire (`out`), because the retention is the service's own
-/// rather than a parameter of the request — see
-/// [`crate::state::managed_query_results_time_to_live`] — and
-/// `types::recorded_member_wire` for why this shape is hand-written.
+/// Member set and order from
+/// `smithy_query(query="shape", shape="ManagedQueryResultsConfiguration")`, which models
+/// `Enabled` and `EncryptionConfiguration`, plus `TimeToLive` — RECORDED BEHAVIOUR rather
+/// than modelled; see [`ManagedQueryResultsTimeToLive`] and `types::recorded_member_wire` for
+/// why the shape is hand-written. The retention is the service's own
+/// ([`crate::state::managed_query_results_time_to_live`]), so the member is only ever
+/// REPORTED: a request that carries one does not set it.
 #[derive(Debug, Clone, Default)]
 pub struct ManagedQueryResultsConfiguration {
     pub enabled: bool,
@@ -106,12 +107,14 @@ ath_schema_and_codec!(
     ),
 );
 
-/// How long Athena keeps a query's results when it holds them in its own storage: the unit
-/// the retention is counted in and how many of them.
+/// How long Athena keeps the results it holds in its own storage, as a read of an execution
+/// in such a workgroup reports it: a count and the unit it is counted in.
 ///
-/// Wholly RECORDED behaviour — the on-disk model declares no such shape — so both members
-/// sit in the recorded namespace; see `types::recorded_member_wire`.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+/// Wholly RECORDED behaviour — the on-disk model declares no such shape — so it and every
+/// member of it sit in the recorded namespace; see `types::recorded_member_wire`. The value
+/// is the service's own ([`crate::state::managed_query_results_time_to_live`]), so both
+/// members are only ever REPORTED.
+#[derive(Debug, Clone, Default)]
 pub struct ManagedQueryResultsTimeToLive {
     pub unit: String,
     pub value: i32,
@@ -215,13 +218,61 @@ pub struct ResultReuseInformation {
     pub reused_previous_result: bool,
 }
 
-#[smithy_macros::smithy(shape = "com.amazonaws.athena#EngineVersion")]
-#[derive(Debug, Clone, Default)]
+/// An Athena engine version: the modelled selected and effective values, plus the engine
+/// FAMILY the service names beside them.
+///
+/// Member set and order from `smithy_query(query="shape", shape="EngineVersion")`, which
+/// models `SelectedEngineVersion` and `EffectiveEngineVersion`, plus `Category` — RECORDED
+/// BEHAVIOUR rather than modelled; see `types::recorded_member_wire` for why the shape is
+/// hand-written. The family is derived from the version itself
+/// ([`crate::state::engine_version_category`]), so the member is only ever REPORTED: a
+/// request that carries one does not set it.
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct EngineVersion {
-    pub category: Option<String>,
     pub selected_engine_version: Option<String>,
     pub effective_engine_version: Option<String>,
+    pub category: Option<String>,
 }
+
+ath_schema_and_codec!(
+    EngineVersion,
+    ENGINE_VERSION_SCHEMA,
+    "com.amazonaws.athena#EngineVersion",
+    "com.amazonaws.athena",
+    "EngineVersion",
+    (
+        M_SELECTED_ENGINE_VERSION,
+        selected_engine_version,
+        "SelectedEngineVersion",
+        0,
+        opt,
+        traits(ENGINE_VERSION_NAME_STRING_TRAITS),
+        string
+    ),
+    (
+        M_EFFECTIVE_ENGINE_VERSION,
+        effective_engine_version,
+        "EffectiveEngineVersion",
+        1,
+        opt,
+        traits(ENGINE_VERSION_NAME_STRING_TRAITS),
+        string
+    ),
+    (M_CATEGORY, category, "Category", 2, out, recorded(string)),
+);
+
+/// The constraints both modelled members of [`EngineVersion`] carry: `@length(min: 1, max:
+/// 128)`, from `smithy_query(query="shape", shape="EngineVersion")`, which targets
+/// `NameString` for each. Declared here because a member schema's trait map cannot live in
+/// the `impl` block the member schemas are declared in; see `ath_member_schema!`.
+static ENGINE_VERSION_NAME_STRING_TRAITS: std::sync::LazyLock<::aws_smithy_schema::TraitMap> =
+    std::sync::LazyLock::new(|| {
+        let mut m = ::aws_smithy_schema::TraitMap::new();
+        m.insert(::std::boxed::Box::new(
+            ::aws_smithy_schema_server::constraints::LengthTrait::new(Some(1), Some(128)),
+        ));
+        m
+    });
 
 #[smithy_macros::smithy(shape = "com.amazonaws.athena#QueryResultsS3AccessGrantsConfiguration")]
 #[derive(Debug, Clone, Default)]
@@ -264,18 +315,14 @@ pub struct ResourceNotFoundException {
     pub resource_name: Option<String>,
 }
 
-/// The configuration of one workgroup: where its queries put their results, which settings
-/// it overrides for its clients, and what it reports about itself.
+/// A workgroup's configuration: every modelled setting, plus the way the workgroup SCHEDULES
+/// the queries submitted to it, which a read reports beside them.
 ///
-/// Member set, order and requiredness from
-/// `smithy_query(query="shape", shape="WorkGroupConfiguration")`, plus two members that are
-/// RECORDED BEHAVIOUR rather than modelled, which a read of a workgroup serves beside them:
-/// `SystemTableStatuses`, one entry per system table Athena publishes with whether this
-/// workgroup has it enabled, and `QuerySchedulingType`, how the workgroup schedules the
-/// queries submitted to it. Both are REPORTED and never read off the wire (`out`) — no
-/// modelled member sets either, so they are the service's own projection of the workgroup
-/// ([`crate::state::effective_work_group_configuration`]) — and
-/// `types::recorded_member_wire` says why this shape is hand-written.
+/// Member set and order from
+/// `smithy_query(query="shape", shape="WorkGroupConfiguration")`, plus `QuerySchedulingType`
+/// — RECORDED BEHAVIOUR rather than modelled; see `types::recorded_member_wire` for why the
+/// shape is hand-written. Nothing a request carries selects a scheduling type
+/// ([`crate::state::QUERY_SCHEDULING_TYPE_DEFAULT`]), so the member is only ever REPORTED.
 #[derive(Debug, Clone, Default)]
 pub struct WorkGroupConfiguration {
     pub result_configuration: Option<ResultConfiguration>,
@@ -296,50 +343,6 @@ pub struct WorkGroupConfiguration {
     pub system_table_statuses: Option<Vec<SystemTableStatus>>,
     pub query_scheduling_type: Option<String>,
 }
-
-/// The `@range` of `WorkGroupConfiguration$BytesScannedCutoffPerQuery`, whose target
-/// `BytesScannedCutoffValue` declares `min: 10000000` and no maximum
-/// (`smithy_query(query="shape", shape="WorkGroupConfiguration")`). Carried on the member
-/// schema so the framework measures a configuration a request sends against it; see
-/// `types::recorded_member_wire`.
-static M_BYTES_SCANNED_CUTOFF_PER_QUERY_TRAITS: ::std::sync::LazyLock<
-    ::aws_smithy_schema::TraitMap,
-> = ::std::sync::LazyLock::new(|| {
-    let mut traits = ::aws_smithy_schema::TraitMap::new();
-    traits.insert(::std::boxed::Box::new(
-        ::aws_smithy_schema_server::constraints::RangeTrait::new(Some(10_000_000.0), None),
-    ));
-    traits
-});
-
-/// The `@length` of `WorkGroupConfiguration$AdditionalConfiguration`, whose target
-/// `NameString` declares `min: 1, max: 128`. See
-/// [`M_BYTES_SCANNED_CUTOFF_PER_QUERY_TRAITS`].
-static M_ADDITIONAL_CONFIGURATION_TRAITS: ::std::sync::LazyLock<::aws_smithy_schema::TraitMap> =
-    ::std::sync::LazyLock::new(|| {
-        let mut traits = ::aws_smithy_schema::TraitMap::new();
-        traits.insert(::std::boxed::Box::new(
-            ::aws_smithy_schema_server::constraints::LengthTrait::new(Some(1), Some(128)),
-        ));
-        traits
-    });
-
-/// The `@length` and `@pattern` of `WorkGroupConfiguration$ExecutionRole`, whose target
-/// `RoleArn` declares `min: 20, max: 2048` and the IAM role ARN pattern. See
-/// [`M_BYTES_SCANNED_CUTOFF_PER_QUERY_TRAITS`].
-static M_EXECUTION_ROLE_TRAITS: ::std::sync::LazyLock<::aws_smithy_schema::TraitMap> =
-    ::std::sync::LazyLock::new(|| {
-        let mut traits = ::aws_smithy_schema::TraitMap::new();
-        traits.insert(::std::boxed::Box::new(
-            ::aws_smithy_schema_server::constraints::LengthTrait::new(Some(20), Some(2048)),
-        ));
-        traits.insert(::std::boxed::Box::new(
-            ::aws_smithy_schema_server::constraints::PatternTrait::new(
-                r"^arn:aws[a-z\-]*:iam::\d{12}:role/?[a-zA-Z_0-9+=,.@\-_/]+$",
-            ),
-        ));
-        traits
-    });
 
 ath_schema_and_codec!(
     WorkGroupConfiguration,
@@ -475,8 +478,9 @@ ath_schema_and_codec!(
         system_table_statuses,
         "SystemTableStatuses",
         15,
-        out,
-        recorded(list_of_struct(SystemTableStatus))
+        opt,
+        traits(M_SYSTEM_TABLE_STATUSES_TRAITS),
+        list_of_struct(SystemTableStatus)
     ),
     (
         M_QUERY_SCHEDULING_TYPE,
@@ -488,29 +492,56 @@ ath_schema_and_codec!(
     ),
 );
 
-/// Whether one of Athena's system tables is enabled for a workgroup: the table, and its
-/// state.
-///
-/// Wholly RECORDED behaviour — the on-disk model declares no such shape — so it and both of
-/// its members sit in the recorded namespace; see `types::recorded_member_wire`. A read of a
-/// workgroup reports one of these per system table Athena publishes
-/// ([`crate::state::SYSTEM_TABLES`]), so a client can tell a system table that is off from
-/// one that does not exist.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct SystemTableStatus {
-    pub table_name: String,
-    pub enabled: bool,
-}
+/// `WorkGroupConfiguration$BytesScannedCutoffPerQuery`'s bound: `@range(min: 10000000)`, from
+/// `smithy_query(query="shape", shape="WorkGroupConfiguration")`. A workgroup's configuration
+/// is an operation INPUT, so each bound a member of it carries travels on that member's
+/// schema for the framework's validating walk to measure against; see `ath_member_schema!`.
+static M_BYTES_SCANNED_CUTOFF_PER_QUERY_TRAITS:
+    std::sync::LazyLock<::aws_smithy_schema::TraitMap> = std::sync::LazyLock::new(|| {
+    let mut m = ::aws_smithy_schema::TraitMap::new();
+    m.insert(::std::boxed::Box::new(
+        ::aws_smithy_schema_server::constraints::RangeTrait::new(Some(10000000.0), None),
+    ));
+    m
+});
 
-ath_schema_and_codec!(
-    SystemTableStatus,
-    SYSTEM_TABLE_STATUS_SCHEMA,
-    "com.amazonaws.athena.recorded#SystemTableStatus",
-    "com.amazonaws.athena.recorded",
-    "SystemTableStatus",
-    (M_TABLE_NAME, table_name, "TableName", 0, req, string),
-    (M_ENABLED, enabled, "Enabled", 1, req, boolean),
-);
+/// `WorkGroupConfiguration$AdditionalConfiguration`'s bound: `@length(min: 1, max: 128)`,
+/// from `smithy_query(query="shape", shape="WorkGroupConfiguration")`.
+static M_ADDITIONAL_CONFIGURATION_TRAITS: std::sync::LazyLock<::aws_smithy_schema::TraitMap> =
+    std::sync::LazyLock::new(|| {
+        let mut m = ::aws_smithy_schema::TraitMap::new();
+        m.insert(::std::boxed::Box::new(
+            ::aws_smithy_schema_server::constraints::LengthTrait::new(Some(1), Some(128)),
+        ));
+        m
+    });
+
+/// `WorkGroupConfiguration$ExecutionRole`'s bounds: `@length(min: 20, max: 2048)` and the
+/// role-ARN `@pattern`, from `smithy_query(query="shape", shape="WorkGroupConfiguration")`.
+static M_EXECUTION_ROLE_TRAITS: std::sync::LazyLock<::aws_smithy_schema::TraitMap> =
+    std::sync::LazyLock::new(|| {
+        let mut m = ::aws_smithy_schema::TraitMap::new();
+        m.insert(::std::boxed::Box::new(
+            ::aws_smithy_schema_server::constraints::LengthTrait::new(Some(20), Some(2048)),
+        ));
+        m.insert(::std::boxed::Box::new(
+            ::aws_smithy_schema_server::constraints::PatternTrait::new(
+                r"^arn:aws[a-z\-]*:iam::\d{12}:role/?[a-zA-Z_0-9+=,.@\-_/]+$",
+            ),
+        ));
+        m
+    });
+
+/// `WorkGroupConfiguration$SystemTableStatuses`'s bound: `@length(min: 0, max: 50)`, from
+/// `smithy_query(query="shape", shape="WorkGroupConfiguration")`.
+static M_SYSTEM_TABLE_STATUSES_TRAITS: std::sync::LazyLock<::aws_smithy_schema::TraitMap> =
+    std::sync::LazyLock::new(|| {
+        let mut m = ::aws_smithy_schema::TraitMap::new();
+        m.insert(::std::boxed::Box::new(
+            ::aws_smithy_schema_server::constraints::LengthTrait::new(Some(0), Some(50)),
+        ));
+        m
+    });
 
 #[smithy_macros::smithy(shape = "com.amazonaws.athena#MonitoringConfiguration")]
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -575,6 +606,13 @@ pub struct IdentityCenterConfiguration {
     pub identity_center_instance_arn: Option<String>,
 }
 
+#[smithy_macros::smithy(shape = "com.amazonaws.athena#SystemTableStatus")]
+#[derive(Debug, Clone, Default)]
+pub struct SystemTableStatus {
+    pub table_name: String,
+    pub enabled: bool,
+}
+
 #[smithy_macros::smithy(shape = "com.amazonaws.athena#NotebookMetadata")]
 #[derive(Debug, Clone, Default)]
 pub struct NotebookMetadata {
@@ -608,23 +646,15 @@ pub struct CapacityAssignment {
     pub work_group_names: Option<Vec<String>>,
 }
 
-/// A reservation of provisioned capacity, as a read of one reports it.
+/// A capacity reservation: every modelled member, plus the two names the wire carries the
+/// same allocation facts under beside them.
 ///
-/// Member set, order and requiredness from
-/// `smithy_query(query="shape", shape="CapacityReservation")`, plus two members that are
-/// RECORDED BEHAVIOUR rather than modelled: `CapacityLockTime`, when the reservation's
-/// allocated capacity became usable, and `LastCapacityAllocation`, the same allocation
-/// `LastAllocation` carries under the name the wire also publishes it under. Both are
-/// REPORTED and never read off the wire (`out`) — a read computes them from the
-/// reservation's own allocation history (see
-/// [`crate::state::CapacityReservationRecord::to_capacity_reservation`]) — and
-/// `types::recorded_member_wire` says why this shape is hand-written.
-///
-/// No member below carries a constraint trait, deliberately: this shape appears in no
-/// operation INPUT, so the framework's validating walk never reads one off it, and the
-/// `@range` on `TargetDpus` applies to what a REQUEST for capacity may ask for — a
-/// reservation whose capacity a cancellation released reports an amount below that minimum
-/// (see [`crate::state::RELEASED_TARGET_DPUS`]).
+/// Member set and order from `smithy_query(query="shape", shape="CapacityReservation")`, plus
+/// `CapacityLockTime` and `LastCapacityAllocation` — RECORDED BEHAVIOUR rather than modelled;
+/// see `types::recorded_member_wire` for why the shape is hand-written. Both are projected
+/// from the same stored reservation the modelled members are
+/// ([`crate::state::CapacityReservationRecord::to_capacity_reservation`]), so the two views
+/// of one reservation can never disagree, and both are only ever REPORTED.
 #[derive(Debug, Clone)]
 pub struct CapacityReservation {
     pub name: String,
@@ -644,15 +674,40 @@ ath_schema_and_codec!(
     "com.amazonaws.athena#CapacityReservation",
     "com.amazonaws.athena",
     "CapacityReservation",
-    (M_NAME, name, "Name", 0, req, string),
-    (M_STATUS, status, "Status", 1, req, string),
-    (M_TARGET_DPUS, target_dpus, "TargetDpus", 2, req, integer),
+    (
+        M_NAME,
+        name,
+        "Name",
+        0,
+        req,
+        traits(CAPACITY_RESERVATION_NAME_TRAITS),
+        string
+    ),
+    (
+        M_STATUS,
+        status,
+        "Status",
+        1,
+        req,
+        traits(CAPACITY_RESERVATION_STATUS_TRAITS),
+        string
+    ),
+    (
+        M_TARGET_DPUS,
+        target_dpus,
+        "TargetDpus",
+        2,
+        req,
+        traits(CAPACITY_RESERVATION_TARGET_DPUS_TRAITS),
+        integer
+    ),
     (
         M_ALLOCATED_DPUS,
         allocated_dpus,
         "AllocatedDpus",
         3,
         req,
+        traits(CAPACITY_RESERVATION_ALLOCATED_DPUS_TRAITS),
         integer
     ),
     (
@@ -690,16 +745,69 @@ ath_schema_and_codec!(
     ),
 );
 
-/// One allocation request against a capacity reservation: "the submission time of a single
-/// allocation request for a capacity reservation and the most recent status of the attempted
-/// allocation" (`CapacityAllocation`).
+/// `CapacityReservation$Name`'s bounds: `@length(min: 1, max: 128)` and the reservation-name
+/// `@pattern`, from `smithy_query(query="shape", shape="CapacityReservation")`.
+static CAPACITY_RESERVATION_NAME_TRAITS: std::sync::LazyLock<::aws_smithy_schema::TraitMap> =
+    std::sync::LazyLock::new(|| {
+        let mut m = ::aws_smithy_schema::TraitMap::new();
+        m.insert(::std::boxed::Box::new(
+            ::aws_smithy_schema_server::constraints::LengthTrait::new(Some(1), Some(128)),
+        ));
+        m.insert(::std::boxed::Box::new(
+            ::aws_smithy_schema_server::constraints::PatternTrait::new(r"^[a-zA-Z0-9._-]+$"),
+        ));
+        m
+    });
+
+/// The values `CapacityReservation$Status` takes, from
+/// `smithy_query(query="shape", shape="CapacityReservationStatus")`.
+static CAPACITY_RESERVATION_STATUS_TRAITS: std::sync::LazyLock<::aws_smithy_schema::TraitMap> =
+    std::sync::LazyLock::new(|| {
+        let mut m = ::aws_smithy_schema::TraitMap::new();
+        m.insert(::std::boxed::Box::new(
+            ::aws_smithy_schema_server::constraints::EnumTrait::new(&[
+                "PENDING",
+                "ACTIVE",
+                "CANCELLING",
+                "CANCELLED",
+                "FAILED",
+                "UPDATE_PENDING",
+            ]),
+        ));
+        m
+    });
+
+/// `CapacityReservation$TargetDpus`'s bound: `@range(min: 4)`, from
+/// `smithy_query(query="shape", shape="CapacityReservation")`.
+static CAPACITY_RESERVATION_TARGET_DPUS_TRAITS:
+    std::sync::LazyLock<::aws_smithy_schema::TraitMap> = std::sync::LazyLock::new(|| {
+    let mut m = ::aws_smithy_schema::TraitMap::new();
+    m.insert(::std::boxed::Box::new(
+        ::aws_smithy_schema_server::constraints::RangeTrait::new(Some(4.0), None),
+    ));
+    m
+});
+
+/// `CapacityReservation$AllocatedDpus`'s bound: `@range(min: 0)`, from
+/// `smithy_query(query="shape", shape="CapacityReservation")`.
+static CAPACITY_RESERVATION_ALLOCATED_DPUS_TRAITS:
+    std::sync::LazyLock<::aws_smithy_schema::TraitMap> = std::sync::LazyLock::new(|| {
+    let mut m = ::aws_smithy_schema::TraitMap::new();
+    m.insert(::std::boxed::Box::new(
+        ::aws_smithy_schema_server::constraints::RangeTrait::new(Some(0.0), None),
+    ));
+    m
+});
+
+/// One allocation request for a capacity reservation: every modelled member, plus the two
+/// names the wire carries the same status and submission instant under beside them.
 ///
-/// Member set, order and requiredness from
-/// `smithy_query(query="shape", shape="CapacityAllocation")`, plus two members that are
-/// RECORDED BEHAVIOUR rather than modelled: `LastAllocationStatus`, the allocation's status
-/// under the name the wire also publishes it under, and `SubmissionTime`, when the allocation
-/// was submitted. Both are REPORTED and never read off the wire (`out`); see
-/// [`CapacityReservation`] and `types::recorded_member_wire`.
+/// Member set and order from `smithy_query(query="shape", shape="CapacityAllocation")`, plus
+/// `LastAllocationStatus` and `SubmissionTime` — RECORDED BEHAVIOUR rather than modelled; see
+/// `types::recorded_member_wire` for why the shape is hand-written. Both are projected from
+/// the same stored allocation the modelled members are
+/// ([`crate::state::CapacityReservationRecord::last_allocation_at`]), so a client reading
+/// either name of either value reads the same allocation, and both are only ever REPORTED.
 #[derive(Debug, Clone)]
 pub struct CapacityAllocation {
     pub status: String,
@@ -716,15 +824,16 @@ ath_schema_and_codec!(
     "com.amazonaws.athena#CapacityAllocation",
     "com.amazonaws.athena",
     "CapacityAllocation",
-    (M_STATUS, status, "Status", 0, req, string),
     (
-        M_STATUS_MESSAGE,
-        status_message,
-        "StatusMessage",
-        1,
-        opt,
+        M_STATUS,
+        status,
+        "Status",
+        0,
+        req,
+        traits(CAPACITY_ALLOCATION_STATUS_TRAITS),
         string
     ),
+    (M_STATUS_MESSAGE, status_message, "StatusMessage", 1, opt, string),
     (M_REQUEST_TIME, request_time, "RequestTime", 2, req, date_time),
     (
         M_REQUEST_COMPLETION_TIME,
@@ -751,6 +860,21 @@ ath_schema_and_codec!(
         recorded(date_time)
     ),
 );
+
+/// The values `CapacityAllocation$Status` takes, from
+/// `smithy_query(query="shape", shape="CapacityAllocationStatus")`.
+static CAPACITY_ALLOCATION_STATUS_TRAITS: std::sync::LazyLock<::aws_smithy_schema::TraitMap> =
+    std::sync::LazyLock::new(|| {
+        let mut m = ::aws_smithy_schema::TraitMap::new();
+        m.insert(::std::boxed::Box::new(
+            ::aws_smithy_schema_server::constraints::EnumTrait::new(&[
+                "PENDING",
+                "SUCCEEDED",
+                "FAILED",
+            ]),
+        ));
+        m
+    });
 
 #[smithy_macros::smithy(shape = "com.amazonaws.athena#Database")]
 #[derive(Debug, Clone, Default)]
@@ -829,6 +953,10 @@ pub const DATA_CATALOG_STATUS_VALUES: &[&str] = &["CREATE_COMPLETE", "CREATE_FAI
 pub const DATA_CATALOG_TYPE_VALUES: &[&str] = &["FEDERATED", "GLUE", "HIVE", "LAMBDA"];
 
 
+/// The values `DatabaseAttributes` accepts on the wire.
+pub const DATABASE_ATTRIBUTES_VALUES: &[&str] = &["NAME"];
+
+
 /// The values `EncryptionOption` accepts on the wire.
 pub const ENCRYPTION_OPTION_VALUES: &[&str] = &["CSE_KMS", "SSE_KMS", "SSE_S3"];
 
@@ -863,6 +991,18 @@ pub const SESSION_STATE_VALUES: &[&str] = &["BUSY", "CREATED", "CREATING", "DEGR
 
 /// The values `StatementType` accepts on the wire.
 pub const STATEMENT_TYPE_VALUES: &[&str] = &["DDL", "DML", "UTILITY"];
+
+
+/// The values `SystemTableName` accepts on the wire.
+pub const SYSTEM_TABLE_NAME_VALUES: &[&str] = &["ALL"];
+
+
+/// The values `SystemTableType` accepts on the wire.
+pub const SYSTEM_TABLE_TYPE_VALUES: &[&str] = &["QUERY_EXECUTIONS"];
+
+
+/// The values `TableAttributes` accepts on the wire.
+pub const TABLE_ATTRIBUTES_VALUES: &[&str] = &["NAME", "TABLE_TYPE"];
 
 
 /// The values `ThrottleReason` accepts on the wire.

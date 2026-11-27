@@ -14,9 +14,10 @@
 //! here named after an operation would make that operation's own module name
 //! ambiguous inside `ops` (`E0659`).
 
-// The schema and codec macros a structure needs when the wire carries a member the
-// on-disk model does not declare — see that module's own note. `#[macro_use]`, and
-// declared FIRST, so the macros are in the textual scope of every `*_types` module below.
+// Declared FIRST, and with `#[macro_use]`, so the macros it holds are in textual scope for
+// every type module below it: a `macro_rules!` macro is usable only after the `#[macro_use]`
+// module that declares it. See the module's own documentation for what it is for and when it
+// goes away.
 #[macro_use]
 pub mod recorded_member_wire;
 
@@ -30,12 +31,14 @@ pub mod create_named_query_types;
 pub mod create_notebook_types;
 pub mod create_prepared_statement_types;
 pub mod create_presigned_notebook_url_types;
+pub mod create_system_table_configuration_types;
 pub mod create_work_group_types;
 pub mod delete_capacity_reservation_types;
 pub mod delete_data_catalog_types;
 pub mod delete_named_query_types;
 pub mod delete_notebook_types;
 pub mod delete_prepared_statement_types;
+pub mod delete_system_table_configuration_types;
 pub mod delete_work_group_types;
 pub mod export_notebook_types;
 pub mod get_calculation_execution_code_types;
@@ -55,6 +58,7 @@ pub mod get_resource_dashboard_types;
 pub mod get_session_endpoint_types;
 pub mod get_session_status_types;
 pub mod get_session_types;
+pub mod get_system_table_configuration_types;
 pub mod get_table_metadata_types;
 pub mod get_work_group_types;
 pub mod import_notebook_types;
@@ -71,6 +75,7 @@ pub mod list_notebook_sessions_types;
 pub mod list_prepared_statements_types;
 pub mod list_query_executions_types;
 pub mod list_sessions_types;
+pub mod list_system_table_statuses_types;
 pub mod list_table_metadata_types;
 pub mod list_tags_for_resource_types;
 pub mod list_work_groups_types;
@@ -90,6 +95,7 @@ pub mod update_named_query_types;
 pub mod update_notebook_metadata_types;
 pub mod update_notebook_types;
 pub mod update_prepared_statement_types;
+pub mod update_system_table_configuration_types;
 pub mod update_work_group_types;
 
 #[allow(ambiguous_glob_reexports, unused_imports)]
@@ -113,6 +119,8 @@ pub use create_prepared_statement_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use create_presigned_notebook_url_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use create_system_table_configuration_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use create_work_group_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use delete_capacity_reservation_types::*;
@@ -124,6 +132,8 @@ pub use delete_named_query_types::*;
 pub use delete_notebook_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use delete_prepared_statement_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use delete_system_table_configuration_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use delete_work_group_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
@@ -163,6 +173,8 @@ pub use get_session_status_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use get_session_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use get_system_table_configuration_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use get_table_metadata_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use get_work_group_types::*;
@@ -194,6 +206,8 @@ pub use list_prepared_statements_types::*;
 pub use list_query_executions_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use list_sessions_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use list_system_table_statuses_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use list_table_metadata_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
@@ -232,6 +246,8 @@ pub use update_notebook_metadata_types::*;
 pub use update_notebook_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use update_prepared_statement_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use update_system_table_configuration_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use update_work_group_types::*;
 

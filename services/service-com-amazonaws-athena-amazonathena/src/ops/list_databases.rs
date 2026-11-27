@@ -244,7 +244,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let page = &stored[start..end];
         let database_list: Vec<Database> = page
             .iter()
-            .map(|held| crate::state::to_database(held))
+            // Narrowed to the properties the request asked for, where it asked for any:
+            // `AttributesToGet` is what spares a caller the rest of the database.
+            .map(|held| {
+                crate::state::narrowed_database(
+                    crate::state::to_database(held),
+                    input.attributes_to_get.as_deref(),
+                )
+            })
             .collect();
         // The token names the last entry of the page, taken from the page itself so there
         // is no index arithmetic to underflow on an empty page.

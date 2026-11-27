@@ -167,7 +167,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         };
 
         Ok(GetWorkGroupOutput {
-            work_group: Some(record.to_work_group()),
+            // `WorkGroupConfiguration$SystemTableStatuses` reports the enablement of each
+            // system table "for the account", so the account's own configuration is what
+            // that member is projected from (`crate::state::system_tables`).
+            work_group: Some(record.to_work_group(store.system_tables.enabled())),
         })
     }
 }

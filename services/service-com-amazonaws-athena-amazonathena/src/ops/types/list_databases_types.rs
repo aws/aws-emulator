@@ -18,6 +18,7 @@ pub struct ListDatabasesInput {
     pub next_token: Option<String>,
     pub max_results: Option<i32>,
     pub work_group: Option<String>,
+    pub attributes_to_get: Option<Vec<String>>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.athena#ListDatabasesOutput")]

@@ -17,7 +17,7 @@
 //! empty are two different workgroups — the first holds Athena's defaults, the second holds
 //! what it was given — and both read back as what they hold.
 
-use crate::ops::types::{SystemTableStatus, WorkGroupConfiguration};
+use crate::ops::types::WorkGroupConfiguration;
 
 /// What one of the boolean switches of a `WorkGroupConfiguration` means when no create or
 /// update ever set it: off. `WorkGroupConfiguration$RequesterPaysEnabled` states it for its
@@ -26,17 +26,21 @@ use crate::ops::types::{SystemTableStatus, WorkGroupConfiguration};
 /// [`effective_work_group_configuration`].
 pub const WORK_GROUP_SWITCH_UNSET: bool = false;
 
-/// The system tables Athena publishes a per-workgroup status for, reported under
-/// `WorkGroupConfiguration.SystemTableStatuses`.
+/// The system tables Athena publishes a status for, reported under
+/// `WorkGroupConfiguration.SystemTableStatuses` and by `ListSystemTableStatuses`.
 ///
-/// RECORDED BEHAVIOUR: the on-disk model declares no such member, so the catalog is not read
-/// from it. A read of a workgroup reports one entry per table named here, so the set a client
-/// discovers is this service's own rather than anything a request wrote — exactly as the
-/// selectable engine versions are ([`crate::state::SELECTABLE_ENGINE_VERSIONS`]).
-pub const SYSTEM_TABLES: [&str; 1] = [QUERY_EXECUTIONS_SYSTEM_TABLE];
+/// The value list of the model's `SystemTableType` enum, as the generated types render it
+/// (`SYSTEM_TABLE_TYPE_VALUES` in [`crate::ops::types`]) — that enum is what
+/// `SystemTableStatus$TableName` targets, so the catalog is read from the model rather than
+/// written out here. One entry per table Athena has, so a client reading a workgroup or
+/// listing the statuses discovers the whole set rather than having to tell a table that is
+/// off from one that does not exist.
+pub const SYSTEM_TABLES: &[&str] = crate::ops::types::SYSTEM_TABLE_TYPE_VALUES;
 
 /// The system table that reports this account's query executions, the one table AWS serves a
-/// status for on every workgroup.
+/// status for: the one value of the model's `SystemTableType` enum, named here for the
+/// readers that speak about that one table rather than about the whole catalog
+/// ([`SYSTEM_TABLES`]).
 pub const QUERY_EXECUTIONS_SYSTEM_TABLE: &str = "QUERY_EXECUTIONS";
 
 /// How a workgroup schedules the queries submitted to it when nothing selected another way:
@@ -78,7 +82,13 @@ pub const DEFAULT_WORK_GROUP_METRICS_PUBLISHED: bool = true;
 
 /// The configuration a read reports for a workgroup that holds `stored`: every switch the
 /// shape carries as a boolean, reported with the value it has in effect, beside the
-/// per-system-table statuses and the query scheduling type.
+/// system-table statuses and the query scheduling type.
+///
+/// `WorkGroupConfiguration$SystemTableStatuses` is "The read-only enablement status of each
+/// system table for the account. This field is returned by `GetWorkGroup` and is ignored on
+/// write", so the statuses are projected from the ACCOUNT's system table configuration
+/// (`system_tables_enabled`, see [`crate::state::system_table_statuses`]) and from nothing
+/// the workgroup holds — a write that carried them sets nothing.
 ///
 /// `WorkGroupConfiguration` carries four of those switches — `EnforceWorkGroupConfiguration`,
 /// `PublishCloudWatchMetricsEnabled`, `RequesterPaysEnabled` and
@@ -94,6 +104,7 @@ pub const DEFAULT_WORK_GROUP_METRICS_PUBLISHED: bool = true;
 #[must_use]
 pub fn effective_work_group_configuration(
     stored: &WorkGroupConfiguration,
+    system_tables_enabled: bool,
 ) -> WorkGroupConfiguration {
     WorkGroupConfiguration {
         enforce_work_group_configuration: Some(
@@ -116,7 +127,7 @@ pub fn effective_work_group_configuration(
                 .enable_minimum_encryption_configuration
                 .unwrap_or(WORK_GROUP_SWITCH_UNSET),
         ),
-        system_table_statuses: Some(system_table_statuses(stored)),
+        system_table_statuses: Some(crate::state::system_table_statuses(system_tables_enabled)),
         query_scheduling_type: Some(
             stored
                 .query_scheduling_type
@@ -125,30 +136,6 @@ pub fn effective_work_group_configuration(
         ),
         ..stored.clone()
     }
-}
-
-/// The status a read reports for each system table of [`SYSTEM_TABLES`], given the
-/// configuration `stored` for the workgroup.
-///
-/// One entry per table in that catalog, in the catalog's own order, so a client reading a
-/// workgroup discovers every system table Athena has and whether this workgroup has it
-/// enabled — rather than having to tell a feature that is off from one that does not exist.
-/// A table the stored configuration says nothing about is off, for the same reason an unset
-/// switch is ([`WORK_GROUP_SWITCH_UNSET`]).
-#[must_use]
-pub fn system_table_statuses(stored: &WorkGroupConfiguration) -> Vec<SystemTableStatus> {
-    SYSTEM_TABLES
-        .iter()
-        .map(|table| SystemTableStatus {
-            table_name: (*table).to_string(),
-            enabled: stored
-                .system_table_statuses
-                .iter()
-                .flatten()
-                .find(|status| status.table_name == *table)
-                .is_some_and(|status| status.enabled),
-        })
-        .collect()
 }
 
 #[cfg(test)]
@@ -196,7 +183,7 @@ mod tests {
         ];
 
         for (case, stored, expected) in cases {
-            let reported = effective_work_group_configuration(&stored);
+            let reported = effective_work_group_configuration(&stored, false);
             let actual = [
                 reported.enforce_work_group_configuration,
                 reported.publish_cloud_watch_metrics_enabled,
@@ -222,7 +209,7 @@ mod tests {
                 default_work_group_configuration(),
             ),
         ] {
-            let reported = effective_work_group_configuration(&stored);
+            let reported = effective_work_group_configuration(&stored, false);
             let statuses = reported
                 .system_table_statuses
                 .unwrap_or_else(|| panic!("case {case:?}: expected the system-table statuses"));
@@ -231,7 +218,7 @@ mod tests {
                 SYSTEM_TABLES.len(),
                 "case {case:?}: expected one entry per system table, got {statuses:?}"
             );
-            for (status, table) in statuses.iter().zip(SYSTEM_TABLES) {
+            for (status, table) in statuses.iter().zip(SYSTEM_TABLES.iter().copied()) {
                 assert_eq!(
                     status.table_name, table,
                     "case {case:?}: expected the catalog's order, got {statuses:?}"
@@ -251,27 +238,46 @@ mod tests {
         }
     }
 
-    /// RULE: a system table the stored configuration ENABLES reads back enabled — the
-    /// statuses are derived from the record, not from the reading call.
+    /// RULE: the statuses a read reports follow the ACCOUNT's system-table enablement, and
+    /// nothing the workgroup's own stored configuration carries: the member is "returned by
+    /// `GetWorkGroup` and is ignored on write".
     #[test]
-    fn an_enabled_system_table_reads_back_enabled() {
-        let stored = WorkGroupConfiguration {
-            system_table_statuses: Some(vec![SystemTableStatus {
-                table_name: QUERY_EXECUTIONS_SYSTEM_TABLE.to_string(),
-                enabled: true,
-            }]),
-            ..WorkGroupConfiguration::default()
-        };
-        let reported = effective_work_group_configuration(&stored)
-            .system_table_statuses
-            .expect("the statuses are reported");
-        assert_eq!(
-            reported
-                .iter()
-                .find(|status| status.table_name == QUERY_EXECUTIONS_SYSTEM_TABLE)
-                .map(|status| status.enabled),
-            Some(true),
-            "expected the enabled table to read back enabled, got {reported:?}"
-        );
+    fn the_reported_statuses_follow_the_account_and_not_the_stored_configuration() {
+        // (case, the configuration stored for the workgroup) — one that says nothing about
+        // the system tables, and one carrying the member a write cannot set, each read back
+        // under both states the ACCOUNT can be in.
+        let stored_cases = [
+            (
+                "a configuration that carries no statuses",
+                WorkGroupConfiguration::default(),
+            ),
+            (
+                "a configuration a write tried to enable a table through",
+                WorkGroupConfiguration {
+                    system_table_statuses: Some(vec![crate::ops::types::SystemTableStatus {
+                        table_name: QUERY_EXECUTIONS_SYSTEM_TABLE.to_string(),
+                        enabled: true,
+                    }]),
+                    ..WorkGroupConfiguration::default()
+                },
+            ),
+        ];
+
+        for (case, stored) in stored_cases {
+            for account_enabled in [false, true] {
+                let reported = effective_work_group_configuration(&stored, account_enabled)
+                    .system_table_statuses
+                    .expect("the statuses are reported");
+                assert_eq!(
+                    reported
+                        .iter()
+                        .find(|status| status.table_name == QUERY_EXECUTIONS_SYSTEM_TABLE)
+                        .map(|status| status.enabled),
+                    Some(account_enabled),
+                    "case {case:?} with the account enabled {account_enabled}: expected the \
+                     account's enablement, got {reported:?}"
+                );
+            }
+        }
     }
 }

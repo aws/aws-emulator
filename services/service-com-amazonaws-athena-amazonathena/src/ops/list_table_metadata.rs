@@ -323,7 +323,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let page = &matching[start..end];
         let table_metadata_list: Vec<TableMetadata> = page
             .iter()
-            .map(|table| crate::state::to_table_metadata(table))
+            // Narrowed to the properties the request asked for, where it asked for any:
+            // `AttributesToGet` is what spares a caller the rest of the metadata.
+            .map(|table| {
+                crate::state::narrowed_table_metadata(
+                    crate::state::to_table_metadata(table),
+                    input.attributes_to_get.as_deref(),
+                )
+            })
             .collect();
         // The token names the last entry of the page, taken from the page itself so
         // there is no index arithmetic to underflow on an empty page.

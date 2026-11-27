@@ -334,7 +334,7 @@ impl ComAmazonawsAthenaAmazonathenaState {
             }
             None => return false,
         };
-        effective_work_group_configuration(&stored)
+        effective_work_group_configuration(&stored, self.system_tables.enabled())
             .publish_cloud_watch_metrics_enabled
             .unwrap_or(WORK_GROUP_SWITCH_UNSET)
     }
