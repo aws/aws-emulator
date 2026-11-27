@@ -40,11 +40,12 @@
 //!
 //! An instance TYPE itself is a fact of the same kind: nothing in the EC2 API creates a
 //! type, renames one or changes its vCPUs. So [`instance_type_record`] and
-//! [`instance_type_info`] derive everything about a type from its name — the family,
-//! generation, capability letters and size [`InstanceTypeName`] parses out of it, read
-//! against the per-family ratios AWS publishes — and `DescribeInstanceTypes` writes
-//! nothing: two calls describe one type identically, and the catalog cannot drift from
-//! the one `DescribeInstanceTypeOfferings` offers.
+//! [`instance_type_info`] report the per-type hardware figures AWS publishes, held row by
+//! row in the catalog table they read, and derive from the type's NAME only what follows
+//! from it — the family, generation, capability letters and size [`InstanceTypeName`]
+//! parses out of it, read against the per-family ratios AWS publishes — and
+//! `DescribeInstanceTypes` writes nothing: two calls describe one type identically, and the
+//! catalog cannot drift from the one `DescribeInstanceTypeOfferings` offers.
 //!
 //! The REGIONS themselves are facts of the account's partition in the same way — no EC2
 //! operation creates a Region, and opting one in or out is the Account API's job — so

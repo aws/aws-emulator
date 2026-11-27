@@ -8,12 +8,13 @@
 //! strategies — the type is offered with.
 //!
 //! An instance type is a FACT of the catalog, not a resource a caller creates: no EC2
-//! operation adds a type or changes one. So every member is derived by
-//! [`crate::state::instance_type_info`] from the type's name — the family, generation,
-//! capability letters and size AWS's naming conventions define — read against the
-//! per-family ratios the EC2 User Guide publishes, and this handler writes NOTHING: two
-//! calls describe one type identically, and the types described are exactly the ones
-//! `DescribeInstanceTypeOfferings` reports as offered.
+//! operation adds a type or changes one. So every member comes from
+//! [`crate::state::instance_type_info`] — the per-type hardware figures AWS publishes, held
+//! row by row in the catalog that function reads, and, for the columns that DO follow from the
+//! type's name (its vCPUs, cores, threads and memory — the family, generation, capability
+//! letters and size AWS's naming conventions define), the published per-family ratios — and
+//! this handler writes NOTHING: two calls describe one type identically, and the types
+//! described are exactly the ones `DescribeInstanceTypeOfferings` reports as offered.
 //!
 //! What the request chooses is which types are reported, and how many at a time:
 //!

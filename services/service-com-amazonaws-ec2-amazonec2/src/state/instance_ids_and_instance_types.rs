@@ -3163,6 +3163,12 @@ pub(super) const PRE_ENA_QUEUES_PER_INTERFACE: i32 = 1;
 /// the single card of a type whose row publishes only the text, while a card of a multi-card
 /// type the catalog holds no published figure for carries its share of this size's host and
 /// reports that share both ways.
+///
+/// What a card reports about its ENA QUEUES is what the type's row publishes: the queues one
+/// interface is given by default, and — where the row carries them — the queues the whole card
+/// holds, the most one interface may be given and the interfaces the card takes beyond the ones
+/// the type publishes. A card of a type whose row publishes none of those reports them absent
+/// rather than invented.
 pub(super) fn network_cards(
     name: &InstanceTypeName<'_>,
     sixteenths: u32,
@@ -3200,29 +3206,36 @@ pub(super) fn network_cards(
     if efa_interfaces > 0 {
         interface_types.push("efa".to_string());
     }
+    // "The default number of the ENA queues for each interface"
+    // (`NetworkCardInfo$DefaultEnaQueueCountPerInterface`): the figure the catalog publishes for
+    // the type's adapter; for a type that predates the Elastic Network Adapter, the one queue
+    // its device presents ([`PRE_ENA_QUEUES_PER_INTERFACE`]); and nothing at all for an ENA type
+    // whose published queue counts this emulator does not hold — an absent member rather than an
+    // invented one.
+    let default_queues = facts
+        .and_then(|facts| facts.ena_queues_per_interface)
+        .or_else(|| {
+            (reported_ena_support(name, facts) == ENA_SUPPORT_UNSUPPORTED)
+                .then_some(PRE_ENA_QUEUES_PER_INTERFACE)
+        });
+    // The queue LIMITS of that adapter, where the type's row publishes them: a card holds the
+    // queues its row states and gives one interface at most the count it states, and a row that
+    // publishes no ceiling leaves both members absent.
+    let published_limits = facts.and_then(|facts| facts.ena_queue_limits);
+    let additional_interfaces =
+        facts.and_then(|facts| facts.additional_flexible_network_interfaces);
     (0..cards.max(1))
         .map(|index| NetworkCardInfo {
             network_card_index: Some(index),
             network_performance: Some(per_card_performance.clone()),
             maximum_network_interfaces: Some(interfaces_per_card),
-            additional_flexible_network_interfaces: None,
+            additional_flexible_network_interfaces: additional_interfaces,
             baseline_bandwidth_in_gbps: Some(per_card_baseline_gbps),
             peak_bandwidth_in_gbps: Some(per_card_peak_gbps),
-            // "The default number of the ENA queues for each interface"
-            // (`NetworkCardInfo$DefaultEnaQueueCountPerInterface`): the figure the catalog
-            // publishes for the type's adapter; for a type that predates the Elastic Network
-            // Adapter, the one queue its device presents
-            // ([`PRE_ENA_QUEUES_PER_INTERFACE`]); and nothing at all for an ENA type whose
-            // published queue counts this emulator does not hold — an absent member rather
-            // than an invented one.
-            default_ena_queue_count_per_interface: facts
-                .and_then(|facts| facts.ena_queues_per_interface)
-                .or_else(|| {
-                    (reported_ena_support(name, facts) == ENA_SUPPORT_UNSUPPORTED)
-                        .then_some(PRE_ENA_QUEUES_PER_INTERFACE)
-                }),
-            maximum_ena_queue_count: None,
-            maximum_ena_queue_count_per_interface: None,
+            default_ena_queue_count_per_interface: default_queues,
+            maximum_ena_queue_count: published_limits.map(|(per_card, _)| per_card),
+            maximum_ena_queue_count_per_interface: published_limits
+                .map(|(_, per_interface)| per_interface),
             interface_types: Some(interface_types.clone()),
         })
         .collect()

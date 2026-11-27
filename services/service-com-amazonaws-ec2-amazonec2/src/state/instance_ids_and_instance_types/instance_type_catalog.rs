@@ -35,6 +35,7 @@ mod burstable_xen_rows;
 mod dense_hdd_storage_rows;
 mod eighth_generation_intel_rows;
 mod fifth_generation_intel_compute_rows;
+mod fifth_generation_intel_nvme_compute_rows;
 mod fifth_generation_intel_rows;
 mod fifth_generation_network_optimized_rows;
 mod first_generation_graviton_rows;
@@ -399,6 +400,17 @@ pub struct PublishedInstanceTypeFacts {
     /// leaves the member absent, the way every other member the catalog has no fact for is
     /// reported absent rather than invented.
     pub ena_queues_per_interface: Option<i32>,
+    /// The ENA queue CEILINGS the type's network card publishes beside that default count: the
+    /// queues ONE card holds (`NetworkCardInfo$MaximumEnaQueueCount`) and the most one interface
+    /// of it may be given (`$MaximumEnaQueueCountPerInterface`), as (per card, per interface).
+    /// A row that publishes no ceiling leaves both members absent, the way every other member
+    /// the catalog has no fact for is reported absent rather than invented.
+    pub ena_queue_limits: Option<(i32, i32)>,
+    /// The interfaces one card takes BEYOND the ones the type publishes once its ENA queues are
+    /// configured (`NetworkCardInfo$AdditionalFlexibleNetworkInterfaces`, "in addition to the
+    /// base number specified by `maximumNetworkInterfaces`"), where the row publishes the
+    /// figure.
+    pub additional_flexible_network_interfaces: Option<i32>,
     /// The most network interfaces it can have attached.
     pub maximum_network_interfaces: Option<i32>,
     /// The most private IPv4 addresses each of those interfaces can have.
@@ -513,6 +525,8 @@ impl PublishedInstanceTypeFacts {
             bandwidth_weightings: None,
             flexible_ena_queues_supported: None,
             ena_queues_per_interface: None,
+            ena_queue_limits: None,
+            additional_flexible_network_interfaces: None,
             maximum_network_interfaces: None,
             ipv4_addresses_per_interface: None,
             efa_interfaces: None,
@@ -754,6 +768,20 @@ impl PublishedInstanceTypeFacts {
     /// queue counts of its adapter say.
     const fn ena_queues(mut self, queues: i32) -> Self {
         self.ena_queues_per_interface = Some(queues);
+        self
+    }
+
+    /// The ceilings those published counts carry: the queues one of the type's network cards
+    /// holds, and the most queues one interface of it may be given.
+    const fn ena_queue_limits(mut self, per_card: i32, per_interface: i32) -> Self {
+        self.ena_queue_limits = Some((per_card, per_interface));
+        self
+    }
+
+    /// The interfaces one card of the type takes beyond the ones it publishes, once its ENA
+    /// queues are configured.
+    const fn additional_flexible_interfaces(mut self, interfaces: i32) -> Self {
+        self.additional_flexible_network_interfaces = Some(interfaces);
         self
     }
 
@@ -1065,6 +1093,47 @@ const UEFI_BOOT_MODE: &[&str] = &["uefi"];
 /// generation's whole-host sizes are offered: its adapter carries many more of them than the
 /// single one an earlier generation's largest size publishes.
 const NEWEST_GENERATION_EFA_INTERFACES: i32 = 16;
+
+/// The network bandwidth, in Gbps, of a WHOLE host of the newest AWS Graviton hardware
+/// generation: the figure the "Network performance" column publishes for the size that holds
+/// one, which is both the bandwidth that size sustains and the bandwidth it reaches, there
+/// being no wider share of the host to burst into.
+const NEWEST_GENERATION_GRAVITON_HOST_GBPS: f64 = 100.0;
+
+/// The ENA queues each interface of a newest-generation AWS Graviton instance that holds a
+/// WHOLE host is given by default (`NetworkCardInfo$DefaultEnaQueueCountPerInterface`): the
+/// published count of the adapter that host's network card carries.
+const NEWEST_GENERATION_GRAVITON_ENA_QUEUES: i32 = 32;
+
+/// The network interfaces a size that holds a whole host of the newest hardware generation can
+/// have attached, and the private IPv4 addresses each of them takes: the figures the published
+/// "IP addresses per network interface per instance type" table carries for a whole host of it,
+/// well above the ones an earlier generation's whole-host sizes publish.
+///
+/// The widest VIRTUALIZED size of a host and the bare metal size of the same host are the same
+/// hardware — one host, one network card — so the two publish these figures alike, exactly as
+/// they publish one bandwidth figure.
+const WHOLE_HOST_NETWORK_INTERFACES: i32 = 24;
+
+/// The private IPv4 addresses one interface of that size takes.
+const WHOLE_HOST_IPV4_PER_INTERFACE: i32 = 64;
+
+/// The ENA queues ONE network card of such a size holds
+/// (`NetworkCardInfo$MaximumEnaQueueCount`): the queue count its published interfaces are given
+/// together — [`WHOLE_HOST_NETWORK_INTERFACES`] of them at
+/// [`NEWEST_GENERATION_GRAVITON_ENA_QUEUES`] queues each.
+const WHOLE_HOST_ENA_QUEUES_PER_CARD: i32 = 768;
+
+/// The most ENA queues ONE interface of that card may be given
+/// (`NetworkCardInfo$MaximumEnaQueueCountPerInterface`): four times the count an interface is
+/// given by default, which an interface reaches on queues the card's others give up.
+const WHOLE_HOST_ENA_QUEUES_PER_INTERFACE: i32 = 128;
+
+/// The interfaces a card takes BEYOND the ones its instance type publishes once its ENA queues
+/// are configured (`NetworkCardInfo$AdditionalFlexibleNetworkInterfaces`, "in addition to the
+/// base number specified by `maximumNetworkInterfaces`"): none, where the queues the card holds
+/// are exactly the ones its published interfaces are given by default.
+const NO_ADDITIONAL_FLEXIBLE_INTERFACES: i32 = 0;
 
 /// The sustained all-core frequency, in GHz, of the AWS Graviton2 processor the sixth
 /// generation Graviton families are built on — shared by the burstable and the general purpose
@@ -1680,97 +1749,6 @@ static PUBLISHED_INSTANCE_TYPE_FACTS: &[PublishedInstanceTypeFacts] = &[
         .processor("AMD", 3.3)
         .dedicated_hosts(false)
         .hibernation(false),
-    // C5d — the C5 family's hardware with local NVMe SSD devices, on the same Intel Xeon
-    // Platinum processors: the 8124M (Skylake) at a sustained 3.4 GHz on most of the ladder,
-    // and the 8275CL (Cascade Lake) at a sustained 3.6 GHz on the sizes built on it
-    // (`12xlarge`, `24xlarge` and the bare metal size). Its EBS figures are the family's own
-    // rows of "Amazon EBS optimized instance types" — the three smallest sizes publish a
-    // baseline they burst above, up to 4,750 Mbps and 20,000 IOPS, and the bandwidth is
-    // dedicated from the `4xlarge` up, two sizes sharing each of the figures above that one —
-    // and its local devices are the ones its specification page publishes per size: ONE device
-    // that doubles with the size up to 900 GB, then two and four of that device, which is a
-    // step of its own rather than a share of the size. Those devices come out of the shared
-    // Nitro attachment pool on every virtualized size, so the EBS volume limit each of those
-    // reports is what the pool leaves once they are counted and those rows leave it unset; the
-    // BARE METAL size publishes the limit of a bare metal instance instead — its local devices
-    // are the host's own hardware rather than attachments a hypervisor presents, so they take
-    // nothing from it — which is the 31 volumes "Instance volume limits" publishes for one.
-    // Reboot migration moves a running instance to another host, which cannot carry the local
-    // devices' data, so no size of the family is offered it, and a PTP hardware clock is not on
-    // this hardware generation. The published core counts go up in twos from the `xlarge` and
-    // start at four on the `18xlarge`, whose published list begins above that step, while the
-    // bare metal size publishes every count. Dedicated Hosts are offered on the family except
-    // on the bare metal size, which holds the whole host; that size is offered the legacy BIOS
-    // boot mode alone, and the packets of a session CAN be mirrored on it.
-    PublishedInstanceTypeFacts::of("c5d.large")
-        .ebs(650, 4_000, 4_750, 20_000)
-        .instance_store(1, 50)
-        .network("Up to 10 Gigabit")
-        .processor("Intel", 3.4)
-        .host_features(false, false),
-    PublishedInstanceTypeFacts::of("c5d.xlarge")
-        .cores_in_steps_of(2)
-        .ebs(1_150, 6_000, 4_750, 20_000)
-        .instance_store(1, 100)
-        .network("Up to 10 Gigabit")
-        .processor("Intel", 3.4)
-        .host_features(false, false),
-    PublishedInstanceTypeFacts::of("c5d.2xlarge")
-        .cores_in_steps_of(2)
-        .ebs(2_300, 10_000, 4_750, 20_000)
-        .instance_store(1, 200)
-        .network("Up to 10 Gigabit")
-        .processor("Intel", 3.4)
-        .host_features(false, false),
-    PublishedInstanceTypeFacts::of("c5d.4xlarge")
-        .cores_in_steps_of(2)
-        .ebs(4_750, 20_000, 4_750, 20_000)
-        .instance_store(1, 400)
-        .network("Up to 10 Gigabit")
-        .processor("Intel", 3.4)
-        .host_features(false, false),
-    PublishedInstanceTypeFacts::of("c5d.9xlarge")
-        .cores_in_steps_of(2)
-        .ebs(9_500, 40_000, 9_500, 40_000)
-        .instance_store(1, 900)
-        // The two sizes carved out of the same half of the host report the same figure, which
-        // is the one the API publishes for them rather than the round number of the family's
-        // specification page.
-        .network("12 Gigabit")
-        .processor("Intel", 3.4)
-        .host_features(false, false),
-    PublishedInstanceTypeFacts::of("c5d.12xlarge")
-        .cores_in_steps_of(2)
-        .ebs(9_500, 40_000, 9_500, 40_000)
-        .instance_store(2, 900)
-        .network("12 Gigabit")
-        .processor("Intel", 3.6)
-        .host_features(false, false),
-    PublishedInstanceTypeFacts::of("c5d.18xlarge")
-        .cores_in_steps_of(2)
-        .cores_from(4)
-        .ebs(19_000, 80_000, 19_000, 80_000)
-        .instance_store(2, 900)
-        .network("25 Gigabit")
-        .processor("Intel", 3.4)
-        .host_features(false, false),
-    PublishedInstanceTypeFacts::of("c5d.24xlarge")
-        .cores_in_steps_of(2)
-        .ebs(19_000, 80_000, 19_000, 80_000)
-        .instance_store(4, 900)
-        .network("25 Gigabit")
-        .processor("Intel", 3.6)
-        .host_features(false, false),
-    PublishedInstanceTypeFacts::of("c5d.metal")
-        .ebs(19_000, 80_000, 19_000, 80_000)
-        .ebs_attachments(31)
-        .instance_store(4, 900)
-        .network("25 Gigabit")
-        .processor("Intel", 3.6)
-        .dedicated_hosts(false)
-        .traffic_mirroring(true)
-        .host_features(false, false)
-        .boot_modes(&["legacy-bios"]),
     // C5n — the C5 family's hardware built for the NETWORK, on the same Intel Xeon Platinum
     // 8000 series (Skylake) processors at a sustained 3.4 GHz and with no local instance
     // store at any size. Two columns are the family's own rather than the C5 ladder's: its
@@ -2891,52 +2869,135 @@ static PUBLISHED_INSTANCE_TYPE_FACTS: &[PublishedInstanceTypeFacts] = &[
         .secondary_network(false)
         .ipv4_per_secondary_interface(0)
         .efa(NEWEST_GENERATION_EFA_INTERFACES),
-    // C9gd — compute optimized with local NVMe on the newest AWS Graviton hardware. The
-    // family's network and EBS bandwidth is CONFIGURABLE: it publishes the bandwidth
-    // weightings a launch may ask for, which the families whose split is fixed publish none
-    // of, and its EBS volumes are attached to EBS hardware of the type's own rather than out
-    // of the pool shared with its interfaces and instance store devices, so the limit it
-    // reports is of the `dedicated` kind at every size. The Elastic Fabric Adapter is offered
-    // on the two sizes that hold the whole host. Its bare metal size's published hardware is
-    // recorded below; the figures of the other sizes are not recorded yet, so each of those
-    // rows carries only what IS published for it and the derivation answers the rest.
+    // C9gd — compute optimized with local NVMe on the newest AWS Graviton hardware, the
+    // hardware generation its sibling family above sits on, so what that generation publishes
+    // it publishes at every size: the bandwidth weightings a launch may ask for, which the
+    // families whose network and EBS split is fixed publish none of; the shorter idle timeout
+    // its connection tracking holds an established TCP connection for; no interface attachment
+    // from a secondary network, so no private address at all is available on one; and no
+    // copying of a session's packets under its guest. Its EBS volumes are attached to EBS
+    // hardware of the type's own rather than out of the pool shared with its interfaces and
+    // instance store devices, so a virtualized size reports the `dedicated` kind of limit, and
+    // so does the BARE METAL size, which holds the 79 attachments of a whole host of this
+    // generation. The Elastic Fabric Adapter is offered on the two sizes that hold the whole
+    // host. That bare metal size's published hardware is recorded below, the host's whole 100
+    // Gigabit of network among it; the network figures of the other sizes are not recorded yet,
+    // so each of those rows carries only what IS published for it and the derivation answers
+    // the rest. The two sizes that hold a WHOLE host — the widest virtualized one and the bare
+    // metal one — are the same hardware, one host and one network card, so they publish one set
+    // of network figures: the host's whole 100 Gigabit, both sustained and reached, its
+    // interfaces and the addresses each of them takes, and the queues its adapter gives an
+    // interface.
     PublishedInstanceTypeFacts::of("c9gd.medium")
         .dedicated_attachment_limit()
-        .bandwidth_weightings(CONFIGURABLE_BANDWIDTH_WEIGHTINGS),
+        .bandwidth_weightings(CONFIGURABLE_BANDWIDTH_WEIGHTINGS)
+        .tcp_established_timeout(SHORT_TCP_ESTABLISHED_TIMEOUT)
+        .traffic_mirroring(false)
+        .secondary_network(false)
+        .ipv4_per_secondary_interface(0),
     PublishedInstanceTypeFacts::of("c9gd.large")
         .dedicated_attachment_limit()
-        .bandwidth_weightings(CONFIGURABLE_BANDWIDTH_WEIGHTINGS),
+        .bandwidth_weightings(CONFIGURABLE_BANDWIDTH_WEIGHTINGS)
+        .tcp_established_timeout(SHORT_TCP_ESTABLISHED_TIMEOUT)
+        .traffic_mirroring(false)
+        .secondary_network(false)
+        .ipv4_per_secondary_interface(0),
     PublishedInstanceTypeFacts::of("c9gd.xlarge")
         .dedicated_attachment_limit()
-        .bandwidth_weightings(CONFIGURABLE_BANDWIDTH_WEIGHTINGS),
+        .bandwidth_weightings(CONFIGURABLE_BANDWIDTH_WEIGHTINGS)
+        .tcp_established_timeout(SHORT_TCP_ESTABLISHED_TIMEOUT)
+        .traffic_mirroring(false)
+        .secondary_network(false)
+        .ipv4_per_secondary_interface(0),
     PublishedInstanceTypeFacts::of("c9gd.2xlarge")
         .dedicated_attachment_limit()
-        .bandwidth_weightings(CONFIGURABLE_BANDWIDTH_WEIGHTINGS),
+        .bandwidth_weightings(CONFIGURABLE_BANDWIDTH_WEIGHTINGS)
+        .tcp_established_timeout(SHORT_TCP_ESTABLISHED_TIMEOUT)
+        .traffic_mirroring(false)
+        .secondary_network(false)
+        .ipv4_per_secondary_interface(0),
     PublishedInstanceTypeFacts::of("c9gd.4xlarge")
         .dedicated_attachment_limit()
-        .bandwidth_weightings(CONFIGURABLE_BANDWIDTH_WEIGHTINGS),
+        .bandwidth_weightings(CONFIGURABLE_BANDWIDTH_WEIGHTINGS)
+        .tcp_established_timeout(SHORT_TCP_ESTABLISHED_TIMEOUT)
+        .traffic_mirroring(false)
+        .secondary_network(false)
+        .ipv4_per_secondary_interface(0),
     PublishedInstanceTypeFacts::of("c9gd.8xlarge")
         .dedicated_attachment_limit()
-        .bandwidth_weightings(CONFIGURABLE_BANDWIDTH_WEIGHTINGS),
+        .bandwidth_weightings(CONFIGURABLE_BANDWIDTH_WEIGHTINGS)
+        .tcp_established_timeout(SHORT_TCP_ESTABLISHED_TIMEOUT)
+        .traffic_mirroring(false)
+        .secondary_network(false)
+        .ipv4_per_secondary_interface(0),
     PublishedInstanceTypeFacts::of("c9gd.12xlarge")
         .dedicated_attachment_limit()
-        .bandwidth_weightings(CONFIGURABLE_BANDWIDTH_WEIGHTINGS),
+        .bandwidth_weightings(CONFIGURABLE_BANDWIDTH_WEIGHTINGS)
+        .tcp_established_timeout(SHORT_TCP_ESTABLISHED_TIMEOUT)
+        .traffic_mirroring(false)
+        .secondary_network(false)
+        .ipv4_per_secondary_interface(0),
     PublishedInstanceTypeFacts::of("c9gd.16xlarge")
         .dedicated_attachment_limit()
-        .bandwidth_weightings(CONFIGURABLE_BANDWIDTH_WEIGHTINGS),
+        .bandwidth_weightings(CONFIGURABLE_BANDWIDTH_WEIGHTINGS)
+        .tcp_established_timeout(SHORT_TCP_ESTABLISHED_TIMEOUT)
+        .traffic_mirroring(false)
+        .secondary_network(false)
+        .ipv4_per_secondary_interface(0),
     PublishedInstanceTypeFacts::of("c9gd.24xlarge")
         .dedicated_attachment_limit()
-        .bandwidth_weightings(CONFIGURABLE_BANDWIDTH_WEIGHTINGS),
+        .bandwidth_weightings(CONFIGURABLE_BANDWIDTH_WEIGHTINGS)
+        .tcp_established_timeout(SHORT_TCP_ESTABLISHED_TIMEOUT)
+        .traffic_mirroring(false)
+        .secondary_network(false)
+        .ipv4_per_secondary_interface(0),
     PublishedInstanceTypeFacts::of("c9gd.48xlarge")
         .dedicated_attachment_limit()
+        .network_bandwidth(
+            NEWEST_GENERATION_GRAVITON_HOST_GBPS,
+            NEWEST_GENERATION_GRAVITON_HOST_GBPS,
+        )
+        .interfaces(WHOLE_HOST_NETWORK_INTERFACES)
+        .ipv4_per_interface(WHOLE_HOST_IPV4_PER_INTERFACE)
+        .ena_queues(NEWEST_GENERATION_GRAVITON_ENA_QUEUES)
+        .ena_queue_limits(
+            WHOLE_HOST_ENA_QUEUES_PER_CARD,
+            WHOLE_HOST_ENA_QUEUES_PER_INTERFACE,
+        )
+        .additional_flexible_interfaces(NO_ADDITIONAL_FLEXIBLE_INTERFACES)
         .bandwidth_weightings(CONFIGURABLE_BANDWIDTH_WEIGHTINGS)
+        .tcp_established_timeout(SHORT_TCP_ESTABLISHED_TIMEOUT)
+        .traffic_mirroring(false)
+        .secondary_network(false)
+        .ipv4_per_secondary_interface(0)
         .efa(1),
     PublishedInstanceTypeFacts::of("c9gd.metal-48xl")
         .ebs(72_000, 288_000, 72_000, 288_000)
         .dedicated_ebs_attachments(79)
         .instance_store(3, 3_800)
+        .network_bandwidth(
+            NEWEST_GENERATION_GRAVITON_HOST_GBPS,
+            NEWEST_GENERATION_GRAVITON_HOST_GBPS,
+        )
+        .interfaces(WHOLE_HOST_NETWORK_INTERFACES)
+        .ipv4_per_interface(WHOLE_HOST_IPV4_PER_INTERFACE)
+        .ena_queues(NEWEST_GENERATION_GRAVITON_ENA_QUEUES)
+        .ena_queue_limits(
+            WHOLE_HOST_ENA_QUEUES_PER_CARD,
+            WHOLE_HOST_ENA_QUEUES_PER_INTERFACE,
+        )
+        .additional_flexible_interfaces(NO_ADDITIONAL_FLEXIBLE_INTERFACES)
+        .flexible_ena_queues(true)
         .bandwidth_weightings(CONFIGURABLE_BANDWIDTH_WEIGHTINGS)
-        .efa(1),
+        .tcp_established_timeout(SHORT_TCP_ESTABLISHED_TIMEOUT)
+        .traffic_mirroring(false)
+        .secondary_network(false)
+        .ipv4_per_secondary_interface(0)
+        .efa(1)
+        .auto_recovery(true)
+        .ena_srd(true)
+        .nitro_tpm(true)
+        .host_features(true, true),
     // D3en — dense HDD storage, 2nd generation Intel Xeon Scalable (Cascade Lake) at a
     // sustained 3.1 GHz, 14 TB magnetic devices (13,980 GB as the catalog counts them), and
     // the enhanced network the family's `n` names, up to 75 Gigabit on its largest size. The
@@ -4715,6 +4776,9 @@ fn published_rows() -> impl Iterator<Item = &'static PublishedInstanceTypeFacts>
         .chain(fifth_generation_intel_rows::FIFTH_GENERATION_INTEL_INSTANCE_TYPE_FACTS)
         .chain(
             fifth_generation_intel_compute_rows::FIFTH_GENERATION_INTEL_COMPUTE_INSTANCE_TYPE_FACTS,
+        )
+        .chain(
+            fifth_generation_intel_nvme_compute_rows::FIFTH_GENERATION_INTEL_NVME_COMPUTE_INSTANCE_TYPE_FACTS,
         )
         .chain(
             first_generation_graviton_rows::FIRST_GENERATION_GRAVITON_INSTANCE_TYPE_FACTS,
