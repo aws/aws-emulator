@@ -79,6 +79,17 @@ impl PaymentManagerRecord {
         self.removal_due_at.is_some()
     }
 
+    /// Whether the clock has already made this manager's removal due at `now`, which is what
+    /// [`ComAmazonawsBedrockagentcorecontrolAmazonbedrockagentcorecontrolState::expire_deleted_payment_managers`]
+    /// materialises.
+    ///
+    /// Read on its own by a caller that must not reclaim anything — the anonymous
+    /// authorization page a connector publishes — so that page reports a manager the clock
+    /// has already removed as gone without writing to the store.
+    pub fn removal_due(&self, now: SystemTime) -> bool {
+        self.removal_due_at.is_some_and(|at| now >= at)
+    }
+
     /// Accept this manager's deletion at `now`: it reports `DELETING` from this instant
     /// on ([`Self::status_at`]) and the clock owes its removal
     /// [`PAYMENT_MANAGER_REMOVAL_DELAY`] later.
@@ -117,7 +128,7 @@ impl ComAmazonawsBedrockagentcorecontrolAmazonbedrockagentcorecontrolState {
         let due: Vec<String> = self
             .payment_managers
             .iter()
-            .filter(|(_, record)| record.removal_due_at.is_some_and(|at| now >= at))
+            .filter(|(_, record)| record.removal_due(now))
             .map(|(id, _)| id.clone())
             .collect();
         for id in due {

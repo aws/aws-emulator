@@ -163,8 +163,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let mut store = state.lock();
         // A manager whose own earlier deletion the clock has already made due is gone
         // before this call looks for it, so a repeat past the span is the modelled 404
-        // rather than a second acceptance.
+        // rather than a second acceptance. A connector whose own removal is already due
+        // is gone too, so it no longer holds this manager's deletion back.
         store.expire_deleted_payment_managers(now);
+        store.expire_deleted_payment_connectors(now);
 
         // "Deletes a payment manager", addressed by the `paymentManagerId` the path
         // carries, which is how the store is keyed: an id this account holds no manager

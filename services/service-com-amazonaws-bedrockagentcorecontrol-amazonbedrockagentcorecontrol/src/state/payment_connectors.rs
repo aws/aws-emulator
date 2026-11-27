@@ -45,6 +45,7 @@ use crate::ops::types::{
 /// which anything here makes happen.
 pub const PAYMENT_CONNECTOR_STATUS_CREATING: &str = "CREATING";
 pub const PAYMENT_CONNECTOR_STATUS_UPDATING: &str = "UPDATING";
+pub const PAYMENT_CONNECTOR_STATUS_DELETING: &str = "DELETING";
 pub const PAYMENT_CONNECTOR_STATUS_READY: &str = "READY";
 pub const PAYMENT_CONNECTOR_STATUS_PENDING_AUTHENTICATION: &str = "PENDING_AUTHENTICATION";
 
@@ -233,6 +234,12 @@ pub struct PaymentConnectorRecord {
     /// When the clock owes the move from one to the other. Stored, never slept
     /// on: a read materialises the transition the clock already made due.
     pub settles_at: SystemTime,
+    /// When an accepted deletion removes this record, once
+    /// `DeletePaymentConnector` has accepted one; `None` for a connector nobody
+    /// has deleted. Stored, never slept on: the removal is the clock's,
+    /// materialised by [`PaymentConnectorStore::expire_deleted`] on the next call
+    /// that reads the payments plane ([`super::payment_connector_deletion`]).
+    pub removal_due_at: Option<SystemTime>,
 }
 
 impl PaymentConnectorRecord {
@@ -285,6 +292,7 @@ impl PaymentConnectorRecord {
             transient_status,
             settled_status,
             settles_at,
+            removal_due_at: None,
         }
     }
 
@@ -336,8 +344,16 @@ impl PaymentConnectorRecord {
     /// The status at `now`: the transient one until the clock owes the
     /// transition, the settled one from then on. No read performs it — it is due
     /// at that instant whether or not anybody looks.
+    ///
+    /// A connector whose own deletion has been accepted reports `DELETING`
+    /// whatever its create or update was doing: the resource is going away, which
+    /// is the one thing a client polling it needs to see, exactly as the manager
+    /// that holds it reports its own accepted deletion
+    /// ([`PaymentManagerRecord::status_at`]).
     pub fn status_at(&self, now: SystemTime) -> &str {
-        if now < self.settles_at {
+        if self.is_deleting() {
+            PAYMENT_CONNECTOR_STATUS_DELETING
+        } else if now < self.settles_at {
             &self.transient_status
         } else {
             &self.settled_status
@@ -514,6 +530,24 @@ impl PaymentConnectorStore {
     pub fn insert(&mut self, record: PaymentConnectorRecord) {
         self.connectors
             .insert(record.payment_connector_id.clone(), record);
+    }
+
+    /// Remove every connector of this manager whose accepted deletion the clock
+    /// has already made due, with the idempotency records naming it.
+    ///
+    /// Lives with the store because the records, and the tokens naming them, are
+    /// the store's own; what an accepted deletion MEANS, and when the removal is
+    /// owed, is in [`super::payment_connector_deletion`]. A token record whose
+    /// connector is gone can never replay anything again, so it goes with it,
+    /// exactly as the manager plane drops its own.
+    pub fn expire_deleted(&mut self, now: SystemTime) {
+        self.connectors.retain(|_, record| !record.removal_due(now));
+        let live = &self.connectors;
+        self.idempotency
+            .retain(|_, payment_connector_id| live.contains_key(payment_connector_id));
+        let live = &self.idempotency;
+        self.idempotency_order
+            .retain(|token| live.contains_key(token));
     }
 
     /// The connector a previous request to `operation` carrying this

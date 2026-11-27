@@ -51,16 +51,20 @@ pub fn answer<Eng: Send + Sync + 'static>(
     let state = crate::state::service_state(engine)?;
     let now = ::std::time::SystemTime::now();
     let page = {
-        let mut store = state.lock();
-        // The removal of a manager whose deletion the clock has already made due was
-        // owed at this instant whether or not anybody opened this address, so this read
-        // materialises it before it looks: the connectors of a manager that is gone are
-        // gone with it.
-        store.expire_deleted_payment_managers(now);
+        let store = state.lock();
+        // A READ, and nothing but a read: this address is fetched by whatever browser holds
+        // it, with no credential of any kind, so nothing reached through it writes to the
+        // store. The removals the clock owes an accepted deletion — the manager's and the
+        // connector's — are therefore read as the owed instants they are rather than
+        // reclaimed here, so the page reports exactly what an authenticated read of the
+        // connector reports at this instant, and the records go when the next operation of
+        // the payments plane materialises them.
         store
             .payment_managers
             .get(payment_manager_id)
+            .filter(|manager| !manager.removal_due(now))
             .and_then(|manager| manager.payment_connectors.get(payment_connector_id))
+            .filter(|record| !record.removal_due(now))
             .map(|record| crate::state::payment_connector_authorization_page(record, now))
     };
     // The page of a connector this emulator holds, and a page saying there is none for

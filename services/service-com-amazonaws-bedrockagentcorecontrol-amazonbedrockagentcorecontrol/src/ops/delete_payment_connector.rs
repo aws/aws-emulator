@@ -1,15 +1,6 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op DeletePaymentConnector
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `DeletePaymentConnector`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
-//!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`DeletePaymentConnector::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
 //!
 //! ## Shape of an operation
 //!
@@ -165,18 +156,62 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `DeletePaymentConnector` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(DeletePaymentConnectorErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
+        let _ = ctx;
+        let state = crate::state::service_state(&*self.engine).ok_or_else(|| {
+            DeletePaymentConnectorErrorModeled::InternalServerException(InternalServerException {
+                message: Some("the payment manager store is unavailable".to_string()),
+            })
+        })?;
+        let now = ::std::time::SystemTime::now();
+        let mut store = state.lock();
+        // Both removals the clock has already made due were owed at this instant whether
+        // or not anybody called, so this call materialises them before it looks: a
+        // connector of a manager that is gone is gone with it, and a repeat of this very
+        // delete past the span is the modelled 404 rather than a second acceptance.
+        store.expire_deleted_payment_managers(now);
+        store.expire_deleted_payment_connectors(now);
+
+        // "Deletes a payment connector", addressed by the two ids its path carries. This
+        // route addresses ONE connector, so the connector is the resource this operation
+        // is asked to delete and the one reported missing: neither a manager this account
+        // holds none under nor a connector that manager does not hold resolves to a
+        // connector, so both are the modelled 404 naming the paymentConnectorId the
+        // caller asked for, in the one sentence this plane reports a missing connector in.
+        let Some(record) = store
+            .payment_managers
+            .get_mut(&input.payment_manager_id)
+            .and_then(|manager| {
+                manager
+                    .payment_connectors
+                    .get_mut(&input.payment_connector_id)
+            })
+        else {
+            return Err(
+                DeletePaymentConnectorErrorModeled::ResourceNotFoundException(
+                    crate::state::payment_connector_not_found(&input.payment_connector_id),
+                )
+                .into(),
+            );
+        };
+
+        // The deletion is ACCEPTED here (202) and the connector reports `DELETING` from
+        // now on — the response's `status` is "set to DELETING when deletion is
+        // initiated"; the record itself goes when the span the clock owes passes, so a
+        // caller that deletes and then reads sees `DELETING`, a change asked of the
+        // connector in that window is refused the modelled conflict rather than reported
+        // missing, and only afterwards is every read of it the modelled 404.
         //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("DeletePaymentConnector"))
+        // Accepted whatever transient status the connector is in: a create or an update
+        // still in flight is a write this deletion supersedes rather than collides with,
+        // exactly as the deletion of the manager that holds the connector is accepted
+        // over a write in flight on it.
+        //
+        // `clientToken` needs nothing recorded for it: this operation is `@idempotent`
+        // and accepting a deletion already under way neither re-arms the clock nor
+        // changes what is reported, so a replayed request answers exactly as the first
+        // one did without a second deletion being performed.
+        record.accept_deletion(now);
+
+        Ok(record.delete_output(now))
     }
 }

@@ -225,8 +225,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         // A manager whose accepted deletion the clock has already made due is gone
         // before this call looks for it, so a connector is never created on a manager
-        // that is no longer there.
+        // that is no longer there; and a connector whose own removal is already due is
+        // gone too, so it counts neither against the ceiling nor as a name in use.
         store.expire_deleted_payment_managers(now);
+        store.expire_deleted_payment_connectors(now);
 
         // The resource the PATH addresses is resolved BEFORE this operation's own judgement
         // of the body: a connector belongs TO a payment manager, this route carries that

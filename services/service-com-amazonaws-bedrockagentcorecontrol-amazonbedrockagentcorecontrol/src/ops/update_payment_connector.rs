@@ -209,8 +209,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let mut store = state.lock();
 
         // A manager whose accepted deletion the clock has already made due is gone
-        // before this call looks for it, and so are the connectors it held.
+        // before this call looks for it, and so are the connectors it held, along with
+        // every connector whose own removal the clock has already made due.
         store.expire_deleted_payment_managers(now);
+        store.expire_deleted_payment_connectors(now);
 
         // A replayed request carrying the same `clientToken` answers with the connector
         // as that token's update left it, rather than applying the change a second
@@ -249,6 +251,17 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     crate::state::payment_connector_not_found(&input.payment_connector_id),
                 )
             })?;
+
+        // A connector whose own deletion has been accepted is going away, so what this
+        // update would change goes with it: the write is refused the modelled 409 and
+        // nothing is written, exactly as a write asked of a manager already being
+        // deleted is.
+        if connector.is_deleting() {
+            return Err(UpdatePaymentConnectorErrorModeled::ConflictException(
+                crate::state::payment_connector_deleting_conflict(&input.payment_connector_id),
+            )
+            .into());
+        }
 
         // One write at a time: a connector whose own create or update has not taken
         // effect yet is still being written, so a second writer collides with the first

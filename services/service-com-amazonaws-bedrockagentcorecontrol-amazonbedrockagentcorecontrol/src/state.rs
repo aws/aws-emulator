@@ -1690,6 +1690,11 @@ pub mod payment_manager_deletion;
 /// handler names `crate::state::…` for it exactly as it does for the manager
 /// that holds the connectors.
 pub mod payment_connectors;
+/// The window an accepted payment connector deletion is under way in: the
+/// connector reports `DELETING` until the removal the clock owes it comes due, and
+/// only then is the record gone. Re-exported, so a handler names `crate::state::…`
+/// for it exactly as it does for the connector the deletion is accepted for.
+pub mod payment_connector_deletion;
 /// The API key credential providers of this account's token vault: the record a
 /// create persists, the ARNs it mints and the Secrets Manager secret the API key
 /// itself lives in. Re-exported, so a handler names `crate::state::…` for it
@@ -1814,6 +1819,7 @@ pub use oauth2_credential_providers::*;
 pub use online_evaluation_configs::*;
 pub use evaluators::*;
 pub use memory_strategies::*;
+pub use payment_connector_deletion::*;
 pub use payment_connectors::*;
 pub use payment_credential_providers::*;
 pub use payment_manager_deletion::*;
