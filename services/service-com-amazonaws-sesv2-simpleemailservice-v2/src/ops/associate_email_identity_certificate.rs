@@ -268,10 +268,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // as how the caller "identif[ies] it" and to refuse only an identity it does not
         // hold, so the ARN is stored as given and the association is accepted. Whether
         // the certificate it names can actually be PREPARED for signing is read from the
-        // holder here, at the instant the preparation starts, and is what the
-        // `PROVISIONING` status settles into — `ACTIVE` for a certificate that can be
-        // signed with, `FAILED` ("the certificate couldn't be prepared for use, or the
-        // certificate has expired") for one that cannot.
+        // holder here, at the instant the preparation would start, and is what the status
+        // the association is created in says — `PROVISIONING`, on its way to `ACTIVE`, for
+        // a certificate that can be signed with, and `FAILED` ("the certificate couldn't
+        // be prepared for use, or the certificate has expired") for one that cannot, which
+        // leaves nothing to prepare.
         let certificate_is_usable =
             crate::state::certificate_can_sign(&*self.engine, &input.certificate_arn, now);
         record.certificates.insert(

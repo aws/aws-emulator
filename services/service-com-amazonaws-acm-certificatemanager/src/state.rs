@@ -1183,6 +1183,15 @@ pub struct Certificate {
     pub subject: Option<String>,
     /// The name of the CA that signs the certificate ([`issuer_name`]).
     pub issuer: Option<String>,
+    /// The issuing authority's WHOLE distinguished name, as the certificate's issuer
+    /// field carries it, beside the common name [`Self::issuer`] reports it under: a name
+    /// the subject field's own ([`Self::subject`]) can be compared with, which is what
+    /// says whether an authority other than the subject itself issued this certificate
+    /// ([`Self::is_self_issued`]).
+    ///
+    /// `None` for a record no certificate body was ever read for — nothing then names the
+    /// issuer beyond the authority ACM reports.
+    pub issuer_distinguished_name: Option<String>,
     /// The algorithm that CA signs with ([`signature_algorithm`]).
     pub signature_algorithm: Option<String>,
     /// A `CertificateKeyPairOrigin` value.
@@ -1299,6 +1308,27 @@ impl Certificate {
     /// the certificate type is AMAZON_ISSUED" (`CertificateDetail` docs).
     pub fn is_imported(&self) -> bool {
         self.cert_type == TYPE_IMPORTED
+    }
+
+    /// Whether this certificate is SELF-ISSUED: the entity its issuer field names is its
+    /// own subject, so what signed it is its own key and the chain of trust it carries
+    /// ends in itself rather than in a certificate authority.
+    ///
+    /// Decided by comparing the two WHOLE distinguished names this record keeps off the
+    /// certificate's own fields ([`Self::issuer_distinguished_name`] and
+    /// [`Self::subject`]) — so whether an authority issued a certificate is answered from
+    /// the record this service stores rather than re-read from X.509 by whoever asks, the
+    /// way [`Self::covers`] answers which hosts it serves. A record whose issuer field was
+    /// never read is not self-issued: what issued it is ACM's own authority rather than
+    /// the subject.
+    pub fn is_self_issued(&self) -> bool {
+        match (
+            self.issuer_distinguished_name.as_deref(),
+            self.subject.as_deref(),
+        ) {
+            (Some(issuer), Some(subject)) => issuer == subject,
+            _ => false,
+        }
     }
 
     /// Whether this certificate covers the host `server_name`.

@@ -15,11 +15,13 @@
 //!   the identity reports every association it holds, each with the address it applies
 //!   to, the certificate it names and the status it currently carries;
 //! * where the preparation of an association ENDS is what the service that holds the
-//!   certificate says about it: `ACTIVE` for a certificate it holds that has been issued,
-//!   is still valid and may be used to protect email, and `FAILED` for one it does not
-//!   hold at all or holds in a state that cannot sign;
+//!   certificate says about it: `ACTIVE` for a certificate it holds that a certificate
+//!   authority issued, that has been issued, is still valid and may be used to protect
+//!   email, and `FAILED` for one it does not hold at all, holds in a state that cannot
+//!   sign, or holds with nothing but its own key vouching for it;
 //! * a created association starts out being prepared for signing and reaches that end
-//!   when the clock says so; a removed one stops signing at once and is cleaned up
+//!   when the clock says so — unless its certificate cannot be prepared at all, in which
+//!   case it is created `FAILED`; a removed one stops signing at once and is cleaned up
 //!   afterwards;
 //! * a second association for an address that already has one is refused, and so is a
 //!   `FromAddress` that does not name an address the identity covers;
@@ -33,8 +35,9 @@
 //! spelling of it, an address in the domain, an address in a subdomain), what Certificate
 //! Manager holds for the ARN the request names (nothing, a certificate it issued for TLS,
 //! an imported certificate that may protect email, one that may not, one that asserts no
-//! key purpose at all, one whose validity has run out, one that is not issued yet), the
-//! status an association is in, the number of stored associations and the page size.
+//! key purpose at all, one whose validity has run out, one that is not issued yet, one no
+//! authority other than its own subject signed), the status an association is in, the
+//! number of stored associations and the page size.
 //!
 //! Certificate Manager is mounted BESIDE this service on one engine, so every certificate
 //! a case names is one its holder really holds: the material is built by `rcgen` —
@@ -126,7 +129,7 @@ fn member(certificate: &Value, name: &str) -> String {
         .to_string()
 }
 
-/// A real self-signed certificate and the private key that matches it.
+/// A real certificate and the private key that matches it.
 struct Minted {
     /// The PEM-encoded certificate.
     certificate: String,
@@ -134,27 +137,79 @@ struct Minted {
     private_key: String,
 }
 
-/// Build a certificate asserting `purposes` as its Extended Key Usage extension and
-/// valid until the first of January of `valid_until`.
+/// The subject common name every leaf certificate in this suite carries.
+const LEAF_COMMON_NAME: &str = "signing.example.com";
+
+/// The subject common name the certificate authority that signs those leaves carries,
+/// which is the name their issuer field then names.
+const AUTHORITY_COMMON_NAME: &str = "signing-authority.example.com";
+
+/// The parameters of a certificate for `common_name` asserting `purposes` as its Extended
+/// Key Usage extension and valid until the first of January of `valid_until`.
 ///
-/// Built by `rcgen` — something other than the code under test — so the holder reads a
-/// genuine X.509 body. An empty `purposes` leaves the extension OFF the certificate,
-/// which is the "asserts no key purpose" case.
-fn mint(purposes: &[rcgen::ExtendedKeyUsagePurpose], valid_until: i32) -> Minted {
-    let key = rcgen::KeyPair::generate_for(&rcgen::PKCS_ECDSA_P256_SHA256).expect("a key pair");
-    let mut params = rcgen::CertificateParams::new(vec!["signing.example.com".to_string()])
+/// An empty `purposes` leaves the extension OFF the certificate, which is the "asserts no
+/// key purpose" case.
+fn certificate_params(
+    purposes: &[rcgen::ExtendedKeyUsagePurpose],
+    valid_until: i32,
+    common_name: &str,
+) -> rcgen::CertificateParams {
+    let mut params = rcgen::CertificateParams::new(vec![common_name.to_string()])
         .expect("certificate parameters");
     let mut subject = rcgen::DistinguishedName::new();
-    subject.push(rcgen::DnType::CommonName, "signing.example.com");
+    subject.push(rcgen::DnType::CommonName, common_name);
     params.distinguished_name = subject;
     params.not_before = rcgen::date_time_ymd(2020, 1, 1);
     params.not_after = rcgen::date_time_ymd(valid_until, 1, 1);
     params.extended_key_usages = purposes.to_vec();
+    params
+}
+
+/// A certificate authority whose key signs the leaves a case brings into the holder, so a
+/// leaf's issuer field names an authority other than the leaf itself.
+///
+/// Built by `rcgen` — something other than the code under test — like the leaves are, so
+/// WHO issued an imported certificate is a genuine X.509 fact of its body rather than a
+/// value written into the test.
+struct Authority {
+    certificate: rcgen::Certificate,
+    key: rcgen::KeyPair,
+}
+
+impl Authority {
+    fn new() -> Self {
+        let key = rcgen::KeyPair::generate_for(&rcgen::PKCS_ECDSA_P256_SHA256).expect("a key pair");
+        let mut params = certificate_params(&[], 2100, AUTHORITY_COMMON_NAME);
+        params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+        let certificate = params.self_signed(&key).expect("a certificate authority");
+        Self { certificate, key }
+    }
+
+    /// A leaf asserting `purposes` and valid until the first of January of `valid_until`,
+    /// signed by this authority.
+    fn sign(&self, purposes: &[rcgen::ExtendedKeyUsagePurpose], valid_until: i32) -> Minted {
+        let key = rcgen::KeyPair::generate_for(&rcgen::PKCS_ECDSA_P256_SHA256).expect("a key pair");
+        let certificate = certificate_params(purposes, valid_until, LEAF_COMMON_NAME)
+            .signed_by(&key, &self.certificate, &self.key)
+            .expect("a signed certificate")
+            .pem();
+        Minted {
+            certificate,
+            private_key: key.serialize_pem(),
+        }
+    }
+}
+
+/// A real SELF-SIGNED certificate asserting `purposes`: its issuer field names its own
+/// subject, so no authority vouches for it.
+fn mint_self_signed(purposes: &[rcgen::ExtendedKeyUsagePurpose], valid_until: i32) -> Minted {
+    let key = rcgen::KeyPair::generate_for(&rcgen::PKCS_ECDSA_P256_SHA256).expect("a key pair");
+    let certificate = certificate_params(purposes, valid_until, LEAF_COMMON_NAME)
+        .self_signed(&key)
+        .expect("a self-signed certificate")
+        .pem();
     Minted {
-        certificate: params
-            .self_signed(&key)
-            .expect("a self-signed certificate")
-            .pem(),
+        certificate,
         private_key: key.serialize_pem(),
     }
 }
@@ -297,15 +352,34 @@ impl Ses {
         parsed
     }
 
-    /// Bring a certificate built from `purposes` and valid until `valid_until` into the
-    /// holder, and answer the ARN it stored it under.
+    /// Bring a certificate signed by a certificate authority, built from `purposes` and
+    /// valid until `valid_until`, into the holder, and answer the ARN it stored it under.
     async fn imported_certificate(
         &self,
         case: &str,
         purposes: &[rcgen::ExtendedKeyUsagePurpose],
         valid_until: i32,
     ) -> String {
-        let minted = mint(purposes, valid_until);
+        self.import(case, Authority::new().sign(purposes, valid_until))
+            .await
+    }
+
+    /// Bring a SELF-SIGNED certificate built from `purposes` into the holder, and answer
+    /// the ARN it stored it under: a certificate no authority other than its own subject
+    /// issued.
+    async fn self_signed_certificate(
+        &self,
+        case: &str,
+        purposes: &[rcgen::ExtendedKeyUsagePurpose],
+        valid_until: i32,
+    ) -> String {
+        self.import(case, mint_self_signed(purposes, valid_until))
+            .await
+    }
+
+    /// Import `minted` through the holder's own `ImportCertificate`, and answer the ARN it
+    /// answered with.
+    async fn import(&self, case: &str, minted: Minted) -> String {
         let imported = self
             .acm(
                 case,
@@ -322,8 +396,9 @@ impl Ses {
             .to_string()
     }
 
-    /// An imported certificate that may be used to sign a message: one asserting the
-    /// `emailProtection` key purpose, which is what an S/MIME signing certificate carries.
+    /// An imported certificate that may be used to sign a message: one a certificate
+    /// authority issued asserting the `emailProtection` key purpose, which is what an
+    /// S/MIME signing certificate carries.
     async fn signing_certificate(&self, case: &str) -> String {
         self.imported_certificate(
             case,
@@ -1531,28 +1606,31 @@ enum Holding {
     CouldNotBeIssued,
     /// A certificate the holder is still validating, so it is not issued.
     NotIssuedYet,
-    /// A certificate brought in by its owner, asserting these key purposes; an empty
-    /// list asserts no key purpose at all.
+    /// A certificate brought in by its owner, issued by a certificate authority and
+    /// asserting these key purposes; an empty list asserts no key purpose at all.
     Imported(&'static [rcgen::ExtendedKeyUsagePurpose]),
+    /// A certificate brought in by its owner that no authority other than its own subject
+    /// issued — it signed itself — asserting these key purposes.
+    SelfSigned(&'static [rcgen::ExtendedKeyUsagePurpose]),
     /// An imported certificate asserting `emailProtection` whose validity has since run
     /// out.
     ImportedThenExpired,
 }
 
-/// One row of the preparation table: what the holder holds, and the status the
-/// preparation of an association naming it must end in.
+/// One row of the preparation table: what the holder holds, and the status an association
+/// naming it must reach.
 struct Preparation {
     case: &'static str,
     holding: Holding,
-    /// The modelled `IdentityCertificateStatus` the association settles into.
+    /// The modelled `IdentityCertificateStatus` the association ends in.
     settles_into: &'static str,
 }
 
 /// The rows span what the rule generalises over: an ARN the holder has nothing under, a
 /// certificate it could not issue, one it has not issued yet, imported certificates whose
 /// Extended Key Usage extension does and does not permit email protection (including the
-/// `anyExtendedKeyUsage` purpose and the absence of the extension altogether), and one
-/// whose validity has run out.
+/// `anyExtendedKeyUsage` purpose and the absence of the extension altogether), ones an
+/// authority issued and ones that issued themselves, and one whose validity has run out.
 ///
 /// The key purposes are the ones the holder publishes as `ExtendedKeyUsageName`
 /// (`smithy_query(query="shape", shape="com.amazonaws.acm#ExtendedKeyUsageName")` lists
@@ -1601,6 +1679,16 @@ fn preparation_cases() -> Vec<Preparation> {
             settles_into: "ACTIVE",
         },
         Preparation {
+            case: "a self-signed certificate asserting emailProtection",
+            holding: Holding::SelfSigned(&[rcgen::ExtendedKeyUsagePurpose::EmailProtection]),
+            settles_into: "FAILED",
+        },
+        Preparation {
+            case: "a self-signed certificate asserting anyExtendedKeyUsage",
+            holding: Holding::SelfSigned(&[rcgen::ExtendedKeyUsagePurpose::Any]),
+            settles_into: "FAILED",
+        },
+        Preparation {
             case: "an imported certificate asserting only the TLS purposes",
             holding: Holding::Imported(&[
                 rcgen::ExtendedKeyUsagePurpose::ServerAuth,
@@ -1616,11 +1704,12 @@ fn preparation_cases() -> Vec<Preparation> {
     ]
 }
 
-/// RULE: an association is created being prepared for signing, and where that
-/// preparation ENDS is what the service holding the certificate says about it — `ACTIVE`
-/// for a certificate it holds that has been issued, is still valid and may be used to
-/// protect email, and `FAILED` for one it does not hold, has not issued, or holds in a
-/// state that cannot sign.
+/// RULE: an association's status is what the service holding the certificate says about
+/// that certificate — `ACTIVE`, by way of the `PROVISIONING` the preparation runs in, for
+/// a certificate it holds that a certificate authority issued, that is still valid and
+/// that may be used to protect email, and `FAILED` from the start for one it does not
+/// hold, has not issued, or holds in a state nothing can be signed with, which leaves no
+/// preparation to run.
 #[tokio::test]
 async fn the_preparation_of_an_association_ends_where_the_certificate_allows() {
     for Preparation {
@@ -1644,6 +1733,9 @@ async fn the_preparation_of_an_association_ends_where_the_certificate_allows() {
             Holding::CouldNotBeIssued => ses.unissued_certificate(case).await,
             Holding::NotIssuedYet => ses.pending_certificate(case).await,
             Holding::Imported(purposes) => ses.imported_certificate(case, purposes, 2100).await,
+            Holding::SelfSigned(purposes) => {
+                ses.self_signed_certificate(case, purposes, 2100).await
+            }
             Holding::ImportedThenExpired => {
                 let arn = ses
                     .imported_certificate(
@@ -1670,18 +1762,26 @@ async fn the_preparation_of_an_association_ends_where_the_certificate_allows() {
             associated.status, associated.body
         );
 
-        // "When the association is created, the certificate begins provisioning and its
-        // status is PROVISIONING": the transition is owed at an instant the handler
-        // stored, so it is held off rather than waited on.
+        // Where the association STARTS is what the certificate allows: "when the
+        // association is created, the certificate begins provisioning and its status is
+        // PROVISIONING" for one there is something to prepare out of — a transition owed
+        // at an instant the handler stored, so it is held off rather than waited on — while
+        // one that cannot be prepared at all has nothing to provision and reads its
+        // terminal status straight away.
         ses.hold_certificate(identity, from_address);
-        let provisioning = ses
+        let first_read = ses
             .list_certificates(json!({ "EmailIdentity": identity }))
             .await;
+        let starts_in = if settles_into == "ACTIVE" {
+            "PROVISIONING"
+        } else {
+            settles_into
+        };
         assert_eq!(
-            member(&provisioning.certificates()[0], "Status"),
-            "PROVISIONING",
-            "case {case:?}: expected a fresh association to be PROVISIONING, got {:?}",
-            provisioning.body
+            member(&first_read.certificates()[0], "Status"),
+            starts_in,
+            "case {case:?}: expected a fresh association to be {starts_in}, got {:?}",
+            first_read.body
         );
 
         ses.due_certificate(identity, from_address);
@@ -1848,4 +1948,138 @@ async fn a_failed_association_signs_nothing_and_can_still_be_removed() {
         "expected an identity whose only association FAILED to be deletable, got {} {:?}",
         deleted_with_failed.status, deleted_with_failed.body
     );
+}
+
+/// One row of the issuance table: who signed the certificate the association names, the
+/// key purposes that certificate asserts, and the status the association must carry while
+/// nothing the clock owes it has fallen due.
+struct Issuance {
+    case: &'static str,
+    /// Whether a certificate authority other than the certificate's own subject signed
+    /// it.
+    issued_by_an_authority: bool,
+    purposes: &'static [rcgen::ExtendedKeyUsagePurpose],
+    /// The modelled `IdentityCertificateStatus` the association is created in.
+    created_in: &'static str,
+    /// The one it carries once every transition the clock owes it has fallen due.
+    settles_into: &'static str,
+}
+
+/// The rows differ along the one thing this rule turns on — whether an authority other
+/// than the certificate's own subject signed it — crossed with the key purposes the
+/// certificate asserts, so every row is compared with a certificate identical in every
+/// other respect.
+const ISSUANCE_CASES: &[Issuance] = &[
+    Issuance {
+        case: "a certificate an authority issued, asserting emailProtection",
+        issued_by_an_authority: true,
+        purposes: &[rcgen::ExtendedKeyUsagePurpose::EmailProtection],
+        created_in: "PROVISIONING",
+        settles_into: "ACTIVE",
+    },
+    Issuance {
+        case: "a certificate that signed itself, asserting emailProtection",
+        issued_by_an_authority: false,
+        purposes: &[rcgen::ExtendedKeyUsagePurpose::EmailProtection],
+        created_in: "FAILED",
+        settles_into: "FAILED",
+    },
+    Issuance {
+        case: "a certificate that signed itself, asserting anyExtendedKeyUsage",
+        issued_by_an_authority: false,
+        purposes: &[rcgen::ExtendedKeyUsagePurpose::Any],
+        created_in: "FAILED",
+        settles_into: "FAILED",
+    },
+    Issuance {
+        case: "a certificate an authority issued, asserting no key purpose at all",
+        issued_by_an_authority: true,
+        purposes: &[],
+        created_in: "PROVISIONING",
+        settles_into: "ACTIVE",
+    },
+    Issuance {
+        case: "a certificate that signed itself, asserting no key purpose at all",
+        issued_by_an_authority: false,
+        purposes: &[],
+        created_in: "FAILED",
+        settles_into: "FAILED",
+    },
+];
+
+/// RULE: a certificate SES can prepare for signing is one a certificate AUTHORITY issued,
+/// so an association naming a certificate that signed itself is created in the terminal
+/// `FAILED` state — there is no preparation to run out of a certificate nothing but its
+/// own key vouches for — while one naming a certificate an authority issued is created
+/// `PROVISIONING` and becomes `ACTIVE` when that preparation falls due.
+#[tokio::test]
+async fn an_association_is_prepared_only_from_a_certificate_an_authority_issued() {
+    for Issuance {
+        case,
+        issued_by_an_authority,
+        purposes,
+        created_in,
+        settles_into,
+    } in ISSUANCE_CASES
+    {
+        let ses = Ses::new();
+        // An address identity, so the association applies to the identity's own address.
+        let identity = "signer@example.com";
+        let created = ses.create_identity(identity).await;
+        assert_eq!(
+            created.status, 200,
+            "case {case:?}: expected the identity to be created, got {} {:?}",
+            created.status, created.body
+        );
+        let arn = if *issued_by_an_authority {
+            ses.imported_certificate(case, purposes, 2100).await
+        } else {
+            ses.self_signed_certificate(case, purposes, 2100).await
+        };
+
+        let associated = ses
+            .associate(json!({ "EmailIdentity": identity, "CertificateArn": arn }))
+            .await;
+        assert_eq!(
+            associated.status, 200,
+            "case {case:?}: expected the association to be accepted, got {} {:?}",
+            associated.status, associated.body
+        );
+
+        // With every transition the clock owes the association held off, the status a
+        // read reports is the one the association was CREATED in — nothing has fallen
+        // due to move it.
+        ses.hold_certificate(identity, identity);
+        let listed = ses
+            .list_certificates(json!({ "EmailIdentity": identity }))
+            .await;
+        let certificate = &listed.certificates()[0];
+        assert_eq!(
+            member(certificate, "Status"),
+            *created_in,
+            "case {case:?}: expected the association to be created {created_in}, got {:?}",
+            listed.body
+        );
+        assert!(
+            IDENTITY_CERTIFICATE_STATUS_VALUES.contains(&member(certificate, "Status").as_str()),
+            "case {case:?}: expected a modelled IdentityCertificateStatus, got {certificate:?}"
+        );
+        assert_eq!(
+            member(certificate, "CertificateArn"),
+            arn,
+            "case {case:?}: expected the ARN the request named, got {certificate:?}"
+        );
+
+        // And once what the clock owes has fallen due, the status it ends in.
+        ses.due_certificate(identity, identity);
+        let settled = ses
+            .list_certificates(json!({ "EmailIdentity": identity }))
+            .await;
+        assert_eq!(
+            member(&settled.certificates()[0], "Status"),
+            *settles_into,
+            "case {case:?}: expected the association to end in {settles_into}, got {:?}",
+            settled.body
+        );
+    }
 }

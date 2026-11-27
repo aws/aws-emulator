@@ -460,6 +460,10 @@ struct ImportedCertificate {
     /// issued and signed the certificate" (`CertificateDetail$Issuer` doc), as
     /// [`issuer_common_name`] reads it out of the certificate's issuer field.
     issuer: String,
+    /// The issuing authority's WHOLE distinguished name, as [`distinguished_name`] writes
+    /// the certificate's issuer field — the name the subject's own is compared with to say
+    /// whether an authority other than the subject itself issued this certificate.
+    issuer_distinguished_name: String,
     /// The X.509 serial number, rendered as ACM reports a serial
     /// (`crate::state::serial_number`).
     serial: String,
@@ -512,6 +516,7 @@ impl ImportedCertificate {
             key_algorithm: self.key_algorithm,
             subject: Some(self.subject),
             issuer: Some(self.issuer),
+            issuer_distinguished_name: Some(self.issuer_distinguished_name),
             signature_algorithm: self.signature_algorithm,
             // The client generated this key pair and sent the private key with the
             // certificate.
@@ -648,6 +653,7 @@ fn imported_certificate(
         subject_alternative_names: names,
         subject: distinguished_name(&tbs.subject),
         issuer: issuer_common_name(&tbs.issuer),
+        issuer_distinguished_name: distinguished_name(&tbs.issuer),
         serial: crate::state::serial_number(tbs.serial_number.as_bytes()),
         key_algorithm: public_key.key_algorithm,
         signature_algorithm: signature_algorithm(&certificate.signature_algorithm.oid),

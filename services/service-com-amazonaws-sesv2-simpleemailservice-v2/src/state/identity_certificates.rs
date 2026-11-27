@@ -38,7 +38,7 @@ pub fn acm_certificates<Eng: Send + Sync + 'static>(
 /// Whether the certificate `certificate_arn` names can be used to SIGN a message at
 /// `now`, as the service that holds that certificate says.
 ///
-/// Three things have to hold of the held record, and each is read off it rather than
+/// Four things have to hold of the held record, and each is read off it rather than
 /// assumed:
 ///
 /// * the holder has a certificate under that ARN at all — an ARN it has none under names
@@ -50,7 +50,14 @@ pub fn acm_certificates<Eng: Send + Sync + 'static>(
 ///   4.2.1.12's `emailProtection` purpose is the one "protection of email" is asserted
 ///   by, and a certificate whose extension names other purposes may not be used for it,
 ///   while one that carries no such extension is restricted to no purpose and so may
-///   ([`certificate_permits_email_protection`]).
+///   ([`certificate_permits_email_protection`]);
+/// * a certificate AUTHORITY issued it, which the holder answers off the certificate's
+///   own issuer and subject fields
+///   ([`::service_com_amazonaws_acm_certificatemanager::state::Certificate::is_self_issued`]).
+///   A self-issued certificate is signed by the very key it certifies, so the signature
+///   it would put on a message is vouched for by nothing a recipient can check: there is
+///   no authority at the end of its chain, and no signing certificate to prepare out of
+///   it.
 ///
 /// Together they are exactly the condition the modelled `FAILED` association status
 /// covers: "the certificate couldn't be prepared for use, or the certificate has
@@ -78,6 +85,7 @@ pub fn certificate_can_sign<Eng: Send + Sync + 'static>(
                 == ::service_com_amazonaws_acm_certificatemanager::state::STATUS_ISSUED
                 && certificate.not_after.is_none_or(|not_after| now < not_after)
                 && certificate_permits_email_protection(certificate)
+                && !certificate.is_self_issued()
         })
 }
 

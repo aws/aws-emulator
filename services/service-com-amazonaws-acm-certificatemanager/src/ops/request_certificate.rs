@@ -485,6 +485,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 &input.domain_name,
             )),
             issuer: crate::state::issuer_name(input.certificate_authority_arn.as_deref()),
+            // ACM signs the certificate itself, with the authority this request names or
+            // its own: no certificate's issuer field has been read, so the only name the
+            // record carries for that authority is the one above.
+            issuer_distinguished_name: None,
             signature_algorithm: crate::state::signature_algorithm(&key_algorithm),
             key_algorithm,
             key_pair_origin: crate::state::KEY_PAIR_ORIGIN_AWS_MANAGED.to_string(),

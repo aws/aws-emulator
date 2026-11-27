@@ -296,40 +296,57 @@ pub struct IdentityCertificateRecord {
     pub certificate_arn: String,
     /// Whether the certificate the association names can be prepared for use at all, as
     /// the service that HOLDS that certificate answered when the association was created
-    /// (see [`Self::new`]). It is what the preparation settles into: `ACTIVE` for a
-    /// certificate that can be signed with, `FAILED` for one that cannot.
+    /// (see [`Self::new`]). It is what the status the association is created in says:
+    /// `PROVISIONING` for a certificate that can be signed with, `FAILED` for one that
+    /// cannot.
     pub certificate_is_usable: bool,
     /// Where the association is in its lifecycle.
     pub status: CertificateStatus,
-    /// When this status's clock-owed transition falls due: `PROVISIONING` -> `ACTIVE`
-    /// or `FAILED`, `INACTIVE` -> `DEPROVISIONING`, and the clean-up that removes a
-    /// `DEPROVISIONING` association.
+    /// When this status's clock-owed transition falls due: `PROVISIONING` -> `ACTIVE`,
+    /// `INACTIVE` -> `DEPROVISIONING`, and the clean-up that removes a `DEPROVISIONING`
+    /// association. A status the clock owes nothing further carries the instant the
+    /// association reached it.
     pub status_due_at: SystemTime,
 }
 
 impl IdentityCertificateRecord {
-    /// A fresh association, as `AssociateEmailIdentityCertificate` stores it: "when
-    /// the association is created, the certificate begins provisioning and its status
-    /// is PROVISIONING", and the preparation ends the span [`CERTIFICATE_SETTLE`] later.
+    /// A fresh association, as `AssociateEmailIdentityCertificate` stores it.
     ///
     /// `certificate_is_usable` is the answer of the service that HOLDS the certificate
-    /// the ARN names, taken here because creating the association is when SES starts
-    /// preparing that certificate: an ARN that resolves to a certificate which can be
-    /// signed with can be prepared, and one that resolves to no certificate at all — or
-    /// to one that cannot sign — cannot, which is where the preparation ends
-    /// ([`Self::settle`]).
+    /// the ARN names, taken here because creating the association is when SES reads that
+    /// certificate, and it is what the status the association starts in says:
+    ///
+    /// * a certificate that can be signed with is one there is something to prepare out
+    ///   of, so "when the association is created, the certificate begins provisioning and
+    ///   its status is PROVISIONING", and "the status changes to ACTIVE when the
+    ///   certificate is ready to use for signing" — the span [`CERTIFICATE_SETTLE`] later
+    ///   ([`Self::settle`]);
+    /// * a certificate that cannot be signed with — one the holder has none of under that
+    ///   ARN, has not issued, whose validity has run out, that may not protect email or
+    ///   that no authority issued — is one no preparation can be made out of, so the
+    ///   association is created in the terminal `FAILED` state ("the certificate couldn't
+    ///   be prepared for use, or the certificate has expired"): nothing about it is left
+    ///   for the clock to decide, and the first read reports it.
     pub fn new(
         from_address: &str,
         certificate_arn: &str,
         certificate_is_usable: bool,
         now: SystemTime,
     ) -> Self {
+        let (status, status_due_at) = if certificate_is_usable {
+            (
+                CertificateStatus::Provisioning,
+                now.checked_add(CERTIFICATE_SETTLE).unwrap_or(now),
+            )
+        } else {
+            (CertificateStatus::Failed, now)
+        };
         Self {
             from_address: from_address.to_string(),
             certificate_arn: certificate_arn.to_string(),
             certificate_is_usable,
-            status: CertificateStatus::Provisioning,
-            status_due_at: now.checked_add(CERTIFICATE_SETTLE).unwrap_or(now),
+            status,
+            status_due_at,
         }
     }
 
@@ -375,10 +392,10 @@ impl IdentityCertificateRecord {
                 return true;
             }
             match self.status {
-                // Where the preparation ends is what the certificate the association
-                // names allows: "the status changes to ACTIVE when the certificate is
-                // ready to use for signing", and `FAILED` — "the certificate couldn't be
-                // prepared for use" — when it is not one that can be signed with.
+                // "The status changes to ACTIVE when the certificate is ready to use for
+                // signing": only an association whose certificate can be signed with is
+                // ever being prepared — one whose certificate cannot was created `FAILED`
+                // ([`Self::new`]) — so this is where that preparation ends.
                 CertificateStatus::Provisioning => {
                     self.status = if self.certificate_is_usable {
                         CertificateStatus::Active
