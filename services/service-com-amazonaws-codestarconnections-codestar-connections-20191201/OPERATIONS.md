@@ -99,7 +99,7 @@ contents — read that shape in the model above when you need its own members.
 ## GetResourceSyncStatus
 
 - **Input:** `ResourceName` (string, len 1..100, pattern ^[0-9A-Za-z]+[0-9A-Za-z_\\-]*$, required), `SyncType` (SyncConfigurationType, one of: CFN_STACK_SYNC, required)
-- **Output:** `DesiredState` (Revision), `LatestSuccessfulSync` (ResourceSyncAttempt), `LatestSync` (ResourceSyncAttempt) — AWS's published model marks `LatestSync` `@required`, but the service answers a `(ResourceName, SyncType)` pair it has recorded no sync state for with HTTP 200 and none of these members present, so the trait is off this output member in `smithy-model/` (see `src/ops/get_resource_sync_status.rs`)
+- **Output:** `DesiredState` (Revision), `LatestSuccessfulSync` (ResourceSyncAttempt), `LatestSync` (ResourceSyncAttempt, required)
 - **Errors:** `AccessDeniedException (HTTP 403)`, `InternalServerException (HTTP 503)`, `InvalidInputException (HTTP 400)`, `ResourceNotFoundException (HTTP 404)`, `ThrottlingException (HTTP 429)`
 
 ## GetSyncBlockerSummary

@@ -14,7 +14,9 @@ cargo test  -p service-com-amazonaws-codestarconnections-codestar-connections-20
 service-com-amazonaws-codestarconnections-codestar-connections-20191201/
 ├── build.rs              # calls emulator_core_build_support::generate(...)
 ├── smithy-model/
-│   └── com-amazonaws-codestarconnections-codestar-connections-20191201.json      # the Smithy model — drives routing + wire shapes
+│   ├── com-amazonaws-codestarconnections-codestar-connections-20191201.json      # the Smithy model — drives routing + wire shapes
+│   ├── local-additions.json  # overlay model for the one output shape AWS answers with narrower than the snapshot declares
+│   └── LOCAL-ADDITIONS.md    # why that overlay exists, shape by shape
 ├── OPERATIONS.md         # every operation's contract, re-rendered from the model
 ├── tests/
 │   └── state_roundtrip.rs  # compiled example of the state API

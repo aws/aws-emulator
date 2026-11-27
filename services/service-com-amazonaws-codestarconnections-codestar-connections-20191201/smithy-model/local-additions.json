@@ -1,0 +1,22 @@
+{
+  "smithy": "2.0",
+  "shapes": {
+    "com.amazonaws.codestarconnections#GetResourceSyncStatusOutput": {
+      "type": "structure",
+      "members": {
+        "DesiredState": { "target": "com.amazonaws.codestarconnections#Revision" },
+        "LatestSuccessfulSync": { "target": "com.amazonaws.codestarconnections#ResourceSyncAttempt" },
+        "LatestSync": { "target": "com.amazonaws.codestarconnections#ResourceSyncAttempt" }
+      },
+      "traits": {
+        "smithy.api#output": {}
+      }
+    },
+    "com.amazonaws.codestarconnections#Revision": {
+      "type": "structure"
+    },
+    "com.amazonaws.codestarconnections#ResourceSyncAttempt": {
+      "type": "structure"
+    }
+  }
+}

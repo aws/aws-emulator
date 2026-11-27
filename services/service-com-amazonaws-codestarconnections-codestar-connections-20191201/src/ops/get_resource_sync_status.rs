@@ -84,9 +84,10 @@
 //!
 //! AWS's published model marks `LatestSync` `@required`; the service does not honour
 //! that for a `(ResourceName, SyncType)` pair it has recorded no sync state for — it
-//! answers HTTP 200 with none of these members present. Since this crate's codegen
-//! always writes a `@required` member, the trait is off this one output member in
-//! `smithy-model/` so the recorded response can be rendered; see
+//! answers HTTP 200 with none of these members present. The published snapshot is kept
+//! exactly as shipped, so the output shape is generated from the small overlay model
+//! `smithy-model/local-additions.json`, which restates it with that one member optional
+//! against the snapshot's own member targets; see `smithy-model/LOCAL-ADDITIONS.md` and
 //! [`super::types::GetResourceSyncStatusOutput`].
 //!
 //! ## Errors

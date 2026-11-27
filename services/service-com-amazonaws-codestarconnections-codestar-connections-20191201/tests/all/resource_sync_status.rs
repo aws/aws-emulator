@@ -19,6 +19,16 @@
 //! makes these assertions evidence that the response is computed from persisted state
 //! rather than from a constant.
 //!
+//! The last two suites pin the LOCAL DECLARATION the "never synced" answer needs: the
+//! published model snapshot marks the output member `LatestSync` `@required`, so the output
+//! shape is generated from the overlay model `smithy-model/local-additions.json` (see
+//! `smithy-model/LOCAL-ADDITIONS.md`), which restates it with that one member optional.
+//! Which members the wire carries is asserted against which members the store holds, over
+//! every combination of the three; and everything the overlay restates of the snapshot is
+//! compared against it, shape by shape, so a refreshed snapshot that drops the trait, adds
+//! or removes a member, or changes a target fails here rather than silently widening or
+//! narrowing what this service reports.
+//!
 //! The tables span what the rule generalises over: whether a pair holds a row at all,
 //! which of the three members that row records, every modeled `ResourceSyncStatus`, how
 //! many events an attempt carries (none, one, several), whether an event carries an
@@ -26,7 +36,7 @@
 //! bounds and forms. The recorded request (an unsynced resource, nothing recorded) is ONE
 //! row.
 
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 
 use service_com_amazonaws_codestarconnections_codestar_connections_20191201 as codestar;
 
@@ -550,6 +560,287 @@ async fn a_resource_name_outside_the_modeled_constraint_is_refused() {
         assert!(
             error_code(&body).ends_with("ValidationException"),
             "case {label:?}: expected a ValidationException, got {body:?}"
+        );
+    }
+}
+
+/// A sync-state member is reported if and only if the store holds it — `LatestSync`
+/// included, which is the member the published model marks `@required` and this service
+/// answers without for a resource that has never synced.
+///
+/// The table is every combination of which of the three members a row holds, the row that
+/// holds none (never synced) and the row that holds all three included, so the rule is
+/// asserted over the whole member-set lattice rather than over the two rows the suites
+/// above cover. The body is also checked to carry NO member outside the three the output
+/// declares, so a reported member set is never widened by a synthesised value.
+#[tokio::test]
+async fn a_sync_state_member_is_reported_exactly_when_the_store_holds_it() {
+    let emulator = Emulator::new();
+
+    for (index, (with_desired, with_latest, with_successful)) in [
+        (false, false, false),
+        (false, false, true),
+        (false, true, false),
+        (false, true, true),
+        (true, false, false),
+        (true, false, true),
+        (true, true, false),
+        (true, true, true),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let resource_name = format!("MemberSet{index}");
+        let case = format!(
+            "DesiredState={with_desired}, LatestSync={with_latest}, \
+             LatestSuccessfulSync={with_successful}"
+        );
+        let status_of_latest = RESOURCE_SYNC_STATUSES[index % RESOURCE_SYNC_STATUSES.len()];
+        let stored = StoredResourceSyncState {
+            desired_state: with_desired.then(|| revision(&resource_name, "desired")),
+            latest_sync: with_latest
+                .then(|| sync_attempt(&resource_name, "latest", status_of_latest, index % 3)),
+            latest_successful_sync: with_successful
+                .then(|| sync_attempt(&resource_name, "successful", SUCCEEDED, 1)),
+        };
+
+        // A row holding nothing is seeded all the same: a stored row with no member is the
+        // same answer as no stored row at all.
+        seed_sync_state(&emulator, SYNC_TYPE, &resource_name, stored.clone());
+
+        let (status, body) = get_status(&emulator, SYNC_TYPE, &resource_name).await;
+        assert_eq!(
+            status, 200,
+            "case {case:?}: expected GetResourceSyncStatus to answer 200, got {status} {body:?}"
+        );
+
+        let expected: Vec<&str> = [
+            ("DesiredState", stored.desired_state.is_some()),
+            ("LatestSync", stored.latest_sync.is_some()),
+            ("LatestSuccessfulSync", stored.latest_successful_sync.is_some()),
+        ]
+        .into_iter()
+        .filter_map(|(member, held)| held.then_some(member))
+        .collect();
+        let reported: Vec<&str> = SYNC_STATE_MEMBERS
+            .iter()
+            .copied()
+            .filter(|member| !body[member].is_null())
+            .collect();
+        assert_eq!(
+            reported, expected,
+            "case {case:?}: the reported members must be exactly the stored ones, got {body:?}"
+        );
+
+        let outside: Vec<String> = body
+            .as_object()
+            .unwrap_or_else(|| panic!("case {case:?}: the answer must be a JSON object, got {body:?}"))
+            .keys()
+            .filter(|member| !SYNC_STATE_MEMBERS.contains(&member.as_str()))
+            .cloned()
+            .collect();
+        assert!(
+            outside.is_empty(),
+            "case {case:?}: the answer may carry no member outside {SYNC_STATE_MEMBERS:?}, \
+             got {outside:?} in {body:?}"
+        );
+
+        assert_reports_stored(&case, &body, &stored);
+    }
+}
+
+/// The `shapes` object of one model document.
+fn model_shapes(model: &str) -> Value {
+    let parsed: Value = serde_json::from_str(model).expect("a model document must be JSON");
+    Value::Object(
+        parsed["shapes"]
+            .as_object()
+            .expect("a model document must carry a shapes object")
+            .clone(),
+    )
+}
+
+/// `declaration` with every documentation trait dropped, recursively — and with a traits
+/// object left empty by that dropped too, so a member the snapshot documents and nothing
+/// else compares equal to the same member restated with no traits at all.
+///
+/// Documentation is prose: the overlay restates what codegen READS — targets, types and
+/// constraint traits — so comparing declarations has to ignore the one trait that carries
+/// no behaviour.
+fn without_docs(declaration: &Value) -> Value {
+    match declaration {
+        Value::Object(members) => Value::Object(
+            members
+                .iter()
+                .filter(|(key, _)| key.as_str() != "smithy.api#documentation")
+                .map(|(key, value)| (key.clone(), without_docs(value)))
+                .filter(|(key, value)| {
+                    key.as_str() != "traits" || !value.as_object().is_some_and(Map::is_empty)
+                })
+                .collect(),
+        ),
+        Value::Array(items) => Value::Array(items.iter().map(without_docs).collect()),
+        other => other.clone(),
+    }
+}
+
+/// `member` with the `@required` trait dropped, and a traits object left empty by that
+/// dropped too: the single difference the overlay is allowed to have from the snapshot.
+fn without_required(member: &Value) -> Value {
+    let Value::Object(fields) = member else {
+        return member.clone();
+    };
+    Value::Object(
+        fields
+            .iter()
+            .map(|(key, value)| {
+                if key.as_str() != "traits" {
+                    return (key.clone(), value.clone());
+                }
+                let traits = match value {
+                    Value::Object(traits) => Value::Object(
+                        traits
+                            .iter()
+                            .filter(|(name, _)| name.as_str() != "smithy.api#required")
+                            .map(|(name, value)| (name.clone(), value.clone()))
+                            .collect(),
+                    ),
+                    other => other.clone(),
+                };
+                (key.clone(), traits)
+            })
+            .filter(|(key, value)| {
+                key.as_str() != "traits" || !value.as_object().is_some_and(Map::is_empty)
+            })
+            .collect(),
+    )
+}
+
+/// The published model snapshot this crate is generated from, embedded at compile time so
+/// the local declaration is checked against the model rather than against a copy of it.
+const SNAPSHOT: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/smithy-model/com-amazonaws-codestarconnections-codestar-connections-20191201.json"
+));
+
+/// The overlay model the output shape is declared from, embedded for the same reason: what
+/// it restates of the snapshot must still match it.
+const OVERLAY: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/smithy-model/local-additions.json"
+));
+
+/// The shape the overlay restates, and the one member it states more loosely than the
+/// snapshot does.
+const LOOSENED_SHAPE: &str = "com.amazonaws.codestarconnections#GetResourceSyncStatusOutput";
+const LOOSENED_MEMBER: &str = "LatestSync";
+
+/// The shapes the overlay declares only so the restated shape's members have a target.
+/// They are reached only as structure members, where codegen takes the member list from the
+/// member's own Rust type, so the overlay restates no member of either.
+const MEMBER_TARGET_SHAPES: &[&str] = &[
+    "com.amazonaws.codestarconnections#Revision",
+    "com.amazonaws.codestarconnections#ResourceSyncAttempt",
+];
+
+/// The overlay restates the snapshot exactly but for the one `@required` trait it drops:
+/// same shapes, same types, same members, same targets, same constraints. A refreshed
+/// snapshot that no longer marks the member `@required` fails here, because the local
+/// declaration should then give way to the modelled shape.
+#[test]
+fn the_overlay_restates_the_snapshot_but_for_the_required_trait_it_drops() {
+    let snapshot = model_shapes(SNAPSHOT);
+    let overlay = model_shapes(OVERLAY);
+    let restated = overlay
+        .as_object()
+        .expect("the overlay carries a shapes object");
+
+    let mut declared_ids: Vec<&str> = restated.keys().map(String::as_str).collect();
+    declared_ids.sort_unstable();
+    let mut expected_ids: Vec<&str> = MEMBER_TARGET_SHAPES.to_vec();
+    expected_ids.push(LOOSENED_SHAPE);
+    expected_ids.sort_unstable();
+    assert_eq!(
+        declared_ids, expected_ids,
+        "the overlay may declare only the restated shape and the shapes its members target"
+    );
+
+    for (shape_id, declared) in restated {
+        let case = shape_id.as_str();
+        let modelled = &snapshot[shape_id];
+        assert!(
+            !modelled.is_null(),
+            "case {case:?}: the overlay restates a shape the snapshot no longer declares"
+        );
+        assert_eq!(
+            declared["type"], modelled["type"],
+            "case {case:?}: must be restated with the type the snapshot gives it, got {}",
+            declared["type"]
+        );
+
+        // The traits the snapshot states for the shape ITSELF are restated as written; a
+        // declaration whose only trait was documentation carries none here.
+        let shape_traits = |declaration: &Value| -> Value {
+            match without_docs(&declaration["traits"]) {
+                Value::Object(traits) if traits.is_empty() => Value::Null,
+                other => other,
+            }
+        };
+        assert_eq!(
+            shape_traits(declared),
+            shape_traits(modelled),
+            "case {case:?}: must be restated with the traits the snapshot states for it, got {}",
+            declared["traits"]
+        );
+
+        let modelled_members = modelled["members"].as_object().cloned().unwrap_or_default();
+        let declared_members = declared["members"].as_object().cloned().unwrap_or_default();
+
+        if case != LOOSENED_SHAPE {
+            assert!(
+                declared_members.is_empty(),
+                "case {case:?}: is restated only as a member target, so it may restate no \
+                 member; got {declared_members:?}"
+            );
+            assert!(
+                !modelled_members.is_empty(),
+                "case {case:?}: the snapshot must still declare the structure whose members \
+                 codegen takes from its Rust type"
+            );
+            continue;
+        }
+
+        let declared_names: Vec<&str> = declared_members.keys().map(String::as_str).collect();
+        let modelled_names: Vec<&str> = modelled_members.keys().map(String::as_str).collect();
+        assert_eq!(
+            declared_names, modelled_names,
+            "case {case:?}: must restate exactly the members the snapshot declares"
+        );
+
+        for (member, modelled_member) in &modelled_members {
+            let expect = if member == LOOSENED_MEMBER {
+                without_required(&without_docs(modelled_member))
+            } else {
+                without_docs(modelled_member)
+            };
+            assert_eq!(
+                without_docs(&declared_members[member]),
+                expect,
+                "case {case:?}: member {member} must be restated as the snapshot declares it, \
+                 got {:?}",
+                declared_members.get(member)
+            );
+        }
+
+        assert!(
+            !modelled_members[LOOSENED_MEMBER]["traits"]["smithy.api#required"].is_null(),
+            "case {case:?}: the snapshot no longer marks {LOOSENED_MEMBER} @required, so the \
+             local declaration should give way to the modelled shape"
+        );
+        assert!(
+            declared_members[LOOSENED_MEMBER]["traits"]["smithy.api#required"].is_null(),
+            "case {case:?}: the overlay exists to state {LOOSENED_MEMBER} optional, got {:?}",
+            declared_members[LOOSENED_MEMBER]
         );
     }
 }
