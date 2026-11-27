@@ -829,6 +829,9 @@ async fn create_connector(emulator: &Emulator) -> String {
                 "As2Config": {
                     "LocalProfileId": "p-0123456789abcdef0",
                     "PartnerProfileId": "p-00000000000000001",
+                    "Compression": "DISABLED",
+                    "EncryptionAlgorithm": "NONE",
+                    "SigningAlgorithm": "NONE",
                 },
             }),
         )

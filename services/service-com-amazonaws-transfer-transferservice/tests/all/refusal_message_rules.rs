@@ -850,7 +850,12 @@ async fn naming_both_connector_configurations_states_that_only_one_may_be() {
         json!({
             "AccessRole": ROLE,
             "Url": "https://partner.example.com/as2",
-            "As2Config": {"LocalProfileId": LOCAL_PROFILE},
+            "As2Config": {
+                "LocalProfileId": LOCAL_PROFILE,
+                "Compression": "DISABLED",
+                "EncryptionAlgorithm": "NONE",
+                "SigningAlgorithm": "NONE",
+            },
         }),
     )
     .await;

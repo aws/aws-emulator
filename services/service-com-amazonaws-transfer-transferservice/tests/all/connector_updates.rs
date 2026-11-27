@@ -329,6 +329,8 @@ async fn an_as2_connectors_members_update_the_same_way() {
                 "LocalProfileId": LOCAL_PROFILE,
                 "PartnerProfileId": PARTNER_PROFILE,
                 "Compression": "ZLIB",
+                "EncryptionAlgorithm": "NONE",
+                "SigningAlgorithm": "NONE",
             },
         }),
     )
@@ -347,6 +349,8 @@ async fn an_as2_connectors_members_update_the_same_way() {
                     "LocalProfileId": LOCAL_PROFILE,
                     "PartnerProfileId": PARTNER_PROFILE,
                     "Compression": "ZLIB",
+                    "EncryptionAlgorithm": "NONE",
+                    "SigningAlgorithm": "NONE",
                     "MessageSubject": "invoices for the next period",
                 },
                 "Url": "https://partner.example.com/as2",
@@ -550,6 +554,11 @@ async fn an_empty_basic_auth_secret_configures_no_basic_authentication() {
     for (case, mut as2_config, expected) in cases {
         as2_config["LocalProfileId"] = json!(LOCAL_PROFILE);
         as2_config["PartnerProfileId"] = json!(PARTNER_PROFILE);
+        // The members an AS2 configuration is required to settle, which every row
+        // carries so the rows differ only along the secret member under test.
+        as2_config["Compression"] = json!("DISABLED");
+        as2_config["EncryptionAlgorithm"] = json!("NONE");
+        as2_config["SigningAlgorithm"] = json!("NONE");
         let connector_id = create_connector(
             &emulator,
             case,
@@ -783,7 +792,13 @@ async fn updates_whose_result_cannot_hold_together_are_refused_and_write_nothing
         json!({
             "AccessRole": ROLE,
             "Url": "https://partner.example.com/as2",
-            "As2Config": {"LocalProfileId": LOCAL_PROFILE, "PartnerProfileId": PARTNER_PROFILE},
+            "As2Config": {
+                "LocalProfileId": LOCAL_PROFILE,
+                "PartnerProfileId": PARTNER_PROFILE,
+                "Compression": "DISABLED",
+                "EncryptionAlgorithm": "NONE",
+                "SigningAlgorithm": "NONE",
+            },
         }),
     )
     .await;

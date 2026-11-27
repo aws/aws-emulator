@@ -185,6 +185,9 @@ async fn create_resource(emulator: &Emulator, kind: &'static str) -> Resource {
                         "As2Config": {
                             "LocalProfileId": LOCAL_PROFILE,
                             "PartnerProfileId": PARTNER_PROFILE,
+                            "Compression": "DISABLED",
+                            "EncryptionAlgorithm": "NONE",
+                            "SigningAlgorithm": "NONE",
                         },
                     }),
                 )

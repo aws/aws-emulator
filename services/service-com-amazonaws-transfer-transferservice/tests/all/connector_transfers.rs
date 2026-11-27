@@ -86,6 +86,9 @@ async fn as2_connector(emulator: &Emulator, case: &str) -> String {
             "As2Config": {
                 "LocalProfileId": LOCAL_PROFILE,
                 "PartnerProfileId": PARTNER_PROFILE,
+                "Compression": "DISABLED",
+                "EncryptionAlgorithm": "NONE",
+                "SigningAlgorithm": "NONE",
             },
         }),
     )

@@ -186,6 +186,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     },
                 )
             }),
+            // `EgressType` is modelled `@required` with `@default("SERVICE_MANAGED")`, so
+            // every described connector carries one: the kind its stored configuration
+            // selected (`state::connector_egress_type`).
             egress_type: stored.egress_type.clone(),
             // `ErrorMessage` carries "details when the connector is in ERRORED status";
             // nothing here leaves a connector in that status, so there is none.

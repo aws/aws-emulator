@@ -186,7 +186,12 @@ async fn a_transfer_that_names_no_file_is_refused_with_one_fixed_text() {
             json!({
                 "AccessRole": ROLE,
                 "Url": "https://partner.example.com/as2",
-                "As2Config": {"LocalProfileId": "p-0123456789abcdef0"},
+                "As2Config": {
+                    "LocalProfileId": "p-0123456789abcdef0",
+                    "Compression": "DISABLED",
+                    "EncryptionAlgorithm": "NONE",
+                    "SigningAlgorithm": "NONE",
+                },
             }),
         )
         .await;
@@ -794,10 +799,13 @@ fn sftp_config() -> Value {
 /// The `Url` values that name no endpoint the service could ever connect to.
 ///
 /// The rows differ along WHY the value names none — a host under each top-level domain
-/// the DNS never delegates (`.invalid`, `.test`, `.localhost`, `.local`), a value that is
-/// no absolute URL at all, a URL carrying no authority, and a host no DNS name can take
-/// the shape of — crossed with the scheme and the protocol configuration the connector
-/// would carry.
+/// the DNS never delegates (`.invalid`, `.test`, `.localhost`, `.local`), a URL carrying
+/// no authority, and a host no DNS name can take the shape of — crossed with the scheme
+/// and the protocol configuration the connector would carry.
+///
+/// A value that carries no scheme at all is NOT here: it earns the service's OTHER
+/// sentence, for a `Url` that is nothing but path information, which
+/// `crate::connector_configuration` asserts beside this one.
 fn unreachable_urls() -> Vec<UnreachableUrl> {
     vec![
         UnreachableUrl {
@@ -829,16 +837,6 @@ fn unreachable_urls() -> Vec<UnreachableUrl> {
             case: "an SFTP endpoint on the local link",
             url: "sftp://files.partner.local",
             config: sftp_config,
-        },
-        UnreachableUrl {
-            case: "a bare host name that is no absolute URL",
-            url: "ftp.example.com",
-            config: sftp_config,
-        },
-        UnreachableUrl {
-            case: "a host and a path with no scheme",
-            url: "partner.example.com/as2",
-            config: as2_config,
         },
         UnreachableUrl {
             case: "a URL that carries no authority at all",

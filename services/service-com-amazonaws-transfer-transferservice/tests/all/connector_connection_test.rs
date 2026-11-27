@@ -580,13 +580,17 @@ async fn testing_a_connector_that_configures_no_sftp_connection_is_refused() {
 
     let cases: Vec<(&str, Value)> = vec![
         (
-            "AS2 with only the two profiles",
+            "AS2 with the two profiles and nothing beyond the members an AS2 \
+             configuration is required to settle",
             json!({
                 "AccessRole": ROLE,
                 "Url": "https://partner.example.com/as2",
                 "As2Config": {
                     "LocalProfileId": "p-0123456789abcdef0",
                     "PartnerProfileId": "p-00000000000000001",
+                    "Compression": "DISABLED",
+                    "EncryptionAlgorithm": "NONE",
+                    "SigningAlgorithm": "NONE",
                 },
             }),
         ),

@@ -2,7 +2,7 @@
 
 //! What `CreateConnector` persists, and what a described connector reports.
 //!
-//! Four rules, each asserted over a TABLE of inputs rather than one recorded call:
+//! Six rules, each asserted over a TABLE of inputs rather than one recorded call:
 //!
 //! 1. a created connector is STORED: the call mints a `ConnectorId` of the modelled
 //!    shape, and a later `DescribeConnector` reports every member the caller supplied
@@ -19,7 +19,13 @@
 //!    `InvalidRequestException` and NOTHING is persisted for it — the next create mints
 //!    the very next id ([`connectors_whose_members_cannot_hold_together_are_refused`]);
 //! 4. a `ConnectorId` the store does not hold answers this service's generic not-found
-//!    error ([`describing_a_connector_that_was_never_created_is_not_found`]).
+//!    error ([`describing_a_connector_that_was_never_created_is_not_found`]);
+//! 5. each `As2Config` member the service fills no default for is required ON ITS OWN,
+//!    and the refusal names the one that is missing
+//!    ([`each_required_as2_config_member_is_required_on_its_own`]);
+//! 6. a `Url` that names no endpoint earns the sentence for ITS OWN condition — nothing
+//!    but path information, or a host that could never be resolved
+//!    ([`a_url_that_names_no_endpoint_earns_the_sentence_for_its_own_condition`]).
 //!
 //! The rows differ along the protocol configuration (AS2 or SFTP), the egress type
 //! (service-managed or VPC Lattice), how many of the nested members the request
@@ -103,13 +109,16 @@ async fn created_connectors_are_described_exactly_as_configured() {
 
     let cases: Vec<(&str, Value, Value)> = vec![
         (
-            "AS2, nothing optional supplied",
+            "AS2, nothing beyond the members an AS2 configuration is required to settle",
             json!({
                 "AccessRole": ROLE,
                 "Url": "https://partner.example.com/as2",
                 "As2Config": {
                     "LocalProfileId": LOCAL_PROFILE,
                     "PartnerProfileId": PARTNER_PROFILE,
+                    "Compression": "DISABLED",
+                    "EncryptionAlgorithm": "NONE",
+                    "SigningAlgorithm": "NONE",
                 },
             }),
             json!({
@@ -118,6 +127,9 @@ async fn created_connectors_are_described_exactly_as_configured() {
                 "As2Config": {
                     "LocalProfileId": LOCAL_PROFILE,
                     "PartnerProfileId": PARTNER_PROFILE,
+                    "Compression": "DISABLED",
+                    "EncryptionAlgorithm": "NONE",
+                    "SigningAlgorithm": "NONE",
                 },
                 "EgressType": "SERVICE_MANAGED",
                 "Status": "ACTIVE",
@@ -605,6 +617,9 @@ async fn a_connector_reports_the_members_the_service_settles() {
                 "As2Config": {
                     "LocalProfileId": LOCAL_PROFILE,
                     "PartnerProfileId": PARTNER_PROFILE,
+                    "Compression": "DISABLED",
+                    "EncryptionAlgorithm": "NONE",
+                    "SigningAlgorithm": "NONE",
                 },
             }),
             Settled {
@@ -982,6 +997,490 @@ async fn describing_a_connector_that_was_never_created_is_not_found() {
             message, &first,
             "case {case:?}: expected the same fixed Connector message as case \
              {first_case:?} ({first:?}), got {message:?}"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Rule 5: each As2Config member the service fills no default for is required
+// ---------------------------------------------------------------------------
+
+/// The `As2Config` members an AS2 connector cannot be written without, in the order the
+/// model declares them.
+///
+/// The catalogue is the three members that settle how an AS2 MESSAGE IS BUILT and that
+/// the model documents no substitute value for, per
+/// `smithy_query(query="shape",shape="As2ConnectorConfig")`: `Compression` ("specifies
+/// whether the AS2 file is compressed"), `EncryptionAlgorithm` ("the algorithm that is
+/// used to encrypt the file") and `SigningAlgorithm` ("the algorithm that is used to sign
+/// the AS2 messages sent with the connector"). The two enum members the service DOES
+/// settle are deliberately absent: `MdnSigningAlgorithm` documents "if set to DEFAULT (or
+/// not set at all), the value for `SigningAlgorithm` is used", and `PreserveContentType`
+/// is "disabled by default when you create an AS2 connector by calling the API directly".
+const REQUIRED_AS2_MEMBERS: [&str; 3] = ["Compression", "EncryptionAlgorithm", "SigningAlgorithm"];
+
+/// The `As2Config` members the rows below prove are NOT required, because the model
+/// documents the reading an omitted one takes — the same source as
+/// [`REQUIRED_AS2_MEMBERS`].
+const DEFAULTED_AS2_MEMBERS: [&str; 2] = ["MdnSigningAlgorithm", "PreserveContentType"];
+
+/// Complete AS2 configurations, which the rows below each remove ONE member from.
+///
+/// They differ along which value every required member carries (each at a different
+/// value of its own enum, including the weakest algorithms the model documents) and how
+/// many members surround them — none, the ones the service defaults, and the nested
+/// asynchronous-MDN structure.
+fn complete_as2_configurations() -> Vec<(&'static str, Value)> {
+    vec![
+        (
+            "the settings that ask for no compression, encryption or signing, and nothing \
+             else at all",
+            json!({
+                "LocalProfileId": LOCAL_PROFILE,
+                "PartnerProfileId": PARTNER_PROFILE,
+                "Compression": "DISABLED",
+                "EncryptionAlgorithm": "NONE",
+                "SigningAlgorithm": "NONE",
+            }),
+        ),
+        (
+            "every required member at another value of its enum, beside the members the \
+             service defaults",
+            json!({
+                "LocalProfileId": LOCAL_PROFILE,
+                "PartnerProfileId": PARTNER_PROFILE,
+                "MessageSubject": "invoices for the period",
+                "Compression": "ZLIB",
+                "EncryptionAlgorithm": "AES256_CBC",
+                "SigningAlgorithm": "SHA384",
+                "MdnSigningAlgorithm": "DEFAULT",
+                "MdnResponse": "SYNC",
+                "PreserveContentType": "ENABLED",
+            }),
+        ),
+        (
+            "the weakest algorithms the model documents, with the asynchronous-MDN settings",
+            json!({
+                "LocalProfileId": LOCAL_PROFILE,
+                "PartnerProfileId": PARTNER_PROFILE,
+                "Compression": "ZLIB",
+                "EncryptionAlgorithm": "DES_EDE3_CBC",
+                "SigningAlgorithm": "SHA1",
+                "MdnResponse": "ASYNC",
+                "AsyncMdnConfig": {"Url": "https://mdn.example.com/async"},
+            }),
+        ),
+    ]
+}
+
+/// The `CreateConnector` request an AS2 configuration is sent in.
+fn as2_create_request(as2_config: Value) -> Value {
+    json!({
+        "AccessRole": ROLE,
+        "Url": "https://partner.example.com/as2",
+        "As2Config": as2_config,
+    })
+}
+
+/// The `Message` an answer carries, or `""`.
+fn message_of(answer: &crate::harness::Answer) -> String {
+    member_of(&answer.body, "Message")
+        .as_str()
+        .unwrap_or_default()
+        .to_string()
+}
+
+/// RULE: each `As2Config` member the service fills no default for
+/// ([`REQUIRED_AS2_MEMBERS`]) is required ON ITS OWN — a configuration complete but for
+/// that one member is refused 400 `InvalidRequestException` with the service's sentence
+/// NAMING it, and nothing is persisted — while a configuration naming all of them is
+/// written however little else it carries, and the members the model gives a reading to
+/// when absent ([`DEFAULTED_AS2_MEMBERS`]) are never asked for.
+///
+/// The requirement is on the configuration the connector would HAVE, not on the request:
+/// the last leg proves an `UpdateConnector` that names one member alone is served,
+/// because the members it does not name stay where they are.
+///
+/// The rows are [`complete_as2_configurations`] crossed with the member each removes.
+#[tokio::test]
+async fn each_required_as2_config_member_is_required_on_its_own() {
+    let emulator = Emulator::new();
+
+    let before = create_connector(
+        &emulator,
+        "a connector created before the refusals",
+        json!({
+            "AccessRole": ROLE,
+            "Url": "sftp://partner.example.com",
+            "SftpConfig": {"UserSecretId": "sftp"},
+        }),
+    )
+    .await;
+
+    let configurations = complete_as2_configurations();
+    let mut written = 0_u64;
+
+    for (configuration_case, configuration) in &configurations {
+        let configuration_case = *configuration_case;
+        for omitted in REQUIRED_AS2_MEMBERS {
+            let case = format!("{configuration_case}, with {omitted} omitted");
+            let mut as2_config = configuration.clone();
+            as2_config
+                .as_object_mut()
+                .expect("a configuration is an object")
+                .remove(omitted);
+
+            let answer = emulator
+                .call("CreateConnector", as2_create_request(as2_config))
+                .await;
+            assert_eq!(
+                answer.status, 400,
+                "case {case:?}: expected HTTP 400, got {} with body {}",
+                answer.status, answer.body
+            );
+            assert_eq!(
+                answer.error_code(),
+                "InvalidRequestException",
+                "case {case:?}: expected InvalidRequestException, got {}",
+                answer.body
+            );
+            let message = message_of(&answer);
+            assert_eq!(
+                message,
+                format!("{omitted} is required in As2Config"),
+                "case {case:?}: expected the refusal to name the missing member, got \
+                 {message:?}"
+            );
+            assert!(
+                answer.get("ConnectorId").is_null(),
+                "case {case:?}: a refused create must answer no ConnectorId, got {}",
+                answer.body
+            );
+        }
+
+        // The members the model gives a reading to when absent are NOT asked for: the
+        // same configuration without either of them is written.
+        for defaulted in DEFAULTED_AS2_MEMBERS {
+            let case = format!("{configuration_case}, with {defaulted} omitted");
+            let mut as2_config = configuration.clone();
+            as2_config
+                .as_object_mut()
+                .expect("a configuration is an object")
+                .remove(defaulted);
+            create_connector(&emulator, &case, as2_create_request(as2_config)).await;
+            written += 1;
+        }
+
+        // And the complete configuration is written and read back exactly as configured.
+        let connector_id =
+            create_connector(&emulator, configuration_case, as2_create_request(configuration.clone()))
+                .await;
+        written += 1;
+        let described = describe_connector(&emulator, configuration_case, &connector_id).await;
+        assert_members(
+            configuration_case,
+            &described,
+            &json!({"As2Config": configuration}),
+        );
+    }
+
+    // Nothing was persisted for any refused create: the ids minted since `before` are
+    // exactly the ones the served creates took.
+    let after = create_connector(
+        &emulator,
+        "a connector created after the refusals",
+        json!({
+            "AccessRole": ROLE,
+            "Url": "sftp://partner.example.com",
+            "SftpConfig": {"UserSecretId": "sftp"},
+        }),
+    )
+    .await;
+    assert_eq!(
+        id_sequence(&after),
+        id_sequence(&before) + written + 1,
+        "expected the refused creates to persist nothing, but the id moved from \
+         {before:?} to {after:?} over {written} served creates"
+    );
+
+    // The rule is about the configuration the connector would HAVE: an update naming one
+    // member alone leaves the others in place, so it is served and the connector still
+    // names every required member.
+    let (_, configuration) = configurations
+        .first()
+        .expect("the catalogue has a configuration");
+    let stored = create_connector(
+        &emulator,
+        "a connector the update addresses",
+        as2_create_request(configuration.clone()),
+    )
+    .await;
+    let case = "an update naming one AS2 member alone";
+    let answer = emulator
+        .call(
+            "UpdateConnector",
+            json!({
+                "ConnectorId": &stored,
+                "As2Config": {"MessageSubject": "invoices for the next period"},
+            }),
+        )
+        .await;
+    assert_eq!(
+        answer.status, 200,
+        "case {case:?}: expected UpdateConnector 200, got {} with body {}",
+        answer.status, answer.body
+    );
+    let described = describe_connector(&emulator, case, &stored).await;
+    let mut expected = configuration.clone();
+    expected["MessageSubject"] = json!("invoices for the next period");
+    assert_members(case, &described, &json!({"As2Config": expected}));
+}
+
+// ---------------------------------------------------------------------------
+// Rule 6: WHICH sentence a Url that names no endpoint earns
+// ---------------------------------------------------------------------------
+
+/// The service's sentence for a `Url` that carries nothing but path information — a value
+/// with no scheme, which has no authority to name a host with.
+const URL_CARRIES_PATH_INFORMATION: &str =
+    "Invalid URL; Configured protocol does not support path information in the url";
+
+/// The service's sentence for a `Url` that IS a URL but whose host could never be
+/// resolved.
+const URL_NOT_VALID: &str = "The specified Url is not valid";
+
+/// A malformed `Url`: the value, whether the row configures SFTP (else AS2), and the
+/// sentence the value's OWN condition earns.
+struct MalformedUrl {
+    case: &'static str,
+    url: &'static str,
+    sftp: bool,
+    expected: &'static str,
+}
+
+/// The `Url` values that name no endpoint, one per way of failing to, crossed with the
+/// protocol configuration the connector would carry.
+///
+/// The first group carries NO SCHEME — a bare host name, a host with a path, a
+/// scheme-relative reference, a path on its own and a relative path of several
+/// segments — so each is read to its end as path information. The second group IS a URL,
+/// and fails on its host: a reserved top-level domain the DNS never delegates, a scheme
+/// whose URL has no host at all, and a name the DNS root holds no address for.
+fn malformed_urls() -> Vec<MalformedUrl> {
+    vec![
+        MalformedUrl {
+            case: "a bare host name, the whole of which is path information",
+            url: "ftp.example.com",
+            sftp: true,
+            expected: URL_CARRIES_PATH_INFORMATION,
+        },
+        MalformedUrl {
+            case: "a host and a path with no scheme",
+            url: "partner.example.com/as2",
+            sftp: false,
+            expected: URL_CARRIES_PATH_INFORMATION,
+        },
+        MalformedUrl {
+            case: "a scheme-relative reference",
+            url: "//partner.example.com/as2",
+            sftp: false,
+            expected: URL_CARRIES_PATH_INFORMATION,
+        },
+        MalformedUrl {
+            case: "a path on its own",
+            url: "/as2",
+            sftp: true,
+            expected: URL_CARRIES_PATH_INFORMATION,
+        },
+        MalformedUrl {
+            case: "a relative path of several segments",
+            url: "inbox/partner/as2",
+            sftp: true,
+            expected: URL_CARRIES_PATH_INFORMATION,
+        },
+        MalformedUrl {
+            case: "an https endpoint under the reserved .invalid",
+            url: "https://partner.invalid/as2",
+            sftp: false,
+            expected: URL_NOT_VALID,
+        },
+        MalformedUrl {
+            case: "an sftp endpoint under the reserved .test",
+            url: "sftp://partner.test",
+            sftp: true,
+            expected: URL_NOT_VALID,
+        },
+        MalformedUrl {
+            case: "a scheme whose URL carries no host at all",
+            url: "mailto:partner@example.com",
+            sftp: false,
+            expected: URL_NOT_VALID,
+        },
+        MalformedUrl {
+            case: "a single-label host, which the DNS root holds no address for",
+            url: "sftp://partner",
+            sftp: true,
+            expected: URL_NOT_VALID,
+        },
+    ]
+}
+
+/// RULE: a connector `Url` that names no endpoint is refused 400
+/// `InvalidRequestException` with the service's sentence for ITS OWN condition — a value
+/// carrying no scheme is nothing but path information, which no connector protocol
+/// addresses its endpoint by, while a value that is a URL whose host could never be
+/// resolved is not a valid one — on every operation that writes a connector, and nothing
+/// is written either way. The same value WITH its scheme is served, and read back
+/// verbatim.
+///
+/// The rows are [`malformed_urls`], crossed with the two operations that write a
+/// connector.
+#[tokio::test]
+async fn a_url_that_names_no_endpoint_earns_the_sentence_for_its_own_condition() {
+    let emulator = Emulator::new();
+
+    // One stored connector per protocol, so an update can carry each row's value onto a
+    // connector configured the way the row is.
+    let stored_sftp_url = "sftp://partner.example.com";
+    let stored_sftp = create_connector(
+        &emulator,
+        "a stored SFTP connector",
+        json!({
+            "AccessRole": ROLE,
+            "Url": stored_sftp_url,
+            "SftpConfig": {"UserSecretId": "sftp"},
+        }),
+    )
+    .await;
+    let stored_as2_url = "https://partner.example.com/as2";
+    let stored_as2 = create_connector(
+        &emulator,
+        "a stored AS2 connector",
+        as2_create_request(json!({
+            "LocalProfileId": LOCAL_PROFILE,
+            "PartnerProfileId": PARTNER_PROFILE,
+            "Compression": "DISABLED",
+            "EncryptionAlgorithm": "NONE",
+            "SigningAlgorithm": "NONE",
+        })),
+    )
+    .await;
+
+    for row in malformed_urls() {
+        let protocol_config = if row.sftp {
+            json!({"SftpConfig": {"UserSecretId": "sftp"}})
+        } else {
+            json!({"As2Config": {
+                "LocalProfileId": LOCAL_PROFILE,
+                "PartnerProfileId": PARTNER_PROFILE,
+                "Compression": "DISABLED",
+                "EncryptionAlgorithm": "NONE",
+                "SigningAlgorithm": "NONE",
+            }})
+        };
+
+        let mut request = json!({"AccessRole": ROLE, "Url": row.url});
+        let object = request.as_object_mut().expect("the request is an object");
+        for (member, value) in protocol_config
+            .as_object()
+            .expect("a configuration is an object")
+        {
+            object.insert(member.clone(), value.clone());
+        }
+
+        let case = format!("CreateConnector with {}", row.case);
+        let answer = emulator.call("CreateConnector", request).await;
+        assert_eq!(
+            (answer.status, answer.error_code().as_str()),
+            (400, "InvalidRequestException"),
+            "case {case:?}: expected 400 InvalidRequestException, got {} with body {}",
+            answer.status,
+            answer.body
+        );
+        let message = message_of(&answer);
+        assert_eq!(
+            message, row.expected,
+            "case {case:?}: expected the sentence for this condition, got {message:?}"
+        );
+        assert!(
+            !message.contains(row.url),
+            "case {case:?}: the sentence is fixed text, so it carries no submitted value, \
+             got {message:?}"
+        );
+        assert!(
+            answer.get("ConnectorId").is_null(),
+            "case {case:?}: a refused create must answer no ConnectorId, got {}",
+            answer.body
+        );
+
+        // The same value on an UPDATE of a connector of the row's protocol: the same
+        // sentence, and the stored connector keeps the endpoint it had.
+        let (stored, stored_url) = if row.sftp {
+            (&stored_sftp, stored_sftp_url)
+        } else {
+            (&stored_as2, stored_as2_url)
+        };
+        let case = format!("UpdateConnector with {}", row.case);
+        let answer = emulator
+            .call(
+                "UpdateConnector",
+                json!({"ConnectorId": stored, "Url": row.url}),
+            )
+            .await;
+        assert_eq!(
+            (answer.status, answer.error_code().as_str()),
+            (400, "InvalidRequestException"),
+            "case {case:?}: expected 400 InvalidRequestException, got {} with body {}",
+            answer.status,
+            answer.body
+        );
+        let message = message_of(&answer);
+        assert_eq!(
+            message, row.expected,
+            "case {case:?}: expected the sentence for this condition, got {message:?}"
+        );
+        let described = describe_connector(&emulator, &case, stored).await;
+        assert_eq!(
+            member_of(&described, "Url").as_str(),
+            Some(stored_url),
+            "case {case:?}: expected the stored connector to keep its endpoint, got {described}"
+        );
+    }
+
+    // The control, bounding the rule from the other side: each schemeless value above,
+    // given the scheme its protocol speaks, names an endpoint — so the create is served
+    // and the read echoes the value verbatim.
+    let served: Vec<(&str, &str, bool)> = vec![
+        ("the bare host name, given the sftp scheme", "sftp://ftp.example.com", true),
+        ("the host and path, given the https scheme", "https://partner.example.com/as2", false),
+        ("a host and a deep path over plain http", "http://partner.example.com:8080/inbox/as2", false),
+    ];
+    for (case, url, sftp) in served {
+        let request = if sftp {
+            json!({
+                "AccessRole": ROLE,
+                "Url": url,
+                "SftpConfig": {"UserSecretId": "sftp"},
+            })
+        } else {
+            json!({
+                "AccessRole": ROLE,
+                "Url": url,
+                "As2Config": {
+                    "LocalProfileId": LOCAL_PROFILE,
+                    "PartnerProfileId": PARTNER_PROFILE,
+                    "Compression": "DISABLED",
+                    "EncryptionAlgorithm": "NONE",
+                    "SigningAlgorithm": "NONE",
+                },
+            })
+        };
+        let connector_id = create_connector(&emulator, case, request).await;
+        let described = describe_connector(&emulator, case, &connector_id).await;
+        assert_eq!(
+            member_of(&described, "Url").as_str(),
+            Some(url),
+            "case {case:?}: expected the Url to be echoed verbatim, got {described}"
         );
     }
 }

@@ -233,7 +233,13 @@ async fn read_of(emulator: &Emulator, kind: &str) -> Read {
                 json!({
                     "AccessRole": ROLE,
                     "Url": "https://partner.example.com/as2",
-                    "As2Config": {"LocalProfileId": local, "PartnerProfileId": partner},
+                    "As2Config": {
+                        "LocalProfileId": local,
+                        "PartnerProfileId": partner,
+                        "Compression": "DISABLED",
+                        "EncryptionAlgorithm": "NONE",
+                        "SigningAlgorithm": "NONE",
+                    },
                 }),
             )
             .await;

@@ -58,12 +58,14 @@
 //! `ValidationException`, whose template (member path + modelled constraint, no value)
 //! lives in `crate::service`.
 
+pub mod as2_connector_requirements;
 pub mod authorization;
 pub mod connector_delivery;
 pub mod home_directory_mappings;
 pub mod identity_provider;
 pub mod vended_log_group;
 pub mod connector_egress_addresses;
+pub mod connector_egress_type;
 pub mod connector_endpoint_url;
 pub mod connector_plane;
 pub mod connector_protocol;
@@ -79,11 +81,16 @@ mod security_policies;
 mod host_key_material;
 pub use connector_egress_addresses::service_managed_egress_ip_addresses;
 
-/// Whether the endpoint a connector's `Url` names can exist, and the fixed text the
-/// service refuses one that cannot with: their own concern, in
+/// Whether the endpoint a connector's `Url` names can exist, and WHICH of the two fixed
+/// texts the service refuses one that cannot with: their own concern, in
 /// [`connector_endpoint_url`], re-exported here beside the other connector rules the
 /// write path reads.
-pub use connector_endpoint_url::{endpoint_url_defect, URL_NOT_VALID};
+pub use connector_endpoint_url::{endpoint_url_defect, URL_CARRIES_PATH_INFORMATION, URL_NOT_VALID};
+
+/// Which `As2Config` members an AS2 connector cannot be written without: their own
+/// concern, in [`as2_connector_requirements`], re-exported here beside the other
+/// connector rules the write path reads.
+pub use as2_connector_requirements::as2_configuration_violation;
 pub use host_key_material::*;
 pub use security_policies::*;
 
@@ -1419,18 +1426,10 @@ pub struct Connector {
     pub tags: Vec<Tag>,
 }
 
-/// The `EgressType` a connector created with `egress_config` has.
-///
-/// `ConnectorEgressConfig`'s only member is `VpcLattice`, so a request that carries an
-/// egress configuration is a `VPC_LATTICE` connector and one that carries none takes
-/// `EgressType`'s modelled default. Both the create handler's cross-member checks and
-/// the stored record read the type from here, so the two cannot disagree.
-pub fn connector_egress_type(egress_config: Option<&ConnectorEgressConfig>) -> &'static str {
-    match egress_config {
-        Some(_) => CONNECTOR_EGRESS_TYPE_VPC_LATTICE,
-        None => DEFAULT_CONNECTOR_EGRESS_TYPE,
-    }
-}
+/// The `EgressType` a connector's configuration selects: its own concern, in
+/// [`connector_egress_type`], re-exported here beside the other connector rules the
+/// write path reads.
+pub use connector_egress_type::connector_egress_type;
 
 /// The endpoint a connector's `Url` names, when it names one.
 ///
@@ -2656,8 +2655,12 @@ impl ConnectorConfig<'_> {
     ///   null."
     /// * `Url` is also "the URL of the partner's AS2 or SFTP endpoint" — the address a
     ///   transfer on this connector connects out to — so a value that names no endpoint
-    ///   the service could reach is refused with the service's own fixed text
-    ///   ([`endpoint_url_defect`]).
+    ///   the service could reach is refused with the service's own fixed text for the
+    ///   condition the value fails on ([`endpoint_url_defect`]).
+    /// * `As2Config` is "a structure that contains the parameters for an AS2 connector
+    ///   object", and the members that settle how an AS2 message is built carry no
+    ///   documented default, so each is required on its own
+    ///   ([`as2_configuration_violation`]).
     /// * `MaxConcurrentConnections` states "The maximum values is `5`" — a bound the
     ///   member's `@range` does not carry (see [`MAX_CONCURRENT_CONNECTIONS`]).
     pub fn cross_member_violation(&self) -> Option<String> {
@@ -2703,6 +2706,17 @@ impl ConnectorConfig<'_> {
             if let Some(defect) = endpoint_url_defect(&url) {
                 return Some(defect.to_string());
             }
+        }
+
+        // The AS2 configuration then has to settle how the messages this connector sends
+        // are BUILT: the members that choose the compression, the encryption and the
+        // signing are each required on their own, and the refusal names the one that is
+        // missing. See [`as2_connector_requirements`], and note the position — after the
+        // either/or above and after the `Url`, so a request that breaks one of those is
+        // answered for it rather than for a member of a configuration the connector may
+        // not even be allowed to carry.
+        if let Some(violation) = self.as2_config.and_then(as2_configuration_violation) {
+            return Some(violation);
         }
 
         if self

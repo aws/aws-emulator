@@ -53,13 +53,16 @@ fn id_sequence(connector_id: &str) -> u64 {
 fn connector_rows() -> Vec<(&'static str, Value)> {
     vec![
         (
-            "AS2 over HTTPS, nothing optional supplied",
+            "AS2 over HTTPS, nothing beyond the required members supplied",
             json!({
                 "AccessRole": ROLE,
                 "Url": "https://partner.example.com/as2",
                 "As2Config": {
                     "LocalProfileId": LOCAL_PROFILE,
                     "PartnerProfileId": PARTNER_PROFILE,
+                    "Compression": "DISABLED",
+                    "EncryptionAlgorithm": "NONE",
+                    "SigningAlgorithm": "NONE",
                 },
             }),
         ),
@@ -74,6 +77,8 @@ fn connector_rows() -> Vec<(&'static str, Value)> {
                     "LocalProfileId": LOCAL_PROFILE,
                     "PartnerProfileId": PARTNER_PROFILE,
                     "Compression": "ZLIB",
+                    "EncryptionAlgorithm": "AES256_CBC",
+                    "SigningAlgorithm": "SHA384",
                 },
                 "Tags": [
                     {"Key": "team", "Value": "edi"},
@@ -350,7 +355,13 @@ async fn deleting_a_connector_the_store_does_not_hold_is_not_found() {
         json!({
             "AccessRole": ROLE,
             "Url": "https://partner.example.com/as2",
-            "As2Config": {"LocalProfileId": LOCAL_PROFILE, "PartnerProfileId": PARTNER_PROFILE},
+            "As2Config": {
+                "LocalProfileId": LOCAL_PROFILE,
+                "PartnerProfileId": PARTNER_PROFILE,
+                "Compression": "DISABLED",
+                "EncryptionAlgorithm": "NONE",
+                "SigningAlgorithm": "NONE",
+            },
         }),
     )
     .await;

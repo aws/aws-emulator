@@ -83,6 +83,9 @@ async fn as2_connector(emulator: &Emulator, case: &str) -> String {
             "As2Config": {
                 "LocalProfileId": LOCAL_PROFILE,
                 "PartnerProfileId": PARTNER_PROFILE,
+                "Compression": "DISABLED",
+                "EncryptionAlgorithm": "NONE",
+                "SigningAlgorithm": "NONE",
             },
         }),
     )
@@ -535,6 +538,9 @@ async fn each_gated_operation_states_its_refusal_in_one_fixed_text() {
                 "LocalProfileId": PARTNER_PROFILE,
                 "PartnerProfileId": LOCAL_PROFILE,
                 "MessageSubject": "invoices",
+                "Compression": "ZLIB",
+                "EncryptionAlgorithm": "AES256_CBC",
+                "SigningAlgorithm": "SHA384",
             },
         }),
     )
