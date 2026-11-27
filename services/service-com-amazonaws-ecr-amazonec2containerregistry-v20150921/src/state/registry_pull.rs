@@ -138,7 +138,11 @@ pub struct RegistryReference {
 impl RegistryReference {
     /// The `ImageIdentifier` this reference resolves through, which is the identifier
     /// `BatchGetImage` would carry for the same pull.
-    fn identifier(&self) -> ImageIdentifier {
+    ///
+    /// Reachable inside this store, so a sibling reading of a reference resolves it exactly
+    /// as the pull does ([`super::image_program`]) rather than assembling an identifier of
+    /// its own.
+    pub(in crate::state) fn identifier(&self) -> ImageIdentifier {
         ImageIdentifier {
             image_digest: self.digest.clone(),
             image_tag: self.tag.clone(),

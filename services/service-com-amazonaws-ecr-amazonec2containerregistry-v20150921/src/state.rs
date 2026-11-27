@@ -4518,6 +4518,11 @@ pub mod authorization;
 /// registry plane it reaches) here, so it is reached as `crate::state::registry_pull::…`
 /// like every other part of this store.
 pub mod registry_pull;
+/// What the IMAGE a pull resolved declares as its own program, read off the manifest the push
+/// stored and the configuration blob it references, in `state/image_program.rs`. Declared (and
+/// not glob re-exported, so a caller names what it asks the registry) here, so it is reached
+/// as `crate::state::image_program::…` like every other part of this store.
+pub mod image_program;
 /// The `AWS/ECR` metric this registry publishes about the pulls its data plane serves, in
 /// `state/pull_metrics.rs`. Declared (and not glob re-exported, so a caller names the
 /// publication it makes) here, so it is reached as `crate::state::pull_metrics::…` like

@@ -130,6 +130,23 @@ use ::service_com_amazonaws_ec2_amazonec2::ComAmazonawsEc2Amazonec2State;
 /// TerminationNotice, UserInitiated).
 pub const STOP_CODE_TASK_FAILED_TO_START: &str = "TaskFailedToStart";
 
+/// The `stoppedReason` of a task whose container Amazon ECS could not CREATE because nothing
+/// names a program for it to run.
+///
+/// Not a fetch failure: the image was fetched, and what the container runtime then could not
+/// do is START a container out of it. A container runs an argument vector, which is its entry
+/// point followed by its command (`ContainerDefinition$entryPoint`, and
+/// `ContainerDefinition$command` — "the command that's passed to the container", which
+/// "overrides the default command from the Docker image"), so a container whose definition
+/// names neither and whose image declares neither
+/// ([`::service_com_amazonaws_ecr_amazonec2containerregistry_v20150921::state::image_program`])
+/// has no process for the runtime to start: the daemon refuses the create with the sentence
+/// below, under the `CannotStartContainerError` class the ECS Developer Guide's "Stopped tasks
+/// error codes" lists such a stop under. The text has no variable part — the daemon names
+/// neither the image nor the container in it.
+pub const CANNOT_START_CONTAINER_NO_COMMAND_REASON: &str =
+    "CannotStartContainerError: Error response from daemon: No command specified";
+
 /// How long the agent spends on an image fetch that cannot REACH the registry before it
 /// gives the attempt up — the wait the `stoppedReason` of such a task reports as having
 /// timed out ([`cannot_pull_container_message`]: "dial tcp ...: i/o timeout").
@@ -212,6 +229,14 @@ pub struct TaskLaunch {
     /// container's output ([`super::log_driver_init`]), which the agent initialises as that
     /// same execution role before the container it is for runs.
     pub log_targets: Vec<AwsLogsTarget>,
+    /// The images of the task's containers that nothing NAMES a program for: neither the
+    /// container's own definition, nor the launch's overrides, nor the catalog of images whose
+    /// program this emulator knows ([`super::container_runtime::container_program`]).
+    ///
+    /// What such a container runs is whatever its IMAGE declares, which is the registry's to
+    /// answer ([`unstartable_container_image`]): an image that declares no program either
+    /// leaves the container nothing to start.
+    pub images_naming_no_program: Vec<String>,
 }
 
 /// The `stoppedReason` of a task whose containers could not be launched because an image
@@ -491,7 +516,55 @@ pub fn evaluate_image_pulls<Eng: Send + Sync + 'static>(engine: &Eng) {
             failure.failure = uninitialisable_logger(engine, launch);
         }
     }
+    // And the CONTAINERS themselves, which the runtime creates once the task's resources and
+    // its images are in hand: a container nothing names a program for has no process to start,
+    // so the create is refused and the task fails to start
+    // ([`CANNOT_START_CONTAINER_NO_COMMAND_REASON`]). Decided last, because creating the
+    // containers is the last step of a launch, and with no lock held: what an image declares
+    // is the registry's own answer.
+    for (launch, verdict) in launches.iter().zip(failures.iter_mut()) {
+        if verdict.failure.is_none() {
+            if let Some(image) = unstartable_container_image(engine, launch) {
+                verdict.failed_image = Some(image);
+                verdict.failure = Some(CANNOT_START_CONTAINER_NO_COMMAND_REASON.to_string());
+            }
+        }
+    }
     state.lock().record_image_pulls(&failures, now);
+}
+
+/// The image of the FIRST container of `launch` that has NO program to run at all — nothing
+/// named one for it and the image it runs declares none — and `None` when every container of
+/// the task has a program, or when nothing states what one of their images declares.
+///
+/// The images asked about are the ones whose container's launch named no program
+/// ([`TaskLaunch::images_naming_no_program`]); what is left is what the IMAGE declares, which
+/// the registry that holds it answers
+/// ([`::service_com_amazonaws_ecr_amazonec2containerregistry_v20150921::state::image_program`]):
+/// an image whose configuration states neither an entry point nor a command carries no program
+/// of its own. A registry this emulator does not hold the image of states nothing about it, so
+/// such a container is left exactly as it was — its program is the image's own, which this
+/// emulator starts no image to run and therefore reports no outcome for
+/// ([`super::container_shell::NO_DECLARED_PROGRAM_DETAIL`]).
+///
+/// Called with no guard of this service's store held: the answer is the registry's, taken
+/// under that store's lock alone.
+fn unstartable_container_image<Eng: Send + Sync + 'static>(
+    engine: &Eng,
+    launch: &TaskLaunch,
+) -> Option<String> {
+    use ::service_com_amazonaws_ecr_amazonec2containerregistry_v20150921::state::image_program::{
+        declared_image_program, ImageProgram,
+    };
+
+    launch
+        .images_naming_no_program
+        .iter()
+        .find(|image| {
+            let addressed = reference_into_this_registry(engine, image, &launch.task_arn);
+            declared_image_program(engine, &addressed) == ImageProgram::Undeclared
+        })
+        .cloned()
 }
 
 /// What the image fetch of ONE launched task answered: why its containers could not be
@@ -1214,6 +1287,48 @@ impl ComAmazonawsEcsAmazonec2containerservicev20141113State {
                 execution_role_arn: task.execution_role_arn.clone(),
                 secrets: self.launched_task_secrets(task),
                 log_targets: self.launched_task_log_targets(task),
+                images_naming_no_program: self.images_naming_no_program(task),
+            })
+            .collect()
+    }
+
+    /// The images of `task`'s containers that nothing NAMES a program for
+    /// ([`TaskLaunch::images_naming_no_program`]).
+    ///
+    /// Read through the one reading of a container's program this crate has
+    /// ([`super::container_runtime::container_program`]), so what counts as a container with
+    /// nothing named for it is exactly what the runs that module starts resolve to no program:
+    /// the container's own definition, the launch's `containerOverrides` entry for it, and the
+    /// halves its image declares in this emulator's catalogs.
+    ///
+    /// Empty for a task whose registered revision this store no longer holds: what its
+    /// containers were given to run is that revision's, and nothing else states it.
+    fn images_naming_no_program(&self, task: &TaskRecord) -> Vec<String> {
+        let Some(definition) = self.revision_of_arn(&task.task_definition_arn) else {
+            return Vec::new();
+        };
+        task.containers
+            .iter()
+            .filter_map(|container| {
+                let name = container.name.as_deref()?;
+                let image = container.image.clone()?;
+                let stored = definition
+                    .container_definitions
+                    .iter()
+                    .find(|candidate| candidate.name.as_deref() == Some(name))?;
+                let overridden = task
+                    .overrides
+                    .as_ref()
+                    .and_then(|overrides| overrides.container_overrides.as_ref())
+                    .and_then(|overrides| {
+                        overrides
+                            .iter()
+                            .find(|candidate| candidate.name.as_deref() == Some(name))
+                    })
+                    .and_then(|over| over.command.as_deref());
+                super::container_runtime::container_program(stored, overridden, Some(&image))
+                    .is_none()
+                    .then_some(image)
             })
             .collect()
     }

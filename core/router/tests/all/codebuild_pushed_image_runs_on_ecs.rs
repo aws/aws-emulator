@@ -368,7 +368,13 @@ const USES_THE_ARGUMENT: &str =
     "FROM scratch\nARG BODY\nENV SERVED_BODY=$BODY\nEXPOSE 80\nCMD [\"/serve\"]\n";
 
 /// One that declares no `ARG`, so the image it composes is the same whatever the build passes.
-const DECLARES_NO_ARGUMENT: &str = "FROM scratch\nENV SERVED_BODY=fixed\nEXPOSE 8080\n";
+/// It still declares the program its own image runs (`CMD`): a container runs the argument
+/// vector its definition or its image names, so an image declaring neither is one no container
+/// can be started out of — which is a rule of its own
+/// (`service_com_amazonaws_ecs_amazonec2containerservicev20141113::state::image_pull`) and not
+/// what this row is about.
+const DECLARES_NO_ARGUMENT: &str =
+    "FROM scratch\nENV SERVED_BODY=fixed\nEXPOSE 8080\nCMD [\"/sidecar\"]\n";
 
 const ROWS: [Row; 3] = [
     Row {

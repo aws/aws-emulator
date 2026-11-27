@@ -401,52 +401,15 @@ impl ComAmazonawsEcsAmazonec2containerservicev20141113State {
                             .iter()
                             .find(|candidate| candidate.name.as_deref() == Some(name))
                     });
-                // `ContainerOverride$command`: "The command to send to the container that
-                // overrides the default command from the Docker image or the task
-                // definition" — so an override replaces the vector rather than adding to
-                // it, and a launch that overrides none runs the revision's own.
-                let command = override_for
-                    .and_then(|over| over.command.as_deref())
-                    .or(stored.command.as_deref());
-                // A container whose revision overrides NEITHER the entry point nor the command
-                // runs the command its IMAGE declares — the "default command from the Docker
-                // image" that same member's own documentation names
-                // ([`super::container_servers::image_declared_command`]). An image this
-                // emulator holds none of leaves such a container no program at all, exactly as
-                // it did before. WHICH image that is comes off the container
+                // WHICH image this container runs comes off the container
                 // ([`ContainerRecord::running_image`]): a reference into a repository that
                 // caches an upstream image names that upstream image, so what the image
                 // declares is the upstream one's.
                 let running_image = container.running_image().map(str::to_string);
-                let declared = (stored.entry_point.is_none() && command.is_none())
-                    .then(|| {
-                        running_image
-                            .as_deref()
-                            .and_then(super::container_servers::image_declared_command)
-                    })
-                    .flatten();
-                // The other half of that default: a container whose revision overrides no
-                // ENTRY POINT is exec'd as the entry point its IMAGE declares, with the
-                // command above as that program's arguments
-                // ([`super::container_image_entry_points`]) — which is how a container of an
-                // image whose own program takes arguments (the AWS CLI's) declares a command
-                // naming no program at all. An image whose entry point this emulator knows
-                // none of adds nothing, so such a container's program is its own vector.
-                let declared_entry_point = stored
-                    .entry_point
-                    .is_none()
-                    .then(|| {
-                        running_image.as_deref().and_then(
-                            super::container_image_entry_points::image_declared_entry_point,
-                        )
-                    })
-                    .flatten();
-                let program = ContainerProgram::resolve(
-                    stored
-                        .entry_point
-                        .as_deref()
-                        .or(declared_entry_point.as_deref()),
-                    command.or(declared.as_deref()),
+                let program = container_program(
+                    stored,
+                    override_for.and_then(|over| over.command.as_deref()),
+                    running_image.as_deref(),
                 );
                 // The address the task's own interface holds, which is both where a server
                 // this container starts is reached and what the container's HOSTNAME is read
@@ -767,6 +730,52 @@ fn container_hostname(
         .map(str::trim)
         .filter(|hostname| !hostname.is_empty())
         .map(str::to_string)
+}
+
+/// The program ONE container is given to run: the argument vector its definition, the
+/// launch's `override_command` and the image `image` between them name — and `None` for a
+/// container nothing names a program for at all.
+///
+/// `ContainerOverride$command`: "The command to send to the container that overrides the
+/// default command from the Docker image or the task definition" — so an override replaces
+/// the vector rather than adding to it, and a launch that overrides none runs the revision's
+/// own.
+///
+/// A container whose revision overrides NEITHER the entry point nor the command runs the
+/// command its IMAGE declares — the "default command from the Docker image" that same
+/// member's own documentation names ([`super::container_servers::image_declared_command`]) —
+/// and one that overrides no ENTRY POINT is exec'd as the entry point its image declares,
+/// with the command as that program's arguments
+/// ([`super::container_image_entry_points::image_declared_entry_point`]), which is how a
+/// container of an image whose own program takes arguments (the AWS CLI's) declares a command
+/// naming no program at all. An image this emulator knows neither half of adds nothing, so
+/// such a container's program is the vector its definition states and nothing more.
+///
+/// The ONE reading of a container's program in this crate: the runs this module starts are
+/// resolved through it, and so is the question of whether a container has any program to run
+/// at all ([`super::image_pull`], where a container that has none is one Amazon ECS cannot
+/// create).
+pub(super) fn container_program(
+    stored: &ContainerDefinition,
+    override_command: Option<&[String]>,
+    image: Option<&str>,
+) -> Option<ContainerProgram> {
+    let command = override_command.or(stored.command.as_deref());
+    let declared = (stored.entry_point.is_none() && command.is_none())
+        .then(|| image.and_then(super::container_servers::image_declared_command))
+        .flatten();
+    let declared_entry_point = stored
+        .entry_point
+        .is_none()
+        .then(|| image.and_then(super::container_image_entry_points::image_declared_entry_point))
+        .flatten();
+    ContainerProgram::resolve(
+        stored
+            .entry_point
+            .as_deref()
+            .or(declared_entry_point.as_deref()),
+        command.or(declared.as_deref()),
+    )
 }
 
 /// The environment a `KeyValuePair` list describes, as the variables a session holds.
