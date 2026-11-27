@@ -305,6 +305,7 @@ members = [
     "services/service-com-amazonaws-partnercentralaccount-partnercentralaccount",
     "services/service-com-amazonaws-partnercentralbenefits-partnercentralbenefitsservice",
     "services/service-com-amazonaws-partnercentralchannel-partnercentralchannel",
+    "services/service-com-amazonaws-partnercentralmarketing-awspartnerdemandgenerator",
     "services/service-com-amazonaws-partnercentralrevenuemeasurement-partnercentralrevenuemeasurement",
     "services/service-com-amazonaws-partnercentralselling-awspartnercentralselling",
     "services/service-com-amazonaws-paymentcryptography-paymentcryptographycontrolplane",
@@ -782,6 +783,7 @@ service-com-amazonaws-outposts-outpostsolafservice = { path = "services/service-
 service-com-amazonaws-partnercentralaccount-partnercentralaccount = { path = "services/service-com-amazonaws-partnercentralaccount-partnercentralaccount" }
 service-com-amazonaws-partnercentralbenefits-partnercentralbenefitsservice = { path = "services/service-com-amazonaws-partnercentralbenefits-partnercentralbenefitsservice" }
 service-com-amazonaws-partnercentralchannel-partnercentralchannel = { path = "services/service-com-amazonaws-partnercentralchannel-partnercentralchannel" }
+service-com-amazonaws-partnercentralmarketing-awspartnerdemandgenerator = { path = "services/service-com-amazonaws-partnercentralmarketing-awspartnerdemandgenerator" }
 service-com-amazonaws-partnercentralrevenuemeasurement-partnercentralrevenuemeasurement = { path = "services/service-com-amazonaws-partnercentralrevenuemeasurement-partnercentralrevenuemeasurement" }
 service-com-amazonaws-partnercentralselling-awspartnercentralselling = { path = "services/service-com-amazonaws-partnercentralselling-awspartnercentralselling" }
 service-com-amazonaws-paymentcryptography-paymentcryptographycontrolplane = { path = "services/service-com-amazonaws-paymentcryptography-paymentcryptographycontrolplane" }

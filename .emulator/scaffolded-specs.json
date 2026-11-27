@@ -1221,6 +1221,10 @@
       "spec_url": "https://raw.githubusercontent.com/aws/api-models-aws/refs/heads/main/models/partnercentral-channel/service/2024-03-18/partnercentral-channel-2024-03-18.json"
     },
     {
+      "shape_id": "com.amazonaws.partnercentralmarketing#AWSPartnerDemandGenerator",
+      "spec_url": "https://raw.githubusercontent.com/aws/api-models-aws/c017e19db1da3c456cbf8f8cd3f6a4b9922c5bcf/models/partnercentral-marketing/service/2026-05-31/partnercentral-marketing-2026-05-31.json"
+    },
+    {
       "shape_id": "com.amazonaws.partnercentralrevenuemeasurement#PartnerCentralRevenueMeasurement",
       "spec_url": "https://raw.githubusercontent.com/aws/api-models-aws/refs/heads/main/models/partnercentral-revenue-measurement/service/2022-07-26/partnercentral-revenue-measurement-2022-07-26.json"
     },

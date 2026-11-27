@@ -316,6 +316,7 @@ service-com-amazonaws-outposts-outpostsolafservice = { workspace = true }
 service-com-amazonaws-partnercentralaccount-partnercentralaccount = { workspace = true }
 service-com-amazonaws-partnercentralbenefits-partnercentralbenefitsservice = { workspace = true }
 service-com-amazonaws-partnercentralchannel-partnercentralchannel = { workspace = true }
+service-com-amazonaws-partnercentralmarketing-awspartnerdemandgenerator = { workspace = true }
 service-com-amazonaws-partnercentralrevenuemeasurement-partnercentralrevenuemeasurement = { workspace = true }
 service-com-amazonaws-partnercentralselling-awspartnercentralselling = { workspace = true }
 service-com-amazonaws-paymentcryptography-paymentcryptographycontrolplane = { workspace = true }
