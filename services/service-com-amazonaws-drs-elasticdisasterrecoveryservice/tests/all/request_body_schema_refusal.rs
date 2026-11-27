@@ -51,8 +51,12 @@ use crate::replication_configuration_template_lifecycle::{call, create_body, drs
 
 /// The error code and the whole message a body-schema refusal carries, written out as the
 /// literals a client reads rather than taken from the implementation's constants.
-const BAD_REQUEST_CODE: &str = "BadRequestException";
-const INVALID_REQUEST_BODY: &str = "Invalid request body";
+///
+/// `pub(crate)`: this suite owns the rule service-wide, so a suite asserting the refusal of
+/// one operation's own request reads the same two literals rather than re-declaring them
+/// (`crate::recovery_plan_update_bounds_and_surfaces`).
+pub(crate) const BAD_REQUEST_CODE: &str = "BadRequestException";
+pub(crate) const INVALID_REQUEST_BODY: &str = "Invalid request body";
 
 /// `PaginationToken` is `length(min: 0, max: 2048)`.
 const PAGINATION_TOKEN_MAX: usize = 2048;

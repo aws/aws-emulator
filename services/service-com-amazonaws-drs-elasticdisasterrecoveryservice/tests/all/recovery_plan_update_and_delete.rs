@@ -9,8 +9,8 @@
 //! asserted is the wire behaviour (status, error code, JSON body), not a handler's
 //! Rust return value. The harness (`call_in`, `Answer`, the plan helpers) is the one
 //! `replication_configuration_template_lifecycle` and `recovery_plan_lifecycle` build;
-//! the engine is read directly only to COUNT stored plans, because the operation that
-//! would enumerate them (`ListRecoveryPlans`) is still a scaffold stub.
+//! the engine is read directly only to COUNT stored plans, which no operation of this
+//! service reports.
 //!
 //! The rules under test, each asserted over a TABLE of inputs rather than one recorded
 //! request:
@@ -47,7 +47,7 @@ const REGION: &str = "eu-west-1";
 const ACCOUNT: &str = engine::EMULATOR_ACCOUNT_ID;
 
 /// `POST /UpdateRecoveryPlan` with `changes` merged onto the plan's ARN.
-async fn update(
+pub(crate) async fn update(
     router: &MultiServiceRouter,
     region: &str,
     plan_arn: &str,

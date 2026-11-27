@@ -44,7 +44,7 @@ const REGION: &str = "eu-west-1";
 
 /// The members the model gives `RecoveryPlanSummary`, all five required
 /// (`smithy_query(query="shape", shape="RecoveryPlanSummary")`).
-const SUMMARY_MEMBERS: [&str; 5] = [
+pub(crate) const SUMMARY_MEMBERS: [&str; 5] = [
     "recoveryPlanArn",
     "name",
     "status",
@@ -98,7 +98,7 @@ async fn list(
 
 /// The `recoveryPlans` list of an answer — modelled required, so an answer without it
 /// is a failure rather than an empty page.
-fn plans_of(answer: &Answer) -> &Vec<Value> {
+pub(crate) fn plans_of(answer: &Answer) -> &Vec<Value> {
     answer
         .member("recoveryPlans")
         .and_then(Value::as_array)

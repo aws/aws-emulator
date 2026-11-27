@@ -88,7 +88,7 @@ pub(crate) fn text(answer: &Answer, name: &str) -> String {
 
 /// `length` characters of what the model's `RecoveryPlanName` pattern
 /// (`^[a-zA-Z0-9][a-zA-Z0-9 _-]*$`) allows in every position.
-fn name_of_length(length: usize) -> String {
+pub(crate) fn name_of_length(length: usize) -> String {
     "a".repeat(length)
 }
 
