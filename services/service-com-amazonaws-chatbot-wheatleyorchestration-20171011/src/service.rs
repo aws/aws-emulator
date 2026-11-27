@@ -55,8 +55,8 @@ pub mod wire;
 /// operations that act on a custom action run before they read or write the store.
 pub mod authorization;
 
-/// The resource-scoped authorization decision on the `Resource` an association operation
-/// addresses, taken ahead of the modelled constraints on that member.
+/// The resource-scoped authorization decision `DisassociateFromConfiguration` takes on the
+/// `Resource` it addresses, ahead of the modelled constraints on that member.
 pub mod resource_authorization;
 
 /// The error code AWS Chatbot answers a request whose input does not satisfy a modeled
@@ -91,10 +91,10 @@ pub struct EmulatedService<Eng: Send + Sync + 'static> {
     /// of [`wire`]. Built once here because [`Service::override_protocol`] hands back a
     /// borrow of it.
     protocol: wire::MessageAlwaysPresentRestJson,
-    /// The two association operations' resource-scoped authorization decision, taken ahead
+    /// `DisassociateFromConfiguration`'s resource-scoped authorization decision, taken ahead
     /// of the modelled constraints on the member it is about; see
     /// [`resource_authorization`].
-    resource_gates: [resource_authorization::ResourceAuthorizationGate<Eng>; 2],
+    resource_gate: resource_authorization::ResourceAuthorizationGate<Eng>,
 }
 
 impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
@@ -102,14 +102,11 @@ impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
     /// generated [`ServiceDefinition`], which constructs each operation from it; the
     /// operation's behaviour lives in that operation's own `impl Operation`.
     pub fn new(engine: Arc<Eng>) -> Self {
-        use resource_authorization::{Association, ResourceAuthorizationGate};
+        use resource_authorization::ResourceAuthorizationGate;
         Self {
             entry: crate::ServiceDefinition::new(Arc::clone(&engine)),
             protocol: wire::MessageAlwaysPresentRestJson::new(),
-            resource_gates: [
-                ResourceAuthorizationGate::new(Arc::clone(&engine), Association::ToConfiguration),
-                ResourceAuthorizationGate::new(engine, Association::FromConfiguration),
-            ],
+            resource_gate: ResourceAuthorizationGate::new(engine),
         }
     }
 }
@@ -141,16 +138,15 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
         // it. `req` is the whole request, so a decision that depends on the body —
         // the `Action` form field on a query protocol, say — is reachable here.
         //
-        // Two cases need it: the association operations, whose resource-scoped
-        // authorization decision is taken ahead of the modelled constraints on the member
+        // ONE case needs it: `DisassociateFromConfiguration`, whose resource-scoped
+        // authorization decision is recorded ahead of the modelled constraints on the member
         // it is about — see [`resource_authorization`] for why that cannot be done from
-        // inside `handle`. The operation names come from the model, not from literals, and
-        // a request naming any other operation is left to the generated routing table.
+        // inside `handle`, and why the LINK is not gated the same way. The operation name
+        // comes from the model, not from a literal, and a request naming any other operation
+        // is left to the generated routing table.
         let routing_key = self.definition().protocol().routing_key(req).ok()?;
-        self.resource_gates
-            .iter()
-            .find(|gate| gate.operation_name() == routing_key)
-            .map(|gate| gate as &dyn ErasedOperation)
+        (self.resource_gate.operation_name() == routing_key)
+            .then_some(&self.resource_gate as &dyn ErasedOperation)
     }
 
     fn override_refusal(&self, refusal: &Refusal) -> Option<Refused> {

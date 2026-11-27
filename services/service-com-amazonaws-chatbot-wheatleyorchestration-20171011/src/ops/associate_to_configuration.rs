@@ -8,18 +8,21 @@
 //!
 //! ## The order the checks run in
 //!
-//! 1. **The resource-scoped authorization check on `Resource`**, taken at the
-//!    [`crate::service::resource_authorization`] seam BEFORE the request is deserialized and
-//!    its modelled constraints are judged: a value no custom action of this account can be
-//!    minted under names no target in the account's namespace — whether or not it also
-//!    satisfies the member's `@length`/`@pattern` — so the request fails closed with the
-//!    modelled `UnauthorizedException` (403, [`crate::state::UNAUTHORIZED_MESSAGE`]). The
-//!    handler takes the same decision again below, so it holds for a caller that drives
-//!    `handle` directly.
-//! 2. **The modelled input constraints**, at the centralized boundary before this handler
-//!    runs: a `ChatConfiguration` outside its `@length`/`@pattern`, or a `Resource` the
-//!    account's namespace admits whose action name is outside the member's pattern, is
-//!    malformed client input, refused 400 `InvalidRequestException` (`crate::service`).
+//! 1. **The modelled input constraints**, at the centralized boundary before this handler
+//!    runs: a `Resource` outside `ResourceIdentifier`'s `@length`/`@pattern` — an ARN of
+//!    another resource type, of another service or partition, a string that is no ARN at
+//!    all, an action name outside the pattern's charset or length — is malformed client
+//!    input, and so is a `ChatConfiguration` outside its own `@length`/`@pattern`: both are
+//!    refused 400 `InvalidRequestException` with this service's fixed boundary sentence
+//!    (`crate::service`). This operation takes NO pre-dispatch authorization gate, unlike
+//!    `DisassociateFromConfiguration` (see [`crate::service::resource_authorization`] for
+//!    the recorded refusals the two orders come from).
+//! 2. **The resource-scoped authorization check on `Resource`**, below, on an ARN the
+//!    boundary already found well formed: a value satisfying the member's pattern that no
+//!    custom action of this account can be minted under (a region segment filled in where
+//!    an account-scoped action carries none, another account's id) names no target in the
+//!    account's namespace, so the request fails closed with the modelled
+//!    `UnauthorizedException` (403, [`crate::state::UNAUTHORIZED_MESSAGE`]).
 //! 3. **IAM**, for the principal the request's credentials speak for
 //!    ([`crate::service::authorization`]): a principal no identity-based policy allows
 //!    `chatbot:AssociateToConfiguration` on the custom action for is refused
@@ -168,8 +171,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         crate::service::authorization::authorize(&*self.engine, ctx, Self::NAME, &input.resource)?;
 
         // The resource-scoped authorization decision, on an ARN the boundary already found
-        // well formed: an ARN outside the form this account's custom actions are minted
-        // under names no target in its namespace, so the request fails closed.
+        // well formed: an ARN the member's pattern admits that this account's custom actions
+        // are not minted under names no target in its namespace, so the request fails
+        // closed.
         if !crate::state::is_mintable_custom_action_arn(&input.resource) {
             return Err(AssociateToConfigurationErrorModeled::UnauthorizedException(
                 UnauthorizedException {

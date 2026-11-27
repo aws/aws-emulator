@@ -14,7 +14,9 @@
 //!    satisfies the member's `@length`/`@pattern` — so the request fails closed with the
 //!    modelled `UnauthorizedException` (403, [`crate::state::UNAUTHORIZED_MESSAGE`]). The
 //!    handler takes the same decision again below, so it holds for a caller that drives
-//!    `handle` directly.
+//!    `handle` directly. This pre-dispatch order is THIS operation's, read off its own
+//!    recorded refusal; `AssociateToConfiguration` keeps the centralized boundary first
+//!    (see [`crate::service::resource_authorization`]).
 //! 2. **The modelled input constraints**, at the centralized boundary before this handler
 //!    runs: a `ChatConfiguration` outside its `@length`/`@pattern`, or a `Resource` the
 //!    account's namespace admits whose action name is outside the member's pattern, is

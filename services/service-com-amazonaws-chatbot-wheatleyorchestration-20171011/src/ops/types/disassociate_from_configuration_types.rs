@@ -11,12 +11,12 @@ use super::*;
 
 smithy_macros::smithy_model!("smithy-model/com-amazonaws-chatbot-wheatleyorchestration-20171011.json");
 
-// The same member, the same constraints and the same split as
-// `AssociateToConfigurationRequest`: the modelled `@length`/`@pattern` on `Resource` is
-// enforced at the centralized boundary, so a value outside it is the client-input class
-// (400 `InvalidRequestException`, `crate::service`), while the handler's resource-scoped
-// authorization decision (`crate::state::is_mintable_custom_action_arn`) judges only ARNs
-// that satisfy the pattern.
+// The same member and the same constraints as `AssociateToConfigurationRequest`, with a
+// different ORDER: this operation's resource-scoped authorization decision is taken at the
+// `crate::service::resource_authorization` seam BEFORE the request is validated, so a
+// `Resource` outside this account's namespace is refused 403 there, and the modelled
+// `@length`/`@pattern` judged here decides only the values that namespace admits (an action
+// name outside the pattern) — 400 `InvalidRequestException` (`crate::service`).
 #[smithy_macros::smithy(shape = "com.amazonaws.chatbot#DisassociateFromConfigurationRequest")]
 #[derive(Debug, Clone, Default)]
 pub struct DisassociateFromConfigurationInput {

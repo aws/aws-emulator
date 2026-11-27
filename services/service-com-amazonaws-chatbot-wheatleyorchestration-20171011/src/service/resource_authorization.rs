@@ -1,31 +1,38 @@
 // SPDX-License-Identifier: CC0-1.0
 
-//! The RESOURCE-SCOPED authorization decision on the `Resource` an association operation
-//! addresses, taken BEFORE the modelled constraints on that member are judged.
+//! The RESOURCE-SCOPED authorization decision `DisassociateFromConfiguration` takes on the
+//! `Resource` it addresses BEFORE the modelled constraints on that member are judged.
 //!
-//! `AssociateToConfiguration` and `DisassociateFromConfiguration` are the two operations
-//! whose input names a resource to LINK to a channel configuration (`Resource`, target
-//! `ResourceIdentifier`, `@pattern` of a `custom-action/` ARN). AWS Chatbot decides whether
-//! the caller's credentials are valid for that target FIRST: a value outside the namespace
-//! this account's custom actions live in — including one that is not an ARN at all, which
-//! the member's pattern would also reject — is refused with the modelled
-//! `UnauthorizedException` (403, [`crate::state::UNAUTHORIZED_MESSAGE`]) rather than as a
-//! request-constraint violation, because the request fails closed on a target the account's
-//! namespace does not contain and nothing about the input is reported for it.
+//! Both association operations name a resource to link to a channel configuration
+//! (`Resource`, target `ResourceIdentifier`, `@pattern` of a `custom-action/` ARN), and both
+//! model `InvalidRequestException` (400) for malformed client input and
+//! `UnauthorizedException` (403) for credentials that are not valid for the target — but AWS
+//! Chatbot does NOT order the two checks the same way on the two operations, and the
+//! recorded refusals are what decides the order:
 //!
-//! The question asked here is exactly that NAMESPACE question
-//! ([`crate::state::is_mintable_custom_action_arn`]: this partition, this service, the empty
-//! region a custom action is account-scoped under, this account's id, a `custom-action/`
-//! resource). What the ARN says about the action's own NAME is a property of the name rather
-//! than of the namespace, so a value the namespace admits keeps the member's modelled
-//! constraints and the refusal they earn.
+//! * the UNLINK is recorded answering a `Resource` that is not an ARN at all — a value the
+//!   member's `@length`/`@pattern` would also reject — with 403 `UnauthorizedException` and
+//!   the fixed sentence [`crate::state::UNAUTHORIZED_MESSAGE`], so its resource-scoped
+//!   authorization decision is taken first and shadows the member's constraints;
+//! * the LINK is recorded answering a `Resource` outside that same `@pattern` with 400
+//!   `InvalidRequestException` and this service's fixed boundary sentence, so it keeps the
+//!   centralized constraint boundary every other operation of this service is judged at and
+//!   needs no gate — its handler takes the resource-scoped decision afterwards, on an ARN
+//!   the boundary already found well formed.
+//!
+//! This seam therefore stands in front of the UNLINK alone. The question it asks is the
+//! NAMESPACE question ([`crate::state::is_mintable_custom_action_arn`]: this partition, this
+//! service, the empty region a custom action is account-scoped under, this account's id, a
+//! `custom-action/` resource). What the ARN says about the action's own NAME is a property of
+//! the name rather than of the namespace, so a value the namespace admits keeps the member's
+//! modelled constraints and the refusal they earn.
 //!
 //! The framework judges every modelled constraint BEFORE a handler runs and answers a
 //! violation in this service's input-constraint wording (400 `InvalidRequestException`,
 //! `crate::service`), so a decision taken inside `handle` cannot come first — `handle` runs
 //! after the validator, and the status a pre-dispatch refusal is served on is the
 //! protocol's. That is why this is a seam: the gate below answers the authorization
-//! question from the SAME reading the two handlers use
+//! question from the SAME reading the handler uses
 //! ([`crate::state::is_mintable_custom_action_arn`]) and renders the modelled error with the
 //! status the model gives it, then hands every request it does not refuse to the generated
 //! deserialize -> validate -> handle walk unchanged — so a malformed `ChatConfiguration`, an
@@ -35,100 +42,63 @@ use std::sync::Arc;
 
 use smithy_server_runtime::{BoxFuture, ErasedOperation, Operation, OperationError, Service};
 
-use crate::ops::associate_to_configuration::{
-    AssociateToConfigurationError as AssociateError,
-    AssociateToConfigurationErrorModeled as AssociateModeled,
-};
 use crate::ops::disassociate_from_configuration::{
     DisassociateFromConfigurationError as DisassociateError,
     DisassociateFromConfigurationErrorModeled as DisassociateModeled,
 };
 use crate::ops::types::UnauthorizedException;
 
-/// The member an association operation names the resource to link in: `Resource`
-/// (`smithy_query(query="operation",operation="AssociateToConfiguration,
-/// DisassociateFromConfiguration")`), a top-level member of both inputs, which this
-/// service's `restJson1` wire carries under that name in the request document.
+/// The member the unlink names the resource to unlink in: `Resource`
+/// (`smithy_query(query="operation",operation="DisassociateFromConfiguration")`), a
+/// top-level member of the input, which this service's `restJson1` wire carries under that
+/// name in the request document.
 const RESOURCE_MEMBER: &str = "Resource";
 
-/// Which of the two association operations a gate stands in front of.
-///
-/// They take the identical input and reach the identical decision, differing only in the
-/// error channel the refusal travels through, so one gate type serves both.
-#[derive(Debug, Clone, Copy)]
-pub enum Association {
-    /// `AssociateToConfiguration`, which LINKS the resource.
-    ToConfiguration,
-    /// `DisassociateFromConfiguration`, which unlinks it.
-    FromConfiguration,
-}
-
-/// Serves one association operation with its resource-scoped authorization decision taken
-/// BEFORE the modelled input constraints, then hands an authorized request to the generated
-/// walk unchanged.
+/// Serves `DisassociateFromConfiguration` with its resource-scoped authorization decision
+/// taken BEFORE the modelled input constraints, then hands an authorized request to the
+/// generated walk unchanged.
 ///
 /// It is a pure READ — of the request's own `Resource` and of the ARN form this account
 /// mints custom actions under — so it writes nothing and cannot change what a later caller
 /// sees, and two identical requests get the identical answer.
 ///
 /// Generic over the engine type for the same reason the rest of this crate is: the
-/// operations it stands in front of are, so naming a concrete engine here would let this
+/// operation it stands in front of is, so naming a concrete engine here would let this
 /// seam drift from the service the router mounts.
 pub struct ResourceAuthorizationGate<Eng> {
     /// The shared engine, so the generated walk this gate delegates to — and the handler
     /// behind it — reads THIS service's store rather than a private one.
     engine: Arc<Eng>,
-    /// Which operation this gate serves.
-    association: Association,
 }
 
 impl<Eng: Send + Sync + 'static> ResourceAuthorizationGate<Eng> {
-    /// Build the gate for `association` from the shared engine.
-    pub fn new(engine: Arc<Eng>, association: Association) -> Self {
-        Self {
-            engine,
-            association,
-        }
+    /// Build the gate from the shared engine.
+    pub fn new(engine: Arc<Eng>) -> Self {
+        Self { engine }
     }
 
     /// The routing key the model names this gate's operation by, read off the operation
     /// itself rather than spelled out here.
     pub fn operation_name(&self) -> &'static str {
-        match self.association {
-            Association::ToConfiguration => {
-                <crate::ops::associate_to_configuration::AssociateToConfiguration<Eng> as Operation>::NAME
-            }
-            Association::FromConfiguration => {
-                <crate::ops::disassociate_from_configuration::DisassociateFromConfiguration<Eng> as Operation>::NAME
-            }
-        }
+        <crate::ops::disassociate_from_configuration::DisassociateFromConfiguration<Eng> as Operation>::NAME
     }
 
     /// The resource-scoped refusal this operation states, in its own error channel: the
     /// modelled `UnauthorizedException` with the one fixed sentence this service words an
     /// authorization failure with.
     fn unauthorized(&self) -> Box<dyn OperationError> {
-        let exception = UnauthorizedException {
-            message: Some(crate::state::UNAUTHORIZED_MESSAGE.to_string()),
-        };
-        match self.association {
-            Association::ToConfiguration => Box::new(AssociateError::Modeled(
-                AssociateModeled::UnauthorizedException(exception),
-            )),
-            Association::FromConfiguration => Box::new(DisassociateError::Modeled(
-                DisassociateModeled::UnauthorizedException(exception),
-            )),
-        }
+        Box::new(DisassociateError::Modeled(
+            DisassociateModeled::UnauthorizedException(UnauthorizedException {
+                message: Some(crate::state::UNAUTHORIZED_MESSAGE.to_string()),
+            }),
+        ))
     }
 
     /// IAM's own refusal, in this operation's error channel: the decision belongs to the
     /// layer in front of the service, which is why it travels through the same channel the
-    /// handlers lift it into rather than through a modelled variant.
+    /// handler lifts it into rather than through a modelled variant.
     fn access_denied(&self, denied: crate::scaffolded::AccessDeniedException) -> Box<dyn OperationError> {
-        match self.association {
-            Association::ToConfiguration => Box::new(AssociateError::AccessDenied(denied)),
-            Association::FromConfiguration => Box::new(DisassociateError::AccessDenied(denied)),
-        }
+        Box::new(DisassociateError::AccessDenied(denied))
     }
 }
 
@@ -159,7 +129,7 @@ impl<Eng: Send + Sync + 'static> ErasedOperation for ResourceAuthorizationGate<E
             let refusal = named_resource(req)
                 .filter(|resource| !crate::state::is_mintable_custom_action_arn(resource))
                 .map(|resource| {
-                    // IAM is asked first, exactly as the handlers ask it, so a principal
+                    // IAM is asked first, exactly as the handler asks it, so a principal
                     // the account's policies do not allow this action for is told that
                     // rather than told about the target.
                     match crate::service::authorization::authorize(
