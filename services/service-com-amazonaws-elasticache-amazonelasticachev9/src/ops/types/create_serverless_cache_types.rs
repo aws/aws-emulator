@@ -29,6 +29,13 @@ pub struct CreateServerlessCacheInput {
     pub daily_snapshot_time: Option<String>,
     pub network_type: Option<String>,
     pub connection_type: Option<String>,
+    pub integrations: Option<Vec<IntegrationRequest>>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.elasticache#IntegrationRequest")]
+#[derive(Debug, Clone, Default)]
+pub struct IntegrationRequest {
+    pub integration_type: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.elasticache#CreateServerlessCacheResponse")]

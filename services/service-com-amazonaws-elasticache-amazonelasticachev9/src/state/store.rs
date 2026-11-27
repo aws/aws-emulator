@@ -153,6 +153,13 @@ impl ComAmazonawsElasticacheAmazonelasticachev9State {
             // A created cache is under no migration: `PrepareMigration` and
             // `StartMigration` are what open one on it.
             migration: None,
+            // The integrations the create asked to enable, each being brought up
+            // alongside the cache ([`IntegrationRecord::enabling`]).
+            integrations: new
+                .integrations
+                .into_iter()
+                .map(|integration_type| IntegrationRecord::enabling(integration_type, new.now))
+                .collect(),
         };
         // The handler refuses a name the store already holds, under the same
         // lock this insert takes, so the slot is always vacant here. The

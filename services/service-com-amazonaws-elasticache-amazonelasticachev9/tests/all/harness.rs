@@ -116,6 +116,14 @@ pub fn every_pending_change_due_in(emulator: &Emulator, due_in: Duration) {
             if cache.pending_deletion.is_some() {
                 cache.pending_deletion = Some(due);
             }
+            // An integration configured on the cache carries a due instant of
+            // its own — when the service has ENABLED it — so a suite about what
+            // a cache answers before then holds that instant too.
+            for integration in &mut cache.integrations {
+                if let Some(pending) = integration.pending_status.as_mut() {
+                    pending.due = due;
+                }
+            }
         }
         for snapshot in store.serverless_cache_snapshots.values_mut() {
             if let Some(pending) = snapshot.pending_status.as_mut() {

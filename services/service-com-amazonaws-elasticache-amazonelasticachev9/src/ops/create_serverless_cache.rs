@@ -65,6 +65,10 @@
 //!   maximum length is 255 characters.
 //! * `Engine` (String) **required** — The name of the cache engine to be used for creating
 //!   the serverless cache.
+//! * `Integrations` (IntegrationRequestList) — Which serverless cache integrations to enable.
+//!   Valid values are: dynamodb – DynamoDB integration. DynamoDB integration requires the
+//!   Valkey engine with a major engine version of 9 or above. If not specified, no
+//!   integrations are enabled.
 //! * `KmsKeyId` (String) — ARN of the customer managed key for encrypting the data at rest.
 //!   If no KMS key is provided, a default service key is used.
 //! * `MajorEngineVersion` (String) — The version of the cache engine that will be used to
@@ -333,6 +337,38 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let network_type = input
             .network_type
             .unwrap_or_else(|| crate::state::DEFAULT_NETWORK_TYPE.to_string());
+
+        // "Which serverless cache integrations to enable. … DynamoDB integration
+        // requires the Valkey engine with a major engine version of 9 or above.
+        // If not specified, no integrations are enabled."
+        //
+        // An entry that names no `IntegrationType` asks for no integration at
+        // all, and an integration on an `Engine` / `MajorEngineVersion` pair that
+        // cannot carry one is the incompatible combination — the same capability
+        // rule a `ModifyServerlessCache` reads against the pair the cache ends up
+        // on, so one implementation decides it
+        // (`crate::state::integration_engine_refusal`). Both are refused before
+        // anything is stored, so a 200 never claims an integration the cache
+        // could not carry. The TYPE is the integration's identity on the cache,
+        // so a list naming one twice enables the one integration of that type.
+        let mut integrations: Vec<String> = Vec::new();
+        for requested in input.integrations.unwrap_or_default() {
+            let Some(integration_type) = requested.integration_type else {
+                return Err(invalid_value(
+                    crate::state::INTEGRATION_TYPE_REQUIRED_MESSAGE,
+                ));
+            };
+            if let Some(message) = crate::state::integration_engine_refusal(
+                &integration_type,
+                &engine,
+                &major_engine_version,
+            ) {
+                return Err(invalid_combination(message));
+            }
+            if !integrations.contains(&integration_type) {
+                integrations.push(integration_type);
+            }
+        }
 
         // The subnets "where the VPC endpoint for the serverless cache will be
         // deployed" have to be subnet ids; `SubnetIdentifier` carries no
@@ -635,6 +671,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             network_type,
             connection_type,
             tags,
+            integrations,
             now,
         };
 

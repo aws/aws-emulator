@@ -184,6 +184,7 @@ use crate::ops::types::{
     DestinationDetails, ECPUPerSecond, Endpoint, Event, MigrationSummary,
     GlobalNodeGroup, GlobalReplicationGroup, GlobalReplicationGroupInfo,
     GlobalReplicationGroupMember, LogDeliveryConfiguration, LogDeliveryConfigurationRequest,
+    Integration,
     NodeGroup, NodeGroupConfiguration, NodeGroupMember, NodeGroupMemberUpdateStatus,
     NodeGroupUpdateStatus, NodeSnapshot, NotificationConfiguration, Parameter,
     PendingLogDeliveryConfiguration, PendingModifiedValues, ProcessedUpdateAction, RecurringCharge,
@@ -2521,6 +2522,10 @@ pub struct NewServerlessCache {
     pub connection_type: String,
     pub port: i32,
     pub tags: Vec<(String, String)>,
+    /// The `IntegrationType`s the create asked to enable, already validated and
+    /// with one entry per type; each becomes an [`IntegrationRecord`] being
+    /// brought up. Empty for a request that named none.
+    pub integrations: Vec<String>,
     pub now: SystemTime,
 }
 

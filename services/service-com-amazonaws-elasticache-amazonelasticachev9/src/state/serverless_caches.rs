@@ -194,6 +194,65 @@ pub const PUBLIC_CONNECTION_ENGINE: &str = "valkey";
 /// See [`PUBLIC_CONNECTION_ENGINE`].
 pub const PUBLIC_CONNECTION_MIN_MAJOR: u32 = 9;
 
+/// The one `IntegrationType` this API offers (`smithy_query(query="shape",
+/// shape="IntegrationType")`: `dynamodb`) — "ElastiCache supports DynamoDB
+/// integration" (`Integration`). A value outside the enum never reaches a
+/// handler: the framework refuses it while the request is validated, the same
+/// way it refuses a `ConnectionType` or a `NetworkType` outside theirs.
+pub const INTEGRATION_TYPE_DYNAMODB: &str = "dynamodb";
+
+/// `IntegrationStatus`'s values this slice writes and reads (the enum's are
+/// `enabled | disabled | enabling | disabling | failed`, from
+/// `smithy_query(query="shape", shape="IntegrationStatus")`): an integration the
+/// create asked for is brought up while the cache itself is still being created,
+/// and reports `enabled` — "the integration is enabled" — once the clock has
+/// carried that through.
+pub const INTEGRATION_STATUS_ENABLING: &str = "enabling";
+/// See [`INTEGRATION_STATUS_ENABLING`].
+pub const INTEGRATION_STATUS_ENABLED: &str = "enabled";
+
+/// The engine, and the lowest major version of it, an integration needs:
+/// "DynamoDB integration requires the Valkey engine with a major engine version
+/// of 9 or above" (`CreateServerlessCache$Integrations`).
+pub const INTEGRATION_ENGINE: &str = "valkey";
+/// See [`INTEGRATION_ENGINE`].
+pub const INTEGRATION_MIN_MAJOR: u32 = 9;
+
+/// What a request asking for an integration without saying which is refused
+/// with: `IntegrationRequest$IntegrationType` is "the integration type to
+/// enable", so an entry naming none asks for no integration at all, which is a
+/// value that member cannot take.
+pub const INTEGRATION_TYPE_REQUIRED_MESSAGE: &str =
+    "Invalid value for Integrations: an integration must name the IntegrationType to enable.";
+
+/// How a request is refused when the cache would run an `Engine` /
+/// `MajorEngineVersion` pair that cannot carry `integration_type`, or `None`
+/// when the pair can carry it.
+///
+/// "DynamoDB integration requires the Valkey engine with a major engine version
+/// of 9 or above" (`CreateServerlessCache$Integrations`), so the requirement is
+/// the engine and version the cache ends up on rather than anything about the
+/// request that asked for it — which is why one statement serves the create that
+/// enables an integration and the modify that moves a cache carrying one onto
+/// another engine. Worded the way this service words the other capability a pair
+/// either has or does not (a `public` `ConnectionType`, see
+/// [`PUBLIC_CONNECTION_ENGINE`]): the requirement, then the pair this request
+/// would leave the cache on.
+pub fn integration_engine_refusal(
+    integration_type: &str,
+    engine: &str,
+    major_engine_version: &str,
+) -> Option<String> {
+    let major = major_version_number(major_engine_version).unwrap_or(0);
+    if engine == INTEGRATION_ENGINE && major >= INTEGRATION_MIN_MAJOR {
+        return None;
+    }
+    Some(format!(
+        "Integration {integration_type} requires {INTEGRATION_ENGINE} {INTEGRATION_MIN_MAJOR} or \
+         above, not {engine} {major_engine_version}."
+    ))
+}
+
 /// The `NetworkType` a serverless cache is created with when the request names
 /// none: "If not specified, defaults to ipv4, unless all provided subnets are
 /// IPv6-only, in which case it defaults to ipv6"
@@ -633,6 +692,71 @@ pub struct ServerlessCacheRecord {
     /// `ServerlessCache$Migration` reports and every migration operation reads;
     /// see [`MigrationRecord`]. `None` until a migration is opened on it.
     pub migration: Option<MigrationRecord>,
+    /// The integrations configured on this cache, which is the one copy
+    /// `ServerlessCache$Integrations` ("configured integrations and their
+    /// status") reports; see [`IntegrationRecord`]. Empty for a cache created
+    /// without any: "if not specified, no integrations are enabled"
+    /// (`CreateServerlessCache$Integrations`).
+    pub integrations: Vec<IntegrationRecord>,
+}
+
+/// One integration configured on a serverless cache, as this emulator persists
+/// it: "an integration configured on the serverless cache, and its current
+/// status" (`Integration`).
+#[derive(Debug, Clone)]
+pub struct IntegrationRecord {
+    /// The `IntegrationType` this integration is of
+    /// ([`INTEGRATION_TYPE_DYNAMODB`]). It is the integration's identity on the
+    /// cache — one status per type — so a request naming a type twice configures
+    /// the ONE integration of that type.
+    pub integration_type: String,
+    /// One of `IntegrationStatus`'s values; see
+    /// [`INTEGRATION_STATUS_ENABLING`].
+    pub status: String,
+    /// The status change the clock owes this integration, if any.
+    pub pending_status: Option<PendingTransition>,
+}
+
+impl IntegrationRecord {
+    /// The integration a `CreateServerlessCache` asked to enable.
+    ///
+    /// Enabling one is work ElastiCache carries out after the call answers, so
+    /// the call that asked for it answers [`INTEGRATION_STATUS_ENABLING`] and the
+    /// clock owes it [`INTEGRATION_STATUS_ENABLED`] once
+    /// [`SERVERLESS_CACHE_TRANSITION`] — the span the cache's own creation takes
+    /// — has passed.
+    pub fn enabling(integration_type: String, now: SystemTime) -> Self {
+        Self {
+            integration_type,
+            status: INTEGRATION_STATUS_ENABLING.to_string(),
+            pending_status: Some(PendingTransition {
+                due: now + SERVERLESS_CACHE_TRANSITION,
+                status: INTEGRATION_STATUS_ENABLED.to_string(),
+            }),
+        }
+    }
+
+    /// Materialise the status change the clock owes this integration, if `now`
+    /// is past its due instant; see [`ServerlessCacheRecord::settle`], which
+    /// drives it.
+    pub fn settle(&mut self, now: SystemTime) {
+        let Some(pending) = self.pending_status.as_ref() else {
+            return;
+        };
+        if now < pending.due {
+            return;
+        }
+        self.status = pending.status.clone();
+        self.pending_status = None;
+    }
+
+    /// This record as the modelled `Integration`.
+    pub fn to_modeled(&self) -> Integration {
+        Integration {
+            integration_type: Some(self.integration_type.clone()),
+            status: Some(self.status.clone()),
+        }
+    }
 }
 
 impl ServerlessCacheRecord {
@@ -654,6 +778,15 @@ impl ServerlessCacheRecord {
     /// its due instant, and hand back the change it made; see
     /// [`CacheClusterRecord::settle`].
     pub fn settle(&mut self, now: SystemTime) -> Option<SettledTransition> {
+        // An integration's own clock-owed change: the `enabled` ElastiCache owes
+        // one it was asked to enable ([`IntegrationRecord::enabling`]). It is not
+        // the cache's status, so it falls due whether or not the cache itself is
+        // owed a transition — and it records no event, because an integration is
+        // not one of the sources this service reports events under (`SourceType`
+        // has no member for one).
+        for integration in &mut self.integrations {
+            integration.settle(now);
+        }
         let pending = self.pending_status.as_ref()?;
         if now < pending.due {
             return None;
@@ -737,6 +870,16 @@ impl ServerlessCacheRecord {
                     address: Some(self.endpoint_address.clone()),
                     port: Some(self.endpoint_port),
                 })
+            }),
+            // "Configured integrations and their status": the integrations this
+            // cache carries, each with the status it has reached. A cache
+            // carrying none reports no list at all, the way it reports no
+            // migration — "if not specified, no integrations are enabled".
+            integrations: (!self.integrations.is_empty()).then(|| {
+                self.integrations
+                    .iter()
+                    .map(IntegrationRecord::to_modeled)
+                    .collect()
             }),
         }
     }

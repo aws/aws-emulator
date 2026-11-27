@@ -366,6 +366,7 @@ pub struct ServerlessCache {
     pub network_type: Option<String>,
     pub connection_type: Option<String>,
     pub migration: Option<MigrationSummary>,
+    pub integrations: Option<Vec<Integration>>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.elasticache#CacheUsageLimits")]
@@ -396,6 +397,13 @@ pub struct MigrationSummary {
     pub status: Option<String>,
     pub migration_endpoint: Option<Endpoint>,
     pub cutover_mode: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.elasticache#Integration")]
+#[derive(Debug, Clone, Default)]
+pub struct Integration {
+    pub integration_type: Option<String>,
+    pub status: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.elasticache#InvalidCacheClusterStateFault")]
@@ -1045,6 +1053,14 @@ pub const EFFECTIVE_DURABILITY_VALUES: &[&str] = &["async", "disabled", "sync"];
 
 /// The values `InputAuthenticationType` accepts on the wire.
 pub const INPUT_AUTHENTICATION_TYPE_VALUES: &[&str] = &["iam", "no-password-required", "password"];
+
+
+/// The values `IntegrationStatus` accepts on the wire.
+pub const INTEGRATION_STATUS_VALUES: &[&str] = &["disabled", "disabling", "enabled", "enabling", "failed"];
+
+
+/// The values `IntegrationType` accepts on the wire.
+pub const INTEGRATION_TYPE_VALUES: &[&str] = &["dynamodb"];
 
 
 /// The values `IpDiscovery` accepts on the wire.

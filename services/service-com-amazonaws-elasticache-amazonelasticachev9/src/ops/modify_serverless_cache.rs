@@ -246,6 +246,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let stored_major_engine_version = cache.major_engine_version.clone();
         let stored_limits = cache.cache_usage_limits.clone();
         let stored_user_group = cache.user_group_id.clone();
+        // The integrations the cache carries, which the engine it ends up on has
+        // to be able to carry too (checked below, once that pair is resolved).
+        let stored_integrations: Vec<String> = cache
+            .integrations
+            .iter()
+            .map(|integration| integration.integration_type.clone())
+            .collect();
 
         // "Modifies the engine listed in a serverless cache request. The options
         // are valkey, memcached or redis" — the same capability rule the create
@@ -359,6 +366,20 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             return Err(invalid_combination(
                 crate::state::USER_GROUP_ENGINE_UNSUPPORTED,
             ));
+        }
+        // An integration "requires the Valkey engine with a major engine version
+        // of 9 or above", read against the engine and version the cache ends up
+        // running: moving a cache that carries one onto a pair that cannot carry
+        // it is the incompatible combination too, the same way the user group
+        // above is read against that pair.
+        for integration_type in &stored_integrations {
+            if let Some(message) = crate::state::integration_engine_refusal(
+                integration_type,
+                &engine,
+                &major_engine_version,
+            ) {
+                return Err(invalid_combination(message));
+            }
         }
 
         // A cache has to be provisioned before it can be reconfigured: one still
