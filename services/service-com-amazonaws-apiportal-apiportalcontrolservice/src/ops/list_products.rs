@@ -1,15 +1,13 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op ListProducts
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `ListProducts`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
+//! IMPLEMENTED: reports a `ProductSummary` for every product this service's store
+//! holds, one bounded page at a time. `@readonly` — the only write it makes is
+//! materialising a rule evaluation the clock had already made due.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`ListProducts::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! The store keys products by `productId`, so one deterministic order serves every
+//! caller and a `nextToken` naming the product a page stopped on resumes at exactly the
+//! next one — even after that product has been deleted.
 //!
 //! ## Shape of an operation
 //!
@@ -92,12 +90,21 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-apiportal-apiportalcont
 // here — hence the `ListProductsError` alias below. An operation that models no errors
 // generates an UNINHABITED enum here, which is correct and expected: there is nothing
 // to construct until the model says otherwise.
-#[smithy_macros::operation_error("com.amazonaws.apiportal#ListProducts")]
+//
+// One shape this SERVICE models that this OPERATION does not list is widened in:
+//
+// * `InternalServerException` (500) — the modelled server fault for a state store this
+//   handler cannot reach, which must never be reported as a client error.
+#[smithy_macros::operation_error(
+    "com.amazonaws.apiportal#ListProducts",
+    extra_errors = ["InternalServerException"]
+)]
 #[derive(Debug)]
 pub enum ListProductsErrorModeled {
     AccessDeniedException(AccessDeniedException),
     BadRequestException(BadRequestException),
     LimitExceededException(LimitExceededException),
+    InternalServerException(InternalServerException),
 }
 
 /// This operation's error channel, as the generated `impl Operation` names it
@@ -151,18 +158,107 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `ListProducts` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(ListProductsErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("ListProducts"))
+        let _ = ctx;
+        let Some(state) = crate::state::service_state(&*self.engine) else {
+            return Err(ListProductsErrorModeled::InternalServerException(
+                InternalServerException {
+                    message: "The service encountered an internal error. Try the request again."
+                        .to_string(),
+                },
+            )
+            .into());
+        };
+
+        // "Defaults to `ALL`, or to `SELF` when `managedApiId` is supplied."
+        let resource_owner = input.resource_owner.clone().unwrap_or_else(|| {
+            if input.managed_api_id.is_some() {
+                crate::state::RESOURCE_OWNER_SELF.to_string()
+            } else {
+                crate::state::RESOURCE_OWNER_ALL.to_string()
+            }
+        });
+        if !RESOURCE_OWNER_VALUES.contains(&resource_owner.as_str()) {
+            return Err(ListProductsErrorModeled::BadRequestException(BadRequestException {
+                message: format!(
+                    "The value of resourceOwner is not valid: {resource_owner}. Valid values \
+                     are {}.",
+                    RESOURCE_OWNER_VALUES.join(", ")
+                ),
+            })
+            .into());
+        }
+        // This emulator presents exactly one account and holds only that account's
+        // products, so no stored product is one another account shared:
+        // `OTHER_ACCOUNTS` selects none of them.
+        let includes_own_products = resource_owner != crate::state::RESOURCE_OWNER_OTHER_ACCOUNTS;
+
+        // The token names the product the previous page stopped on, so a resumed
+        // listing continues strictly after it — and keeps working when that product has
+        // since been deleted.
+        let resume_after = match input.next_token.as_deref() {
+            None => None,
+            Some(token) => match crate::state::decode_page_token(token) {
+                Some(product_id) => Some(product_id),
+                None => {
+                    return Err(ListProductsErrorModeled::BadRequestException(
+                        BadRequestException {
+                            message: "The value of nextToken is not valid: it is not a token \
+                                      this service issued."
+                                .to_string(),
+                        },
+                    )
+                    .into())
+                }
+            },
+        };
+
+        // A listing is always bounded: the model bounds `maxResults` to 1..100, so the
+        // boundary validator has already refused a value outside it; an absent one pages
+        // at the service's own default rather than collecting the whole store.
+        let page_size = input
+            .max_results
+            .and_then(|max_results| usize::try_from(max_results).ok())
+            .map_or(crate::state::DEFAULT_MAX_RESULTS, |max_results| {
+                max_results.clamp(1, crate::state::DEFAULT_MAX_RESULTS)
+            });
+
+        let now = crate::state::now_millis();
+        let mut store = state.lock();
+        store.settle(now);
+
+        let matching: Vec<&crate::state::Product> = if includes_own_products {
+            store
+                .products
+                .values()
+                .filter(|product| {
+                    resume_after
+                        .as_deref()
+                        .is_none_or(|after| product.product_id.as_str() > after)
+                })
+                .filter(|product| {
+                    input.managed_api_id.as_deref().is_none_or(|managed_api_id| {
+                        product.has_member_managed_api(managed_api_id)
+                    })
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+
+        let truncated = matching.len() > page_size;
+        // `take` rather than a slice index: the page is bounded by construction, so no
+        // caller-supplied page size can reach an out-of-range index.
+        let page: Vec<&crate::state::Product> = matching.into_iter().take(page_size).collect();
+
+        Ok(ListProductsOutput {
+            items: Some(page.iter().map(|product| product.summary()).collect()),
+            // A token only when products remain after this page.
+            next_token: if truncated {
+                page.last()
+                    .map(|product| crate::state::encode_page_token(&product.product_id))
+            } else {
+                None
+            },
+        })
     }
 }

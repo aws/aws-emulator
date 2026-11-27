@@ -1,15 +1,13 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op CreateProduct
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `CreateProduct`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
+//! IMPLEMENTED: mints a `productId` and its `productArn`, and persists the product in
+//! this service's store so every later read computes its answer from that record.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`CreateProduct::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! An absent `apiSelectionConfiguration` is a `CUSTOM` product: the mode "can't be
+//! changed after the product is created", so a product has one from the create onward,
+//! and `CUSTOM` is the only mode that needs no `ruleFilters`. A `RULE_BASED` product
+//! owes a membership evaluation, so it reports `IN_PROGRESS` until that falls due.
 //!
 //! ## Shape of an operation
 //!
@@ -114,12 +112,21 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-apiportal-apiportalcont
 // here — hence the `CreateProductError` alias below. An operation that models no errors
 // generates an UNINHABITED enum here, which is correct and expected: there is nothing
 // to construct until the model says otherwise.
-#[smithy_macros::operation_error("com.amazonaws.apiportal#CreateProduct")]
+//
+// One shape this SERVICE models that this OPERATION does not list is widened in:
+//
+// * `InternalServerException` (500) — the modelled server fault for a state store this
+//   handler cannot reach, which must never be reported as a client error.
+#[smithy_macros::operation_error(
+    "com.amazonaws.apiportal#CreateProduct",
+    extra_errors = ["InternalServerException"]
+)]
 #[derive(Debug)]
 pub enum CreateProductErrorModeled {
     AccessDeniedException(AccessDeniedException),
     BadRequestException(BadRequestException),
     LimitExceededException(LimitExceededException),
+    InternalServerException(InternalServerException),
 }
 
 /// This operation's error channel, as the generated `impl Operation` names it
@@ -173,18 +180,84 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `CreateProduct` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(CreateProductErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("CreateProduct"))
+        let Some(state) = crate::state::service_state(&*self.engine) else {
+            return Err(CreateProductErrorModeled::InternalServerException(
+                InternalServerException {
+                    message: "The service encountered an internal error. Try the request again."
+                        .to_string(),
+                },
+            )
+            .into());
+        };
+
+        let api_selection_configuration =
+            input
+                .api_selection_configuration
+                .unwrap_or(ApiSelectionConfiguration {
+                    api_selection_mode: crate::state::API_SELECTION_MODE_CUSTOM.to_string(),
+                    rule_filters: None,
+                });
+        if let Err(message) =
+            crate::state::validate_api_selection_configuration(&api_selection_configuration)
+        {
+            return Err(
+                CreateProductErrorModeled::BadRequestException(BadRequestException { message })
+                    .into(),
+            );
+        }
+
+        let tags: std::collections::BTreeMap<String, String> =
+            input.tags.unwrap_or_default().into_iter().collect();
+        let now = crate::state::now_millis();
+        let region = crate::state::request_region(ctx.parts());
+
+        let mut store = state.lock();
+        store.settle(now);
+
+        // The store is bounded: nothing else limits how many products a caller can
+        // create, and an in-memory store on a developer's machine must not grow without
+        // a bound.
+        if store.products.len() >= crate::state::MAX_PRODUCTS {
+            return Err(CreateProductErrorModeled::LimitExceededException(
+                LimitExceededException {
+                    message: format!(
+                        "A service quota was exceeded: this account already holds the maximum \
+                         of {} products. Reduce the number of resources and try again.",
+                        crate::state::MAX_PRODUCTS
+                    ),
+                },
+            )
+            .into());
+        }
+
+        let sequence = store.next_product_sequence();
+        let product_id = crate::state::product_id(sequence);
+        let product_arn = crate::state::product_arn(&region, &product_id);
+        let product = crate::state::Product::new(
+            product_id,
+            product_arn,
+            input.display_name,
+            input.description,
+            api_selection_configuration,
+            tags,
+            now,
+        );
+
+        // The response is the record that is about to be stored, so a later read of the
+        // same product answers exactly what this create reported.
+        let output = CreateProductOutput {
+            product_id: product.product_id.clone(),
+            product_arn: product.product_arn.clone(),
+            display_name: product.display_name.clone(),
+            display_order: product.display_order.clone(),
+            description: product.description.clone(),
+            updated_at: product.updated_at(),
+            tags: product.tags(),
+            api_selection_configuration: product.api_selection_configuration(),
+            status: Some(product.status.clone()),
+            failure_reason: product.failure_reason.clone(),
+        };
+        store.insert_product(product);
+        Ok(output)
     }
 }

@@ -1,15 +1,14 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op UpdateProduct
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `UpdateProduct`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
+//! IMPLEMENTED: merges the members the request supplied into the stored product and
+//! reports the merged record. "Only the fields supplied in the request are changed",
+//! so an absent member keeps its stored value.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`UpdateProduct::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! Two rules of `apiSelectionConfiguration` bind here: the selection mode "can't be
+//! changed after the product is created", and `ruleFilters` are "replaced as a whole on
+//! update, not merged" — so a replacement that selects different APIs owes another
+//! membership evaluation and puts the product back to `IN_PROGRESS`.
 //!
 //! ## Shape of an operation
 //!
@@ -115,13 +114,22 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-apiportal-apiportalcont
 // here — hence the `UpdateProductError` alias below. An operation that models no errors
 // generates an UNINHABITED enum here, which is correct and expected: there is nothing
 // to construct until the model says otherwise.
-#[smithy_macros::operation_error("com.amazonaws.apiportal#UpdateProduct")]
+//
+// One shape this SERVICE models that this OPERATION does not list is widened in:
+//
+// * `InternalServerException` (500) — the modelled server fault for a state store this
+//   handler cannot reach, which must never be reported as a client error.
+#[smithy_macros::operation_error(
+    "com.amazonaws.apiportal#UpdateProduct",
+    extra_errors = ["InternalServerException"]
+)]
 #[derive(Debug)]
 pub enum UpdateProductErrorModeled {
     AccessDeniedException(AccessDeniedException),
     BadRequestException(BadRequestException),
     LimitExceededException(LimitExceededException),
     ResourceNotFoundException(ResourceNotFoundException),
+    InternalServerException(InternalServerException),
 }
 
 /// This operation's error channel, as the generated `impl Operation` names it
@@ -175,18 +183,80 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `UpdateProduct` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(UpdateProductErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("UpdateProduct"))
+        let _ = ctx;
+        let Some(state) = crate::state::service_state(&*self.engine) else {
+            return Err(UpdateProductErrorModeled::InternalServerException(
+                InternalServerException {
+                    message: "The service encountered an internal error. Try the request again."
+                        .to_string(),
+                },
+            )
+            .into());
+        };
+
+        if let Some(configuration) = input.api_selection_configuration.as_ref() {
+            if let Err(message) =
+                crate::state::validate_api_selection_configuration(configuration)
+            {
+                return Err(UpdateProductErrorModeled::BadRequestException(
+                    BadRequestException { message },
+                )
+                .into());
+            }
+        }
+
+        let now = crate::state::now_millis();
+        let mut store = state.lock();
+        store.settle(now);
+
+        let Some(product) = store.products.get_mut(&input.product_id) else {
+            return Err(UpdateProductErrorModeled::ResourceNotFoundException(
+                ResourceNotFoundException {
+                    message: crate::state::product_not_found_message(&input.product_id),
+                },
+            )
+            .into());
+        };
+
+        // "The selection mode can't be changed after the product is created."
+        if let Some(configuration) = input.api_selection_configuration.as_ref() {
+            let stored_mode = product
+                .api_selection_configuration
+                .api_selection_mode
+                .clone();
+            if configuration.api_selection_mode != stored_mode {
+                return Err(UpdateProductErrorModeled::BadRequestException(
+                    BadRequestException {
+                        message: format!(
+                            "The value of apiSelectionConfiguration.apiSelectionMode is not \
+                             valid: the selection mode can't be changed after the product is \
+                             created. Product {} was created with {stored_mode}.",
+                            input.product_id
+                        ),
+                    },
+                )
+                .into());
+            }
+        }
+
+        product.apply_update(
+            input.display_name,
+            input.description,
+            input.display_order,
+            input.api_selection_configuration,
+            now,
+        );
+
+        Ok(UpdateProductOutput {
+            product_id: product.product_id.clone(),
+            product_arn: product.product_arn.clone(),
+            display_name: product.display_name.clone(),
+            display_order: product.display_order.clone(),
+            description: product.description.clone(),
+            updated_at: product.updated_at(),
+            api_selection_configuration: product.api_selection_configuration(),
+            status: Some(product.status.clone()),
+            failure_reason: product.failure_reason.clone(),
+        })
     }
 }
