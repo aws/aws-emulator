@@ -321,6 +321,21 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .into());
         }
 
+        // The task definition the task set runs is a REGIONAL resource too, and its reference
+        // member takes "the full Amazon Resource Name (ARN)" of one, so an ARN of another
+        // Region or another account names a revision this endpoint owns none of
+        // ([`crate::state::task_definition_arn_violation`], whose sentence names this member).
+        if let Some(message) =
+            crate::state::task_definition_arn_violation(ctx, Some(input.task_definition.as_str()))
+        {
+            return Err(CreateTaskSetErrorModeled::InvalidParameterException(
+                InvalidParameterException {
+                    message: Some(message),
+                },
+            )
+            .into());
+        }
+
         // A service ARN carries the cluster that hosts it, so it names the cluster as
         // well as the service; a short name takes the `cluster` member's.
         let (arn_cluster, service_name) =

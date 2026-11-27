@@ -415,6 +415,21 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .into());
         }
 
+        // The task definition the service is moved to is a REGIONAL resource too, and its
+        // reference member takes "the full Amazon Resource Name (ARN)" of one, so an ARN of
+        // another Region or another account names a revision this endpoint owns none of
+        // ([`crate::state::task_definition_arn_violation`], whose sentence names this member).
+        if let Some(message) =
+            crate::state::task_definition_arn_violation(ctx, input.task_definition.as_deref())
+        {
+            return Err(UpdateServiceErrorModeled::InvalidParameterException(
+                InvalidParameterException {
+                    message: Some(message),
+                },
+            )
+            .into());
+        }
+
         // A service ARN carries the cluster that hosts it, so an ARN names the cluster
         // too; `cluster` is what names it otherwise ("If you do not specify a cluster,
         // the default cluster is assumed"). Naming two different clusters in one request

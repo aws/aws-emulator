@@ -13,7 +13,8 @@
 //!   are registered to your account" — of the account AND Region it is asked of), reports
 //!   none of its families (`ListTaskDefinitionFamilies`), and resolves none of its
 //!   references (`DescribeTaskDefinition` and `RunTask` answer for an identifier they know
-//!   nothing about). Revision numbering is per family per Region too: "when you register a
+//!   nothing about, and refuse one whose ARN names another Region as the invalid parameter
+//!   it is). Revision numbering is per family per Region too: "when you register a
 //!   task definition for the first time, the revision is 1" holds of the family in THAT
 //!   Region, so one family name registered in two Regions is revision 1 in each.
 //! * Amazon EventBridge: a rule lives on an event bus of one Region, so `DescribeRule` in
@@ -322,16 +323,21 @@ async fn a_task_definition_lookup_from_another_region_resolves_nothing() {
     let router = build_router();
     let registered = register_in(&router, HOME, case).await;
 
+    // Each form, with the refusal it earns away from home. A family or a `family:revision`
+    // carries no Region of its own, so away from home it names a revision that endpoint holds
+    // none of — the client fault about an identifier it knows nothing about. A full ARN
+    // carries the home Region IN the identifier, so it is the parameter that is wrong rather
+    // than a revision that is absent, and it is refused as such before anything is resolved.
     let references = [
         // The family alone, which names "the latest ACTIVE revision in that family".
-        FAMILY.to_string(),
+        (FAMILY.to_string(), "ClientException"),
         // The family and the revision.
-        format!("{FAMILY}:1"),
+        (format!("{FAMILY}:1"), "ClientException"),
         // The full ARN the home Region reported, Region label and all.
-        registered.clone(),
+        (registered.clone(), "InvalidParameterException"),
     ];
 
-    for reference in references {
+    for (reference, expected_code) in references {
         // The home Region resolves every one of them.
         let described = ecs_ok(
             &router,
@@ -360,7 +366,7 @@ async fn a_task_definition_lookup_from_another_region_resolves_nothing() {
                 "case {case:?}: expected {far} to resolve nothing for {reference:?}, got \
                  {status} with {answer}"
             );
-            assert_client_fault(&answer, &reference, far, case);
+            assert_refused_as(&answer, expected_code, &reference, far, case);
 
             // And no task of it can be run there either: there is no revision to run.
             let cluster = "s2r-regional-cluster";
@@ -384,18 +390,25 @@ async fn a_task_definition_lookup_from_another_region_resolves_nothing() {
                 "case {case:?}: expected {far} to run nothing for {reference:?}, got {status} \
                  with {answer}"
             );
-            assert_client_fault(&answer, &reference, far, case);
+            assert_refused_as(&answer, expected_code, &reference, far, case);
         }
     }
 }
 
-/// The refusal a Region that holds no such revision answers: a client fault about an
-/// identifier it knows nothing about.
-fn assert_client_fault(answer: &Value, reference: &str, region: &str, case: &str) {
+/// The refusal a Region that resolves nothing for `reference` answers: the error code that
+/// reference's FORM earns there — a client fault for an identifier the endpoint knows nothing
+/// about, and the invalid parameter for one whose ARN names another Region.
+fn assert_refused_as(
+    answer: &Value,
+    expected_code: &str,
+    reference: &str,
+    region: &str,
+    case: &str,
+) {
     let wire_type = answer["__type"].as_str().unwrap_or_default();
     assert!(
-        wire_type.contains("ClientException"),
-        "case {case:?}: expected a ClientException from {region} for {reference:?}, got {answer}"
+        wire_type.contains(expected_code),
+        "case {case:?}: expected a {expected_code} from {region} for {reference:?}, got {answer}"
     );
 }
 

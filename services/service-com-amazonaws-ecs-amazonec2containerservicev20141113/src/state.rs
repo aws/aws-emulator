@@ -272,8 +272,9 @@ pub use agent_endpoints::*;
 
 pub use request_arn::{
     foreign_arn_segment, is_cluster_arn, names_another_account, names_another_region,
-    request_arn_resource_violation, request_arn_violation, ForeignArnSegment,
-    ACCOUNT_IDS_MISMATCH_MESSAGE, INVALID_ARN_MESSAGE, INVALID_REGION_IN_ARN_MESSAGE,
+    request_arn_resource_violation, request_arn_violation, task_definition_arn_violation,
+    ForeignArnSegment, ACCOUNT_IDS_MISMATCH_MESSAGE, INVALID_ARN_MESSAGE,
+    INVALID_REGION_IN_ARN_MESSAGE, TASK_DEFINITION_ARN_SUBJECT,
 };
 
 /// The records a SERVICE is made of — the service itself, the deployments and service

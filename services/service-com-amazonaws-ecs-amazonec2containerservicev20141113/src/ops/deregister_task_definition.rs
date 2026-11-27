@@ -159,6 +159,25 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         })?;
         let region = crate::state::request_region(ctx);
 
+        // A task definition is a REGIONAL resource, and its reference member takes "the
+        // full Amazon Resource Name (ARN)" of one: an ARN is a WHOLE identifier, Region and
+        // account included, so both segments are checked before the reference is read or
+        // resolved ([`crate::state::request_arn_violation`]). An ARN of another Region
+        // names a resource this endpoint owns none of, which is the bad parameter the
+        // request carried rather than a revision this Region happens not to hold.
+        if let Some(message) =
+            crate::state::task_definition_arn_violation(ctx, Some(input.task_definition.as_str()))
+        {
+            return Err(
+                DeregisterTaskDefinitionErrorModeled::InvalidParameterException(
+                    InvalidParameterException {
+                        message: Some(message),
+                    },
+                )
+                .into(),
+            );
+        }
+
         // "Deregisters the specified task definition by family and revision. ... You must
         // specify a revision." The revision is what this call ACTS ON, so a
         // `taskDefinition` that spells no revision at all misses the member's own

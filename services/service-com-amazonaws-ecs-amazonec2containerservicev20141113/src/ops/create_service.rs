@@ -580,13 +580,28 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .into());
         }
 
-        // An ARN is a WHOLE identifier, Region and account included, so both segments are
-        // checked before the identifier is resolved
+        // An ARN is a WHOLE identifier, Region and account included, so both segments of
+        // every identifier the request carries are checked before any of them is resolved
         // ([`crate::state::request_arn_violation`]).
         if let Some(message) = crate::state::request_arn_violation(ctx, input.cluster.as_deref()) {
             return Err(CreateServiceErrorModeled::InvalidParameterException(
                 InvalidParameterException {
                     message: Some(message.to_string()),
+                },
+            )
+            .into());
+        }
+
+        // The task definition the service runs is a REGIONAL resource too, and its reference
+        // member takes "the full Amazon Resource Name (ARN)" of one, so an ARN of another
+        // Region or another account names a revision this endpoint owns none of
+        // ([`crate::state::task_definition_arn_violation`], whose sentence names this member).
+        if let Some(message) =
+            crate::state::task_definition_arn_violation(ctx, input.task_definition.as_deref())
+        {
+            return Err(CreateServiceErrorModeled::InvalidParameterException(
+                InvalidParameterException {
+                    message: Some(message),
                 },
             )
             .into());

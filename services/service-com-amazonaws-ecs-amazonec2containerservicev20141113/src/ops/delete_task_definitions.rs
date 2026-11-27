@@ -181,6 +181,26 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             );
         }
 
+        // A task definition is a REGIONAL resource, and every entry may be "the full Amazon
+        // Resource Name (ARN)" of one: an ARN is a WHOLE identifier, Region and account
+        // included, so both segments of every entry are checked before any of them is read
+        // or resolved ([`crate::state::request_arn_violation`]). An ARN of another Region
+        // names a resource this endpoint owns none of, which is the bad parameter the
+        // request carried rather than a revision this Region happens not to hold.
+        if let Some(message) = crate::state::task_definition_arn_violation(
+            ctx,
+            input.task_definitions.iter().map(String::as_str),
+        ) {
+            return Err(
+                DeleteTaskDefinitionsErrorModeled::InvalidParameterException(
+                    InvalidParameterException {
+                        message: Some(message),
+                    },
+                )
+                .into(),
+            );
+        }
+
         // Every entry is resolved to ONE (family, revision) BEFORE anything is written,
         // so a request carrying an entry this service cannot read deletes nothing rather
         // than deleting the entries ahead of it: "The family and revision

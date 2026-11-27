@@ -181,6 +181,23 @@ pub fn request_arn_resource_violation(
     }
 }
 
+/// How a refusal names the `taskDefinition` member a foreign ARN was supplied in.
+pub const TASK_DEFINITION_ARN_SUBJECT: &str = "Invalid task definition";
+
+/// The same check for a TASK-DEFINITION reference — a member documented as taking "the
+/// family and revision (family:revision) or full Amazon Resource Name (ARN) of the task
+/// definition": the sentence names the MEMBER the identifier was supplied in and then the
+/// segment of that ARN which is not this endpoint's, so a caller is told which of the
+/// several identifiers its request carried is the foreign one rather than only that one of
+/// them was.
+pub fn task_definition_arn_violation<'a>(
+    ctx: &smithy_server_runtime::OperationContext<'_>,
+    references: impl IntoIterator<Item = &'a str>,
+) -> Option<String> {
+    foreign_arn_segment(ctx, references)
+        .map(|segment| format!("{TASK_DEFINITION_ARN_SUBJECT}: {}", segment.message()))
+}
+
 /// Whether `reference` is the full ARN of a CLUSTER of this service —
 /// `arn:<partition>:ecs:<region>:<account>:cluster/<name>` with a name of the character
 /// set a cluster name is spelled in — rather than a bare cluster name or an ARN of some
