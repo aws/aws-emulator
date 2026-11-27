@@ -461,6 +461,19 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         if let Some(engine) = &input.engine {
             crate::state::check_engine(engine)
                 .map_err(ModifyDBInstanceError::invalid_parameter_value)?;
+            // And `Engine` is the one member that names what the instance RUNS, which a
+            // modification cannot replace: the member exists to convert an Oracle non-CDB
+            // instance to a container database and admits nothing else
+            // ([`crate::state::engine_change_is_supported`]). A value that asks for another
+            // engine's database over this one's storage is refused before anything is
+            // written, so no instance is left reporting an engine its version, parameter
+            // group and option group belong to another of.
+            let current_engine = store.db_instances[&key].engine.clone();
+            if !crate::state::engine_change_is_supported(&current_engine, engine) {
+                return Err(ModifyDBInstanceError::invalid_parameter_combination(
+                    crate::state::engine_change_message(&current_engine, engine),
+                ));
+            }
         }
         if let Some(class) = &input.db_instance_class {
             crate::state::check_db_instance_class(class)
@@ -489,11 +502,23 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 )));
             }
         }
-        // `OptionGroupName` is NOT resolved the same way, and deliberately: AWS creates
-        // a DEFAULT option group per engine major version (`default:mysql-8-0`) that no
-        // request creates and this service does not hold, so refusing every name it has
-        // no record of would refuse the groups AWS itself provides. See
-        // `CreateDBInstance`, which says the same of `DBParameterGroupName`.
+        // `OptionGroupName` is resolved like every other reference the request carries, and
+        // against the groups the account can SEE: the groups a request created plus the
+        // default group AWS provides for each engine major version, which no request creates
+        // and this store holds no record of
+        // ([`crate::state::ComAmazonawsRdsAmazonrdsv19State::resolve_visible_option_group`]).
+        // A name that resolves to neither names no option group at all, which is the modelled
+        // not-found fault rather than a membership a later read could not agree with.
+        if let Some(named) = &input.option_group_name {
+            if store.resolve_visible_option_group(&region, named).is_none() {
+                return Err(ModifyDBInstanceErrorModeled::OptionGroupNotFoundFault(
+                    OptionGroupNotFoundFault {
+                        message: Some(crate::state::option_group_not_found_message(named)),
+                    },
+                )
+                .into());
+            }
+        }
         // An instance that is still coming up, or is on its way out, cannot take a
         // modification — the state the clock has yet to settle is real. One that is
         // already `modifying` can: RDS accepts a further change while it applies the
@@ -584,26 +609,18 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         if let Some(requested_type) = &input.storage_type {
             // A type `StorageType` does not publish for this engine is the modelled
             // unsupported-type fault; the legacy magnetic type the member still lists is
-            // published, and simply carries no bounds here.
-            if !crate::ops::describe_orderable_db_instance_options::publishes_storage_type(
-                &resulting_engine,
-                requested_type,
-            ) {
-                let published =
-                    crate::ops::describe_orderable_db_instance_options::storage_profiles(
-                        &resulting_engine,
-                    );
+            // published, and simply carries no bounds here. The check and its wording are
+            // the one every operation that takes the member reads
+            // ([`crate::ops::describe_orderable_db_instance_options::check_requested_storage_type`]).
+            if let Err(message) =
+                crate::ops::describe_orderable_db_instance_options::check_requested_storage_type(
+                    &resulting_engine,
+                    requested_type,
+                )
+            {
                 return Err(ModifyDBInstanceErrorModeled::StorageTypeNotSupportedFault(
                     StorageTypeNotSupportedFault {
-                        message: Some(format!(
-                            "Invalid storage type {requested_type} for engine \
-                             {resulting_engine}: must be one of {}",
-                            published
-                                .iter()
-                                .map(|profile| profile.name)
-                                .collect::<Vec<_>>()
-                                .join(", ")
-                        )),
+                        message: Some(message),
                     },
                 )
                 .into());

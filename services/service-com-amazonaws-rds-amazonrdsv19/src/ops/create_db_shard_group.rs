@@ -276,6 +276,43 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             )
             .into());
         }
+        // And the cluster has to be one a shard group BELONGS in. Two conditions, each read
+        // off the cluster this request names:
+        //
+        // The ENGINE VERSION it runs has to be one Aurora Limitless Database is offered on
+        // (`SupportsLimitlessDatabase`, which the engine-version report publishes per build,
+        // [`crate::ops::describe_db_engine_versions::published_version_supports_limitless_database`]):
+        // the attributes a shard group is made of do not exist on any other build, so there
+        // is nothing to provision them into, and the refusal names the version the cluster
+        // runs by the description that report gives it.
+        let cluster_engine = cluster.engine.clone();
+        let cluster_engine_version = cluster.engine_version.clone().unwrap_or_default();
+        if !crate::ops::describe_db_engine_versions::published_version_supports_limitless_database(
+            &cluster_engine,
+            &cluster_engine_version,
+        ) {
+            let described = crate::ops::describe_db_engine_versions::published_version_description(
+                &cluster_engine,
+                &cluster_engine_version,
+            )
+            .unwrap_or(cluster_engine_version);
+            return Err(CreateDBShardGroupError::invalid_parameter_combination(
+                crate::state::shard_group_engine_version_message(&described),
+            ));
+        }
+        // And its `ClusterScalabilityType` has to be `limitless`: a cluster created in the
+        // standard mode operates no Limitless database
+        // ([`crate::state::DbClusterRecord::runs_limitless_database`]) even on a build that
+        // offers one, so there is no Limitless database of this cluster to hold the shards.
+        // The request names the cluster and the shard group, which cannot hold together, so
+        // it is refused as the combination it is and nothing is stored for it.
+        if !cluster.runs_limitless_database() {
+            return Err(CreateDBShardGroupError::invalid_parameter_combination(
+                crate::state::shard_group_requires_limitless_cluster_message(
+                    &db_cluster_identifier,
+                ),
+            ));
+        }
 
         // The identifier names one DB shard group in the region, case-insensitively: a
         // second create under the same name is the modelled already-exists fault rather

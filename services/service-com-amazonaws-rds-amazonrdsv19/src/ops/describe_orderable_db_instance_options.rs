@@ -1211,6 +1211,21 @@ pub fn publishes_storage_type(engine: &str, storage_type: &str) -> bool {
     storage_bounds(engine, storage_type).is_some()
 }
 
+/// Refuse a `StorageType` a request names for a DB instance of `engine`: one the member's
+/// value list does not publish for that engine names no storage this service can provision
+/// ([`publishes_storage_type`]).
+///
+/// `Err` carries the sentence Amazon RDS answers — the member's subject and the value it
+/// would not take — so every operation that takes the member (a create, a restore and a
+/// modification alike) refuses the same values with the same words, lifted into its own
+/// modelled unsupported-type fault.
+pub fn check_requested_storage_type(engine: &str, storage_type: &str) -> Result<(), String> {
+    if publishes_storage_type(engine, storage_type) {
+        return Ok(());
+    }
+    Err(format!("Invalid storage type: {storage_type}"))
+}
+
 /// The legacy magnetic storage type `StorageType` still publishes.
 pub const LEGACY_MAGNETIC_STORAGE: &str = "standard";
 

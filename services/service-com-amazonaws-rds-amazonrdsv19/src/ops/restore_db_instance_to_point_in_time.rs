@@ -765,6 +765,26 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 .storage_type
                 .clone()
                 .unwrap_or_else(|| source.storage_type.clone());
+            // The TYPE is resolved against the value list `StorageType` publishes for the
+            // engine the restored instance runs before the size it bounds is: a value that
+            // list does not carry names no storage this service can provision, which is the
+            // modelled unsupported-type fault
+            // ([`crate::ops::describe_orderable_db_instance_options::check_requested_storage_type`]).
+            if let Some(requested_type) = &input.storage_type {
+                if let Err(message) =
+                    crate::ops::describe_orderable_db_instance_options::
+                        check_requested_storage_type(&engine, requested_type)
+                {
+                    return Err(
+                        RestoreDBInstanceToPointInTimeErrorModeled::StorageTypeNotSupportedFault(
+                            StorageTypeNotSupportedFault {
+                                message: Some(message),
+                            },
+                        )
+                        .into(),
+                    );
+                }
+            }
             // `AllocatedStorage` is bounded by the (engine, storage type) pair the restored
             // instance ends up on, exactly as a create and a modification are; a request
             // that names no type is held to the widest range the engine's types reach
@@ -783,6 +803,23 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 .db_parameter_group_name
                 .clone()
                 .or_else(|| source.db_parameter_group_name.clone());
+            // `OptionGroupName` is resolved against the groups the account can SEE — the
+            // groups a request created plus the default group AWS provides for each engine
+            // major version — so a name that resolves to neither is the modelled not-found
+            // fault rather than a restored instance reporting a membership nothing could
+            // resolve ([`crate::state::option_group_not_found_message`]).
+            if let Some(named) = &input.option_group_name {
+                if store.resolve_visible_option_group(&region, named).is_none() {
+                    return Err(
+                        RestoreDBInstanceToPointInTimeErrorModeled::OptionGroupNotFoundFault(
+                            OptionGroupNotFoundFault {
+                                message: Some(crate::state::option_group_not_found_message(named)),
+                            },
+                        )
+                        .into(),
+                    );
+                }
+            }
             let option_group_name = input
                 .option_group_name
                 .clone()

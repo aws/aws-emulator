@@ -57,7 +57,13 @@ const CREATING: &str = "creating";
 const AVAILABLE: &str = "available";
 
 /// `CreateDBCluster` for the primary cluster of `region`'s shard groups.
+///
+/// `ClusterScalabilityType` is `limitless` and the engine version is the one Aurora Limitless
+/// Database is offered on: a DB shard group holds the shards of a Limitless database, so only
+/// a cluster created that way can take one.
 async fn create_cluster(router: &MultiServiceRouter, region: &str, identifier: &str) {
+    let engine_version =
+        crate::instance_reference_resolution_refusals::limitless_engine_version(router).await;
     expect_ok(
         &format!("create cluster {identifier} in {region}"),
         call_in(
@@ -65,8 +71,10 @@ async fn create_cluster(router: &MultiServiceRouter, region: &str, identifier: &
             region,
             "CreateDBCluster",
             &[
-                ("DBClusterIdentifier", identifier),
-                ("Engine", CLUSTER_ENGINE),
+                ("DBClusterIdentifier", identifier.to_string()),
+                ("Engine", CLUSTER_ENGINE.to_string()),
+                ("ClusterScalabilityType", "limitless".to_string()),
+                ("EngineVersion", engine_version),
             ],
         )
         .await,

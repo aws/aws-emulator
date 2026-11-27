@@ -90,13 +90,21 @@ struct PrimaryClusterCase {
 }
 
 /// `CreateDBCluster` for the primary cluster of one row.
+///
+/// `ClusterScalabilityType` is `limitless` and the engine version is the one Aurora Limitless
+/// Database is offered on: a DB shard group holds the shards of a Limitless database, so only
+/// a cluster created that way can take one.
 async fn create_cluster(router: &MultiServiceRouter, identifier: &str) -> (u16, String) {
+    let engine_version =
+        crate::instance_reference_resolution_refusals::limitless_engine_version(router).await;
     call(
         router,
         "CreateDBCluster",
         &[
-            ("DBClusterIdentifier", identifier),
-            ("Engine", CLUSTER_ENGINE),
+            ("DBClusterIdentifier", identifier.to_string()),
+            ("Engine", CLUSTER_ENGINE.to_string()),
+            ("ClusterScalabilityType", "limitless".to_string()),
+            ("EngineVersion", engine_version),
         ],
     )
     .await

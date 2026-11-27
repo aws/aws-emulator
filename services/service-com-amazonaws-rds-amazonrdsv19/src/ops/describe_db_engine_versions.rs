@@ -3364,6 +3364,43 @@ pub(crate) fn version_rank(engine: &str, engine_version: &str) -> Option<usize> 
         .position(|entry| entry.engine_version.eq_ignore_ascii_case(engine_version))
 }
 
+/// The catalogue row of `engine_version` for `engine`, however the catalogue spells the
+/// version, or `None` for a version this catalogue does not publish for that engine.
+///
+/// `pub(crate)` so an operation whose precondition is a CAPABILITY of the version a resource
+/// runs reads the published row rather than keeping a second account of which version can do
+/// what ([`published_version_supports_limitless_database`]).
+pub(crate) fn published_version(engine: &str, engine_version: &str) -> Option<&'static CatalogVersion> {
+    CATALOG.iter().find(|entry| {
+        entry.engine.eq_ignore_ascii_case(engine)
+            && entry.engine_version.eq_ignore_ascii_case(engine_version)
+    })
+}
+
+/// Whether the engine version `engine_version` of `engine` runs Aurora Limitless Database, as
+/// this catalogue publishes it (`SupportsLimitlessDatabase`).
+///
+/// A version the catalogue does not publish runs none: Aurora Limitless Database is offered
+/// on the builds AWS ships it on, so a version nothing says it is offered on is not one of
+/// them.
+pub(crate) fn published_version_supports_limitless_database(
+    engine: &str,
+    engine_version: &str,
+) -> bool {
+    published_version(engine, engine_version)
+        .is_some_and(|entry| entry.profile.supports_limitless_database)
+}
+
+/// How this catalogue DESCRIBES the engine version `engine_version` of `engine` —
+/// `DBEngineVersionDescription`, the same sentence `DescribeDBEngineVersions` reports for the
+/// row — or `None` for an engine this service publishes no versions for.
+///
+/// It is what a refusal that names the version a resource RUNS reports, so the refusal and
+/// the report name the version the one way.
+pub(crate) fn published_version_description(engine: &str, engine_version: &str) -> Option<String> {
+    engine_facts(engine).map(|facts| version_description(facts, engine_version))
+}
+
 /// The catalogue version this service would PROVISION for `engine` when a create or
 /// modify request names `requested`, or `Err` with the message to refuse the request
 /// with.

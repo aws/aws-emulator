@@ -166,6 +166,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             return Err(crate::scaffolded::Scaffolded::not_implemented(Self::NAME));
         };
         let mut store = state.lock();
+        // A DB cluster whose accepted deletion the clock has already made due is gone, so it
+        // holds no parameter group any more: the transitions due at this instant are
+        // materialised before the association below is read.
+        store.settle_due_transitions(&region);
 
         let name = input.db_cluster_parameter_group_name.to_ascii_lowercase();
         // "You can't delete a default cluster parameter group." The engine's own groups are
@@ -191,7 +195,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             );
         }
 
-        let key = (region, name.clone());
+        let key = (region.clone(), name.clone());
         if !store.db_cluster_parameter_groups.contains_key(&key) {
             return Err(
                 DeleteDBClusterParameterGroupErrorModeled::DBParameterGroupNotFoundFault(
@@ -201,6 +205,29 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                                 &input.db_cluster_parameter_group_name,
                             ),
                         ),
+                    },
+                )
+                .into(),
+            );
+        }
+
+        // "The DB cluster parameter group to delete can't be associated with any DB
+        // clusters." The association is the cluster record's own
+        // `DBClusterParameterGroupName`, which carries the name as its create spelled it
+        // while the group is keyed lowercased, so the two are compared without case: both
+        // spellings name the one group. A group a cluster still holds is the modelled STATE
+        // fault — the group exists, and the caller has to release it first — worded as the
+        // DB PARAMETER group delete words its own ([`crate::state::parameter_group_in_use_message`]).
+        if store.clusters_in(&region).into_iter().any(|cluster| {
+            cluster
+                .db_cluster_parameter_group_name
+                .as_deref()
+                .is_some_and(|applied| applied.eq_ignore_ascii_case(&name))
+        }) {
+            return Err(
+                DeleteDBClusterParameterGroupErrorModeled::InvalidDBParameterGroupStateFault(
+                    InvalidDBParameterGroupStateFault {
+                        message: Some(crate::state::parameter_group_in_use_message(&name)),
                     },
                 )
                 .into(),

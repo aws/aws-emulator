@@ -407,6 +407,19 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             &db_security_group_names,
         )
         .map_err(RestoreDBInstanceFromS3Error::invalid_parameter_value)?;
+        // `DBSecurityGroups` is the EC2-Classic association the member was introduced for,
+        // and every DB instance this restore creates is placed IN a VPC: it sits in the DB
+        // subnet group the request named or in the account's `default` group, so none of them
+        // is the non-VPC DB instance the member exists for. A VPC DB instance cannot carry
+        // the association through this API version, as Amazon RDS answers
+        // ([`crate::state::DB_SECURITY_GROUPS_NOT_SUPPORTED_IN_VPC_MESSAGE`]) — whatever
+        // group the request names — so the restore is refused rather than run and left
+        // reporting a membership the instance's network could never honour.
+        if !db_security_group_names.is_empty() {
+            return Err(RestoreDBInstanceFromS3Error::invalid_parameter_combination(
+                crate::state::DB_SECURITY_GROUPS_NOT_SUPPORTED_IN_VPC_MESSAGE,
+            ));
+        }
         crate::state::check_stored_text(
             "S3IngestionRoleArn",
             &input.s3_ingestion_role_arn,
@@ -733,6 +746,26 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             let storage_type = input.storage_type.clone().unwrap_or_else(|| {
                 crate::state::default_storage_type(input.iops).to_string()
             });
+            // The TYPE is resolved against the value list `StorageType` publishes for the
+            // engine the restored instance runs before the size it bounds is: a value that
+            // list does not carry names no storage this service can provision, which is the
+            // modelled unsupported-type fault
+            // ([`crate::ops::describe_orderable_db_instance_options::check_requested_storage_type`]).
+            if let Some(requested_type) = &input.storage_type {
+                if let Err(message) =
+                    crate::ops::describe_orderable_db_instance_options::
+                        check_requested_storage_type(&input.engine, requested_type)
+                {
+                    return Err(
+                        RestoreDBInstanceFromS3ErrorModeled::StorageTypeNotSupportedFault(
+                            StorageTypeNotSupportedFault {
+                                message: Some(message),
+                            },
+                        )
+                        .into(),
+                    );
+                }
+            }
             // `AllocatedStorage` is bounded by the (engine, storage type) pair the restored
             // instance ends up on, exactly as a create and a modification are; a request
             // that names no type is held to the widest range the engine's types reach
@@ -752,6 +785,23 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     crate::state::default_db_parameter_group_name(entry.parameter_group_family)
                 })
             });
+            // `OptionGroupName` is resolved against the groups the account can SEE — the
+            // groups a request created plus the default group AWS provides for each engine
+            // major version — so a name that resolves to neither is the modelled not-found
+            // fault rather than a restored instance reporting a membership nothing could
+            // resolve ([`crate::state::option_group_not_found_message`]).
+            if let Some(named) = &input.option_group_name {
+                if store.resolve_visible_option_group(&region, named).is_none() {
+                    return Err(
+                        RestoreDBInstanceFromS3ErrorModeled::OptionGroupNotFoundFault(
+                            OptionGroupNotFoundFault {
+                                message: Some(crate::state::option_group_not_found_message(named)),
+                            },
+                        )
+                        .into(),
+                    );
+                }
+            }
             let option_group_name = input.option_group_name.clone().or_else(|| {
                 resolved_version.map(|entry| {
                     crate::state::default_option_group_name(

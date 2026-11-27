@@ -919,3 +919,154 @@ pub fn describe_automated_backup_not_found_message(named: &str) -> String {
 pub fn delete_automated_backup_not_found_message(named: &str) -> String {
     format!("Automated backups could not be found for: {named}")
 }
+
+/// How every front door that RESOLVES an `OptionGroupName` words the not-found fault: the
+/// member, then the value it could not resolve.
+///
+/// One sentence for every operation that names an option group — the calls whose subject IS
+/// the group and the DB instance calls that place one in it — so a caller reads the same
+/// answer wherever the name went unresolved.
+pub fn option_group_not_found_message(named: &str) -> String {
+    format!("Specified OptionGroupName: {named} not found.")
+}
+
+/// What a request that names `DBSecurityGroups` for a DB instance placed in a VPC is
+/// refused with, as Amazon RDS words it.
+///
+/// What a request that names a `DBSecurityGroups` entry for a DB instance is refused with.
+///
+/// A DB security group is the EC2-Classic association the member was introduced for, and
+/// every DB instance this service creates is placed in a DB subnet group — the one the
+/// request named, its DB cluster's, or the account's `default` group — so every one of them
+/// is a VPC DB instance, and the API versions that carry the association to such an instance
+/// are long past.
+///
+/// Fixed text, naming neither the group nor the instance: like the sibling refusal of a
+/// CHANGE to such a group's rules ([`VPC_DB_SECURITY_GROUP_NOT_MODIFIABLE`]) it is a
+/// statement about which API versions carry the association at all, which is why it holds
+/// whether or not the account has a group of that name.
+pub const DB_SECURITY_GROUPS_NOT_SUPPORTED_IN_VPC_MESSAGE: &str =
+    "DB Security Groups can only be associated with VPC DB Instances using API versions \
+     2012-01-15 through 2012-04-23.";
+
+/// Whether the Availability Zone `zone` is one the DB subnet group `group` covers.
+///
+/// A DB instance is placed in a SUBNET of the group it is placed in, and a subnet lies in
+/// exactly one Availability Zone, so the zone a request asks for has to be one of the zones
+/// the group's own subnets lie in ([`DbSubnetGroupRecord::subnet_zones`], read off the
+/// records the service that owns subnets answered with).
+///
+/// A group this service knows NO zone for — one whose subnets EC2 could not be asked about —
+/// is evidence of nothing: `true`, so no zone is refused on silence.
+pub fn db_subnet_group_covers_zone(group: &DbSubnetGroupRecord, zone: &str) -> bool {
+    let covered = db_subnet_group_zones(group);
+    covered.is_empty() || covered.iter().any(|known| known.eq_ignore_ascii_case(zone))
+}
+
+/// The Availability Zones a DB subnet group COVERS, in zone order: the distinct zones of the
+/// subnets it holds, as the service that owns subnets reported them.
+pub fn db_subnet_group_zones(group: &DbSubnetGroupRecord) -> BTreeSet<String> {
+    group.subnet_zones.values().cloned().collect()
+}
+
+/// What a request that asks for an Availability Zone the DB subnet group it places the
+/// instance in covers no subnet in is refused with.
+///
+/// Amazon RDS words it as a statement about the DB instance that cannot be created: the class
+/// it would have run, the zone the request asked for — which the group holds no subnet in, so
+/// there is no address in it to give the instance — and the two ways out, a subnet in that
+/// zone or a request that leaves the zone to the service.
+pub fn availability_zone_not_in_db_subnet_group_message(
+    db_instance_class: &str,
+    zone: &str,
+) -> String {
+    format!(
+        "You can't create a {db_instance_class} database instance because there are no \
+         subnets with available IP addresses in the specified Availability Zone {zone}. \
+         Create a new subnet in {zone} and target that Availability Zone again, or retry \
+         the launch with no availability zone specified."
+    )
+}
+
+/// What a delete of a parameter group that is still applied to a database is refused with:
+/// "can't be associated with any DB instances" for a DB parameter group, and the same of a DB
+/// cluster for a DB cluster parameter group.
+///
+/// ONE sentence for both levels, with the group's name as its only variable part: Amazon RDS
+/// words the state fault of a parameter group still in use the same way whichever kind of
+/// database holds it, so the two deletes cannot drift apart.
+pub fn parameter_group_in_use_message(name: &str) -> String {
+    format!(
+        "One or more database instances are still members of this parameter group {name}, \
+         so the group cannot be deleted"
+    )
+}
+
+/// The engines `ModifyDBInstance$Engine` names, and the engine each one converts an instance
+/// FROM: "the target Oracle DB engine when you convert a non-CDB to a CDB", where "you
+/// specify `oracle-ee-cdb` or `oracle-se2-cdb`" — each being the container-database form of
+/// one Oracle edition.
+const CDB_CONVERSION_ENGINES: &[(&str, &str)] =
+    &[("oracle-ee-cdb", "oracle-ee"), ("oracle-se2-cdb", "oracle-se2")];
+
+/// Whether an `Engine` a modification names is a change this operation can make to an
+/// instance currently running `current_engine`.
+///
+/// `ModifyDBInstance$Engine` exists for ONE change — converting an Oracle non-CDB instance to
+/// a container database — so the only values it admits are the CDB form of the edition the
+/// instance already runs, and the engine the instance runs itself (a request that changes
+/// nothing). Every other value asks for a database of another engine over the storage of this
+/// one, which no modification can do: the instance would have to be created again, and the
+/// member documents no such move.
+pub fn engine_change_is_supported(current_engine: &str, requested: &str) -> bool {
+    if requested.eq_ignore_ascii_case(current_engine) {
+        return true;
+    }
+    CDB_CONVERSION_ENGINES.iter().any(|(cdb, non_cdb)| {
+        requested.eq_ignore_ascii_case(cdb) && current_engine.eq_ignore_ascii_case(non_cdb)
+    })
+}
+
+/// How this service words the refusal of an `Engine` a modification cannot make; see
+/// [`engine_change_is_supported`].
+///
+/// Amazon RDS words it as a statement about the MOVE the request asked for, naming the engine
+/// the instance runs and the engine it was asked to run.
+pub fn engine_change_message(current_engine: &str, requested: &str) -> String {
+    format!(
+        "Modification of database from engine {current_engine} to engine {requested} is not \
+         supported."
+    )
+}
+
+/// What `CreateDBShardGroup` refuses a primary DB cluster whose ENGINE VERSION does not run
+/// Aurora Limitless Database with.
+///
+/// A DB shard group holds the shards of a Limitless database, and the Limitless attributes a
+/// shard group is made of are offered on the engine versions AWS ships them on
+/// (`SupportsLimitlessDatabase`, which the engine-version report publishes per build) — so a
+/// cluster on any other build has nothing to provision them into. Amazon RDS words it as a
+/// statement about the REQUEST's attributes, naming the version the cluster runs by the
+/// description the engine-version report gives it and what to do about it.
+pub fn shard_group_engine_version_message(engine_version_description: &str) -> String {
+    format!(
+        "The request includes Aurora Limitless Database attributes, which aren't available \
+         for the engine version of your DB cluster ({engine_version_description}). Upgrade \
+         to an engine version that's compatible with Aurora Limitless Database."
+    )
+}
+
+/// What `CreateDBShardGroup` refuses a primary DB cluster that is not an Aurora Limitless
+/// Database cluster with.
+///
+/// A DB shard group holds the shards of a Limitless database, and a cluster runs one only
+/// "when [`ClusterScalabilityType`] is set to `limitless`"
+/// ([`DbClusterRecord::runs_limitless_database`]) — so a cluster of any other scalability
+/// type has no Limitless database for a shard group to be provisioned into.
+pub fn shard_group_requires_limitless_cluster_message(db_cluster_identifier: &str) -> String {
+    format!(
+        "The DB cluster {db_cluster_identifier} isn't an Aurora Limitless Database cluster. \
+         Create the DB cluster with ClusterScalabilityType set to \
+         {CLUSTER_SCALABILITY_TYPE_LIMITLESS} to create DB shard groups in it."
+    )
+}

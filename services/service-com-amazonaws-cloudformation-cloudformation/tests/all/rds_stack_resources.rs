@@ -28,7 +28,7 @@ use service_com_amazonaws_cloudformation_cloudformation::state::{resource_status
 use smithy_server_runtime::MultiServiceRouter;
 
 use crate::stack_lifecycle::{
-    call, create_stack, describe_stack, member, rds, resource_event_reason, router,
+    call, create_stack, describe_stack, ec2, member, rds, resource_event_reason, router,
     wait_for_the_transition, xml_text, xml_texts,
 };
 
@@ -112,9 +112,12 @@ struct ProvisionCase<'a> {
     /// The members RDS must report for that instance — the declared configuration really
     /// in force on the database.
     members: Vec<Reported>,
-    /// The VPC security group ids RDS must report for the instance: the type spells the
-    /// property `VPCSecurityGroups` and the API's member is `VpcSecurityGroupIds`, so a row
-    /// that declares them exercises the one rename the arm makes.
+    /// The VPC security group ids RDS must report for the instance, named by the PLACEHOLDER
+    /// each one stands as in the template: the type spells the property `VPCSecurityGroups`
+    /// and the API's member is `VpcSecurityGroupIds`, so a row that declares them exercises
+    /// the one rename the arm makes. Each placeholder is replaced by the id Amazon EC2 minted
+    /// for a group this suite creates there first — Amazon RDS resolves a membership against
+    /// the service that owns security groups, so only an id it minted can be one.
     security_groups: &'a [&'a str],
     /// The logical id of a DB subnet group the row declares, if any.
     subnet_group: Option<&'a str>,
@@ -270,8 +273,8 @@ async fn a_db_instance_a_stack_declares_exists_in_rds_once_the_stack_reports_it_
             template: r#"{"Resources":{"Database":{"Type":"AWS::RDS::DBInstance",
                      "Properties":{"DBInstanceIdentifier":"cfn-probe-renamed",
                        "Engine":"mariadb","DBInstanceClass":"db.m5.large",
-                       "VPCSecurityGroups":["sg-0123456789abcdef0",
-                         "sg-00112233445566778"],
+                       "VPCSecurityGroups":["emu-cfn-group-one",
+                         "emu-cfn-group-two"],
                        "CustomIAMInstanceProfile":"AWSRDSCustomInstanceProfile"}}},
                  "Outputs":{"InstanceId":{"Value":{"Ref":"Database"}},
                    "Endpoint":{"Value":{"Fn::GetAtt":["Database","Endpoint.Address"]}},
@@ -282,15 +285,50 @@ async fn a_db_instance_a_stack_declares_exists_in_rds_once_the_stack_reports_it_
                 reported("Engine", "mariadb"),
                 reported("DBInstanceClass", "db.m5.large"),
             ],
-            security_groups: &["sg-0123456789abcdef0", "sg-00112233445566778"],
+            security_groups: &["emu-cfn-group-one", "emu-cfn-group-two"],
             subnet_group: None,
         },
     ];
 
     for case in cases {
         let router = router();
-        let (status_code, created) =
-            create_stack(&router, case.stack_name, case.template, &[]).await;
+        // The security groups the row's template names are created in Amazon EC2 FIRST, and
+        // each placeholder in the template is replaced by the id EC2 minted: Amazon RDS
+        // resolves every `VpcSecurityGroupIds` entry against the service that owns security
+        // groups, so a declaration naming an id nobody minted is a stack the real service
+        // rolls back too.
+        let mut template = case.template.to_string();
+        let mut minted_groups: Vec<String> = Vec::new();
+        for placeholder in case.security_groups {
+            let (status_code, created) = ec2(
+                &router,
+                "CreateSecurityGroup",
+                &[
+                    ("GroupName", placeholder),
+                    (
+                        "GroupDescription",
+                        "a group the probe stack places its instance in",
+                    ),
+                ],
+            )
+            .await;
+            assert_eq!(
+                status_code, 200,
+                "case {:?}: CreateSecurityGroup({placeholder}) must answer 200, got \
+                 {status_code} {created}",
+                case.case
+            );
+            let group_id = xml_text(&created, "groupId").unwrap_or_default();
+            assert!(
+                group_id.starts_with("sg-"),
+                "case {:?}: EC2 must answer the id it minted for {placeholder}, got \
+                 {group_id:?} in {created}",
+                case.case
+            );
+            template = template.replace(placeholder, &group_id);
+            minted_groups.push(group_id);
+        }
+        let (status_code, created) = create_stack(&router, case.stack_name, &template, &[]).await;
         assert_eq!(
             status_code, 200,
             "case {:?}: CreateStack must answer 200, got {status_code} {created}",
@@ -372,11 +410,11 @@ async fn a_db_instance_a_stack_declares_exists_in_rds_once_the_stack_reports_it_
             );
         }
         let memberships = xml_texts(&reported_instance, "VpcSecurityGroupId");
-        for group in case.security_groups {
+        for group in &minted_groups {
             assert!(
                 memberships.iter().any(|reported| reported == group),
-                "case {:?}: RDS must report {group:?} among the instance's VPC security \
-                 groups, got {memberships:?} in {reported_instance}",
+                "case {:?}: RDS must report {group:?}, an id EC2 minted, among the \
+                 instance's VPC security groups, got {memberships:?} in {reported_instance}",
                 case.case
             );
         }

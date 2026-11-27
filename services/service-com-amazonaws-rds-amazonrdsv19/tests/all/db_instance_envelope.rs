@@ -552,9 +552,9 @@ async fn every_db_instance_envelope_projects_the_whole_stored_record() {
 async fn a_supplied_member_is_reported_from_the_store_rather_than_defaulted() {
     let router = emulator();
     let identifier = "emu-env-supplied";
-    // A `DBSubnetGroupName` and a `DBParameterGroupName` are RESOLVED against the store
-    // rather than echoed, so the groups this row names have to exist before an instance
-    // can reference them.
+    // A `DBSubnetGroupName`, a `DBParameterGroupName` and an `OptionGroupName` are RESOLVED
+    // against the store rather than echoed, so the groups this row names have to exist
+    // before an instance can reference them.
     expect_ok(
         "the named parameter group is created first",
         call(
@@ -564,6 +564,20 @@ async fn a_supplied_member_is_reported_from_the_store_rather_than_defaulted() {
                 ("DBParameterGroupName", "custom-mysql80".to_string()),
                 ("DBParameterGroupFamily", "mysql8.0".to_string()),
                 ("Description", "a-group-under-test".to_string()),
+            ],
+        )
+        .await,
+    );
+    expect_ok(
+        "the named option group is created first",
+        call(
+            &router,
+            "CreateOptionGroup",
+            &[
+                ("OptionGroupName", "custom-option-group".to_string()),
+                ("EngineName", "mysql".to_string()),
+                ("MajorEngineVersion", "8.0".to_string()),
+                ("OptionGroupDescription", "a-group-under-test".to_string()),
             ],
         )
         .await,
@@ -613,8 +627,9 @@ async fn a_supplied_member_is_reported_from_the_store_rather_than_defaulted() {
         // A non-gp3 storage type provisions no separate throughput.
         ("StorageType", "gp2"),
         ("DBSubnetGroupName", "emu-subnets"),
-        ("DBSecurityGroups.DBSecurityGroupName.1", "legacy-one"),
-        ("DBSecurityGroups.DBSecurityGroupName.2", "legacy-two"),
+        // `DBSecurityGroups` is NOT among them: this instance is placed in a VPC, and a DB
+        // security group — the EC2-Classic association — can't be given to a VPC DB
+        // instance through this API version, which `create_path_refusal_wording` pins.
         ("VpcSecurityGroupIds.VpcSecurityGroupId.1", "sg-00000001"),
         ("VpcSecurityGroupIds.VpcSecurityGroupId.2", "sg-00000002"),
         ("Domain", "d-9067d45678"),
@@ -655,19 +670,16 @@ async fn a_supplied_member_is_reported_from_the_store_rather_than_defaulted() {
         ] {
             assert_member(case, envelope, instance, member, expected);
         }
-        // The membership lists carry one entry per supplied name, each with the status
-        // of a membership that is in effect.
+        // A VPC DB instance holds no DB security group, so the element is reported EMPTY:
+        // the list says the instance is a member of none rather than being absent.
         let security_groups = subtrees(instance, "DBSecurityGroup");
-        assert_eq!(
-            security_groups.len(),
-            2,
-            "case {case:?}: the {envelope} envelope must report one DBSecurityGroup \
-             membership per supplied name, got {security_groups:?}"
+        assert!(
+            security_groups.is_empty(),
+            "case {case:?}: the {envelope} envelope of a VPC DB instance must report no \
+             DBSecurityGroup membership, got {security_groups:?}"
         );
-        for (membership, expected) in security_groups.iter().zip(["legacy-one", "legacy-two"]) {
-            assert_member(case, envelope, membership, "DBSecurityGroupName", expected);
-            assert_member(case, envelope, membership, "Status", "active");
-        }
+        // The membership lists carry one entry per supplied id, each with the status of a
+        // membership that is in effect.
         let vpc_groups = subtrees(instance, "VpcSecurityGroupMembership");
         assert_eq!(
             vpc_groups.len(),

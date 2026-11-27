@@ -438,6 +438,47 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .storage_type
             .clone()
             .unwrap_or_else(|| crate::state::default_storage_type(input.iops).to_string());
+        // The TYPE itself is resolved against the value list `StorageType` publishes for the
+        // engine before the size it bounds is: a value that list does not carry names no
+        // storage this service can provision, so it is the modelled unsupported-type fault
+        // rather than a type stored verbatim and reported back
+        // ([`crate::ops::describe_orderable_db_instance_options::check_requested_storage_type`],
+        // the one check every operation that takes the member reads).
+        if let Some(requested_type) = &input.storage_type {
+            if let Err(message) =
+                crate::ops::describe_orderable_db_instance_options::check_requested_storage_type(
+                    &input.engine,
+                    requested_type,
+                )
+            {
+                return Err(CreateDBInstanceErrorModeled::StorageTypeNotSupportedFault(
+                    StorageTypeNotSupportedFault {
+                        message: Some(message),
+                    },
+                )
+                .into());
+            }
+        }
+        // `DBSecurityGroups` is the EC2-Classic association the member was introduced for,
+        // and every DB instance this operation creates is placed IN a VPC: it sits in the DB
+        // subnet group the request named, in the group of the DB cluster it joins, or in the
+        // account's `default` group (the placement resolved further down), so none of them is
+        // the non-VPC DB instance the member exists for. A VPC DB instance cannot carry the
+        // association through this API version
+        // ([`crate::state::DB_SECURITY_GROUPS_NOT_SUPPORTED_IN_VPC_MESSAGE`], the sentence
+        // Amazon RDS answers), whatever group the request names and whether or not the
+        // account holds one — so a request that names any is refused for the combination it
+        // is, and nothing is stored with a membership the instance's network could never
+        // honour.
+        if input
+            .db_security_groups
+            .as_ref()
+            .is_some_and(|named| !named.is_empty())
+        {
+            return Err(CreateDBInstanceError::invalid_parameter_combination(
+                crate::state::DB_SECURITY_GROUPS_NOT_SUPPORTED_IN_VPC_MESSAGE,
+            ));
+        }
         if let Some(allocated_storage) = input.allocated_storage {
             crate::ops::describe_orderable_db_instance_options::check_requested_allocated_storage(
                 &input.engine,
@@ -535,6 +576,28 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             }
         }
 
+        // `VpcSecurityGroupIds`: "A list of Amazon EC2 VPC security groups to associate with
+        // this DB instance", which are Amazon EC2's resources — so each one the request names
+        // is resolved against EC2 over the in-process callback, which cannot be done under
+        // the store's guard either, and a group the account does not hold is refused for the
+        // value it carried rather than stored as a membership nothing could resolve (the same
+        // hop and the same sentence `CreateDBCluster` answers,
+        // [`crate::state::unresolved_vpc_security_groups`]).
+        let vpc_security_group_ids = input.vpc_security_group_ids.clone().unwrap_or_default();
+        crate::state::check_security_group_memberships(
+            "VpcSecurityGroupIds",
+            &vpc_security_group_ids,
+        )
+        .map_err(CreateDBInstanceError::invalid_parameter_value)?;
+        let unresolved =
+            crate::state::unresolved_vpc_security_groups(ctx, &region, &vpc_security_group_ids)
+                .await;
+        if let Some(group_id) = unresolved.first() {
+            return Err(CreateDBInstanceError::invalid_parameter_value(
+                crate::state::invalid_security_group_message(group_id),
+            ));
+        }
+
         // No store means this service was mounted on an engine it has no state in,
         // so it cannot serve the operation at all. Unreachable with the engine the
         // router builds; 501 is the honest answer, never a fabricated success.
@@ -601,13 +664,25 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 .into());
             }
         }
-        // `OptionGroupName` is NOT resolved the same way, and deliberately: alongside
-        // every engine major version AWS creates a DEFAULT option group
-        // (`default:mysql-8-0`) that no request creates and this service does not hold,
-        // and its name is not drawn from the parameter groups' `default.` form, so
-        // refusing every name this store has no record of would refuse the groups AWS
-        // itself provides. It is stored as given — which is what lets `DeleteOptionGroup`
+        // `OptionGroupName` is resolved against the groups the account can SEE: the groups a
+        // request created plus the DEFAULT group AWS creates alongside every engine major
+        // version (`default:mysql-8-0`), which no request creates and this store holds no
+        // record of
+        // ([`crate::state::ComAmazonawsRdsAmazonrdsv19State::resolve_visible_option_group`]).
+        // A name that resolves to neither names no option group at all, so it is the modelled
+        // not-found fault rather than an instance reporting a membership in a group nothing
+        // could resolve. The name is STORED as given — which is what lets `DeleteOptionGroup`
         // see that an instance is using a group.
+        if let Some(named) = &input.option_group_name {
+            if store.resolve_visible_option_group(&region, named).is_none() {
+                return Err(CreateDBInstanceErrorModeled::OptionGroupNotFoundFault(
+                    OptionGroupNotFoundFault {
+                        message: Some(crate::state::option_group_not_found_message(named)),
+                    },
+                )
+                .into());
+            }
+        }
 
         if store.db_instances.contains_key(&key) {
             return Err(CreateDBInstanceErrorModeled::DBInstanceAlreadyExistsFault(
@@ -676,6 +751,33 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .clone()
             .or(cluster_db_subnet_group_name)
             .unwrap_or_else(|| crate::state::DEFAULT_DB_SUBNET_GROUP.to_string());
+        // `AvailabilityZone` is "the Availability Zone (AZ) where the database will be
+        // created", and the database is created in a SUBNET of the group it is placed in — so
+        // the zone the request asks for has to be one of the zones that group's subnets lie
+        // in ([`crate::state::db_subnet_group_covers_zone`], which reads the zones the
+        // service that owns subnets answered with). A zone the group covers no subnet in
+        // leaves the instance with no network to be placed in, which is the modelled
+        // `InvalidVPCNetworkStateFault` ("the DB subnet group doesn't cover all Availability
+        // Zones"), rather than an accepted create reporting the zone of an instance the group
+        // could never have placed there.
+        if let Some(zone) = input.availability_zone.as_deref() {
+            if let Some(group) = store.resolve_db_subnet_group(&region, &placed_in_db_subnet_group)
+            {
+                if !crate::state::db_subnet_group_covers_zone(&group, zone) {
+                    return Err(CreateDBInstanceErrorModeled::InvalidVPCNetworkStateFault(
+                        InvalidVPCNetworkStateFault {
+                            message: Some(
+                                crate::state::availability_zone_not_in_db_subnet_group_message(
+                                    &input.db_instance_class,
+                                    zone,
+                                ),
+                            ),
+                        },
+                    )
+                    .into());
+                }
+            }
+        }
         // What the instance RUNS and the combination it is ordered IN are resolved once the
         // DB cluster above — the resource this request REFERENCES — has been resolved: a
         // request naming a cluster that does not exist is told THAT, the obstacle it has to
@@ -924,8 +1026,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 option_group_name.as_deref(),
             ),
             option_group_name,
-            vpc_security_group_ids: input.vpc_security_group_ids.unwrap_or_default(),
-            db_security_group_names: input.db_security_groups.unwrap_or_default(),
+            vpc_security_group_ids,
+            // A DB instance this operation creates is a VPC DB instance, which carries no DB
+            // SECURITY group at all: a request naming one is refused above, so the record
+            // holds none and the envelope reports the membership list empty.
+            db_security_group_names: Vec::new(),
             db_cluster_identifier,
             // `PromotionTier`: the failover order the request asked for, else "Default:
             // `1`".

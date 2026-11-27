@@ -34,7 +34,9 @@ use service_com_amazonaws_rds_amazonrdsv19::state::{
 };
 use smithy_server_runtime::MultiServiceRouter;
 
-use crate::db_instances::{call, call_in, emulator, expect_error, expect_ok, subtrees, text, REGION};
+use crate::db_instances::{
+    call, call_in, emulator, expect_error, expect_ok, subtrees, text, wait_for_settle, REGION,
+};
 
 /// The canonical account id every generated emulator presents, as the sibling suites assert
 /// it in an ARN.
@@ -325,11 +327,30 @@ async fn a_group_a_db_instance_is_using_is_refused_with_the_state_fault_then_rel
                     ("DBInstanceIdentifier", instance),
                     ("Engine", "mysql"),
                     ("DBInstanceClass", "db.m5.large"),
-                    ("DBSecurityGroups.DBSecurityGroupName.1", membership),
                 ],
             )
             .await,
         );
+        // The membership is given to the instance through the MODIFICATION: every DB
+        // instance a create places in a VPC, which is every instance this service creates,
+        // is refused the EC2-Classic association at create time
+        // (`instance_reference_resolution_refusals` pins that refusal), so the state this
+        // delete is held to is reached the one way that still reaches it.
+        wait_for_settle();
+        expect_ok(
+            case,
+            call(
+                &router,
+                "ModifyDBInstance",
+                &[
+                    ("DBInstanceIdentifier", instance),
+                    ("DBSecurityGroups.DBSecurityGroupName.1", membership),
+                    ("ApplyImmediately", "true"),
+                ],
+            )
+            .await,
+        );
+        wait_for_settle();
 
         // A group in use is refused with the STATE fault, not the not-found: the group
         // exists, and the caller has to release it first.

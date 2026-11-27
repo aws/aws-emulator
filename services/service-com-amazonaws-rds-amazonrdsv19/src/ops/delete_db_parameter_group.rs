@@ -217,7 +217,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // "Can't be associated with any DB instances." The association is the instance
         // record's own `DBParameterGroupName`, which carries the name as its create spelled
         // it while the group is keyed lowercased, so the two are compared without case: both
-        // spellings name the one group.
+        // spellings name the one group. The sentence is the one both parameter-group deletes
+        // answer ([`crate::state::parameter_group_in_use_message`]).
         if store.instances_in(&region).into_iter().any(|instance| {
             instance
                 .db_parameter_group_name
@@ -227,10 +228,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             return Err(
                 DeleteDBParameterGroupErrorModeled::InvalidDBParameterGroupStateFault(
                     InvalidDBParameterGroupStateFault {
-                        message: Some(format!(
-                            "One or more database instances are still members of this parameter \
-                             group {name}, so the group cannot be deleted"
-                        )),
+                        message: Some(crate::state::parameter_group_in_use_message(&name)),
                     },
                 )
                 .into(),

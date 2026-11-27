@@ -578,12 +578,26 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 }
             };
             // `OptionGroupName`: the same rule for the option group, read from the group's
-            // own `EngineName`. A name this service can resolve to no group at all is stored
-            // as given, exactly as `CreateDBInstance` stores one.
+            // own `EngineName`. A name this service can resolve to NO group — neither one a
+            // request created nor a default group AWS provides — names no option group at
+            // all, which is the modelled not-found fault, exactly as `CreateDBInstance`
+            // answers it.
             let option_group_name = match &input.option_group_name {
                 None => source.option_group_name.clone(),
                 Some(named) => {
-                    if let Some(group) = store.resolve_visible_option_group(&region, named) {
+                    let Some(group) = store.resolve_visible_option_group(&region, named) else {
+                        return Err(
+                            CreateDBInstanceReadReplicaErrorModeled::OptionGroupNotFoundFault(
+                                OptionGroupNotFoundFault {
+                                    message: Some(
+                                        crate::state::option_group_not_found_message(named),
+                                    ),
+                                },
+                            )
+                            .into(),
+                        );
+                    };
+                    {
                         if !group.engine_name.eq_ignore_ascii_case(&source.engine) {
                             // Amazon RDS words this refusal as the two version FAMILIES it
                             // cannot reconcile — the group's engine and major version, and
@@ -640,6 +654,26 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
             let mint = store.next_mint();
             let storage_type = input.storage_type.clone().unwrap_or(source.storage_type.clone());
+            // The TYPE is resolved against the value list `StorageType` publishes for the
+            // engine the replica runs before the size it bounds is: a value that list does
+            // not carry names no storage this service can provision, which is the modelled
+            // unsupported-type fault
+            // ([`crate::ops::describe_orderable_db_instance_options::check_requested_storage_type`]).
+            if let Some(requested_type) = &input.storage_type {
+                if let Err(message) =
+                    crate::ops::describe_orderable_db_instance_options::
+                        check_requested_storage_type(&source.engine, requested_type)
+                {
+                    return Err(
+                        CreateDBInstanceReadReplicaErrorModeled::StorageTypeNotSupportedFault(
+                            StorageTypeNotSupportedFault {
+                                message: Some(message),
+                            },
+                        )
+                        .into(),
+                    );
+                }
+            }
             // `AllocatedStorage` is bounded by the (engine, storage type) pair the replica
             // ends up on, exactly as a create and a modification are; a request that names no
             // type is held to the widest range the engine's types reach between them
