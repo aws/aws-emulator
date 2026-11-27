@@ -343,7 +343,12 @@ pub async fn perform_owed_session_statements<Eng: ::std::marker::Send + ::std::m
             region,
             &plan.role_arn,
             SESSION_ROLE_SESSION_NAME,
-        );
+        )
+        // The AWS SDK the cell's own calls are made with is the one the session's RUNTIME
+        // supplies, which is the generation its `GlueVersion` pins
+        // ([`super::bundled_sdk_of`]) — so a call of it travels the wire that SDK's client of
+        // the called service speaks.
+        .map(|access| access.bundling(super::bundled_sdk_of(&plan.glue_version)));
         if !hand_off_statement(&state, ctx.callback(), region, plan, identity, access) {
             break;
         }

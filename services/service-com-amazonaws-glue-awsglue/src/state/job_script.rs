@@ -771,7 +771,12 @@ pub async fn perform_owed_job_runs<Eng: ::std::marker::Send + ::std::marker::Syn
                 region,
                 &plan.role_arn,
                 JOB_RUN_ROLE_SESSION_NAME,
-            );
+            )
+            // The AWS SDK the run's own calls are made with is the one the run's RUNTIME
+            // supplies, which is the generation its `GlueVersion` pins
+            // ([`crate::state::bundled_sdk_of`]) — so a call of it travels the wire that
+            // SDK's client of the called service speaks.
+            .map(|access| access.bundling(bundled_sdk_of(&plan.glue_version)));
             if !hand_off_job_script(&state, ctx.callback(), region, plan, identity, access) {
                 break;
             }

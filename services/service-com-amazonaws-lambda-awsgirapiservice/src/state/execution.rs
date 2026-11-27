@@ -128,7 +128,7 @@ mod bootstrap;
 
 /// The AWS SDK call seam a running handler reaches the rest of this emulator through.
 pub mod aws_api;
-pub use aws_api::AwsAccess;
+pub use aws_api::{AwsAccess, BundledSdk};
 
 /// What an SDK client fills into a call's input itself: the members the called service's model
 /// marks as an idempotency token.
@@ -246,6 +246,11 @@ mod sdk_call;
 
 /// Binding one of those calls to HTTP for a service whose protocol is `restJson1`.
 pub mod rest_json;
+
+/// Binding one of those calls to the AWS QUERY wire — the surface an API published over two
+/// wires keeps for the SDK generations released before it moved — and reading that wire's XML
+/// answer back.
+mod query_wire;
 
 /// WHICH values of an answered call an SDK MATERIALISES rather than hand over as the text or
 /// the number the wire carried — its bytes and its instants — which the called service's own

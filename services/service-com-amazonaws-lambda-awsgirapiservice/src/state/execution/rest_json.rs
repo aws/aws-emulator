@@ -73,6 +73,27 @@ pub struct Model {
 static NO_MEMBERS: OnceLock<Map<String, Value>> = OnceLock::new();
 
 impl Model {
+    /// Parse `source` for a model whose namespace is not stated beside it: the namespace is the
+    /// one the model's OWN service shape is declared in, so a short shape name resolves without
+    /// this crate restating it.
+    pub(crate) fn parse_in_its_own_namespace(source: &str) -> Self {
+        let mut parsed = Self::parse(source, "");
+        parsed.namespace = parsed
+            .shapes
+            .iter()
+            .find(|(_, shape)| shape.get("type").and_then(Value::as_str) == Some("service"))
+            .and_then(|(id, _)| id.split('#').next())
+            .unwrap_or_default()
+            .to_string();
+        parsed
+    }
+
+    /// Every shape the model declares, keyed by its shape id — for a question about the model
+    /// as a whole rather than about one shape it holds.
+    pub(crate) fn shapes(&self) -> &Map<String, Value> {
+        &self.shapes
+    }
+
     /// Parse `source`, which is a Smithy model document.
     pub(crate) fn parse(source: &str, namespace: &str) -> Self {
         let shapes = ::serde_json::from_str::<Value>(source)
@@ -611,8 +632,9 @@ const UNRESERVED: ::percent_encoding::AsciiSet = ::percent_encoding::NON_ALPHANU
     .remove(b'~');
 
 /// `text` with every character a URI path segment or a query parameter may not carry
-/// percent-encoded, which is what an SDK does to a value before it reaches a URI.
-fn encoded(text: &str) -> String {
+/// percent-encoded, which is what an SDK does to a value before it reaches a URI — and to a
+/// field of a form-encoded body, which is the same encoding ([`super::query_wire`]).
+pub(crate) fn encoded(text: &str) -> String {
     ::percent_encoding::utf8_percent_encode(text, &UNRESERVED).to_string()
 }
 

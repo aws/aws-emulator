@@ -42,24 +42,35 @@ fn runs_no_python_2(glue_version: &str) -> bool {
         .is_some_and(|major| major >= GLUE_VERSION_WITHOUT_PYTHON_2)
 }
 
+/// The Glue version a job stored under `glue_version` RUNS ON.
+///
+/// `auto` names no runtime of its own: the service runs such a job on the version it would
+/// have filled in ([`DEFAULT_GLUE_VERSION`]), so that is the version every question about the
+/// runtime of such a job is answered from. Any other value is the version it named.
+///
+/// The ONE reading of that mapping, so no two questions about a run's runtime — which Python
+/// it has ([`default_python_version`]), which AWS SDK it supplies
+/// ([`super::bundled_sdk_of`]) — can disagree about which version a job is on.
+pub fn effective_glue_version(glue_version: &str) -> &str {
+    match glue_version.trim() {
+        AUTO_GLUE_VERSION => DEFAULT_GLUE_VERSION,
+        named => named,
+    }
+}
+
 /// The `PythonVersion` the service fills into a command that named none, for a definition
 /// stored under `glue_version`.
 ///
-/// The version follows the Glue version the job RUNS ON — the one the stored definition
-/// carries and every read of it reports, which is the version the write stated, the one the
-/// service filled in for a write that stated none ([`DEFAULT_GLUE_VERSION`]), or the one it
-/// chooses for a definition that left the choice to it ([`AUTO_GLUE_VERSION`]). A job on a
-/// version whose runtime carries no Python 2 runs Python 3 ([`PYTHON_VERSION_3`]) and
-/// nothing else, so that is the version it reads back with; one on an early version that
-/// still ran Python 2 keeps the historical default ([`DEFAULT_PYTHON_VERSION`]).
+/// The version follows the Glue version the job RUNS ON ([`effective_glue_version`]) — the one
+/// the stored definition carries and every read of it reports, which is the version the write
+/// stated, the one the service filled in for a write that stated none
+/// ([`DEFAULT_GLUE_VERSION`]), or the one it chooses for a definition that left the choice to
+/// it ([`AUTO_GLUE_VERSION`]). A job on a version whose runtime carries no Python 2 runs
+/// Python 3 ([`PYTHON_VERSION_3`]) and nothing else, so that is the version it reads back
+/// with; one on an early version that still ran Python 2 keeps the historical default
+/// ([`DEFAULT_PYTHON_VERSION`]).
 pub fn default_python_version(glue_version: &str) -> &'static str {
-    // `auto` names no runtime of its own: the service runs such a job on the version it
-    // would have filled in, so that is the version this reads.
-    let effective = match glue_version {
-        AUTO_GLUE_VERSION => DEFAULT_GLUE_VERSION,
-        named => named,
-    };
-    if runs_no_python_2(effective) {
+    if runs_no_python_2(effective_glue_version(glue_version)) {
         PYTHON_VERSION_3
     } else {
         DEFAULT_PYTHON_VERSION

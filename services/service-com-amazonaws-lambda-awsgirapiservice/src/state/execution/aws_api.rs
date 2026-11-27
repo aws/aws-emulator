@@ -149,6 +149,60 @@ pub struct Api {
     pub answer_model: Option<&'static super::blob_members::ServiceModel>,
 }
 
+/// Which GENERATION of the AWS SDK the runtime a run happens in bundles.
+///
+/// A managed runtime ships the AWS SDK on its own import path, pinned to the release that
+/// runtime was built with, and an SDK's own generation decides WHICH WIRE its client of a
+/// service speaks: for a service that publishes one API over two of them, a client released
+/// before the move speaks the older wire and goes on being answered there. So this is a fact
+/// about the RUNTIME and not about the called service, which is why it travels on the seam
+/// ([`AwsAccess::bundling`]) rather than in the table of services above.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum BundledSdk {
+    /// The current generation: every service is called on the wire its own model declares.
+    #[default]
+    Current,
+    /// A generation released before the AWS SDKs moved the services that had published an AWS
+    /// Query API onto an AWS JSON protocol. Its client of such a service speaks that API's
+    /// form-encoded AWS Query surface — the one those services kept for exactly these clients,
+    /// which is what the query-compatible modifier on their models records — and every other
+    /// service is called on the wire its own model declares.
+    BeforeTheQueryApisMovedToJson,
+}
+
+impl BundledSdk {
+    /// The wire a call to `api` travels on for a run whose runtime bundles this SDK.
+    ///
+    /// The MODEL decides which services have two wires rather than a list of names here: a
+    /// service whose model declares an AWS JSON protocol and carries the query-compatible
+    /// modifier is one that published an AWS Query API first and kept serving it, which is
+    /// exactly the service an SDK of the older generation reaches there.
+    fn wire(self, api: &Api) -> Wire {
+        match (self, &api.protocol) {
+            (
+                Self::BeforeTheQueryApisMovedToJson,
+                Protocol::AwsJson {
+                    query_compatible: true,
+                    ..
+                },
+            ) => Wire::AwsQuery,
+            _ => Wire::AsTheModelDeclares,
+        }
+    }
+}
+
+/// WHICH wire one call travels on, once the SDK generation and the called service are both
+/// known ([`BundledSdk::wire`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Wire {
+    /// The protocol the called service's own model declares, which is what every current
+    /// client speaks.
+    AsTheModelDeclares,
+    /// The AWS Query surface of an API published over two wires: a form-encoded `Action`
+    /// answered with an XML document ([`super::query_wire`]).
+    AwsQuery,
+}
+
 /// How a request to one service is bound to HTTP, which its model's protocol trait decides.
 #[derive(Debug)]
 pub enum Protocol {
@@ -2126,6 +2180,9 @@ pub struct AwsAccess {
     /// them. `None` for a run that was given no engine — every run that is no Spark program's —
     /// whose statements are answered by nothing rather than by an engine holding no catalog.
     session_sql: Option<::std::sync::Arc<dyn ::service_common::spark_runtime::SessionSql>>,
+    /// The GENERATION of the AWS SDK the runtime this run happens in bundles, which decides
+    /// which WIRE a call of it travels on ([`BundledSdk`]).
+    sdk: BundledSdk,
 }
 
 impl AwsAccess {
@@ -2148,7 +2205,25 @@ impl AwsAccess {
             sandbox: None,
             egress: None,
             session_sql: None,
+            sdk: BundledSdk::default(),
         })
+    }
+
+    /// The same access, for a run whose runtime bundles the AWS SDK generation `sdk` — which is
+    /// what decides the WIRE each of its calls travels on ([`BundledSdk`]).
+    ///
+    /// A seam built without one is a run of the current generation, which is what every
+    /// managed runtime shipping a current SDK gives its code.
+    #[must_use]
+    pub fn bundling(mut self, sdk: BundledSdk) -> Self {
+        self.sdk = sdk;
+        self
+    }
+
+    /// The AWS SDK generation this run's runtime bundles.
+    #[must_use]
+    pub fn bundled_sdk(&self) -> BundledSdk {
+        self.sdk
     }
 
     /// The same access, with `engine` planning and running the SQL a Spark program of this run
@@ -2488,6 +2563,7 @@ impl AwsAccess {
                         identity: self.identity.as_ref(),
                         trace_header: self.trace_header.as_deref(),
                         addressed_at: self.client_endpoint.as_ref(),
+                        wire: self.sdk.wire(api),
                     },
                 )
                 .await
@@ -2843,6 +2919,9 @@ struct Caller<'a> {
     /// The endpoint the request is addressed at, or `None` to address it at the called
     /// service's own regional endpoint ([`ClientEndpoint`]).
     addressed_at: Option<&'a ClientEndpoint>,
+    /// The WIRE the request travels on, which the SDK generation the run's runtime bundles
+    /// decides ([`BundledSdk::wire`]).
+    wire: Wire,
 }
 
 /// Build, sign and dispatch one request, and read the answer back.
@@ -2883,6 +2962,7 @@ async fn sent(
         identity,
         trace_header,
         addressed_at,
+        wire,
     } = caller;
     // WHERE the request is addressed: the endpoint the SDK client was configured with, where
     // it was built with one, and otherwise the called service's own regional endpoint
@@ -2897,12 +2977,34 @@ async fn sent(
     if let Some(trace) = trace_header {
         builder = builder.header(super::trace_context::TRACE_HEADER, trace);
     }
-    let sent_body = match &api.protocol {
-        Protocol::AwsJson {
-            target_prefix,
-            query_compatible,
-            ..
-        } => {
+    let sent_body = match (wire, &api.protocol) {
+        // The AWS QUERY surface of an API published over two wires: the operation travels as
+        // the `Action` field of a form-encoded body with the input laid out in the fields
+        // beside it, and the answer is an XML document ([`super::query_wire`]). It is the SDK
+        // GENERATION this run's runtime bundles that puts the call here, so nothing of the
+        // service's own table above changes.
+        (Wire::AwsQuery, _) => {
+            let input = ::serde_json::from_str::<::serde_json::Value>(body)
+                .unwrap_or(::serde_json::Value::Null);
+            let laid_out = super::query_wire::bound(api.sdk_token, operation, &input)
+                .map_err(Sent::NotMade)?;
+            builder = builder
+                .method("POST")
+                .uri(format!("https://{host}{base_path}/"))
+                .header(
+                    "content-type",
+                    ::service_common::query_wire_form::QUERY_CONTENT_TYPE,
+                );
+            laid_out
+        }
+        (
+            Wire::AsTheModelDeclares,
+            Protocol::AwsJson {
+                target_prefix,
+                query_compatible,
+                ..
+            },
+        ) => {
             builder = builder
                 .method("POST")
                 .uri(format!("https://{host}{base_path}/"))
@@ -2916,7 +3018,7 @@ async fn sent(
             }
             body.as_bytes().to_vec()
         }
-        Protocol::RestJson(rest) => {
+        (Wire::AsTheModelDeclares, Protocol::RestJson(rest)) => {
             // The input document the guest sent is keyed by the operation's own member
             // names; where each belongs on the wire is that service's model's to say.
             let input = ::serde_json::from_str::<::serde_json::Value>(body)
@@ -2937,15 +3039,18 @@ async fn sent(
         // CloudFront's by the one [`super::aws_cloudfront`] holds and Amazon SNS's by the one
         // [`super::aws_sns`] holds, which is where a call to each is dispatched
         // ([`AwsAccess::dispatched`]): no request to them is built here.
-        Protocol::S3Rest
-        | Protocol::CloudFrontRest
-        | Protocol::SesQuery
-        | Protocol::SnsQuery
-        | Protocol::StsQuery
-        | Protocol::IamQuery
-        | Protocol::RdsQuery
-        | Protocol::CloudFormationQuery
-        | Protocol::Ec2Query => {
+        (
+            Wire::AsTheModelDeclares,
+            Protocol::S3Rest
+            | Protocol::CloudFrontRest
+            | Protocol::SesQuery
+            | Protocol::SnsQuery
+            | Protocol::StsQuery
+            | Protocol::IamQuery
+            | Protocol::RdsQuery
+            | Protocol::CloudFormationQuery
+            | Protocol::Ec2Query,
+        ) => {
             return Err(Sent::NotMade(format!(
                 "{} binds its requests with its own protocol rather than with a JSON one",
                 api.sdk_token
@@ -2988,12 +3093,48 @@ async fn sent(
         return Err(Sent::TooLarge);
     }
     let answered = String::from_utf8_lossy(payload).into_owned();
+    // The refusal an AWS QUERY answer carries, for a call that travelled that wire and was
+    // refused: that wire names the class in its own XML document rather than in the headers an
+    // AWS JSON answer carries it in, so this is where such a refusal's code and message come
+    // from ([`super::query_wire`]).
+    let refused_on_the_query_wire = match (wire, (200..300).contains(&status)) {
+        (Wire::AwsQuery, false) => super::query_wire::refusal(&answered),
+        _ => None,
+    };
+    // The class an SDK raises that refusal as is the error SHAPE the called service declares
+    // for the code the document named, and the code it REPORTS is that legacy code itself —
+    // which is the vocabulary a client of this wire matches on.
+    let (error_type, query_error_code) = match &refused_on_the_query_wire {
+        Some(refused) => (
+            super::query_wire::error_shape(api.sdk_token, &refused.code),
+            Some(refused.code.clone()),
+        ),
+        None => (error_type, query_error_code),
+    };
     // A REST-bound answer carries its output members where that operation's own model says,
     // so what the guest reads back is the output document keyed by those members' own names.
     // A REFUSAL is left exactly as the service worded it: its code and message are the
     // service's own, and the SDK raises them as they are.
-    let body = match (&api.protocol, status) {
-        (Protocol::RestJson(rest), 200..=299) => super::rest_json::read(
+    let body = match (wire, &api.protocol, status) {
+        // An answer of the AWS Query wire is an XML document: a served call's output members
+        // are read back under their own names, and a refusal is stated in the two members the
+        // SDK the guest calls reads a refusal's code and message from.
+        (Wire::AwsQuery, _, 200..=299) => {
+            super::query_wire::read(api.sdk_token, operation, &answered)
+        }
+        (Wire::AwsQuery, _, _) => match &refused_on_the_query_wire {
+            Some(refused) => {
+                let mut document = ::serde_json::Map::new();
+                document.insert("Code".to_string(), refused.code.clone().into());
+                document.insert("Message".to_string(), refused.message.clone().into());
+                for (member, value) in &refused.members {
+                    document.insert(member.clone(), value.clone().into());
+                }
+                ::serde_json::Value::Object(document).to_string()
+            }
+            None => answered,
+        },
+        (_, Protocol::RestJson(rest), 200..=299) => super::rest_json::read(
             rest,
             operation,
             status,
@@ -3257,8 +3398,60 @@ fn well_formed_region(region: &str) -> bool {
 mod tests {
     use super::{
         api_for, held_model, reachable_services, well_formed_operation, well_formed_region,
-        ClientEndpoint, APIS,
+        BundledSdk, ClientEndpoint, Protocol, Wire, APIS,
     };
+
+    /// RULE: the SDK GENERATION a run's runtime bundles decides the wire each of its calls
+    /// travels on, and WHICH services have a second wire is their own models' to say — a
+    /// service whose model declares an AWS JSON protocol and carries the query-compatible
+    /// modifier published an AWS Query API first and kept serving it, so an SDK of the
+    /// generation released before that move reaches it there and every other service on the
+    /// protocol its model declares.
+    ///
+    /// Asserted over the WHOLE table of reachable services rather than over one of them, so a
+    /// service added to it is covered by the rule instead of by a list written out here.
+    #[test]
+    fn the_bundled_sdk_decides_the_wire_and_the_model_decides_which_services_have_two() {
+        let mut moved: Vec<&str> = Vec::new();
+        for api in APIS {
+            let two_wires = matches!(
+                api.protocol,
+                Protocol::AwsJson {
+                    query_compatible: true,
+                    ..
+                }
+            );
+            assert_eq!(
+                BundledSdk::Current.wire(api),
+                Wire::AsTheModelDeclares,
+                "case {} with the current SDK: every service is called on the wire its own \
+                 model declares",
+                api.sdk_token
+            );
+            let older = BundledSdk::BeforeTheQueryApisMovedToJson.wire(api);
+            let expected = match two_wires {
+                true => Wire::AwsQuery,
+                false => Wire::AsTheModelDeclares,
+            };
+            assert_eq!(
+                older, expected,
+                "case {} with an SDK from before the query APIs moved to JSON: expected \
+                 {expected:?} for a service whose model {} the query-compatible modifier, got \
+                 {older:?}",
+                api.sdk_token,
+                if two_wires { "carries" } else { "does not carry" }
+            );
+            if two_wires {
+                moved.push(api.sdk_token);
+            }
+        }
+        // The table really holds such services, so the rows above are not all one branch.
+        assert!(
+            moved.contains(&"sqs"),
+            "the table must hold the services that moved off an AWS Query API, and it names \
+             {moved:?}"
+        );
+    }
 
     /// RULE: a service is reached by either spelling of its SDK id — the words run together, as
     /// an SDK client is built from it, and hyphenated, as the JavaScript SDK's client package is
