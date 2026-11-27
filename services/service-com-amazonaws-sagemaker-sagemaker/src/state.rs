@@ -182,6 +182,12 @@ pub use s3_access::{
     DELETE_OBJECT_ACTION, GET_OBJECT_ACTION, LIST_BUCKET_ACTION, PUT_OBJECT_ACTION,
 };
 
+/// The OBJECT KEY slice: whether the AWS KMS key an Amazon S3 object is sealed under lets the
+/// execution role a job's work reads it as open it, which is KMS's own decision.
+/// Re-exported below, so a handler names them as `crate::state::…` like every other slice.
+pub mod object_key_access;
+pub use object_key_access::{object_read_refusal, DECRYPT_OPERATION};
+
 /// The CONTAINER IMAGE slice: the one reading of a container image path a request names, and
 /// the sentence a path that is no reference at all is refused with. Re-exported below, so a
 /// handler names them as `crate::state::…` like every other slice.

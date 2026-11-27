@@ -401,6 +401,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // budget, and sees only the files this job's own inputs were downloaded into and the
         // variables this request declared (see `crate::state::container_run`).
         let outcome = match crate::state::processing_inputs_in_container(
+            &*self.engine,
             ctx,
             &region,
             &role_arn,

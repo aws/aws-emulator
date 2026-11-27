@@ -707,6 +707,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             reported: false,
         };
         let outcome = crate::state::run_training_job(
+            &*self.engine,
             ctx,
             &region,
             &input.training_job_name,

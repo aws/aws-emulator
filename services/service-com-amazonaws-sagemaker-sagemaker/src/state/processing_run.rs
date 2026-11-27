@@ -107,11 +107,17 @@ const NO_BUCKET_DETAIL: &str = " the location names no Amazon S3 bucket";
 /// places nothing for it; so is an input that names a dataset definition rather than an Amazon
 /// S3 location, whose data this emulator holds no query engine for.
 ///
+/// `engine` is the shared store every service of this emulator keeps its own records in, which
+/// the KMS half of each read's authorization is decided over ([`super::object_key_access`]).
+///
 /// The bounds are the ones every run of this service reads a caller's data under
 /// ([`super::MAX_OBJECT_BYTES`] per object, [`super::MAX_CHANNEL_OBJECTS`] objects per
 /// location, [`super::MAX_RUN_INPUT_BYTES`] over the whole job): the data is held in this
 /// process's memory, so what one job brings into it is bounded wherever it is read.
-pub async fn processing_inputs_in_container(
+pub async fn processing_inputs_in_container<
+    Eng: ::std::marker::Send + ::std::marker::Sync + 'static,
+>(
+    engine: &Eng,
     ctx: &smithy_server_runtime::OperationContext<'_>,
     region: &str,
     role_arn: &str,
@@ -148,6 +154,7 @@ pub async fn processing_inputs_in_container(
             ));
         };
         let objects = input_objects(
+            engine,
             ctx,
             &client,
             region,
@@ -166,17 +173,17 @@ pub async fn processing_inputs_in_container(
             ));
         }
         for object in objects {
-            // The read is authorized against BOTH the policy on the object's bucket and the
-            // grant in force on the execution role, per object: a prefix resolves to concrete
-            // keys only when it is read.
-            if object_read_is_unauthorized(ctx, &client, region, role_arn, &partition, &object)
-                .await
+            // The read is authorized against BOTH halves in force on it, per object — a prefix
+            // resolves to concrete keys only when it is read: the policy on the object's bucket
+            // together with the grant in force on the execution role, and the KMS key the object
+            // is SEALED under, whose `kms:Decrypt` the read performs as that same role
+            // ([`super::object_key_access`]). A read either half refuses brings nothing down, so
+            // the download leg fails here rather than completing over data it never saw.
+            if let Some(detail) =
+                object_read_refusal(engine, ctx, &client, region, role_arn, &partition, &object)
+                    .await
             {
-                return Err(processing_download_failed(
-                    name,
-                    &object.uri(),
-                    &access_denied_detail(),
-                ));
+                return Err(processing_download_failed(name, &object.uri(), &detail));
             }
             let ceiling = MAX_OBJECT_BYTES.min(remaining_bytes);
             if ceiling == 0 {
@@ -208,7 +215,8 @@ pub async fn processing_inputs_in_container(
 /// Amazon S3 lists under the key name prefix the input gave — which is the object itself when
 /// that prefix names one.
 #[allow(clippy::too_many_arguments)]
-async fn input_objects(
+async fn input_objects<Eng: ::std::marker::Send + ::std::marker::Sync + 'static>(
+    engine: &Eng,
     ctx: &smithy_server_runtime::OperationContext<'_>,
     client: &::aws_sdk_s3::Client,
     region: &str,
@@ -219,12 +227,10 @@ async fn input_objects(
     location: &S3Location,
 ) -> Result<Vec<S3Location>, String> {
     if s3_data_type == MANIFEST_DATA_TYPE {
-        if object_read_is_unauthorized(ctx, client, region, role_arn, partition, location).await {
-            return Err(processing_download_failed(
-                input,
-                &location.uri(),
-                &access_denied_detail(),
-            ));
+        if let Some(detail) =
+            object_read_refusal(engine, ctx, client, region, role_arn, partition, location).await
+        {
+            return Err(processing_download_failed(input, &location.uri(), &detail));
         }
         let bytes = read_object(client, location, MAX_OBJECT_BYTES)
             .await

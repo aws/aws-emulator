@@ -166,7 +166,10 @@ pub struct TransformTarget {
 /// Answers a [`TransformRunOutcome`] rather than an error channel, for the reason the module
 /// docs give: the run is the job's own work, so what it could not do is the job's `Failed`
 /// status rather than a refusal of the call that submitted it.
-pub async fn run_transform_job(
+/// `engine` is the shared store every service of this emulator keeps its own records in, which
+/// the KMS half of each read's authorization is decided over ([`super::object_key_access`]).
+pub async fn run_transform_job<Eng: ::std::marker::Send + ::std::marker::Sync + 'static>(
+    engine: &Eng,
     ctx: &smithy_server_runtime::OperationContext<'_>,
     region: &str,
     target: &TransformTarget,
@@ -195,7 +198,7 @@ pub async fn run_transform_job(
         Err(reason) => return TransformRunOutcome::failed(reason),
     };
 
-    let objects = match transform_objects(ctx, &client, region, &role_arn, &partition, &input, target).await
+    let objects = match transform_objects(engine, ctx, &client, region, &role_arn, &partition, &input, target).await
     {
         Ok(objects) => objects,
         Err(reason) => return TransformRunOutcome::failed(reason),
@@ -209,10 +212,15 @@ pub async fn run_transform_job(
 
     let mut outputs: Vec<String> = Vec::new();
     for object in objects {
-        if object_read_is_unauthorized(ctx, &client, region, &role_arn, &partition, &object).await {
+        // Both halves in force on the read, per object: the object itself, and the KMS key it is
+        // SEALED under, whose `kms:Decrypt` this read performs as the job's execution role
+        // ([`super::object_key_access`]).
+        if let Some(detail) =
+            object_read_refusal(engine, ctx, &client, region, &role_arn, &partition, &object).await
+        {
             return TransformRunOutcome::failed(transform_download_failed(
                 &object.uri(),
-                &access_denied_detail(),
+                &detail,
             ));
         }
         let bytes = match read_object(&client, &object, MAX_OBJECT_BYTES).await {
@@ -304,7 +312,8 @@ async fn load_transform_model(
 /// prefix, so the objects are the ones Amazon S3 lists under it — which is the object itself
 /// when the prefix names one.
 #[allow(clippy::too_many_arguments)]
-async fn transform_objects(
+async fn transform_objects<Eng: ::std::marker::Send + ::std::marker::Sync + 'static>(
+    engine: &Eng,
     ctx: &smithy_server_runtime::OperationContext<'_>,
     client: &::aws_sdk_s3::Client,
     region: &str,
@@ -314,11 +323,10 @@ async fn transform_objects(
     target: &TransformTarget,
 ) -> Result<Vec<S3Location>, String> {
     if target.input_data_type == MANIFEST_FILE {
-        if object_read_is_unauthorized(ctx, client, region, role_arn, partition, location).await {
-            return Err(transform_download_failed(
-                &location.uri(),
-                &access_denied_detail(),
-            ));
+        if let Some(detail) =
+            object_read_refusal(engine, ctx, client, region, role_arn, partition, location).await
+        {
+            return Err(transform_download_failed(&location.uri(), &detail));
         }
         let bytes = read_object(client, location, MAX_OBJECT_BYTES)
             .await

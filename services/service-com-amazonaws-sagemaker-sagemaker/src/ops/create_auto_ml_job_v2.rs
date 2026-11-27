@@ -409,8 +409,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             job_key: key,
             reported: false,
         };
-        let outcome =
-            crate::state::run_auto_ml_job_v2(ctx, &region, &input.auto_ml_job_name, &input).await;
+        let outcome = crate::state::run_auto_ml_job_v2(
+            &*self.engine,
+            ctx,
+            &region,
+            &input.auto_ml_job_name,
+            &input,
+        )
+        .await;
         recorder.report(outcome);
         drop(recorder);
 

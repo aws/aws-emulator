@@ -856,6 +856,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let mut children_end = now;
         for (child, child_arn) in &children {
             let outcome = crate::state::run_training_job(
+                &*self.engine,
                 ctx,
                 &region,
                 &child.request.training_job_name,

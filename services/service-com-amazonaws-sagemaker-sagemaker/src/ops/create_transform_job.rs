@@ -334,6 +334,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // record carries the outcome from the moment a caller can read it — the terminal
         // status is still the clock's to materialise.
         let outcome = crate::state::run_transform_job(
+            &*self.engine,
             ctx,
             &region,
             &crate::state::TransformTarget {

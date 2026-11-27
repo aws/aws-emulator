@@ -284,7 +284,21 @@ pub fn data_download_failed(channel: &str, uri: &str, detail: &str) -> String {
 /// reason carrying the code twice never states.
 #[must_use]
 pub fn access_denied_detail() -> String {
-    format!("{ACCESS_DENIED_MESSAGE} (Service: Amazon S3; Status Code: 403; Error Code: AccessDenied)")
+    s3_refusal_detail(ACCESS_DENIED_MESSAGE)
+}
+
+/// The ENVELOPE a refused Amazon S3 call's answer arrives in, around the sentence Amazon S3
+/// answered with: the service, the HTTP status and the error code, as the SDK inside a job's
+/// container reports one.
+///
+/// Stated once because a job's work reads TWO sentences in this one envelope: Amazon S3's own
+/// "Access Denied" for a call its own authorities refused ([`access_denied_detail`]), and the
+/// sentence KMS worded for a read it could not open the object's data key for
+/// ([`super::object_key_access`]) — a read Amazon S3 answers with the same code and status,
+/// relaying what KMS said.
+#[must_use]
+pub fn s3_refusal_detail(message: &str) -> String {
+    format!("{message} (Service: Amazon S3; Status Code: 403; Error Code: AccessDenied)")
 }
 
 /// The message Amazon S3 answers a refused call with, from its own list of error responses:
@@ -630,7 +644,8 @@ pub async fn unlistable_input_location(
 /// ([`crate::state::ContainerAwsAccess`]): a training container runs with that role's
 /// credentials, so code inside it that reads or writes Amazon S3 itself makes that call as
 /// that role.
-pub async fn run_training_job(
+pub async fn run_training_job<Eng: ::std::marker::Send + ::std::marker::Sync + 'static>(
+    engine: &Eng,
     ctx: &smithy_server_runtime::OperationContext<'_>,
     region: &str,
     job_name: &str,
@@ -671,6 +686,7 @@ pub async fn run_training_job(
             continue;
         };
         match read_channel(
+            engine,
             ctx,
             &client,
             region,
@@ -1050,8 +1066,12 @@ fn artifact_location(output: &S3Location, job_name: &str) -> S3Location {
 ///
 /// `Err` is the job's `FailureReason`: the download leg failed, which is the job's own
 /// failure rather than the request's.
+///
+/// `engine` is the shared store every service of this emulator keeps its own records in, which
+/// the KMS half of each read's authorization is decided over ([`super::object_key_access`]).
 #[allow(clippy::too_many_arguments)]
-pub async fn read_channel(
+pub async fn read_channel<Eng: ::std::marker::Send + ::std::marker::Sync + 'static>(
+    engine: &Eng,
     ctx: &smithy_server_runtime::OperationContext<'_>,
     client: &::aws_sdk_s3::Client,
     region: &str,
@@ -1072,6 +1092,7 @@ pub async fn read_channel(
     };
     let mut read = ChannelData::new(name, location.uri());
     let objects = channel_objects(
+        engine,
         ctx,
         client,
         region,
@@ -1086,17 +1107,17 @@ pub async fn read_channel(
         return Err(data_download_failed(name, &location.uri(), NO_OBJECT_DETAIL));
     }
     for object in objects {
-        // The read is authorized against BOTH the policy on the object's bucket and the grant
-        // in force on the execution role: a bucket policy that explicitly denies the role is
-        // what stops the read whatever the role's own policies allow (see
-        // [`super::s3_access`]), so a job whose input bucket fences the role off reads nothing
-        // and fails here rather than completing over data it never saw.
-        if object_read_is_unauthorized(ctx, client, region, role_arn, partition, &object).await {
-            return Err(data_download_failed(
-                name,
-                &object.uri(),
-                &access_denied_detail(),
-            ));
+        // The read is authorized against BOTH halves in force on it: the policy on the object's
+        // bucket together with the grant in force on the execution role — a bucket policy that
+        // explicitly denies the role is what stops the read whatever the role's own policies
+        // allow (see [`super::s3_access`]) — and the KMS key the object is SEALED under, whose
+        // `kms:Decrypt` the read performs as that same role ([`super::object_key_access`]). So a
+        // job whose input its bucket fences the role off from, or whose data key that role may
+        // not open, reads nothing and fails here rather than completing over data it never saw.
+        if let Some(detail) =
+            object_read_refusal(engine, ctx, client, region, role_arn, partition, &object).await
+        {
+            return Err(data_download_failed(name, &object.uri(), &detail));
         }
         let ceiling = MAX_OBJECT_BYTES.min(*remaining_bytes);
         if ceiling == 0 {
@@ -1139,7 +1160,8 @@ pub async fn read_channel(
 /// Every other value names a key name prefix, so the objects are the ones Amazon S3 lists under
 /// it — which is the object itself when the prefix names one.
 #[allow(clippy::too_many_arguments)]
-async fn channel_objects(
+async fn channel_objects<Eng: ::std::marker::Send + ::std::marker::Sync + 'static>(
+    engine: &Eng,
     ctx: &smithy_server_runtime::OperationContext<'_>,
     client: &::aws_sdk_s3::Client,
     region: &str,
@@ -1153,12 +1175,10 @@ async fn channel_objects(
         return Ok(vec![location.clone()]);
     }
     if s3_data_type == MANIFEST_FILE {
-        if object_read_is_unauthorized(ctx, client, region, role_arn, partition, location).await {
-            return Err(data_download_failed(
-                channel,
-                &location.uri(),
-                &access_denied_detail(),
-            ));
+        if let Some(detail) =
+            object_read_refusal(engine, ctx, client, region, role_arn, partition, location).await
+        {
+            return Err(data_download_failed(channel, &location.uri(), &detail));
         }
         let bytes = read_object(client, location, MAX_OBJECT_BYTES)
             .await

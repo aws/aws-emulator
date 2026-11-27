@@ -286,7 +286,11 @@ impl AutoMLRunOutcome {
 ///
 /// Answers an [`AutoMLRunOutcome`] rather than an error channel, for the reason the module
 /// docs give: the run is the job's own work.
-pub async fn run_auto_ml_job_v2(
+///
+/// `engine` is the shared store every service of this emulator keeps its own records in, which
+/// the KMS half of each read's authorization is decided over ([`super::object_key_access`]).
+pub async fn run_auto_ml_job_v2<Eng: ::std::marker::Send + ::std::marker::Sync + 'static>(
+    engine: &Eng,
     ctx: &smithy_server_runtime::OperationContext<'_>,
     region: &str,
     job_name: &str,
@@ -317,6 +321,7 @@ pub async fn run_auto_ml_job_v2(
         };
         let name = channel_name(channel, index);
         match read_channel(
+            engine,
             ctx,
             &client,
             region,

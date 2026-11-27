@@ -108,6 +108,12 @@ service-com-amazonaws-ecr-amazonec2containerregistry-v20150921 = { workspace = t
 # build-time code of its own beyond the generated service scaffolding every service crate here
 # builds.
 service-com-amazonaws-lambda-awsgirapiservice = { workspace = true }
+# The account's own KMS records: an Amazon S3 object a job's work reads may be SEALED under a
+# KMS key, and whether the job's execution role may perform that object's `kms:Decrypt` is
+# decided by the service that HOLDS the key, its policy and its grants
+# (`state::object_key_access`) rather than re-decided here. That store lives on the same shared
+# engine, so it is read through its own service's accessors.
+service-com-amazonaws-kms-trentservice = { workspace = true }
 
 [build-dependencies]
 emulator-core-build-support = { workspace = true }
@@ -132,10 +138,6 @@ service-com-amazonaws-ec2-amazonec2 = { workspace = true }
 # callback step's whole work is the message it hands the caller's own queue, so the suite
 # creates that queue through SQS's own API and reads the message back off it.
 service-com-amazonaws-sqs-amazonsqs = { workspace = true }
-# KMS, mounted beside SageMaker and Amazon S3 on one engine by the output-encryption suite:
-# the key a job's output configuration declares is a KMS key, minted through that service's
-# own `CreateKey`, so the SSE-KMS write a job's output makes names a key KMS really holds.
-service-com-amazonaws-kms-trentservice = { workspace = true }
 
 [lints]
 workspace = true
