@@ -89,6 +89,7 @@ pub mod create_vocabulary_types;
 pub mod create_workspace_page_types;
 pub mod create_workspace_types;
 pub mod deactivate_evaluation_form_types;
+pub mod delete_all_entity_sessions_types;
 pub mod delete_attached_file_types;
 pub mod delete_contact_data_types;
 pub mod delete_contact_evaluation_types;
@@ -252,6 +253,7 @@ pub mod list_queue_quick_connects_types;
 pub mod list_queues_types;
 pub mod list_quick_connects_types;
 pub mod list_realtime_contact_analysis_segments_v2_types;
+pub mod list_replication_findings_types;
 pub mod list_routing_profile_manual_assignment_queues_types;
 pub mod list_routing_profile_queues_types;
 pub mod list_routing_profiles_types;
@@ -377,6 +379,7 @@ pub mod update_instance_storage_config_types;
 pub mod update_metric_content_types;
 pub mod update_metric_metadata_types;
 pub mod update_notification_content_types;
+pub mod update_outbound_email_contact_message_types;
 pub mod update_participant_authentication_types;
 pub mod update_participant_role_config_types;
 pub mod update_phone_number_metadata_types;
@@ -568,6 +571,8 @@ pub use create_workspace_page_types::*;
 pub use create_workspace_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use deactivate_evaluation_form_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use delete_all_entity_sessions_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use delete_attached_file_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
@@ -895,6 +900,8 @@ pub use list_quick_connects_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use list_realtime_contact_analysis_segments_v2_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use list_replication_findings_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use list_routing_profile_manual_assignment_queues_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use list_routing_profile_queues_types::*;
@@ -1144,6 +1151,8 @@ pub use update_metric_content_types::*;
 pub use update_metric_metadata_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use update_notification_content_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use update_outbound_email_contact_message_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use update_participant_authentication_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]

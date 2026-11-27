@@ -25,5 +25,6 @@ pub struct GetTrafficDistributionOutput {
     pub arn: Option<String>,
     pub sign_in_config: Option<SignInConfig>,
     pub agent_config: Option<AgentConfig>,
+    pub last_failover_time: Option<::aws_smithy_types::DateTime>,
 }
 

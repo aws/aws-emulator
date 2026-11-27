@@ -20,6 +20,27 @@ pub struct ListRealtimeContactAnalysisSegmentsV2Input {
     pub next_token: Option<String>,
     pub output_type: String,
     pub segment_types: Vec<String>,
+    pub list_filter: Option<RealTimeContactAnalysisSegmentsFilter>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.connect#RealTimeContactAnalysisSegmentsFilter")]
+#[derive(Debug, Clone, Default)]
+pub struct RealTimeContactAnalysisSegmentsFilter {
+    pub categories_attribute_filter: Option<CategoriesAttributeFilter>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.connect#CategoriesAttributeFilter")]
+#[derive(Debug, Clone, Default)]
+pub struct CategoriesAttributeFilter {
+    pub or_conditions: Option<Vec<CategoriesAttributeAndCondition>>,
+    pub and_condition: Option<CategoriesAttributeAndCondition>,
+    pub tag_condition: Option<TagCondition>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.connect#CategoriesAttributeAndCondition")]
+#[derive(Debug, Clone, Default)]
+pub struct CategoriesAttributeAndCondition {
+    pub tag_conditions: Option<Vec<TagCondition>>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.connect#ListRealtimeContactAnalysisSegmentsV2Response")]
@@ -87,6 +108,7 @@ pub struct RealTimeContactAnalysisSegmentCategories {
 #[smithy_macros::smithy(shape = "com.amazonaws.connect#RealTimeContactAnalysisCategoryDetails")]
 #[derive(Debug, Clone, Default)]
 pub struct RealTimeContactAnalysisCategoryDetails {
+    pub rule_id: Option<String>,
     pub points_of_interest: Vec<RealTimeContactAnalysisPointOfInterest>,
 }
 

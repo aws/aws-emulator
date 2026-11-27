@@ -24,12 +24,19 @@ pub struct UpdateContactInput {
     pub user_info: Option<UserInfo>,
     pub customer_endpoint: Option<Endpoint>,
     pub system_endpoint: Option<Endpoint>,
+    pub additional_recipients: Option<NullableAdditionalRecipients>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.connect#QueueInfoInput")]
 #[derive(Debug, Clone, Default)]
 pub struct QueueInfoInput {
     pub id: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.connect#NullableAdditionalRecipients")]
+#[derive(Debug, Clone, Default)]
+pub struct NullableAdditionalRecipients {
+    pub cc_email_addresses: Option<Vec<EmailAddressInfo>>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.connect#UpdateContactResponse")]

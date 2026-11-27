@@ -39,6 +39,9 @@ pub struct Evaluation {
     pub last_modified_time: ::aws_smithy_types::DateTime,
     pub evaluation_type: Option<String>,
     pub tags: Option<std::collections::HashMap<String, String>>,
+    pub item_enablement_status: Option<std::collections::HashMap<String, String>>,
+    pub source_resolution_status: Option<String>,
+    pub source_values: Option<Vec<EvaluationResolvedSource>>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.connect#EvaluationMetadata")]
@@ -154,6 +157,14 @@ pub struct EvaluationAutomationRuleCategory {
     pub category: String,
     pub condition: String,
     pub points_of_interest: Option<Vec<EvaluationTranscriptPointOfInterest>>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.connect#EvaluationResolvedSource")]
+#[derive(Debug, Clone, Default)]
+pub struct EvaluationResolvedSource {
+    pub source: EvaluationFormItemEnablementSource,
+    pub status: String,
+    pub values: Option<Vec<EvaluationFormItemEnablementSourceValue>>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.connect#EvaluationFormContent")]

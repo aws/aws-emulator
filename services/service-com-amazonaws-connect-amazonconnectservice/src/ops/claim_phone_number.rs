@@ -181,6 +181,18 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
+        // A value that is not a phone number at all is refused before anything is
+        // resolved, naming the member: the snapshot's own `@pattern` for `PhoneNumber`
+        // carries an extra escaping level and is therefore off the request boundary
+        // (`skip_validation` in `src/ops/types/claim_phone_number_types.rs`), so the
+        // expression the model publishes is applied here instead — see
+        // `src/state/phone_number_syntax.rs`.
+        if !crate::state::is_phone_number(&input.phone_number) {
+            return Err(ClaimPhoneNumberErrorModeled::InvalidParameterException(
+                crate::state::invalid_parameter(crate::state::PHONE_NUMBER_PARAMETER),
+            )
+            .into());
+        }
         let state = crate::state::service_state(&*self.engine).ok_or_else(|| {
             ClaimPhoneNumberErrorModeled::InternalServiceException(InternalServiceException {
                 message: Some("the Amazon Connect store is unavailable".to_string()),

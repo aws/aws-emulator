@@ -166,6 +166,20 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
         let _ = ctx;
+        // A prefix that is not one at all is refused before anything is read, naming
+        // the member: the snapshot's own `@pattern` for `PhoneNumberPrefix` carries an
+        // extra escaping level and is therefore off the request boundary
+        // (`skip_validation` in
+        // `src/ops/types/search_available_phone_numbers_types.rs`), so the expression
+        // the model publishes is applied here instead — see
+        // `src/state/phone_number_syntax.rs`.
+        if let Some(prefix) = input.phone_number_prefix.as_deref() {
+            if !crate::state::is_phone_number_prefix(prefix) {
+                return Err(invalid_parameter_member(
+                    crate::state::PHONE_NUMBER_PREFIX_PARAMETER,
+                ));
+            }
+        }
         let state = crate::state::service_state(&*self.engine).ok_or_else(|| {
             SearchAvailablePhoneNumbersErrorModeled::InternalServiceException(
                 InternalServiceException {
@@ -219,5 +233,15 @@ fn invalid_parameter(message: &str) -> SearchAvailablePhoneNumbersError {
     SearchAvailablePhoneNumbersErrorModeled::InvalidParameterException(InvalidParameterException {
         message: Some(message.to_string()),
     })
+    .into()
+}
+
+/// The same modelled refusal for a MEMBER whose value this operation cannot read, in
+/// the sentence this service states for one (`crate::state::invalid_parameter`): the
+/// member is named and the rejected value is not quoted.
+fn invalid_parameter_member(member: &str) -> SearchAvailablePhoneNumbersError {
+    SearchAvailablePhoneNumbersErrorModeled::InvalidParameterException(
+        crate::state::invalid_parameter(member),
+    )
     .into()
 }

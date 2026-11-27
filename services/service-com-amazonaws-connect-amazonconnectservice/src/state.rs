@@ -66,6 +66,15 @@ pub use instance_attributes::{
 mod tagging;
 pub use tagging::{tags_growth, TAGS_PARAMETER, TAGS_PER_RESOURCE_MAXIMUM};
 
+/// The form a phone-number member must have, and why this service checks it rather
+/// than the request boundary: one concern of its own, so its own file, re-exported so
+/// a handler reaches it through `crate::state` like everything else here.
+mod phone_number_syntax;
+pub use phone_number_syntax::{
+    is_phone_number, is_phone_number_prefix, PHONE_NUMBER_PARAMETER, PHONE_NUMBER_PATTERN,
+    PHONE_NUMBER_PREFIX_PARAMETER, PHONE_NUMBER_PREFIX_PATTERN,
+};
+
 /// How this service words a refusal, and the identifier forms a path label may take:
 /// one concern of its own, so its own file, re-exported so a handler reaches it through
 /// `crate::state` like everything else here.
@@ -80,10 +89,10 @@ pub use refusals::{
 
 use crate::ops::types::{
     AvailableNumberSummary, ClaimedPhoneNumberSummary, ContactFlow, ContactFlowSummary,
-    HoursOfOperation, HoursOfOperationConfig, HoursOfOperationSummary, HoursOfOperationTimeSlice,
-    HoursOfOperationsIdentifier, Instance, InstanceStorageConfig, InstanceSummary,
-    OutboundCallerConfig, OutboundEmailConfig, PhoneNumberStatus, Queue, QueueSummary,
-    PHONE_NUMBER_TYPE_VALUES,
+    EncryptionConfig, HoursOfOperation, HoursOfOperationConfig, HoursOfOperationSummary,
+    HoursOfOperationTimeSlice, HoursOfOperationsIdentifier, Instance, InstanceStorageConfig,
+    InstanceSummary, KinesisVideoStreamConfig, OutboundCallerConfig, OutboundEmailConfig,
+    PhoneNumberStatus, Queue, QueueSummary, S3Config, PHONE_NUMBER_TYPE_VALUES,
 };
 
 /// The region an unsigned request is served in. The emulator's own shared AWS config
@@ -1278,11 +1287,9 @@ impl StorageConfigRecord {
 
     /// Whether `config` describes the same storage resource this record already
     /// holds: every `InstanceStorageConfig` member but the association id, which the
-    /// association mints rather than the caller.
+    /// association mints rather than the caller. See [`same_storage_config`].
     pub fn describes(&self, config: &InstanceStorageConfig) -> bool {
-        let mut candidate = config.clone();
-        candidate.association_id = Some(self.association_id.clone());
-        candidate == self.config
+        same_storage_config(config, &self.config)
     }
 
     /// Replace the configuration this record holds with `config`.
@@ -1295,6 +1302,74 @@ impl StorageConfigRecord {
         config.association_id = Some(self.association_id.clone());
         self.config = config;
     }
+}
+
+/// Whether two storage configurations describe the SAME storage resource — the
+/// question an association's `ClientToken` is answered by: a repeat of an association
+/// carries the configuration that association was first given, while the same token
+/// carrying another configuration is a different association wearing that token.
+///
+/// The association id is left out of the comparison: the association mints it, so
+/// whatever `AssociationId` a request's own configuration carries says nothing about
+/// which storage resource it names. Every other member is compared, at every depth,
+/// through the member lists below — the modelled shapes carry no equality of their
+/// own, and spelling their members out here is what stops a configuration differing
+/// only deep inside one of them (an encryption key, a retention period) from passing
+/// as the one already stored.
+pub fn same_storage_config(left: &InstanceStorageConfig, right: &InstanceStorageConfig) -> bool {
+    left.storage_type == right.storage_type
+        && left.s3_config.as_ref().map(s3_members) == right.s3_config.as_ref().map(s3_members)
+        && left
+            .kinesis_video_stream_config
+            .as_ref()
+            .map(kinesis_video_stream_members)
+            == right
+                .kinesis_video_stream_config
+                .as_ref()
+                .map(kinesis_video_stream_members)
+        && left
+            .kinesis_stream_config
+            .as_ref()
+            .map(|config| config.stream_arn.as_str())
+            == right
+                .kinesis_stream_config
+                .as_ref()
+                .map(|config| config.stream_arn.as_str())
+        && left
+            .kinesis_firehose_config
+            .as_ref()
+            .map(|config| config.firehose_arn.as_str())
+            == right
+                .kinesis_firehose_config
+                .as_ref()
+                .map(|config| config.firehose_arn.as_str())
+}
+
+/// The members of one `S3Config`, in the form [`same_storage_config`] compares two of
+/// them by: the modelled members of the shape, with a nested shape in the same form
+/// again, so a member added to the shape is added here beside the others.
+fn s3_members(config: &S3Config) -> (&str, &str, Option<(&str, &str)>) {
+    (
+        &config.bucket_name,
+        &config.bucket_prefix,
+        config.encryption_config.as_ref().map(encryption_members),
+    )
+}
+
+/// The members of one `KinesisVideoStreamConfig`, on the terms [`s3_members`] gives
+/// the S3 configuration.
+fn kinesis_video_stream_members(config: &KinesisVideoStreamConfig) -> (&str, i32, (&str, &str)) {
+    (
+        &config.prefix,
+        config.retention_period_hours,
+        encryption_members(&config.encryption_config),
+    )
+}
+
+/// The members of one `EncryptionConfig`, on the terms [`s3_members`] gives the S3
+/// configuration.
+fn encryption_members(config: &EncryptionConfig) -> (&str, &str) {
+    (&config.encryption_type, &config.key_id)
 }
 
 /// Which `InstanceStorageConfig` member each `StorageType` names, from

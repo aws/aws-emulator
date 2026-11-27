@@ -39,5 +39,7 @@ pub struct IntegrationAssociationSummary {
     pub source_application_url: Option<String>,
     pub source_application_name: Option<String>,
     pub source_type: Option<String>,
+    pub last_modified_time: Option<::aws_smithy_types::DateTime>,
+    pub last_modified_region: Option<String>,
 }
 

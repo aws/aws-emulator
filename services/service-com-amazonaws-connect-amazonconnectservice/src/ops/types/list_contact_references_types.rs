@@ -42,6 +42,10 @@ pub enum ReferenceSummary {
     Date(DateReference),
     Email(EmailReference),
     ContactAnalysis(ContactAnalysisReference),
+    VoicemailRecording(VoicemailRecordingReference),
+    VoicemailRecordingRedacted(VoicemailRecordingReference),
+    VoicemailAnalysis(VoicemailAnalysisReference),
+    VoicemailAnalysisRedacted(VoicemailAnalysisReference),
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.connect#UrlReference")]
@@ -104,5 +108,23 @@ pub struct ContactAnalysisReference {
     pub arn: Option<String>,
     pub analytics_mode: Option<String>,
     pub is_redacted: Option<bool>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.connect#VoicemailRecordingReference")]
+#[derive(Debug, Clone, Default)]
+pub struct VoicemailRecordingReference {
+    pub name: Option<String>,
+    pub value: Option<String>,
+    pub status: Option<String>,
+    pub arn: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.connect#VoicemailAnalysisReference")]
+#[derive(Debug, Clone, Default)]
+pub struct VoicemailAnalysisReference {
+    pub name: Option<String>,
+    pub value: Option<String>,
+    pub status: Option<String>,
+    pub arn: Option<String>,
 }
 

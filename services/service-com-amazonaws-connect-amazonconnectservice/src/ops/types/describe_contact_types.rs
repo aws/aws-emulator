@@ -70,11 +70,14 @@ pub struct Contact {
     pub disconnect_reason: Option<String>,
     pub contact_evaluations: Option<std::collections::HashMap<String, ContactEvaluation>>,
     pub task_template_info: Option<TaskTemplateInfoV2>,
+    pub cases: Option<Vec<CaseEntry>>,
     pub contact_details: Option<ContactDetails>,
     pub outbound_strategy: Option<OutboundStrategy>,
     pub attributes: Option<std::collections::HashMap<String, String>>,
     pub next_contacts: Option<Vec<NextContactEntry>>,
     pub global_resiliency_metadata: Option<GlobalResiliencyMetadata>,
+    pub contact_lens: Option<ContactLens>,
+    pub voicemail_info: Option<VoicemailInfo>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.connect#QueueInfo")]
@@ -289,6 +292,13 @@ pub struct TaskTemplateInfoV2 {
     pub name: Option<String>,
 }
 
+#[smithy_macros::smithy(shape = "com.amazonaws.connect#CaseEntry")]
+#[derive(Debug, Clone, Default)]
+pub struct CaseEntry {
+    pub case_id: Option<String>,
+    pub case_reference_number: Option<String>,
+}
+
 #[smithy_macros::smithy(shape = "com.amazonaws.connect#ContactDetails")]
 #[derive(Debug, Clone, Default)]
 pub struct ContactDetails {
@@ -318,5 +328,70 @@ pub struct QuickConnectContactData {
     pub quick_connect_id: Option<String>,
     pub quick_connect_name: Option<String>,
     pub quick_connect_type: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.connect#ContactLens")]
+#[derive(Debug, Clone, Default)]
+pub struct ContactLens {
+    pub conversational_analytics: Option<ConversationalAnalytics>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.connect#ConversationalAnalytics")]
+#[derive(Debug, Clone, Default)]
+pub struct ConversationalAnalytics {
+    pub configuration: Option<ConversationalAnalyticsConfiguration>,
+    pub contact_analysis_reference_state: Option<ContactAnalysisReferenceState>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.connect#ConversationalAnalyticsConfiguration")]
+#[derive(Debug, Clone, Default)]
+pub struct ConversationalAnalyticsConfiguration {
+    pub enabled: Option<bool>,
+    pub language_locale: Option<String>,
+    pub language_locales: Option<Vec<String>>,
+    pub channel_configuration: Option<ContactLensChannelConfiguration>,
+    pub redaction_configuration: Option<ContactLensRedactionConfiguration>,
+    pub summary_configuration: Option<ContactLensSummaryConfiguration>,
+    pub sentiment_configuration: Option<ContactLensSentimentConfiguration>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.connect#ContactLensChannelConfiguration")]
+#[derive(Debug, Clone, Default)]
+pub struct ContactLensChannelConfiguration {
+    pub analytics_modes: Option<Vec<String>>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.connect#ContactLensRedactionConfiguration")]
+#[derive(Debug, Clone, Default)]
+pub struct ContactLensRedactionConfiguration {
+    pub behavior: Option<String>,
+    pub policy: Option<String>,
+    pub entities: Option<Vec<String>>,
+    pub mask_mode: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.connect#ContactLensSummaryConfiguration")]
+#[derive(Debug, Clone, Default)]
+pub struct ContactLensSummaryConfiguration {
+    pub summary_modes: Option<Vec<String>>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.connect#ContactLensSentimentConfiguration")]
+#[derive(Debug, Clone, Default)]
+pub struct ContactLensSentimentConfiguration {
+    pub behavior: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.connect#ContactAnalysisReferenceState")]
+#[derive(Debug, Clone, Default)]
+pub struct ContactAnalysisReferenceState {
+    pub status: Option<String>,
+    pub status_reason: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.connect#VoicemailInfo")]
+#[derive(Debug, Clone, Default)]
+pub struct VoicemailInfo {
+    pub number_of_voicemails: Option<i32>,
 }
 

@@ -29,6 +29,7 @@ pub struct GetTaskTemplateOutput {
     pub description: Option<String>,
     pub contact_flow_id: Option<String>,
     pub self_assign_flow_id: Option<String>,
+    pub contact_hooks: Option<TaskTemplateContactHooks>,
     pub constraints: Option<TaskTemplateConstraints>,
     pub defaults: Option<TaskTemplateDefaults>,
     pub fields: Option<Vec<TaskTemplateField>>,

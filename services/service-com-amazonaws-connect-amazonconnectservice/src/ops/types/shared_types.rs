@@ -119,7 +119,7 @@ pub struct ConditionalOperationFailedException {
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.connect#InstanceStorageConfig")]
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default)]
 pub struct InstanceStorageConfig {
     pub association_id: Option<String>,
     pub storage_type: String,
@@ -130,7 +130,7 @@ pub struct InstanceStorageConfig {
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.connect#S3Config")]
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default)]
 pub struct S3Config {
     pub bucket_name: String,
     pub bucket_prefix: String,
@@ -138,14 +138,14 @@ pub struct S3Config {
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.connect#EncryptionConfig")]
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default)]
 pub struct EncryptionConfig {
     pub encryption_type: String,
     pub key_id: String,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.connect#KinesisVideoStreamConfig")]
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default)]
 pub struct KinesisVideoStreamConfig {
     pub prefix: String,
     pub retention_period_hours: i32,
@@ -153,13 +153,13 @@ pub struct KinesisVideoStreamConfig {
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.connect#KinesisStreamConfig")]
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default)]
 pub struct KinesisStreamConfig {
     pub stream_arn: String,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.connect#KinesisFirehoseConfig")]
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default)]
 pub struct KinesisFirehoseConfig {
     pub firehose_arn: String,
 }
@@ -435,6 +435,7 @@ pub struct EvaluationFormSection {
     pub weight: f64,
     pub is_excluded_from_scoring: bool,
     pub score_thresholds: Option<Vec<EvaluationFormScoreThreshold>>,
+    pub enablement: Option<EvaluationFormItemEnablementConfiguration>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.connect#EvaluationFormScoreThreshold")]
@@ -443,6 +444,60 @@ pub struct EvaluationFormScoreThreshold {
     pub performance_category: String,
     pub min_score_percentage: f64,
     pub max_score_percentage: f64,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.connect#EvaluationFormItemEnablementConfiguration")]
+#[derive(Debug, Clone, Default)]
+pub struct EvaluationFormItemEnablementConfiguration {
+    pub condition: EvaluationFormItemEnablementCondition,
+    pub action: String,
+    pub default_action: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.connect#EvaluationFormItemEnablementCondition")]
+#[derive(Debug, Clone, Default)]
+pub struct EvaluationFormItemEnablementCondition {
+    pub operands: Vec<EvaluationFormItemEnablementConditionOperand>,
+    pub operator: Option<String>,
+}
+
+#[smithy_macros::smithy(union_for = "com.amazonaws.connect#EvaluationFormItemEnablementConditionOperand")]
+#[allow(clippy::large_enum_variant)]
+#[derive(Debug, Clone)]
+pub enum EvaluationFormItemEnablementConditionOperand {
+    Expression(EvaluationFormItemEnablementExpression),
+    Condition(EvaluationFormItemEnablementCondition),
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.connect#EvaluationFormItemEnablementExpression")]
+#[derive(Debug, Clone, Default)]
+pub struct EvaluationFormItemEnablementExpression {
+    pub source: EvaluationFormItemEnablementSource,
+    pub values: Vec<EvaluationFormItemEnablementSourceValue>,
+    pub comparator: String,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.connect#EvaluationFormItemEnablementSource")]
+#[derive(Debug, Clone, Default)]
+pub struct EvaluationFormItemEnablementSource {
+    pub r#type: String,
+    pub ref_id: Option<String>,
+    pub contact_field: Option<String>,
+    pub contact_attribute_key: Option<String>,
+    pub segment_attribute_key: Option<String>,
+    pub evaluation_metadata_field: Option<String>,
+    pub ai_metrics_field: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.connect#EvaluationFormItemEnablementSourceValue")]
+#[derive(Debug, Clone, Default)]
+pub struct EvaluationFormItemEnablementSourceValue {
+    pub r#type: String,
+    pub ref_id: Option<String>,
+    pub string_value: Option<String>,
+    pub numeric_value: Option<f64>,
+    pub boolean_value: Option<bool>,
+    pub date_time_value: Option<::aws_smithy_types::DateTime>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.connect#EvaluationFormQuestion")]
@@ -555,6 +610,7 @@ pub struct EvaluationFormSingleSelectQuestionAutomation {
 #[derive(Debug, Clone)]
 pub enum EvaluationFormSingleSelectQuestionAutomationOption {
     RuleCategory(SingleSelectQuestionRuleCategoryAutomation),
+    AutomationRule(SingleSelectQuestionAutomationRule),
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.connect#SingleSelectQuestionRuleCategoryAutomation")]
@@ -562,6 +618,13 @@ pub enum EvaluationFormSingleSelectQuestionAutomationOption {
 pub struct SingleSelectQuestionRuleCategoryAutomation {
     pub category: String,
     pub condition: String,
+    pub option_ref_id: String,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.connect#SingleSelectQuestionAutomationRule")]
+#[derive(Debug, Clone, Default)]
+pub struct SingleSelectQuestionAutomationRule {
+    pub condition: EvaluationFormItemEnablementCondition,
     pub option_ref_id: String,
 }
 
@@ -617,51 +680,6 @@ pub struct MultiSelectQuestionRuleCategoryAutomation {
     pub category: String,
     pub condition: String,
     pub option_ref_ids: Vec<String>,
-}
-
-#[smithy_macros::smithy(shape = "com.amazonaws.connect#EvaluationFormItemEnablementConfiguration")]
-#[derive(Debug, Clone, Default)]
-pub struct EvaluationFormItemEnablementConfiguration {
-    pub condition: EvaluationFormItemEnablementCondition,
-    pub action: String,
-    pub default_action: Option<String>,
-}
-
-#[smithy_macros::smithy(shape = "com.amazonaws.connect#EvaluationFormItemEnablementCondition")]
-#[derive(Debug, Clone, Default)]
-pub struct EvaluationFormItemEnablementCondition {
-    pub operands: Vec<EvaluationFormItemEnablementConditionOperand>,
-    pub operator: Option<String>,
-}
-
-#[smithy_macros::smithy(union_for = "com.amazonaws.connect#EvaluationFormItemEnablementConditionOperand")]
-#[allow(clippy::large_enum_variant)]
-#[derive(Debug, Clone)]
-pub enum EvaluationFormItemEnablementConditionOperand {
-    Expression(EvaluationFormItemEnablementExpression),
-    Condition(EvaluationFormItemEnablementCondition),
-}
-
-#[smithy_macros::smithy(shape = "com.amazonaws.connect#EvaluationFormItemEnablementExpression")]
-#[derive(Debug, Clone, Default)]
-pub struct EvaluationFormItemEnablementExpression {
-    pub source: EvaluationFormItemEnablementSource,
-    pub values: Vec<EvaluationFormItemEnablementSourceValue>,
-    pub comparator: String,
-}
-
-#[smithy_macros::smithy(shape = "com.amazonaws.connect#EvaluationFormItemEnablementSource")]
-#[derive(Debug, Clone, Default)]
-pub struct EvaluationFormItemEnablementSource {
-    pub r#type: String,
-    pub ref_id: Option<String>,
-}
-
-#[smithy_macros::smithy(shape = "com.amazonaws.connect#EvaluationFormItemEnablementSourceValue")]
-#[derive(Debug, Clone, Default)]
-pub struct EvaluationFormItemEnablementSourceValue {
-    pub r#type: String,
-    pub ref_id: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.connect#EvaluationFormQuestionScoringConfiguration")]
@@ -963,6 +981,7 @@ pub struct RuleAction {
     pub update_case_action: Option<UpdateCaseActionDefinition>,
     pub assign_sla_action: Option<AssignSlaActionDefinition>,
     pub end_associated_tasks_action: Option<EndAssociatedTasksActionDefinition>,
+    pub end_associated_emails_action: Option<EndAssociatedEmailsActionDefinition>,
     pub submit_auto_evaluation_action: Option<SubmitAutoEvaluationActionDefinition>,
     pub extract_information_action: Option<ExtractInformationActionDefinition>,
     pub send_in_app_notification_action: Option<SendInAppNotificationActionDefinition>,
@@ -1062,6 +1081,11 @@ pub struct CaseSlaConfiguration {
 pub struct EndAssociatedTasksActionDefinition {
 }
 
+#[smithy_macros::smithy(shape = "com.amazonaws.connect#EndAssociatedEmailsActionDefinition")]
+#[derive(Debug, Clone, Default)]
+pub struct EndAssociatedEmailsActionDefinition {
+}
+
 #[smithy_macros::smithy(shape = "com.amazonaws.connect#SubmitAutoEvaluationActionDefinition")]
 #[derive(Debug, Clone, Default)]
 pub struct SubmitAutoEvaluationActionDefinition {
@@ -1151,6 +1175,12 @@ pub struct PrimaryAttributeValue {
     pub access_type: Option<String>,
     pub attribute_name: Option<String>,
     pub values: Option<Vec<String>>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.connect#TaskTemplateContactHooks")]
+#[derive(Debug, Clone, Default)]
+pub struct TaskTemplateContactHooks {
+    pub wrap_up_flow_id: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.connect#TaskTemplateConstraints")]
@@ -1985,6 +2015,13 @@ pub struct QuickConnectSummary {
     pub last_modified_region: Option<String>,
 }
 
+#[smithy_macros::smithy(shape = "com.amazonaws.connect#TagCondition")]
+#[derive(Debug, Clone, Default)]
+pub struct TagCondition {
+    pub tag_key: Option<String>,
+    pub tag_value: Option<String>,
+}
+
 #[smithy_macros::smithy(shape = "com.amazonaws.connect#ActionSummary")]
 #[derive(Debug, Clone, Default)]
 pub struct ActionSummary {
@@ -2009,13 +2046,6 @@ pub struct ControlPlaneAttributeFilter {
 #[derive(Debug, Clone, Default)]
 pub struct CommonAttributeAndCondition {
     pub tag_conditions: Option<Vec<TagCondition>>,
-}
-
-#[smithy_macros::smithy(shape = "com.amazonaws.connect#TagCondition")]
-#[derive(Debug, Clone, Default)]
-pub struct TagCondition {
-    pub tag_key: Option<String>,
-    pub tag_value: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.connect#StringCondition")]
@@ -2164,7 +2194,7 @@ pub const ACCESS_TYPE_VALUES: &[&str] = &["ALLOW"];
 
 
 /// The values `ActionType` accepts on the wire.
-pub const ACTION_TYPE_VALUES: &[&str] = &["ASSIGN_CONTACT_CATEGORY", "ASSIGN_SLA", "CREATE_CASE", "CREATE_TASK", "END_ASSOCIATED_TASKS", "EXTRACT_INFORMATION", "GENERATE_EVENTBRIDGE_EVENT", "SEND_IN_APP_NOTIFICATION", "SEND_NOTIFICATION", "SUBMIT_AUTO_EVALUATION", "UPDATE_CASE"];
+pub const ACTION_TYPE_VALUES: &[&str] = &["ASSIGN_CONTACT_CATEGORY", "ASSIGN_SLA", "CREATE_CASE", "CREATE_TASK", "END_ASSOCIATED_EMAILS", "END_ASSOCIATED_TASKS", "EXTRACT_INFORMATION", "GENERATE_EVENTBRIDGE_EVENT", "SEND_IN_APP_NOTIFICATION", "SEND_NOTIFICATION", "SUBMIT_AUTO_EVALUATION", "UPDATE_CASE"];
 
 
 /// The values `AgentAvailabilityTimer` accepts on the wire.
@@ -2383,8 +2413,24 @@ pub const ENDPOINT_TYPE_VALUES: &[&str] = &["CONNECT_PHONENUMBER_ARN", "CONTACT_
 pub const ENTITY_TYPE_VALUES: &[&str] = &["AI_AGENT", "USER"];
 
 
+/// The values `EvaluationEnablementStatus` accepts on the wire.
+pub const EVALUATION_ENABLEMENT_STATUS_VALUES: &[&str] = &["DISABLED", "ENABLED"];
+
+
 /// The values `EvaluationFormAIVersionStatus` accepts on the wire.
 pub const EVALUATION_FORM_A_I_VERSION_STATUS_VALUES: &[&str] = &["ACTIVE", "DEPRECATED", "LATEST", "PREVIEW"];
+
+
+/// The values `EvaluationFormAiMetricsField` accepts on the wire.
+pub const EVALUATION_FORM_AI_METRICS_FIELD_VALUES: &[&str] = &["AI_AGENT_MAX_PROMPT_LATENCY", "AI_SESSION_COMPLETENESS_SCORE", "AI_SESSION_FAITHFULNESS_SCORE", "AI_SESSION_GOAL_SUCCESS_RATE", "AI_SESSION_IS_HANDED_OFF", "AI_SESSION_SELF_SERVICE_DURATION", "AI_TOOL_MAX_LATENCY", "AI_TOOL_PARAMETER_ACCURACY", "AI_TOOL_SELECTION_ACCURACY", "AI_TOOL_UTILIZATION_ACCURACY"];
+
+
+/// The values `EvaluationFormContactField` accepts on the wire.
+pub const EVALUATION_FORM_CONTACT_FIELD_VALUES: &[&str] = &["AGENT_ARN", "AGENT_INTERACTION_AND_HOLD_DURATION", "AGENT_INTERACTION_DURATION", "CATEGORIES", "CHANNEL", "CONTACT_DURATION", "CUSTOMER_HOLD_TIME", "CUSTOMER_SENTIMENT_SCORE_WITHOUT_AGENT", "CUSTOMER_SENTIMENT_SCORE_WITH_AGENT", "INITIATION_METHOD", "IS_QUEUED", "LONGEST_HOLD_DURATION", "NON_TALK_TIME", "NON_TALK_TIME_PERCENTAGE", "NUMBER_OF_HOLDS", "NUMBER_OF_INTERRUPTIONS", "OVERALL_AGENT_SENTIMENT_SCORE", "OVERALL_CUSTOMER_SENTIMENT_SCORE", "QUEUE_ARN", "RECORDING_MEDIA_STREAM_TYPES", "ROUTING_PROFILE_ARN"];
+
+
+/// The values `EvaluationFormEvaluationMetadataField` accepts on the wire.
+pub const EVALUATION_FORM_EVALUATION_METADATA_FIELD_VALUES: &[&str] = &["EVALUATION_TYPE"];
 
 
 /// The values `EvaluationFormItemEnablementAction` accepts on the wire.
@@ -2396,19 +2442,19 @@ pub const EVALUATION_FORM_ITEM_ENABLEMENT_OPERATOR_VALUES: &[&str] = &["AND", "O
 
 
 /// The values `EvaluationFormItemEnablementSourceType` accepts on the wire.
-pub const EVALUATION_FORM_ITEM_ENABLEMENT_SOURCE_TYPE_VALUES: &[&str] = &["QUESTION_REF_ID"];
+pub const EVALUATION_FORM_ITEM_ENABLEMENT_SOURCE_TYPE_VALUES: &[&str] = &["AI_METRICS", "CONTACT", "EVALUATION_METADATA", "FORM_METADATA", "QUESTION_REF_ID"];
 
 
 /// The values `EvaluationFormItemEnablementSourceValueType` accepts on the wire.
-pub const EVALUATION_FORM_ITEM_ENABLEMENT_SOURCE_VALUE_TYPE_VALUES: &[&str] = &["OPTION_REF_ID"];
+pub const EVALUATION_FORM_ITEM_ENABLEMENT_SOURCE_VALUE_TYPE_VALUES: &[&str] = &["BOOLEAN_VALUE", "DATETIME_VALUE", "NUMERIC_VALUE", "OPTION_REF_ID", "STRING_VALUE"];
 
 
 /// The values `EvaluationFormItemSourceValuesComparator` accepts on the wire.
-pub const EVALUATION_FORM_ITEM_SOURCE_VALUES_COMPARATOR_VALUES: &[&str] = &["ALL_IN", "EXACT", "IN", "NOT_IN"];
+pub const EVALUATION_FORM_ITEM_SOURCE_VALUES_COMPARATOR_VALUES: &[&str] = &["ALL_IN", "EQUAL_TO", "EXACT", "GREATER_THAN", "GREATER_THAN_OR_EQUAL_TO", "IN", "LESS_THAN", "LESS_THAN_OR_EQUAL_TO", "NOT_EQUAL_TO", "NOT_IN"];
 
 
 /// The values `EvaluationFormLanguageCode` accepts on the wire.
-pub const EVALUATION_FORM_LANGUAGE_CODE_VALUES: &[&str] = &["de-DE", "en-US", "es-ES", "fr-FR", "it-IT", "ja-JP", "ko-KR", "ms-MY", "pt-BR", "zh-CN"];
+pub const EVALUATION_FORM_LANGUAGE_CODE_VALUES: &[&str] = &["af-ZA", "am-ET", "ar-AE", "ar-SA", "be-BY", "bg-BG", "bn-BD", "bs-BA", "ca-ES", "ckb-IQ", "ckb-IR", "cs-CZ", "cy-GB", "da-DK", "de-AT", "de-CH", "de-DE", "el-GR", "en-AB", "en-AU", "en-GB", "en-IE", "en-IN", "en-NZ", "en-SG", "en-US", "en-WL", "en-ZA", "es-ES", "es-MX", "es-US", "et-EE", "eu-ES", "fa-AF", "fa-IR", "fi-FI", "fr-BE", "fr-CA", "fr-FR", "ga-IE", "gl-ES", "gu-IN", "he-IL", "hi-IN", "hmn", "hr-HR", "ht-HT", "hu-HU", "hy-AM", "id-ID", "is-IS", "it-IT", "ja-JP", "jv-ID", "ka-GE", "kk-KZ", "km-KH", "kn-IN", "ko-KR", "lg-UG", "lo-LA", "lt-LT", "lv-LV", "mk-MK", "ml-IN", "mr-IN", "ms-MY", "my-MM", "ne-NP", "nl-BE", "nl-NL", "no-NO", "or-IN", "pa-IN", "pl-PL", "ps-AF", "pt-BR", "pt-PT", "ro-RO", "ru-RU", "si-LK", "sk-SK", "sl-SI", "so-SO", "sq-AL", "sr-RS", "su-ID", "sv-SE", "sw-BI", "sw-KE", "sw-RW", "sw-TZ", "sw-UG", "ta-IN", "te-IN", "th-TH", "tl-PH", "tr-TR", "uk-UA", "uz-UZ", "vi-VN", "xh-ZA", "yue-HK", "zh-CN", "zh-TW", "zu-ZA"];
 
 
 /// The values `EvaluationFormMetricType` accepts on the wire.
@@ -2420,7 +2466,7 @@ pub const EVALUATION_FORM_MULTI_SELECT_QUESTION_DISPLAY_MODE_VALUES: &[&str] = &
 
 
 /// The values `EvaluationFormQuestionAutomationAnswerSourceType` accepts on the wire.
-pub const EVALUATION_FORM_QUESTION_AUTOMATION_ANSWER_SOURCE_TYPE_VALUES: &[&str] = &["CONTACT_LENS_DATA", "GEN_AI"];
+pub const EVALUATION_FORM_QUESTION_AUTOMATION_ANSWER_SOURCE_TYPE_VALUES: &[&str] = &["CONDITION", "CONTACT_LENS_DATA", "GEN_AI"];
 
 
 /// The values `EvaluationFormQuestionType` accepts on the wire.
@@ -2451,8 +2497,12 @@ pub const EVALUATION_FORM_VALIDATION_STATUS_VALUES: &[&str] = &["COMPLETED", "FA
 pub const EVALUATION_FORM_VERSION_STATUS_VALUES: &[&str] = &["ACTIVE", "DRAFT"];
 
 
+/// The values `EvaluationItemResolutionStatus` accepts on the wire.
+pub const EVALUATION_ITEM_RESOLUTION_STATUS_VALUES: &[&str] = &["FAILED", "PENDING", "RESOLVED"];
+
+
 /// The values `EvaluationQuestionAnswerAnalysisType` accepts on the wire.
-pub const EVALUATION_QUESTION_ANSWER_ANALYSIS_TYPE_VALUES: &[&str] = &["CONTACT_LENS_DATA", "GEN_AI"];
+pub const EVALUATION_QUESTION_ANSWER_ANALYSIS_TYPE_VALUES: &[&str] = &["CONDITION", "CONTACT_LENS_DATA", "GEN_AI"];
 
 
 /// The values `EvaluationReviewNotificationRecipientType` accepts on the wire.
@@ -2492,7 +2542,7 @@ pub const FILE_STATUS_TYPE_VALUES: &[&str] = &["APPROVED", "DRAFTING", "FAILED",
 
 
 /// The values `FileUseCaseType` accepts on the wire.
-pub const FILE_USE_CASE_TYPE_VALUES: &[&str] = &["ATTACHMENT", "CONTACT_ANALYSIS", "EMAIL_MESSAGE", "EMAIL_MESSAGE_PLAIN_TEXT", "EMAIL_MESSAGE_PLAIN_TEXT_REDACTED", "EMAIL_MESSAGE_REDACTED", "VOICE_RECORDING"];
+pub const FILE_USE_CASE_TYPE_VALUES: &[&str] = &["ATTACHMENT", "CONTACT_ANALYSIS", "EMAIL_MESSAGE", "EMAIL_MESSAGE_PLAIN_TEXT", "EMAIL_MESSAGE_PLAIN_TEXT_REDACTED", "EMAIL_MESSAGE_REDACTED", "VOICEMAIL_ANALYSIS", "VOICEMAIL_ANALYSIS_REDACTED", "VOICEMAIL_RECORDING", "VOICEMAIL_RECORDING_REDACTED", "VOICE_RECORDING"];
 
 
 /// The values `FilterV2StringConditionComparisonOperator` accepts on the wire.
@@ -2660,7 +2710,7 @@ pub const NUMBER_COMPARISON_TYPE_VALUES: &[&str] = &["EQUAL", "GREATER", "GREATE
 
 
 /// The values `NumericQuestionPropertyAutomationLabel` accepts on the wire.
-pub const NUMERIC_QUESTION_PROPERTY_AUTOMATION_LABEL_VALUES: &[&str] = &["AGENT_INTERACTION_AND_HOLD_DURATION", "AGENT_INTERACTION_DURATION", "CONTACT_DURATION", "CUSTOMER_HOLD_TIME", "CUSTOMER_SENTIMENT_SCORE_WITHOUT_AGENT", "CUSTOMER_SENTIMENT_SCORE_WITH_AGENT", "LONGEST_HOLD_DURATION", "NON_TALK_TIME", "NON_TALK_TIME_PERCENTAGE", "NUMBER_OF_HOLDS", "NUMBER_OF_INTERRUPTIONS", "OVERALL_AGENT_SENTIMENT_SCORE", "OVERALL_CUSTOMER_SENTIMENT_SCORE"];
+pub const NUMERIC_QUESTION_PROPERTY_AUTOMATION_LABEL_VALUES: &[&str] = &["AGENT_INTERACTION_AND_HOLD_DURATION", "AGENT_INTERACTION_DURATION", "AI_AGENT_MAX_PROMPT_LATENCY", "AI_SESSION_COMPLETENESS_SCORE", "AI_SESSION_FAITHFULNESS_SCORE", "AI_SESSION_GOAL_SUCCESS_RATE", "AI_SESSION_SELF_SERVICE_DURATION", "AI_TOOL_MAX_LATENCY", "AI_TOOL_PARAMETER_ACCURACY", "AI_TOOL_SELECTION_ACCURACY", "AI_TOOL_UTILIZATION_ACCURACY", "CONTACT_DURATION", "CUSTOMER_HOLD_TIME", "CUSTOMER_SENTIMENT_SCORE_WITHOUT_AGENT", "CUSTOMER_SENTIMENT_SCORE_WITH_AGENT", "LONGEST_HOLD_DURATION", "NON_TALK_TIME", "NON_TALK_TIME_PERCENTAGE", "NUMBER_OF_HOLDS", "NUMBER_OF_INTERRUPTIONS", "OVERALL_AGENT_SENTIMENT_SCORE", "OVERALL_CUSTOMER_SENTIMENT_SCORE"];
 
 
 /// The values `OperationalStatus` accepts on the wire.
@@ -2732,7 +2782,7 @@ pub const PRE_EVALUATION_FILTER_OPERATOR_VALUES: &[&str] = &["EQUALS"];
 
 
 /// The values `PreEvaluationFilterResourceType` accepts on the wire.
-pub const PRE_EVALUATION_FILTER_RESOURCE_TYPE_VALUES: &[&str] = &["CONTACT"];
+pub const PRE_EVALUATION_FILTER_RESOURCE_TYPE_VALUES: &[&str] = &["CONTACT", "CONTACT_EVALUATION"];
 
 
 /// The values `PreEvaluationFilterType` accepts on the wire.
@@ -2800,11 +2850,11 @@ pub const RECURRENCE_FREQUENCY_VALUES: &[&str] = &["MONTHLY", "WEEKLY", "YEARLY"
 
 
 /// The values `ReferenceStatus` accepts on the wire.
-pub const REFERENCE_STATUS_VALUES: &[&str] = &["APPROVED", "AVAILABLE", "DELETED", "FAILED", "PROCESSING", "REJECTED"];
+pub const REFERENCE_STATUS_VALUES: &[&str] = &["APPROVED", "AVAILABLE", "DELETED", "DRAFTING", "FAILED", "PROCESSING", "REJECTED"];
 
 
 /// The values `ReferenceType` accepts on the wire.
-pub const REFERENCE_TYPE_VALUES: &[&str] = &["ATTACHMENT", "CONTACT_ANALYSIS", "DATE", "EMAIL", "EMAIL_MESSAGE", "EMAIL_MESSAGE_PLAIN_TEXT", "EMAIL_MESSAGE_PLAIN_TEXT_REDACTED", "EMAIL_MESSAGE_REDACTED", "NUMBER", "STRING", "URL"];
+pub const REFERENCE_TYPE_VALUES: &[&str] = &["ATTACHMENT", "CONTACT_ANALYSIS", "DATE", "EMAIL", "EMAIL_MESSAGE", "EMAIL_MESSAGE_PLAIN_TEXT", "EMAIL_MESSAGE_PLAIN_TEXT_REDACTED", "EMAIL_MESSAGE_REDACTED", "NUMBER", "STRING", "URL", "VOICEMAIL_ANALYSIS", "VOICEMAIL_ANALYSIS_REDACTED", "VOICEMAIL_RECORDING", "VOICEMAIL_RECORDING_REDACTED"];
 
 
 /// The values `RehydrationType` accepts on the wire.
@@ -2853,6 +2903,10 @@ pub const SEARCHABLE_QUEUE_TYPE_VALUES: &[&str] = &["STANDARD"];
 
 /// The values `SecurityProfileType` accepts on the wire.
 pub const SECURITY_PROFILE_TYPE_VALUES: &[&str] = &["AWS_MANAGED", "CUSTOMER_MANAGED"];
+
+
+/// The values `SessionEntityType` accepts on the wire.
+pub const SESSION_ENTITY_TYPE_VALUES: &[&str] = &["USER"];
 
 
 /// The values `SingleSelectQuestionRuleCategoryAutomationCondition` accepts on the wire.
@@ -2941,6 +2995,10 @@ pub const TREND_INDICATOR_VALUES: &[&str] = &["NEGATIVE", "NEUTRAL", "POSITIVE"]
 
 /// The values `Unit` accepts on the wire.
 pub const UNIT_VALUES: &[&str] = &["COUNT", "PERCENT", "SECONDS"];
+
+
+/// The values `UpdateOutboundEmailMessageSourceType` accepts on the wire.
+pub const UPDATE_OUTBOUND_EMAIL_MESSAGE_SOURCE_TYPE_VALUES: &[&str] = &["RAW"];
 
 
 /// The values `UseCaseType` accepts on the wire.
