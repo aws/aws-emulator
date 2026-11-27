@@ -33,8 +33,11 @@
 //! A `timePeriod` this granularity reports no series over is refused rather than
 //! answered with a series about another period ([`period`]): each bound is
 //! written in the form the requested granularity takes its bounds in, names no
-//! interval later than the present one, comes in order, and reaches back no
-//! further than the window the granularity reports over.
+//! interval the series could not report — the INCLUSIVE start no later than the
+//! present interval, the EXCLUSIVE end no later than the interval AFTER it,
+//! which is the end of a series whose last data point is the present one —
+//! comes in order, and reaches back no further than the window the granularity
+//! reports over.
 //!
 //! `score` is the efficiency score of the group: the percentage of its spend
 //! that is NOT identified as removable, so a group with nothing left to save
@@ -478,7 +481,8 @@ impl Granularity {
     ///
     /// `period` is one this granularity reports over — [`period`] refuses a
     /// period reaching outside that window — so the series is bounded by the
-    /// window itself: at most [`Granularity::max_intervals`] points.
+    /// window itself: the intervals from the earliest one a bound may name
+    /// through the present one ([`Window`]).
     fn intervals(self, period: Period) -> Vec<Interval> {
         let mut intervals: Vec<Interval> = Vec::new();
         // A daily series starts on the period's first day; a monthly one starts
@@ -572,9 +576,19 @@ impl Granularity {
         }
     }
 
+    /// The bound naming the interval right after the one `bound` names: the next
+    /// day of a daily series, the first day of the next month of a monthly one.
+    /// `None` where the calendar has no such interval.
+    fn next_bound(self, bound: EpochDay) -> Option<EpochDay> {
+        match self {
+            Self::Daily => bound.checked_add(1),
+            Self::Monthly => next_month(bound),
+        }
+    }
+
     /// The present interval as a bound of this granularity: the day the clock is
-    /// on for a daily series, and the month it is in for a monthly one. A bound
-    /// past this one names an interval that has not elapsed.
+    /// on for a daily series, and the month it is in for a monthly one. It is
+    /// the last interval a series reports a data point for.
     fn present_bound(self) -> Option<EpochDay> {
         let today = today()?;
         match self {
@@ -583,9 +597,9 @@ impl Granularity {
         }
     }
 
-    /// The most intervals one series at this granularity covers, which is both
-    /// how far back a bound may reach and how many data points one group's
-    /// series carries ([`MAX_DAILY_DAYS`], [`MAX_MONTHLY_MONTHS`]).
+    /// The most intervals one series at this granularity reaches BACK over,
+    /// which is how far back either bound of a period may reach
+    /// ([`MAX_DAILY_DAYS`], [`MAX_MONTHLY_MONTHS`]).
     fn max_intervals(self) -> usize {
         match self {
             Self::Daily => MAX_DAILY_DAYS,
@@ -603,16 +617,13 @@ impl Granularity {
         }
     }
 
-    /// The window a series at this granularity is reported over, as the two
-    /// bounds every bound of a request has to fall between: from the present
-    /// interval ([`Granularity::present_bound`]) less the most intervals one
-    /// series covers, up to the present interval itself. A period inside this
-    /// window carries at most that many data points; one reaching outside it
-    /// asks for metrics over time this granularity reports none for.
+    /// The window a series at this granularity is reported over ([`Window`]): a
+    /// period inside it is reported, and one reaching outside it asks for
+    /// metrics over time this granularity reports none for.
     ///
     /// `None` where the clock is at an instant the calendar cannot place, in
     /// which case the window is unknown and no period can be reported over.
-    fn reported_window(self) -> Option<(EpochDay, EpochDay)> {
+    fn reported_window(self) -> Option<Window> {
         let present = self.present_bound()?;
         let intervals = i64::try_from(self.max_intervals()).ok()?;
         let earliest = match self {
@@ -625,8 +636,34 @@ impl Granularity {
                 month
             }
         };
-        Some((earliest, present))
+        Some(Window {
+            earliest,
+            present,
+            latest_end: self.next_bound(present)?,
+        })
     }
+}
+
+/// The bounds a requested `timePeriod` has to fall between for a series at one
+/// granularity to be reported over it, all three as bounds of that granularity.
+///
+/// The start is INCLUSIVE and the end EXCLUSIVE, so the two bounds are not
+/// limited by the same interval: the start names an interval the series reports
+/// a data point for, while the end names the first interval it does NOT report.
+#[derive(Debug, Clone, Copy)]
+struct Window {
+    /// The earliest interval either bound may name: the present one less the
+    /// most intervals a series reaches back over
+    /// ([`Granularity::max_intervals`]).
+    earliest: EpochDay,
+    /// The present interval ([`Granularity::present_bound`]) — the last one a
+    /// series reports a data point for, and so the latest the inclusive start
+    /// may name.
+    present: EpochDay,
+    /// The latest interval the exclusive end may name: the one after the present
+    /// interval, which asks for a series whose last data point IS the present
+    /// interval. A series so bounded reaches no interval that has not elapsed.
+    latest_end: EpochDay,
 }
 
 /// A count of days as a figure a share can be taken with; a count no number of
@@ -706,8 +743,8 @@ fn days_in_month(day: EpochDay) -> Option<f64> {
 /// form the requested granularity takes them in, one whose start is not before
 /// its end — the start being inclusive and the end exclusive, such a period
 /// reaches no interval at all — and one reaching outside the window the
-/// granularity reports over, past the present interval or back before the
-/// earliest one ([`Granularity::reported_window`]).
+/// granularity reports over, asking for a data point later than the present
+/// interval or reaching back before the earliest one ([`Window`]).
 fn period(
     requested: &TimePeriod,
     granularity: Granularity,
@@ -721,7 +758,7 @@ fn period(
     // A window this operation cannot place on the calendar is one it cannot
     // report a period against, so the request is answered as the server fault
     // it is rather than with a series over a window nothing bounded.
-    let Some((earliest, present)) = granularity.reported_window() else {
+    let Some(window) = granularity.reported_window() else {
         return Err(ListEfficiencyMetricsErrorModeled::InternalServerException(
             InternalServerException {
                 message: "the Cost Optimization Hub clock is unavailable".to_string(),
@@ -730,13 +767,33 @@ fn period(
         .into());
     };
     // Nothing has been spent yet over time that has not elapsed, so a bound
-    // naming an interval later than the one the clock is on is refused rather
-    // than reported as a series of nothing.
-    if start > present {
-        return Err(future_period(START, granularity));
+    // asking for a data point later than the interval the clock is on is
+    // refused rather than reported as a series of nothing. The two bounds are
+    // judged against the intervals each of them names: the start is INCLUSIVE,
+    // so it names a reported interval and may reach the present one at the
+    // latest; the end is EXCLUSIVE, so it names the first interval that is NOT
+    // reported and may reach the interval AFTER the present one — the bound of
+    // a series whose last data point is the present interval, which is how the
+    // present interval is asked for at all.
+    if start > window.present {
+        return Err(future_period(
+            START,
+            format!(
+                "the start bound names a reported interval, so it may name no {} later than \
+                 the present one",
+                granularity.unit()
+            ),
+        ));
     }
-    if end > present {
-        return Err(future_period(END, granularity));
+    if end > window.latest_end {
+        return Err(future_period(
+            END,
+            format!(
+                "the end bound is exclusive, so the latest {unit} it may name is the one after \
+                 the present {unit}",
+                unit = granularity.unit()
+            ),
+        ));
     }
     if start >= end {
         return Err(empty_period(granularity));
@@ -746,7 +803,7 @@ fn period(
     // than answered with part of the series it asked for: the response pages
     // over GROUPS, so there is no member a caller could resume a truncated
     // series at.
-    if start < earliest {
+    if start < window.earliest {
         return Err(period_too_long(granularity));
     }
     Ok(Period { start, end })
@@ -1064,16 +1121,15 @@ fn wrong_date_format(
 
 /// Refuse a `timePeriod` that reaches past the present: a series is reported
 /// over elapsed time, so an interval that has not happened yet has no spend to
-/// report and no saving to measure against it. `member` is the bound that names
-/// it, which is the one the caller has to move.
-fn future_period(member: &str, granularity: Granularity) -> ListEfficiencyMetricsError {
+/// report and no saving to measure against it. `member` is the bound that
+/// reaches there, which is the one the caller has to move, and `rule` is what
+/// that bound may name — the two bounds differ, the start being inclusive and
+/// the end exclusive ([`Window`]).
+fn future_period(member: &str, rule: String) -> ListEfficiencyMetricsError {
     stated_refusal(
         format!("Invalid {TIME_PERIOD} specified. Time period cannot be in the future."),
         member,
-        format!(
-            "neither bound of the period may name a {} later than the present one",
-            granularity.unit()
-        ),
+        rule,
     )
 }
 

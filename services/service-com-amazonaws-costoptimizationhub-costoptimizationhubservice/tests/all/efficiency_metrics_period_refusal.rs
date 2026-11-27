@@ -11,8 +11,11 @@
 //! * a bound is written in the form the requested granularity takes its bounds
 //!   in — the member documents its dates as given "in either YYYY-MM-DD format
 //!   or YYYY-MM format depending on the desired granularity";
-//! * no bound names an interval later than the present one, because a series is
-//!   reported over elapsed time;
+//! * no bound asks for a data point later than the present interval, because a
+//!   series is reported over elapsed time: the inclusive start names no interval
+//!   later than the present one, and the exclusive end — which names the first
+//!   interval the series does NOT carry — none later than the interval after it,
+//!   so a series ending AT the present interval is served;
 //! * the end bound comes after the start bound, stated in the unit the requested
 //!   granularity reports its data points in (a day for `Daily`, a month for
 //!   `Monthly`);
@@ -23,6 +26,11 @@
 //! appears in it. Each table spans both granularities and the forms a period
 //! takes, and every period is built from the clock rather than written as a fixed
 //! date, because the window moves with the clock.
+//!
+//! The complement of the present-interval rule has its own table at the end: the
+//! periods whose exclusive end names the interval AFTER the present one, which
+//! are the only periods whose series reaches the present interval, and the share
+//! that interval's data point carries.
 
 use serde_json::{json, Value};
 use smithy_server_runtime::MultiServiceRouter;
@@ -233,25 +241,29 @@ async fn a_bound_in_another_form_than_the_granularity_takes_is_refused() {
     }
 }
 
-/// A bound naming an interval later than the present one is refused: a series is
-/// reported over elapsed time, so nothing has been spent over an interval that
-/// has not happened.
+/// A bound asking for a data point later than the present interval is refused: a
+/// series is reported over elapsed time, so nothing has been spent over an
+/// interval that has not happened.
 #[tokio::test]
 async fn a_period_reaching_past_the_present_is_refused() {
     let router = enrolled_router().await;
 
     for reported in REPORTED {
         // (case, start, end, the bound the refusal names): each a period one
-        // bound of which names an interval that has not elapsed. A future bound
-        // is two intervals ahead, not one, because the clock is read here and
-        // again in the handler: a bound one interval ahead would be the present
-        // one if the UTC day rolled over between the two.
+        // bound of which asks for a data point over an interval that has not
+        // elapsed. The END bound is exclusive, so the latest it may name is the
+        // interval AFTER the present one — which is served
+        // ([`a_series_ending_at_the_present_interval_is_served`]) — so a refused
+        // end is three intervals ahead and a refused start two, not one past
+        // their own limits: the clock is read here and again in the handler, so
+        // a bound one interval past its limit would be AT that limit if the UTC
+        // day rolled over between the two.
         let cases: Vec<(&str, String, String, &str)> = if reported.granularity == "Daily" {
             vec![
                 (
-                    "the end two days ahead",
+                    "the end three days ahead",
                     day_text(today() - 1),
-                    day_text(today() + 2),
+                    day_text(today() + 3),
                     END_MEMBER,
                 ),
                 (
@@ -270,9 +282,9 @@ async fn a_period_reaching_past_the_present_is_refused() {
         } else {
             vec![
                 (
-                    "the end two months ahead",
+                    "the end three months ahead",
                     month_text(months_before(today(), 1)),
-                    month_text(months_after(today(), 2)),
+                    month_text(months_after(today(), 3)),
                     END_MEMBER,
                 ),
                 (
@@ -417,12 +429,269 @@ async fn every_period_inside_the_reported_window_is_served() {
     }
 }
 
-/// How many data points one series carries at most, which is the window stated
-/// in that granularity's own intervals.
+/// How many data points one series carries over the periods above, which is the
+/// window stated in that granularity's own intervals.
 fn reported_window(granularity: &str) -> usize {
     REPORTED
         .iter()
         .find(|reported| reported.granularity == granularity)
         .map(|reported| reported.window)
         .unwrap_or_else(|| panic!("case {granularity}: expected a reported granularity"))
+}
+
+// ---------------------------------------------------------------------------
+// The PRESENT interval, which the exclusive end bound is what reaches
+// ---------------------------------------------------------------------------
+
+/// One case's period, as the two days of the calendar its bounds name: a daily
+/// bound names a day, a monthly bound the first day of its month. Both the
+/// request's bound text and the series the case expects are derived from these
+/// two days, so neither depends on the clock being read twice at the same
+/// instant.
+struct Reaching {
+    case: &'static str,
+    granularity: &'static str,
+    start: i64,
+    end: i64,
+}
+
+/// A bound as the text its granularity takes it in: `YYYY-MM-DD` for a daily
+/// series, `YYYY-MM` for a monthly one.
+fn bound(granularity: &str, day: i64) -> String {
+    if granularity == "Daily" {
+        day_text(day)
+    } else {
+        month_text(day)
+    }
+}
+
+/// The interval after the one `day` falls in, as a bound of this granularity:
+/// the next day of a daily series, the next month of a monthly one.
+fn next_interval(granularity: &str, day: i64) -> i64 {
+    if granularity == "Daily" {
+        day + 1
+    } else {
+        months_after(day, 1)
+    }
+}
+
+/// The timestamps a series over `[start, end)` carries, in time order: one per
+/// interval of the granularity the period reaches, the end bound's own interval
+/// excluded because that bound is exclusive.
+fn expected_stamps(granularity: &str, start: i64, end: i64) -> Vec<String> {
+    let mut stamps: Vec<String> = Vec::new();
+    let mut cursor = start;
+    while cursor < end {
+        stamps.push(bound(granularity, cursor));
+        cursor = next_interval(granularity, cursor);
+    }
+    stamps
+}
+
+/// The one group an unfiltered request answers with, which carries the whole
+/// series.
+fn only_group(payload: &Value, case: &str) -> Value {
+    let groups = payload["efficiencyMetricsByGroup"]
+        .as_array()
+        .unwrap_or_else(|| panic!("case {case:?}: expected a list of groups in {payload}"));
+    assert_eq!(
+        groups.len(),
+        1,
+        "case {case:?}: expected one group covering every resource, got {payload}"
+    );
+    groups[0].clone()
+}
+
+/// One group's series, as the data points it carries in order.
+fn points(group: &Value, case: &str) -> Vec<Value> {
+    group["metricsByTime"]
+        .as_array()
+        .unwrap_or_else(|| panic!("case {case:?}: expected a series in {group}"))
+        .clone()
+}
+
+/// A period whose EXCLUSIVE end names the interval after the present one is
+/// served, and its series carries one data point per interval of the period —
+/// the present interval included, which is the point no period could obtain
+/// while that bound was judged as if it were inclusive.
+///
+/// The table spans both granularities and periods of one interval, of a few and
+/// of the whole reported window.
+#[tokio::test]
+async fn a_series_ending_at_the_present_interval_is_served() {
+    let router = enrolled_router().await;
+    let now = today();
+
+    let cases = vec![
+        Reaching {
+            case: "the present day alone",
+            granularity: "Daily",
+            start: now,
+            end: now + 1,
+        },
+        Reaching {
+            case: "yesterday through the present day",
+            granularity: "Daily",
+            start: now - 1,
+            end: now + 1,
+        },
+        Reaching {
+            case: "a fortnight ending at the present day",
+            granularity: "Daily",
+            start: now - 13,
+            end: now + 1,
+        },
+        // Just inside the far edge of the daily window: the window is read from
+        // the clock here and again in the handler, so a case ON that edge would
+        // flip if the UTC day rolled over between the two.
+        Reaching {
+            case: "nearly the whole window ending at the present day",
+            granularity: "Daily",
+            start: now - 88,
+            end: now + 1,
+        },
+        Reaching {
+            case: "the present month alone",
+            granularity: "Monthly",
+            start: months_before(now, 0),
+            end: months_after(now, 1),
+        },
+        Reaching {
+            case: "the month before through the present month",
+            granularity: "Monthly",
+            start: months_before(now, 1),
+            end: months_after(now, 1),
+        },
+        Reaching {
+            case: "the whole window ending at the present month",
+            granularity: "Monthly",
+            start: months_before(now, 2),
+            end: months_after(now, 1),
+        },
+    ];
+
+    for Reaching {
+        case,
+        granularity,
+        start,
+        end,
+    } in cases
+    {
+        let case = format!("{granularity}, {case}");
+        let answered = ok(
+            &router,
+            "ListEfficiencyMetrics",
+            &request(
+                granularity,
+                &bound(granularity, start),
+                &bound(granularity, end),
+            ),
+        )
+        .await;
+        let group = only_group(&answered, &case);
+        let reported: Vec<String> = points(&group, &case)
+            .iter()
+            .map(|point| {
+                point["timestamp"]
+                    .as_str()
+                    .unwrap_or_else(|| panic!("case {case:?}: expected a timestamp in {point}"))
+                    .to_string()
+            })
+            .collect();
+        let expected = expected_stamps(granularity, start, end);
+        assert_eq!(
+            reported, expected,
+            "case {case:?}: expected one data point per interval of the period, got {reported:?}"
+        );
+        // The last point IS the present interval: every case's end bound names
+        // the interval after it, and that bound is exclusive.
+        let present = bound(granularity, now);
+        assert_eq!(
+            reported.last().map(String::as_str),
+            Some(present.as_str()),
+            "case {case:?}: expected the last data point at {present}, got {reported:?}"
+        );
+        // The present interval's point reports the figures every data point
+        // reports, over the enrolled account's spend.
+        for point in points(&group, &case) {
+            for member in ["score", "spend", "savings"] {
+                assert!(
+                    point[member].is_number(),
+                    "case {case:?}: expected a {member} figure on every point, got {point}"
+                );
+            }
+            let spend = point["spend"].as_f64().unwrap_or_default();
+            assert!(
+                spend > 0.0,
+                "case {case:?}: expected the enrolled account's spend on every point, \
+                 got {spend} in {point}"
+            );
+        }
+    }
+}
+
+/// The present interval's data point is prorated by exactly the rule every other
+/// interval's is — the days of its month the interval covers inside the period,
+/// over the days that month has — so the points of a series whose intervals all
+/// cover the same share of a month report the same figures. The present interval
+/// is not a point of its own kind.
+#[tokio::test]
+async fn the_present_interval_carries_the_same_share_as_its_peers() {
+    let router = enrolled_router().await;
+    let now = today();
+
+    // Periods every interval of which covers the same share of a month: the days
+    // of the present month up to and including today, each one day of that one
+    // month, and the whole months of the monthly window, each a whole month.
+    let cases = vec![
+        Reaching {
+            case: "the days of the present month through today",
+            granularity: "Daily",
+            start: months_before(now, 0),
+            end: now + 1,
+        },
+        Reaching {
+            case: "the whole months of the window through the present one",
+            granularity: "Monthly",
+            start: months_before(now, 2),
+            end: months_after(now, 1),
+        },
+    ];
+
+    for Reaching {
+        case,
+        granularity,
+        start,
+        end,
+    } in cases
+    {
+        let case = format!("{granularity}, {case}");
+        let answered = ok(
+            &router,
+            "ListEfficiencyMetrics",
+            &request(
+                granularity,
+                &bound(granularity, start),
+                &bound(granularity, end),
+            ),
+        )
+        .await;
+        let group = only_group(&answered, &case);
+        let spends: Vec<f64> = points(&group, &case)
+            .iter()
+            .map(|point| {
+                point["spend"]
+                    .as_f64()
+                    .unwrap_or_else(|| panic!("case {case:?}: expected a spend figure in {point}"))
+            })
+            .collect();
+        let first = *spends
+            .first()
+            .unwrap_or_else(|| panic!("case {case:?}: expected at least one data point in {group}"));
+        assert!(
+            spends.iter().all(|spend| (*spend - first).abs() < 0.005),
+            "case {case:?}: expected every interval to carry the same share of its month, \
+             got {spends:?}"
+        );
+    }
 }
