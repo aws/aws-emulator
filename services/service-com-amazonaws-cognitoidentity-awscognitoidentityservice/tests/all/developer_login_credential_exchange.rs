@@ -254,11 +254,9 @@ async fn a_value_this_pool_never_minted_is_refused_as_the_token_it_claims_to_be(
     // over the SHAPE of the map as well as over the value.
     for (case, presented, owed) in &rows {
         for shape in ["alone", "beside a public-provider login"] {
-            // A SERVED exchange spends the issuance it was made with
-            // (`login_token_single_use`'s rule), so the row the exchange is SERVED for
-            // presents a fresh issuance of that same identity for each shape of the map,
-            // while a row that is refused presents the one value under test: a refused
-            // exchange spends nothing.
+            // The row the exchange is SERVED for presents a fresh issuance of that same
+            // identity for each shape of the map, so neither shape is read against what the
+            // other did; a row that is refused presents the one value under test.
             let presented = if owed.is_some() {
                 presented.clone()
             } else {

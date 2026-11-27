@@ -22,9 +22,9 @@
 //! of a request that names none, and the modelled maximum among them — rather than one
 //! recorded call, and each row is read at three instants: inside its nominal window, past
 //! that window but inside the grace, and past the grace. Each of those readings is made with
-//! an issuance of its own, of the row's window: what a SERVED exchange does to the issuance it
-//! was made with is `login_token_single_use`'s rule, and this suite's rule is the window
-//! alone.
+//! an issuance of its own, of the row's window, so one row's reading cannot be what decides
+//! the next: how many exchanges ONE issuance buys is `login_token_single_use`'s rule, and
+//! this suite's rule is the window alone.
 //!
 //! Those instants are reached by AGEING the issuance each row is read against — the record
 //! this service keeps of the token it minted, held in the store of this suite's own engine —
@@ -32,7 +32,9 @@
 //! out, and an outcome that depends on how fast the host runs is no assertion at all.
 //! Holding that engine is why this suite stands its emulator up itself instead of borrowing
 //! `identity_pool_flow`'s, which keeps its engine to itself; everything else — the role a
-//! vend assumes, the request bodies — is the sibling suites' own.
+//! vend assumes, the request bodies — is the sibling suites' own. A sibling suite whose rule
+//! is read against that same record drives it through THIS harness rather than a second copy
+//! of it (`login_token_reuse_then_expiry`).
 
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
@@ -92,14 +94,16 @@ const CLOCK_SKEW_GRACE: Duration = Duration::from_secs(300);
 
 /// One emulator holding this service, reached exactly as the production router reaches it,
 /// beside the engine it is mounted on: this suite reads and AGES the issuance records that
-/// engine holds, which is how it drives the clock the window is read against.
-struct Emulator {
+/// engine holds, which is how it drives the clock the window is read against. `pub(crate)`
+/// so a sibling suite whose rule is read against that same record drives the service through
+/// this harness rather than a second copy of it.
+pub(crate) struct Emulator {
     router: MultiServiceRouter,
     engine: Arc<engine::InMemoryEngine>,
 }
 
 impl Emulator {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let engine: Arc<engine::InMemoryEngine> = Arc::new(engine::InMemoryEngine::new());
         let mut router = MultiServiceRouter::new();
         router.register_service(cognito::EmulatedService::new(Arc::clone(&engine)));
@@ -164,7 +168,7 @@ impl Emulator {
     /// role is seeded into the IAM store of the same engine and configured on the pool,
     /// which is the shape a pool has to be in for an exchange to be served at all. Answers
     /// its `IdentityPoolId`.
-    async fn vending_pool(&self, name: &str, developer_provider: &str) -> String {
+    pub(crate) async fn vending_pool(&self, name: &str, developer_provider: &str) -> String {
         let created = self
             .ok(
                 "CreateIdentityPool",
@@ -197,7 +201,7 @@ impl Emulator {
 
     /// Mint a token for `user` in `pool_id` with the window `token_duration` asks for (none
     /// when it is `None`), and answer the identity it resolved to with the token itself.
-    async fn mint(
+    pub(crate) async fn mint(
         &self,
         pool_id: &str,
         developer_provider: &str,
@@ -228,7 +232,7 @@ impl Emulator {
 
     /// The exchange itself: `GetCredentialsForIdentity` presenting `token` under this
     /// service's own provider name, as a client spends a minted token.
-    async fn exchange(&self, identity_id: &str, token: &str) -> (u16, Value) {
+    pub(crate) async fn exchange(&self, identity_id: &str, token: &str) -> (u16, Value) {
         self.call(
             OPERATION,
             &json!({
@@ -242,7 +246,7 @@ impl Emulator {
     /// Move the window the recorded issuance of `token` carries BACK by `elapsed`: the
     /// record is left as it would be had it been minted that much earlier, which is the
     /// same thing as reading it that much later and needs no wall clock to pass.
-    fn age_issuance(&self, case: &str, token: &str, elapsed: Duration) {
+    pub(crate) fn age_issuance(&self, case: &str, token: &str, elapsed: Duration) {
         let state = cognito::state::service_state(&*self.engine)
             .expect("this service's store is on this engine");
         let mut store = state.lock();
@@ -291,8 +295,6 @@ impl Emulator {
                 expiration,
                 authenticated_by: authenticated_by.to_vec(),
                 principal_tags: None,
-                // Recorded as a mint records one: no exchange has been served with it yet.
-                spent: false,
             },
         );
         token
@@ -316,7 +318,7 @@ fn error_message(case: &str, body: &Value) -> String {
 }
 
 /// Assert that `body` is a served exchange: a complete credential set for `identity_id`.
-fn assert_served_credentials(case: &str, identity_id: &str, body: &Value) {
+pub(crate) fn assert_served_credentials(case: &str, identity_id: &str, body: &Value) {
     assert_eq!(
         body["IdentityId"].as_str(),
         Some(identity_id),
@@ -331,7 +333,7 @@ fn assert_served_credentials(case: &str, identity_id: &str, body: &Value) {
 }
 
 /// Assert that `body` is the refusal `message` words, with no credential in it.
-fn assert_refused(case: &str, status: u16, body: &Value, message: &str) {
+pub(crate) fn assert_refused(case: &str, status: u16, body: &Value, message: &str) {
     assert_eq!(
         status, 400,
         "case {case:?}: expected the HTTP 400 of a refused exchange, got {status} with {body}"
@@ -407,9 +409,9 @@ async fn a_minted_token_is_spent_until_the_clock_skew_grace_past_its_window_has_
 
     let mut identity: Option<String> = None;
     for (case, token_duration, nominal) in rows {
-        // One issuance per phase of the row, all of the same window: a SERVED exchange spends
-        // the issuance it was made with (`login_token_single_use`'s rule), so what is asked
-        // again is asked with another token of the same window rather than with a spent one.
+        // One issuance per phase of the row, all of the same window, so what one phase read
+        // its record at cannot be what the next phase reads: each phase ages an issuance of
+        // its own.
         let mut minted = Vec::new();
         while minted.len() < 3 {
             let (identity_id, token) = emulator
@@ -513,9 +515,9 @@ async fn the_sweep_gives_up_what_the_grace_no_longer_covers_and_nothing_else() {
         now - Duration::from_secs(901),
         now - Duration::from_secs(1),
     );
-    // A second issuance of that same window, for the reading made AFTER the sweep: one
-    // served exchange spends the issuance it was made with, so the two readings are made
-    // with two tokens the grace covers alike.
+    // A second issuance of that same window, for the reading made AFTER the sweep, so the two
+    // readings are made with two tokens the grace covers alike and neither reading is the
+    // other's.
     let inside_the_grace_again = emulator.record_issuance(
         &pool_id,
         &identity_id,
@@ -622,8 +624,8 @@ async fn a_token_this_service_never_issued_buys_no_credential() {
         status, 200,
         "the issued token is exchanged, got {status} with {body}"
     );
-    // A second issuance of the same identity, for the reading made after the rows: one served
-    // exchange spends the issuance it was made with.
+    // A second issuance of the same identity, for the reading made after the rows, so that
+    // reading is its own.
     let (_, issued_again) = emulator
         .mint(
             &pool_id,

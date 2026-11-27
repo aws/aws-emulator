@@ -2,34 +2,36 @@
 
 //! HOW MANY credential exchanges one OpenID token this service minted buys.
 //!
-//! RULE: a token this service mints is redeemable ONCE at the credential exchange. The
+//! RULE: as many as it is presented for, while the window its issuance recorded is open. The
 //! exchange is the pass-through that token was minted for — "If the token is for
 //! `cognito-identity.amazonaws.com`, it will be passed through to Security Token Service with
 //! the appropriate role for the token"
-//! (`smithy_query(query="doc",shape="GetCredentialsForIdentity")`) — so an exchange that is
-//! SERVED with it spends the issuance, and the same token presented again resolves to nothing:
-//! it is no Cognito token of the pool any more, which is the modelled `NotAuthorizedException`
-//! with AWS's fixed sentence `Invalid login token. Not a Cognito token.`, the sentence a value
-//! this pool never minted carries. An exchange that was REFUSED redeemed nothing, so the
-//! token it presented is still the unspent issuance it was, and a caller that needs another
-//! exchange asks its mint for another token: what is spent is the ISSUANCE, never the identity
-//! it names.
+//! (`smithy_query(query="doc",shape="GetCredentialsForIdentity")`) — and the pass-through
+//! READS the issuance rather than consuming it: the mint hands its caller a credential to keep
+//! for the window it asked for, "You can specify a custom expiration time for the token so
+//! that you can cache it"
+//! (`smithy_query(query="doc",shape="GetOpenIdTokenForDeveloperIdentityInput",member="TokenDuration")`),
+//! and a cached token is a token presented more than once. So a served exchange leaves the
+//! token exchangeable, every presentation of it is answered with a session of its own, and the
+//! only thing that ends it is the close of its window (`login_token_window`'s rule, and
+//! `login_token_reuse_then_expiry`'s for the refusal it then carries).
 //!
-//! The spending is read wherever a presented login is read, so the second call that presents a
-//! spent token is answered the same way whichever call it is — the exchange itself and the
-//! unlink both read one.
+//! The reading is the same wherever a presented login is read, so a token an exchange was
+//! served with is still the login it is at the later call that reads one — the exchange itself
+//! and the unlink both read one.
 //!
-//! And the presented login is decided BEFORE the request's role-selection parameters, so a
-//! request presenting a spent token beside a `CustomRoleArn` the pool's configuration does not
-//! permit is answered for the TOKEN rather than for the parameter.
+//! And a request is still decided for its presented login BEFORE its role-selection
+//! parameters, so a request whose login is fine and whose `CustomRoleArn` the pool does not
+//! permit is answered for the parameter — the token, having nothing wrong with it, is not what
+//! the refusal names.
 //!
 //! The rows span what the rule generalises over: how the token was minted (`GetOpenIdToken`
 //! for an unauthenticated identity, `GetOpenIdToken` for a federated one,
 //! `GetOpenIdTokenForDeveloperIdentity` for a backend-authenticated one), the shape of the
 //! second presentation (the token alone, beside a public-provider login, beside a
-//! `CustomRoleArn` the pool does not permit), which refusal the first exchange was answered
-//! with for the rows that spend nothing, and how many issuances of one identity are
-//! outstanding at once.
+//! `CustomRoleArn` the pool does not permit), which refusal an earlier exchange was answered
+//! with for the rows that are refused, and how many issuances of one identity are outstanding
+//! at once.
 //!
 //! The harness is `identity_pool_flow`'s: one shared engine behind the same
 //! `MultiServiceRouter` the production router builds, with the role a vend assumes seeded into
@@ -70,6 +72,10 @@ const CUSTOM_ROLE_ARN_UNSUPPORTED: &str =
 /// How many issuances of one identity the last case holds outstanding at once: more than two,
 /// so "one each" is not "the second one".
 const OUTSTANDING_ISSUANCES: usize = 3;
+
+/// How many times one issuance is presented where the rule is "as often as it is presented":
+/// more than twice, so "again" is not "once more".
+const PRESENTATIONS: usize = 3;
 
 /// A pool that mints tokens and vends credentials: it names the developer provider its
 /// backend logins are made under and the public provider its federated logins are made under,
@@ -220,7 +226,9 @@ async fn exchange(
 }
 
 /// Assert that the exchange was SERVED: a complete credential set for the identity asked for.
-fn assert_served(case: &str, identity_id: &str, status: u16, body: &Value) {
+/// Answers the `AccessKeyId` of the session it minted, so a caller can tell one session from
+/// the next.
+fn assert_served(case: &str, identity_id: &str, status: u16, body: &Value) -> String {
     assert_eq!(
         status, 200,
         "case {case:?}: expected the HTTP 200 of a served exchange, got {status} with {body}"
@@ -236,6 +244,10 @@ fn assert_served(case: &str, identity_id: &str, status: u16, body: &Value) {
             "case {case:?}: a served exchange carries Credentials.{member}, got {body}"
         );
     }
+    body["Credentials"]["AccessKeyId"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string()
 }
 
 /// Assert that the call was refused with `code` and the fixed sentence `message`, and that it
@@ -278,8 +290,9 @@ fn rows() -> Vec<(&'static str, Mint)> {
     ]
 }
 
-/// What a refused exchange of `a_refused_exchange_spends_nothing` is refused FOR: never the
-/// presented token's own validity, so each one has to leave the token spendable.
+/// What a refused exchange of `a_refused_exchange_leaves_the_token_exchangeable` is refused
+/// FOR: never the presented token's own validity, so each one has to leave the token
+/// exchangeable.
 #[derive(Clone, Copy)]
 enum Refused {
     /// A `CustomRoleArn` the pool's configuration does not permit the exchange to name.
@@ -302,100 +315,106 @@ impl Refused {
     }
 }
 
-/// RULE: the exchange a token is SERVED spends the issuance, so presenting that same token
-/// again buys nothing — whichever mint handed it out and whatever shape the second request
-/// takes — while a fresh issuance of the same identity is exchanged as ever.
+/// RULE: a SERVED exchange leaves the issuance it was presented with exchangeable, so the same
+/// token presented again — whichever mint handed it out, and in whatever shape — buys another
+/// exchange, each with a session of its own.
 #[tokio::test]
-async fn a_served_exchange_spends_the_token_it_was_presented_with() {
+async fn a_served_exchange_leaves_the_token_it_was_presented_with_exchangeable() {
     let emulator = Emulator::new();
-    let pool_id = vending_pool(&emulator, "token-single-use").await;
-    // A role ARN this pool's configuration does not permit an exchange to name at all:
-    // neither of its providers is a SAML provider or one the pool holds a `RoleMappings`
-    // entry for.
-    let custom_role_arn = seeded_role_arn("token-single-use", "custom");
+    let pool_id = vending_pool(&emulator, "token-reuse").await;
 
     for (row, how) in rows() {
         let identity_id = identity_of(&emulator, &pool_id, how).await;
-        // The shapes the SECOND presentation takes: the token alone, beside a login of the
-        // public provider, and beside a `CustomRoleArn` the pool does not permit — the last
-        // one being the shape that would be answered for the parameter if the login were not
-        // decided first.
-        let shapes: Vec<(&str, Value, Option<&str>)> = vec![
-            (
-                "alone",
-                json!({COGNITO_IDENTITY_PROVIDER: "<the spent token>"}),
-                None,
-            ),
+        // The shapes the LATER presentations take: the token alone, and beside a login of the
+        // public provider.
+        let shapes: Vec<(&str, Value)> = vec![
+            ("alone", json!({COGNITO_IDENTITY_PROVIDER: "<the token>"})),
             (
                 "beside a public-provider login",
                 json!({
-                    COGNITO_IDENTITY_PROVIDER: "<the spent token>",
+                    COGNITO_IDENTITY_PROVIDER: "<the token>",
                     PUBLIC_PROVIDER: "fb-access-token",
                 }),
-                None,
-            ),
-            (
-                "beside a CustomRoleArn the pool does not permit",
-                json!({COGNITO_IDENTITY_PROVIDER: "<the spent token>"}),
-                Some(custom_role_arn.as_str()),
             ),
         ];
-        for (shape, map, names_a_custom_role) in &shapes {
+        for (shape, map) in &shapes {
             let case = format!("{row}, presented again {shape}");
-            let spent = mint(&emulator, &pool_id, &identity_id, how).await;
-            // The first exchange: served, and it is what spends the issuance.
-            let (status, body) = exchange(
-                &emulator,
-                &identity_id,
-                &json!({COGNITO_IDENTITY_PROVIDER: &spent}),
-                None,
-            )
-            .await;
-            assert_served(&case, &identity_id, status, &body);
-
-            // The same token again, in this row's shape: refused for the TOKEN, with no
-            // credential in the answer and — for the shape that names one — nothing said
-            // about the `CustomRoleArn`.
+            let token = mint(&emulator, &pool_id, &identity_id, how).await;
+            let mut vended: Vec<String> = Vec::new();
             let mut presented = map.clone();
-            presented[COGNITO_IDENTITY_PROVIDER] = json!(&spent);
-            let (status, body) =
-                exchange(&emulator, &identity_id, &presented, *names_a_custom_role).await;
-            assert_refused(
-                &case,
-                status,
-                &body,
-                "NotAuthorizedException",
-                NOT_A_COGNITO_TOKEN,
-            );
-            assert_ne!(
-                body["message"].as_str(),
-                Some(CUSTOM_ROLE_ARN_UNSUPPORTED),
-                "case {case:?}: the login is decided before the role the vend would assume, \
-                 got {body}"
-            );
-
-            // What was spent is the ISSUANCE: a fresh token of the same identity is exchanged
-            // as ever, so the identity itself is untouched.
-            let fresh = mint(&emulator, &pool_id, &identity_id, how).await;
-            let (status, body) = exchange(
-                &emulator,
-                &identity_id,
-                &json!({COGNITO_IDENTITY_PROVIDER: &fresh}),
-                None,
-            )
-            .await;
-            assert_served(&format!("{case}, with a fresh issuance"), &identity_id, status, &body);
+            presented[COGNITO_IDENTITY_PROVIDER] = json!(&token);
+            for presentation in 1..=PRESENTATIONS {
+                let case = format!("{case}, presentation {presentation} of {PRESENTATIONS}");
+                let (status, body) = exchange(&emulator, &identity_id, &presented, None).await;
+                let access_key_id = assert_served(&case, &identity_id, status, &body);
+                assert!(
+                    !vended.contains(&access_key_id),
+                    "case {case:?}: every exchange mints its own session, got \
+                     {access_key_id} again"
+                );
+                vended.push(access_key_id);
+            }
         }
     }
 }
 
-/// RULE, the other side: an exchange that was REFUSED redeemed nothing, so the token it
-/// presented is still spendable — whichever refusal it was answered with.
+/// RULE, against the request's role-selection parameters: the presented login is decided
+/// FIRST, so a request whose token is good and whose `CustomRoleArn` the pool does not permit
+/// is answered for the parameter — and that refusal leaves the token exchangeable, as every
+/// refusal does.
 #[tokio::test]
-async fn a_refused_exchange_spends_nothing() {
+async fn a_good_token_beside_an_impermissible_custom_role_arn_is_answered_for_the_parameter() {
     let emulator = Emulator::new();
-    let pool_id = vending_pool(&emulator, "token-refused-spends-nothing").await;
-    let custom_role_arn = seeded_role_arn("token-refused-spends-nothing", "custom");
+    let pool_id = vending_pool(&emulator, "token-reuse-custom-role").await;
+    // A role ARN this pool's configuration does not permit an exchange to name at all:
+    // neither of its providers is a SAML provider or one the pool holds a `RoleMappings`
+    // entry for.
+    let custom_role_arn = seeded_role_arn("token-reuse-custom-role", "custom");
+
+    for (row, how) in rows() {
+        let identity_id = identity_of(&emulator, &pool_id, how).await;
+        let token = mint(&emulator, &pool_id, &identity_id, how).await;
+        let presented = json!({COGNITO_IDENTITY_PROVIDER: &token});
+
+        // Served first, so the token is one an exchange has already been answered with.
+        let (status, body) = exchange(&emulator, &identity_id, &presented, None).await;
+        assert_served(&format!("{row}, the first exchange"), &identity_id, status, &body);
+
+        let case = format!("{row}, beside a CustomRoleArn the pool does not permit");
+        let (status, body) = exchange(
+            &emulator,
+            &identity_id,
+            &presented,
+            Some(custom_role_arn.as_str()),
+        )
+        .await;
+        assert_refused(
+            &case,
+            status,
+            &body,
+            "InvalidParameterException",
+            CUSTOM_ROLE_ARN_UNSUPPORTED,
+        );
+        assert_ne!(
+            body["message"].as_str(),
+            Some(NOT_A_COGNITO_TOKEN),
+            "case {case:?}: a token an exchange was served with is no less a Cognito token, \
+             got {body}"
+        );
+
+        // And the parameter's refusal cost the token nothing.
+        let (status, body) = exchange(&emulator, &identity_id, &presented, None).await;
+        assert_served(&format!("{case}, afterwards"), &identity_id, status, &body);
+    }
+}
+
+/// RULE, the other side: an exchange that was REFUSED leaves the token it presented
+/// exchangeable too — whichever refusal it was answered with.
+#[tokio::test]
+async fn a_refused_exchange_leaves_the_token_exchangeable() {
+    let emulator = Emulator::new();
+    let pool_id = vending_pool(&emulator, "token-refused-costs-nothing").await;
+    let custom_role_arn = seeded_role_arn("token-refused-costs-nothing", "custom");
     // A second identity of the same pool, so a row can present one identity's token for
     // another.
     let other_identity = identity_of(&emulator, &pool_id, Mint::Developer("other-user")).await;
@@ -411,18 +430,18 @@ async fn a_refused_exchange_spends_nothing() {
             Refused::AnotherIdentity,
             Refused::DeveloperProviderLogin,
         ] {
-            let spendable = mint(&emulator, &pool_id, &identity_id, how).await;
+            let token = mint(&emulator, &pool_id, &identity_id, how).await;
             let (named, logins, custom, code, message) = match refused {
                 Refused::CustomRoleArn => (
                     &identity_id,
-                    json!({COGNITO_IDENTITY_PROVIDER: &spendable}),
+                    json!({COGNITO_IDENTITY_PROVIDER: &token}),
                     Some(custom_role_arn.as_str()),
                     "InvalidParameterException",
                     CUSTOM_ROLE_ARN_UNSUPPORTED,
                 ),
                 Refused::AnotherIdentity => (
                     &other_identity,
-                    json!({COGNITO_IDENTITY_PROVIDER: &spendable}),
+                    json!({COGNITO_IDENTITY_PROVIDER: &token}),
                     None,
                     "NotAuthorizedException",
                     UNMATCHED_LOGINS,
@@ -430,7 +449,7 @@ async fn a_refused_exchange_spends_nothing() {
                 Refused::DeveloperProviderLogin => (
                     &identity_id,
                     json!({
-                        COGNITO_IDENTITY_PROVIDER: &spendable,
+                        COGNITO_IDENTITY_PROVIDER: &token,
                         DEVELOPER_PROVIDER: "backend-user",
                     }),
                     None,
@@ -442,12 +461,12 @@ async fn a_refused_exchange_spends_nothing() {
             let (status, body) = exchange(&emulator, named, &logins, custom).await;
             assert_refused(&case, status, &body, code, message);
 
-            // The refusal cost the token nothing: it still buys the one exchange it was
-            // minted for.
+            // The refusal cost the token nothing: it still buys the exchange it was minted
+            // for.
             let (status, body) = exchange(
                 &emulator,
                 &identity_id,
-                &json!({COGNITO_IDENTITY_PROVIDER: &spendable}),
+                &json!({COGNITO_IDENTITY_PROVIDER: &token}),
                 None,
             )
             .await;
@@ -456,11 +475,11 @@ async fn a_refused_exchange_spends_nothing() {
     }
 }
 
-/// RULE, over how many issuances are outstanding: each one is spendable once on its own, so an
-/// identity holding several buys exactly that many exchanges — in whichever order they are
-/// presented — and none of them a second one.
+/// RULE, over how many issuances are outstanding: each one stands on its own, so an identity
+/// holding several buys an exchange with each of them — in whichever order they are presented
+/// — and with each of them again.
 #[tokio::test]
-async fn each_outstanding_issuance_buys_exactly_one_exchange() {
+async fn every_outstanding_issuance_buys_an_exchange_as_often_as_it_is_presented() {
     let emulator = Emulator::new();
     let pool_id = vending_pool(&emulator, "token-outstanding").await;
 
@@ -475,98 +494,65 @@ async fn each_outstanding_issuance_buys_exactly_one_exchange() {
         outstanding.reverse();
 
         let mut vended: Vec<String> = Vec::new();
-        for (index, token) in outstanding.iter().enumerate() {
-            let case = format!("{row}, issuance {} of {OUTSTANDING_ISSUANCES}", index + 1);
-            let (status, body) = exchange(
-                &emulator,
-                &identity_id,
-                &json!({COGNITO_IDENTITY_PROVIDER: token}),
-                None,
-            )
-            .await;
-            assert_served(&case, &identity_id, status, &body);
-            let access_key_id = body["Credentials"]["AccessKeyId"]
-                .as_str()
-                .unwrap_or_default()
-                .to_string();
-            assert!(
-                !vended.contains(&access_key_id),
-                "case {case:?}: every exchange mints its own session, got {access_key_id} \
-                 again"
-            );
-            vended.push(access_key_id);
-        }
-        // And none of them buys a second one.
-        for (index, token) in outstanding.iter().enumerate() {
-            let case = format!(
-                "{row}, issuance {} of {OUTSTANDING_ISSUANCES} presented again",
-                index + 1
-            );
-            let (status, body) = exchange(
-                &emulator,
-                &identity_id,
-                &json!({COGNITO_IDENTITY_PROVIDER: token}),
-                None,
-            )
-            .await;
-            assert_refused(
-                &case,
-                status,
-                &body,
-                "NotAuthorizedException",
-                NOT_A_COGNITO_TOKEN,
-            );
+        for presentation in 1..=PRESENTATIONS {
+            for (index, token) in outstanding.iter().enumerate() {
+                let case = format!(
+                    "{row}, issuance {} of {OUTSTANDING_ISSUANCES}, presentation \
+                     {presentation} of {PRESENTATIONS}",
+                    index + 1
+                );
+                let (status, body) = exchange(
+                    &emulator,
+                    &identity_id,
+                    &json!({COGNITO_IDENTITY_PROVIDER: token}),
+                    None,
+                )
+                .await;
+                let access_key_id = assert_served(&case, &identity_id, status, &body);
+                assert!(
+                    !vended.contains(&access_key_id),
+                    "case {case:?}: every exchange mints its own session, got \
+                     {access_key_id} again"
+                );
+                vended.push(access_key_id);
+            }
         }
     }
 }
 
-/// RULE, wherever a presented login is read: a spent issuance resolves at no later reading of
-/// one, so the unlink that presents it is answered the same sentence the exchange is — and an
-/// unspent issuance of the same identity is read as the login it is.
+/// RULE, wherever a presented login is read: a token an exchange was served with is still the
+/// login it is at every later reading of one, so the unlink that presents it is served as the
+/// exchange was.
 #[tokio::test]
-async fn a_spent_issuance_resolves_at_no_later_reading_of_a_presented_login() {
+async fn an_exchanged_issuance_is_still_read_as_the_login_it_is() {
     let emulator = Emulator::new();
-    let pool_id = vending_pool(&emulator, "token-spent-elsewhere").await;
+    let pool_id = vending_pool(&emulator, "token-read-elsewhere").await;
     let how = Mint::Federated("fb-access-token");
     let identity_id = identity_of(&emulator, &pool_id, how).await;
 
-    let spent = mint(&emulator, &pool_id, &identity_id, how).await;
+    let token = mint(&emulator, &pool_id, &identity_id, how).await;
     let (status, body) = exchange(
         &emulator,
         &identity_id,
-        &json!({COGNITO_IDENTITY_PROVIDER: &spent}),
+        &json!({COGNITO_IDENTITY_PROVIDER: &token}),
         None,
     )
     .await;
-    assert_served("the exchange that spends the issuance", &identity_id, status, &body);
+    assert_served("the exchange served with the issuance", &identity_id, status, &body);
 
-    // The unlink presenting that spent token: it reads a presented login too, so it answers
-    // the same sentence and detaches nothing.
-    let unlink = |token: &str| {
-        json!({
-            "IdentityId": &identity_id,
-            "Logins": {
-                COGNITO_IDENTITY_PROVIDER: token,
-                PUBLIC_PROVIDER: "fb-access-token",
-            },
-            "LoginsToRemove": [PUBLIC_PROVIDER],
-        })
-    };
-    let (status, body) = emulator.call(UNLINK, &unlink(&spent)).await;
-    assert_refused(
-        "the unlink presenting the spent issuance",
-        status,
-        &body,
-        "NotAuthorizedException",
-        NOT_A_COGNITO_TOKEN,
-    );
-
-    // The control: an unspent issuance of the same identity is read as the login it is, so
-    // the refusal above was the token's doing and nothing else's.
-    let unspent = mint(&emulator, &pool_id, &identity_id, how).await;
-    let (status, body) = emulator.call(UNLINK, &unlink(&unspent)).await;
+    // The unlink presenting that same token: it reads a presented login too, so it reads the
+    // login the token is and detaches the provider it was asked to.
+    let unlink = json!({
+        "IdentityId": &identity_id,
+        "Logins": {
+            COGNITO_IDENTITY_PROVIDER: &token,
+            PUBLIC_PROVIDER: "fb-access-token",
+        },
+        "LoginsToRemove": [PUBLIC_PROVIDER],
+    });
+    let (status, body) = emulator.call(UNLINK, &unlink).await;
     assert_eq!(
         status, 200,
-        "the unlink presenting an unspent issuance is served, got {status} with {body}"
+        "the unlink presenting the exchanged issuance is served, got {status} with {body}"
     );
 }

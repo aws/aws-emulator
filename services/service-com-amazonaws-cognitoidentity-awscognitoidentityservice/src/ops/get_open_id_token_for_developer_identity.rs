@@ -946,8 +946,6 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static>
             principal_tags: input
                 .principal_tags
                 .map(|tags| tags.into_iter().collect()),
-            // Handed out unspent: the exchange this token buys has not been served yet.
-            spent: false,
         };
         store.record_open_id_token(token.clone(), issued.clone(), now);
         // The same issuance, in the registry the service that REDEEMS this token reads

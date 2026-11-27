@@ -16,9 +16,9 @@
 //! public login, two of them), whether it names a `CustomRoleArn`, and whether the login it
 //! presents is a token this service minted for a developer-authenticated identity — and each
 //! row vends more than twice, because "a new one each time" is not "two in a row". The row
-//! that presents a token of THIS service presents a fresh one on each attempt: such an
-//! issuance is spendable once (`login_token_single_use`'s rule), so asking again is asking
-//! with another token, which is exactly how a caller vends again against the real service.
+//! that presents a token of THIS service presents a fresh one on each attempt, which is one
+//! way a caller vends again against the real service — the other being the same token again,
+//! which `login_token_single_use` is the rule for.
 //!
 //! The harness is `vended_role_session`'s: this service and the token service on ONE shared
 //! engine, with the IAM records seeded into that same engine as `iam:CreateRole` writes them,
@@ -185,8 +185,7 @@ async fn every_vend_of_one_identity_mints_its_own_session() {
         .expect("the developer exchange answers an IdentityId")
         .to_string();
     // One token per attempt: the mint answers the SAME identity for one developer user and a
-    // fresh issuance each time, and an issuance a served exchange has spent buys no second
-    // one.
+    // fresh issuance each time, so no two attempts here present one issuance.
     let mut developer_requests = vec![json!({
         "IdentityId": &developer_identity,
         "Logins": {COGNITO_PROVIDER: minted["Token"].as_str()

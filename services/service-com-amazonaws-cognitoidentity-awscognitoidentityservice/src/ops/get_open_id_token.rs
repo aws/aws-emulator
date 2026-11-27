@@ -456,8 +456,6 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> GetOpenIdToken<En
             expiration,
             authenticated_by: providers.clone(),
             principal_tags: (!mapped_tags.is_empty()).then(|| mapped_tags.into_iter().collect()),
-            // Handed out unspent: the exchange this token buys has not been served yet.
-            spent: false,
         };
         store.record_open_id_token(token.clone(), issued.clone(), now);
         // The same issuance, in the registry the service that REDEEMS this token reads

@@ -303,10 +303,9 @@ async fn a_vend_is_decided_on_the_methods_the_redeemed_token_was_issued_with() {
 
         for (index, row) in rows.iter().enumerate() {
             let case = format!("{} against a role scoped to {scoped_to:?}", row.case);
-            // One issuance per reading: a SERVED exchange spends the issuance it was made
-            // with (`login_token_single_use`'s rule), and what is redeemed here is the
-            // methods a mint of this row's login records, which every issuance of it carries
-            // alike.
+            // One issuance per reading, so no reading is made against what another did: what
+            // is redeemed here is the methods a mint of this row's login records, which every
+            // issuance of it carries alike.
             let (identity_id, token) =
                 mint(&emulator, &pool_id, row.case, row.login, &format!("user-{index}")).await;
             let identity_id = &identity_id;

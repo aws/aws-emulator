@@ -2229,12 +2229,6 @@ pub struct IssuedOpenIdToken {
     /// The `PrincipalTags` the issuing call carried, ordered so a read reports the same
     /// map twice. `None` when the caller sent none, so nothing invents an empty map.
     pub principal_tags: Option<BTreeMap<String, String>>,
-    /// Whether the credential exchange this token buys has already been SERVED with it
-    /// ([`ComAmazonawsCognitoidentityAwscognitoidentityserviceState::spend_presented_login_token`]).
-    /// An issuance is handed out unspent, and the first exchange served with it spends it:
-    /// from then on the issuance resolves no presented token
-    /// ([`ComAmazonawsCognitoidentityAwscognitoidentityserviceState::resolve_login_token`]).
-    pub spent: bool,
 }
 
 /// The `Logins` provider name a token THIS service minted is presented under — the Cognito
@@ -2296,9 +2290,6 @@ pub const UNVERIFIABLE_LOGIN_TOKEN_MESSAGE: &str =
 /// pool minted, read against the pool that owns the identity the call names, each identity
 /// belonging to the pool that minted it, so a token some other pool minted is no Cognito
 /// token of this one whatever it claims. An issuance the pool has already REDEEMED carries it
-/// too ([`LoginTokenRefusal::Spent`]): a token a served exchange spent is no token of this
-/// pool any more.
-///
 /// Fixed text with no request- or state-derived part, as the other refusals of a presented
 /// token are: the caller of a credential exchange holds no credential yet, so the refusal
 /// names neither pool, neither identity, nor the token it was made with.
@@ -2309,10 +2300,6 @@ pub const NOT_A_COGNITO_TOKEN_MESSAGE: &str = "Invalid login token. Not a Cognit
 pub enum LoginTokenRefusal {
     /// The validity window the issuance recorded has closed.
     Expired,
-    /// The issuance has already been SPENT: a credential exchange was served with this very
-    /// token, so the issuance buys no second one
-    /// ([`ComAmazonawsCognitoidentityAwscognitoidentityserviceState::spend_presented_login_token`]).
-    Spent,
     /// The value carries this service's OWN issuer and no issuance of this service resolves
     /// it: a token of this service's form whose signature nothing here can vouch for.
     Unverifiable,
@@ -2334,7 +2321,6 @@ impl LoginTokenRefusal {
     pub fn message(self) -> &'static str {
         match self {
             Self::Expired => EXPIRED_LOGIN_TOKEN_MESSAGE,
-            Self::Spent => NOT_A_COGNITO_TOKEN_MESSAGE,
             Self::Unverifiable => UNVERIFIABLE_LOGIN_TOKEN_MESSAGE,
             Self::NotACognitoToken => NOT_A_COGNITO_TOKEN_MESSAGE,
             Self::AnotherPool => NOT_A_COGNITO_TOKEN_MESSAGE,
@@ -2856,9 +2842,16 @@ impl ComAmazonawsCognitoidentityAwscognitoidentityserviceState {
     /// instant it says it expires at and the shortest window a mint can be asked for is one
     /// a caller can actually spend.
     ///
-    /// An issuance is spendable ONCE ([`Self::spend_presented_login_token`]): the exchange
-    /// that was served with it redeemed it, so an issuance already spent resolves no
-    /// presented token however open its window still is.
+    /// Presenting a token is a READING of the issuance and never a consumption of it: the
+    /// window is the whole of what bounds it, so the same token resolves as often as it is
+    /// presented while that window is open. The mint hands out a credential its caller may
+    /// keep for exactly that long — "You can specify a custom expiration time for the token
+    /// so that you can cache it", and the risk that member's own documentation states is that
+    /// "an attacker could use a leaked token to access your Amazon Web Services resources for
+    /// the token's duration"
+    /// (`smithy_query(query="doc",shape="GetOpenIdTokenForDeveloperIdentityInput",member="TokenDuration")`):
+    /// a cached token is a token presented more than once, and what bounds a leaked one is its
+    /// duration rather than a first use.
     pub fn resolve_login_token(
         &self,
         token: &str,
@@ -2870,35 +2863,9 @@ impl ComAmazonawsCognitoidentityAwscognitoidentityserviceState {
             return Err(LoginTokenRefusal::Expired);
         }
         match self.open_id_tokens.get(token) {
-            Some(issued) if issued.spent => Err(LoginTokenRefusal::Spent),
             Some(issued) if presented_token_window_open(issued.expiration, now) => Ok(issued),
             Some(_) => Err(LoginTokenRefusal::Expired),
             None => Err(LoginTokenRefusal::Unverifiable),
-        }
-    }
-
-    /// SPEND the token `logins` presents under this service's own provider name, if it
-    /// presents one this service issued: the issuance is marked redeemed, so no later
-    /// presentation of that token resolves it ([`Self::resolve_login_token`]).
-    ///
-    /// A token minted under this service's own provider name is what the credential exchange
-    /// "passed through to Security Token Service with the appropriate role for the token"
-    /// (`smithy_query(query="doc",shape="GetCredentialsForIdentity")`), which is a REDEMPTION
-    /// of the issuance rather than a reading of it: the exchange the token bought has been
-    /// served, so the issuance has done what it was minted for and the bearer of a copy of
-    /// that token buys nothing more with it. A caller that needs another exchange asks its
-    /// mint for another token, which is what the issuing operations are for.
-    ///
-    /// Called only where an exchange was SERVED: an exchange that was refused redeemed
-    /// nothing, so the token it presented is still the unspent issuance it was. A map
-    /// presenting no token of this service's, and one presenting a value no issuance
-    /// resolves, spend nothing.
-    pub fn spend_presented_login_token(&mut self, logins: &HashMap<String, String>) {
-        let Some(token) = logins.get(COGNITO_IDENTITY_LOGIN_PROVIDER) else {
-            return;
-        };
-        if let Some(issued) = self.open_id_tokens.get_mut(token) {
-            issued.spent = true;
         }
     }
 

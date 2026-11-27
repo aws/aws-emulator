@@ -12,9 +12,8 @@
 //! token minted in one identity pool out of every other pool's identities. The refusal is
 //! answered before any role is resolved and before any session is minted, and it costs the
 //! token nothing: presented for the identity it WAS minted for, the same token is still
-//! exchanged — which is what a refused exchange leaves of an issuance only one SERVED
-//! exchange spends (`login_token_single_use`'s rule), so each token below is exchanged once
-//! and after every refusal.
+//! exchanged — whether or not an exchange has been served with it before
+//! (`login_token_single_use`'s rule).
 //!
 //! WHICH refusal it is, is decided by the pool the token is read against — the pool that owns
 //! the identity the request names. A token of THAT pool, minted for another of its
@@ -296,9 +295,8 @@ async fn another_identitys_token_is_refused_whatever_else_the_logins_map_carries
         &Mint::Federated("map-user"),
     )
     .await;
-    // A second issuance of the SAME identity, for the second row that is served: one served
-    // exchange spends the issuance it was made with, so each served row presents its own
-    // token.
+    // A second issuance of the SAME identity, so each served row presents its own token and
+    // no row is read against what another did.
     let (again_identity, own_token_again) = mint(
         &emulator,
         "the identity under test, minted again",
