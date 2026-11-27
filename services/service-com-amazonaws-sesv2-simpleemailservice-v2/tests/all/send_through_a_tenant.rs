@@ -402,14 +402,14 @@ async fn a_send_naming_no_tenant_of_the_account_is_refused_before_the_sender_is_
         );
         assert_eq!(
             bulk_through_live.message(),
-            // A bulk send states ONE sending identity for the whole call and composes one
-            // message per entry, so the call is weighed on that identity (and refused for
-            // it here) while what a sandbox account may be sent to is weighed per entry
-            // and reported as that entry's own result
+            // A bulk send states ONE sending identity for the whole call, and the check
+            // weighs the identities of the whole call: that sending identity and every
+            // mailbox any entry addresses, so the sentence names both the unverified
+            // sender and the recipient the entry addresses
             // (`send_sandbox_destination_gate.rs`).
-            unverified(&[UNVERIFIED_SENDER]),
+            unverified(&[UNVERIFIED_SENDER, RECIPIENT]),
             "case {case:?} on SendBulkEmail through the tenant the account holds: expected \
-             the unverified-sender sentence, got {:?}",
+             the unverified-identity sentence, got {:?}",
             bulk_through_live.message()
         );
 

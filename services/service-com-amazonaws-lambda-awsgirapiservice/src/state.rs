@@ -1291,19 +1291,6 @@ pub struct FunctionConfig {
     pub architectures: Vec<String>,
     /// The environment variables, ordered so a read reports them deterministically.
     pub environment: BTreeMap<String, String>,
-    /// Whether this configuration CARRIES an environment at all — whether the create or an
-    /// update STATED the `Environment` member — which is a different fact from whether it
-    /// holds any variables.
-    ///
-    /// `Environment` is "environment variables that are accessible from function code
-    /// during execution" and `FunctionConfiguration$Environment` is what a read reports of
-    /// it, so a function configured with an environment that states no variable is one
-    /// whose read carries that `Environment` with an empty `Variables`, while a function
-    /// configured with none carries no member at all: the two are distinct configurations
-    /// and a client reading them back has to be able to tell them apart (a resource model
-    /// built from this read — `AWS::Lambda::Function` through Cloud Control — reports an
-    /// explicitly empty property and omits an absent one for exactly that reason).
-    pub environment_configured: bool,
     /// The layer versions this configuration holds, in the order the caller named
     /// them, each resolved against the layer the store holds.
     pub layers: Vec<FunctionLayer>,

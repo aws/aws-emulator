@@ -1895,20 +1895,10 @@ impl ComAmazonawsSesv2SimpleemailserviceV2State {
         self.unverified_among(region, asked)
     }
 
-    /// The same check over RECIPIENTS alone, for the caller that weighs a message's
-    /// destinations on their own ([`identities_refusing_entry`](Self::identities_refusing_entry)).
-    pub fn unverified_recipient_identities(
-        &self,
-        region: &str,
-        recipients: &[String],
-    ) -> Vec<String> {
-        self.unverified_among(region, recipients.iter().map(String::as_str))
-    }
-
     /// Those of `addresses` this account holds no identity verified for sending in
     /// `region` for, in the order they arrive and each mailbox named once.
     ///
-    /// The one pass behind both readings above: one store lookup per address and nothing
+    /// The one pass behind the reading above: one store lookup per address and nothing
     /// more, with the mailbox simulator's own mailboxes passing it
     /// ([`is_mailbox_simulator`]).
     fn unverified_among<'a>(
@@ -1952,6 +1942,12 @@ impl ComAmazonawsSesv2SimpleemailserviceV2State {
     /// ([`unverified_send_identities`](Self::unverified_send_identities)), so a send
     /// addressed to one is served in the sandbox as well.
     ///
+    /// A BULK send is weighed here too, over the identities of the whole call: its one
+    /// sending identity and every mailbox any of its entries addresses
+    /// (`crate::ops::send_bulk_email`). One failed identity refuses the call, so a
+    /// request none of whose messages SES would accept is refused rather than answered
+    /// with a result per entry.
+    ///
     /// What this returns is what the refusal REPORTS
     /// ([`unverified_identities_message`]): every identity the check weighed and rejected,
     /// in the order the request states them.
@@ -1967,27 +1963,6 @@ impl ComAmazonawsSesv2SimpleemailserviceV2State {
         } else {
             self.unverified_send_identities(region, sender, recipients, feedback_forwarding)
         };
-        (!failed.is_empty()).then_some(failed)
-    }
-
-    /// The same check for ONE entry of a bulk send, which carries its own recipients.
-    ///
-    /// A bulk send composes one message per entry, so the recipients a sandbox account
-    /// may be sent to are weighed per ENTRY and reported as that entry's own result, the
-    /// way every other condition of one entry is; what the CALL is weighed on — the one
-    /// identity every message of it is sent from, and the address its feedback is
-    /// forwarded to — is [`identities_refusing_send`](Self::identities_refusing_send)
-    /// with no recipients at all. An account with production access weighs no recipient,
-    /// so nothing here refuses one.
-    pub fn identities_refusing_entry(
-        &self,
-        region: &str,
-        recipients: &[String],
-    ) -> Option<Vec<String>> {
-        if self.account.production_access_enabled {
-            return None;
-        }
-        let failed = self.unverified_recipient_identities(region, recipients);
         (!failed.is_empty()).then_some(failed)
     }
 

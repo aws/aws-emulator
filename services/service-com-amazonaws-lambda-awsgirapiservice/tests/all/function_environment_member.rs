@@ -3,19 +3,18 @@
 //! The `Environment` a function CARRIES, as every read of its configuration reports it,
 //! end to end over HTTP.
 //!
-//! RULE: `FunctionConfiguration$Environment` reports "the function's environment variables"
-//! — the environment the configuration carries, which is the member a create or an update
-//! STATED — and not whether that environment holds any variables. So a function configured
-//! with an environment that states no variable reports the member with an empty `Variables`
-//! map, and a function configured with no environment at all reports no member: the two are
-//! different configurations, and a client reading the configuration back to decide what to
-//! change has to be able to tell them apart.
+//! RULE: `FunctionConfiguration$Environment` reports "the function's environment variables",
+//! so the member is part of an answer exactly while the function HOLDS at least one variable.
+//! A request that states an environment naming no variable leaves the function holding none —
+//! it is a CLEAR, not an empty environment to carry — so the create's own answer and every
+//! later read of that function omit the member, exactly as they do for a function that never
+//! named one.
 //!
 //! The rows differ along what the rule generalises over: how the create states the member
 //! (absent, present with no member of its own, present with an empty map, present with
 //! variables), which READ answers it (`CreateFunction`'s own answer,
 //! `GetFunctionConfiguration`, `GetFunction`, `ListFunctions`), and — in the second test —
-//! how an update moves the member between those states.
+//! how an update moves the function between holding variables and holding none.
 //!
 //! Every row builds its function through the real `CreateFunction` over HTTP and reads it
 //! back through the real reads, so a hardcoded answer fails. The clock-driven
@@ -168,15 +167,11 @@ async fn the_environment_a_function_carries_is_reported_and_an_absent_one_is_not
     // `None` meaning the member is part of no answer.
     let rows: [(&str, Option<Value>, Option<Value>); 4] = [
         ("no Environment member at all", None, None),
-        (
-            "an Environment stating no variables",
-            Some(json!({})),
-            Some(json!({ VARIABLES: {} })),
-        ),
+        ("an Environment stating no variables", Some(json!({})), None),
         (
             "an Environment stating an empty set of variables",
             Some(json!({ VARIABLES: {} })),
-            Some(json!({ VARIABLES: {} })),
+            None,
         ),
         (
             "an Environment stating variables",
@@ -218,9 +213,10 @@ async fn the_environment_a_function_carries_is_reported_and_an_absent_one_is_not
 }
 
 #[tokio::test]
-async fn an_update_moves_the_member_between_carried_and_absent_states() {
-    // The member is what the configuration carries NOW: an update that states it leaves the
-    // function carrying what it stated, and one that leaves it out changes nothing about it.
+async fn an_update_moves_the_member_between_reported_and_absent_states() {
+    // The member reports the variables the function holds NOW: an update that states the
+    // member replaces them with the ones it names, and one that leaves it out changes
+    // nothing about them.
     let engine = Arc::new(engine::InMemoryEngine::new());
     let router = router_on(&engine);
     let name = "environment-updated";
@@ -235,7 +231,7 @@ async fn an_update_moves_the_member_between_carried_and_absent_states() {
         (
             "an update stating an environment with no variables",
             json!({ ENVIRONMENT: { VARIABLES: {} } }),
-            Some(json!({ VARIABLES: {} })),
+            None,
         ),
         (
             "an update stating variables",
@@ -250,7 +246,7 @@ async fn an_update_moves_the_member_between_carried_and_absent_states() {
         (
             "an update emptying the variables again",
             json!({ ENVIRONMENT: { VARIABLES: {} } }),
-            Some(json!({ VARIABLES: {} })),
+            None,
         ),
     ] {
         let (status, updated) = call(

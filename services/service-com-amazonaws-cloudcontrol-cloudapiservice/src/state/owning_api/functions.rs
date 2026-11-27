@@ -708,11 +708,10 @@ fn model(
     }
     if let Some(environment) = configuration.environment.as_ref() {
         // The property is reported for the environment the FUNCTION CARRIES, which is what
-        // `GetFunction` answers the member as — not for whether it holds any variables: a
-        // function configured with an explicitly empty environment reports the property
-        // with an empty `Variables`, and one configured with none reports no property at
-        // all, so a client reading the model back can tell an empty block from an absent
-        // one.
+        // `GetFunction` answers the member as: AWS Lambda reports the member exactly while
+        // the function holds at least one variable, so the model carries the property for
+        // such a function and no property at all for one holding none — this projection
+        // takes the owning service's own answer rather than deciding it.
         model.insert(
             ENVIRONMENT.to_string(),
             Value::Object(Map::from_iter([(

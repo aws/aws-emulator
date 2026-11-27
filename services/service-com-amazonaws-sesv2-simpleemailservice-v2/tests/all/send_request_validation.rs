@@ -1305,6 +1305,10 @@ async fn a_bulk_send_addresses_between_one_and_fifty_destinations() {
     // The counter-cases: the two ends of the range the sentence states.
     for (case, count) in [("one destination", 1usize), ("fifty", 50)] {
         let ses = verified().await;
+        // About how many destinations one call may carry, so the account is given
+        // production access here too (`send_sandbox_destination_gate.rs`): a sandbox
+        // account weighs every mailbox the call addresses, which is a different rule.
+        crate::send_sandbox_destination_gate::given_production_access(&ses.engine);
         let created = ses.create_template().await;
         assert_eq!(
             created.status, 200,

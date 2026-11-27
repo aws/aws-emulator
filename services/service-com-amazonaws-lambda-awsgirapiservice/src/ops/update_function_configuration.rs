@@ -864,10 +864,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             config.memory_size = memory_size;
         }
         if let Some(environment) = environment {
+            // An update that STATES the member replaces the variables the function holds
+            // with the ones it names, so one that names none leaves the function holding
+            // none — the environment is cleared rather than kept as an empty one.
             config.environment = environment;
-            // An update that STATES the member leaves the function carrying an
-            // environment, whatever variables it put in it — including none.
-            config.environment_configured = true;
         }
         if let Some(layers) = layers {
             config.layers = layers;

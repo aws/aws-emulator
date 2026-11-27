@@ -22,9 +22,10 @@
 //!   such an account may address a message to anybody — while its sending identity is
 //!   still weighed.
 //!
-//! A bulk send composes one message per entry, so the recipients the sandbox weighs are
-//! weighed per ENTRY and reported as that entry's own `BulkEmailEntryResult`, the way every
-//! other condition of one entry is.
+//! A bulk send is weighed the same way, over the identities of the whole CALL: its one
+//! sending identity and every mailbox any of its entries addresses, so one mailbox the check
+//! rejects refuses the request rather than being reported as that entry's own
+//! `BulkEmailEntryResult`.
 //!
 //! The rows below differ along what the rule generalises over: which recipient list carries
 //! the address, how many addresses fail, whether an address is verified by its own identity
@@ -656,71 +657,138 @@ async fn production_access_weighs_the_sending_identity_and_no_recipient() {
 }
 
 #[tokio::test]
-async fn a_bulk_entry_the_sandbox_account_may_not_send_to_is_the_only_one_refused() {
-    // One message per entry, so the gate is weighed per entry: the entries that address a
-    // verified identity or the simulator are accepted, and the one that addresses a mailbox
-    // nobody verified carries the refusal as its own result.
+async fn a_bulk_destination_the_sandbox_account_may_not_send_to_refuses_the_whole_call() {
+    // The check weighs the identities of the CALL, whichever entry addresses them, so one
+    // mailbox nobody verified refuses the request and nothing of it is sent. The rows differ
+    // along which entry carries the unverified mailbox, how many entries do, how many
+    // mailboxes fail, and whether a verified mailbox or the simulator stands beside one.
     let ses = Ses::new();
     ses.given_verified_identity(SENDER_DOMAIN).await;
     ses.given_verified_identity(VERIFIED_RECIPIENT).await;
 
-    let unverified = stranger("bulk");
+    let first = stranger("bulk-first");
+    let second = stranger("bulk-second");
+    /// One row: the entries the call states, and the identities its refusal must name.
+    struct Row<'a> {
+        case: &'a str,
+        entries: Vec<Vec<&'a str>>,
+        failed: Vec<&'a str>,
+    }
+    let rows: Vec<Row<'_>> = vec![
+        Row {
+            case: "one entry, addressing a mailbox nobody verified",
+            entries: vec![vec![first.as_str()]],
+            failed: vec![first.as_str()],
+        },
+        Row {
+            case: "the unverified mailbox in the LAST entry, behind served ones",
+            entries: vec![
+                vec![VERIFIED_RECIPIENT],
+                vec![SIMULATOR_SUCCESS],
+                vec![first.as_str()],
+            ],
+            failed: vec![first.as_str()],
+        },
+        Row {
+            case: "an unverified mailbox beside a verified one in the same entry",
+            entries: vec![vec![VERIFIED_RECIPIENT, first.as_str()]],
+            failed: vec![first.as_str()],
+        },
+        Row {
+            case: "two entries failing on two different mailboxes",
+            entries: vec![
+                vec![first.as_str()],
+                vec![VERIFIED_RECIPIENT],
+                vec![second.as_str()],
+            ],
+            failed: vec![first.as_str(), second.as_str()],
+        },
+        Row {
+            case: "the same unverified mailbox in two entries, named once",
+            entries: vec![vec![first.as_str()], vec![first.as_str()]],
+            failed: vec![first.as_str()],
+        },
+    ];
+
+    for Row {
+        case,
+        entries,
+        failed,
+    } in rows
+    {
+        let reply = ses.send_bulk(&entries).await;
+        assert_eq!(
+            reply.status, 400,
+            "case {case:?}: expected the call refused with HTTP 400, got {} {:?}",
+            reply.status, reply.body
+        );
+        assert_eq!(
+            reply.error_code(),
+            "MessageRejected",
+            "case {case:?}: expected the modelled MessageRejected, got {:?}",
+            reply.error_code()
+        );
+        let expected = refusal(&failed);
+        assert_eq!(
+            reply.message(),
+            expected,
+            "case {case:?}: expected {expected:?}, got {:?}",
+            reply.message()
+        );
+        assert!(
+            reply.results().is_empty(),
+            "case {case:?}: a refused call reports no entry result, got {:?}",
+            reply.results()
+        );
+        assert_eq!(
+            ses.logged(),
+            0,
+            "case {case:?}: a refused call sends nothing, got {} logged",
+            ses.logged()
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_bulk_call_every_destination_of_which_passes_the_check_is_served() {
+    // The other side of the same rule: a call none of whose addresses fails the check is
+    // served in the sandbox, one message per entry.
+    let ses = Ses::new();
+    ses.given_verified_identity(SENDER_DOMAIN).await;
+    ses.given_verified_identity(VERIFIED_RECIPIENT).await;
+
     let entries: Vec<Vec<&str>> = vec![
         vec![VERIFIED_RECIPIENT],
-        vec![unverified.as_str()],
         vec![SIMULATOR_SUCCESS],
-        vec![VERIFIED_RECIPIENT, unverified.as_str()],
+        vec![SIMULATOR_BOUNCE, VERIFIED_RECIPIENT],
     ];
     let reply = ses.send_bulk(&entries).await;
     assert_eq!(
         reply.status, 200,
-        "case a mixed bulk send: expected HTTP 200 with one result per entry, got {} {:?}",
+        "case a served bulk send: expected HTTP 200 with one result per entry, got {} {:?}",
         reply.status, reply.body
     );
     let results = reply.results();
     assert_eq!(
         results.len(),
         entries.len(),
-        "case a mixed bulk send: expected one result per entry, got {results:?}"
+        "case a served bulk send: expected one result per entry, got {results:?}"
     );
-
-    let expected_error = refusal(&[unverified.as_str()]);
-    // (case, the status the entry must carry, the error it must carry)
-    let expected: Vec<(&str, &str, String)> = vec![
-        ("a verified recipient", "SUCCESS", String::new()),
-        (
-            "a recipient nobody verified",
-            "MESSAGE_REJECTED",
-            expected_error.clone(),
-        ),
-        ("the mailbox simulator", "SUCCESS", String::new()),
-        (
-            "a verified recipient beside an unverified one",
-            "MESSAGE_REJECTED",
-            expected_error,
-        ),
-    ];
-    for (index, (case, status, error)) in expected.iter().enumerate() {
-        let (reported_status, message_id, reported_error) = &results[index];
+    for (index, (status, message_id, error)) in results.iter().enumerate() {
         assert_eq!(
-            reported_status, status,
-            "case {case:?}: expected status {status}, got {results:?}"
+            status, "SUCCESS",
+            "case entry {index}: expected SUCCESS, got {results:?}"
         );
-        assert_eq!(
-            reported_error, error,
-            "case {case:?}: expected error {error:?}, got {results:?}"
-        );
-        assert_eq!(
-            message_id.is_empty(),
-            status != &"SUCCESS",
-            "case {case:?}: a served entry reports the id it minted and a refused one none, \
-             got {results:?}"
+        assert!(
+            error.is_empty() && !message_id.is_empty(),
+            "case entry {index}: a served entry reports the id it minted and no error, got \
+             {results:?}"
         );
     }
     assert_eq!(
         ses.logged(),
-        2,
-        "case a mixed bulk send: expected only the served entries in the log, got {}",
+        entries.len(),
+        "case a served bulk send: expected one logged message per entry, got {}",
         ses.logged()
     );
 }

@@ -935,12 +935,12 @@ impl FunctionRecord {
                 self.resolved_version(version)
                     .unwrap_or_else(|| version.to_string()),
             ),
-            // `FunctionConfiguration$Environment` is the environment the configuration
-            // CARRIES, which is what a create or an update stated the member as — not a
-            // report of whether it holds any variables. So a function configured with an
-            // environment that states no variable carries the member with an empty
-            // `Variables`, and one configured with none carries no member at all.
-            environment: config.environment_configured.then(|| EnvironmentResponse {
+            // `FunctionConfiguration$Environment` reports "the function's environment
+            // variables", so it is reported exactly while the configuration HOLDS one: a
+            // configuration with no variable in it has no environment to report, whether
+            // the create named the member or an update emptied it, and the member is part
+            // of no answer about it.
+            environment: (!config.environment.is_empty()).then(|| EnvironmentResponse {
                 variables: Some(
                     config
                         .environment

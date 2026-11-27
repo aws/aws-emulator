@@ -1,29 +1,33 @@
 // SPDX-License-Identifier: CC0-1.0
 
-//! An EMPTY property a resource was created with, as Cloud Control API reports it: told
-//! apart from a property the create left out altogether.
+//! The property a resource CARRIES, as Cloud Control API reports it: exactly what the
+//! OWNING service reports, with no empty value invented for a property the resource holds
+//! none of.
 //!
-//! RULE: a resource model reports the properties the resource CARRIES, so a property whose
-//! value is an empty structure is reported — as that empty structure — while a property the
-//! resource carries none of is absent from the model. The two are different configurations,
-//! and a client that reads the model back to decide what to change (a drift read, a patch
-//! built from the reported model) can only tell them apart if the read keeps them apart.
+//! RULE: a resource model carries the properties the resource itself carries, read off the
+//! owning service's own answer — so a property that service reports no value for is absent
+//! from the model rather than reported as an empty structure, and the two reads agree on
+//! that property in every state. A client that reads the model back to decide what to
+//! change (a drift read, a patch built from the reported model) is then reading the owning
+//! service's facts rather than this service's rendering of them.
 //!
 //! `AWS::Lambda::Function` is the type driven here, over the property whose value is itself a
 //! structure of one map (`Environment`, whose `Variables` is "environment variables that are
-//! accessible from function code during execution"): a function created with an explicitly
-//! empty environment reports `Environment` with an empty `Variables`, and a function created
-//! with no `Environment` at all reports no such property. The fact is the OWNING service's —
-//! `GetFunction` is what answers the member — so each row asserts AWS Lambda's own read
-//! beside the Cloud Control model, and the rows are created through BOTH write paths (this
-//! service's `CreateResource` and AWS Lambda's own `CreateFunction`), because the model is
-//! the function's own however it was created.
+//! accessible from function code during execution"). AWS Lambda reports
+//! `FunctionConfiguration$Environment` exactly while the function HOLDS at least one
+//! variable — a create or an update stating an environment with no variables leaves it
+//! holding none — so the model reports the property for a function carrying variables and no
+//! such property for one carrying none, however the create stated it. The fact is the OWNING
+//! service's — `GetFunction` is what answers the member — so each row asserts AWS Lambda's
+//! own read beside the Cloud Control model, and the rows are created through BOTH write paths
+//! (this service's `CreateResource` and AWS Lambda's own `CreateFunction`), because the model
+//! is the function's own however it was created.
 //!
 //! The rows differ along what the rule generalises over: how the create states the property
 //! (absent, present but carrying no member, present carrying an empty map, present carrying
 //! variables) and which API performed the create. One further row drives the property from
-//! empty to filled and back through the owning service's own update, because the
-//! distinction has to survive a change rather than only a create.
+//! absent to filled and back through the owning service's own update, because what the model
+//! reports has to follow a CHANGE rather than only a create.
 //!
 //! The harness is [`crate::emulator`]'s, which mounts this service and AWS Lambda on ONE
 //! engine — the shape `core/router/src/lib.rs` mounts them in — so the model is built from
@@ -141,20 +145,18 @@ async fn created_and_read(emulator: &Emulator, wrote: Wrote, model: &Value) -> V
 }
 
 #[tokio::test]
-async fn an_empty_property_is_reported_and_an_absent_one_is_not() {
+async fn a_property_the_owning_service_reports_is_in_the_model_and_one_it_omits_is_not() {
     // Each row: how the create states `Environment`, and what both reads must then report
-    // for it — `None` meaning the property is part of no model and no API answer.
+    // for it — `None` meaning the property is part of no model and no API answer. An
+    // environment stating no variable leaves the function holding none, which is the same
+    // function as one created with no environment at all.
     let rows: [(&str, Option<Value>, Option<Value>); 4] = [
         ("no Environment property at all", None, None),
-        (
-            "an Environment carrying no member",
-            Some(json!({})),
-            Some(json!({ VARIABLES: {} })),
-        ),
+        ("an Environment carrying no member", Some(json!({})), None),
         (
             "an Environment carrying an empty Variables map",
             Some(json!({ VARIABLES: {} })),
-            Some(json!({ VARIABLES: {} })),
+            None,
         ),
         (
             "an Environment carrying variables",
@@ -177,14 +179,14 @@ async fn an_empty_property_is_reported_and_an_absent_one_is_not() {
                 properties.get(ENVIRONMENT)
             );
             // The fact is the owning service's: the property is reported for the
-            // environment the FUNCTION carries, which is what its own read answers.
+            // environment the FUNCTION carries, which is what its own read answers — the
+            // same value, down to its absence.
             let reported = lambda_environment(&emulator, &name).await;
             assert_eq!(
-                reported.is_some(),
-                expected.is_some(),
+                reported.as_ref(),
+                expected.as_ref(),
                 "case {case:?} written through {wrote:?}: expected AWS Lambda's own read to \
-                 {} report {ENVIRONMENT}, got {reported:?}",
-                if expected.is_some() { "" } else { "not" }
+                 report {ENVIRONMENT} as {expected:?}, got {reported:?}"
             );
         }
     }
@@ -221,10 +223,11 @@ async fn await_active(emulator: &Emulator, name: &str) {
 }
 
 #[tokio::test]
-async fn the_distinction_survives_every_change_of_the_property() {
+async fn the_model_follows_every_change_of_the_property() {
     // The property is driven through each of its states by the owning service's own update,
     // so what the model reports is what the function carries NOW rather than what its create
-    // stated: nothing, an empty environment, variables, and empty again.
+    // stated: nothing, nothing again (an environment stating no variable holds none),
+    // variables, and nothing once the update empties them.
     let emulator = Emulator::with_lambda();
     let name = "environment-changes-fn";
     let properties = created_and_read(
@@ -242,19 +245,19 @@ async fn the_distinction_survives_every_change_of_the_property() {
 
     for (case, applied, expected) in [
         (
-            "an update stating an empty environment",
+            "an update stating an environment with no variables",
             json!({ VARIABLES: {} }),
-            json!({ VARIABLES: {} }),
+            None,
         ),
         (
             "an update stating variables",
             json!({ VARIABLES: { "STAGE": "beta" } }),
-            json!({ VARIABLES: { "STAGE": "beta" } }),
+            Some(json!({ VARIABLES: { "STAGE": "beta" } })),
         ),
         (
             "an update emptying them again",
             json!({ VARIABLES: {} }),
-            json!({ VARIABLES: {} }),
+            None,
         ),
     ] {
         await_active(&emulator, name).await;
@@ -268,7 +271,7 @@ async fn the_distinction_survives_every_change_of_the_property() {
         let properties = emulator.properties(TYPE_NAME, name).await;
         assert_eq!(
             properties.get(ENVIRONMENT),
-            Some(&expected),
+            expected.as_ref(),
             "case {case:?}: expected the model to report {ENVIRONMENT} as {expected:?}, got \
              {:?}",
             properties.get(ENVIRONMENT)

@@ -912,10 +912,6 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 vec![crate::state::DEFAULT_ARCHITECTURE.to_string()]
             }),
             environment,
-            // The member the REQUEST stated, which is what makes an environment this
-            // configuration carries with no variables in it different from no environment
-            // at all.
-            environment_configured: input.environment.is_some(),
             layers,
             ephemeral_storage_mb: input
                 .ephemeral_storage
