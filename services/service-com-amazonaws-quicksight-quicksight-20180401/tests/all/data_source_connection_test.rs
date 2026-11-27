@@ -27,7 +27,9 @@
 //! other than the data source's `DataSourceType` is refused synchronously with
 //! `InvalidParameterValueException` naming the member supplied and the kind it
 //! configures, and writes nothing — on the create against the requested kind and on the
-//! update against the kind the stored data source is of.
+//! update against the kind the stored data source is of. A refused create leaves no
+//! record at all, so the id it named reads back as not found and is still free; that
+//! cross-check is asserted for every kind the model's `DataSourceType` enum names.
 //!
 //! The rows therefore vary what the rule generalises over: which parameter set the
 //! union carries, whether the named workgroup exists (the account's default, one
@@ -1482,5 +1484,175 @@ async fn an_update_whose_parameters_belong_to_another_kind_is_refused_and_change
             json!(CREATION_SUCCESSFUL),
             "case {label:?}: the refused update must not move the status: {read}"
         );
+    }
+}
+
+/// One parameter set the catalog pass below probes every kind with: the union member it
+/// is submitted under, the single kind whose sources that member configures, and the set
+/// itself.
+struct ParameterProbe {
+    member: &'static str,
+    owning_kind: &'static str,
+    parameters: Value,
+}
+
+/// The parameter sets the catalog pass probes with — one naming its target by a workgroup
+/// and one by a host — so the pass varies the form of the set as well as the kind it is
+/// submitted on.
+/// Source: smithy_query(query="shape", shape="DataSourceParameters") for the member names
+/// and smithy_query(query="shape", shape="DataSourceType") for the kind each configures.
+fn parameter_probes() -> Vec<ParameterProbe> {
+    vec![
+        ParameterProbe {
+            member: "AthenaParameters",
+            owning_kind: "ATHENA",
+            parameters: json!({ "AthenaParameters": { "WorkGroup": DEFAULT_WORK_GROUP } }),
+        },
+        ParameterProbe {
+            member: "PostgreSqlParameters",
+            owning_kind: "POSTGRESQL",
+            parameters: json!({
+                "PostgreSqlParameters": {
+                    "Host": "db.example.com",
+                    "Port": 5432,
+                    "Database": "sales"
+                }
+            }),
+        },
+    ]
+}
+
+/// The same cross-check over the WHOLE catalog of kinds rather than a chosen few, and the
+/// state consequence of a refusal.
+///
+/// The rule: a create whose `DataSourceParameters` member configures a kind other than
+/// the requested `DataSourceType` is refused with `InvalidParameterValueException` (400)
+/// naming that member and the kind it configures, and nothing is written — so the id it
+/// named is absent from a read (404, naming it by its ARN) and still free for a later
+/// create, while the set that agrees with the requested kind is accepted.
+///
+/// The kinds are the generated catalog of the model's own `DataSourceType` enum, so every
+/// kind the service names is exercised, not just the ones a recording happened to use.
+#[tokio::test]
+async fn the_parameter_kind_cross_check_holds_for_every_modelled_kind() {
+    let harness = Harness::new();
+    assert!(
+        qs_types::DATA_SOURCE_TYPE_VALUES.len() > 1,
+        "the model's DataSourceType enum must name more than one kind, got {:?}",
+        qs_types::DATA_SOURCE_TYPE_VALUES
+    );
+
+    for probe in parameter_probes() {
+        assert_modelled_kind(probe.member, probe.owning_kind);
+
+        for (index, kind) in qs_types::DATA_SOURCE_TYPE_VALUES.iter().enumerate() {
+            let case = format!("{} on a {kind} source", probe.member);
+            let id = format!("ds-catalog-{}-{index}", probe.owning_kind.to_lowercase());
+            let before = held_data_sources(&harness);
+            let (status, body, headers) = harness
+                .call_reporting_headers(
+                    REGION,
+                    "POST",
+                    &format!("/accounts/{ACCOUNT}/data-sources"),
+                    Some(json!({
+                        "DataSourceId": id,
+                        "Name": id,
+                        "Type": kind,
+                        "DataSourceParameters": probe.parameters.clone(),
+                    })),
+                )
+                .await;
+
+            if *kind == probe.owning_kind {
+                assert_eq!(
+                    status, 202,
+                    "case {case:?}: a create whose parameters configure the kind it asks \
+                     for expected 202, got {status} with {body}"
+                );
+                let (status, read) = describe_data_source(&harness, ACCOUNT, &id).await;
+                assert_eq!(
+                    status, 200,
+                    "case {case:?}: the accepted create must read back, got {status} with \
+                     {read}"
+                );
+                assert_eq!(
+                    read["DataSource"]["DataSourceParameters"],
+                    probe.parameters,
+                    "case {case:?}: the submitted parameters are stored verbatim: {read}"
+                );
+                continue;
+            }
+
+            assert_eq!(
+                status, 400,
+                "case {case:?}: a create whose parameters configure {} expected 400, got \
+                 {status} with {body}",
+                probe.owning_kind
+            );
+            assert_eq!(
+                headers.get("x-amzn-errortype").and_then(|v| v.to_str().ok()),
+                Some("InvalidParameterValueException"),
+                "case {case:?}: the refused class travels in x-amzn-errortype, got \
+                 {headers:?}"
+            );
+            assert_eq!(
+                body["__type"],
+                json!("InvalidParameterValueException"),
+                "case {case:?}: the refused parameter value is what is reported: {body}"
+            );
+            assert_eq!(
+                body["Message"],
+                json!(mismatched_message(probe.member, probe.owning_kind)),
+                "case {case:?}: the refusal must name the member supplied and the kind it \
+                 configures: {body}"
+            );
+            assert_eq!(
+                held_data_sources(&harness),
+                before,
+                "case {case:?}: the refused create must write no record"
+            );
+
+            let (status, read) = describe_data_source(&harness, ACCOUNT, &id).await;
+            assert_eq!(
+                status, 404,
+                "case {case:?}: an id the refused create did not register expected 404, got \
+                 {status} with {read}"
+            );
+            assert_eq!(
+                read["Message"],
+                json!(format!(
+                    "DataSource {} is not found",
+                    data_source_arn(ACCOUNT, &id)
+                )),
+                "case {case:?}: the miss must name the data source by its ARN: {read}"
+            );
+
+            // No phantom record was left behind, so the id is still free: the same id,
+            // submitted with no parameter set to disagree with its kind, is registered
+            // rather than reported as one that already exists.
+            let (status, body) = create_data_source(
+                &harness,
+                ACCOUNT,
+                json!({ "DataSourceId": id, "Name": id, "Type": kind }),
+            )
+            .await;
+            assert_eq!(
+                status, 202,
+                "case {case:?}: the id the refused create named must still be free, got \
+                 {status} with {body}"
+            );
+            let (status, read) = describe_data_source(&harness, ACCOUNT, &id).await;
+            assert_eq!(
+                status, 200,
+                "case {case:?}: the create that followed the refusal must read back, got \
+                 {status} with {read}"
+            );
+            assert_eq!(
+                read["DataSource"]["Type"],
+                json!(kind),
+                "case {case:?}: the stored data source is of the kind the create asked \
+                 for: {read}"
+            );
+        }
     }
 }
