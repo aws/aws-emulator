@@ -384,12 +384,12 @@ pub(crate) fn create_body(client_token: &str, device_arn: &str, shots: i64) -> V
 #[test]
 fn every_value_the_service_stores_is_one_the_model_declares() {
     use service_com_amazonaws_braket_braket::ops::types::{
-        CANCELLATION_STATUS_VALUES, DEVICE_STATUS_VALUES, DEVICE_TYPE_VALUES,
-        QUANTUM_TASK_STATUS_VALUES, QUEUE_NAME_VALUES, QUEUE_PRIORITY_VALUES,
+        CANCELLATION_STATUS_VALUES, DEVICE_STATUS_REASON_CODE_VALUES, DEVICE_STATUS_VALUES,
+        DEVICE_TYPE_VALUES, QUANTUM_TASK_STATUS_VALUES, QUEUE_NAME_VALUES, QUEUE_PRIORITY_VALUES,
     };
     use service_com_amazonaws_braket_braket::state as braket_state;
 
-    let cases: [(&str, &str, &[&str]); 13] = [
+    let cases: [(&str, &str, &[&str]); 16] = [
         ("task status", braket_state::STATUS_CREATED, QUANTUM_TASK_STATUS_VALUES),
         ("task status", braket_state::STATUS_QUEUED, QUANTUM_TASK_STATUS_VALUES),
         ("task status", braket_state::STATUS_FAILED, QUANTUM_TASK_STATUS_VALUES),
@@ -400,7 +400,18 @@ fn every_value_the_service_stores_is_one_the_model_declares() {
         ("cancellation status", braket_state::STATUS_CANCELLED, CANCELLATION_STATUS_VALUES),
         ("device status", braket_state::DEVICE_ONLINE, DEVICE_STATUS_VALUES),
         ("device status", braket_state::DEVICE_OFFLINE, DEVICE_STATUS_VALUES),
+        ("device status", braket_state::DEVICE_PAUSED, DEVICE_STATUS_VALUES),
         ("device status", braket_state::DEVICE_RETIRED, DEVICE_STATUS_VALUES),
+        (
+            "device status reason",
+            braket_state::REASON_OUTSIDE_AVAILABILITY_WINDOW,
+            DEVICE_STATUS_REASON_CODE_VALUES,
+        ),
+        (
+            "device status reason",
+            braket_state::REASON_MAINTENANCE,
+            DEVICE_STATUS_REASON_CODE_VALUES,
+        ),
         ("queue name", braket_state::QUEUE_QUANTUM_TASKS, QUEUE_NAME_VALUES),
         ("queue priority", braket_state::PRIORITY_PRIORITY, QUEUE_PRIORITY_VALUES),
     ];
@@ -2197,6 +2208,98 @@ async fn the_create_answers_200_with_the_accepted_tasks_status() {
             read.body
         );
     }
+}
+
+/// This crate's Smithy model, as the file the service is generated from.
+const MODEL: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/smithy-model/com-amazonaws-braket-braket.json"
+));
+
+/// Every timestamp member this model declares, as `(member id, the format it declares or
+/// `None`)` — derived from the model file itself, so the catalog the service carries is
+/// checked against the model rather than against a second hand-written list.
+fn modelled_timestamp_members() -> Vec<(String, Option<String>)> {
+    let model: Value = serde_json::from_str(MODEL).expect("the crate's Smithy model parses");
+    let shapes = model["shapes"]
+        .as_object()
+        .expect("the model declares shapes")
+        .clone();
+    let mut members = Vec::new();
+    for (shape_id, shape) in &shapes {
+        let Some(declared) = shape.get("members").and_then(Value::as_object) else {
+            continue;
+        };
+        for (name, definition) in declared {
+            let target = definition["target"].as_str().unwrap_or_default();
+            let targets_timestamp = target == "smithy.api#Timestamp"
+                || shapes
+                    .get(target)
+                    .is_some_and(|target| target["type"] == "timestamp");
+            if !targets_timestamp {
+                continue;
+            }
+            let format = definition
+                .get("traits")
+                .and_then(|traits| traits.get("smithy.api#timestampFormat"))
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            members.push((format!("{shape_id}${name}"), format));
+        }
+    }
+    members
+}
+
+/// RULE: the service carries exactly the timestamp members its model declares the
+/// `date-time` form on, and carries none of the members it declares another form on — the
+/// catalog the protocol seam supplies that form from
+/// (`service_com_amazonaws_braket_braket::service::DATE_TIME_MEMBERS`).
+///
+/// The table is the model's whole timestamp vocabulary, so a member the next model update
+/// adds, removes or re-declares fails here rather than reaching the wire in the wrong form.
+#[test]
+fn the_service_carries_exactly_the_date_time_members_its_model_declares() {
+    use std::collections::BTreeSet;
+
+    use service_com_amazonaws_braket_braket::service::DATE_TIME_MEMBERS;
+
+    let members = modelled_timestamp_members();
+    assert!(
+        members.len() > DATE_TIME_MEMBERS.len(),
+        "case the model: this model declares both timestamp forms, so it must carry more \
+         timestamp members than the date-time ones, found {} in all",
+        members.len()
+    );
+
+    let declared_date_time: BTreeSet<&str> = members
+        .iter()
+        .filter(|(_, format)| format.as_deref() == Some("date-time"))
+        .map(|(id, _)| id.as_str())
+        .collect();
+    let carried: BTreeSet<&str> = DATE_TIME_MEMBERS.iter().copied().collect();
+    assert_eq!(
+        carried, declared_date_time,
+        "case date-time members: the service must carry exactly the members the model \
+         declares date-time on; it carries {carried:?} and the model declares \
+         {declared_date_time:?}"
+    );
+
+    let other_form: BTreeSet<&str> = members
+        .iter()
+        .filter(|(_, format)| format.as_deref() != Some("date-time"))
+        .map(|(id, _)| id.as_str())
+        .collect();
+    assert!(
+        !other_form.is_empty(),
+        "case the other members: this model declares epoch-seconds timestamp members too, \
+         so the catalog must be selective"
+    );
+    let overlap: Vec<&&str> = other_form.intersection(&carried).collect();
+    assert!(
+        overlap.is_empty(),
+        "case the other members: a member the model does not declare date-time on must not \
+         be carried, got {overlap:?}"
+    );
 }
 
 /// RULE: a timestamp member travels in the wire form its model declares — the `date-time`

@@ -86,16 +86,17 @@
 //! Every `Timestamp` member of this model declares the wire form it travels in, and all
 //! but two declare `@timestampFormat("date-time")` — a quantum task's and a hybrid job's
 //! `createdAt`/`startedAt`/`endedAt`, a job event's `timeOfEvent`, a spending limit's
-//! `createdAt`/`updatedAt` (`smithy_query(query="shape",
-//! shape="GetQuantumTaskResponse,QuantumTaskSummary,GetJobResponse,JobSummary,JobEventDetails,SpendingLimitSummary,TimePeriod")`).
+//! `createdAt`/`updatedAt`, a device's status reason instants
+//! (`smithy_query(query="shape",
+//! shape="GetQuantumTaskResponse,QuantumTaskSummary,GetJobResponse,JobSummary,JobEventDetails,SpendingLimitSummary,DeviceStatusReason,TimePeriod")`).
 //! The vendored codegen emits no member-level format at all, so the JSON codec fell back
 //! to the protocol default and put an epoch NUMBER on the wire where the model pins a
 //! date-time STRING. [`service_common::date_time_json::DateTimeRestJson`] is the tree's one
 //! correction for that class and this service takes it at [`Service::override_protocol`];
-//! it supplies the format only to a member that reports NONE, so the two members whose
-//! declared form really is `epoch-seconds` — `TimePeriod$startAt` and `TimePeriod$endAt` —
-//! keep it by declaring it on their own schemas
-//! (`crate::ops::types::shared_types::TimePeriod`).
+//! it is given the members whose model declares that form ([`DATE_TIME_MEMBERS`]), so the
+//! two members whose declared form really is `epoch-seconds` — `TimePeriod$startAt` and
+//! `TimePeriod$endAt` — keep the protocol's own number. The catalog is a transcription of
+//! the model, and `tests/all/quantum_task_loop.rs` re-derives it from the model file.
 //!
 //! ## And how an answer that carries NO CONTENT is framed
 //!
@@ -143,7 +144,7 @@ impl NoContentDateTimeRestJson {
     /// back a borrow of it and must never build one per request.
     fn new() -> Self {
         Self {
-            inner: DateTimeRestJson::new(),
+            inner: DateTimeRestJson::for_members(DATE_TIME_MEMBERS),
         }
     }
 }
@@ -284,6 +285,37 @@ arn_parameter_wordings!(
     delete_spending_limit_wording => delete_spending_limit,
     update_spending_limit_wording => update_spending_limit,
 );
+
+/// Every member of this model that declares `@timestampFormat("date-time")`, by the
+/// absolute member id its generated member schema carries (`"ns#Shape$member"`).
+///
+/// The JSON codec reads a timestamp's wire form from the member schema alone and the
+/// generated schemas carry no member-level format, so the declared form is supplied at the
+/// protocol seam for exactly these members. Every OTHER timestamp member of this model
+/// declares `epoch-seconds` (`TimePeriod$startAt` / `TimePeriod$endAt`, a spending limit's
+/// period) and keeps the number the protocol gives it — which is why the correction is
+/// named per member here instead of being applied to every format-less timestamp.
+///
+/// A transcription of the model: `tests/all/quantum_task_loop.rs` re-derives this list from
+/// the model file and fails if a member is missing from it or named wrongly.
+pub const DATE_TIME_MEMBERS: &[&str] = &[
+    "com.amazonaws.braket#DeviceStatusReason$estimatedEndAt",
+    "com.amazonaws.braket#DeviceStatusReason$startedAt",
+    "com.amazonaws.braket#DeviceStatusReason$updatedAt",
+    "com.amazonaws.braket#GetJobResponse$createdAt",
+    "com.amazonaws.braket#GetJobResponse$endedAt",
+    "com.amazonaws.braket#GetJobResponse$startedAt",
+    "com.amazonaws.braket#GetQuantumTaskResponse$createdAt",
+    "com.amazonaws.braket#GetQuantumTaskResponse$endedAt",
+    "com.amazonaws.braket#JobEventDetails$timeOfEvent",
+    "com.amazonaws.braket#JobSummary$createdAt",
+    "com.amazonaws.braket#JobSummary$endedAt",
+    "com.amazonaws.braket#JobSummary$startedAt",
+    "com.amazonaws.braket#QuantumTaskSummary$createdAt",
+    "com.amazonaws.braket#QuantumTaskSummary$endedAt",
+    "com.amazonaws.braket#SpendingLimitSummary$createdAt",
+    "com.amazonaws.braket#SpendingLimitSummary$updatedAt",
+];
 
 /// The `com-amazonaws-braket-braket` emulated service: the generated [`ServiceDefinition`] plus
 /// the behavioral seams this file owns.
@@ -451,12 +483,12 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
     }
 
     fn override_protocol(&self) -> Option<&dyn smithy_server_runtime::ServerHttpProtocol> {
-        // The model's own `restJson1`, with a timestamp member that reports no format
-        // written in the `date-time` form this model declares for all but two of them
-        // (see the module docs). Those two declare `epoch-seconds` on their own member
-        // schemas, which this codec never overrides. And an answer that carries no content —
-        // a tag mutation's success — carries no body rather than the empty JSON object the
-        // renderer writes for a members-less output structure.
+        // The model's own `restJson1`, with every member this model declares
+        // `@timestampFormat("date-time")` on ([`DATE_TIME_MEMBERS`]) written in that form
+        // (see the module docs). The two that declare `epoch-seconds` are outside that
+        // catalog, so they keep the protocol's own number. And an answer that carries no
+        // content — a tag mutation's success — carries no body rather than the empty JSON
+        // object the renderer writes for a members-less output structure.
         Some(&self.protocol)
     }
 }

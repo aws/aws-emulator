@@ -21,11 +21,18 @@
 
 use serde_json::Value;
 
-use crate::quantum_task_loop::{member, Braket};
+use crate::quantum_task_loop::{member, Braket, Reply};
 
 /// The action types this inventory's devices accept, from
 /// `service_com_amazonaws_braket_braket::state`.
 use service_com_amazonaws_braket_braket::state::{ACTION_AHS, ACTION_JAQCD, ACTION_OPENQASM};
+
+/// The device vocabularies, as generated from the Smithy model
+/// (`ops::types::shared_types`), so a status or a reason code this service publishes is
+/// checked against the model rather than against a list written out here.
+use service_com_amazonaws_braket_braket::ops::types::{
+    DEVICE_STATUS_REASON_CODE_VALUES, DEVICE_STATUS_VALUES,
+};
 
 /// The GATE-MODEL program actions: only a program of gates names operations, result
 /// types or pragmas, so only these entries publish them.
@@ -678,5 +685,167 @@ async fn a_published_catalog_entry_is_the_same_document_after_a_restart() {
         distinct_anchors.len() >= 2,
         "the catalog documents its devices in different sections: expected at least two \
          distinct anchors across the inventory, got {anchors:?}"
+    );
+}
+
+/// One `date-time` member of a reported structure, as epoch seconds, so two instants can
+/// be compared. A `Timestamp` of this service travels as an RFC 3339 STRING
+/// (`@timestampFormat("date-time")`).
+fn instant(value: &Value, name: &str, case: &str) -> f64 {
+    let rendered = value
+        .get(name)
+        .and_then(Value::as_str)
+        .unwrap_or_else(|| panic!("case {case}: expected a date-time {name}, got {value}"));
+    ::aws_smithy_types::DateTime::from_str(
+        rendered,
+        ::aws_smithy_types::date_time::Format::DateTime,
+    )
+    .unwrap_or_else(|e| {
+        panic!("case {case}: {name} {rendered:?} is not an RFC 3339 date-time: {e}")
+    })
+    .as_secs_f64()
+}
+
+/// RULE: `GetDevice` reports a `deviceStatusReason` for exactly those devices the catalog
+/// publishes in a status that HOLDS them out of service — a device taking work has nothing
+/// to explain and a device the service has retired is gone for good rather than for a
+/// reason that ends — and that reason carries a code the model declares together with the
+/// instants it is published with.
+///
+/// The table is the inventory itself, whose rows differ along the status under test (every
+/// value the model declares is published by some device), the device type and the provider.
+#[tokio::test]
+async fn a_device_publishes_the_reason_for_the_status_it_is_published_in() {
+    let braket = Braket::new();
+    let inventory = braket.inventory().await;
+
+    let mut statuses: Vec<String> = Vec::new();
+    let mut with_reason: Vec<String> = Vec::new();
+    let mut without_reason: Vec<String> = Vec::new();
+
+    for summary in &inventory {
+        let arn = member(summary, "deviceArn");
+        let status = member(summary, "deviceStatus").to_string();
+        let case = format!("the {status} device {arn}");
+        assert!(
+            DEVICE_STATUS_VALUES.contains(&status.as_str()),
+            "case {case}: a published status is one the model declares \
+             ({DEVICE_STATUS_VALUES:?}), got {status:?}"
+        );
+        statuses.push(status.clone());
+
+        let reply = braket.get_device(arn).await;
+        assert_eq!(
+            reply.status, 200,
+            "case {case}: GetDevice must answer 200, got {} ({:?}) {}",
+            reply.status, reply.error, reply.body
+        );
+        assert_eq!(
+            member(&reply.body, "deviceStatus"),
+            status,
+            "case {case}: the device reports the status the catalog publishes it in, \
+             got {}",
+            reply.body
+        );
+
+        // Whether a reason is published is decided by the status alone: `ONLINE` is a
+        // device taking work and `RETIRED` a device that is gone, and every other status
+        // is the device held out of service for a reason.
+        let held_out_of_service = status != "ONLINE" && status != "RETIRED";
+        let Some(reason) = reply.body.get("deviceStatusReason") else {
+            assert!(
+                !held_out_of_service,
+                "case {case}: a device held out of service publishes why, got {}",
+                reply.body
+            );
+            without_reason.push(status);
+            continue;
+        };
+        assert!(
+            held_out_of_service,
+            "case {case}: this status has no reason to publish, got {reason}"
+        );
+
+        let code = member(reason, "reason");
+        assert!(
+            DEVICE_STATUS_REASON_CODE_VALUES.contains(&code),
+            "case {case}: a published reason is one the model declares \
+             ({DEVICE_STATUS_REASON_CODE_VALUES:?}), got {code:?}"
+        );
+        // `updatedAt` is required, so it is always there; the two window members are
+        // optional, and whichever of them is published bounds the other way round.
+        let updated_at = instant(reason, "updatedAt", &case);
+        if reason.get("startedAt").is_some() {
+            let started_at = instant(reason, "startedAt", &case);
+            assert!(
+                started_at <= updated_at,
+                "case {case}: the reason cannot be updated ({updated_at}) before it \
+                 started ({started_at})"
+            );
+            if reason.get("estimatedEndAt").is_some() {
+                let estimated_end_at = instant(reason, "estimatedEndAt", &case);
+                assert!(
+                    estimated_end_at >= started_at,
+                    "case {case}: the reason cannot be estimated to end \
+                     ({estimated_end_at}) before it started ({started_at})"
+                );
+            }
+        }
+        with_reason.push(status);
+    }
+
+    // Both halves of the rule are exercised by the catalog, and every status the model
+    // declares is published by some device, so no row of the vocabulary goes untested.
+    assert!(
+        !with_reason.is_empty() && !without_reason.is_empty(),
+        "case the published catalog: the table must span both halves of the rule, got \
+         {with_reason:?} with a reason and {without_reason:?} without one"
+    );
+    for status in DEVICE_STATUS_VALUES {
+        assert!(
+            statuses.iter().any(|published| published == status),
+            "case the published catalog: every modelled device status is published by \
+             some device, got {statuses:?} with no {status}"
+        );
+    }
+}
+
+/// RULE: a status reason is DATA OF THE CATALOG ENTRY, like every other value of it: a
+/// device published in a status reports the same reason however often it is read and
+/// whichever emulator publishes it, so nothing about it is observed from the clock.
+///
+/// The table is the inventory again, and the second emulator stands in for a restart.
+#[tokio::test]
+async fn a_published_status_reason_is_the_same_reason_after_a_restart() {
+    let published_by = Braket::new();
+    let republished_by = Braket::new();
+
+    let mut published_reasons = 0_usize;
+    for summary in published_by.inventory().await {
+        let arn = member(&summary, "deviceArn");
+        let case = format!("device {arn}");
+        let reason = |reply: Reply| reply.body.get("deviceStatusReason").cloned();
+        let first = reason(published_by.get_device(arn).await);
+        let again = reason(published_by.get_device(arn).await);
+        let republished = reason(republished_by.get_device(arn).await);
+        assert_eq!(
+            first, again,
+            "case {case}: reading a device twice reports the same status reason, got \
+             {first:?} then {again:?}"
+        );
+        assert_eq!(
+            first, republished,
+            "case {case}: a later boot publishes the same status reason, got {first:?} \
+             then {republished:?}"
+        );
+        if first.is_some() {
+            published_reasons += 1;
+        }
+    }
+
+    assert!(
+        published_reasons >= 1,
+        "case the published catalog: the rule is only exercised by a device that \
+         publishes a status reason, and the catalog published none"
     );
 }

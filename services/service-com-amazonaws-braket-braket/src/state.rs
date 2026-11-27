@@ -18,8 +18,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use sha2::{Digest, Sha256};
 
 use crate::ops::types::{
-    AlgorithmSpecification, Association, DeviceConfig, ExperimentalCapabilities, InputFileConfig,
-    InstanceConfig, JobCheckpointConfig, JobOutputDataConfig, JobStoppingCondition, TimePeriod,
+    AlgorithmSpecification, Association, DeviceConfig, DeviceStatusReason, ExperimentalCapabilities,
+    InputFileConfig, InstanceConfig, JobCheckpointConfig, JobOutputDataConfig, JobStoppingCondition,
+    TimePeriod,
 };
 
 /// The program a quantum task's `action` document carries, split out of this root as its
@@ -72,7 +73,16 @@ pub const STATUS_CANCELLED: &str = "CANCELLED";
 /// `DeviceStatus` values.
 pub const DEVICE_ONLINE: &str = "ONLINE";
 pub const DEVICE_OFFLINE: &str = "OFFLINE";
+/// The device is held out of service for the time being, rather than being unavailable
+/// for the moment ([`DEVICE_OFFLINE`]) or gone for good ([`DEVICE_RETIRED`]).
+pub const DEVICE_PAUSED: &str = "PAUSED";
 pub const DEVICE_RETIRED: &str = "RETIRED";
+
+/// `DeviceStatusReasonCode` — the device is unavailable because the clock is outside the
+/// execution windows its capability document publishes.
+pub const REASON_OUTSIDE_AVAILABILITY_WINDOW: &str = "OUTSIDE_AVAILABILITY_WINDOW";
+/// `DeviceStatusReasonCode` — the device is held out of service while it is worked on.
+pub const REASON_MAINTENANCE: &str = "MAINTENANCE";
 
 /// `DeviceType` values.
 pub const DEVICE_TYPE_QPU: &str = "QPU";
@@ -239,8 +249,13 @@ pub struct Device {
     pub provider_name: String,
     /// One of [`DEVICE_TYPE_QPU`] / [`DEVICE_TYPE_SIMULATOR`].
     pub device_type: String,
-    /// One of [`DEVICE_ONLINE`] / [`DEVICE_OFFLINE`] / [`DEVICE_RETIRED`].
+    /// One of [`DEVICE_ONLINE`] / [`DEVICE_OFFLINE`] / [`DEVICE_PAUSED`] /
+    /// [`DEVICE_RETIRED`].
     pub device_status: String,
+    /// Why the device is in that status, for a status the catalog publishes a reason for;
+    /// `None` for a status that has none. Built by [`status_reason`] from the row itself,
+    /// so the reason a caller reads can never disagree with the status beside it.
+    pub device_status_reason: Option<DeviceStatusReason>,
     /// The device capability document, as the JSON string `deviceCapabilities`
     /// carries (`@mediaType("application/json")`).
     pub device_capabilities: String,
@@ -1111,8 +1126,10 @@ struct DeviceSeed {
 /// that hosts it). A real device's status tracks hardware availability windows,
 /// which the emulator does not model, so each row's status is a FIXED seed chosen so
 /// every modelled `DeviceStatus` is reachable — `ONLINE` devices accept tasks, and
-/// the `OFFLINE` / `RETIRED` rows are what `CreateQuantumTask` refuses with
-/// `DeviceOfflineException` / `DeviceRetiredException`.
+/// the rows that are not online are what `CreateQuantumTask` refuses with
+/// `DeviceOfflineException` / `DeviceRetiredException`. The status of a row that is not
+/// taking work also decides the reason the catalog publishes beside it (see
+/// [`status_reason`]).
 ///
 /// A device Amazon Braket has RETIRED stays in the list it publishes, carrying that
 /// status, which is what lets a caller naming one be told the device is retired rather
@@ -1242,6 +1259,26 @@ const DEVICE_SEEDS: &[DeviceSeed] = &[
         documentation_section: "braket-qpu-partner-iqm",
         image_url: "https://d1.awsstatic.com/braket/devices/iqm-garnet.png",
         published_at: "2024-03-26T00:00:00",
+    },
+    DeviceSeed {
+        arn: "arn:aws:braket:eu-north-1::device/qpu/iqm/Emerald",
+        name: "Emerald",
+        provider: "IQM",
+        device_type: DEVICE_TYPE_QPU,
+        device_status: DEVICE_PAUSED,
+        qubit_count: 54,
+        shots_range: (1, 10_000),
+        action_types: &[ACTION_OPENQASM],
+        supported_operations: GATE_MODEL_OPERATIONS,
+        native_gates: &["cz", "prx"],
+        result_types: QPU_RESULT_TYPES,
+        verbatim: true,
+        noise: false,
+        cost: (0.00145, "shot"),
+        summary: "IQM Emerald superconducting quantum processor",
+        documentation_section: "braket-qpu-partner-iqm",
+        image_url: "https://d1.awsstatic.com/braket/devices/iqm-emerald.png",
+        published_at: "2025-02-25T00:00:00",
     },
     DeviceSeed {
         arn: "arn:aws:braket:us-west-1::device/qpu/rigetti/Ankaa-3",
@@ -1422,6 +1459,7 @@ fn seeded_devices() -> BTreeMap<String, Device> {
                 provider_name: seed.provider.to_string(),
                 device_type: seed.device_type.to_string(),
                 device_status: seed.device_status.to_string(),
+                device_status_reason: status_reason(seed),
                 device_capabilities: capabilities_document(seed),
                 shots_range: seed.shots_range,
                 cost_price: seed.cost.0,
@@ -1430,6 +1468,56 @@ fn seeded_devices() -> BTreeMap<String, Device> {
             (device.device_arn.clone(), device)
         })
         .collect()
+}
+
+/// Which reason the catalog publishes for a device in `device_status`, or `None` for a
+/// status that has no reason to publish.
+///
+/// `DeviceStatusReasonCode` names the reasons a device is not taking work
+/// (`smithy_query(query="shape",shape="DeviceStatusReasonCode")`): a device is
+/// unavailable while the clock lies outside the execution windows its capability
+/// document publishes, and held out of service while it is worked on. A device that is
+/// `ONLINE` is taking work, and one the service has retired is gone for good rather than
+/// for a reason that ends, so neither of those statuses carries a reason at all.
+fn status_reason_code(device_status: &str) -> Option<&'static str> {
+    match device_status {
+        DEVICE_OFFLINE => Some(REASON_OUTSIDE_AVAILABILITY_WINDOW),
+        DEVICE_PAUSED => Some(REASON_MAINTENANCE),
+        _ => None,
+    }
+}
+
+/// The status reason one catalog row publishes, for a row whose status has one.
+///
+/// Both instants are the row's OWN published instant ([`DeviceSeed::published_at`], the
+/// `service.updatedAt` of its capability document): the reason has held since the entry
+/// stating this status was published, and nothing has updated it since — so, like every
+/// other value of the entry, the reason a caller reads is the same before and after a
+/// restart rather than an instant this emulator observed. `estimatedEndAt` is left out,
+/// which the model allows: this emulator runs no hardware whose schedule could estimate
+/// when the device comes back, so it publishes no estimate.
+fn status_reason(seed: &DeviceSeed) -> Option<DeviceStatusReason> {
+    let reason = status_reason_code(seed.device_status)?;
+    let published = published_instant(seed.published_at);
+    Some(DeviceStatusReason {
+        reason: reason.to_string(),
+        started_at: Some(published),
+        estimated_end_at: None,
+        updated_at: published,
+    })
+}
+
+/// A catalog row's published instant as the modelled `Timestamp` the wire carries.
+///
+/// The device-service-properties document carries that instant as a date and a time of
+/// day with no zone offset; a published catalog instant is UTC, which is the offset the
+/// `date-time` form the model declares needs to read it back.
+fn published_instant(published_at: &str) -> ::aws_smithy_types::DateTime {
+    ::aws_smithy_types::DateTime::from_str(
+        &format!("{published_at}Z"),
+        ::aws_smithy_types::date_time::Format::DateTime,
+    )
+    .expect("every seeded published instant is written in the document's own form")
 }
 
 /// The `deviceCapabilities` JSON document for one seeded device.

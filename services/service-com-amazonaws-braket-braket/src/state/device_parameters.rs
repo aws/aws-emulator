@@ -108,6 +108,7 @@ mod tests {
             provider_name: "A provider".to_string(),
             device_type: device_type.to_string(),
             device_status: super::super::DEVICE_ONLINE.to_string(),
+            device_status_reason: None,
             device_capabilities: EMPTY_PARAMETERS.to_string(),
             shots_range: (1, 100),
             cost_price: 0.0,

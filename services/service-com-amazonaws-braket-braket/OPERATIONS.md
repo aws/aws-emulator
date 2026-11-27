@@ -49,7 +49,7 @@ contents — read that shape in the model above when you need its own members.
 - **Route:** `GET /device/{deviceArn}`
 - **Traits:** @readonly
 - **Input:** `deviceArn` (string, len 1..256, @httpLabel, required)
-- **Output:** `deviceArn` (string, len 1..256, required), `deviceName` (string, required), `providerName` (string, required), `deviceType` (string, one of: QPU | SIMULATOR, required), `deviceStatus` (string, one of: OFFLINE | ONLINE | RETIRED, required), `deviceCapabilities` (string, required), `deviceQueueInfo` (list<DeviceQueueInfo>)
+- **Output:** `deviceArn` (string, len 1..256, required), `deviceName` (string, required), `providerName` (string, required), `deviceType` (string, one of: QPU | SIMULATOR, required), `deviceStatus` (string, one of: OFFLINE | ONLINE | PAUSED | RETIRED, required), `deviceStatusReason` (DeviceStatusReason), `deviceCapabilities` (string, required), `deviceQueueInfo` (list<DeviceQueueInfo>)
 - **Errors:** `AccessDeniedException (HTTP 403)`, `InternalServiceException (HTTP 500)`, `ResourceNotFoundException (HTTP 404)`, `ThrottlingException (HTTP 429)`, `ValidationException (HTTP 400)`
 
 ## SearchDevices

@@ -25,8 +25,18 @@ pub struct GetDeviceOutput {
     pub provider_name: String,
     pub device_type: String,
     pub device_status: String,
+    pub device_status_reason: Option<DeviceStatusReason>,
     pub device_capabilities: String,
     pub device_queue_info: Option<Vec<DeviceQueueInfo>>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.braket#DeviceStatusReason")]
+#[derive(Debug, Clone)]
+pub struct DeviceStatusReason {
+    pub reason: String,
+    pub started_at: Option<::aws_smithy_types::DateTime>,
+    pub estimated_end_at: Option<::aws_smithy_types::DateTime>,
+    pub updated_at: ::aws_smithy_types::DateTime,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.braket#DeviceQueueInfo")]
