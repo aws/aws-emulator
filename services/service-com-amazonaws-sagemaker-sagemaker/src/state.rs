@@ -215,6 +215,12 @@ pub use image_digest::{
 pub mod aws_container_registry;
 pub use aws_container_registry::aws_publishes_from;
 
+/// The PUBLISHED IMAGE DIGEST slice: the digest the container images AWS itself publishes
+/// carry, which is a property of the published image rather than of the reference naming it.
+/// Re-exported below, so a handler names them as `crate::state::…` like every other slice.
+pub mod published_image_digest;
+pub use published_image_digest::published_image_digest;
+
 /// The IMAGE PULL slice: whether SageMaker can pull the container image a registration
 /// references out of Amazon ECR, and the sentence a reference it cannot pull is refused with.
 /// Re-exported below, so a handler names them as `crate::state::…` like every other slice.

@@ -14,9 +14,11 @@
 //! ^[Ss][Hh][Aa]256:[0-9a-fA-F]{64}$`).
 //! So the value is a property of the IMAGE the reference names, not of the resource that
 //! references it: one image reports ONE digest, to every operation and to every resource
-//! naming it, and that digest is the one the registry holding the image reports for it.
+//! naming it, and that digest is the one the registry holding the image reports for it — the
+//! registry this emulator serves for an image pushed to it, and AWS's own for an image AWS
+//! published ([`super::published_image_digest`]).
 //!
-//! Three ways the digest of a referenced image is known here, asked in this order:
+//! Four ways the digest of a referenced image is known here, asked in this order:
 //!
 //! 1. the reference PINS it — a path in the documented `registry/repository[@digest]` format
 //!    names the image by its content digest, so that digest IS the image's and nothing has
@@ -27,7 +29,11 @@
 //!    reference is read by Amazon ECR's OWN reading of a pull reference, so a path this
 //!    service resolves and a path that registry serves are the same paths
 //!    ([`registry_image_digest`]);
-//! 3. nothing resolves one — no registry is mounted to ask, the path addresses another
+//! 3. AWS PUBLISHED the image — the path addresses one of the registries AWS publishes
+//!    SageMaker's containers from, so the image is one AWS pushed once and every account
+//!    pulls, and the digest reported for it is that published image's own, the same for every
+//!    account and for every Region's copy of it ([`super::published_image_digest`]);
+//! 4. nothing resolves one — no registry is mounted to ask, the path addresses another
 //!    account's or another registry's host, or that repository holds nothing under the tag
 //!    the path names. Then what is reported is this emulator's own identifier for the
 //!    reference ([`derived_image_digest`]), which keeps the modelled form and every property
@@ -161,8 +167,9 @@ pub fn registry_image_digest<Eng: Send + Sync + 'static>(
 }
 
 /// The digest of the image `image` names, as every reader of the resource reports it: the
-/// digest the reference pins, else the one Amazon ECR holds for it, else this emulator's
-/// identifier for the reference — the order the module docs state.
+/// digest the reference pins, else the one Amazon ECR holds for it, else the one the image AWS
+/// published carries, else this emulator's identifier for the reference — the order the module
+/// docs state.
 #[must_use]
 pub fn resolved_image_digest<Eng: Send + Sync + 'static>(
     engine: &Eng,
@@ -172,7 +179,9 @@ pub fn resolved_image_digest<Eng: Send + Sync + 'static>(
     if let Some(pinned) = pinned_image_digest(image) {
         return pinned.to_string();
     }
-    registry_image_digest(engine, ctx, image).unwrap_or_else(|| derived_image_digest(image))
+    registry_image_digest(engine, ctx, image)
+        .or_else(|| super::published_image_digest(image).map(str::to_string))
+        .unwrap_or_else(|| derived_image_digest(image))
 }
 
 /// The `DeployedImage` the container image reference `image` is REPORTED as, once the
