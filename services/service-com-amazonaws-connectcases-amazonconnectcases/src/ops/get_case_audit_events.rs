@@ -152,9 +152,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
         // A read (`@readonly` in the model): it reports the edits already
-        // recorded against the case and writes nothing, so a later caller sees
-        // exactly what it would have seen had this call never happened. The
-        // history itself is written by the operations that EDIT the case.
+        // recorded against the case and writes nothing of its own, so a later
+        // caller sees exactly what it would have seen had this call never
+        // happened. The history itself is written by the operations that EDIT
+        // the case — and by a merge, at the instant its completion fell due,
+        // which this call only materialises.
         let _ = ctx;
         let Some(state) = crate::state::service_state(&*self.engine) else {
             return Err(GetCaseAuditEventsErrorModeled::InternalServerException(
@@ -182,7 +184,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .into());
         }
 
-        let store = state.lock();
+        let mut store = state.lock();
+        // A merge runs asynchronously, so its completion is a transition the
+        // clock owes: the history reports it from the instant it fell due,
+        // whether or not anybody called in between.
+        store.settle_due_merges(::std::time::SystemTime::now());
         let domain = store
             .domain(&input.domain_id)
             .map_err(GetCaseAuditEventsErrorModeled::ResourceNotFoundException)?;
@@ -247,6 +253,9 @@ fn audit_event(event: &crate::state::CaseAuditEvent) -> AuditEvent {
             user: event.performed_by.clone(),
             iam_principal_arn: event.iam_principal_arn.clone(),
         }),
+        // Present only on an event a merge produced, which is the only edit
+        // that records one.
+        merge_metadata: event.merge_metadata.clone(),
     }
 }
 

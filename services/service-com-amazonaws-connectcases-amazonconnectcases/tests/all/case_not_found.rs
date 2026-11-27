@@ -201,8 +201,12 @@ async fn every_operation_that_addresses_a_missing_case_answers_the_case_sentence
             "c".repeat(500),
         ),
         (
+            // The model's `CaseId` carries a pattern of its own
+            // (`^[A-Za-z0-9\-._/:#=+-]*$`), so an id of no minted form is
+            // still one that pattern admits: a value outside it is refused by
+            // the boundary rather than resolved against the domain.
             "an id that is not of the minted form at all",
-            "Not-A_Case.Id~0".to_string(),
+            "Not-A_Case.Id:0".to_string(),
         ),
     ];
 

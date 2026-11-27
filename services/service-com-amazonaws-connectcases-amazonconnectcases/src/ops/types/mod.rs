@@ -14,9 +14,11 @@
 //! here named after an operation would make that operation's own module name
 //! ambiguous inside `ops` (`E0659`).
 
+pub mod batch_create_related_item_types;
 pub mod batch_get_case_rule_types;
 pub mod batch_get_field_types;
 pub mod batch_put_field_options_types;
+pub mod batch_update_case_types;
 pub mod create_case_rule_types;
 pub mod create_case_types;
 pub mod create_domain_types;
@@ -36,6 +38,7 @@ pub mod get_case_event_configuration_types;
 pub mod get_case_types;
 pub mod get_domain_types;
 pub mod get_layout_types;
+pub mod get_merge_cases_status_types;
 pub mod get_template_types;
 pub mod list_case_rules_types;
 pub mod list_cases_for_contact_types;
@@ -50,6 +53,7 @@ pub mod search_all_related_items_types;
 pub mod search_cases_types;
 pub mod search_related_items_types;
 pub mod shared_types;
+pub mod start_merge_cases_types;
 pub mod tag_resource_types;
 pub mod untag_resource_types;
 pub mod update_case_rule_types;
@@ -60,11 +64,15 @@ pub mod update_related_item_types;
 pub mod update_template_types;
 
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use batch_create_related_item_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use batch_get_case_rule_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use batch_get_field_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use batch_put_field_options_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use batch_update_case_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use create_case_rule_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
@@ -104,6 +112,8 @@ pub use get_domain_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use get_layout_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use get_merge_cases_status_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use get_template_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use list_case_rules_types::*;
@@ -131,6 +141,8 @@ pub use search_cases_types::*;
 pub use search_related_items_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use shared_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use start_merge_cases_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use tag_resource_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]

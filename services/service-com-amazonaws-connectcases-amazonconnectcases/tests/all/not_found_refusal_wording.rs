@@ -400,8 +400,11 @@ async fn a_case_refusal_is_worded_by_the_operation_that_raises_it() {
         ),
         ("a one-character id", "c".to_string()),
         (
+            // The model's `CaseId` carries a pattern of its own
+            // (`^[A-Za-z0-9\-._/:#=+-]*$`), so an id of no minted form is
+            // still one that pattern admits.
             "an id that is of no minted form at all",
-            "Not-A_Case.Id~0".to_string(),
+            "Not-A_Case.Id:0".to_string(),
         ),
     ];
 

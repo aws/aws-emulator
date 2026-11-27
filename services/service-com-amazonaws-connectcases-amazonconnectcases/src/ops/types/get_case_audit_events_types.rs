@@ -36,6 +36,7 @@ pub struct AuditEvent {
     pub performed_time: ::aws_smithy_types::DateTime,
     pub fields: Vec<AuditEventField>,
     pub performed_by: Option<AuditEventPerformedBy>,
+    pub merge_metadata: Option<AuditMergeMetadata>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.connectcases#AuditEventField")]
@@ -62,5 +63,13 @@ pub enum AuditEventFieldValueUnion {
 pub struct AuditEventPerformedBy {
     pub user: Option<UserUnion>,
     pub iam_principal_arn: String,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.connectcases#AuditMergeMetadata")]
+#[derive(Debug, Clone, Default)]
+pub struct AuditMergeMetadata {
+    pub merge_event_id: String,
+    pub primary_case_id: String,
+    pub secondary_case_id: String,
 }
 

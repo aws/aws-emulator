@@ -85,6 +85,7 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-connectcases-amazonconn
 #[derive(Debug)]
 pub enum DeleteCaseErrorModeled {
     AccessDeniedException(AccessDeniedException),
+    ConflictException(ConflictException),
     InternalServerException(InternalServerException),
     ResourceNotFoundException(ResourceNotFoundException),
     ThrottlingException(ThrottlingException),
@@ -150,10 +151,26 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .into());
         };
         let mut store = state.lock();
+        // A merge already due is completed before this delete is judged, so
+        // the conflict a running merge holds a case under is the one that still
+        // holds at this instant.
+        store.settle_due_merges(::std::time::SystemTime::now());
 
         let domain = store
             .domain_mut(&input.domain_id)
             .map_err(DeleteCaseErrorModeled::ResourceNotFoundException)?;
+        // "While the merge runs, ... you can't delete the primary case. These
+        // requests return a ConflictException"
+        // (`smithy_query(query="doc",shape="StartMergeCases")`), and deleting
+        // the secondary case is a modification of it, so a running merge holds
+        // both of its cases against a delete until it finishes. Judged before
+        // the case is removed, so a refused delete leaves the domain exactly as
+        // it was.
+        if domain.cases.contains_key(&input.case_id) {
+            if let Some(conflict) = domain.merge_deletion_conflict(&input.case_id) {
+                return Err(DeleteCaseErrorModeled::ConflictException(conflict).into());
+            }
+        }
         if domain.cases.remove(&input.case_id).is_none() {
             return Err(DeleteCaseErrorModeled::ResourceNotFoundException(
                 crate::state::not_found_worded(

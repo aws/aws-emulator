@@ -92,6 +92,7 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-connectcases-amazonconn
 #[derive(Debug)]
 pub enum DeleteRelatedItemErrorModeled {
     AccessDeniedException(AccessDeniedException),
+    ConflictException(ConflictException),
     InternalServerException(InternalServerException),
     ResourceNotFoundException(ResourceNotFoundException),
     ThrottlingException(ThrottlingException),

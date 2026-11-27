@@ -21,53 +21,6 @@ pub struct CreateRelatedItemInput {
     pub performed_by: Option<UserUnion>,
 }
 
-#[smithy_macros::smithy(union_for = "com.amazonaws.connectcases#RelatedItemInputContent")]
-#[allow(clippy::large_enum_variant)]
-#[derive(Debug, Clone)]
-pub enum RelatedItemInputContent {
-    Contact(Contact),
-    Comment(CommentContent),
-    File(FileContent),
-    Sla(SlaInputContent),
-    connectCase(ConnectCaseInputContent),
-    Custom(CustomInputContent),
-}
-
-#[smithy_macros::smithy(shape = "com.amazonaws.connectcases#Contact")]
-#[derive(Debug, Clone, Default)]
-pub struct Contact {
-    pub contact_arn: String,
-}
-
-#[smithy_macros::smithy(union_for = "com.amazonaws.connectcases#SlaInputContent")]
-#[allow(clippy::large_enum_variant)]
-#[derive(Debug, Clone)]
-pub enum SlaInputContent {
-    slaInputConfiguration(SlaInputConfiguration),
-}
-
-#[smithy_macros::smithy(shape = "com.amazonaws.connectcases#SlaInputConfiguration")]
-#[derive(Debug, Clone, Default)]
-pub struct SlaInputConfiguration {
-    pub name: String,
-    pub r#type: String,
-    pub field_id: Option<String>,
-    pub target_field_values: Option<Vec<FieldValueUnion>>,
-    pub target_sla_minutes: i64,
-}
-
-#[smithy_macros::smithy(shape = "com.amazonaws.connectcases#ConnectCaseInputContent")]
-#[derive(Debug, Clone, Default)]
-pub struct ConnectCaseInputContent {
-    pub case_id: String,
-}
-
-#[smithy_macros::smithy(shape = "com.amazonaws.connectcases#CustomInputContent")]
-#[derive(Debug, Clone, Default)]
-pub struct CustomInputContent {
-    pub fields: Vec<FieldValue>,
-}
-
 #[smithy_macros::smithy(shape = "com.amazonaws.connectcases#CreateRelatedItemResponse")]
 #[derive(Debug, Clone, Default)]
 pub struct CreateRelatedItemOutput {

@@ -239,7 +239,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .into());
         }
 
-        let store = state.lock();
+        let mut store = state.lock();
+        // A merge runs asynchronously, so its completion is a transition the
+        // CLOCK owes: it is materialised here, before anything is read, so a
+        // search reports the cases as the merge already left them.
+        store.settle_due_merges(::std::time::SystemTime::now());
         let domain = store
             .domain(&input.domain_id)
             .map_err(SearchCasesErrorModeled::ResourceNotFoundException)?;

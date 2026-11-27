@@ -16,8 +16,9 @@
 //! [`MAX_LAYOUTS_PER_DOMAIN`], [`MAX_CASES_PER_DOMAIN`],
 //! [`MAX_CASE_RULES_PER_DOMAIN`],
 //! [`MAX_RELATED_ITEMS_PER_CASE`], [`MAX_AUDIT_EVENTS_PER_CASE`],
-//! [`MAX_TAGS_PER_RESOURCE`] and
-//! [`MAX_IDEMPOTENCY_TOKENS`]. Creating past a
+//! [`MAX_TAGS_PER_RESOURCE`], [`MAX_MERGES_PER_DOMAIN`] and
+//! [`MAX_IDEMPOTENCY_TOKENS`], which bounds the remembered `CreateCase` tokens
+//! and the remembered batch answers alike. Creating past a
 //! ceiling is refused with a modelled error, and the idempotency table evicts
 //! its oldest entry rather than growing, so no caller can grow this store
 //! without end.
@@ -28,7 +29,8 @@
 //! [`MAX_EVENT_INCLUDED_FIELD_IDS`], [`MAX_SEARCH_CASE_FIELD_IDS`],
 //! [`MAX_SEARCH_SORTS`] and [`MAX_CASE_FILTER_CLAUSES`] are re-checked
 //! in the handler ([`list_too_long`]), as are
-//! [`MAX_BATCH_CASE_RULE_IDS`], [`MAX_TEMPLATE_CASE_RULES`] and the
+//! [`MAX_BATCH_CASE_RULE_IDS`], [`MAX_TEMPLATE_CASE_RULES`], [`MAX_BATCH_CASES`]
+//! and the
 //! bounds a case rule's condition tree is walked under
 //! ([`case_rule_conditions_too_complex`]),
 //! the scans below are linear in the list length, and a refusal names at most
@@ -42,12 +44,19 @@
 //! an opaque `nextToken` for the rest, so no single response grows with the
 //! store.
 
+// What the batch operations share: resolving one entry's case identifier, the
+// per-entry outcome vocabulary, and the answer a replay hands back.
+mod batches;
 // The case rules a domain holds: the record a create mints, the bounded walk
 // over the conditions it carries, and what a read of one reports.
 mod case_rules;
 // Comparing a stored field value against one of the model's `FieldFilter`
 // comparisons: what every search in this service narrows with.
 mod field_filters;
+// Merging one case into another: the record a merge is started as, the
+// completion the clock owes it, and what it refuses a request against either
+// of its cases with.
+mod merges;
 // Projecting and narrowing a case's related items: what every related-item
 // reader reports.
 mod related_items;
@@ -55,8 +64,10 @@ mod related_items;
 // carries: what every tagging operation reads and writes.
 mod tags;
 
+pub use batches::*;
 pub use case_rules::*;
 pub use field_filters::*;
+pub use merges::*;
 pub use related_items::*;
 pub use tags::*;
 
@@ -70,11 +81,11 @@ use std::time::SystemTime;
 use sha2::{Digest, Sha256};
 
 use crate::ops::types::{
-    BasicLayout, ConflictException, EventBridgeConfiguration, FieldAttributes, FieldGroup,
-    FieldOption, FieldValueUnion, InternalServerException, LayoutConfiguration, LayoutContent,
-    LayoutSections, RelatedItemInputContent, RequiredField, ResourceNotFoundException, Section,
-    ServiceQuotaExceededException, TagPropagationConfiguration, TemplateRule, UserUnion,
-    ValidationException,
+    AuditMergeMetadata, BasicLayout, ConflictException, EventBridgeConfiguration, FieldAttributes,
+    FieldGroup, FieldOption, FieldValueUnion, InternalServerException, LayoutConfiguration,
+    LayoutContent, LayoutSections, RelatedItemInputContent, RequiredField,
+    ResourceNotFoundException, Section, ServiceQuotaExceededException, TagPropagationConfiguration,
+    TemplateRule, UserUnion, ValidationException,
 };
 
 /// The ARN namespace (and SigV4 signing name / endpoint prefix) of this service,
@@ -385,6 +396,12 @@ pub struct Domain {
     /// [`MAX_CASE_RULES_PER_DOMAIN`]. They are scoped to the domain exactly as
     /// its fields and templates are, so deleting the domain takes them with it.
     pub case_rules: HashMap<String, CaseRule>,
+    /// The merges started in this domain, in the order they were started: each
+    /// one a record of two of the domain's cases taking part in a merge, still
+    /// running or finished. Bounded by [`MAX_MERGES_PER_DOMAIN`]. They are
+    /// scoped to the domain exactly as its cases are, so deleting the domain
+    /// takes them with it.
+    pub merges: Vec<CaseMerge>,
     pub event_bridge: Option<EventBridgeConfiguration>,
 }
 
@@ -552,6 +569,11 @@ pub struct CaseAuditEvent {
     /// The IAM principal whose credentials made the edit
     /// ([`caller_principal_arn`]).
     pub iam_principal_arn: String,
+    /// The merge that produced this event, on an event a MERGE recorded:
+    /// "Present only on audit events produced by a merge"
+    /// (`smithy_query(query="shape",shape="AuditEvent")`, member
+    /// `mergeMetadata`). An edit made by any other operation carries none.
+    pub merge_metadata: Option<AuditMergeMetadata>,
 }
 
 /// One field an edit of a case wrote: the value the case held for it before the
@@ -581,6 +603,15 @@ pub struct ComAmazonawsConnectcasesAmazonconnectcasesState {
     /// Insertion order of `case_idempotency`, so the OLDEST remembered token is
     /// the one dropped at [`MAX_IDEMPOTENCY_TOKENS`].
     idempotency_order: VecDeque<IdempotencyKey>,
+    /// `(operation, domainId, batch clientToken)` -> the answer that token
+    /// already got, so a retry is answered with it instead of the request being
+    /// processed a second time. Reached through [`Self::batch_replay`] /
+    /// [`Self::remember_batch_replay`] so the eviction order below cannot drift
+    /// from it.
+    batch_replays: HashMap<BatchReplayKey, BatchReplay>,
+    /// Insertion order of `batch_replays`, as `idempotency_order` is of the
+    /// remembered `CreateCase` tokens.
+    batch_replay_order: VecDeque<BatchReplayKey>,
 }
 
 impl ComAmazonawsConnectcasesAmazonconnectcasesState {
@@ -681,7 +712,25 @@ impl ComAmazonawsConnectcasesAmazonconnectcasesState {
             .retain(|(domain, _), _| domain != domain_id);
         self.idempotency_order
             .retain(|(domain, _)| domain != domain_id);
+        self.batch_replays
+            .retain(|(_, domain, _), _| domain != domain_id);
+        self.batch_replay_order
+            .retain(|(_, domain, _)| domain != domain_id);
         Ok(removed)
+    }
+
+    /// Materialise, in every domain this store holds, the merges whose
+    /// completion the clock already owes ([`Domain::settle_merges`]).
+    ///
+    /// Every operation that reads or writes a case runs this first, right after
+    /// taking the store lock, so a merge that fell due is applied once, where
+    /// it was owed, rather than differently depending on which operation
+    /// noticed it. It writes only what that instant already owed, so a read
+    /// that runs it still shows a later caller exactly what it showed this one.
+    pub fn settle_due_merges(&mut self, now: SystemTime) {
+        for domain in self.domains.values_mut() {
+            domain.settle_merges(now);
+        }
     }
 
     /// Forget every token that resolved to `case_id` in `domain_id`, so a
@@ -1001,6 +1050,9 @@ impl Case {
             fields,
             performed_by,
             iam_principal_arn,
+            // An edit made by any operation other than a merge carries no
+            // merge metadata; the merge's own event sets it.
+            merge_metadata: None,
         });
         while self.audit_events.len() > MAX_AUDIT_EVENTS_PER_CASE {
             self.audit_events.pop_front();
@@ -2026,6 +2078,11 @@ pub enum NotFoundWording {
     /// What the association of a related item answers for the case it is about:
     /// entirely fixed text, quoting no id.
     RelatedItemCase,
+    /// What a report of a case's MERGE answers for a case that takes part in
+    /// none: the case itself resolves, so the sentence says which of the two it
+    /// is — "For any other case, it returns a `ResourceNotFoundException`"
+    /// (`smithy_query(query="doc",shape="GetMergeCasesStatus")`).
+    CaseNotMerged,
     /// What a create of a case in a domain answers for the domain itself: the
     /// sentence quotes the domain identifier the request carried.
     NamedDomain,
@@ -2039,6 +2096,9 @@ impl NotFoundWording {
             Self::Generic => RESOURCE_NOT_FOUND_MESSAGE.to_string(),
             Self::AddressedCase => format!("A case with id '{resource_id}' could not be found."),
             Self::RelatedItemCase => RELATED_ITEM_CASE_NOT_FOUND_MESSAGE.to_string(),
+            Self::CaseNotMerged => {
+                format!("Case '{resource_id}' does not take part in a merge.")
+            }
             Self::NamedDomain => format!("Domain '{resource_id}' does not exist."),
         }
     }

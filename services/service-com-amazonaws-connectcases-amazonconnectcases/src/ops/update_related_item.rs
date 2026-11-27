@@ -124,6 +124,7 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-connectcases-amazonconn
 #[derive(Debug)]
 pub enum UpdateRelatedItemErrorModeled {
     AccessDeniedException(AccessDeniedException),
+    ConflictException(ConflictException),
     InternalServerException(InternalServerException),
     ResourceNotFoundException(ResourceNotFoundException),
     ServiceQuotaExceededException(ServiceQuotaExceededException),

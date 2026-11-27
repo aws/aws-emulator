@@ -90,6 +90,7 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-connectcases-amazonconn
 #[derive(Debug)]
 pub enum UpdateCaseErrorModeled {
     AccessDeniedException(AccessDeniedException),
+    ConflictException(ConflictException),
     InternalServerException(InternalServerException),
     ResourceNotFoundException(ResourceNotFoundException),
     ThrottlingException(ThrottlingException),
@@ -181,6 +182,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         }
 
         let mut store = state.lock();
+        // A merge already due is completed before this edit is judged, so the
+        // conflict a running merge holds a case under is the one that still
+        // holds at this instant.
+        store.settle_due_merges(now);
 
         let domain = store
             .domain_mut(&input.domain_id)
@@ -200,6 +205,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let deleted = domain.deleted_field_ids(input.fields.iter().map(|f| f.id.as_str()));
         let mismatched =
             domain.mismatched_field_value(input.fields.iter().map(|f| (f.id.as_str(), &f.value)));
+        // "While the merge runs, you can't modify the secondary case or its
+        // related items ... These requests return a ConflictException"
+        // (`smithy_query(query="doc",shape="StartMergeCases")`): a case the
+        // service is about to write a merge's result onto is held against a
+        // caller's own write until the merge finishes.
+        let merge_conflict = domain.merge_modification_conflict(&input.case_id);
         let Some(case) = domain.cases.get_mut(&input.case_id) else {
             return Err(UpdateCaseErrorModeled::ResourceNotFoundException(
                 crate::state::not_found_worded(
@@ -210,6 +221,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             )
             .into());
         };
+        if let Some(conflict) = merge_conflict {
+            return Err(UpdateCaseErrorModeled::ConflictException(conflict).into());
+        }
         if !unknown.is_empty() {
             return Err(UpdateCaseErrorModeled::ValidationException(
                 crate::state::unknown_fields(&unknown),

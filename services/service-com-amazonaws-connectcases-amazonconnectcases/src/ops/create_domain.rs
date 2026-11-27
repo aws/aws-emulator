@@ -205,6 +205,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 layouts: ::std::collections::HashMap::new(),
                 cases: ::std::collections::HashMap::new(),
                 case_rules: ::std::collections::HashMap::new(),
+                merges: ::std::vec::Vec::new(),
                 event_bridge: None,
             });
 

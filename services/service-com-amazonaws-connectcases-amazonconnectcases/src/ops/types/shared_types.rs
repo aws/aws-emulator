@@ -87,16 +87,28 @@ pub struct FieldIdentifier {
     pub id: String,
 }
 
-#[smithy_macros::smithy(union_for = "com.amazonaws.connectcases#FieldFilter")]
+#[smithy_macros::smithy(shape = "com.amazonaws.connectcases#ServiceQuotaExceededException")]
+#[derive(Debug, Clone, Default)]
+pub struct ServiceQuotaExceededException {
+    pub message: String,
+}
+
+#[smithy_macros::smithy(union_for = "com.amazonaws.connectcases#RelatedItemInputContent")]
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone)]
-pub enum FieldFilter {
-    equalTo(FieldValue),
-    Contains(FieldValue),
-    greaterThan(FieldValue),
-    greaterThanOrEqualTo(FieldValue),
-    lessThan(FieldValue),
-    lessThanOrEqualTo(FieldValue),
+pub enum RelatedItemInputContent {
+    Contact(Contact),
+    Comment(CommentContent),
+    File(FileContent),
+    Sla(SlaInputContent),
+    connectCase(ConnectCaseInputContent),
+    Custom(CustomInputContent),
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.connectcases#Contact")]
+#[derive(Debug, Clone, Default)]
+pub struct Contact {
+    pub contact_arn: String,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.connectcases#CommentContent")]
@@ -112,10 +124,61 @@ pub struct FileContent {
     pub file_arn: String,
 }
 
-#[smithy_macros::smithy(shape = "com.amazonaws.connectcases#ServiceQuotaExceededException")]
+#[smithy_macros::smithy(union_for = "com.amazonaws.connectcases#SlaInputContent")]
+#[allow(clippy::large_enum_variant)]
+#[derive(Debug, Clone)]
+pub enum SlaInputContent {
+    slaInputConfiguration(SlaInputConfiguration),
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.connectcases#SlaInputConfiguration")]
 #[derive(Debug, Clone, Default)]
-pub struct ServiceQuotaExceededException {
-    pub message: String,
+pub struct SlaInputConfiguration {
+    pub name: String,
+    pub r#type: String,
+    pub field_id: Option<String>,
+    pub target_field_values: Option<Vec<FieldValueUnion>>,
+    pub target_sla_minutes: i64,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.connectcases#ConnectCaseInputContent")]
+#[derive(Debug, Clone, Default)]
+pub struct ConnectCaseInputContent {
+    pub case_id: String,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.connectcases#CustomInputContent")]
+#[derive(Debug, Clone, Default)]
+pub struct CustomInputContent {
+    pub fields: Vec<FieldValue>,
+}
+
+#[smithy_macros::smithy(union_for = "com.amazonaws.connectcases#CaseIdentifierUnion")]
+#[allow(clippy::large_enum_variant)]
+#[derive(Debug, Clone)]
+pub enum CaseIdentifierUnion {
+    caseId(String),
+    referenceId(String),
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.connectcases#CaseIdentifier")]
+#[derive(Debug, Clone, Default)]
+pub struct CaseIdentifier {
+    pub case_id: Option<String>,
+    pub reference_number: Option<String>,
+    pub reference_id: Option<String>,
+}
+
+#[smithy_macros::smithy(union_for = "com.amazonaws.connectcases#FieldFilter")]
+#[allow(clippy::large_enum_variant)]
+#[derive(Debug, Clone)]
+pub enum FieldFilter {
+    equalTo(FieldValue),
+    Contains(FieldValue),
+    greaterThan(FieldValue),
+    greaterThanOrEqualTo(FieldValue),
+    lessThan(FieldValue),
+    lessThanOrEqualTo(FieldValue),
 }
 
 #[smithy_macros::smithy(union_for = "com.amazonaws.connectcases#RelatedItemContent")]
@@ -329,6 +392,7 @@ pub struct EventIncludedData {
 #[derive(Debug, Clone, Default)]
 pub struct CaseEventIncludedData {
     pub fields: Vec<FieldIdentifier>,
+    pub auto_include_fields: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.connectcases#RelatedItemEventIncludedData")]
@@ -425,7 +489,11 @@ pub struct TagPropagationConfiguration {
 }
 
 /// The values `AuditEventType` accepts on the wire.
-pub const AUDIT_EVENT_TYPE_VALUES: &[&str] = &["Case.Created", "Case.Updated", "RelatedItem.Created", "RelatedItem.Deleted", "RelatedItem.Updated"];
+pub const AUDIT_EVENT_TYPE_VALUES: &[&str] = &["Case.Created", "Case.Merged", "Case.Updated", "RelatedItem.Created", "RelatedItem.Deleted", "RelatedItem.Updated"];
+
+
+/// The values `AutoIncludeFields` accepts on the wire.
+pub const AUTO_INCLUDE_FIELDS_VALUES: &[&str] = &["All", "Custom", "System"];
 
 
 /// The values `CommentBodyTextType` accepts on the wire.
@@ -442,6 +510,10 @@ pub const FIELD_NAMESPACE_VALUES: &[&str] = &["Custom", "System"];
 
 /// The values `FieldType` accepts on the wire.
 pub const FIELD_TYPE_VALUES: &[&str] = &["Boolean", "DateTime", "Number", "SingleSelect", "Text", "Url", "User"];
+
+
+/// The values `MergeStatus` accepts on the wire.
+pub const MERGE_STATUS_VALUES: &[&str] = &["COMPLETED", "IN_PROGRESS"];
 
 
 /// The values `Order` accepts on the wire.

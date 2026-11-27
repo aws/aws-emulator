@@ -27,6 +27,7 @@ pub struct UpdateRelatedItemInput {
 pub enum RelatedItemUpdateContent {
     Comment(CommentUpdateContent),
     Custom(CustomUpdateContent),
+    Sla(SlaUpdateContent),
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.connectcases#CommentUpdateContent")]
@@ -40,6 +41,19 @@ pub struct CommentUpdateContent {
 #[derive(Debug, Clone, Default)]
 pub struct CustomUpdateContent {
     pub fields: Vec<FieldValue>,
+}
+
+#[smithy_macros::smithy(union_for = "com.amazonaws.connectcases#SlaUpdateContent")]
+#[allow(clippy::large_enum_variant)]
+#[derive(Debug, Clone)]
+pub enum SlaUpdateContent {
+    slaUpdateConfiguration(SlaUpdateConfiguration),
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.connectcases#SlaUpdateConfiguration")]
+#[derive(Debug, Clone, Default)]
+pub struct SlaUpdateConfiguration {
+    pub target_sla_minutes: i64,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.connectcases#UpdateRelatedItemResponse")]

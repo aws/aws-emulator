@@ -24,11 +24,15 @@ use ::std::sync::Arc;
 pub fn table<Eng: Send + Sync + 'static>(engine: &Arc<Eng>) -> OperationRoutingTable {
     let mut front_door = FrontDoorTable::new();
     front_door
+        .serve(crate::ops::batch_create_related_item::BatchCreateRelatedItem::new(Arc::clone(
+            engine,
+        )))
         .serve(crate::ops::batch_get_case_rule::BatchGetCaseRule::new(Arc::clone(engine)))
         .serve(crate::ops::batch_get_field::BatchGetField::new(Arc::clone(engine)))
         .serve(crate::ops::batch_put_field_options::BatchPutFieldOptions::new(Arc::clone(
             engine,
         )))
+        .serve(crate::ops::batch_update_case::BatchUpdateCase::new(Arc::clone(engine)))
         .serve(crate::ops::create_case_rule::CreateCaseRule::new(Arc::clone(engine)))
         .serve(crate::ops::create_domain::CreateDomain::new(Arc::clone(engine)))
         .serve(crate::ops::create_field::CreateField::new(Arc::clone(engine)))
@@ -49,6 +53,7 @@ pub fn table<Eng: Send + Sync + 'static>(engine: &Arc<Eng>) -> OperationRoutingT
         ))
         .serve(crate::ops::get_domain::GetDomain::new(Arc::clone(engine)))
         .serve(crate::ops::get_layout::GetLayout::new(Arc::clone(engine)))
+        .serve(crate::ops::get_merge_cases_status::GetMergeCasesStatus::new(Arc::clone(engine)))
         .serve(crate::ops::get_template::GetTemplate::new(Arc::clone(engine)))
         .serve(crate::ops::list_case_rules::ListCaseRules::new(Arc::clone(engine)))
         .serve(crate::ops::list_cases_for_contact::ListCasesForContact::new(Arc::clone(engine)))
@@ -66,6 +71,7 @@ pub fn table<Eng: Send + Sync + 'static>(engine: &Arc<Eng>) -> OperationRoutingT
         )))
         .serve(crate::ops::search_cases::SearchCases::new(Arc::clone(engine)))
         .serve(crate::ops::search_related_items::SearchRelatedItems::new(Arc::clone(engine)))
+        .serve(crate::ops::start_merge_cases::StartMergeCases::new(Arc::clone(engine)))
         .serve(crate::ops::tag_resource::TagResource::new(Arc::clone(engine)))
         .serve(crate::ops::untag_resource::UntagResource::new(Arc::clone(engine)))
         .serve(crate::ops::update_case::UpdateCase::new(Arc::clone(engine)))

@@ -272,7 +272,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .into());
         }
 
-        let store = state.lock();
+        let mut store = state.lock();
+        // A merge runs asynchronously, so its completion — which moves related
+        // items from one case to another — is a transition the CLOCK owes: it
+        // is materialised here, before anything is read, so a search reports
+        // each item under the case the merge already left it on.
+        store.settle_due_merges(::std::time::SystemTime::now());
         let domain = store
             .domain(&input.domain_id)
             .map_err(SearchAllRelatedItemsErrorModeled::ResourceNotFoundException)?;

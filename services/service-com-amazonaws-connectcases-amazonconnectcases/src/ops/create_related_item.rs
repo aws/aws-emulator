@@ -114,6 +114,7 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-connectcases-amazonconn
 #[derive(Debug)]
 pub enum CreateRelatedItemErrorModeled {
     AccessDeniedException(AccessDeniedException),
+    ConflictException(ConflictException),
     InternalServerException(InternalServerException),
     ResourceNotFoundException(ResourceNotFoundException),
     ServiceQuotaExceededException(ServiceQuotaExceededException),
@@ -233,6 +234,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         }
 
         let mut store = state.lock();
+        // A merge already due is completed before this association is judged,
+        // so the conflict a running merge holds a case under is the one that
+        // still holds at this instant.
+        store.settle_due_merges(now);
         let domain = store
             .domain_mut(&input.domain_id)
             .map_err(CreateRelatedItemErrorModeled::ResourceNotFoundException)?;
@@ -243,12 +248,20 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // resolved, so a request naming a case the domain does not hold is told
         // about the case rather than about the content it carried for it.
         let content_check = content_refusal(domain, &input.content);
+        // "While the merge runs, you can't modify the secondary case or its
+        // related items" (`smithy_query(query="doc",shape="StartMergeCases")`):
+        // a case whose related items the service is about to move is held
+        // against a caller's own association until the merge finishes.
+        let merge_conflict = domain.merge_modification_conflict(&input.case_id);
         let Some(case) = domain.cases.get_mut(&input.case_id) else {
             return Err(CreateRelatedItemErrorModeled::ResourceNotFoundException(
                 case_not_found(&input.case_id),
             )
             .into());
         };
+        if let Some(conflict) = merge_conflict {
+            return Err(CreateRelatedItemErrorModeled::ConflictException(conflict).into());
+        }
         content_check?;
         // Bound request-driven growth: a caller cannot hang associations off one
         // case without end.
