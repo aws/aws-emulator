@@ -24,7 +24,9 @@
 //!    refusal is about the combination rather than about one member or one value.
 //! 3. To `ClientToken` idempotency a member the request specified and the same member
 //!    omitted are DIFFERENT requests — the modelled `ConflictException` — while a true
-//!    repeat replays the first answer.
+//!    repeat replays the first answer. (A member the model documents a value for when it
+//!    is absent is the exception, and `idempotency_effective_member_values.rs` owns that
+//!    rule: there, omitting it and spelling that value out are one request.)
 
 use serde_json::json;
 use service_com_amazonaws_ebs_ebs::state::service_state;
@@ -235,9 +237,9 @@ struct TokenCase<'a> {
 }
 
 /// RULE 3: `ClientToken` scopes idempotency to the request, and a request that SPECIFIED
-/// an optional member is not the request that omitted it: the second call conflicts
-/// (HTTP 409) exactly when it differs from the first, member presence included, and
-/// replays the first answer when it does not.
+/// an optional member the model documents no absent-value default for is not the request
+/// that omitted it: the second call conflicts (HTTP 409) exactly when it differs from the
+/// first, that member's presence included, and replays the first answer when it does not.
 #[tokio::test]
 async fn a_specified_member_and_an_omitted_one_are_different_requests() {
     // Rows differ along which optional member the two requests disagree about, which way

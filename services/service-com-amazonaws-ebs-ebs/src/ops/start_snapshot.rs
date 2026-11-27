@@ -298,9 +298,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let mut store = state.lock();
         store.apply_due_transitions(now);
 
+        // The `Timeout` the new snapshot GETS: the one the request carries, or the
+        // documented default when it carries none. Derived ONCE, before anything reads it,
+        // because it is both the value the record is built with and the value the
+        // `ClientToken` fingerprint is scoped to — two uses that must never disagree.
+        let timeout_minutes = input.timeout.unwrap_or(DEFAULT_SNAPSHOT_TIMEOUT_MINUTES);
+
         // `ClientToken` idempotency: the same token replays the original answer, a
         // different request under the same token is the modeled `ConflictException`.
-        let fingerprint = request_fingerprint(&input);
+        let fingerprint = request_fingerprint(&input, timeout_minutes);
         if let Some(token) = input.client_token.as_deref() {
             if let Some(record) = store.client_tokens.get(token) {
                 if record.request_fingerprint != fingerprint {
@@ -422,7 +428,6 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             input.kms_key_arn.as_deref(),
             parent_encryption.as_ref(),
         );
-        let timeout_minutes = input.timeout.unwrap_or(DEFAULT_SNAPSHOT_TIMEOUT_MINUTES);
 
         let snapshot = Snapshot {
             snapshot_id: snapshot_id.clone(),
@@ -528,7 +533,14 @@ fn quota_exceeded(message: String) -> StartSnapshotError {
 
 /// A stable digest of the request members a `ClientToken` is scoped to, so a retry of
 /// the identical request is recognised and a different one is a `ConflictException`.
-fn request_fingerprint(input: &StartSnapshotInput) -> String {
+///
+/// A member the model documents a value for when it is ABSENT is digested as the value
+/// that TAKES EFFECT, never as whether the request spelled it out: `timeout_minutes` is
+/// that value for `Timeout`, so a retry naming the default asks for the snapshot the
+/// store already holds and replays it. Members with no documented default keep the
+/// presence distinction [`push_optional_member`] draws, because for them absence IS the
+/// value that takes effect.
+fn request_fingerprint(input: &StartSnapshotInput, timeout_minutes: i32) -> String {
     let mut canonical = String::new();
     canonical.push_str(&format!("VolumeSize={}\n", input.volume_size));
     push_optional_member(
@@ -546,11 +558,10 @@ fn request_fingerprint(input: &StartSnapshotInput) -> String {
             .as_deref(),
     );
     push_optional_member(&mut canonical, "KmsKeyArn", input.kms_key_arn.as_deref());
-    push_optional_member(
-        &mut canonical,
-        "Timeout",
-        input.timeout.map(|timeout| timeout.to_string()).as_deref(),
-    );
+    // The timeout that takes effect, so an absent `Timeout` and one spelling the
+    // documented default out canonicalise alike. No legal request can be mistaken for
+    // another through it: every value admitted here is one a request could have carried.
+    canonical.push_str(&format!("Timeout={timeout_minutes}\n"));
     for tag in input.tags.iter().flatten() {
         push_optional_member(&mut canonical, "TagKey", tag.key.as_deref());
         push_optional_member(&mut canonical, "TagValue", tag.value.as_deref());
@@ -558,10 +569,11 @@ fn request_fingerprint(input: &StartSnapshotInput) -> String {
     fingerprint_hex_sha256(canonical.as_bytes())
 }
 
-/// Append one OPTIONAL request member to a canonical form, so that a member the request
-/// did not carry and one it carried can never canonicalise to the same text: a request
-/// specifying `Encrypted` as `false` is a different request from one specifying no
-/// `Encrypted` at all, and the same holds for every other optional member.
+/// Append one OPTIONAL request member with no documented absent-value default to a
+/// canonical form, so that a member the request did not carry and one it carried can
+/// never canonicalise to the same text: a request specifying `Encrypted` as `false` is a
+/// different request from one specifying no `Encrypted` at all, and the same holds for
+/// every other member digested through here.
 ///
 /// A specified value is written behind its own byte length, so no value a member may
 /// carry can spell out another member's line (`Description`'s pattern `^[\S\s]+$` admits
