@@ -101,3 +101,34 @@ enum's value set; compare the bracketed set's order.
 Cause 2: replay lambda-function-url-config-lifecycle and read task#8's 201 body —
 `CreateFunctionUrlConfig` with `AuthType` set; compare `$.FunctionUrl`'s form, then issue a
 GET to the value and see which of the two forms a client on this machine can reach.
+
+## Resolution
+
+Cause 1 — FIXED. `SourceAccessType` now has its own row in `REPORTED_ENUM_ORDERS`
+(`services/service-com-amazonaws-lambda-awsgirapiservice/src/service.rs`), matched by value
+SET, so every member targeting that enum states the set alike. The whole order the paragraph
+above said this report does not carry was recovered by replaying the unit the order was
+recorded in: the replay compares the WHOLE recorded message, so an order that replays clean
+against `lambda-rmq-traj-mapping-request-shape-mistakes#task#2` is the recorded one,
+value for value, and that unit now passes (`lambda|CreateEventSourceMapping|4xx->4xx|$.message`
+reported `fixed`). The order is
+`[CLIENT_CERTIFICATE_TLS_AUTH, OAUTHBEARER_AUDIENCE, OAUTHBEARER_SCOPE, OAUTHBEARER_AUTH,
+IAM_AUTH, VPC_SUBNET, OAUTHBEARER_IDENTITY_POOL, VPC_SECURITY_GROUP,
+SERVER_ROOT_CA_CERTIFICATE, IAM_OAUTHBEARER_AUTH, BASIC_AUTH, SASL_SCRAM_512_AUTH,
+VIRTUAL_HOST, OAUTHBEARER_LOGICAL_CLUSTER, SASL_SCRAM_256_AUTH]`, pinned over a set of
+refused and admitted inputs by
+`services/service-com-amazonaws-lambda-awsgirapiservice/tests/all/source_access_type_enum_order.rs`.
+
+Cause 2 — NOT FIXED, and not fixable in this emulator as the core stands; the key
+`lambda|CreateFunctionUrlConfig|2xx->2xx|$.FunctionUrl` stays divergent deliberately. The
+emulator keeps announcing the address it ANSWERS on, because the two requirements exclude
+each other: the core vends loopback listeners only (`ResourceListener::authority`) and its
+front door refuses a non-loopback `Host` on a loopback bind (`host_allowed`), so the
+documented `<url-id>.lambda-url.<region>.on.aws` host is an address no client on this
+machine resolves or can be served at — which is also what the replay itself reports for that
+value (`host_not_own`, recorded in
+`issues/things-that-now-work/20261109T152638Z-lambda-function-url-payloads-advertise-a-lambda-url.md`,
+"even where the string equals the recorded one"). Serving a NAME is a core-side capability
+(a resolver the emulator's own clients honour for the zone a resource publishes in, plus a
+`Host` allowlist entry for it); until the core has one, this cause needs no further work in
+this service.

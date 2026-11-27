@@ -255,6 +255,31 @@ const REPORTED_ENUM_ORDERS: &[&[&str]] = &[
         "SERVER_ROOT_CA_CERTIFICATE",
         "BASIC_AUTH",
     ],
+    // com.amazonaws.lambda#SourceAccessType (`BASIC_AUTH | VPC_SUBNET | VPC_SECURITY_GROUP |
+    // SASL_SCRAM_512_AUTH | SASL_SCRAM_256_AUTH | VIRTUAL_HOST | CLIENT_CERTIFICATE_TLS_AUTH |
+    // SERVER_ROOT_CA_CERTIFICATE | OAUTHBEARER_AUTH | OAUTHBEARER_SCOPE |
+    // OAUTHBEARER_AUDIENCE | OAUTHBEARER_LOGICAL_CLUSTER | OAUTHBEARER_IDENTITY_POOL |
+    // IAM_AUTH | IAM_OAUTHBEARER_AUTH` in the model), reported by AWS as below. Source: the
+    // recorded answer the corpus unit `lambda-rmq-traj-mapping-request-shape-mistakes`
+    // carries for a source access configuration's `Type` outside its value set — its whole
+    // message, which that unit replays clean against value for value.
+    &[
+        "CLIENT_CERTIFICATE_TLS_AUTH",
+        "OAUTHBEARER_AUDIENCE",
+        "OAUTHBEARER_SCOPE",
+        "OAUTHBEARER_AUTH",
+        "IAM_AUTH",
+        "VPC_SUBNET",
+        "OAUTHBEARER_IDENTITY_POOL",
+        "VPC_SECURITY_GROUP",
+        "SERVER_ROOT_CA_CERTIFICATE",
+        "IAM_OAUTHBEARER_AUTH",
+        "BASIC_AUTH",
+        "SASL_SCRAM_512_AUTH",
+        "VIRTUAL_HOST",
+        "OAUTHBEARER_LOGICAL_CLUSTER",
+        "SASL_SCRAM_256_AUTH",
+    ],
 ];
 
 /// `allowed` in the order this service reports that enum in, or in the order the model
@@ -803,13 +828,16 @@ impl<Eng: Send + Sync + 'static> ErasedOperation for Downloads<Eng> {
         })
     }
 
-    /// Served UNSIGNED. A download URL is handed to a caller to fetch directly, so the
-    /// fetch carries no SigV4 `Authorization` header. The modelled operations are
-    /// unaffected — the router reads their schemes from the model, which this answer
-    /// cannot weaken.
-    fn auth_schemes(&self) -> Option<&'static [&'static str]> {
-        Some(&[])
-    }
+    // No `auth_schemes` answer of its own, so this plane declares nothing about its own
+    // authentication and the emulator's front door holds a fetch to the credential the
+    // announced URL carries: the location is PRESIGNED
+    // ([`crate::state::download_location`]), a presigned request carries its SigV4
+    // credential in the QUERY rather than in an `Authorization` header, and the emulator
+    // verifies every request signature itself — so the signature, its expiry and the
+    // method and path it was minted for are checked before any object is served, and a
+    // fetch presenting no credential at all is refused there. Opting out of a scheme here
+    // would be the one way this unmodelled path could serve stored bytes to a caller the
+    // front door would otherwise refuse.
 }
 
 /// What this service's download message says for an object it does not hold.

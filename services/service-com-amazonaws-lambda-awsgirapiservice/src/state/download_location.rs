@@ -15,8 +15,11 @@
 //!
 //! [`parse_download_target`] reads that path back, so the URL this service hands out and
 //! the request `crate::service`'s download plane claims cannot disagree about either half.
-//! A presigned URL is followed with no `Authorization` header, which is why that plane is
-//! mounted unsigned; the signature is what makes the announced address a presigned one.
+//! A presigned URL is followed with no `Authorization` header — it carries its SigV4
+//! credential in the QUERY instead — so the plane declares no scheme of its own and the
+//! emulator's front door verifies that signature, its expiry and the method and path it was
+//! minted for before the plane serves an object: the signature is what makes the announced
+//! address a presigned one, and what authorizes the fetch of it.
 
 use super::*;
 
