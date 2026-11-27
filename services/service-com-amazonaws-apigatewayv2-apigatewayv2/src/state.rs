@@ -4044,9 +4044,9 @@ pub fn portal_default_domain_name(portal_id: &str, region: &str, zone: &str) -> 
     )
 }
 
-/// The default domain name this emulator ANNOUNCES for a portal: the portal's own labels
-/// ([`portal_default_domain_name`]) in the zone this emulator may announce a name of its own
-/// in.
+/// The default domain name this emulator ANNOUNCES for a portal when it is reached at NO
+/// ADDRESS AT ALL: the portal's own labels ([`portal_default_domain_name`]) in the zone this
+/// emulator may announce a name of its own in.
 ///
 /// The ZONE is the workspace's one reading of that question
 /// (`service_common::data_plane_addressing::announced_zone_of_authority`): the zone of the
@@ -4060,12 +4060,11 @@ pub fn portal_default_domain_name(portal_id: &str, region: &str, zone: &str) -> 
 /// (`crate::service::portal`, which compares an addressed host against the name each portal
 /// RECORDS), so the name a portal publishes is a name this emulator serves its site on.
 ///
-/// A portal that DID get a socket of its own publishes this SAME name: the member is a domain
-/// name, which carries no port, so the `host:port` that socket landed on is reported by the
-/// portal's URL-typed members instead ([`portal_preview_url`]) and the name stays a name.
-///
-/// Minted ONCE, by the create, and persisted on the portal's endpoint configuration, so
-/// every later read of that portal reports the same name whatever it is addressed at.
+/// It is the FALLBACK behind [`announced_portal_site_base`], not what a portal of a served
+/// emulator publishes: no resolver a client of this machine has answers for a name of this
+/// form, so a portal whose site is served at an address of this process publishes THAT
+/// address instead — the one its create recorded ([`Portal::site_base`]) — and a client that
+/// reads the member dials what it was given.
 pub fn announced_portal_default_domain_name(
     portal_id: &str,
     region: &str,
@@ -4103,29 +4102,30 @@ pub fn portal_preview_url(site_base: &str) -> String {
     format!("https://{site_base}/{PORTAL_PREVIEW_SEGMENT}")
 }
 
-/// The address a portal's WEBSITE is announced at — the base of every URL-typed member that
-/// sends a client to the site (`Preview$PreviewUrl`) when the portal has no socket of its
-/// own to publish ([`portal_transport`]).
+/// The address a portal's WEBSITE is announced at — the base of every member that sends a
+/// client to the site, the URL-typed ones (`Preview$PreviewUrl`) and the default domain the
+/// portal reports — when the portal has no socket of its own to publish
+/// ([`portal_transport`]).
 ///
-/// A URL a client FETCHES has to lead back to this emulator, so which address this names
-/// follows the endpoint the CREATE was addressed at:
+/// A URL a client FETCHES has to lead back to this emulator, so this names an address this
+/// process is REACHED at:
 ///
-/// * a request that addressed the EMULATOR'S OWN endpoint ([`local_endpoint_host`]) comes
-///   from a client that resolves nothing else, so the website is named on that same
-///   endpoint with the portal's own path behind the [`LOCAL_ENDPOINT_PREFIX`] marker. This
-///   is the address the portal data plane serves there, and the same shape this emulator's
-///   API Gateway (REST) stages are reached at (`/_aws/execute-api/{api-id}/{stage}`);
-/// * a request that addressed this service by one of AWS's own hosts comes from a client
-///   that resolves them, so the website is named on the portal's own default domain
-///   ([`announced_portal_default_domain_name`]), which the portal data plane claims
-///   host-style.
+/// * the EMULATOR'S OWN endpoint this request arrived at ([`local_endpoint_host`]), else the
+///   address this process is served at ([`served_endpoint_authority`]), with the portal's own
+///   path behind the [`LOCAL_ENDPOINT_PREFIX`] marker. That is the address the portal data
+///   plane serves there, and the same shape this emulator's api stages are reached at
+///   (`/_aws/execute-api/{api-id}/{stage}`);
+/// * on an emulator that is reached at no address at all — one driven in process, with no
+///   socket behind it — there is no address of this process to name, so the portal's own
+///   generated default domain is ([`announced_portal_default_domain_name`]), which the portal
+///   data plane claims host-style.
 pub fn announced_portal_site_base(
     portal_id: &str,
     region: &str,
     parts: &::http::request::Parts,
     served_base: &str,
 ) -> String {
-    match local_endpoint_host(parts) {
+    match local_endpoint_host(parts).or_else(|| served_endpoint_authority(served_base)) {
         Some(host) => format!("{host}/{LOCAL_ENDPOINT_PREFIX}/{PORTAL_ENDPOINT_LABEL}/{portal_id}"),
         None => announced_portal_default_domain_name(portal_id, region, parts, served_base),
     }

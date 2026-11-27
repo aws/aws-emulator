@@ -243,8 +243,8 @@ fn published_target(parts: &::http::request::Parts) -> Addressed {
 /// is admitting a name that may reach this address without the core's `Host` allowlist, and
 /// those are the two zones no resolver somebody else controls can answer for; a name carrying
 /// no Region, a deeper zone, or any other zone is one only such a resolver could point at this
-/// machine, which is the rebinding the allowlist exists to refuse. A client that rewrote the
-/// endpoint into a PATH reaches the api that way instead, which this address serves as sent.
+/// machine, which is the rebinding the allowlist exists to refuse. The address this plane
+/// ANNOUNCES carries the api in the PATH instead, which this address serves as sent.
 fn addressed_api_id(parts: &::http::request::Parts) -> Option<String> {
     let host = parts
         .headers

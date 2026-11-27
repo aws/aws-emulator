@@ -344,7 +344,7 @@ async fn a_client_that_dials_the_published_address_is_served_the_portals_site() 
             .cloned()
             .unwrap_or(Value::Null);
         let published = as_str(&endpoint, "portalDefaultDomainName");
-        crate::portal_lifecycle::assert_published_domain_name(case, &published, &portal_id, REGION);
+        crate::portal_lifecycle::assert_published_domain_name(case, &published, &portal_id);
 
         // The reader reports the same name, so a client that goes through `GetPortal` —
         // which is what a client that did not make the create does — addresses what the
@@ -641,7 +641,7 @@ async fn each_portals_published_address_serves_only_its_own_site() {
                 .unwrap_or(&Value::Null),
             "portalDefaultDomainName",
         );
-        crate::portal_lifecycle::assert_published_domain_name(case, &published, &portal_id, REGION);
+        crate::portal_lifecycle::assert_published_domain_name(case, &published, &portal_id);
         // The address that name is served at, read off the portal's own preview URL.
         let preview_url = preview_url_once_ready(&emulator, row, case, &portal_id).await;
         let address = site_address(case, &preview_url);

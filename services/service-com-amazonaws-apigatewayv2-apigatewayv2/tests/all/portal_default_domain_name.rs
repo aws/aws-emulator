@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: CC0-1.0
 
-//! The default domain NAME a portal publishes, and what this emulator answers for it.
+//! The default domain a portal publishes, and what this emulator answers at it.
 //!
 //! The rule, one level above the recorded case (one `CreatePortal` through a client
 //! configured with this emulator's loopback endpoint):
@@ -8,13 +8,13 @@
 //! > `EndpointConfigurationResponse$PortalDefaultDomainName` is "the portal default domain
 //! > name. This domain name is generated and managed by API Gateway", typed
 //! > `__stringMin3Max256`
-//! > (`smithy_query(query="shape",shape="EndpointConfigurationResponse")`). The value is
-//! > therefore a domain NAME: the portal's own labels in the zone this emulator answers in,
-//! > with no scheme, no `:port` and no path, rather than the address of a socket — and it is
-//! > a name this emulator ANSWERS for, so a request addressed to it is refused while the
+//! > (`smithy_query(query="shape",shape="EndpointConfigurationResponse")`), and a client
+//! > FETCHES the value — so this emulator publishes the address it serves that portal's site
+//! > at: the `host:port` of the socket the portal was given, or its own endpoint with the
+//! > portal's reserved site path for a portal that got no socket. It is settled once, by the
+//! > create, so every operation that reports the portal reports that one address; and it is an
+//! > address this emulator ANSWERS at, so a request addressed to it is refused while the
 //! > portal has nothing live and is answered the portal's page once a publish has settled.
-//! > It is minted once, by the create, and every operation that reports the portal reports
-//! > that one value.
 //!
 //! The rows span what the rule generalises over: the endpoint the create was addressed at
 //! (this service's own AWS host, the emulator's own endpoint as an IP literal with and
@@ -81,10 +81,10 @@ fn published_name(case: &str, body: &Value) -> String {
     name
 }
 
-/// RULE: the member is the generated domain name of THIS portal in THIS Region, every
+/// RULE: the member is the address this emulator serves THIS portal's site at, every
 /// operation that reports the portal reports that one value, and no two portals share it.
 #[tokio::test]
-async fn every_portal_reports_the_one_domain_name_generated_for_it() {
+async fn every_portal_reports_the_one_address_its_site_is_served_at() {
     let emulator = emulator();
     let mut seen: Vec<(String, String)> = Vec::new();
 
@@ -113,7 +113,6 @@ async fn every_portal_reports_the_one_domain_name_generated_for_it() {
             &format!("{case}: CreatePortal"),
             &name,
             &portal_id,
-            row.region,
         );
 
         // Every reader of the portal reports that one value: the name is the portal's, not
@@ -196,10 +195,11 @@ async fn every_portal_reports_the_one_domain_name_generated_for_it() {
     );
 }
 
-/// RULE's other half: the generated name is one this emulator ANSWERS for — the portal's site
-/// is refused there while nothing is published and served there once a publish has settled.
+/// RULE's other half: the published address is one this emulator ANSWERS at — the portal's
+/// site is refused there while nothing is published and served there once a publish has
+/// settled.
 #[tokio::test]
-async fn the_generated_domain_name_is_a_host_this_emulator_answers_for() {
+async fn the_published_address_is_one_this_emulator_answers_at() {
     for row in rows() {
         let case = row.case;
         let emulator = emulator();

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: CC0-1.0
 
-//! The FORM of the default domain name a portal publishes, on every operation that reports a
+//! The FORM of the default domain a portal publishes, on every operation that reports a
 //! portal.
 //!
 //! The rule, one level above the recorded cases that filed the issue (a `GetPortal` and an
@@ -10,15 +10,16 @@
 //! > `EndpointConfigurationResponse$PortalDefaultDomainName` is "the portal default domain
 //! > name. This domain name is generated and managed by API Gateway", typed
 //! > `__stringMin3Max256`
-//! > (`smithy_query(query="shape",shape="EndpointConfigurationResponse")`), so the value is a
-//! > DOMAIN NAME and nothing else: dot-separated host labels naming the portal and the Region
-//! > it lives in, with no scheme, no `:port` and no path — never the `host:port` of a socket
-//! > this emulator listens on. It is generated ONCE, by the create, so every operation that
-//! > reports the portal reports that one name; and it is a name this service answers for, so a
-//! > request addressed to it is refused while the portal has nothing live and is served the
-//! > portal's page once a publish has settled. The dialable address a client opens a connection
-//! > to is carried by the portal's URL-typed members (`Preview$PreviewUrl`), which may hold a
-//! > port because a URL does — `portal_published_address` is that half's subject.
+//! > (`smithy_query(query="shape",shape="EndpointConfigurationResponse")`), and what a client
+//! > does with the value is FETCH it — so this emulator publishes the address it SERVES that
+//! > portal's site at: the `host:port` of the socket the portal was given, or its own endpoint
+//! > with the portal's reserved site path for a portal that got no socket. AWS's generated
+//! > name resolves nowhere near this process, and neither does one this emulator could mint in
+//! > a zone of its own, so neither is ever announced. The value is settled ONCE, by the
+//! > create, so every operation that reports the portal reports that one address, no later
+//! > caller's endpoint moves it; and it is an address this service ANSWERS at, so a request
+//! > addressed to it is refused while the portal has nothing live and is served the portal's
+//! > page once a publish has settled.
 //!
 //! The rows span what the rule generalises over: the endpoint the create was addressed at
 //! (this service's own AWS host, the emulator's own endpoint as an IP literal with and without
@@ -157,11 +158,11 @@ fn patches(region: &str) -> Vec<(&'static str, Value)> {
     ]
 }
 
-/// RULE: every reader of a portal reports the one generated DOMAIN NAME — host labels only,
-/// no authority — whatever endpoint the calls are addressed at and whatever a patch rewrites
-/// around it.
+/// RULE: every reader of a portal reports the one address this emulator serves that portal's
+/// site at, whatever endpoint the calls are addressed at and whatever a patch rewrites around
+/// it.
 #[tokio::test]
-async fn every_portal_reader_reports_a_domain_name_and_never_an_authority() {
+async fn every_portal_reader_reports_the_address_the_site_is_served_at() {
     for row in rows() {
         let case = row.case;
         let emulator = emulator();
@@ -171,20 +172,22 @@ async fn every_portal_reader_reports_a_domain_name_and_never_an_authority() {
             &format!("{case}: CreatePortal"),
             &published,
             &portal_id,
-            row.region,
         );
-        // The precise defect this suite pins: the address this emulator is REACHED at is no
-        // part of the name it generates for a portal.
+        // The precise defect this suite pins: the value is settled by the portal's own site,
+        // never by the endpoint the CALL happened to reach this emulator at — two portals
+        // created through one endpoint are published at two addresses, and the control-plane
+        // endpoint is not a portal's site.
         assert_ne!(
             published, row.host,
-            "case {case:?}: the endpoint this emulator is reached at is not the portal's \
-             domain name, got {published:?}"
+            "case {case:?}: the endpoint this emulator is reached at is not the portal's own \
+             site address, got {published:?}"
         );
-        assert!(
-            !published.contains(row.host),
-            "case {case:?}: expected a generated domain name, got {published:?} carrying the \
-             endpoint {:?} this client reached",
-            row.host
+        let (other_id, other_created) = portal_of_row(&emulator, &row).await;
+        let other_published = published_name(case, "CreatePortal", &other_created);
+        assert_ne!(
+            published, other_published,
+            "case {case:?}: expected each portal published at its own address, got \
+             {published:?} for {portal_id} and {other_id}"
         );
 
         // The reader a client that did not make the create uses reports the same name.
@@ -227,13 +230,12 @@ async fn every_portal_reader_reports_a_domain_name_and_never_an_authority() {
             let patched_name = published_name(case, "UpdatePortal", &patched);
             assert_eq!(
                 patched_name, published,
-                "case {case:?}: {what} must carry the generated name over, got {patched}"
+                "case {case:?}: {what} must carry the published address over, got {patched}"
             );
             assert_published_domain_name(
                 &format!("{case}: UpdatePortal with {what}"),
                 &patched_name,
                 &portal_id,
-                row.region,
             );
         }
 
@@ -286,29 +288,26 @@ async fn every_portal_reader_reports_a_domain_name_and_never_an_authority() {
     }
 }
 
-/// RULE's other half: the generated name is a host THIS service answers for — a client that
-/// resolves it and addresses this emulator by it is refused while the portal has nothing live
-/// and is served the portal's page once a publish has settled, with the port of the endpoint
-/// it reached or without one, because a name matches either way.
+/// RULE's other half: the address the portal publishes is one THIS service answers at — a
+/// client that dials it is refused while the portal has nothing live and is served the
+/// portal's page once a publish has settled.
 #[tokio::test]
-async fn the_generated_domain_name_is_a_host_this_service_answers_for() {
+async fn the_published_address_is_one_this_service_answers_at() {
     for row in rows() {
         let case = row.case;
         let emulator = emulator();
         let (portal_id, created) = portal_of_row(&emulator, &row).await;
         let published = published_name(case, "CreatePortal", &created);
 
-        // Nothing is published yet: the name is claimed by this service and answers the
+        // Nothing is published yet: the address is claimed by this service and answers the
         // refusal a site with nothing live earns, rather than a routing failure.
-        for addressed in [published.clone(), format!("{published}:9297")] {
-            let page = fetch(&emulator, &addressed, "/").await;
-            refused(
-                &format!("{case}: {addressed} before the publish"),
-                &page,
-                FORBIDDEN,
-                FORBIDDEN_MESSAGE,
-            );
-        }
+        let page = fetch(&emulator, &published, "/").await;
+        refused(
+            &format!("{case}: {published} before the publish"),
+            &page,
+            FORBIDDEN,
+            FORBIDDEN_MESSAGE,
+        );
 
         let (status, body) = call_at_host(
             &emulator,
@@ -325,20 +324,8 @@ async fn the_generated_domain_name_is_a_host_this_service_answers_for() {
         );
 
         // A publish only STARTS the build, so the wait is for the CONDITION: the page being
-        // served at the name the service generated.
+        // served at the address the service published.
         let page = fetch_path_until_served(&emulator, case, &published, "/").await;
         served(case, &page, &portal_id);
-        let page = fetch_path_until_served(
-            &emulator,
-            &format!("{case}: addressed with a port"),
-            &format!("{published}:9297"),
-            "/",
-        )
-        .await;
-        served(
-            &format!("{case}: addressed with a port"),
-            &page,
-            &portal_id,
-        );
     }
 }

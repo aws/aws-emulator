@@ -719,15 +719,10 @@ async fn a_portal_announces_a_preview_url_its_creator_can_fetch() {
             .get("endpointConfiguration")
             .cloned()
             .unwrap_or(Value::Null);
-        // The name the portal publishes is one this emulator answers for, whichever
+        // The address the portal publishes is one this emulator answers at, whichever
         // endpoint this create was addressed at.
         let announced = as_str(&endpoint, "portalDefaultDomainName");
-        crate::portal_lifecycle::assert_published_domain_name(
-            case,
-            &announced,
-            &portal_id,
-            REGION,
-        );
+        crate::portal_lifecycle::assert_published_domain_name(case, &announced, &portal_id);
 
         // It is the name that SERVES the portal: a client that asks this emulator for what
         // it was announced reaches this portal's page once a publish has settled.

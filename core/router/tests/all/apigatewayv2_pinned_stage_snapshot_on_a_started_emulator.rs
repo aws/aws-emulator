@@ -237,8 +237,8 @@ fn grant(emulator: &Started, name: &str, api_id: &str) {
 struct Addressing {
     case: &'static str,
     /// The authority dialled — for the address the api itself published, the loopback interface
-    /// that address's name resolves to on the port it names, which is a listener of this
-    /// emulator's own and not the address the harness knows it by.
+    /// that address names on the port it carries, which is a listener of this emulator's own
+    /// and not the address the harness knows it by.
     dialled: String,
     host: String,
     base_path: String,
