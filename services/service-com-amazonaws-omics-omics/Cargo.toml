@@ -40,6 +40,9 @@ flate2 = "1"
 noodles-fastq = "0.24"
 
 [dev-dependencies]
+# `automod::dir!`: declares every `tests/all/<suite>.rs` as a module of the single
+# integration-test target, so a new suite needs no declaration of its own.
+automod = { workspace = true }
 # Percent-encoding for the `@httpLabel` and `@httpQuery` values this crate's tagging
 # suite puts in a request path, so no test hand-rolls RFC 3986 escaping.
 percent-encoding = "2.3"

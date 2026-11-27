@@ -1,0 +1,40 @@
+{
+  "smithy": "2.0",
+  "shapes": {
+    "com.amazonaws.omics#FileInformation": {
+      "type": "structure",
+      "members": {
+        "totalParts": {
+          "target": "smithy.api#Integer",
+          "traits": {
+            "smithy.api#range": { "min": 1, "max": 10000 }
+          }
+        },
+        "partSize": {
+          "target": "smithy.api#Long",
+          "traits": {
+            "smithy.api#range": { "min": 1, "max": 5368709120 }
+          }
+        },
+        "contentLength": {
+          "target": "smithy.api#Long",
+          "traits": {
+            "smithy.api#range": { "min": 1, "max": 5497558138880 }
+          }
+        },
+        "s3Access": { "target": "com.amazonaws.omics#ReadSetS3Access" },
+        "md5": { "target": "com.amazonaws.omics#Md5" }
+      }
+    },
+    "com.amazonaws.omics#ReadSetS3Access": {
+      "type": "structure"
+    },
+    "com.amazonaws.omics#Md5": {
+      "type": "string",
+      "traits": {
+        "smithy.api#length": { "min": 1, "max": 255 },
+        "smithy.api#pattern": "^[\\p{L}||\\p{N}]+$"
+      }
+    }
+  }
+}

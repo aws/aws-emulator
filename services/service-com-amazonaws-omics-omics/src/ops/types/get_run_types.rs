@@ -64,6 +64,9 @@ pub struct GetRunOutput {
     pub vpc_config: Option<VpcConfigResponse>,
     pub engine_settings: Option<::aws_smithy_types::Document>,
     pub session_policy: Option<String>,
+    pub output_uri_prefix_mode: Option<String>,
+    pub requester_pays_enabled: Option<bool>,
+    pub parameters_uri: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.omics#RunLogLocation")]

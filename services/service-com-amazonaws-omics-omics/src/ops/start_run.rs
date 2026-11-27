@@ -106,10 +106,18 @@
 //!   ^[\p{L}||\p{M}||\p{Z}||\p{S}||\p{N}||\p{P}]+$) **required** — An output S3 URI for the
 //!   run. The S3 bucket must be in the same region as the workflow. The role ARN must have
 //!   permission to write to this S3 bucket.
+//! * `outputUriPrefixMode` (RunOutputUriPrefixMode, one of: SERVICE_DEFINED |
+//!   NONE_WITH_OVERWRITE) — You can control the path prefixes that the service adds beneath
+//!   outputUri. If you don't specify a value, the service uses SERVICE_DEFINED, which adds a
+//!   run-specific prefix.
 //! * `parameters` (RunParameters) — Parameters for the run. The run needs all required
 //!   parameters and can include optional parameters. The run cannot include any parameters
 //!   that are not defined in the parameter template. To retrieve parameters from the run, use
 //!   the GetRun API operation.
+//! * `parametersUri` (RunParametersUri, len 1..1093, pattern
+//!   ^s3://[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]/.+$) — The S3 URI of a JSON file that contains
+//!   the run parameters. Use this field instead of parameters when your parameters are too
+//!   large for the request. Specify either parameters or parametersUri, not both. …
 //! * `priority` (Integer) — Use the run priority (highest: 1) to establish the order of runs
 //!   in a run group when you start a run. If multiple runs share the same priority, the run
 //!   that was initiated first will have the higher priority. Runs that do not belong to a run
@@ -119,6 +127,9 @@
 //! * `requestId` (RunRequestId, len 1..128, pattern
 //!   ^[\p{L}||\p{M}||\p{Z}||\p{S}||\p{N}||\p{P}]+$, @idempotencyToken) **required** — An
 //!   idempotency token used to dedupe retry requests so that duplicate runs are not created.
+//! * `requesterPaysEnabled` (Boolean) — Specifies whether the workflow run that this request
+//!   starts can read inputs from Amazon S3 buckets that use Requester Pays. Your account pays
+//!   the request and data transfer charges for those reads. The default is false.
 //! * `retentionMode` (RunRetentionMode, len 1..64, one of: REMOVE | RETAIN) — The retention
 //!   mode for the run. The default value is RETAIN. Amazon Web Services HealthOmics stores a
 //!   fixed number of runs that are available to the console and API. In the default mode
@@ -309,6 +320,26 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             return Err(
                 StartRunErrorModeled::ValidationException(ValidationException { message: why })
                     .into(),
+            );
+        }
+
+        // `parametersUri`'s own documentation: "Use this field instead of `parameters`
+        // when your parameters are too large for the request. Specify either
+        // `parameters` or `parametersUri`, not both." A request that sets both names two
+        // parameter sources for one run, so it is refused rather than one of them being
+        // silently dropped.
+        if input.parameters.is_some() && input.parameters_uri.is_some() {
+            crate::state::audit(
+                Self::NAME,
+                ctx,
+                crate::state::AuditOutcome::ValidationRefused,
+                None,
+            );
+            return Err(
+                StartRunErrorModeled::ValidationException(ValidationException {
+                    message: crate::state::RUN_PARAMETERS_AND_URI_MESSAGE.to_string(),
+                })
+                .into(),
             );
         }
 
@@ -546,12 +577,25 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // The check is on the RESOLVED document — this request's, or the one inherited
         // from the run it duplicates — so a duplicate pointed at another workflow cannot
         // carry parameters that workflow does not define either.
-        let parameters = input
-            .parameters
-            .clone()
-            .or_else(|| source.and_then(|run| run.parameters.clone()));
+        //
+        // `parameters` and `parametersUri` are the same input in two forms and a request
+        // may set only one of them (refused above), so a run inherits the form the
+        // request left open and never ends up carrying both: naming either one replaces
+        // the other.
+        let (parameters, parameters_uri) = match (&input.parameters, &input.parameters_uri) {
+            (Some(parameters), _) => (Some(parameters.clone()), None),
+            (None, Some(parameters_uri)) => (None, Some(parameters_uri.clone())),
+            (None, None) => (
+                source.and_then(|run| run.parameters.clone()),
+                source.and_then(|run| run.parameters_uri.clone()),
+            ),
+        };
+        // A run whose parameters are in a file carries no document to check: the real
+        // service reads the file only after `StartRun` answers, and this emulator serves
+        // no object store to read it from, so nothing is claimed about its contents.
         let undefined_parameters =
             crate::state::undefined_parameters(&workflow.parameter_template, parameters.as_ref());
+
         if let Some(undefined) = undefined_parameters {
             crate::state::audit(
                 Self::NAME,
@@ -619,7 +663,18 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         let (key, id) = store.next_run_id();
         let arn = crate::state::run_arn(&region, &id);
-        let run_output_uri = crate::state::run_output_uri(&input.output_uri, &id);
+        // `outputUriPrefixMode`'s own documentation: "If you don't specify a value, the
+        // service uses SERVICE_DEFINED, which adds a run-specific prefix." Same
+        // precedence as every other inherited member: this request, then the run it
+        // duplicates, then the value the member's own documentation names. The resolved
+        // mode is what decides the run's destination, so it is stored beside it.
+        let output_uri_prefix_mode = input
+            .output_uri_prefix_mode
+            .clone()
+            .or_else(|| source.map(|run| run.output_uri_prefix_mode.clone()))
+            .unwrap_or_else(|| crate::state::DEFAULT_RUN_OUTPUT_URI_PREFIX_MODE.to_string());
+        let run_output_uri =
+            crate::state::run_output_uri(&input.output_uri, &id, &output_uri_prefix_mode);
         let run = crate::state::Run {
             id: id.clone(),
             arn: arn.clone(),
@@ -667,6 +722,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 .or_else(|| cache.as_ref().map(|cache| cache.cache_behavior.clone())),
             priority: input.priority.or_else(|| source.and_then(|run| run.priority)),
             parameters,
+            parameters_uri,
             engine_settings: input
                 .engine_settings
                 .clone()
@@ -675,6 +731,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             storage_type,
             output_uri: input.output_uri.clone(),
             run_output_uri: run_output_uri.clone(),
+            output_uri_prefix_mode,
+            // `requesterPaysEnabled`'s own documentation: "The default is false."
+            requester_pays_enabled: input
+                .requester_pays_enabled
+                .or_else(|| source.map(|run| run.requester_pays_enabled))
+                .unwrap_or(crate::state::DEFAULT_RUN_REQUESTER_PAYS_ENABLED),
             log_level: input
                 .log_level
                 .clone()

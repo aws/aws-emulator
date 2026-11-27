@@ -38,6 +38,9 @@ pub struct StartRunInput {
     pub configuration_name: Option<String>,
     pub session_policy: Option<String>,
     pub engine_settings: Option<::aws_smithy_types::Document>,
+    pub output_uri_prefix_mode: Option<String>,
+    pub requester_pays_enabled: Option<bool>,
+    pub parameters_uri: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.omics#StartRunResponse")]

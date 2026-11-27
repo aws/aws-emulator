@@ -197,6 +197,7 @@ pub struct DefaultRunSetting {
     pub session_policy: Option<String>,
     pub engine_settings: Option<::aws_smithy_types::Document>,
     pub scratch_storage_mode: Option<String>,
+    pub requester_pays_enabled: Option<bool>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.omics#ConfigurationDetails")]
@@ -439,6 +440,10 @@ pub const RUN_EXPORT_VALUES: &[&str] = &["DEFINITION"];
 
 /// The values `RunLogLevel` accepts on the wire.
 pub const RUN_LOG_LEVEL_VALUES: &[&str] = &["ALL", "ERROR", "FATAL", "OFF"];
+
+
+/// The values `RunOutputUriPrefixMode` accepts on the wire.
+pub const RUN_OUTPUT_URI_PREFIX_MODE_VALUES: &[&str] = &["NONE_WITH_OVERWRITE", "SERVICE_DEFINED"];
 
 
 /// The values `RunRetentionMode` accepts on the wire.

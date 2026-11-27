@@ -400,6 +400,35 @@ pub const DEFAULT_RUN_WORKFLOW_TYPE: &str = WORKFLOW_TYPE_PRIVATE;
 /// From that member's own documentation: "The default value is `RETAIN`."
 pub const DEFAULT_RUN_RETENTION_MODE: &str = "RETAIN";
 
+/// The modelled `RunOutputUriPrefixMode` value that adds no prefix beneath `outputUri`.
+///
+/// Source: `smithy_query(query="shape",shape="RunOutputUriPrefixMode")` ->
+/// SERVICE_DEFINED | NONE_WITH_OVERWRITE. That value's own documentation: "Adds no
+/// prefix and overwrites existing objects at the run's output keys".
+pub const OUTPUT_URI_PREFIX_MODE_NONE_WITH_OVERWRITE: &str = "NONE_WITH_OVERWRITE";
+
+/// `RunOutputUriPrefixMode` applied when `StartRun` omits `outputUriPrefixMode`.
+///
+/// From that member's own documentation: "If you don't specify a value, the service uses
+/// `SERVICE_DEFINED`, which adds a run-specific prefix." `GetRun`'s own member says the
+/// same from the reporting side, so a run that named no mode still reports this one.
+pub const DEFAULT_RUN_OUTPUT_URI_PREFIX_MODE: &str = "SERVICE_DEFINED";
+
+/// Whether a run may read inputs from Requester Pays buckets when `StartRun` omits
+/// `requesterPaysEnabled`.
+///
+/// From that member's own documentation: "The default is `false`."
+pub const DEFAULT_RUN_REQUESTER_PAYS_ENABLED: bool = false;
+
+/// Why `StartRun` refuses a request that carries both an inline parameters document and
+/// a parameters file URI.
+///
+/// Fixed text: the `parametersUri` member's own documentation states the rule —
+/// "Specify either `parameters` or `parametersUri`, not both." — and the refusal names
+/// neither value, because the rule is about which members the request set.
+pub const RUN_PARAMETERS_AND_URI_MESSAGE: &str =
+    "Specify either parameters or parametersUri, not both.";
+
 /// `ShareStatus` a share carries from the moment `CreateShare` answers.
 ///
 /// From the modelled `ShareStatus` enum's documentation for this value: "The share has
@@ -1208,11 +1237,22 @@ pub struct Run {
     pub cache_behavior: Option<String>,
     pub priority: Option<i32>,
     pub parameters: Option<::aws_smithy_types::Document>,
+    /// The S3 URI of the file the run's parameters are in, when `StartRun` named one
+    /// instead of an inline `parameters` document. The two are mutually exclusive, so a
+    /// run carries at most one of this and `parameters`.
+    pub parameters_uri: Option<String>,
     pub engine_settings: Option<::aws_smithy_types::Document>,
     pub storage_capacity: Option<i32>,
     pub storage_type: String,
     pub output_uri: String,
     pub run_output_uri: String,
+    /// Which prefixes the service adds beneath [`Run::output_uri`], resolved at
+    /// `StartRun` and reported unchanged afterwards: it is what
+    /// [`Run::run_output_uri`] was derived under.
+    pub output_uri_prefix_mode: String,
+    /// Whether this run may read inputs from Requester Pays buckets, as `StartRun` set
+    /// it.
+    pub requester_pays_enabled: bool,
     pub log_level: Option<String>,
     pub retention_mode: String,
     pub accelerators: Option<String>,
@@ -2142,11 +2182,19 @@ pub fn read_set_arn(region: &str, sequence_store_id: &str, read_set_id: &str) ->
     )
 }
 
-/// Where this run's outputs land: the caller's `outputUri` with the run's own id
-/// appended, so two runs writing to one `outputUri` do not collide.
+/// Where this run's outputs land: the caller's `outputUri` under the prefix the run's
+/// `outputUriPrefixMode` asks the service to add.
+///
+/// `SERVICE_DEFINED` — the mode a run that named none resolves to — "adds a run-specific
+/// prefix", so the run's own id is appended and two runs writing to one `outputUri` do
+/// not collide. `NONE_WITH_OVERWRITE` "adds no prefix and overwrites existing objects at
+/// the run's output keys", so the destination is the `outputUri` the request submitted.
 ///
 /// Derived from the request and the minted id — nothing here is invented per run.
-pub fn run_output_uri(output_uri: &str, id: &str) -> String {
+pub fn run_output_uri(output_uri: &str, id: &str, output_uri_prefix_mode: &str) -> String {
+    if output_uri_prefix_mode == OUTPUT_URI_PREFIX_MODE_NONE_WITH_OVERWRITE {
+        return output_uri.to_string();
+    }
     format!("{}/{id}", output_uri.trim_end_matches('/'))
 }
 

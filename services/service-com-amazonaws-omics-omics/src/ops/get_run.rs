@@ -92,8 +92,18 @@
 //!   networking behavior. If absent, this will default to RESTRICTED.
 //! * `outputUri` (RunOutputUri, len 1..750, pattern
 //!   ^[\p{L}||\p{M}||\p{Z}||\p{S}||\p{N}||\p{P}]+$) — The run's output URI.
+//! * `outputUriPrefixMode` (RunOutputUriPrefixMode, one of: SERVICE_DEFINED |
+//!   NONE_WITH_OVERWRITE) — The service returns the value that the StartRun request
+//!   specified for outputUriPrefixMode. The service returns SERVICE_DEFINED if the request
+//!   did not specify a value.
 //! * `parameters` (RunParameters) — The run's parameters.
+//! * `parametersUri` (RunParametersUriOrPresignedUrl, len 1..8192) — For a run that you
+//!   started with parametersUri, the service returns the location of the run parameters in
+//!   this field instead of parameters. …
 //! * `priority` (Integer) — The run's priority.
+//! * `requesterPaysEnabled` (Boolean) — Specifies whether this workflow run can read inputs
+//!   from Amazon S3 buckets that use Requester Pays, as set in the StartRun or StartRunBatch
+//!   request.
 //! * `resourceDigests` (RunResourceDigests) — The run's resource digests.
 //! * `retentionMode` (RunRetentionMode, len 1..64, one of: REMOVE | RETAIN) — The run's
 //!   retention mode.
@@ -302,8 +312,27 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             definition: run.definition.clone(),
             digest: run.digest.clone(),
             parameters: run.parameters.clone(),
+            // "For a run that you started with `parametersUri`, the service returns the
+            // location of the run parameters in this field instead of `parameters`". The
+            // two forms are mutually exclusive, so at most one of them is reported. The
+            // value is "the S3 URI that you submitted, if Amazon Web Services HealthOmics
+            // has not stored a copy of the file yet": this emulator serves no object store
+            // to hold a copy of it in, so there is no presigned URL to a copy to report
+            // and the URI the run was started with is what the run carries.
+            parameters_uri: run.parameters_uri.clone(),
+
             storage_capacity: run.storage_capacity,
             output_uri: Some(run.output_uri.clone()),
+            // "The service returns the value that the `StartRun` request specified for
+            // `outputUriPrefixMode`. The service returns `SERVICE_DEFINED` if the request
+            // did not specify a value" — `StartRun` resolves the mode to that default, so
+            // the stored mode is reported for every run.
+            output_uri_prefix_mode: Some(run.output_uri_prefix_mode.clone()),
+            // "Specifies whether this workflow run can read inputs from Amazon S3 buckets
+            // that use Requester Pays, as set in the `StartRun` ... request", which
+            // defaults it to `false`, so every run reports the flag it was started with.
+            requester_pays_enabled: Some(run.requester_pays_enabled),
+
             log_level: run.log_level.clone(),
             // `resourceDigests` and `logLocation` describe the container images the run
             // pulled and the CloudWatch streams it wrote. Nothing executed and nothing
