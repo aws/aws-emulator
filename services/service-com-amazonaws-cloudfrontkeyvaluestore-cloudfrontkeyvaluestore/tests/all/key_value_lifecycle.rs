@@ -1235,3 +1235,170 @@ async fn a_missing_if_match_is_refused_for_an_unescaped_arn_label() {
     }
 }
 
+/// A key value store is addressed by its ARN alone: every partition and account this
+/// service publishes an endpoint for names a store of its own, and the metadata members
+/// `DescribeKeyValueStore` reports come from that store's record.
+///
+/// The partition and the account are part of the IDENTIFIER, not of the route — this
+/// API's endpoint resolution resolves one account-based endpoint per ARN
+/// (`https://<account-id>.cloudfront-kvs.global.api.aws` for a store in `aws`, and
+/// `https://<account-id>.cloudfront-kvs.global.api.amazonwebservices.eu` for one in
+/// `aws-eusc`), and the store ARN then travels as the `KvsARN` label of every route. So
+/// the rows below span that class: both partitions whose ARNs resolve an endpoint, two
+/// accounts, and a distinct store id each. The partition and account the data-plane
+/// reproduction names are one row of it.
+#[tokio::test]
+async fn a_store_is_served_for_every_partition_and_account_the_model_addresses() {
+    // partition, account id, store id. The partitions are the ones this service's
+    // endpoint resolution resolves an endpoint for
+    // (`smithy.rules#endpointRuleSet` on
+    // `com.amazonaws.cloudfrontkeyvaluestore#CloudFrontKeyValueStore`); the accounts and
+    // ids differ row by row so no two rows can name the same store.
+    let rows = [
+        (
+            "aws",
+            "123456789012",
+            "11111111-2222-3333-4444-555555555555",
+        ),
+        (
+            "aws",
+            "000000000000",
+            "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+        ),
+        (
+            "aws-eusc",
+            "123456789012",
+            "0f0f0f0f-1e1e-2d2d-3c3c-4b4b4b4b4b4b",
+        ),
+        (
+            "aws-eusc",
+            "210987654321",
+            "99999999-8888-7777-6666-555555555555",
+        ),
+    ];
+
+    let kvs = Kvs::new();
+    for (partition, account, id) in rows {
+        let case = format!("{partition}/{account}");
+        let store = format!("arn:{partition}:cloudfront::{account}:key-value-store/{id}");
+
+        let empty = kvs.describe(&store).await;
+        assert_eq!(
+            empty.status, 200,
+            "case {case:?}: expected HTTP 200 from DescribeKeyValueStore, got {} {}",
+            empty.status, empty.raw
+        );
+        assert_eq!(
+            empty.str_at("KvsARN"),
+            store,
+            "case {case:?}: expected the addressed ARN back, got {}",
+            empty.raw
+        );
+        assert_eq!(
+            empty.i64_at("ItemCount"),
+            0,
+            "case {case:?}: expected an empty store, got {}",
+            empty.raw
+        );
+        assert_eq!(
+            empty.i64_at("TotalSizeInBytes"),
+            0,
+            "case {case:?}: expected an empty store, got {}",
+            empty.raw
+        );
+        // `Status` is the store's current lifecycle status and `LastModified` is when its
+        // pairs last changed, so both are reported for a store that serves; `FailureReason`
+        // is the reason a store was NOT created, so a store that serves carries none.
+        assert_eq!(
+            empty.str_at("Status"),
+            "READY",
+            "case {case:?}: expected a serving store's status, got {}",
+            empty.raw
+        );
+        let created = empty.body["Created"].as_f64().unwrap_or_else(|| {
+            panic!(
+                "case {case:?}: expected Created to be a timestamp, got {}",
+                empty.raw
+            )
+        });
+        let last_modified = empty.body["LastModified"].as_f64().unwrap_or_else(|| {
+            panic!(
+                "case {case:?}: expected LastModified to be a timestamp, got {}",
+                empty.raw
+            )
+        });
+        assert!(
+            last_modified >= created,
+            "case {case:?}: expected LastModified at or after Created, got {last_modified} and {created}"
+        );
+        assert!(
+            empty.body.get("FailureReason").is_none(),
+            "case {case:?}: expected no FailureReason on a serving store, got {}",
+            empty.raw
+        );
+
+        // The ARN that reads the store is the one that writes it: the value this row puts
+        // is the value this row reads back.
+        let version = empty.etag();
+        let put = kvs.put(&store, "color", partition, &version).await;
+        assert_eq!(
+            put.status, 200,
+            "case {case:?}: expected HTTP 200 from PutKey, got {} {}",
+            put.status, put.raw
+        );
+        assert_ne!(
+            put.etag(),
+            version,
+            "case {case:?}: expected the version to advance past {version}"
+        );
+
+        let got = kvs.get(&store, "color").await;
+        assert_eq!(
+            got.status, 200,
+            "case {case:?}: expected HTTP 200 from GetKey, got {} {}",
+            got.status, got.raw
+        );
+        assert_eq!(
+            got.str_at("Value"),
+            partition,
+            "case {case:?}: expected the value written through this ARN, got {}",
+            got.raw
+        );
+        assert_eq!(
+            got.i64_at("ItemCount"),
+            1,
+            "case {case:?}: expected the one pair this ARN wrote, got {}",
+            got.raw
+        );
+    }
+
+    // Every row is its own record: after all four writes each store still holds exactly
+    // the one pair IT wrote, so no two partitions or accounts share a store.
+    for (partition, account, id) in rows {
+        let case = format!("{partition}/{account}");
+        let store = format!("arn:{partition}:cloudfront::{account}:key-value-store/{id}");
+        let listed = kvs.list(&store, Some(50), None).await;
+        assert_eq!(
+            listed.status, 200,
+            "case {case:?}: expected HTTP 200 from ListKeys, got {} {}",
+            listed.status, listed.raw
+        );
+        let items = listed.body["Items"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        assert_eq!(
+            items.len(),
+            1,
+            "case {case:?}: expected exactly the pair this ARN wrote, got {}",
+            listed.raw
+        );
+        assert_eq!(
+            items[0]["Value"].as_str(),
+            Some(partition),
+            "case {case:?}: expected the value this ARN wrote, got {}",
+            listed.raw
+        );
+    }
+}
+
