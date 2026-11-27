@@ -323,6 +323,38 @@ const REVEAL_SECRETS_WITH_A_MOCK: &str =
 /// operation needs a role to make.
 const TASK_STATE_TYPE: &str = "Task";
 
+/// The state type whose own work is a set of state machines run concurrently.
+const PARALLEL_STATE_TYPE: &str = "Parallel";
+
+/// The member a `Parallel` state declares the state machines it runs in.
+const PARALLEL_BRANCHES_MEMBER: &str = "Branches";
+
+/// What this operation answers a mocked result standing in for a `Parallel` state's
+/// branches that does not carry one item per branch the state declares.
+///
+/// RECORDED text, and a FIXED sentence: neither the number of items the mock carried
+/// nor the number of branches the state declares is interpolated into it, so a client
+/// matching on the text reads the same sentence whichever mock it sent.
+const MOCK_RESULT_PARALLEL_BRANCH_ARITY: &str =
+    "Mocked result must contain the same number of items as number of Parallel branches.";
+
+/// Whether the mocked `result` standing in for a `Parallel` state's branches carries
+/// another number of items than that state declares branches.
+///
+/// A `Parallel` state's own result is a JSON array holding one element per branch it
+/// runs, in branch order, so a mock standing in for that invocation has to be an array
+/// of exactly that length: a document that is no array carries no branch output at all,
+/// and an array of another length stands for a fan-out this state could not have run.
+/// Only the state's own branch list decides it, so the rule holds for every `Parallel`
+/// state under test whatever its branches or the mocked items are.
+fn mocked_branch_arity_violated(state: &serde_json::Map<String, Value>, result: &Value) -> bool {
+    let branches = state
+        .get(PARALLEL_BRANCHES_MEMBER)
+        .and_then(Value::as_array)
+        .map_or(0, Vec::len);
+    result.as_array().map_or(0, Vec::len) != branches
+}
+
 /// What this operation answers a `Task` state whose integration call it is to MAKE,
 /// tested with no `roleArn`.
 ///
@@ -723,6 +755,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 // own result schema before the state is tested against it: a result
                 // AWS refuses is no result to compute an answer from.
                 if let asl::Mock::Result(result) = &read {
+                    // A `Parallel` state's invocation is its branches, and what it
+                    // produces is one element per branch: the mock stands in for THAT
+                    // fan-out, so a result carrying another number of items is refused
+                    // before the state is tested against it, whatever the items are.
+                    if state_type == PARALLEL_STATE_TYPE
+                        && mocked_branch_arity_violated(state, result)
+                    {
+                        return Err(refuse(MOCK_RESULT_PARALLEL_BRANCH_ARITY.to_string()));
+                    }
                     if let Some(refusal) = mock_result_refusal(state, mock, result) {
                         return Err(refuse(refusal));
                     }

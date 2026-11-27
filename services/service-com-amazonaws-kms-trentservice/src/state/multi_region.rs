@@ -96,8 +96,13 @@ impl MultiRegionTopology {
     /// between — the old primary key and the new one, which are the keys that carry
     /// the transient [`KEY_STATE_UPDATING`] state while it is in flight.
     pub fn is_moving_through(&self, region: &str) -> bool {
+        self.is_moving_through_at(region, SystemTime::now())
+    }
+
+    /// The same, as of ONE instant ([`crate::state::Cmk::metadata_at`]).
+    pub fn is_moving_through_at(&self, region: &str, now: SystemTime) -> bool {
         self.promotion.as_ref().is_some_and(|promotion| {
-            SystemTime::now() < promotion.due
+            now < promotion.due
                 && (promotion.region == region || self.settled_primary_region == region)
         })
     }
@@ -106,17 +111,22 @@ impl MultiRegionTopology {
     /// already made due promoted, and otherwise the one the designation rests in. A
     /// move still in flight has not happened yet, so it moves nothing a reader sees.
     pub fn primary_region(&self) -> &str {
-        match self.due_promotion() {
+        self.primary_region_at(SystemTime::now())
+    }
+
+    /// The same, as of ONE instant ([`crate::state::Cmk::metadata_at`]).
+    pub fn primary_region_at(&self, now: SystemTime) -> &str {
+        match self.due_promotion_at(now) {
             Some(promoted) => promoted,
             None => &self.settled_primary_region,
         }
     }
 
-    /// The Regions holding a replica key of this set NOW — every Region of the set
-    /// but the one [`Self::primary_region`] reports, in the sorted order the backing
-    /// set keeps them in.
-    fn replica_regions(&self) -> BTreeSet<&str> {
-        match self.due_promotion() {
+    /// The Regions holding a replica key of this set as of `now` — every Region of the
+    /// set but the one [`Self::primary_region_at`] reports, in the sorted order the
+    /// backing set keeps them in.
+    fn replica_regions_at(&self, now: SystemTime) -> BTreeSet<&str> {
+        match self.due_promotion_at(now) {
             Some(promoted) => self
                 .settled_replica_regions
                 .iter()
@@ -135,9 +145,14 @@ impl MultiRegionTopology {
     /// The Region a move the clock has ALREADY made due promoted, which is the
     /// designation this topology has not written down yet.
     fn due_promotion(&self) -> Option<&str> {
+        self.due_promotion_at(SystemTime::now())
+    }
+
+    /// The same, as of ONE instant ([`crate::state::Cmk::metadata_at`]).
+    fn due_promotion_at(&self, now: SystemTime) -> Option<&str> {
         self.promotion
             .as_ref()
-            .filter(|promotion| SystemTime::now() >= promotion.due)
+            .filter(|promotion| now >= promotion.due)
             .map(|promotion| promotion.region.as_str())
     }
 
@@ -160,7 +175,17 @@ impl MultiRegionTopology {
     /// own, and `ReplicaKeys` names every Region holding a replica, each by the key
     /// ARN that Region's endpoint serves it under.
     pub fn configuration(&self, key_id: &str, region: &str) -> MultiRegionConfiguration {
-        let primary_region = self.primary_region();
+        self.configuration_at(key_id, region, SystemTime::now())
+    }
+
+    /// The same, as of ONE instant ([`crate::state::Cmk::metadata_at`]).
+    pub fn configuration_at(
+        &self,
+        key_id: &str,
+        region: &str,
+        now: SystemTime,
+    ) -> MultiRegionConfiguration {
+        let primary_region = self.primary_region_at(now);
         let key_type = if primary_region == region {
             MULTI_REGION_KEY_TYPE_PRIMARY
         } else {
@@ -170,7 +195,7 @@ impl MultiRegionTopology {
             multi_region_key_type: Some(key_type.to_string()),
             primary_key: Some(multi_region_member(key_id, primary_region)),
             replica_keys: Some(
-                self.replica_regions()
+                self.replica_regions_at(now)
                     .into_iter()
                     .map(|replica| multi_region_member(key_id, replica))
                     .collect(),

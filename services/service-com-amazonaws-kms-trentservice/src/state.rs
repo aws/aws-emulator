@@ -3142,6 +3142,20 @@ impl Cmk {
     /// This key's `KeyMetadata`, computed from the record — the one place the
     /// metadata is built, so `CreateKey` and `DescribeKey` cannot disagree.
     pub fn metadata(&self) -> KeyMetadata {
+        self.metadata_at(SystemTime::now())
+    }
+
+    /// The same, as of ONE instant.
+    ///
+    /// Every transient state of a key is derived from the clock rather than written
+    /// when it falls due, and SEVERAL members of this one document derive from it: the
+    /// key state and the `Enabled` it follows, the primary-key designation of the key's
+    /// multi-Region set, and whether the clock has taken the key's imported material
+    /// away. Reading the clock once per member would let one document straddle the
+    /// instant a transient state ends — a key still reported `Updating` beside the
+    /// designation that move had not yet carried, which is a pair no caller of the real
+    /// service observes — so the whole document is projected as of one instant.
+    pub fn metadata_at(&self, now: SystemTime) -> KeyMetadata {
         KeyMetadata {
             aws_account_id: Some(self.aws_account_id.clone()),
             key_id: self.key_id.clone(),
@@ -3153,10 +3167,10 @@ impl Cmk {
             // it is read from the state a READER reports: a replica still being
             // created, and a key whose imported material the clock has taken away,
             // are not enabled.
-            enabled: self.reported_key_state() == KEY_STATE_ENABLED,
+            enabled: self.reported_key_state_at(now) == KEY_STATE_ENABLED,
             description: Some(self.description.clone()),
             key_usage: Some(self.key_usage.clone()),
-            key_state: Some(self.reported_key_state().to_string()),
+            key_state: Some(self.reported_key_state_at(now).to_string()),
             deletion_date: self.deletion_date.map(date_time),
             // Only a key with imported key material expires, and only when the caller
             // asked for material that does: both members are read from what the caller
@@ -3200,13 +3214,13 @@ impl Cmk {
             multi_region_configuration: self
                 .multi_region_topology
                 .as_ref()
-                .map(|topology| topology.configuration(&self.key_id, &self.region)),
+                .map(|topology| topology.configuration_at(&self.key_id, &self.region, now)),
             pending_deletion_window_in_days: None,
             mac_algorithms: self.algorithms_under(KEY_USAGE_GENERATE_VERIFY_MAC),
             xks_key_configuration: None,
             current_key_material_id: self
                 .reported_key_material_id()
-                .filter(|_| !self.key_material_expired()),
+                .filter(|_| !self.key_material_expired_at(now)),
         }
     }
 
@@ -3250,10 +3264,15 @@ impl Cmk {
     /// a deletion the CLOCK makes due, so it is read from the instant the caller set
     /// rather than written by whoever happens to look.
     pub fn key_material_expired(&self) -> bool {
+        self.key_material_expired_at(SystemTime::now())
+    }
+
+    /// The same, as of ONE instant ([`Self::metadata_at`]).
+    pub fn key_material_expired_at(&self, now: SystemTime) -> bool {
         self.imported_material
             .as_ref()
             .and_then(|imported| imported.valid_to)
-            .is_some_and(|valid_to| SystemTime::now() >= valid_to)
+            .is_some_and(|valid_to| now >= valid_to)
     }
 
     /// The `KeyState` a READER reports for this key, which is the one it carries unless
@@ -3263,10 +3282,15 @@ impl Cmk {
     /// and a key its set is still moving the primary-key designation through is
     /// `Updating` until that move is due ([`Self::is_updating_primary_region`]).
     pub fn reported_key_state(&self) -> &str {
-        if self.is_creating() {
+        self.reported_key_state_at(SystemTime::now())
+    }
+
+    /// The same, as of ONE instant ([`Self::metadata_at`]).
+    pub fn reported_key_state_at(&self, now: SystemTime) -> &str {
+        if self.is_creating_at(now) {
             return KEY_STATE_CREATING;
         }
-        if self.key_material_expired() {
+        if self.key_material_expired_at(now) {
             return KEY_STATE_PENDING_IMPORT;
         }
         // A key whose set is still moving its primary Region reports the transient
@@ -3275,7 +3299,7 @@ impl Cmk {
         // the transient state stands in for the ENABLED state it suspends. A key
         // awaiting deletion, awaiting key material or disabled goes on reporting what
         // it is: the move changes none of those, and each refuses what it refused.
-        if self.key_state == KEY_STATE_ENABLED && self.is_updating_primary_region() {
+        if self.key_state == KEY_STATE_ENABLED && self.is_updating_primary_region_at(now) {
             return KEY_STATE_UPDATING;
         }
         &self.key_state
@@ -3284,8 +3308,12 @@ impl Cmk {
     /// Whether this key is still in the transient [`KEY_STATE_CREATING`] state, which
     /// the clock ends by itself — see [`REPLICA_CREATING_SPAN`].
     pub fn is_creating(&self) -> bool {
-        self.creating_until
-            .is_some_and(|until| SystemTime::now() < until)
+        self.is_creating_at(SystemTime::now())
+    }
+
+    /// The same, as of ONE instant ([`Self::metadata_at`]).
+    pub fn is_creating_at(&self, now: SystemTime) -> bool {
+        self.creating_until.is_some_and(|until| now < until)
     }
 
     /// Whether the clock still owes this key's multi-Region key set the primary-Region
@@ -3298,9 +3326,14 @@ impl Cmk {
     /// the reported designation comes from, so the state and the designation can never
     /// disagree about whether the move is over.
     pub fn is_updating_primary_region(&self) -> bool {
+        self.is_updating_primary_region_at(SystemTime::now())
+    }
+
+    /// The same, as of ONE instant ([`Self::metadata_at`]).
+    pub fn is_updating_primary_region_at(&self, now: SystemTime) -> bool {
         self.multi_region_topology
             .as_ref()
-            .is_some_and(|topology| topology.is_moving_through(&self.region))
+            .is_some_and(|topology| topology.is_moving_through_at(&self.region, now))
     }
 
     /// Whether this key can be used in a cryptographic operation right now.

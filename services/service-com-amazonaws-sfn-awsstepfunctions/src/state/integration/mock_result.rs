@@ -20,11 +20,14 @@
 //! is what `NONE` means for every operation: no claim is made about a schema this
 //! emulator does not carry.
 //!
-//! Only the result of a REQUEST-RESPONSE integration call is that operation's own
-//! output. A `.sync` task reports the JOB it started, a `.waitForTaskToken` task
-//! reports what the task reply carried, a `Resource` that is a function's ARN reports
-//! that function's own payload and an HTTP Task reports the endpoint's response — so
-//! none of those is judged against an operation's output schema ([`schema_of`]).
+//! Which operation's output that is comes from what the task's result IS. A
+//! REQUEST-RESPONSE call answers with its own operation's output. A `.sync` task's
+//! result is the job's final REPORT, so the model it conforms to is the output of the
+//! operation that REPORTS the job ([`super::RunAJob::describe`]) rather than of the one
+//! that started it. A `.waitForTaskToken` task reports what the task reply carried, a
+//! `Resource` that is a function's ARN reports that function's own payload and an HTTP
+//! Task reports the endpoint's response — none of those is an operation's output
+//! document, so none is judged against one ([`schema_of`]).
 
 use super::*;
 
@@ -138,6 +141,38 @@ pub const RESULT_SCHEMAS: &[ResultSchema] = &[
         operation: "StartExecution",
         members: &[("ExecutionArn", SchemaType::String)],
     },
+    // The REPORT of a nested execution, which is what a `states:startExecution.sync`
+    // task's result is. `smithy_query(query="operation",operation="DescribeExecution")`
+    // on this service's own model: `executionArn`, `stateMachineArn`, `name`, `status`
+    // (an enum), `input`, `output`, `traceHeader`, `mapRunArn`, `error`, `cause`,
+    // `stateMachineVersionArn`, `stateMachineAliasArn` and `redriveStatusReason` are
+    // strings, `inputDetails` and `outputDetails` structures
+    // (`CloudWatchEventsExecutionDataDetails`), `redriveStatus` an enum, `redriveCount`
+    // an integer, and `startDate`, `stopDate` and `redriveDate` timestamps (left out
+    // above).
+    ResultSchema {
+        service: "states",
+        operation: "DescribeExecution",
+        members: &[
+            ("ExecutionArn", SchemaType::String),
+            ("StateMachineArn", SchemaType::String),
+            ("Name", SchemaType::String),
+            ("Status", SchemaType::String),
+            ("Input", SchemaType::String),
+            ("InputDetails", SchemaType::Structure),
+            ("Output", SchemaType::String),
+            ("OutputDetails", SchemaType::Structure),
+            ("TraceHeader", SchemaType::String),
+            ("MapRunArn", SchemaType::String),
+            ("Error", SchemaType::String),
+            ("Cause", SchemaType::String),
+            ("StateMachineVersionArn", SchemaType::String),
+            ("StateMachineAliasArn", SchemaType::String),
+            ("RedriveCount", SchemaType::Integer),
+            ("RedriveStatus", SchemaType::String),
+            ("RedriveStatusReason", SchemaType::String),
+        ],
+    },
     // `smithy_query(query="operation",operation="SendMessage",model_path="services/
     // service-com-amazonaws-sqs-amazonsqs/smithy-model/com-amazonaws-sqs-amazonsqs.json")`:
     // `SendMessageResult` is `MD5OfMessageBody`, `MD5OfMessageAttributes`,
@@ -203,6 +238,16 @@ pub const RESULT_SCHEMAS: &[ResultSchema] = &[
         operation: "StartQueryExecution",
         members: &[("QueryExecutionId", SchemaType::String)],
     },
+    // The REPORT of a query, which is what an `athena:startQueryExecution.sync` task's
+    // result is. `smithy_query(query="operation",operation="GetQueryExecution",
+    // model_path="services/service-com-amazonaws-athena-amazonathena/smithy-model/
+    // com-amazonaws-athena-amazonathena.json")`: `GetQueryExecutionOutput` is
+    // `QueryExecution` (a structure).
+    ResultSchema {
+        service: "athena",
+        operation: "GetQueryExecution",
+        members: &[("QueryExecution", SchemaType::Structure)],
+    },
     // `smithy_query(query="operation",operation="StartJobRun",model_path="services/
     // service-com-amazonaws-glue-awsglue/smithy-model/com-amazonaws-glue-awsglue.json")`:
     // `StartJobRunResponse` is `JobRunId` (IdString, a string).
@@ -210,6 +255,15 @@ pub const RESULT_SCHEMAS: &[ResultSchema] = &[
         service: "glue",
         operation: "StartJobRun",
         members: &[("JobRunId", SchemaType::String)],
+    },
+    // The REPORT of a job run, which is what a `glue:startJobRun.sync` task's result
+    // is. `smithy_query(query="operation",operation="GetJobRun",model_path="services/
+    // service-com-amazonaws-glue-awsglue/smithy-model/com-amazonaws-glue-awsglue.json")`:
+    // `GetJobRunResponse` is `JobRun` (a structure).
+    ResultSchema {
+        service: "glue",
+        operation: "GetJobRun",
+        members: &[("JobRun", SchemaType::Structure)],
     },
     // `smithy_query(query="operation",operation="StartBackupJob",model_path="services/
     // service-com-amazonaws-backup-cryocontrollerusermanager/smithy-model/
@@ -239,15 +293,22 @@ const DYNAMODB_WRITE_RESULT: &[(&str, SchemaType)] = &[
 /// is not the invoked operation's own output, or no schema is stated for that
 /// operation.
 pub fn schema_of(call: &Call) -> Option<&'static ResultSchema> {
-    // A job's final description, a task reply's payload, a function's own response and
-    // an endpoint's answer are each the result of something other than the call's
-    // operation, so none of them is that operation's output document.
-    if call.job.is_some() || call.callback || call.invokes.is_some() || call.endpoint.is_some() {
+    // A task reply's payload, a function's own response and an endpoint's answer are
+    // each the result of something no operation of the invoked model describes, so
+    // none of them is an operation's output document.
+    if call.callback || call.invokes.is_some() || call.endpoint.is_some() {
         return None;
     }
+    // A run-a-job task's result is the JOB's final report, which is the output of the
+    // operation that reports the job rather than of the one that started it — so that
+    // operation's schema is what such a result conforms to.
+    let operation = match call.job {
+        Some(job) => job.describe,
+        None => call.operation.as_str(),
+    };
     RESULT_SCHEMAS
         .iter()
-        .find(|schema| schema.service == call.api.namespace && schema.operation == call.operation)
+        .find(|schema| schema.service == call.api.namespace && schema.operation == operation)
 }
 
 /// The first member of `result` that is not of the type the schema of `call`'s
@@ -293,7 +354,7 @@ mod tests {
     fn a_mocked_result_is_judged_by_the_invoked_operations_output() {
         // (case, the `Resource`, the mocked result, the member and type a refusal
         // names, if any)
-        let rows: [Row; 9] = [
+        let rows: [Row; 14] = [
             (
                 "a blob member sent as an object",
                 "arn:aws:states:::lambda:invoke",
@@ -343,12 +404,47 @@ mod tests {
                 None,
             ),
             (
-                // The result of a run-a-job task is the job's own description, so the
-                // start call's output schema is not what it conforms to.
-                "a run-a-job task's mocked result",
+                // The result of a run-a-job task is the job's own REPORT, so the
+                // START call's output schema is not what it conforms to: the id that
+                // call answered is no member of the report.
+                "a run-a-job task's mocked result, by the start call's member",
                 "arn:aws:states:::glue:startJobRun.sync",
                 r#"{"JobRunId":7}"#,
                 None,
+            ),
+            (
+                // What it IS judged by: the output of the operation that reports the
+                // job, whose one member carries the run's own document.
+                "a run-a-job report member sent as a string",
+                "arn:aws:states:::glue:startJobRun.sync",
+                r#"{"JobRun":"SUCCEEDED"}"#,
+                Some(("JobRun", SchemaType::Structure)),
+            ),
+            (
+                "the same member sent as the object it is declared as",
+                "arn:aws:states:::glue:startJobRun.sync",
+                r#"{"JobRun":{"JobRunState":"SUCCEEDED"}}"#,
+                None,
+            ),
+            (
+                "a query report's member sent as a list",
+                "arn:aws:states:::athena:startQueryExecution.sync",
+                r#"{"QueryExecution":[]}"#,
+                Some(("QueryExecution", SchemaType::Structure)),
+            ),
+            (
+                "a nested execution's report member sent as an object",
+                "arn:aws:states:::states:startExecution.sync",
+                r#"{"ExecutionArn":"arn:aws:states:::execution:m:e","Status":{"of":"it"}}"#,
+                Some(("Status", SchemaType::String)),
+            ),
+            (
+                // The pattern's second revision reports the same operation's output,
+                // so the same schema judges its mocked result.
+                "the second revision of the same integration",
+                "arn:aws:states:::states:startExecution.sync:2",
+                r#"{"RedriveCount":"none"}"#,
+                Some(("RedriveCount", SchemaType::Integer)),
             ),
         ];
 

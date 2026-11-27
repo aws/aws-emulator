@@ -263,8 +263,10 @@ async fn test_state_names_the_required_member_the_supplied_state_does_not_carry(
             json!({ "definition": r#"{"Type":"Map","Iterator":{"StartAt":"P","States":{"P":{"Type":"Pass","End":true}}},"End":true}"#, "mock": { "result": "[]" } }),
         ),
         (
+            // One item per branch: a mocked result standing in for this state's one
+            // branch, so what the row shows is still the `Branches` member it carries.
             "a Parallel state carrying its Branches",
-            json!({ "definition": r#"{"Type":"Parallel","Branches":[{"StartAt":"P","States":{"P":{"Type":"Pass","End":true}}}],"End":true}"#, "mock": { "result": "[]" } }),
+            json!({ "definition": r#"{"Type":"Parallel","Branches":[{"StartAt":"P","States":{"P":{"Type":"Pass","End":true}}}],"End":true}"#, "mock": { "result": "[{}]" } }),
         ),
     ];
     for (case, body) in carried {
