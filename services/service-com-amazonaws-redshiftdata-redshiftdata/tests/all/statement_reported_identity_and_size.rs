@@ -13,8 +13,8 @@
 //!   database user that identity maps to, which every record of it reports; one
 //!   that names a database user runs as the user it named;
 //! * `ResultSize` is the size in bytes of the result a statement returned — the
-//!   text its column names and values carry — and 0 for a statement that finished
-//!   returning no result set, the -1 null marker being for a statement with no
+//!   bytes the warehouse sent back for its rows — and 0 for a statement that
+//!   finished returning none, the -1 null marker being for a statement with no
 //!   size to report at all;
 //! * `RedshiftQueryId` is the identifier the WAREHOUSE generated for the query,
 //!   the one its query log holds that query under, and the modelled default 0 for
@@ -153,15 +153,16 @@ struct SizeCase {
     label: &'static str,
     sql: &'static str,
     status: &'static str,
-    /// Counted by hand from the result's own text: every column name and every
-    /// value, plus one byte of separator between two adjacent cells.
+    /// Counted by hand from the rows the warehouse returned: per row its own
+    /// two-byte field count, and per value four bytes of length and the value's
+    /// text.
     expected: i64,
 }
 
 /// `ResultSize` is the size of the result the statement returned: 0 for a
-/// statement that finished returning none, the bytes of the result's text for one
-/// that returned rows, and the -1 null marker only for a statement that has no
-/// size to report at all.
+/// statement that finished returning none, the bytes the warehouse sent back for
+/// one that returned rows, and the -1 null marker only for a statement that has
+/// no size to report at all.
 #[tokio::test]
 async fn result_size_is_the_size_of_the_result_the_statement_returned() {
     let cases = [
@@ -179,35 +180,35 @@ async fn result_size_is_the_size_of_the_result_the_statement_returned() {
         },
         SizeCase {
             label: "one computed column of one row",
-            // `1` names the column as well as the value: 1 + 1 bytes of text,
-            // and one separator between the two cells.
+            // One row of one value: 2 bytes of row framing, 4 bytes of length
+            // and the one byte of `1`.
             sql: "SELECT 1",
             status: "FINISHED",
-            expected: 3,
+            expected: 7,
         },
         SizeCase {
             label: "three typed columns of two rows",
-            // Labels `id`, `label`, `amount` (2 + 5 + 6), then `1`, `bolt`,
-            // `2.50` (1 + 4 + 4) and `22`, `washer`, `10.75` (2 + 6 + 5): 35
-            // bytes of text in 9 cells, so 8 separators.
+            // `1`, `bolt`, `2.50` (1 + 4 + 4) and `22`, `washer`, `10.75`
+            // (2 + 6 + 5): 35 bytes of text in two rows of three values, so
+            // 2 * 2 bytes of row framing and 6 * 4 bytes of value lengths.
             sql: "SELECT id, label, amount FROM gear ORDER BY id",
             status: "FINISHED",
-            expected: 43,
+            expected: 50,
         },
         SizeCase {
             label: "a NULL, which carries no text at all",
-            // Labels `a` and `b` (1 + 1), values `x` and nothing (1 + 0): 3
-            // bytes of text in 4 cells, so 3 separators.
+            // One row of two values, `x` and nothing: 2 + 4 + 1 + 4 + 0.
             sql: "SELECT 'x' AS a, NULL AS b",
             status: "FINISHED",
-            expected: 6,
+            expected: 11,
         },
         SizeCase {
-            label: "an empty result set, which still names its column",
-            // The label `id` and no value at all: one cell, no separator.
+            label: "an empty result set, which returned no row at all",
+            // No row was returned, so no byte was: the column it names is
+            // metadata no row message carries.
             sql: "SELECT id FROM gear WHERE id < 0",
             status: "FINISHED",
-            expected: 2,
+            expected: 0,
         },
         SizeCase {
             label: "a statement the engine refused, which has no size to report",
@@ -267,9 +268,9 @@ async fn each_statement_of_a_batch_reports_its_own_size() {
         "a batch has no result of its own, so its own size is null, got {described}"
     );
 
-    // The label `label` (5) and the values `bolt` (4) and `washer` (6): 15 bytes
-    // of text in 3 cells, so 2 separators.
-    let expected = [0, 0, 17];
+    // Two rows of one value, `bolt` (4) and `washer` (6): 2 * 2 bytes of row
+    // framing, 2 * 4 bytes of value lengths and the 10 bytes of text.
+    let expected = [0, 0, 22];
     let subs = list(&described, "SubStatements");
     assert_eq!(
         subs.len(),

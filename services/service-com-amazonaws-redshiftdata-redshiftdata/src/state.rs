@@ -3223,9 +3223,9 @@ fn execute_once(
     // row it had materialised and so spends nothing.
     budget.spend(records.len(), cells, retained);
 
-    // What the statement REPORTS as its `ResultSize`: the size of the result it
-    // returned, read off the result itself.
-    let reported = result_size(&column_metadata, &records);
+    // What the statement REPORTS as its `ResultSize`: the bytes the warehouse
+    // returned for the result, read off the result itself.
+    let reported = result_size(&records);
 
     Ok(Produced::Rows(
         ResultSet {
@@ -3246,8 +3246,8 @@ fn bound_reached(message: String) -> ExecutionFailure {
 /// which is what the retained-result bounds are counted in.
 ///
 /// NOT the size a statement reports for its result ([`result_size`]): that is the
-/// size of the RESULT — the text its columns and values carry — and a value's
-/// storage class in this process is no part of it.
+/// size of the RESULT — the bytes the warehouse returned for its rows — and a
+/// value's storage class in this process is no part of it.
 fn value_bytes(value: rusqlite::types::ValueRef<'_>) -> usize {
     use rusqlite::types::ValueRef;
     match value {
