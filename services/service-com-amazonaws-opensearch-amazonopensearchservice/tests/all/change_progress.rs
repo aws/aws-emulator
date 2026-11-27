@@ -152,30 +152,73 @@ pub(crate) const LEAF_PROPERTY_BLOCKS: [(&str, &[&str]); 3] = [
     ),
 ];
 
+/// The parts of a domain's configuration a CHANGE reports no property for, though a
+/// DESCRIPTOR of the domain reports them as properties being modified: the advanced
+/// options map is one (recorded behaviour).
+pub(crate) const UNREPORTED_BY_A_CHANGE: [&str; 1] = ["AdvancedOptions"];
+
+/// The option blocks a CHANGE reports property by property, with the properties it names
+/// each by — the security block's are FEWER than the ones a descriptor of the domain
+/// reports ([`LEAF_PROPERTY_BLOCKS`]), which is recorded behaviour.
+pub(crate) const CHANGE_LEAF_PROPERTY_BLOCKS: [(&str, &[&str]); 3] = [
+    (
+        "AIMLOptions",
+        &[
+            "NaturalLanguageQueryGenerationOptions",
+            "S3VectorsEngine",
+            "ServerlessVectorAcceleration",
+        ],
+    ),
+    (
+        "AdvancedSecurityOptions",
+        &[
+            "AnonymousAuthEnabled",
+            "InternalUserDatabaseEnabled",
+            "MasterUserOptions",
+            "SAMLOptions",
+        ],
+    ),
+    (
+        "ClusterConfig",
+        &[
+            "ColdStorageOptions",
+            "DedicatedMasterCount",
+            "DedicatedMasterEnabled",
+            "DedicatedMasterType",
+            "InstanceCount",
+            "InstanceType",
+            "MultiAZWithStandbyEnabled",
+            "WarmCount",
+            "WarmEnabled",
+            "WarmStorage",
+            "WarmType",
+            "ZoneAwarenessEnabled",
+        ],
+    ),
+];
+
 /// The properties EVERY domain's configuration is reported as made of, whatever the
 /// create named: the service provisions a domain with a whole configuration, filling in
 /// the blocks the request left out, so the change a create starts applies all of them —
 /// the blocks of [`LEAF_PROPERTY_BLOCKS`] property by property, every other enumerated
 /// option whole, and the tag set the create carried.
 ///
-/// Only the properties the service ENUMERATES: a part of the configuration it does not
-/// report as a modifiable property (the Auto-Tune settings, the Cognito authentication of
-/// the dashboards, the engine mode and the use case) is applied without a property being
-/// reported for it, and so is a part the domain holds NOTHING in (the Identity Center
-/// integration of a domain that names no instance, the access policy of a domain created
-/// without one, the log publishing of a domain that publishes no log type, the placement
-/// of a domain reached on a public endpoint) — the conditional ones are added by
-/// [`provisioned_properties`].
-const PROVISIONED_PROPERTIES: [&str; 34] = [
+/// Only the properties a CHANGE enumerates: a part of the configuration the service does
+/// not report as a property of a change (the Auto-Tune settings, the Cognito
+/// authentication of the dashboards, the engine mode and the use case, and — on this
+/// surface — the advanced options map and the security block's anonymous-auth date,
+/// IAM-federation and JWT settings, which only a DESCRIPTOR of the domain reports) is
+/// applied without a property being reported for it, and so is a part the domain holds
+/// NOTHING in (the Identity Center integration of a domain that names no instance, the
+/// access policy of a domain created without one, the log publishing of a domain that
+/// publishes no log type, the placement of a domain reached on a public endpoint) — the
+/// conditional ones are added by [`provisioned_properties`].
+const PROVISIONED_PROPERTIES: [&str; 30] = [
     "AIMLOptions.NaturalLanguageQueryGenerationOptions",
     "AIMLOptions.S3VectorsEngine",
     "AIMLOptions.ServerlessVectorAcceleration",
-    "AdvancedOptions",
-    "AdvancedSecurityOptions.AnonymousAuthDisableDate",
     "AdvancedSecurityOptions.AnonymousAuthEnabled",
-    "AdvancedSecurityOptions.IAMFederationOptions",
     "AdvancedSecurityOptions.InternalUserDatabaseEnabled",
-    "AdvancedSecurityOptions.JWTOptions",
     "AdvancedSecurityOptions.MasterUserOptions",
     "AdvancedSecurityOptions.SAMLOptions",
     "AutomatedSnapshotPauseOptions",
@@ -203,11 +246,15 @@ const PROVISIONED_PROPERTIES: [&str; 34] = [
     "TAGS",
 ];
 
-/// The property names setting `option` amounts to: a block the service applies property
-/// by property ([`LEAF_PROPERTY_BLOCKS`]) names every one of its properties, and every
-/// other option is applied whole.
+/// The property names a CHANGE reports setting `option` as: a block the service applies
+/// property by property names the properties a change names it by
+/// ([`CHANGE_LEAF_PROPERTY_BLOCKS`]), an option a change reports no property for
+/// ([`UNREPORTED_BY_A_CHANGE`]) names none, and every other option is applied whole.
 fn leaf_names(option: &str, _value: &Value) -> Vec<String> {
-    let Some((_, properties)) = LEAF_PROPERTY_BLOCKS
+    if UNREPORTED_BY_A_CHANGE.contains(&option) {
+        return Vec::new();
+    }
+    let Some((_, properties)) = CHANGE_LEAF_PROPERTY_BLOCKS
         .iter()
         .find(|(block, _)| *block == option)
     else {

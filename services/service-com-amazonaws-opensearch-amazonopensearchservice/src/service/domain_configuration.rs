@@ -592,8 +592,9 @@ pub fn reported_change_progress(
     // The stages the change is going through, and the total beside them, are the
     // change's own record of the deployment applying it ([`ConfigChange::stages`]).
     //
-    // Both property lists name the same properties the same way; which of the two a property
-    // sits in is `ConfigChange`'s own answer.
+    // Both property lists name the same properties the same way — the enumeration a CHANGE
+    // reports its own properties by ([`CHANGE_PROPERTIES`]) — and which of the two a
+    // property sits in is `ConfigChange`'s own answer.
     if let Some(pending) = progress.pending_properties.take() {
         progress.pending_properties = Some(reported_properties(domain, &pending));
     }
@@ -643,7 +644,7 @@ fn reported_modifying_properties(domain: &Domain) -> Vec<ModifyingProperties> {
     let Some(change) = domain.latest_change().filter(|change| change.in_progress()) else {
         return Vec::new();
     };
-    change_leaf_values(domain, &change.properties)
+    change_leaf_values(domain, &change.properties, &DESCRIPTOR_PROPERTIES)
         .into_iter()
         .map(|(name, value)| {
             let pending = property_text(&value);
@@ -706,14 +707,15 @@ const PROPERTY_VALUE_TYPE_STRINGIFIED_JSON: &str = "STRINGIFIED_JSON";
 const PROPERTY_VALUE_TYPE_PLAIN_TEXT: &str = "PLAIN_TEXT";
 
 /// The `options` a change is applying, as `ChangeProgressStatusDetails` reports them:
-/// one entry per LEAF option container, naming it and the value the domain holds for
-/// it.
+/// one entry per LEAF option container, naming it and the value the domain holds for it.
 ///
-/// In the order the service enumerates its domain properties ([`ENUMERATED_PROPERTIES`]),
+/// In the order the service enumerates the properties of a CHANGE ([`CHANGE_PROPERTIES`]),
 /// so two reads of one change report its properties in the same order and a caller that
-/// indexes the list reads the same property each time.
+/// indexes the list reads the same property each time, and with the same value text a
+/// descriptor of the domain reports for that property ([`property_text`]) — a caller
+/// comparing the two reads one value.
 fn reported_properties(domain: &Domain, options: &[String]) -> Vec<String> {
-    change_leaf_values(domain, options)
+    change_leaf_values(domain, options, &CHANGE_PROPERTIES)
         .into_iter()
         .map(|(name, value)| format!("{name}{PROPERTY_SEPARATOR}{}", property_text(&value)))
         .collect()
@@ -760,23 +762,118 @@ const ENUMERATED_PROPERTIES: [&str; 20] = [
 ];
 
 /// The leaf properties the `options` of a change amount to, each with the value the
-/// domain holds for it: the ONE reading of a change's properties, so the list it
-/// reports as pending and the properties it reports as modifying cannot name different
-/// things.
+/// domain holds for it, as the enumeration `enumeration` reports them: the ONE reading of
+/// a change's properties, so two projections built on the same enumeration cannot name
+/// different things.
 ///
-/// Walked in the service's enumeration order rather than in the order the change
-/// recorded its options, and holding only the properties that enumeration names, so what
-/// a caller finds at one index is the same property on every read of every domain.
-fn change_leaf_values(domain: &Domain, options: &[String]) -> Vec<(String, Value)> {
-    ENUMERATED_PROPERTIES
+/// Walked in that enumeration's order rather than in the order the change recorded its
+/// options, and holding only the properties it names, so what a caller finds at one index
+/// is the same property on every read of every domain.
+fn change_leaf_values(
+    domain: &Domain,
+    options: &[String],
+    enumeration: &PropertyEnumeration,
+) -> Vec<(String, Value)> {
+    enumeration
+        .properties
         .iter()
         .filter(|property| options.iter().any(|applied| applied == *property))
         .filter_map(|property| {
-            reported_option_value(domain, property).map(|value| leaf_values(property, &value))
+            reported_option_value(domain, property)
+                .map(|value| leaf_values(enumeration, property, &value))
         })
         .flatten()
         .collect()
 }
+
+/// How ONE projection enumerates the properties of a domain's configuration change: which
+/// properties it reports and in what order, and which option blocks it reports property by
+/// property rather than whole.
+///
+/// There are two of them, because the service reports a change's properties on two
+/// surfaces and the two do not report the same properties: a DESCRIPTOR of the domain
+/// reports what is being modified ([`DESCRIPTOR_PROPERTIES`]), and the CHANGE itself
+/// reports what it is applying ([`CHANGE_PROPERTIES`]). Each is one table, so every read
+/// path on a surface reports that surface's properties identically.
+struct PropertyEnumeration {
+    /// The option blocks the surface reports, in the order it reports them.
+    properties: &'static [&'static str],
+    /// Those of them it reports property by property, with the properties it names each
+    /// by; every other block is reported whole.
+    blocks: &'static [(&'static str, &'static [&'static str])],
+}
+
+/// The enumeration a DESCRIPTOR of the domain reports a change by:
+/// `DomainStatus$ModifyingProperties` / `DomainConfig$ModifyingProperties`.
+static DESCRIPTOR_PROPERTIES: PropertyEnumeration = PropertyEnumeration {
+    properties: &ENUMERATED_PROPERTIES,
+    blocks: &LEAF_PROPERTY_BLOCKS,
+};
+
+/// The enumeration the CHANGE itself reports its properties by:
+/// `ChangeProgressStatusDetails$PendingProperties` and `$CompletedProperties`.
+static CHANGE_PROPERTIES: PropertyEnumeration = PropertyEnumeration {
+    properties: &CHANGE_ENUMERATED_PROPERTIES,
+    blocks: &CHANGE_LEAF_PROPERTY_BLOCKS,
+};
+
+/// The domain properties a CHANGE reports as its own — "the list of properties in the
+/// domain configuration change that are still pending", and the same list of the ones it
+/// has applied — in the order it reports them.
+///
+/// A change's own list is not the one a DESCRIPTOR of the domain reports as being modified
+/// ([`ENUMERATED_PROPERTIES`]): recorded behaviour is that the service enumerates fewer
+/// properties here, and in its own order. Two differences:
+///
+/// * the advanced options map is no property of a change — a change reports nothing for
+///   it, where a descriptor reports it as a property being modified; and
+/// * the cluster's own topology is enumerated AFTER the endpoint options and the EBS
+///   volume, where a descriptor enumerates it before them.
+///
+/// The security block's properties differ too ([`CHANGE_LEAF_PROPERTY_BLOCKS`]).
+const CHANGE_ENUMERATED_PROPERTIES: [&str; 19] = [
+    OPT_AIML_OPTIONS,
+    OPT_ACCESS_POLICIES,
+    OPT_ADVANCED_SECURITY_OPTIONS,
+    OPT_DOMAIN_ENDPOINT_OPTIONS,
+    OPT_EBS_OPTIONS,
+    OPT_CLUSTER_CONFIG,
+    OPT_TAGS,
+    OPT_AUTOMATED_SNAPSHOT_PAUSE_OPTIONS,
+    OPT_DEPLOYMENT_STRATEGY_OPTIONS,
+    OPT_ENCRYPTION_AT_REST_OPTIONS,
+    OPT_ENGINE_VERSION,
+    OPT_IP_ADDRESS_TYPE,
+    OPT_IDENTITY_CENTER_OPTIONS,
+    OPT_LOG_PUBLISHING_OPTIONS,
+    OPT_NODE_TO_NODE_ENCRYPTION_OPTIONS,
+    OPT_OFF_PEAK_WINDOW_OPTIONS,
+    OPT_SNAPSHOT_OPTIONS,
+    OPT_SOFTWARE_UPDATE_OPTIONS,
+    OPT_VPC_OPTIONS,
+];
+
+/// The option blocks a CHANGE reports property by property, each with the properties it
+/// names that block by.
+///
+/// The blocks are the descriptor's ([`LEAF_PROPERTY_BLOCKS`]), and the security block's
+/// properties are FEWER: a change reports the security features it is switching on or off
+/// — whether anonymous access, the internal user database, a master user and SAML
+/// federation are configured — and reports nothing for the date anonymous access was
+/// disabled on, nor for the IAM-federation and JWT settings (recorded behaviour).
+const CHANGE_LEAF_PROPERTY_BLOCKS: [(&str, &[&str]); 3] = [
+    (OPT_AIML_OPTIONS, AIML_LEAF_PROPERTIES),
+    (
+        OPT_ADVANCED_SECURITY_OPTIONS,
+        &[
+            "AnonymousAuthEnabled",
+            "InternalUserDatabaseEnabled",
+            "MasterUserOptions",
+            "SAMLOptions",
+        ],
+    ),
+    (OPT_CLUSTER_CONFIG, CLUSTER_LEAF_PROPERTIES),
+];
 
 /// The text a property's value is reported as: a container or a list as the compact
 /// JSON document it is, a direct value as itself, and a property the domain holds no
@@ -834,14 +931,7 @@ fn property_value_type(text: &str) -> &'static str {
 /// plus the cluster's warm-tier STORAGE and the block's master-user credentials, which
 /// are properties the service applies and this model declares no reportable member for.
 const LEAF_PROPERTY_BLOCKS: [(&str, &[&str]); 3] = [
-    (
-        OPT_AIML_OPTIONS,
-        &[
-            "NaturalLanguageQueryGenerationOptions",
-            "S3VectorsEngine",
-            "ServerlessVectorAcceleration",
-        ],
-    ),
+    (OPT_AIML_OPTIONS, AIML_LEAF_PROPERTIES),
     (
         OPT_ADVANCED_SECURITY_OPTIONS,
         &[
@@ -854,36 +944,49 @@ const LEAF_PROPERTY_BLOCKS: [(&str, &[&str]); 3] = [
             "SAMLOptions",
         ],
     ),
-    (
-        OPT_CLUSTER_CONFIG,
-        &[
-            "ColdStorageOptions",
-            "DedicatedMasterCount",
-            "DedicatedMasterEnabled",
-            "DedicatedMasterType",
-            "InstanceCount",
-            "InstanceType",
-            "MultiAZWithStandbyEnabled",
-            "WarmCount",
-            "WarmEnabled",
-            "WarmStorage",
-            "WarmType",
-            "ZoneAwarenessEnabled",
-        ],
-    ),
+    (OPT_CLUSTER_CONFIG, CLUSTER_LEAF_PROPERTIES),
 ];
 
-/// `value` split into the leaf properties the service names it by: a block it applies
-/// property by property ([`LEAF_PROPERTY_BLOCKS`]) is reported property by property —
-/// every property of the block, each with the value the domain holds for it — and every
+/// The properties the AI/ML block is applied as, named once because both enumerations name
+/// that block by the same properties.
+const AIML_LEAF_PROPERTIES: &[&str] = &[
+    "NaturalLanguageQueryGenerationOptions",
+    "S3VectorsEngine",
+    "ServerlessVectorAcceleration",
+];
+
+/// The properties the cluster's topology is applied as, named once for the same reason.
+const CLUSTER_LEAF_PROPERTIES: &[&str] = &[
+    "ColdStorageOptions",
+    "DedicatedMasterCount",
+    "DedicatedMasterEnabled",
+    "DedicatedMasterType",
+    "InstanceCount",
+    "InstanceType",
+    "MultiAZWithStandbyEnabled",
+    "WarmCount",
+    "WarmEnabled",
+    "WarmStorage",
+    "WarmType",
+    "ZoneAwarenessEnabled",
+];
+
+/// `value` split into the leaf properties the service names it by: a block `enumeration`
+/// reports property by property is reported property by property — every property that
+/// enumeration names the block by, each with the value the domain holds for it — and every
 /// other option is reported whole.
 ///
 /// The service provisions a whole block, so every property of one HAS a value: a property
 /// the configuration does not use (the warm instance type of a cluster with no warm tier)
 /// is reported with the EMPTY value, carried here as JSON null and reported as the empty
 /// text by [`property_text`].
-fn leaf_values(option: &str, value: &Value) -> Vec<(String, Value)> {
-    let Some((_, properties)) = LEAF_PROPERTY_BLOCKS
+fn leaf_values(
+    enumeration: &PropertyEnumeration,
+    option: &str,
+    value: &Value,
+) -> Vec<(String, Value)> {
+    let Some((_, properties)) = enumeration
+        .blocks
         .iter()
         .find(|(block, _)| *block == option)
     else {

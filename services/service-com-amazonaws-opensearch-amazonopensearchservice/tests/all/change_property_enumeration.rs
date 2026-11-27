@@ -20,6 +20,11 @@
 //! an option a property is reported for is `Processing` while the change is in flight,
 //! every other option `Active`.
 //!
+//! The service has TWO such enumerations, one per surface: a DESCRIPTOR of the domain
+//! reports what is being modified ([`enumerated_properties`]) and the CHANGE itself reports
+//! what it is applying ([`change_enumerated_properties`]), which is the narrower list in
+//! its own order.
+//!
 //! So the rows span a SET of creates: one that named nothing, three tag counts, a create
 //! carrying a policy, a volume and a log type, and one with fine-grained access control
 //! switched on.
@@ -105,6 +110,79 @@ fn rows() -> Vec<(&'static str, Value)> {
             }),
         ),
     ]
+}
+
+/// The properties of a domain's configuration a CHANGE enumerates when it reports what it
+/// is applying — `ChangeProgressStatusDetails$PendingProperties` — in the order it
+/// enumerates them, stated here independently of the implementation.
+///
+/// Recorded behaviour is that this is NOT the list a descriptor of the domain reports as
+/// being modified ([`enumerated_properties`]): a change reports no property for the
+/// advanced options map, names the security block by four of its properties rather than
+/// seven, and enumerates the cluster's own topology after the endpoint options and the EBS
+/// volume rather than before them.
+///
+/// Those three differences, and every position up to and including the cluster's cold
+/// storage, are what the recorded response discloses. The order of the properties AFTER
+/// the cluster's topology is pinned here as a determinism and positional-stability check —
+/// two reads of one change must report its properties in the same order — rather than as
+/// recorded behaviour: a recording that discloses the service's own order for them should
+/// be followed instead of this row.
+fn change_enumerated_properties(body: &Value) -> Vec<String> {
+    let mut names: Vec<&str> = vec![
+        "AIMLOptions.NaturalLanguageQueryGenerationOptions",
+        "AIMLOptions.S3VectorsEngine",
+        "AIMLOptions.ServerlessVectorAcceleration",
+    ];
+    if body["AccessPolicies"]
+        .as_str()
+        .is_some_and(|policy| !policy.is_empty())
+    {
+        names.push("AccessPolicies");
+    }
+    names.extend([
+        "AdvancedSecurityOptions.AnonymousAuthEnabled",
+        "AdvancedSecurityOptions.InternalUserDatabaseEnabled",
+        "AdvancedSecurityOptions.MasterUserOptions",
+        "AdvancedSecurityOptions.SAMLOptions",
+        "DomainEndpointOptions",
+    ]);
+    if body.get("EBSOptions").is_some() {
+        names.push("EBSOptions");
+    }
+    names.extend([
+        "ClusterConfig.ColdStorageOptions",
+        "ClusterConfig.DedicatedMasterCount",
+        "ClusterConfig.DedicatedMasterEnabled",
+        "ClusterConfig.DedicatedMasterType",
+        "ClusterConfig.InstanceCount",
+        "ClusterConfig.InstanceType",
+        "ClusterConfig.MultiAZWithStandbyEnabled",
+        "ClusterConfig.WarmCount",
+        "ClusterConfig.WarmEnabled",
+        "ClusterConfig.WarmStorage",
+        "ClusterConfig.WarmType",
+        "ClusterConfig.ZoneAwarenessEnabled",
+        "TAGS",
+        "AutomatedSnapshotPauseOptions",
+        "DeploymentStrategyOptions",
+        "EncryptionAtRestOptions",
+        "EngineVersion",
+        "IPAddressType",
+    ]);
+    if body["LogPublishingOptions"]
+        .as_object()
+        .is_some_and(|types| !types.is_empty())
+    {
+        names.push("LogPublishingOptions");
+    }
+    names.extend([
+        "NodeToNodeEncryptionOptions",
+        "OffPeakWindowOptions",
+        "SnapshotOptions",
+        "SoftwareUpdateOptions",
+    ]);
+    names.into_iter().map(str::to_owned).collect()
 }
 
 /// The properties of a domain's configuration the service enumerates when it reports a
@@ -344,9 +422,9 @@ async fn every_reader_enumerates_the_same_properties_in_the_same_order() {
         let pending = pending_properties(&emulator, &name).await;
         assert_eq!(
             pending_names(&pending),
-            expected,
-            "case {case:?} (DescribeDomainChangeProgress): the change names the same properties \
-             it reports as modifying, got {pending:?}"
+            change_enumerated_properties(&body),
+            "case {case:?} (DescribeDomainChangeProgress): the change names its own \
+             properties, got {pending:?}"
         );
     }
 }

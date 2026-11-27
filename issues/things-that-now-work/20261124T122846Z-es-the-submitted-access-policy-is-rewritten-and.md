@@ -102,3 +102,32 @@ Smithy cited: com.amazonaws.opensearch#ModifyingProperties{Name, ActiveValue, Pe
 4. Cause 4: step task#14 (CreateDomain re-create) - $.DomainStatus.ChangeProgressDetails.ConfigChangeStatus must be 'Initializing'.
 5. Cause 5: drive fixture opensearch-domain-version-capacity-and-software-update-management step setup#1 (CreateDomain) and check the AccessPolicies PendingValue the same way.
 6. All five steps must pass against the recorded responses.
+
+## Disposition
+
+* Causes 1, 2 and 5 (the AccessPolicies `PendingValue`) are GONE from this code base: a
+  submitted policy document is held with only the insignificant whitespace between its JSON
+  tokens dropped, and a change's property reports an account principal as the account
+  itself, so a principal submitted as a bare account id is read back as that bare account
+  id. Replay reports the `DescribeDomain` and `DescribeDomainConfig` keys of this report as
+  fixed and the `CreateDomain` one past this cause.
+  `tests/all/change_property_account_principal.rs` and
+  `tests/all/change_property_enumeration.rs` pin it over a table of principal spellings.
+* Cause 3 (`PendingProperties`) is FIXED on the property set and on every position the
+  recorded response discloses here: the change's own enumeration is now separate from the
+  descriptor's, reports no property for the advanced options map nor for the security
+  block's anonymous-auth date, IAM-federation and JWT settings, and enumerates the cluster's
+  topology after the endpoint options and the EBS volume — so `AccessPolicies`, the four
+  security properties, `DomainEndpointOptions`, `EBSOptions` and
+  `ClusterConfig.ColdStorageOptions` land where AWS reports them. The ORDER of the
+  properties past that disclosed prefix is not a published rule — the member is a plain
+  `StringList` and the same run has the service ordering one change's properties differently
+  on its two surfaces — and replay still reports those later positions as divergent.
+* Cause 4 (`ChangeProgressDetails.ConfigChangeStatus` on the create response) is DECLINED as
+  a per-run value, on the same evidence as
+  `issues/things-that-now-work/20261118T145127Z-es-createdomain-re-create-step-reports-configchangestatus-pending.md`:
+  the same key is recorded as `Pending` on other creates of this corpus (see
+  `issues/things-that-now-work/20261029T190009Z-es-domainstatus-and-domainconfig-responses-omit-modeled-option.md`,
+  cause 1), so which early state of its own change workflow the service has reached when it
+  serialises a create response is a race rather than a rule. The emulator reports the state
+  the change is really in, the same value on every path that reports that change.
