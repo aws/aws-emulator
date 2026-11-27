@@ -26,21 +26,26 @@ use std::sync::Arc;
 use serde_json::{json, Value};
 use smithy_server_runtime::multi_service_router::MultiServiceRouter;
 
+use service_com_amazonaws_invoicing_invoicing::ops::types::PROCUREMENT_PORTAL_NAME_VALUES;
+
 /// The portals this service serves, each with the `PortalIdentifier` a caller names it
 /// by: one per value of `ProcurementPortalName` (`smithy_query(query="shape",
-/// shape="ProcurementPortalName")` — `ZIP | SAP_BUSINESS_NETWORK | JAGGAER | COUPA`),
-/// identified by that name lowercased with its underscores hyphenated. The model
-/// publishes no identifier for a portal, so this is the identifier the emulator derives,
-/// and it is the one `ListProcurementPortalSuppliers` already resolves a portal by.
+/// shape="ProcurementPortalName")`, read here from the model's own value set rather than
+/// restated), identified by that name lowercased with its underscores hyphenated. The
+/// model publishes no identifier for a portal, so this is the identifier the emulator
+/// derives, and it is the one `ListProcurementPortalSuppliers` already resolves a portal
+/// by.
 ///
-/// Listed in the order the listing owes them — by identifier — so a row here is also the
+/// In the order the listing owes them — by identifier — so a row here is also the
 /// position a page resumes at.
-const PORTALS: &[(&str, &str)] = &[
-    ("coupa", "COUPA"),
-    ("jaggaer", "JAGGAER"),
-    ("sap-business-network", "SAP_BUSINESS_NETWORK"),
-    ("zip", "ZIP"),
-];
+fn portals() -> Vec<(String, &'static str)> {
+    let mut portals: Vec<(String, &'static str)> = PROCUREMENT_PORTAL_NAME_VALUES
+        .iter()
+        .map(|name| (name.to_lowercase().replace('_', "-"), *name))
+        .collect();
+    portals.sort_by(|left, right| left.0.cmp(&right.0));
+    portals
+}
 
 /// The values `EinvoiceDeliveryDocumentType` admits (`smithy_query(query="shape",
 /// shape="EinvoiceDeliveryDocumentType")`), which is what a portal's default
@@ -171,11 +176,11 @@ fn portal(case: &str, item: &Value) -> Portal {
 
 /// The portals the rule owes, in the order the listing owes them.
 fn expected_portals() -> Vec<Portal> {
-    PORTALS
-        .iter()
+    portals()
+        .into_iter()
         .map(|(identifier, name)| Portal {
-            identifier: (*identifier).to_string(),
-            name: (*name).to_string(),
+            identifier,
+            name: name.to_string(),
             document_types: DOCUMENT_TYPES.iter().map(|t| (*t).to_string()).collect(),
             attachment_types: ATTACHMENT_TYPES.iter().map(|t| (*t).to_string()).collect(),
         })
@@ -224,7 +229,7 @@ async fn walk(
             break;
         }
         assert!(
-            pages <= PORTALS.len() + 1,
+            pages <= portals().len() + 1,
             "case {case}: the walk did not terminate after {pages} pages, reported {reported:?}"
         );
     }
@@ -449,7 +454,9 @@ async fn the_catalog_is_what_the_rest_of_the_plane_resolves_a_portal_by() {
     let created = ok(
         &router,
         "CreateProcurementPortalPreference",
-        &preference_request("JAGGAER"),
+        // One of the portals the model declares: which one it is does not matter, since
+        // the rule is that storing a preference changes no reported portal.
+        &preference_request(portals()[0].1),
     )
     .await;
     assert!(

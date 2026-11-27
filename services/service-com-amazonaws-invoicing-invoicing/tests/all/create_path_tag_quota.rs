@@ -21,6 +21,8 @@ use std::sync::Arc;
 use serde_json::{json, Value};
 use smithy_server_runtime::multi_service_router::MultiServiceRouter;
 
+use service_com_amazonaws_invoicing_invoicing::ops::types::PROCUREMENT_PORTAL_NAME_VALUES;
+
 /// How many tags ONE RESOURCE holds — the per-resource quota this service enforces
 /// (`crate::state::MAX_RESOURCE_TAGS`, the AWS-wide "maximum number of tags per
 /// resource" tagging quota), strictly below `ResourceTagList`'s per-CALL maximum.
@@ -36,9 +38,10 @@ const MAX_TAGS_PER_CALL: usize = 200;
 /// nor a count, so every refusal of this quota carries it.
 const TAG_QUOTA_MESSAGE: &str = "The request exceeds the maximum number of tags allowed per resource.";
 
-/// Every value `ProcurementPortalName` accepts (`smithy_query(query="shape",
-/// shape="ProcurementPortalName")`), so the rows span portals rather than repeating one.
-const PORTAL_NAMES: &[&str] = &["ZIP", "SAP_BUSINESS_NETWORK", "JAGGAER", "COUPA"];
+/// Every value `ProcurementPortalName` accepts, taken from the model's own value set
+/// (`smithy_query(query="shape", shape="ProcurementPortalName")`), so the rows span the
+/// portals the model declares rather than repeating one.
+const PORTAL_NAMES: &[&str] = PROCUREMENT_PORTAL_NAME_VALUES;
 
 /// How a create carrying `tags` distinct tag keys must be answered.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

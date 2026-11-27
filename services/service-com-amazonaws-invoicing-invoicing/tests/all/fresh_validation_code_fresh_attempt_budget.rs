@@ -28,7 +28,7 @@ use smithy_server_runtime::multi_service_router::MultiServiceRouter;
 use crate::refused_procurement_portal_writes::{
     accepted_update_round, arn_of, call, create_with_delivery_endpoint, emulator_with_engine,
     error_code, error_text, get_preference, invalid_code_sentence, issue_code, ok,
-    outstanding_code, shifted, version, without_write_markers, PORTAL_NAMES,
+    outstanding_code, portal_at, shifted, version, without_write_markers, PORTAL_NAMES,
     VERIFICATION_ATTEMPT_BUDGET,
 };
 
@@ -107,7 +107,7 @@ fn rows() -> Vec<Row> {
     vec![
         Row {
             label: "no failure before the fresh code",
-            portal: PORTAL_NAMES[0],
+            portal: portal_at(0),
             failures_before_resend: 0,
             complete_before_resend: false,
             resends: 1,
@@ -115,7 +115,7 @@ fn rows() -> Vec<Row> {
         },
         Row {
             label: "one failure before the fresh code",
-            portal: PORTAL_NAMES[1],
+            portal: portal_at(1),
             failures_before_resend: 1,
             complete_before_resend: false,
             resends: 1,
@@ -123,7 +123,7 @@ fn rows() -> Vec<Row> {
         },
         Row {
             label: "the budget exactly spent before the fresh code",
-            portal: PORTAL_NAMES[2],
+            portal: portal_at(2),
             failures_before_resend: VERIFICATION_ATTEMPT_BUDGET,
             complete_before_resend: false,
             resends: 1,
@@ -131,7 +131,7 @@ fn rows() -> Vec<Row> {
         },
         Row {
             label: "past the budget before the fresh code, then two fresh codes",
-            portal: PORTAL_NAMES[3],
+            portal: portal_at(3),
             failures_before_resend: VERIFICATION_ATTEMPT_BUDGET + 2,
             complete_before_resend: false,
             resends: 2,
@@ -139,7 +139,7 @@ fn rows() -> Vec<Row> {
         },
         Row {
             label: "the budget spent, then the validation completed, then a fresh code",
-            portal: PORTAL_NAMES[0],
+            portal: portal_at(0),
             failures_before_resend: VERIFICATION_ATTEMPT_BUDGET,
             complete_before_resend: true,
             resends: 1,
@@ -147,7 +147,7 @@ fn rows() -> Vec<Row> {
         },
         Row {
             label: "three fresh codes after one failure",
-            portal: PORTAL_NAMES[2],
+            portal: portal_at(2),
             failures_before_resend: 1,
             complete_before_resend: false,
             resends: 3,

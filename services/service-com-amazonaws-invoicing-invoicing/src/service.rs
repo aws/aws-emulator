@@ -24,9 +24,10 @@
 //!   correctly. The default returns `None`, so every request resolves through the
 //!   generated routing table. This service returns `Some` for every operation it
 //!   serves, so that a refused input is stated in the modelled
-//!   `ValidationException` and the tag plane announces its own media type (see
-//!   [`FrontDoor`]), and for a fetch of an invoice document, which is not an API
-//!   call at all (see [`invoice_document`]).
+//!   `ValidationException`, the tag plane announces its own media type, and a failure
+//!   reports its text and the resource it is about in the members this service's wire
+//!   carries them in (see [`FrontDoor`]), and for a fetch of an invoice document, which
+//!   is not an API call at all (see [`invoice_document`]).
 //! - `override_refusal` — how this service words a request the framework refused
 //!   before any handler ran. The default returns `None`, keeping the framework's
 //!   wording; this service words it itself, through the one formatter in
@@ -71,6 +72,7 @@
 //! is the one seam `override_protocol` deliberately does not reach, and which is the
 //! media type the recorded refusals carry too.
 
+pub(crate) mod error_body_members;
 pub(crate) mod invoice_document;
 pub(crate) mod validation;
 
@@ -117,9 +119,43 @@ const VALIDATION_EXCEPTION_STATUS: u16 = 400;
 /// plane and announce it too.
 const TAG_PLANE_MEDIA_TYPE: &str = "application/x-amz-json-1.0";
 
+/// One PLANE of this API: the properties of an answer that belong to the plane that
+/// answers rather than to the operation that was called — the media type it announces, and
+/// the member its failures carry their explanatory text in (see [`error_body_members`]).
+#[derive(Clone, Copy)]
+struct Plane {
+    /// The media type this plane's responses announce, when it is NOT the one
+    /// `override_protocol` serves service-wide: `Some(TAG_PLANE_MEDIA_TYPE)` for the
+    /// tag plane, `None` for every other plane.
+    media_type: Option<&'static str>,
+    /// The body member this plane's failures report their explanatory text in.
+    detail_member: &'static str,
+}
+
+/// The invoice-unit, invoice-summary, invoice-document and invoice-profile operations: the
+/// service-wide media type, and the text under the member name the model spells.
+const INVOICE_PLANE: Plane = Plane {
+    media_type: None,
+    detail_member: error_body_members::MODEL_DETAIL_MEMBER,
+};
+
+/// The procurement-portal plane: the service-wide media type, and the text under the
+/// capitalised member every recorded body of this plane carries it in.
+const PORTAL_PLANE: Plane = Plane {
+    media_type: None,
+    detail_member: error_body_members::PORTAL_PLANE_DETAIL_MEMBER,
+};
+
+/// The tag plane: its own media type ([`TAG_PLANE_MEDIA_TYPE`]), and the text under the
+/// member name the model spells.
+const TAG_PLANE: Plane = Plane {
+    media_type: Some(TAG_PLANE_MEDIA_TYPE),
+    detail_member: error_body_members::MODEL_DETAIL_MEMBER,
+};
+
 /// One operation [`FrontDoor`] serves: the routing key the model names it by, how a
-/// request for it is read and validated against ITS input shape, and the media type it
-/// announces when that is not the service-wide one.
+/// request for it is read and validated against ITS input shape, and the plane it belongs
+/// to.
 struct ServedOperation {
     /// The operation's routing key — read off the operation, never spelled out.
     name: &'static str,
@@ -129,14 +165,13 @@ struct ServedOperation {
         &dyn ServerHttpProtocol,
         &aws_smithy_runtime_api::http::Request,
     ) -> Option<Vec<Violation>>,
-    /// The media type this operation's responses announce, when it is NOT the one
-    /// `override_protocol` serves service-wide: `Some(TAG_PLANE_MEDIA_TYPE)` for the
-    /// tag plane, `None` for every other plane.
-    media_type: Option<&'static str>,
+    /// The plane this operation belongs to, which decides the two properties of its
+    /// answers that are the plane's.
+    plane: Plane,
 }
 
 /// Serves the operations of this service that are answered in front of the generated
-/// walk, for two reasons the generated walk cannot reach on its own:
+/// walk, for three reasons the generated walk cannot reach on its own:
 ///
 /// 1. A REFUSED INPUT is stated in this service's own modelled `ValidationException`
 ///    instead of the framework's generic refusal body. `ValidationException` models
@@ -156,6 +191,13 @@ struct ServedOperation {
 ///    a property of the plane that answers, and `override_protocol` is one choice for
 ///    the whole service, so the per-plane part is stamped here, on everything those
 ///    operations answer — a success and a modelled failure alike.
+/// 3. A FAILURE reports its explanatory text in the member the ANSWERING PLANE carries it
+///    in, and the resource a 404 is about in the member this service's bodies carry that
+///    in ([`error_body_members`]). Both are wire members rather than the ones the model
+///    spells, and `override_protocol` is one choice for the whole service, so the
+///    per-plane part is applied here to what the operation's handler answered — which is
+///    also why a refusal of the REQUEST, answered by reason 1 above before any handler
+///    runs, keeps the member the model spells.
 ///
 /// EVERY operation this service serves is served here, whichever plane it belongs
 /// to: the modelled refusal body is a property of the REFUSAL — the model gives
@@ -179,52 +221,54 @@ impl<Eng: Send + Sync + 'static> FrontDoor<Eng> {
         use crate::ops;
         [
             // The invoice-unit plane.
-            Self::served::<ops::create_invoice_unit::CreateInvoiceUnit<Eng>>(None),
-            Self::served::<ops::get_invoice_unit::GetInvoiceUnit<Eng>>(None),
-            Self::served::<ops::list_invoice_units::ListInvoiceUnits<Eng>>(None),
-            Self::served::<ops::update_invoice_unit::UpdateInvoiceUnit<Eng>>(None),
-            Self::served::<ops::delete_invoice_unit::DeleteInvoiceUnit<Eng>>(None),
-            Self::served::<ops::list_invoice_summaries::ListInvoiceSummaries<Eng>>(None),
-            Self::served::<ops::get_invoice_pdf::GetInvoicePDF<Eng>>(None),
+            Self::served::<ops::create_invoice_unit::CreateInvoiceUnit<Eng>>(INVOICE_PLANE),
+            Self::served::<ops::get_invoice_unit::GetInvoiceUnit<Eng>>(INVOICE_PLANE),
+            Self::served::<ops::list_invoice_units::ListInvoiceUnits<Eng>>(INVOICE_PLANE),
+            Self::served::<ops::update_invoice_unit::UpdateInvoiceUnit<Eng>>(INVOICE_PLANE),
+            Self::served::<ops::delete_invoice_unit::DeleteInvoiceUnit<Eng>>(INVOICE_PLANE),
+            Self::served::<ops::list_invoice_summaries::ListInvoiceSummaries<Eng>>(INVOICE_PLANE),
+            Self::served::<ops::get_invoice_pdf::GetInvoicePDF<Eng>>(INVOICE_PLANE),
             // The invoice-profile plane.
-            Self::served::<ops::batch_get_invoice_profile::BatchGetInvoiceProfile<Eng>>(None),
+            Self::served::<ops::batch_get_invoice_profile::BatchGetInvoiceProfile<Eng>>(
+                INVOICE_PLANE,
+            ),
             // The procurement-portal plane.
             Self::served::<
                 ops::create_procurement_portal_preference::CreateProcurementPortalPreference<Eng>,
-            >(None),
+            >(PORTAL_PLANE),
             Self::served::<
                 ops::get_procurement_portal_preference::GetProcurementPortalPreference<Eng>,
-            >(None),
+            >(PORTAL_PLANE),
             Self::served::<
                 ops::put_procurement_portal_preference::PutProcurementPortalPreference<Eng>,
-            >(None),
+            >(PORTAL_PLANE),
             Self::served::<
                 ops::delete_procurement_portal_preference::DeleteProcurementPortalPreference<Eng>,
-            >(None),
+            >(PORTAL_PLANE),
             Self::served::<
                 ops::update_procurement_portal_preference_status::UpdateProcurementPortalPreferenceStatus<
                     Eng,
                 >,
-            >(None),
+            >(PORTAL_PLANE),
             Self::served::<
                 ops::send_procurement_portal_validation::SendProcurementPortalValidation<Eng>,
-            >(None),
+            >(PORTAL_PLANE),
             Self::served::<
                 ops::verify_procurement_portal_validation::VerifyProcurementPortalValidation<Eng>,
-            >(None),
+            >(PORTAL_PLANE),
             Self::served::<
                 ops::list_procurement_portal_preferences::ListProcurementPortalPreferences<Eng>,
-            >(None),
-            Self::served::<ops::list_procurement_portals::ListProcurementPortals<Eng>>(None),
+            >(PORTAL_PLANE),
+            Self::served::<ops::list_procurement_portals::ListProcurementPortals<Eng>>(
+                PORTAL_PLANE,
+            ),
             Self::served::<
                 ops::list_procurement_portal_suppliers::ListProcurementPortalSuppliers<Eng>,
-            >(None),
+            >(PORTAL_PLANE),
             // The tag plane, which announces its own media type.
-            Self::served::<ops::list_tags_for_resource::ListTagsForResource<Eng>>(Some(
-                TAG_PLANE_MEDIA_TYPE,
-            )),
-            Self::served::<ops::tag_resource::TagResource<Eng>>(Some(TAG_PLANE_MEDIA_TYPE)),
-            Self::served::<ops::untag_resource::UntagResource<Eng>>(Some(TAG_PLANE_MEDIA_TYPE)),
+            Self::served::<ops::list_tags_for_resource::ListTagsForResource<Eng>>(TAG_PLANE),
+            Self::served::<ops::tag_resource::TagResource<Eng>>(TAG_PLANE),
+            Self::served::<ops::untag_resource::UntagResource<Eng>>(TAG_PLANE),
         ]
     }
 
@@ -232,8 +276,8 @@ impl<Eng: Send + Sync + 'static> FrontDoor<Eng> {
     /// routing key the model names it by, the input schema a request for it is validated
     /// against, and — as [`Operation::Input`] — the shape that request is read into. Taking
     /// all three from the one type is what keeps an entry from naming one operation's key
-    /// beside another's input, and leaves an entry nothing to state but the media type.
-    fn served<Op: Operation>(media_type: Option<&'static str>) -> ServedOperation {
+    /// beside another's input, and leaves an entry nothing to state but its plane.
+    fn served<Op: Operation>(plane: Plane) -> ServedOperation {
         ServedOperation {
             name: <Op as Operation>::NAME,
             violations: |protocol, req| {
@@ -243,7 +287,7 @@ impl<Eng: Send + Sync + 'static> FrontDoor<Eng> {
                     <Op as Operation>::INPUT_SCHEMA,
                 )
             },
-            media_type,
+            plane,
         }
     }
 
@@ -317,6 +361,11 @@ impl<Eng: Send + Sync + 'static> ErasedOperation for FrontDoor<Eng> {
                         crate::ops::types::ValidationException::shape_name(),
                         VALIDATION_EXCEPTION_STATUS,
                     )
+                    // The nested detail entries name their own shape here too — the
+                    // member the text travels in stays the model's, because this body is
+                    // the request validator's rather than the plane's (see
+                    // [`error_body_members`]).
+                    .map(error_body_members::with_named_detail_entries)
                     .unwrap_or_else(|e| svc.definition().framework_error_response(e, req));
             }
             // Nothing to restate: run the generated deserialize -> validate -> handle
@@ -325,14 +374,22 @@ impl<Eng: Send + Sync + 'static> ErasedOperation for FrontDoor<Eng> {
             // reads and validates the body again — the price of answering a refusal in
             // the modelled shape, paid once per request on a body the transport has
             // already bounded.
-            let mut response = match svc.definition().routing_table().get(entry.name) {
+            let answered = match svc.definition().routing_table().get(entry.name) {
                 Some(op) => op.run(svc, req, ctx).await,
                 None => return svc.definition().routing_error_response(req),
             };
+            // What this operation ANSWERED is the plane's answer, so the members its
+            // failures report are this plane's: the explanatory text under the member
+            // this plane's bodies carry it in, and the resource a 404 is about under the
+            // member this service's bodies carry that in (see [`error_body_members`]).
+            // A success, and a failure whose class this service does not model, are
+            // unchanged.
+            let mut response =
+                error_body_members::as_this_service_reports(answered, entry.plane.detail_member);
             // This operation's own plane announces its own media type: replace the one
             // the service-wide protocol stamped on the body it just serialized. The
             // bytes are unchanged — only the media type naming them differs.
-            if let Some(media_type) = entry.media_type {
+            if let Some(media_type) = entry.plane.media_type {
                 response.headers_mut().insert("content-type", media_type);
             }
             response

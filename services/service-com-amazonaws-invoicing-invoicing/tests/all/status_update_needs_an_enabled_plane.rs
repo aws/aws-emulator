@@ -32,7 +32,7 @@ use serde_json::{json, Value};
 use smithy_server_runtime::multi_service_router::MultiServiceRouter;
 
 use crate::refused_procurement_portal_writes::{
-    emulator_with_engine, validate_preference, PORTAL_INSTANCE_ENDPOINT,
+    emulator_with_engine, validate_preference, PORTAL_INSTANCE_ENDPOINT, PORTAL_NAMES,
 };
 
 /// Every value `ProcurementPortalPreferenceStatus` admits (`smithy_query(query="shape",
@@ -54,10 +54,6 @@ const CALLER_REQUESTED_STATUSES: &[&str] = &["TEST_INITIALIZED", "ACTIVE"];
 
 /// The status an enabled plane carries until something moves it, one of the values above.
 const PENDING_VERIFICATION: &str = "PENDING_VERIFICATION";
-
-/// Every value `ProcurementPortalName` accepts (`smithy_query(query="shape",
-/// shape="ProcurementPortalName")`).
-const PORTAL_NAMES: &[&str] = &["ZIP", "SAP_BUSINESS_NETWORK", "JAGGAER", "COUPA"];
 
 /// The two planes of a preference, each as the members the model spells for it: a label,
 /// the configuration member that enables the plane, its status and its status reason.

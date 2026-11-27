@@ -28,8 +28,8 @@ use serde_json::{json, Value};
 
 use crate::refused_procurement_portal_writes::{
     arn_of, call, emulator_with_engine, error_code, error_text, get_preference, minimal_create,
-    invalid_code_sentence, ok, outstanding_code, shifted, version, DELIVERY_NOT_CONFIRMED,
-    DELIVERY_PATH, PORTAL_NAMES,
+    invalid_code_sentence, ok, outstanding_code, portal_at, shifted, version,
+    DELIVERY_NOT_CONFIRMED, DELIVERY_PATH, PORTAL_NAMES,
 };
 
 /// The status an enabled plane holds while nothing has verified its portal connection: one
@@ -67,7 +67,7 @@ fn identity_rows() -> Vec<IdentityRow> {
     vec![
         IdentityRow {
             label: "network ids on the first portal",
-            portal: PORTAL_NAMES[0],
+            portal: portal_at(0),
             buyer_domain: "NetworkID",
             buyer: "AN01234567890",
             supplier_domain: "NetworkID",
@@ -75,7 +75,7 @@ fn identity_rows() -> Vec<IdentityRow> {
         },
         IdentityRow {
             label: "a long network identifier pair on the second portal",
-            portal: PORTAL_NAMES[1],
+            portal: portal_at(1),
             buyer_domain: "NetworkID",
             buyer: "AN01234567890123456789",
             supplier_domain: "NetworkID",
@@ -83,7 +83,7 @@ fn identity_rows() -> Vec<IdentityRow> {
         },
         IdentityRow {
             label: "one-character identifiers",
-            portal: PORTAL_NAMES[2],
+            portal: portal_at(2),
             buyer_domain: "NetworkID",
             buyer: "A",
             supplier_domain: "NetworkID",
@@ -91,7 +91,7 @@ fn identity_rows() -> Vec<IdentityRow> {
         },
         IdentityRow {
             label: "the same identifier on both sides",
-            portal: PORTAL_NAMES[3],
+            portal: portal_at(3),
             buyer_domain: "NetworkID",
             buyer: "AN05555555555",
             supplier_domain: "NetworkID",

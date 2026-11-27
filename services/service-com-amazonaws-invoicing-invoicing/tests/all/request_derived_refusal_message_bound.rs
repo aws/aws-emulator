@@ -31,6 +31,8 @@ use std::sync::Arc;
 use serde_json::{json, Value};
 use smithy_server_runtime::multi_service_router::MultiServiceRouter;
 
+use service_com_amazonaws_invoicing_invoicing::ops::types::PROCUREMENT_PORTAL_NAME_VALUES;
+
 /// The longest text a `message` member of this model may carry: every one of them targets
 /// `BasicString`, `@length(min: 0, max: 1024)` (`smithy_query(query="shape",
 /// shape="BasicString")`), counted in CHARACTERS.
@@ -201,12 +203,17 @@ async fn a_portal_404_holds_the_bound_in_characters_whatever_they_cost_in_bytes(
     }
 
     // The control: holding the text to the bound changes nothing about WHICH identifiers
-    // resolve — a portal this service serves is still listed rather than refused.
+    // resolve — a portal this service serves is still listed rather than refused. The
+    // identifier is the one the catalog derives from a modelled portal name: that name
+    // lowercased with its underscores hyphenated.
+    let served = PROCUREMENT_PORTAL_NAME_VALUES[0]
+        .to_lowercase()
+        .replace('_', "-");
     let listed = ok(
         &router,
         "a served portal",
         "ListProcurementPortalSuppliers",
-        &json!({"PortalIdentifier": "zip"}),
+        &json!({"PortalIdentifier": served}),
     )
     .await;
     assert!(

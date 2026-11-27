@@ -29,17 +29,39 @@ use std::sync::Arc;
 use serde_json::{json, Value};
 use smithy_server_runtime::multi_service_router::MultiServiceRouter;
 
+use service_com_amazonaws_invoicing_invoicing::ops::types::PROCUREMENT_PORTAL_NAME_VALUES;
 use service_com_amazonaws_invoicing_invoicing::state::ComAmazonawsInvoicingInvoicingState;
 
-/// Every value `ProcurementPortalName` accepts (`smithy_query(query="shape",
-/// shape="ProcurementPortalName")`).
-pub(crate) const PORTAL_NAMES: &[&str] = &["ZIP", "SAP_BUSINESS_NETWORK", "JAGGAER", "COUPA"];
+/// Every value `ProcurementPortalName` accepts, taken from the model's own value set
+/// (`smithy_query(query="shape", shape="ProcurementPortalName")`) rather than restated
+/// here, so a table over the portals follows the model.
+pub(crate) const PORTAL_NAMES: &[&str] = PROCUREMENT_PORTAL_NAME_VALUES;
+
+/// The portal the row at `index` of a table routes to. A table may carry more rows than
+/// the model declares portals, so a row past the end wraps round the value set: the rows
+/// of these tables are told apart by the identity each one creates, not by the portal it
+/// names.
+pub(crate) fn portal_at(index: usize) -> &'static str {
+    PORTAL_NAMES[index % PORTAL_NAMES.len()]
+}
 
 /// The portal the CREATE's own member states its Marketplace PunchOut configuration
 /// requirement for (`CreateProcurementPortalPreferenceRequest$MarketplacePunchOutPreference`:
 /// "Required for Coupa when MarketplacePunchOutEnabled is true"); the UPDATE states it for
 /// every portal, which is what makes one row's update refusable.
-const PORTAL_REQUIRING_PUNCH_OUT_CONFIG: &str = "COUPA";
+pub(crate) const PORTAL_REQUIRING_PUNCH_OUT_CONFIG: &str = "COUPA";
+
+/// A portal whose create states no Marketplace PunchOut configuration requirement: the
+/// first value `ProcurementPortalName` admits other than
+/// [`PORTAL_REQUIRING_PUNCH_OUT_CONFIG`], so a row that enables Marketplace PunchOut
+/// without stating its configuration is accepted.
+pub(crate) fn portal_without_punch_out_requirement() -> &'static str {
+    PORTAL_NAMES
+        .iter()
+        .copied()
+        .find(|portal| *portal != PORTAL_REQUIRING_PUNCH_OUT_CONFIG)
+        .expect("the model declares a portal beside the one its create requires a configuration for")
+}
 
 /// A status every plane of a preference may hold: one of the values
 /// `ProcurementPortalPreferenceStatus` admits (`smithy_query(query="shape",
@@ -379,7 +401,7 @@ fn refusal_classes() -> Vec<Refusal> {
     vec![
         Refusal {
             label: "a status update stating no plane",
-            portal: PORTAL_NAMES[1],
+            portal: portal_at(1),
             operation: "UpdateProcurementPortalPreferenceStatus",
             request: status_update_stating_nothing,
             http_status: 400,
@@ -387,7 +409,7 @@ fn refusal_classes() -> Vec<Refusal> {
         },
         Refusal {
             label: "a status update stating a reason without its status",
-            portal: PORTAL_NAMES[2],
+            portal: portal_at(2),
             operation: "UpdateProcurementPortalPreferenceStatus",
             request: status_update_stating_a_reason_only,
             http_status: 400,
@@ -395,7 +417,7 @@ fn refusal_classes() -> Vec<Refusal> {
         },
         Refusal {
             label: "a status update naming a status outside the modelled enum",
-            portal: PORTAL_NAMES[3],
+            portal: portal_at(3),
             operation: "UpdateProcurementPortalPreferenceStatus",
             request: status_update_outside_the_enum,
             http_status: 400,
@@ -403,7 +425,7 @@ fn refusal_classes() -> Vec<Refusal> {
         },
         Refusal {
             label: "a status update into a status the service assigns itself",
-            portal: PORTAL_NAMES[0],
+            portal: portal_at(0),
             operation: "UpdateProcurementPortalPreferenceStatus",
             request: status_update_into_a_service_assigned_status,
             http_status: 400,
@@ -411,7 +433,7 @@ fn refusal_classes() -> Vec<Refusal> {
         },
         Refusal {
             label: "a status update into a status the lifecycle does not reach from here",
-            portal: PORTAL_NAMES[1],
+            portal: portal_at(1),
             operation: "UpdateProcurementPortalPreferenceStatus",
             request: status_update_into_an_unreachable_status,
             http_status: 400,
@@ -427,7 +449,7 @@ fn refusal_classes() -> Vec<Refusal> {
         },
         Refusal {
             label: "a create of the identity this preference already holds",
-            portal: PORTAL_NAMES[0],
+            portal: portal_at(0),
             operation: "CreateProcurementPortalPreference",
             request: conflicting_create,
             http_status: 409,
@@ -880,7 +902,7 @@ fn rejected_code_rows() -> Vec<RejectedCode> {
     vec![
         RejectedCode {
             label: "no code outstanding, straight after the create",
-            portal: PORTAL_NAMES[0],
+            portal: portal_at(0),
             writes_after_create: 0,
             write_with_status_update: false,
             issue_a_code: false,
@@ -888,7 +910,7 @@ fn rejected_code_rows() -> Vec<RejectedCode> {
         },
         RejectedCode {
             label: "no code outstanding, after one configuration update",
-            portal: PORTAL_NAMES[1],
+            portal: portal_at(1),
             writes_after_create: 1,
             write_with_status_update: false,
             issue_a_code: false,
@@ -896,7 +918,7 @@ fn rejected_code_rows() -> Vec<RejectedCode> {
         },
         RejectedCode {
             label: "a code outstanding, straight after the create",
-            portal: PORTAL_NAMES[2],
+            portal: portal_at(2),
             writes_after_create: 0,
             write_with_status_update: false,
             issue_a_code: true,
@@ -904,7 +926,7 @@ fn rejected_code_rows() -> Vec<RejectedCode> {
         },
         RejectedCode {
             label: "a code outstanding, after one status update",
-            portal: PORTAL_NAMES[3],
+            portal: portal_at(3),
             writes_after_create: 1,
             write_with_status_update: true,
             issue_a_code: true,
@@ -912,7 +934,7 @@ fn rejected_code_rows() -> Vec<RejectedCode> {
         },
         RejectedCode {
             label: "a code outstanding, after two configuration updates",
-            portal: PORTAL_NAMES[0],
+            portal: portal_at(0),
             writes_after_create: 2,
             write_with_status_update: false,
             issue_a_code: true,
@@ -920,7 +942,7 @@ fn rejected_code_rows() -> Vec<RejectedCode> {
         },
         RejectedCode {
             label: "no code outstanding, after two configuration updates",
-            portal: PORTAL_NAMES[2],
+            portal: portal_at(2),
             writes_after_create: 2,
             write_with_status_update: false,
             issue_a_code: false,

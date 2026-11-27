@@ -84,8 +84,7 @@
 //! * `ProcurementPortalInstanceEndpoint` (BasicStringWithoutSpace, len 0..1024, pattern
 //!   ^\S+$) — The endpoint URL where e-invoices will be delivered to the procurement portal.
 //!   Must be a valid HTTPS URL.
-//! * `ProcurementPortalName` (ProcurementPortalName, one of: ZIP | SAP_BUSINESS_NETWORK |
-//!   JAGGAER | COUPA)
+//! * `ProcurementPortalName` (ProcurementPortalName, one of: COUPA | SAP_BUSINESS_NETWORK)
 //!   **required** — The name of the procurement portal.
 //! * `ProcurementPortalSharedSecret` (SensitiveBasicStringWithoutSpace, len 0..1024, pattern
 //!   ^\S+$) — The shared secret or authentication credential used to establish secure
@@ -315,9 +314,6 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 CreateProcurementPortalPreferenceErrorModeled::ServiceQuotaExceededException(
                     ServiceQuotaExceededException {
                         message: crate::state::TAG_QUOTA_EXCEEDED_MESSAGE.to_string(),
-                        // The procurement-portal plane keys the text as `Message` (see
-                        // `crate::ops::types::MessageKey`).
-                        message_key: MessageKey::Capitalised,
                     },
                 )
             })?;
@@ -362,9 +358,6 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     message: Some(DUPLICATE_PORTAL_IDENTIFIERS_MESSAGE.to_string()),
                     resource_id: Some(existing.preference.procurement_portal_preference_arn.clone()),
                     resource_type: Some(RESOURCE_TYPE.to_string()),
-                    // The procurement-portal plane keys the text as `Message` (see
-                    // `crate::ops::types::MessageKey`).
-                    message_key: MessageKey::Capitalised,
                 },
             )
             .into());
@@ -381,9 +374,6 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                              preferences",
                             crate::state::MAX_PROCUREMENT_PORTAL_PREFERENCES
                         ),
-                        // The procurement-portal plane keys the text as `Message` (see
-                        // `crate::ops::types::MessageKey`).
-                        message_key: MessageKey::Capitalised,
                     },
                 )
                 .into(),

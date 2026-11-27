@@ -29,18 +29,25 @@ use std::sync::Arc;
 use serde_json::{json, Value};
 use smithy_server_runtime::multi_service_router::MultiServiceRouter;
 
+use service_com_amazonaws_invoicing_invoicing::ops::types::PROCUREMENT_PORTAL_NAME_VALUES;
+
 /// The portals this service serves, each with the `PortalIdentifier` a caller names it
 /// by: one per value of `ProcurementPortalName` (`smithy_query(query="shape",
-/// shape="ProcurementPortalName")` — `ZIP | SAP_BUSINESS_NETWORK | JAGGAER | COUPA`),
-/// identified by that name lowercased with its underscores hyphenated. The model
-/// publishes no identifier for a portal, so this is the identifier the emulator derives
-/// and the one `ListProcurementPortals` reports.
-const PORTALS: &[(&str, &str)] = &[
-    ("COUPA", "coupa"),
-    ("JAGGAER", "jaggaer"),
-    ("SAP_BUSINESS_NETWORK", "sap-business-network"),
-    ("ZIP", "zip"),
-];
+/// shape="ProcurementPortalName")`, read here from the model's own value set rather than
+/// restated), identified by that name lowercased with its underscores hyphenated. The
+/// model publishes no identifier for a portal, so this is the identifier the emulator
+/// derives and the one `ListProcurementPortals` reports.
+fn portals() -> Vec<(&'static str, String)> {
+    PROCUREMENT_PORTAL_NAME_VALUES
+        .iter()
+        .map(|name| (*name, name.to_lowercase().replace('_', "-")))
+        .collect()
+}
+
+/// The identifier a caller names `portal_name` by, by that same rule.
+fn identifier_of(portal_name: &str) -> String {
+    portal_name.to_lowercase().replace('_', "-")
+}
 
 /// The values `ProcurementPortalEnv` admits (`smithy_query(query="shape",
 /// shape="ProcurementPortalEnv")`), which is what a reported `Environment` is one of.
@@ -274,42 +281,42 @@ fn configured_by(request: &Value) -> Vec<Supplier> {
 fn supplier_cases() -> Vec<SupplierCase> {
     vec![
         SupplierCase {
-            case: "zip, no selector and no test environment",
+            case: "sap, no selector and no test environment",
             request: json!({
-                "ProcurementPortalName": "ZIP",
+                "ProcurementPortalName": "SAP_BUSINESS_NETWORK",
                 "BuyerDomain": "NetworkID",
-                "BuyerIdentifier": "zip-buyer-1",
+                "BuyerIdentifier": "sap-buyer-1",
                 "SupplierDomain": "NetworkID",
-                "SupplierIdentifier": "zip-supplier-1",
+                "SupplierIdentifier": "sap-supplier-1",
                 "EinvoiceDeliveryEnabled": true,
                 "PurchaseOrderRetrievalEnabled": false,
-                "Contacts": contacts("zip-1"),
+                "Contacts": contacts("sap-1"),
             }),
         },
         SupplierCase {
-            case: "zip, another buyer configuring the SAME supplier identity",
+            case: "sap, another buyer configuring the SAME supplier identity",
             request: json!({
-                "ProcurementPortalName": "ZIP",
+                "ProcurementPortalName": "SAP_BUSINESS_NETWORK",
                 "BuyerDomain": "NetworkID",
-                "BuyerIdentifier": "zip-buyer-2",
+                "BuyerIdentifier": "sap-buyer-2",
                 "SupplierDomain": "NetworkID",
-                "SupplierIdentifier": "zip-supplier-1",
+                "SupplierIdentifier": "sap-supplier-1",
                 "EinvoiceDeliveryEnabled": true,
                 "PurchaseOrderRetrievalEnabled": true,
-                "Contacts": contacts("zip-2"),
+                "Contacts": contacts("sap-2"),
             }),
         },
         SupplierCase {
-            case: "zip, a third preference configuring another supplier",
+            case: "sap, a third preference configuring another supplier",
             request: json!({
-                "ProcurementPortalName": "ZIP",
+                "ProcurementPortalName": "SAP_BUSINESS_NETWORK",
                 "BuyerDomain": "NetworkID",
-                "BuyerIdentifier": "zip-buyer-3",
+                "BuyerIdentifier": "sap-buyer-3",
                 "SupplierDomain": "NetworkID",
-                "SupplierIdentifier": "zip-supplier-2",
+                "SupplierIdentifier": "sap-supplier-2",
                 "EinvoiceDeliveryEnabled": false,
                 "PurchaseOrderRetrievalEnabled": true,
-                "Contacts": contacts("zip-3"),
+                "Contacts": contacts("sap-3"),
             }),
         },
         SupplierCase {
@@ -323,26 +330,26 @@ fn supplier_cases() -> Vec<SupplierCase> {
                 "Selector": {"SellerOfRecords": ["AWS-INC", "AMCS-LLC", "AWS-EMEA-SARL"]},
                 "EinvoiceDeliveryEnabled": true,
                 "PurchaseOrderRetrievalEnabled": true,
-                "Contacts": contacts("sap-1"),
+                "Contacts": contacts("sap-4"),
             }),
         },
         SupplierCase {
-            case: "jaggaer, a test environment naming its own supplier",
+            case: "coupa, a test environment naming its own supplier",
             request: json!({
-                "ProcurementPortalName": "JAGGAER",
+                "ProcurementPortalName": "COUPA",
                 "BuyerDomain": "NetworkID",
-                "BuyerIdentifier": "jaggaer-buyer-1",
+                "BuyerIdentifier": "coupa-alt-buyer-1",
                 "SupplierDomain": "NetworkID",
-                "SupplierIdentifier": "jaggaer-supplier-prod",
+                "SupplierIdentifier": "coupa-alt-supplier-prod",
                 "TestEnvPreference": {
                     "BuyerDomain": "NetworkID",
-                    "BuyerIdentifier": "jaggaer-buyer-test",
+                    "BuyerIdentifier": "coupa-alt-buyer-test",
                     "SupplierDomain": "NetworkID",
-                    "SupplierIdentifier": "jaggaer-supplier-test",
+                    "SupplierIdentifier": "coupa-alt-supplier-test",
                 },
                 "EinvoiceDeliveryEnabled": true,
                 "PurchaseOrderRetrievalEnabled": false,
-                "Contacts": contacts("jaggaer-1"),
+                "Contacts": contacts("coupa-alt-1"),
             }),
         },
         SupplierCase {
@@ -401,8 +408,8 @@ async fn reports_the_suppliers_the_stored_preferences_configure() {
 
     // Nothing is configured yet, so every portal owes an empty listing and no token —
     // not a 404, which is for an identifier that names no portal at all.
-    for (portal_name, portal_identifier) in PORTALS {
-        let (reported, pages) = walk(&router, portal_name, portal_identifier, None).await;
+    for (portal_name, portal_identifier) in portals() {
+        let (reported, pages) = walk(&router, portal_name, &portal_identifier, None).await;
         assert!(
             reported.is_empty() && pages == 1,
             "case {portal_name} before any create: expected one empty page, got {pages} pages \
@@ -412,15 +419,15 @@ async fn reports_the_suppliers_the_stored_preferences_configure() {
 
     create_all(&router, &cases).await;
 
-    for (portal_name, portal_identifier) in PORTALS {
+    for (portal_name, portal_identifier) in portals() {
         let expected = expected_by_portal(&cases, portal_name);
-        let (reported, _) = walk(&router, portal_name, portal_identifier, None).await;
+        let (reported, _) = walk(&router, portal_name, &portal_identifier, None).await;
         assert_eq!(
             reported, expected,
             "case {portal_name}: expected the configured suppliers {expected:?}, got {reported:?}"
         );
         // A read changes nothing a later caller sees: the same walk answers the same.
-        let (again, _) = walk(&router, portal_name, portal_identifier, None).await;
+        let (again, _) = walk(&router, portal_name, &portal_identifier, None).await;
         assert_eq!(
             again, reported,
             "case {portal_name} re-read: expected {reported:?}, got {again:?}"
@@ -435,14 +442,15 @@ async fn pages_concatenate_to_the_whole_listing() {
     create_all(&router, &cases).await;
 
     // Every page size: both published `MaxResults` bounds and the sizes between them that
-    // split the listings (4 suppliers for Coupa, 3 for SAP, 2 for Zip and for Jaggaer) —
-    // one that is a divisor of a listing, one that is not, and one larger than all of them.
+    // split the listings (six suppliers for one portal of the catalog, five for the other)
+    // — one that is a divisor of a listing, one that is not, and one larger than all of
+    // them.
     for max_results in [MAX_RESULTS_MIN, 2, 3, 4, 5, MAX_RESULTS_MAX] {
-        for (portal_name, portal_identifier) in PORTALS {
+        for (portal_name, portal_identifier) in portals() {
             let case = format!("{portal_name} at MaxResults {max_results}");
             let expected = expected_by_portal(&cases, portal_name);
             let (reported, pages) =
-                walk(&router, &case, portal_identifier, Some(max_results)).await;
+                walk(&router, &case, &portal_identifier, Some(max_results)).await;
             assert_eq!(
                 reported, expected,
                 "case {case}: expected the pages to concatenate to {expected:?}, got {reported:?}"
@@ -471,15 +479,15 @@ async fn reports_a_selector_at_the_modelled_seller_of_record_length() {
     };
 
     let at_the_maximum = json!({
-        "ProcurementPortalName": "ZIP",
+        "ProcurementPortalName": "SAP_BUSINESS_NETWORK",
         "BuyerDomain": "NetworkID",
-        "BuyerIdentifier": "zip-buyer-max",
+        "BuyerIdentifier": "sap-buyer-max",
         "SupplierDomain": "NetworkID",
-        "SupplierIdentifier": "zip-supplier-max",
+        "SupplierIdentifier": "sap-supplier-max",
         "Selector": {"SellerOfRecords": sellers(MAX_SELLERS_OF_RECORD)},
         "EinvoiceDeliveryEnabled": true,
         "PurchaseOrderRetrievalEnabled": true,
-        "Contacts": contacts("zip-max"),
+        "Contacts": contacts("sap-max"),
     });
     create(&router, &at_the_maximum).await;
     let expected = configured_by(&at_the_maximum)
@@ -487,7 +495,13 @@ async fn reports_a_selector_at_the_modelled_seller_of_record_length() {
         .collect::<BTreeSet<Supplier>>()
         .into_iter()
         .collect::<Vec<Supplier>>();
-    let (reported, pages) = walk(&router, "at the maximum", "zip", Some(MAX_RESULTS_MAX)).await;
+    let (reported, pages) = walk(
+        &router,
+        "at the maximum",
+        &identifier_of("SAP_BUSINESS_NETWORK"),
+        Some(MAX_RESULTS_MAX),
+    )
+    .await;
     assert_eq!(
         reported.len(),
         MAX_SELLERS_OF_RECORD,
@@ -503,7 +517,7 @@ async fn reports_a_selector_at_the_modelled_seller_of_record_length() {
     // One past the published maximum is refused by the modelled length, so no such
     // preference is ever stored for this reader to report.
     let mut past_the_maximum = at_the_maximum.clone();
-    past_the_maximum["BuyerIdentifier"] = json!("zip-buyer-past-max");
+    past_the_maximum["BuyerIdentifier"] = json!("sap-buyer-past-max");
     past_the_maximum["Selector"] = json!({"SellerOfRecords": sellers(MAX_SELLERS_OF_RECORD + 1)});
     let (status, body) = call(
         &router,
@@ -528,7 +542,10 @@ async fn refuses_a_max_results_outside_the_published_range() {
         let (status, body) = call(
             &router,
             "ListProcurementPortalSuppliers",
-            &json!({"PortalIdentifier": "zip", "MaxResults": max_results}),
+            &json!({
+                "PortalIdentifier": identifier_of("SAP_BUSINESS_NETWORK"),
+                "MaxResults": max_results,
+            }),
         )
         .await;
         assert_eq!(
@@ -548,7 +565,13 @@ async fn refuses_an_identifier_that_names_no_portal() {
     // Identifiers that name no portal: the portal NAME rather than its identifier, a
     // near-miss of one, an identifier of another shape entirely, and one that is a
     // prefix of a real one.
-    for portal_identifier in ["ZIP", "zipp", "sap_business_network", "unknown-portal", "zi"] {
+    for portal_identifier in [
+        "COUPA",
+        "coupaa",
+        "sap_business_network",
+        "unknown-portal",
+        "cou",
+    ] {
         let (status, body) = call(
             &router,
             "ListProcurementPortalSuppliers",
@@ -590,8 +613,13 @@ async fn refuses_a_next_token_minted_for_another_walk() {
         .unwrap_or_else(|| panic!("expected a NextToken in {first}"))
         .to_string();
 
+    let other_portal = identifier_of("SAP_BUSINESS_NETWORK");
     for (case, portal_identifier, next_token) in [
-        ("coupa's token on zip's walk", "zip", coupa_token.as_str()),
+        (
+            "coupa's token on another portal's walk",
+            other_portal.as_str(),
+            coupa_token.as_str(),
+        ),
         ("a token this service never minted", "coupa", "not-a-token"),
         ("hex that decodes to another prefix", "coupa", "6162636465"),
     ] {
@@ -635,18 +663,19 @@ async fn refuses_a_next_token_minted_for_another_walk() {
 async fn follows_the_preferences_through_a_rewrite_and_a_delete() {
     let router = emulator();
     let create_request = json!({
-        "ProcurementPortalName": "JAGGAER",
+        "ProcurementPortalName": "SAP_BUSINESS_NETWORK",
         "BuyerDomain": "NetworkID",
-        "BuyerIdentifier": "jaggaer-buyer-1",
+        "BuyerIdentifier": "sap-buyer-1",
         "SupplierDomain": "NetworkID",
-        "SupplierIdentifier": "jaggaer-supplier-1",
+        "SupplierIdentifier": "sap-supplier-1",
         "Selector": {"SellerOfRecords": ["AWS-INC"]},
         "EinvoiceDeliveryEnabled": true,
         "PurchaseOrderRetrievalEnabled": true,
-        "Contacts": contacts("jaggaer-rewrite"),
+        "Contacts": contacts("sap-rewrite"),
     });
     let arn = create(&router, &create_request).await;
-    let (created, _) = walk(&router, "after the create", "jaggaer", None).await;
+    let portal_identifier = identifier_of("SAP_BUSINESS_NETWORK");
+    let (created, _) = walk(&router, "after the create", &portal_identifier, None).await;
     assert_eq!(
         created,
         configured_by(&create_request),
@@ -665,16 +694,16 @@ async fn follows_the_preferences_through_a_rewrite_and_a_delete() {
         "Selector": {"SellerOfRecords": ["AWS-INC", "AMCS-LLC"]},
         "TestEnvPreference": {
             "BuyerDomain": "NetworkID",
-            "BuyerIdentifier": "jaggaer-buyer-test",
+            "BuyerIdentifier": "sap-buyer-test",
             "SupplierDomain": "NetworkID",
-            "SupplierIdentifier": "jaggaer-supplier-test",
+            "SupplierIdentifier": "sap-supplier-test",
         },
         "EinvoiceDeliveryEnabled": true,
         "PurchaseOrderRetrievalEnabled": true,
-        "Contacts": contacts("jaggaer-rewritten"),
+        "Contacts": contacts("sap-rewritten"),
     });
     ok(&router, "PutProcurementPortalPreference", &rewrite).await;
-    let (rewritten, _) = walk(&router, "after the rewrite", "jaggaer", None).await;
+    let (rewritten, _) = walk(&router, "after the rewrite", &portal_identifier, None).await;
     // What the preference configures after the rewrite: the stored production supplier
     // identity, under the rewritten selector and test environment.
     let mut rewritten_configuration = rewrite.clone();
@@ -697,7 +726,7 @@ async fn follows_the_preferences_through_a_rewrite_and_a_delete() {
         &json!({"ProcurementPortalPreferenceArn": arn}),
     )
     .await;
-    let (after_delete, pages) = walk(&router, "after the delete", "jaggaer", None).await;
+    let (after_delete, pages) = walk(&router, "after the delete", &portal_identifier, None).await;
     assert!(
         after_delete.is_empty() && pages == 1,
         "case after the delete: expected one empty page, got {pages} pages of {after_delete:?}"

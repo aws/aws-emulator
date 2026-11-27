@@ -175,9 +175,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         )
         .map_err(|_| {
             ListProcurementPortalPreferencesErrorModeled::ValidationException(
-                // This plane keys the refusal's text as `Message` (see
-                // `crate::ops::types::MessageKey`).
-                crate::state::invalid_next_token(MessageKey::Capitalised),
+                crate::state::invalid_next_token(),
             )
         })?;
         // The walk's maximum, and the page size this request resolves to inside it: the

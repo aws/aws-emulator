@@ -41,7 +41,7 @@ use service_com_amazonaws_invoicing_invoicing::state::ComAmazonawsInvoicingInvoi
 
 use crate::refused_procurement_portal_writes::{
     accepted_update_round, arn_of, call, create_with_delivery_endpoint, emulator_with_engine,
-    error_code, error_text, get_preference, minimal_create, ok, outstanding_code,
+    error_code, error_text, get_preference, minimal_create, ok, outstanding_code, portal_at,
     undeliverable_sentence, PORTAL_INSTANCE_ENDPOINT, PORTAL_NAMES,
 };
 
@@ -146,31 +146,31 @@ fn rows() -> Vec<Row> {
     vec![
         Row {
             label: "one send, straight after the create",
-            portal: PORTAL_NAMES[0],
+            portal: portal_at(0),
             writes_after_create: 0,
             sends: 1,
         },
         Row {
             label: "one send, after one configuration update",
-            portal: PORTAL_NAMES[1],
+            portal: portal_at(1),
             writes_after_create: 1,
             sends: 1,
         },
         Row {
             label: "two sends, after one configuration update",
-            portal: PORTAL_NAMES[2],
+            portal: portal_at(2),
             writes_after_create: 1,
             sends: 2,
         },
         Row {
             label: "three sends, after two configuration updates",
-            portal: PORTAL_NAMES[3],
+            portal: portal_at(3),
             writes_after_create: 2,
             sends: 3,
         },
         Row {
             label: "two sends, straight after the create",
-            portal: PORTAL_NAMES[0],
+            portal: portal_at(0),
             writes_after_create: 0,
             sends: 2,
         },
@@ -542,7 +542,7 @@ async fn a_send_for_an_arn_that_names_no_preference_issues_nothing() {
         &ok(
             &router,
             "CreateProcurementPortalPreference",
-            &minimal_create(PORTAL_NAMES[0], "BUYER-HELD", "SUPPLIER-HELD"),
+            &minimal_create(portal_at(0), "BUYER-HELD", "SUPPLIER-HELD"),
         )
         .await,
     );

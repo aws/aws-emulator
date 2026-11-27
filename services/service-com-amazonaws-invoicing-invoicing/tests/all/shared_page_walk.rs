@@ -136,9 +136,9 @@ async fn create_procurement_portal_preferences(router: &MultiServiceRouter) {
     let preferences: &[(&str, &str, &[&str], bool)] = &[
         ("COUPA", "coupa-1", &["AWS-INC", "AMCS-LLC", "AWS-EMEA"], true),
         ("COUPA", "coupa-2", &[], false),
-        ("JAGGAER", "jaggaer-1", &["AWS-INC"], false),
         ("SAP_BUSINESS_NETWORK", "sap-1", &["AWS-INC", "AWS-EMEA"], false),
-        ("ZIP", "zip-1", &[], true),
+        ("SAP_BUSINESS_NETWORK", "sap-2", &["AWS-INC"], false),
+        ("SAP_BUSINESS_NETWORK", "sap-3", &[], true),
     ];
     for (portal, identifier, sellers, test_env) in preferences {
         let mut request = json!({

@@ -39,6 +39,7 @@ use smithy_server_runtime::multi_service_router::MultiServiceRouter;
 
 use crate::refused_procurement_portal_writes::{
     arn_of, call, emulator_with_engine, error_code, minimal_create, ok,
+    portal_without_punch_out_requirement,
 };
 
 /// The member both writes state the delivery endpoint on, which a refusal about it names.
@@ -49,8 +50,11 @@ const ENDPOINT_MEMBER: &str = "ProcurementPortalInstanceEndpoint";
 const PORTAL_PLANE_KEY: &str = "Message";
 
 /// A portal the create needs no further configuration for, so each row's write turns only
-/// on its endpoint. One of the values `ProcurementPortalName` admits.
-const PORTAL: &str = "ZIP";
+/// on its endpoint: one of the values `ProcurementPortalName` admits, chosen from the
+/// model's own value set.
+fn portal() -> &'static str {
+    portal_without_punch_out_requirement()
+}
 
 /// The explanatory text of a refusal of this plane, if the body carries one.
 fn message(body: &Value) -> String {
@@ -207,7 +211,7 @@ async fn a_create_stores_only_a_secure_delivery_endpoint() {
         let case = row.case;
         let buyer = format!("create-buyer-{index}");
         let supplier = format!("create-supplier-{index}");
-        let mut request = minimal_create(PORTAL, &buyer, &supplier);
+        let mut request = minimal_create(portal(), &buyer, &supplier);
         request[ENDPOINT_MEMBER] = json!(row.endpoint);
         let (status, body) = call(&router, "CreateProcurementPortalPreference", &request).await;
 
@@ -232,7 +236,7 @@ async fn a_create_stores_only_a_secure_delivery_endpoint() {
         // A refused create persisted nothing, so the identity it named is still free: the
         // same portal and buyer/supplier pair creates, rather than conflicting with a
         // preference the refusal left behind.
-        let mut retried = minimal_create(PORTAL, &buyer, &supplier);
+        let mut retried = minimal_create(portal(), &buyer, &supplier);
         retried[ENDPOINT_MEMBER] = json!("https://portal.example.com/cxml");
         let (retry_status, retry_body) =
             call(&router, "CreateProcurementPortalPreference", &retried).await;
@@ -258,7 +262,7 @@ async fn an_update_stores_only_a_secure_delivery_endpoint() {
                 &router,
                 "CreateProcurementPortalPreference",
                 &minimal_create(
-                    PORTAL,
+                    portal(),
                     &format!("update-buyer-{index}"),
                     &format!("update-supplier-{index}"),
                 ),
@@ -305,7 +309,7 @@ async fn an_update_that_states_no_endpoint_keeps_the_stored_one() {
     let (router, _engine) = emulator_with_engine();
 
     let stored = "https://portal.example.com/cxml";
-    let mut request = minimal_create(PORTAL, "kept-buyer", "kept-supplier");
+    let mut request = minimal_create(portal(), "kept-buyer", "kept-supplier");
     request[ENDPOINT_MEMBER] = json!(stored);
     let arn = arn_of(&ok(&router, "CreateProcurementPortalPreference", &request).await);
 
@@ -340,7 +344,7 @@ async fn the_requirement_reaches_the_members_that_document_it() {
 
     for (index, (case, endpoint)) in test_env_endpoints.iter().enumerate() {
         let mut request = minimal_create(
-            PORTAL,
+            portal(),
             &format!("scope-buyer-{index}"),
             &format!("scope-supplier-{index}"),
         );

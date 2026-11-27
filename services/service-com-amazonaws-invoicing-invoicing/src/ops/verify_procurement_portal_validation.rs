@@ -328,9 +328,6 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                             // `ValidationExceptionReason` values
                             // (`crate::ops::types::VALIDATION_EXCEPTION_REASON_VALUES`).
                             reason: Some("invalidInput".to_string()),
-                            // The procurement-portal plane keys the text as `Message`
-                            // (`crate::ops::types::MessageKey`).
-                            message_key: MessageKey::Capitalised,
                             ..Default::default()
                         },
                     )

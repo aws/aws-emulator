@@ -24,7 +24,9 @@ use std::time::Duration;
 use serde_json::{json, Value};
 use smithy_server_runtime::multi_service_router::MultiServiceRouter;
 
-use service_com_amazonaws_invoicing_invoicing::ops::types::ProcurementPortalPreference;
+use service_com_amazonaws_invoicing_invoicing::ops::types::{
+    ProcurementPortalPreference, PROCUREMENT_PORTAL_NAME_VALUES,
+};
 use service_com_amazonaws_invoicing_invoicing::state::{
     self, ComAmazonawsInvoicingInvoicingState, StoredProcurementPortalPreference,
 };
@@ -43,9 +45,15 @@ const TAGS_PER_CALL_MAX: usize = 200;
 /// calls could ever reach it — which is exactly the defect the rows below span.
 const _: () = assert!(TAG_QUOTA < TAGS_PER_CALL_MAX);
 
-/// Every value `ProcurementPortalName` accepts:
+/// Every value `ProcurementPortalName` accepts, taken from the model's own value set:
 /// `smithy_query(query="shape", shape="ProcurementPortalName")`.
-const PORTAL_NAMES: &[&str] = &["ZIP", "SAP_BUSINESS_NETWORK", "JAGGAER", "COUPA"];
+const PORTAL_NAMES: &[&str] = PROCUREMENT_PORTAL_NAME_VALUES;
+
+/// The portal the row at `index` of a table routes to, wrapping round the value set: a
+/// table may carry more rows than the model declares portals.
+fn portal_at(index: usize) -> &'static str {
+    PORTAL_NAMES[index % PORTAL_NAMES.len()]
+}
 
 /// A router carrying only this service, over one shared engine — the same assembly the
 /// production router performs, minus the other services. The engine is handed back for
@@ -849,8 +857,8 @@ async fn portal_validation_accepts_only_the_code_it_issued() {
     let (router, engine) = emulator_with_engine();
     let first = preference_arn("pref-0000000000a1");
     let second = preference_arn("pref-0000000000b2");
-    seed_preference(&engine, &first, PORTAL_NAMES[0]);
-    seed_preference(&engine, &second, PORTAL_NAMES[2]);
+    seed_preference(&engine, &first, portal_at(0));
+    seed_preference(&engine, &second, portal_at(2));
 
     // No code is outstanding yet, so there is no code any submission could match.
     let (status, body) = call(

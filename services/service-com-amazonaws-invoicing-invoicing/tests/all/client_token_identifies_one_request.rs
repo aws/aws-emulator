@@ -22,7 +22,7 @@ use smithy_server_runtime::multi_service_router::MultiServiceRouter;
 use crate::refused_procurement_portal_writes::{
     accepted_update_round, arn_of, call, create_with_delivery_endpoint, emulator_with_engine,
     error_code, error_text, get_preference, invalid_code_sentence, issue_code, ok,
-    outstanding_code, shifted, validate_preference, version, PORTAL_NAMES,
+    outstanding_code, portal_at, shifted, validate_preference, version, PORTAL_NAMES,
     STATUS_TEST_INITIALIZED,
 };
 
@@ -131,27 +131,27 @@ fn code_rows() -> Vec<CodeRow> {
     vec![
         CodeRow {
             label: "a shifted copy of the code the token was spent on",
-            portal: PORTAL_NAMES[0],
+            portal: portal_at(0),
             other_code: a_shifted_copy,
         },
         CodeRow {
             label: "a code of a different shape",
-            portal: PORTAL_NAMES[1],
+            portal: portal_at(1),
             other_code: a_non_digit_code,
         },
         CodeRow {
             label: "a longer code",
-            portal: PORTAL_NAMES[2],
+            portal: portal_at(2),
             other_code: a_longer_code,
         },
         CodeRow {
             label: "a one-character code",
-            portal: PORTAL_NAMES[3],
+            portal: portal_at(3),
             other_code: a_one_character_code,
         },
         CodeRow {
             label: "the code outstanding for another preference",
-            portal: PORTAL_NAMES[0],
+            portal: portal_at(0),
             other_code: another_preferences_code,
         },
     ]
@@ -174,7 +174,7 @@ async fn a_spent_token_does_not_excuse_the_code_check() {
             &router,
             "CreateProcurementPortalPreference",
             &create_with_delivery_endpoint(
-                PORTAL_NAMES[1],
+                portal_at(1),
                 "BUYER-ELSEWHERE",
                 "SUPPLIER-ELSEWHERE",
             ),
@@ -312,35 +312,35 @@ fn status_rows() -> Vec<StatusRow> {
     vec![
         StatusRow {
             label: "the identical request",
-            portal: PORTAL_NAMES[0],
+            portal: portal_at(0),
             patch: json!({}),
             owed: Owed::Replay,
             expected_reason: "the first move",
         },
         StatusRow {
             label: "the next status the lifecycle allows for that plane",
-            portal: PORTAL_NAMES[1],
+            portal: portal_at(1),
             patch: json!({"EinvoiceDeliveryPreferenceStatus": STATUS_ACTIVE}),
             owed: Owed::Applied(STATUS_ACTIVE, None),
             expected_reason: "the first move",
         },
         StatusRow {
             label: "the same status with another reason",
-            portal: PORTAL_NAMES[2],
+            portal: portal_at(2),
             patch: json!({"EinvoiceDeliveryPreferenceStatusReason": "a second reason"}),
             owed: Owed::Applied(STATUS_TEST_INITIALIZED, None),
             expected_reason: "a second reason",
         },
         StatusRow {
             label: "the other plane stated as well",
-            portal: PORTAL_NAMES[3],
+            portal: portal_at(3),
             patch: json!({"PurchaseOrderRetrievalPreferenceStatus": STATUS_TEST_INITIALIZED}),
             owed: Owed::Applied(STATUS_TEST_INITIALIZED, Some(STATUS_TEST_INITIALIZED)),
             expected_reason: "the first move",
         },
         StatusRow {
             label: "a status only the service assigns",
-            portal: PORTAL_NAMES[0],
+            portal: portal_at(0),
             patch: json!({"EinvoiceDeliveryPreferenceStatus": STATUS_PENDING_VERIFICATION}),
             owed: Owed::Refused,
             expected_reason: "the first move",

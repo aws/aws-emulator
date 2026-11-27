@@ -33,7 +33,7 @@ use serde_json::{json, Value};
 use smithy_server_runtime::multi_service_router::MultiServiceRouter;
 
 use crate::refused_procurement_portal_writes::{
-    emulator_with_engine, validate_preference, PORTAL_INSTANCE_ENDPOINT,
+    emulator_with_engine, validate_preference, PORTAL_INSTANCE_ENDPOINT, PORTAL_NAMES,
 };
 
 /// The statuses the planes of a preference hold once its validation is complete and the
@@ -44,10 +44,6 @@ use crate::refused_procurement_portal_writes::{
 const VALIDATED: &str = "VALIDATED";
 const TEST_INITIALIZED: &str = "TEST_INITIALIZED";
 const ACTIVE: &str = "ACTIVE";
-
-/// Every value `ProcurementPortalName` accepts (`smithy_query(query="shape",
-/// shape="ProcurementPortalName")`).
-const PORTAL_NAMES: &[&str] = &["ZIP", "SAP_BUSINESS_NETWORK", "JAGGAER", "COUPA"];
 
 /// The members of a stored preference no status update can change: its identity, when it
 /// was created, and the configuration members — none of them is a member of this

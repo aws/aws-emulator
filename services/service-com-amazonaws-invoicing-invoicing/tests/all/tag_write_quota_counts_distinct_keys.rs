@@ -23,6 +23,8 @@ use std::sync::Arc;
 use serde_json::{json, Value};
 use smithy_server_runtime::multi_service_router::MultiServiceRouter;
 
+use service_com_amazonaws_invoicing_invoicing::ops::types::PROCUREMENT_PORTAL_NAME_VALUES;
+
 /// How many tags ONE RESOURCE holds — the per-resource quota this service enforces
 /// (`crate::state::MAX_RESOURCE_TAGS`, the AWS-wide "maximum number of tags per resource"
 /// tagging quota), strictly below `ResourceTagList`'s per-CALL maximum.
@@ -288,7 +290,10 @@ async fn resource(router: &MultiServiceRouter, kind: Kind, label: &str) -> Strin
                 router,
                 "CreateProcurementPortalPreference",
                 &json!({
-                    "ProcurementPortalName": "ZIP",
+                    // One of the portals the model declares (`smithy_query(query="shape",
+                    // shape="ProcurementPortalName")`); which one it is does not matter to
+                    // the tag quota under test.
+                    "ProcurementPortalName": PROCUREMENT_PORTAL_NAME_VALUES[0],
                     "BuyerDomain": "NetworkID",
                     "BuyerIdentifier": format!("buyer-{label}"),
                     "SupplierDomain": "NetworkID",

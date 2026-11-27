@@ -71,7 +71,7 @@
 
 use smithy_server_runtime::{Refusal, Refused, Violation, ViolationKind};
 
-use crate::ops::types::{MessageKey, ValidationException, ValidationExceptionField};
+use crate::ops::types::{ValidationException, ValidationExceptionField};
 
 /// The error code this service answers an input-constraint violation with: its own
 /// modelled `ValidationException`, which every operation declares and which the model
@@ -331,6 +331,12 @@ pub(crate) fn envelope(violations: &[Violation]) -> Option<String> {
 /// the message bounds, so the count the envelope states is the number of entries the
 /// field list carries. Every text is held to [`MAX_MESSAGE_LENGTH`], the bound the model
 /// gives each of the members it travels in.
+///
+/// This body is answered by the input validator in FRONT of the service rather than by the
+/// plane the request was for (see this module's docs and [`crate::service::FrontDoor`]), so
+/// its text reaches the wire under the member name the model spells — the member every
+/// recorded refusal of a request carries it in — rather than under the answering plane's
+/// ([`crate::service::error_body_members`]).
 pub(crate) fn field_validation_failed(violations: &[Violation]) -> ValidationException {
     let capped = &violations[..violations.len().min(MAX_VIOLATIONS)];
     // A violation class with no wording here declines the envelope, which keeps the
@@ -341,12 +347,6 @@ pub(crate) fn field_validation_failed(violations: &[Violation]) -> ValidationExc
         message: Some(message),
         resource_name: None,
         reason: Some(REASON_FIELD_VALIDATION_FAILED.to_string()),
-        // A refusal of the REQUEST is answered by the input validator in FRONT of the
-        // service, not by the plane the request was for (see this module's docs and
-        // `crate::service`), so the text travels under the member name the model spells
-        // — the key every recorded refusal of a request carries
-        // (`crate::ops::types::MessageKey`).
-        message_key: MessageKey::ModelMemberName,
         field_list: Some(
             violations
                 .iter()

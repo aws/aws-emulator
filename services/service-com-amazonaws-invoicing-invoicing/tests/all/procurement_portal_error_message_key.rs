@@ -34,6 +34,24 @@ use std::sync::Arc;
 use serde_json::{json, Value};
 use smithy_server_runtime::multi_service_router::MultiServiceRouter;
 
+use service_com_amazonaws_invoicing_invoicing::ops::types::PROCUREMENT_PORTAL_NAME_VALUES;
+
+/// The portal whose create states a Marketplace PunchOut configuration requirement of its
+/// own (`CreateProcurementPortalPreferenceRequest$MarketplacePunchOutPreference`:
+/// "Required for Coupa when MarketplacePunchOutEnabled is true"), which one row provokes.
+const PORTAL_REQUIRING_PUNCH_OUT_CONFIG: &str = "COUPA";
+
+/// A portal a create needs no further configuration for, so a row's write turns on what
+/// the row is about: the first value `ProcurementPortalName` admits other than the portal
+/// above (`smithy_query(query="shape", shape="ProcurementPortalName")`).
+fn plain_portal() -> &'static str {
+    PROCUREMENT_PORTAL_NAME_VALUES
+        .iter()
+        .copied()
+        .find(|portal| *portal != PORTAL_REQUIRING_PUNCH_OUT_CONFIG)
+        .expect("the model declares a portal beside the one with a configuration requirement")
+}
+
 /// The key the PROCUREMENT-PORTAL-PREFERENCE plane's refusals carry their explanatory
 /// text under, as every recorded body of that plane keys it.
 const PORTAL_PLANE_KEY: &str = "Message";
@@ -210,8 +228,9 @@ async fn a_refusals_message_key_is_the_answering_planes() {
 
     // Resources these rows refuse AGAINST, so a refusal is about the request rather than
     // about an empty store.
-    let held_preference = create_preference(&router, "ZIP", "held").await;
-    let coupa_preference = create_preference(&router, "COUPA", "coupa-held").await;
+    let held_preference = create_preference(&router, plain_portal(), "held").await;
+    let coupa_preference =
+        create_preference(&router, PORTAL_REQUIRING_PUNCH_OUT_CONFIG, "coupa-held").await;
     let held_unit = create_unit(&router, "HeldUnit").await;
 
     let absent_preference = absent_preference_arn("does-not-exist-000");
@@ -275,7 +294,7 @@ async fn a_refusals_message_key_is_the_answering_planes() {
         RefusalCase {
             case: "create a preference whose identity is already held".to_string(),
             operation: "CreateProcurementPortalPreference".to_string(),
-            request: create_preference_request("ZIP", "held"),
+            request: create_preference_request(plain_portal(), "held"),
             status: 409,
             error_code: "ConflictException",
         },
@@ -284,7 +303,7 @@ async fn a_refusals_message_key_is_the_answering_planes() {
                 .to_string(),
             operation: "CreateProcurementPortalPreference".to_string(),
             request: json!({
-                "ProcurementPortalName": "COUPA",
+                "ProcurementPortalName": PORTAL_REQUIRING_PUNCH_OUT_CONFIG,
                 "BuyerDomain": "NetworkID",
                 "BuyerIdentifier": "punch-out-buyer",
                 "SupplierDomain": "NetworkID",
@@ -425,7 +444,7 @@ async fn a_not_found_of_the_portal_plane_is_worded_from_the_request() {
     let router = emulator();
     // One preference and one unit exist, so each row is reported absent on its own
     // account rather than because the store is empty.
-    create_preference(&router, "ZIP", "held").await;
+    create_preference(&router, plain_portal(), "held").await;
     create_unit(&router, "HeldUnit").await;
 
     let ids = [
@@ -523,8 +542,13 @@ async fn a_not_found_of_the_portal_plane_is_worded_from_the_request() {
 #[tokio::test]
 async fn a_refused_validation_code_states_the_attempt_and_the_budget() {
     let router = emulator();
-    let first = create_preference(&router, "ZIP", "attempts-first").await;
-    let second = create_preference(&router, "JAGGAER", "attempts-second").await;
+    let first = create_preference(&router, plain_portal(), "attempts-first").await;
+    let second = create_preference(
+        &router,
+        PORTAL_REQUIRING_PUNCH_OUT_CONFIG,
+        "attempts-second",
+    )
+    .await;
 
     // One row per attempt, so the reported attempt number has to advance with the count
     // this service keeps rather than being a constant.

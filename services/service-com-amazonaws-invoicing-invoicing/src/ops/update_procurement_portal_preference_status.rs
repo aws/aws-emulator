@@ -231,8 +231,7 @@ fn stated_status(
 
 /// The 400 a request is refused with when it states a plane's status REASON without that
 /// plane's status. Built from the request — it names the two members whose combination was
-/// rejected — and keyed the way this plane's bodies key their text
-/// ([`MessageKey::Capitalised`]).
+/// rejected.
 fn reason_without_status((status_member, reason_member): (&str, &str)) -> ValidationException {
     ValidationException {
         message: Some(format!(
@@ -241,7 +240,6 @@ fn reason_without_status((status_member, reason_member): (&str, &str)) -> Valida
         // `invalidInput` is one of the model's `ValidationExceptionReason` values
         // ([`crate::ops::types::VALIDATION_EXCEPTION_REASON_VALUES`]).
         reason: Some("invalidInput".to_string()),
-        message_key: MessageKey::Capitalised,
         ..Default::default()
     }
 }
@@ -310,8 +308,7 @@ fn stated_detail(
 /// in the order the rules are stated.
 ///
 /// Recorded behaviour: the refusal reads as the detail the request carried followed by the
-/// rules it is invalid because of, and it is keyed the way this plane's bodies key their
-/// text ([`MessageKey::Capitalised`]). A caller-supplied status reason is part of that
+/// rules it is invalid because of. A caller-supplied status reason is part of that
 /// detail, so the sentence is kept inside the bound every message member of this model
 /// carries (`crate::service::validation::bounded_message`).
 fn invalid_status_transition(detail: &str, violations: &[String]) -> ValidationException {
@@ -324,7 +321,6 @@ fn invalid_status_transition(detail: &str, violations: &[String]) -> ValidationE
         // ([`crate::ops::types::VALIDATION_EXCEPTION_REASON_VALUES`]): the status the
         // request stated is not one this resource may be moved to from where it is.
         reason: Some("invalidInput".to_string()),
-        message_key: MessageKey::Capitalised,
         ..Default::default()
     }
 }
@@ -338,7 +334,6 @@ fn no_status_stated() -> ValidationException {
             EINVOICE_DELIVERY_MEMBERS.0, PURCHASE_ORDER_RETRIEVAL_MEMBERS.0
         )),
         reason: Some("invalidInput".to_string()),
-        message_key: MessageKey::Capitalised,
         ..Default::default()
     }
 }

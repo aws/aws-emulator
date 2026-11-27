@@ -210,9 +210,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let resume_at = crate::state::decode_page_offset(&token_prefix, input.next_token.as_deref())
             .map_err(|_| {
                 ListProcurementPortalSuppliersErrorModeled::ValidationException(
-                    // This plane keys the refusal's text as `Message` (see
-                    // `crate::ops::types::MessageKey`).
-                    crate::state::invalid_next_token(MessageKey::Capitalised),
+                    crate::state::invalid_next_token(),
                 )
             })?;
         // The walk's maximum, and the page size this request resolves to inside it: the

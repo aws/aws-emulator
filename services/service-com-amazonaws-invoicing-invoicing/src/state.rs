@@ -94,7 +94,7 @@ use ::rand::Rng;
 use crate::ops::types::{
     AccessDeniedException, Contact, EinvoiceDeliveryPreference, FeatureConfigurations,
     InternalServerException, InvoiceConfiguration, InvoiceProfile, InvoiceSummary, InvoiceUnit,
-    InvoiceUnitRule, MarketplacePunchOutPreference, MessageKey, ProcurementPortal,
+    InvoiceUnitRule, MarketplacePunchOutPreference, ProcurementPortal,
     ProcurementPortalPreference, ProcurementPortalPreferenceSelector,
     ProcurementPortalPreferenceSummary, ProcurementPortalSupplier, ResourceNotFoundException,
     ResourceTag, TestEnvPreferenceInput, ValidationException,
@@ -738,14 +738,12 @@ impl ComAmazonawsInvoicingInvoicingState {
 /// ([`crate::service::validation::bounded_message`]), as every message this service words
 /// from a request is, and `other_unit` — the invoice unit the account is already linked
 /// into — is reported in `resourceName` under the same rule every ARN this service reports
-/// is held to ([`crate::service::validation::reportable_resource_arn`]). The text is keyed
-/// as the invoice-unit plane keys it ([`MessageKey::ModelMemberName`]).
+/// is held to ([`crate::service::validation::reportable_resource_arn`]).
 fn mutual_exclusion(message: String, other_unit: Option<&str>) -> ValidationException {
     ValidationException {
         message: Some(crate::service::validation::bounded_message(message)),
         resource_name: other_unit.and_then(crate::service::validation::reportable_resource_arn),
         reason: Some("mutualExclusionError".to_string()),
-        message_key: MessageKey::ModelMemberName,
         ..Default::default()
     }
 }
@@ -1355,8 +1353,7 @@ pub fn caller_requested_transition_violations(
 /// restates the configuration it was written under.
 ///
 /// The message names the two members whose combination was rejected, so it is built from
-/// what the request is acting on rather than from a constant, and it is keyed the way this
-/// plane's bodies key their text ([`MessageKey::Capitalised`]).
+/// what the request is acting on rather than from a constant.
 pub fn check_plane_enabled_for_status(
     enabled: bool,
     status_member: &str,
@@ -1372,7 +1369,6 @@ pub fn check_plane_enabled_for_status(
         // `invalidInput` is one of the model's `ValidationExceptionReason` values
         // ([`crate::ops::types::VALIDATION_EXCEPTION_REASON_VALUES`]).
         reason: Some("invalidInput".to_string()),
-        message_key: MessageKey::Capitalised,
         ..Default::default()
     })
 }
@@ -1460,9 +1456,7 @@ impl PunchOutConfigRequirement {
 /// it is refused here as the modelled `ValidationException`. How far that requirement
 /// reaches is `requirement`, the scope the write's own member states
 /// ([`PunchOutConfigRequirement`]) — the one part of the rule the two writes differ on.
-/// The message is worded from what the write is acting on rather than from a constant, and
-/// it is keyed the way this plane's recorded bodies key it ([`MessageKey::Capitalised`]) —
-/// every write that reaches this rule is a write of a procurement portal preference.
+/// The message is worded from what the write is acting on rather than from a constant.
 ///
 /// The CONFIGURATION is part of the same rule, the way a disabled plane's status and
 /// reason are part of [`apply_plane_verification_statuses`]:
@@ -1497,7 +1491,6 @@ pub fn resolve_marketplace_punch_out(
             // `invalidInput` is one of the model's `ValidationExceptionReason` values
             // ([`crate::ops::types::VALIDATION_EXCEPTION_REASON_VALUES`]).
             reason: Some("invalidInput".to_string()),
-            message_key: MessageKey::Capitalised,
             ..Default::default()
         });
     }
@@ -1557,8 +1550,7 @@ fn is_secure_endpoint_url(endpoint: &str) -> bool {
 /// [`resolve_marketplace_punch_out`] refuses the combination the model cannot express.
 ///
 /// The refusal names the member it is about, worded as that member words its own
-/// requirement, and is keyed the way this plane's bodies key their text
-/// ([`MessageKey::Capitalised`]). It lives beside the preference registry, for the reason
+/// requirement. It lives beside the preference registry, for the reason
 /// [`PORTAL_COUPA`] states: both writes that set such a member apply it.
 pub fn check_secure_endpoint_url(
     member: &str,
@@ -1575,7 +1567,6 @@ pub fn check_secure_endpoint_url(
         // `invalidInput` is one of the model's `ValidationExceptionReason` values
         // ([`crate::ops::types::VALIDATION_EXCEPTION_REASON_VALUES`]).
         reason: Some("invalidInput".to_string()),
-        message_key: MessageKey::Capitalised,
         ..Default::default()
     })
 }
@@ -1632,7 +1623,6 @@ pub fn check_marketplace_punch_out_redirect_host(
         // `invalidInput` is one of the model's `ValidationExceptionReason` values
         // ([`crate::ops::types::VALIDATION_EXCEPTION_REASON_VALUES`]).
         reason: Some("invalidInput".to_string()),
-        message_key: MessageKey::Capitalised,
         ..Default::default()
     })
 }
@@ -1806,8 +1796,7 @@ const PROCUREMENT_PORTAL_KIND: &str = "Procurement portal";
 
 /// The 404 a reader answers for a `PortalIdentifier` that names no portal this service
 /// serves, worded from the REQUEST the way the rest of the procurement-portal plane
-/// words its refusals (see [`no_such_procurement_portal_preference`]) and keyed the way
-/// that plane keys them ([`MessageKey::Capitalised`]).
+/// words its refusals (see [`no_such_procurement_portal_preference`]).
 ///
 /// `resourceName` is left absent: the model types it as an `InvoiceUnitArnString`
 /// (`smithy_query(query="shape", shape="ResourceNotFoundException")`), so a portal
@@ -1824,8 +1813,7 @@ pub fn no_such_procurement_portal(portal_identifier: &str) -> ResourceNotFoundEx
         message: Some(crate::service::validation::bounded_message(format!(
             "{PROCUREMENT_PORTAL_KIND} with identifier {portal_identifier} does not exist"
         ))),
-        resource_id: None,
-        message_key: MessageKey::Capitalised,
+        resource_name: None,
     }
 }
 
@@ -2065,8 +2053,7 @@ pub fn invoice_profile(account_id: &str) -> InvoiceProfile {
 pub const RESOURCE_NOT_FOUND_MESSAGE: &str = "The resource could not be found.";
 
 /// The 404 an operation of the INVOICE-UNIT or TAG plane answers for an ARN that is not
-/// in state: the constant message, plus `arn` in the shape's own ARN member, keyed the
-/// way those planes' recorded bodies key it ([`MessageKey::ModelMemberName`]).
+/// in state: the constant message, plus `arn` in the shape's own ARN member.
 ///
 /// The ARN is reported only when it is one that member can hold
 /// ([`crate::service::validation::reportable_resource_arn`]), as every value this service
@@ -2081,8 +2068,7 @@ pub const RESOURCE_NOT_FOUND_MESSAGE: &str = "The resource could not be found.";
 pub fn no_such_resource(arn: &str) -> ResourceNotFoundException {
     ResourceNotFoundException {
         message: Some(RESOURCE_NOT_FOUND_MESSAGE.to_string()),
-        resource_id: crate::service::validation::reportable_resource_arn(arn),
-        message_key: MessageKey::ModelMemberName,
+        resource_name: crate::service::validation::reportable_resource_arn(arn),
     }
 }
 
@@ -2098,8 +2084,7 @@ const PROCUREMENT_PORTAL_PREFERENCE_KIND: &str = "Procurement portal preference"
 ///
 /// Recorded behaviour: this plane's message is BUILT FROM THE REQUEST — it names the kind
 /// of resource that was asked about and the exact ARN the request supplied — rather than
-/// the constant sentence the shape's documentation gives, and it travels under the
-/// capitalised key this plane's recorded bodies carry ([`MessageKey::Capitalised`]). The
+/// the constant sentence the shape's documentation gives. The
 /// ARN is reported in the shape's own ARN member as well, so a client can still read it
 /// mechanically instead of parsing it out of the prose.
 ///
@@ -2116,8 +2101,7 @@ pub fn no_such_procurement_portal_preference(arn: &str) -> ResourceNotFoundExcep
         message: Some(crate::service::validation::bounded_message(format!(
             "{PROCUREMENT_PORTAL_PREFERENCE_KIND} with arn {arn} does not exist"
         ))),
-        resource_id: crate::service::validation::reportable_resource_arn(arn),
-        message_key: MessageKey::Capitalised,
+        resource_name: crate::service::validation::reportable_resource_arn(arn),
     }
 }
 
@@ -2134,8 +2118,7 @@ const INVOICE_KIND: &str = "Invoice";
 /// client that fans a read out over a list of invoice ids can tell WHICH id was rejected,
 /// rather than the constant sentence the shape's documentation gives
 /// ([`RESOURCE_NOT_FOUND_MESSAGE`], which the invoice-unit and tag planes' own recorded
-/// bodies carry). It travels under the key those planes key their text with
-/// ([`MessageKey::ModelMemberName`]), which is the member name the model spells.
+/// bodies carry).
 ///
 /// The ARN member is left ABSENT: it is modelled `InvoiceUnitArnString`, whose `@pattern`
 /// admits only an ARN (`smithy_query(query="shape", shape="ResourceNotFoundException")`),
@@ -2153,8 +2136,7 @@ pub fn no_such_invoice(invoice_id: &str) -> ResourceNotFoundException {
         message: Some(crate::service::validation::bounded_message(format!(
             "{INVOICE_KIND} {invoice_id} does not exist"
         ))),
-        resource_id: None,
-        message_key: MessageKey::ModelMemberName,
+        resource_name: None,
     }
 }
 
@@ -2364,14 +2346,14 @@ pub fn page_by_offset<Entry: Clone>(
 /// ([`crate::ops::types::VALIDATION_EXCEPTION_REASON_VALUES`]), so a client branches on
 /// the reason rather than on the prose.
 ///
-/// `message_key` is the walking operation's own plane: a paginated walk of invoice units
-/// or invoice summaries keys the text as those planes do, a walk of procurement portal
-/// preferences as that plane does (see [`MessageKey`]).
-pub fn invalid_next_token(message_key: MessageKey) -> ValidationException {
+/// ONE refusal for every paginated walk of this service, whichever plane the walking
+/// operation belongs to: the member the text reaches the wire under is that plane's and is
+/// applied to what the operation answered (see [`crate::service::error_body_members`]), so
+/// nothing about this refusal is per plane.
+pub fn invalid_next_token() -> ValidationException {
     ValidationException {
         message: Some("The NextToken provided is not valid".to_string()),
         reason: Some("invalidNextToken".to_string()),
-        message_key,
         ..Default::default()
     }
 }

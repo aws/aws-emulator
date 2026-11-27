@@ -249,9 +249,6 @@ fn undeliverable_test_einvoice(endpoint: &str) -> ValidationException {
         // ([`crate::ops::types::VALIDATION_EXCEPTION_REASON_VALUES`]): no member of the
         // request is at fault — the delivery the call attempted did not arrive.
         reason: Some("other".to_string()),
-        // The procurement-portal plane keys the text as `Message`
-        // ([`crate::ops::types::MessageKey`]).
-        message_key: MessageKey::Capitalised,
         ..Default::default()
     }
 }
@@ -271,8 +268,7 @@ const TEST_EINVOICE_DELIVERY_NOT_CONFIRMED: &str = "We could not confirm deliver
      review your Invoice Rules) and submit it to complete verification. If the OTP is not \
      there, verify your portal configuration or contact support.";
 
-/// That refusal as this operation's modelled `ValidationException` (HTTP 400), keyed the
-/// way this plane's bodies key their text ([`MessageKey::Capitalised`]).
+/// That refusal as this operation's modelled `ValidationException` (HTTP 400).
 fn test_einvoice_delivery_not_confirmed() -> ValidationException {
     ValidationException {
         message: Some(TEST_EINVOICE_DELIVERY_NOT_CONFIRMED.to_string()),
@@ -280,7 +276,6 @@ fn test_einvoice_delivery_not_confirmed() -> ValidationException {
         // ([`crate::ops::types::VALIDATION_EXCEPTION_REASON_VALUES`]): no member of the
         // request is at fault — the delivery the call attempted was not confirmed.
         reason: Some("other".to_string()),
-        message_key: MessageKey::Capitalised,
         ..Default::default()
     }
 }

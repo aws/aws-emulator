@@ -47,5 +47,10 @@ pdf-writer = "0.13"
 [build-dependencies]
 emulator-core-build-support = { workspace = true }
 
+[dev-dependencies]
+# Declares one module per `tests/all/<name>.rs` from `tests/all/main.rs`, so this
+# crate's suites are one cargo target and a new suite needs no declaration.
+automod = { workspace = true }
+
 [lints]
 workspace = true

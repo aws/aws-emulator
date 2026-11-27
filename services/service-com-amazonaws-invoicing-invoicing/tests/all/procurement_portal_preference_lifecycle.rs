@@ -41,16 +41,14 @@ use smithy_server_runtime::multi_service_router::MultiServiceRouter;
 
 // The members every applied write of this resource advances, stripped in ONE place for
 // every suite of this plane that compares a configuration across such a write.
-use crate::refused_procurement_portal_writes::{error_text, without_write_markers};
+use crate::refused_procurement_portal_writes::{
+    error_text, portal_without_punch_out_requirement, without_write_markers, PORTAL_NAMES,
+};
 
 /// The status each enabled plane of a preference carries until a validation moves it: one
 /// of the values `ProcurementPortalPreferenceStatus` admits (`smithy_query(query="shape",
 /// shape="ProcurementPortalPreferenceStatus")`).
 const PENDING_VERIFICATION: &str = "PENDING_VERIFICATION";
-
-/// Every value `ProcurementPortalName` accepts (`smithy_query(query="shape",
-/// shape="ProcurementPortalName")`).
-const PORTAL_NAMES: &[&str] = &["ZIP", "SAP_BUSINESS_NETWORK", "JAGGAER", "COUPA"];
 
 /// The members of a stored preference that identify it, which
 /// `PutProcurementPortalPreference`'s input does not carry — so no update can change
@@ -442,7 +440,7 @@ async fn a_put_leaves_the_members_it_does_not_state_alone() {
         // A portal other than Coupa, so Marketplace PunchOut may be enabled without the
         // preference Coupa requires and this row can omit that preference.
         let mut create = minimal_create(
-            "ZIP",
+            portal_without_punch_out_requirement(),
             &format!("BUYER-KEEP-{index}"),
             &format!("SUPPLIER-KEEP-{index}"),
         );

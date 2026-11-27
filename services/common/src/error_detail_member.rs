@@ -89,6 +89,13 @@
 //! same response-level rewrite as the renames above (the same bodies left alone, the same
 //! `content-length` correction), so a service states only which members its wire carries and
 //! what class they hold.
+//!
+//! # The shape a NESTED structure names
+//!
+//! [`with_error_body_list_element_shape`] is that same rewrite for the structures nested in
+//! an error member: a service whose recorded bodies name each element of such a list by its
+//! own shape id, the way the envelope names its own, states the list member and the nested
+//! shape's id and nothing else.
 
 use aws_smithy_runtime_api::http::Response as RtResponse;
 use aws_smithy_types::body::SdkBody;
@@ -307,6 +314,68 @@ pub fn with_restated_detail_member(
 ) -> RtResponse {
     with_rewritten_body(resp, |body| {
         restated_detail_member(body, modelled_shapes, from, to, restated)
+    })
+}
+
+/// `body` with each element of the LIST member `list_member` carrying the shape
+/// DISCRIMINATOR `shape_id`, or `None` when there is nothing to write: the body is not a
+/// JSON object, its `__type` names no shape in `modelled_shapes`, it carries no such list,
+/// or every element already names its shape.
+///
+/// For a service whose recorded error bodies name the shape of the structures NESTED in an
+/// error member the way the envelope names its own: an AWS JSON backend writes the
+/// discriminator on each element of such a list, while the framework's serializer writes
+/// the modelled members alone, so a client that decides how to decode a JSON document from
+/// its discriminator cannot decode the nested detail.
+///
+/// `shape_id` is the nested shape's own id, which the caller reads off that shape's schema
+/// rather than spelling out. Idempotent and non-destructive: an element that already names
+/// a shape keeps the id IT holds, and an element that is not a JSON object is left alone.
+pub fn error_body_with_list_element_shape(
+    body: &[u8],
+    modelled_shapes: &[&str],
+    list_member: &str,
+    shape_id: &str,
+) -> Option<Vec<u8>> {
+    let mut document = modelled_error_document(body, modelled_shapes)?;
+    let elements = document
+        .as_object_mut()?
+        .get_mut(list_member)?
+        .as_array_mut()?;
+    let mut written = false;
+    for element in elements {
+        let Some(object) = element.as_object_mut() else {
+            continue;
+        };
+        if !object.contains_key(SHAPE_DISCRIMINATOR) {
+            object.insert(
+                SHAPE_DISCRIMINATOR.to_string(),
+                Value::String(shape_id.to_string()),
+            );
+            written = true;
+        }
+    }
+    if !written {
+        return None;
+    }
+    serde_json::to_vec(&document).ok()
+}
+
+/// `resp` with every element of one list member of its error body naming its own shape
+/// ([`error_body_with_list_element_shape`]).
+///
+/// The same responses are left untouched, byte for byte, as by the renames above: a success,
+/// a streamed body, a body whose `__type` names no shape of the serving service's model, and
+/// one whose elements already name their shape.
+#[must_use]
+pub fn with_error_body_list_element_shape(
+    resp: RtResponse,
+    modelled_shapes: &[&str],
+    list_member: &str,
+    shape_id: &str,
+) -> RtResponse {
+    with_rewritten_body(resp, |body| {
+        error_body_with_list_element_shape(body, modelled_shapes, list_member, shape_id)
     })
 }
 
@@ -623,6 +692,94 @@ mod tests {
             SdkBody::from(body),
         );
         let answered = with_error_body_members(resp, &SHAPES, &[("Code", "INVALID_INPUT")]);
+        assert_eq!(
+            answered.body().bytes().expect("bytes"),
+            body.as_bytes(),
+            "a success body must be byte-identical"
+        );
+    }
+
+    /// RULE: every element of the named list member names its own shape, and only an element
+    /// that names none gains one. The rows span what the rule generalises over: how many
+    /// elements the list carries, an element that already names a shape, an element that is
+    /// not a structure at all, and an empty list.
+    #[test]
+    fn every_nested_element_of_an_error_list_names_its_own_shape() {
+        const NESTED: &str = "com.amazonaws.example#BadRequestField";
+        const LIST: &str = "fieldList";
+        // (case, the body, the shape each element must name)
+        for (case, body, expected) in [
+            (
+                "one element",
+                r#"{"__type":"BadRequestException","fieldList":[{"name":"a"}]}"#,
+                vec![Some(NESTED)],
+            ),
+            (
+                "several elements",
+                r#"{"__type":"BadRequestException","fieldList":[{"name":"a"},{"name":"b"},{"name":"c"}]}"#,
+                vec![Some(NESTED); 3],
+            ),
+            (
+                "an element that already names a shape",
+                r#"{"__type":"BadRequestException","fieldList":[{"__type":"other#Field"},{"name":"b"}]}"#,
+                vec![Some("other#Field"), Some(NESTED)],
+            ),
+        ] {
+            let rewritten =
+                error_body_with_list_element_shape(body.as_bytes(), &SHAPES, LIST, NESTED)
+                    .unwrap_or_else(|| panic!("case {case:?}: expected a rewrite"));
+            let object = decoded(rewritten);
+            let elements = object
+                .get(LIST)
+                .and_then(Value::as_array)
+                .unwrap_or_else(|| panic!("case {case:?}: expected the list, got {object:?}"));
+            let named: Vec<Option<&str>> = elements
+                .iter()
+                .map(|element| element.get("__type").and_then(Value::as_str))
+                .collect();
+            assert_eq!(
+                named, expected,
+                "case {case:?}: expected the elements to name {expected:?}, got {object:?}"
+            );
+        }
+
+        for (case, body) in [
+            (
+                "an empty list",
+                r#"{"__type":"BadRequestException","fieldList":[]}"#,
+            ),
+            (
+                "no such list member",
+                r#"{"__type":"BadRequestException","Message":"no"}"#,
+            ),
+            (
+                "a list of values that are not structures",
+                r#"{"__type":"BadRequestException","fieldList":["a","b"]}"#,
+            ),
+            (
+                "every element already naming its shape",
+                r#"{"__type":"BadRequestException","fieldList":[{"__type":"other#Field"}]}"#,
+            ),
+            (
+                "a shape the model does not declare",
+                r#"{"__type":"NotImplemented","fieldList":[{"name":"a"}]}"#,
+            ),
+            ("not JSON", "<Error/>"),
+        ] {
+            assert!(
+                error_body_with_list_element_shape(body.as_bytes(), &SHAPES, LIST, NESTED)
+                    .is_none(),
+                "case {case:?}: expected no rewrite"
+            );
+        }
+
+        // A success is not an error body, so nothing nested in it is named either.
+        let body = r#"{"__type":"BadRequestException","fieldList":[{"name":"a"}]}"#;
+        let resp = RtResponse::new(
+            aws_smithy_runtime_api::http::StatusCode::try_from(200u16).expect("200"),
+            SdkBody::from(body),
+        );
+        let answered = with_error_body_list_element_shape(resp, &SHAPES, LIST, NESTED);
         assert_eq!(
             answered.body().bytes().expect("bytes"),
             body.as_bytes(),

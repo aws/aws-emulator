@@ -30,7 +30,7 @@ use serde_json::{json, Value};
 
 use crate::refused_procurement_portal_writes::{
     arn_of, call, create_with_delivery_endpoint, emulator_with_engine, error_code, get_preference,
-    issue_code, ok, PORTAL_NAMES,
+    issue_code, ok, portal_at, PORTAL_NAMES,
 };
 
 /// How many decimal digits an issued validation code carries: the six-digit form the
@@ -213,22 +213,22 @@ fn rows() -> Vec<Row> {
     vec![
         Row {
             label: "one send",
-            portal: PORTAL_NAMES[0],
+            portal: portal_at(0),
             sends: 1,
         },
         Row {
             label: "two sends",
-            portal: PORTAL_NAMES[1],
+            portal: portal_at(1),
             sends: 2,
         },
         Row {
             label: "three sends",
-            portal: PORTAL_NAMES[2],
+            portal: portal_at(2),
             sends: 3,
         },
         Row {
             label: "one send, on the fourth portal",
-            portal: PORTAL_NAMES[3],
+            portal: portal_at(3),
             sends: 1,
         },
     ]

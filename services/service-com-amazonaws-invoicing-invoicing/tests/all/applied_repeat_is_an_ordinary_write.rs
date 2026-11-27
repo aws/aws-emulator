@@ -25,7 +25,7 @@ use smithy_server_runtime::multi_service_router::MultiServiceRouter;
 
 use crate::refused_procurement_portal_writes::{
     arn_of, create_with_delivery_endpoint, emulator_with_engine, get_preference, last_update, ok,
-    validate_preference, version, PORTAL_NAMES, STATUS_TEST_INITIALIZED,
+    portal_at, validate_preference, version, STATUS_TEST_INITIALIZED,
 };
 
 /// The value `ProcurementPortalPreferenceStatus` names for an activated feature — the move
@@ -373,7 +373,7 @@ fn plane_rows() -> Vec<PlaneRow> {
     vec![
         PlaneRow {
             label: "the later request states only the plane the first one left alone",
-            portal: PORTAL_NAMES[0],
+            portal: portal_at(0),
             recorded: json!({"EinvoiceDeliveryPreferenceStatus": STATUS_TEST_INITIALIZED}),
             repeat: json!({"PurchaseOrderRetrievalPreferenceStatus": STATUS_TEST_INITIALIZED}),
             token: Token::Spent,
@@ -382,7 +382,7 @@ fn plane_rows() -> Vec<PlaneRow> {
         },
         PlaneRow {
             label: "the same two planes the other way round",
-            portal: PORTAL_NAMES[1],
+            portal: portal_at(1),
             recorded: json!({"PurchaseOrderRetrievalPreferenceStatus": STATUS_TEST_INITIALIZED}),
             repeat: json!({"EinvoiceDeliveryPreferenceStatus": STATUS_TEST_INITIALIZED}),
             token: Token::Spent,
@@ -391,7 +391,7 @@ fn plane_rows() -> Vec<PlaneRow> {
         },
         PlaneRow {
             label: "the later request carries no ClientToken at all",
-            portal: PORTAL_NAMES[2],
+            portal: portal_at(2),
             recorded: json!({"EinvoiceDeliveryPreferenceStatus": STATUS_TEST_INITIALIZED}),
             repeat: json!({"PurchaseOrderRetrievalPreferenceStatus": STATUS_TEST_INITIALIZED}),
             token: Token::Absent,
@@ -400,7 +400,7 @@ fn plane_rows() -> Vec<PlaneRow> {
         },
         PlaneRow {
             label: "the later request moves one of the two planes the first one stated",
-            portal: PORTAL_NAMES[3],
+            portal: portal_at(3),
             recorded: json!({
                 "EinvoiceDeliveryPreferenceStatus": STATUS_TEST_INITIALIZED,
                 "PurchaseOrderRetrievalPreferenceStatus": STATUS_TEST_INITIALIZED,

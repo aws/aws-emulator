@@ -34,13 +34,15 @@ use std::sync::Arc;
 use serde_json::{json, Value};
 use smithy_server_runtime::multi_service_router::MultiServiceRouter;
 
+use service_com_amazonaws_invoicing_invoicing::ops::types::PROCUREMENT_PORTAL_NAME_VALUES;
+
 /// The key every refusal of the procurement-portal-preference plane carries its
 /// explanatory text under.
 const PORTAL_PLANE_KEY: &str = "Message";
 
-/// Every portal a preference can name: the values `ProcurementPortalName` admits
+/// Every portal a preference can name, taken from the model's own value set
 /// (`smithy_query(query="shape", shape="ProcurementPortalName")`).
-const PORTALS: [&str; 4] = ["ZIP", "SAP_BUSINESS_NETWORK", "JAGGAER", "COUPA"];
+const PORTALS: &[&str] = PROCUREMENT_PORTAL_NAME_VALUES;
 
 /// The one portal the CREATE's own member states its configuration requirement for
 /// (`CreateProcurementPortalPreferenceRequest$MarketplacePunchOutPreference`: "Required
@@ -205,7 +207,7 @@ struct Row {
 /// present and absent.
 fn rows() -> Vec<Row> {
     let mut rows = Vec::new();
-    for portal in PORTALS {
+    for &portal in PORTALS {
         for enabled in [Some(true), Some(false), None] {
             for config in [false, true] {
                 rows.push(Row {

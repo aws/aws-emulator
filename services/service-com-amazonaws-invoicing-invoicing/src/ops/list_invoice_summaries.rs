@@ -150,9 +150,7 @@ fn decode_next_token(
     token: Option<&str>,
 ) -> Result<Option<String>, ListInvoiceSummariesErrorModeled> {
     crate::state::decode_page_token(NEXT_TOKEN_PREFIX, token).map_err(|_| {
-        ListInvoiceSummariesErrorModeled::ValidationException(crate::state::invalid_next_token(
-            MessageKey::ModelMemberName,
-        ))
+        ListInvoiceSummariesErrorModeled::ValidationException(crate::state::invalid_next_token())
     })
 }
 
@@ -312,10 +310,6 @@ fn period_before_data_start() -> ValidationException {
         // ([`crate::ops::types::VALIDATION_EXCEPTION_REASON_VALUES`]): a named member of
         // the request carries a period this operation does not answer about.
         reason: Some("invalidInput".to_string()),
-        // The invoice-summaries plane keys its explanatory text the way the model names
-        // the member, as this operation's own `invalidNextToken` refusal does (see
-        // [`MessageKey`]).
-        message_key: MessageKey::ModelMemberName,
         ..Default::default()
     }
 }
@@ -331,7 +325,6 @@ fn interval_longer_than_bound(bound: IntervalBound) -> ValidationException {
             if bound.with_receiver_role { "" } else { "not " }
         )),
         reason: Some("invalidInput".to_string()),
-        message_key: MessageKey::ModelMemberName,
         ..Default::default()
     }
 }
