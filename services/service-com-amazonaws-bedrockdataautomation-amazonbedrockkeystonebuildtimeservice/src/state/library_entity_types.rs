@@ -13,9 +13,9 @@
 //!
 //! RECORDED for the provisioned type: the read-back of a freshly created library reports one
 //! `entityTypes` element, `VOCABULARY`, carrying an `entityMetadata` value — so a library
-//! holds that type before anything has been ingested into it. The other modelled entity type
-//! (`smithy_query(query="shape",shape="EntityType")` -> `["VOCABULARY",
-//! "RECOGNIZED_PERSON"]`) appears only once an ingestion has populated it.
+//! holds that type before anything has been ingested into it. A type the model declares
+//! beside it (`smithy_query(query="shape",shape="EntityType")` -> `["VOCABULARY"]`) appears
+//! only once an ingestion has populated it.
 //!
 //! Single-homed here because the create and the ingestion submission both write this list and
 //! the library's read projects it: three readings of what a library holds are three answers

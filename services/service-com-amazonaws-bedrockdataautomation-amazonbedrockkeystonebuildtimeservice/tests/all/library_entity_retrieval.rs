@@ -459,7 +459,7 @@ async fn an_upsert_replaces_and_a_delete_removes_the_entity() {
 
 /// RULE: the read resolves the whole triple, so everything that resolves to nothing is
 /// refused — an unresolved library and an ARN of another Region on the library, and an id of
-/// another library, of the other modelled entity type, or one nothing upserted on the entity.
+/// another library, an id differing only in case, or one nothing upserted on the entity.
 ///
 /// The rows differ along WHICH part of the triple fails to resolve.
 #[tokio::test]
@@ -522,10 +522,13 @@ async fn what_resolves_to_nothing_is_refused() {
             state::library_entities::ENTITY_NOT_FOUND_MESSAGE,
         ),
         (
-            "the other modelled entity type",
+            // An `entityId` is the id the upsert named, character for character: the model
+            // admits both cases (`smithy_query(shape="EntityId")` -> `^[a-zA-Z0-9-_]+$`), so
+            // an id differing only in case names another entity.
+            "an id differing from the upserted one only in case",
             &other,
-            "RECOGNIZED_PERSON",
-            entity_id,
+            "VOCABULARY",
+            "VOCAB-OF-ONE-LIBRARY",
             404,
             "ResourceNotFoundException",
             state::library_entities::ENTITY_NOT_FOUND_MESSAGE,
@@ -721,10 +724,9 @@ type ListingRow<'a> = (
 ///
 /// The rows differ along how many entities the pair holds (one, a few, the modelled maximum
 /// of one payload, `smithy_query(query="shape",shape="UpsertEntitiesInfo")`:
-/// `@length(min: 1, max: 10)`), which modelled entity type they are ingested under
-/// (`smithy_query(query="shape",shape="EntityType")` -> `["VOCABULARY",
-/// "RECOGNIZED_PERSON"]`), whether a description is carried and how many phrases each entity
-/// holds.
+/// `@length(min: 1, max: 10)`), the modelled entity type they are ingested under
+/// (`smithy_query(query="shape",shape="EntityType")` -> `["VOCABULARY"]`), whether a
+/// description is carried and how many phrases each entity holds.
 #[tokio::test]
 async fn the_listing_enumerates_what_the_completed_ingestions_left() {
     let rows: Vec<ListingRow<'_>> = vec![
@@ -743,14 +745,14 @@ async fn the_listing_enumerates_what_the_completed_ingestions_left() {
             ],
         ),
         (
-            "the other modelled entity type, at one payload's modelled maximum",
-            "RECOGNIZED_PERSON",
+            "one payload's modelled maximum",
+            "VOCABULARY",
             (0..10)
                 .map(|index| {
                     (
-                        format!("person-{index:02}"),
+                        format!("vocab-{index:02}"),
                         "KO",
-                        (index % 2 == 0).then_some("a described person"),
+                        (index % 2 == 0).then_some("a described entity"),
                         1 + index % 3,
                     )
                 })
@@ -916,6 +918,7 @@ async fn the_listing_is_of_one_pair_and_refuses_what_resolves_to_nothing() {
     let router = emulator();
     let library = create_library(&router, "entity-listing-scope-library").await;
     let other = create_library(&router, "entity-listing-scope-other").await;
+    let emptied = create_library(&router, "entity-listing-scope-emptied").await;
     submit(
         &router,
         &library,
@@ -927,19 +930,27 @@ async fn the_listing_is_of_one_pair_and_refuses_what_resolves_to_nothing() {
     )
     .await;
     poll_listing(&router, &library, "VOCABULARY", 1, "fixture").await;
+    // A job that takes entities OUT leaves the pair it names holding nothing, so its listing
+    // is as empty as one no job has ever named.
+    submit(
+        &router,
+        &emptied,
+        "the emptied pair",
+        &submission(
+            "VOCABULARY",
+            "DELETE",
+            json!({ "deleteEntitiesInfo": { "entityIds": ["vocab-of-one-pair"] } }),
+        ),
+    )
+    .await;
 
     // (case, the library addressed, the entity type)
-    let empty: [(&str, &str, &str); 3] = [
-        (
-            "the other modelled entity type of the same library",
-            &library,
-            "RECOGNIZED_PERSON",
-        ),
+    let empty: [(&str, &str, &str); 2] = [
         ("a library nothing has ingested into", &other, "VOCABULARY"),
         (
-            "the other entity type of that library",
-            &other,
-            "RECOGNIZED_PERSON",
+            "a library whose only accepted job takes entities out",
+            &emptied,
+            "VOCABULARY",
         ),
     ];
     for (case, library_arn, entity_type) in empty {
@@ -1073,10 +1084,9 @@ type RefusedSubmissionRow<'a> = (&'a str, Value, String, &'a str, String);
 /// The rows differ along HOW the submission was refused (an `entityType` outside the modelled
 /// enum, an `operationType` outside it, a `libraryArn` naming another resource type, and a
 /// submission naming no input source), along the modelled entity type the read then probes
-/// (`smithy_query(query="shape",shape="EntityType")` -> `["VOCABULARY",
-/// "RECOGNIZED_PERSON"]`, so both are covered) and along the `entityId` form it names —
-/// hyphens, underscores, digits and the longest id the modelled `@length(min: 1, max: 128)`
-/// admits.
+/// (`smithy_query(query="shape",shape="EntityType")` -> `["VOCABULARY"]`) and along the
+/// `entityId` form it names — hyphens, underscores, digits and the longest id the modelled
+/// `@length(min: 1, max: 128)` admits.
 #[tokio::test]
 async fn an_id_only_a_refused_ingestion_named_is_refused_by_the_read() {
     let router = emulator();
@@ -1141,13 +1151,13 @@ async fn an_id_only_a_refused_ingestion_named_is_refused_by_the_read() {
         (
             "a submission naming no input source",
             json!({
-                "entityType": "RECOGNIZED_PERSON",
+                "entityType": "VOCABULARY",
                 "operationType": "UPSERT",
                 "inputConfiguration": {},
                 "outputConfiguration": { "s3Uri": "s3://bda-ingestion/output/" },
             }),
             library.clone(),
-            "RECOGNIZED_PERSON",
+            "VOCABULARY",
             longest_id.clone(),
         ),
     ];

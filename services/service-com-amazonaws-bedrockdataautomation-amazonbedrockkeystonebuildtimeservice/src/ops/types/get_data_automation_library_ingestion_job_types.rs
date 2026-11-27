@@ -24,7 +24,17 @@ pub struct GetDataAutomationLibraryIngestionJobOutput {
     pub job: Option<DataAutomationLibraryIngestionJob>,
 }
 
-#[smithy_macros::smithy(shape = "com.amazonaws.bedrockdataautomation#DataAutomationLibraryIngestionJob")]
+/// `DataAutomationLibraryIngestionJob`, the projection
+/// `GetDataAutomationLibraryIngestionJob` serves. Its schema and codec come from
+/// [`bda_schema_and_codec!`] rather than `#[smithy_macros::smithy(shape = ...)]` because
+/// `creationTime` and `completionTime` target `DateTimestamp`, which carries
+/// `@timestampFormat("date-time")`
+/// (`smithy_query(query="shape", shape="DataAutomationLibraryIngestionJob")` reports it on
+/// both) — a trait the derive does not put on a member schema; see
+/// `types/date_time_wire.rs`.
+///
+/// The member list below is the model's, member for member: same shape ids, same wire names,
+/// same order, same shape types.
 #[derive(Debug, Clone)]
 pub struct DataAutomationLibraryIngestionJob {
     pub job_arn: String,
@@ -37,4 +47,56 @@ pub struct DataAutomationLibraryIngestionJob {
     pub error_message: Option<String>,
     pub error_type: Option<String>,
 }
+
+bda_schema_and_codec!(
+    DataAutomationLibraryIngestionJob,
+    DATA_AUTOMATION_LIBRARY_INGESTION_JOB_SCHEMA,
+    "com.amazonaws.bedrockdataautomation#DataAutomationLibraryIngestionJob",
+    "com.amazonaws.bedrockdataautomation",
+    "DataAutomationLibraryIngestionJob",
+    (M_JOB_ARN, job_arn, "jobArn", 0, req, string),
+    (
+        M_CREATION_TIME,
+        creation_time,
+        "creationTime",
+        1,
+        req,
+        date_time
+    ),
+    (M_ENTITY_TYPE, entity_type, "entityType", 2, req, string),
+    (
+        M_OPERATION_TYPE,
+        operation_type,
+        "operationType",
+        3,
+        req,
+        string
+    ),
+    (M_JOB_STATUS, job_status, "jobStatus", 4, req, string),
+    (
+        M_OUTPUT_CONFIGURATION,
+        output_configuration,
+        "outputConfiguration",
+        5,
+        req,
+        struct_of(OutputConfiguration)
+    ),
+    (
+        M_COMPLETION_TIME,
+        completion_time,
+        "completionTime",
+        6,
+        opt,
+        date_time
+    ),
+    (
+        M_ERROR_MESSAGE,
+        error_message,
+        "errorMessage",
+        7,
+        opt,
+        string
+    ),
+    (M_ERROR_TYPE, error_type, "errorType", 8, opt, string),
+);
 

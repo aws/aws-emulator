@@ -111,7 +111,7 @@ const NEXT_TOKEN_PATTERN: &str = r"\S*";
 
 /// The values `EntityType` admits, in the order this service states them (source:
 /// `smithy_query(shape="EntityType")`).
-const ENTITY_TYPE_SET: &str = "VOCABULARY, RECOGNIZED_PERSON";
+const ENTITY_TYPE_SET: &str = "VOCABULARY";
 
 /// The values `LibraryIngestionJobOperationType` admits, in the order this service states
 /// them (source: `smithy_query(shape="LibraryIngestionJobOperationType")`).
@@ -471,13 +471,14 @@ fn entity_type_cases() -> Vec<EntityTypeCase> {
 
 /// The values `EntityType` admits (source: `smithy_query(shape="EntityType")`); each is
 /// admitted by every operation above.
-const ADMITTED_ENTITY_TYPES: [&str; 2] = ["VOCABULARY", "RECOGNIZED_PERSON"];
+const ADMITTED_ENTITY_TYPES: [&str; 1] = ["VOCABULARY"];
 
-/// Values outside that set, differing in case, in separator and in being unknown
-/// altogether.
-const REFUSED_ENTITY_TYPES: [&str; 4] = [
+/// Values outside that set, differing in case, in separator, in being unknown altogether and
+/// in being a value the model does not declare.
+const REFUSED_ENTITY_TYPES: [&str; 5] = [
     "NOT_A_REAL_ENTITY_TYPE",
     "vocabulary",
+    "RECOGNIZED_PERSON",
     "RecognizedPerson",
     "RECOGNIZED PERSON",
 ];

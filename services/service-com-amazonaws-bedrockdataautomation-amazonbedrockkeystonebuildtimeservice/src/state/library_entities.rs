@@ -488,33 +488,27 @@ mod tests {
             ),
             job(
                 "job/unnamed",
-                "RECOGNIZED_PERSON",
+                "VOCABULARY",
                 UPSERT_OPERATION,
                 Some(upsert(None, "FR", &["martin-pecheur"])),
                 submitted,
             ),
         ]);
 
-        // (case, the entity type asked for, the ids held under it)
+        // The pair both jobs named holds both entities: the one the upsert named, and the one
+        // stored under the id this service minted for the upsert that named none.
         let minted = minted_entity_id("job/unnamed", 0);
-        let rows: [(&str, &str, Vec<String>); 2] = [
-            ("the vocabulary type", "VOCABULARY", vec!["named_1".to_string()]),
-            (
-                "the other modelled type",
-                "RECOGNIZED_PERSON",
-                vec![minted.clone()],
-            ),
-        ];
-        for (case, entity_type, expected) in rows {
-            let held: Vec<String> = store
-                .library_entities(LIBRARY, entity_type, now)
-                .into_keys()
-                .collect();
-            assert_eq!(
-                held, expected,
-                "case {case:?}: expected {expected:?}, got {held:?}"
-            );
-        }
+        let mut held: Vec<String> = store
+            .library_entities(LIBRARY, "VOCABULARY", now)
+            .into_keys()
+            .collect();
+        held.sort();
+        let mut expected = vec!["named_1".to_string(), minted.clone()];
+        expected.sort();
+        assert_eq!(
+            held, expected,
+            "case \"the ingested pair\": expected {expected:?}, got {held:?}"
+        );
         assert!(
             minted
                 .chars()

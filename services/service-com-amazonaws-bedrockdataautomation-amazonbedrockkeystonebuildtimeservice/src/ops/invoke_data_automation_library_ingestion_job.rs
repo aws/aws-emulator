@@ -56,7 +56,7 @@
 //!
 //! * `clientToken` (ClientToken, len 33..256, pattern ^[a-zA-Z0-9](-*[a-zA-Z0-9]){0,256}$,
 //!   @idempotencyToken) — Idempotency token
-//! * `entityType` (EntityType, one of: RECOGNIZED_PERSON | VOCABULARY) **required** — The
+//! * `entityType` (EntityType, one of: VOCABULARY) **required** — The
 //!   entity type for which
 //!   DataAutomationLibraryIngestionJob is being run
 //! * `inputConfiguration` (InputConfiguration) **required** — Input configuration of

@@ -34,7 +34,15 @@ pub enum DataAutomationLibraryEntitySummary {
     Vocabulary(VocabularyEntitySummary),
 }
 
-#[smithy_macros::smithy(shape = "com.amazonaws.bedrockdataautomation#VocabularyEntitySummary")]
+/// `VocabularyEntitySummary`, the entity summary `ListDataAutomationLibraryEntities` serves
+/// inside `DataAutomationLibraryEntitySummary`. Its schema and codec come from
+/// [`bda_schema_and_codec!`] rather than `#[smithy_macros::smithy(shape = ...)]` because
+/// `lastModifiedTime` targets `DateTimestamp`, which carries `@timestampFormat("date-time")`
+/// (`smithy_query(query="shape", shape="VocabularyEntitySummary")` reports it) — a trait the
+/// derive does not put on a member schema; see `types/date_time_wire.rs`.
+///
+/// The member list below is the model's, member for member: same shape ids, same wire names,
+/// same order, same shape types.
 #[derive(Debug, Clone, Default)]
 pub struct VocabularyEntitySummary {
     pub entity_id: Option<String>,
@@ -43,4 +51,31 @@ pub struct VocabularyEntitySummary {
     pub num_of_phrases: Option<i32>,
     pub last_modified_time: Option<::aws_smithy_types::DateTime>,
 }
+
+bda_schema_and_codec!(
+    VocabularyEntitySummary,
+    VOCABULARY_ENTITY_SUMMARY_SCHEMA,
+    "com.amazonaws.bedrockdataautomation#VocabularyEntitySummary",
+    "com.amazonaws.bedrockdataautomation",
+    "VocabularyEntitySummary",
+    (M_ENTITY_ID, entity_id, "entityId", 0, opt, string),
+    (M_DESCRIPTION, description, "description", 1, opt, string),
+    (M_LANGUAGE, language, "language", 2, opt, string),
+    (
+        M_NUM_OF_PHRASES,
+        num_of_phrases,
+        "numOfPhrases",
+        3,
+        opt,
+        integer
+    ),
+    (
+        M_LAST_MODIFIED_TIME,
+        last_modified_time,
+        "lastModifiedTime",
+        4,
+        opt,
+        date_time
+    ),
+);
 

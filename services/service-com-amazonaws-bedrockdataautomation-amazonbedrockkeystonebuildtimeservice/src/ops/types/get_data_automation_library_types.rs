@@ -23,7 +23,14 @@ pub struct GetDataAutomationLibraryOutput {
     pub library: Option<DataAutomationLibrary>,
 }
 
-#[smithy_macros::smithy(shape = "com.amazonaws.bedrockdataautomation#DataAutomationLibrary")]
+/// `DataAutomationLibrary`, the projection the library doors serve. Its schema and codec come
+/// from [`bda_schema_and_codec!`] rather than `#[smithy_macros::smithy(shape = ...)]` because
+/// `creationTime` targets `DateTimestamp`, which carries `@timestampFormat("date-time")`
+/// (`smithy_query(query="shape", shape="DataAutomationLibrary")` reports it) — a trait the
+/// derive does not put on a member schema; see `types/date_time_wire.rs`.
+///
+/// The member list below is the model's, member for member: same shape ids, same wire names,
+/// same order, same shape types.
 #[derive(Debug, Clone)]
 pub struct DataAutomationLibrary {
     pub library_arn: String,
@@ -35,6 +42,50 @@ pub struct DataAutomationLibrary {
     pub kms_key_id: Option<String>,
     pub kms_encryption_context: Option<std::collections::HashMap<String, String>>,
 }
+
+bda_schema_and_codec!(
+    DataAutomationLibrary,
+    DATA_AUTOMATION_LIBRARY_SCHEMA,
+    "com.amazonaws.bedrockdataautomation#DataAutomationLibrary",
+    "com.amazonaws.bedrockdataautomation",
+    "DataAutomationLibrary",
+    (M_LIBRARY_ARN, library_arn, "libraryArn", 0, req, string),
+    (
+        M_CREATION_TIME,
+        creation_time,
+        "creationTime",
+        1,
+        req,
+        date_time
+    ),
+    (M_LIBRARY_NAME, library_name, "libraryName", 2, req, string),
+    (
+        M_LIBRARY_DESCRIPTION,
+        library_description,
+        "libraryDescription",
+        3,
+        opt,
+        string
+    ),
+    (M_STATUS, status, "status", 4, req, string),
+    (
+        M_ENTITY_TYPES,
+        entity_types,
+        "entityTypes",
+        5,
+        opt,
+        list_of_struct(EntityTypeInfo)
+    ),
+    (M_KMS_KEY_ID, kms_key_id, "kmsKeyId", 6, opt, string),
+    (
+        M_KMS_ENCRYPTION_CONTEXT,
+        kms_encryption_context,
+        "kmsEncryptionContext",
+        7,
+        opt,
+        map_of_string
+    ),
+);
 
 #[smithy_macros::smithy(shape = "com.amazonaws.bedrockdataautomation#EntityTypeInfo")]
 #[derive(Debug, Clone, Default)]

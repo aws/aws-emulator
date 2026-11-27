@@ -26,7 +26,17 @@ pub struct ListDataAutomationLibraryIngestionJobsOutput {
     pub next_token: Option<String>,
 }
 
-#[smithy_macros::smithy(shape = "com.amazonaws.bedrockdataautomation#DataAutomationLibraryIngestionJobSummary")]
+/// `DataAutomationLibraryIngestionJobSummary`, the list item
+/// `ListDataAutomationLibraryIngestionJobs` serves. Its schema and codec come from
+/// [`bda_schema_and_codec!`] rather than `#[smithy_macros::smithy(shape = ...)]` because
+/// `creationTime` and `completionTime` target `DateTimestamp`, which carries
+/// `@timestampFormat("date-time")`
+/// (`smithy_query(query="shape", shape="DataAutomationLibraryIngestionJobSummary")` reports it
+/// on both) — a trait the derive does not put on a member schema; see
+/// `types/date_time_wire.rs`.
+///
+/// The member list below is the model's, member for member: same shape ids, same wire names,
+/// same order, same shape types.
 #[derive(Debug, Clone)]
 pub struct DataAutomationLibraryIngestionJobSummary {
     pub job_arn: String,
@@ -36,4 +46,39 @@ pub struct DataAutomationLibraryIngestionJobSummary {
     pub creation_time: ::aws_smithy_types::DateTime,
     pub completion_time: Option<::aws_smithy_types::DateTime>,
 }
+
+bda_schema_and_codec!(
+    DataAutomationLibraryIngestionJobSummary,
+    DATA_AUTOMATION_LIBRARY_INGESTION_JOB_SUMMARY_SCHEMA,
+    "com.amazonaws.bedrockdataautomation#DataAutomationLibraryIngestionJobSummary",
+    "com.amazonaws.bedrockdataautomation",
+    "DataAutomationLibraryIngestionJobSummary",
+    (M_JOB_ARN, job_arn, "jobArn", 0, req, string),
+    (M_JOB_STATUS, job_status, "jobStatus", 1, req, string),
+    (M_ENTITY_TYPE, entity_type, "entityType", 2, req, string),
+    (
+        M_OPERATION_TYPE,
+        operation_type,
+        "operationType",
+        3,
+        req,
+        string
+    ),
+    (
+        M_CREATION_TIME,
+        creation_time,
+        "creationTime",
+        4,
+        req,
+        date_time
+    ),
+    (
+        M_COMPLETION_TIME,
+        completion_time,
+        "completionTime",
+        5,
+        opt,
+        date_time
+    ),
+);
 

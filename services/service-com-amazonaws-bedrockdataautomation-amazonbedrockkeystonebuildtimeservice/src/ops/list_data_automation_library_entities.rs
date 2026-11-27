@@ -54,7 +54,7 @@
 //!
 //! ## Input
 //!
-//! * `entityType` (EntityType, one of: RECOGNIZED_PERSON | VOCABULARY) **required** — The
+//! * `entityType` (EntityType, one of: VOCABULARY) **required** — The
 //!   entity type for which
 //!   the entity list is requested
 //! * `libraryArn` (DataAutomationLibraryArn, len ..128, pattern

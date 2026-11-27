@@ -10,7 +10,7 @@
 //! (`operationType` `DELETE`) gives the library no type.
 //!
 //! The suites are TABLE-driven along what the rule generalises over: the entity type
-//! (`smithy_query(shape="EntityType")` -> `["VOCABULARY", "RECOGNIZED_PERSON"]`), the
+//! (`smithy_query(shape="EntityType")` -> `["VOCABULARY"]`), the
 //! `operationType` (`smithy_query(shape="LibraryIngestionJobOperationType")` -> `["DELETE",
 //! "UPSERT"]`), the input source the submission names (the modelled `InputConfiguration`'s
 //! `s3Object` and `inlinePayload`), and the number of submissions per type.
@@ -30,9 +30,8 @@ const REGION: &str = "us-east-1";
 
 /// The entity types the model admits, which is the set a library can acquire.
 ///
-/// Source: `smithy_query(query="shape",shape="EntityType")` -> `["VOCABULARY",
-/// "RECOGNIZED_PERSON"]`.
-const ENTITY_TYPES: [&str; 2] = ["VOCABULARY", "RECOGNIZED_PERSON"];
+/// Source: `smithy_query(query="shape",shape="EntityType")` -> `["VOCABULARY"]`.
+const ENTITY_TYPES: [&str; 1] = ["VOCABULARY"];
 
 fn authorization() -> String {
     format!(
@@ -272,8 +271,8 @@ async fn an_upsert_submission_gives_the_library_the_type_it_names() {
 }
 
 /// RULE: the entity types are a SET — a type several jobs have populated is reported once,
-/// with the metadata counting all of them — and a library ingested into under both modelled
-/// types reports both.
+/// with the metadata counting all of them — and a library reports every modelled type it has
+/// been ingested into.
 #[tokio::test]
 async fn a_type_is_reported_once_however_many_jobs_populated_it() {
     let router = emulator();
@@ -309,8 +308,8 @@ async fn a_type_is_reported_once_however_many_jobs_populated_it() {
         }
     }
 
-    let library = read_library(&router, &arn, "both types").await;
-    let mut named: Vec<String> = reported_types(&library, "both types")
+    let library = read_library(&router, &arn, "every ingested type").await;
+    let mut named: Vec<String> = reported_types(&library, "every ingested type")
         .into_iter()
         .map(|(name, _)| name)
         .collect();
@@ -319,7 +318,7 @@ async fn a_type_is_reported_once_however_many_jobs_populated_it() {
     expected.sort();
     assert_eq!(
         named, expected,
-        "case \"both types\": expected every ingested type reported, got {named:?}"
+        "case \"every ingested type\": expected every ingested type reported, got {named:?}"
     );
 }
 

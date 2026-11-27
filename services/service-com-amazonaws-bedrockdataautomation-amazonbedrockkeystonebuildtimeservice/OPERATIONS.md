@@ -43,7 +43,7 @@ contents — read that shape in the model above when you need its own members.
 
 - **Route:** `POST /data-automation-libraries/{libraryArn}/entityType/{entityType}/entities/{entityId} -> 200`
 - **Traits:** @readonly
-- **Input:** `libraryArn` (string, len ..128, pattern ^arn:aws(|-cn|-iso|-iso-[a-z]|-us-gov):bedrock:[a-zA-Z0-9-]*:[0-9]{12}:data-automation-library/[a-zA-Z0-9-]{12,36}$, @httpLabel, required), `entityType` (EntityType, one of: RECOGNIZED_PERSON | VOCABULARY, @httpLabel, required), `entityId` (string, len 1..128, pattern ^[a-zA-Z0-9-_]+$, @httpLabel, required)
+- **Input:** `libraryArn` (string, len ..128, pattern ^arn:aws(|-cn|-iso|-iso-[a-z]|-us-gov):bedrock:[a-zA-Z0-9-]*:[0-9]{12}:data-automation-library/[a-zA-Z0-9-]{12,36}$, @httpLabel, required), `entityType` (EntityType, one of: VOCABULARY, @httpLabel, required), `entityId` (string, len 1..128, pattern ^[a-zA-Z0-9-_]+$, @httpLabel, required)
 - **Output:** `entity` (EntityDetails)
 - **Errors:** `AccessDeniedException (HTTP 403)`, `InternalServerException (HTTP 500)`, `ResourceNotFoundException (HTTP 404)`, `ThrottlingException (HTTP 429)`, `ValidationException (HTTP 400)`
 
@@ -51,7 +51,7 @@ contents — read that shape in the model above when you need its own members.
 
 - **Route:** `POST /data-automation-libraries/{libraryArn}/entityType/{entityType}/entities/ -> 200`
 - **Traits:** @paginated(inputToken=nextToken, outputToken=nextToken, items=entities), @readonly
-- **Input:** `libraryArn` (string, len ..128, pattern ^arn:aws(|-cn|-iso|-iso-[a-z]|-us-gov):bedrock:[a-zA-Z0-9-]*:[0-9]{12}:data-automation-library/[a-zA-Z0-9-]{12,36}$, @httpLabel, required), `entityType` (EntityType, one of: RECOGNIZED_PERSON | VOCABULARY, @httpLabel, required), `maxResults` (integer, range 1..1000), `nextToken` (string, len 1..2048, pattern ^\S*$)
+- **Input:** `libraryArn` (string, len ..128, pattern ^arn:aws(|-cn|-iso|-iso-[a-z]|-us-gov):bedrock:[a-zA-Z0-9-]*:[0-9]{12}:data-automation-library/[a-zA-Z0-9-]{12,36}$, @httpLabel, required), `entityType` (EntityType, one of: VOCABULARY, @httpLabel, required), `maxResults` (integer, range 1..1000), `nextToken` (string, len 1..2048, pattern ^\S*$)
 - **Output:** `entities` (list<DataAutomationLibraryEntitySummary>), `nextToken` (string, len 1..2048, pattern ^\S*$)
 - **Errors:** `AccessDeniedException (HTTP 403)`, `InternalServerException (HTTP 500)`, `ResourceNotFoundException (HTTP 404)`, `ThrottlingException (HTTP 429)`, `ValidationException (HTTP 400)`
 
@@ -136,7 +136,7 @@ contents — read that shape in the model above when you need its own members.
 
 - **Route:** `PUT /data-automation-libraries/{libraryArn}/library-ingestion-jobs/ -> 201`
 - **Traits:** @idempotent
-- **Input:** `libraryArn` (string, len ..128, pattern ^arn:aws(|-cn|-iso|-iso-[a-z]|-us-gov):bedrock:[a-zA-Z0-9-]*:[0-9]{12}:data-automation-library/[a-zA-Z0-9-]{12,36}$, @httpLabel, required), `clientToken` (string, len 33..256, pattern ^[a-zA-Z0-9](-*[a-zA-Z0-9]){0,256}$, @idempotencyToken), `inputConfiguration` (InputConfiguration, required), `entityType` (EntityType, one of: RECOGNIZED_PERSON | VOCABULARY, required), `operationType` (LibraryIngestionJobOperationType, one of: DELETE | UPSERT, required), `outputConfiguration` (OutputConfiguration, required), `notificationConfiguration` (NotificationConfiguration), `tags` (list<Tag>, len 0..200)
+- **Input:** `libraryArn` (string, len ..128, pattern ^arn:aws(|-cn|-iso|-iso-[a-z]|-us-gov):bedrock:[a-zA-Z0-9-]*:[0-9]{12}:data-automation-library/[a-zA-Z0-9-]{12,36}$, @httpLabel, required), `clientToken` (string, len 33..256, pattern ^[a-zA-Z0-9](-*[a-zA-Z0-9]){0,256}$, @idempotencyToken), `inputConfiguration` (InputConfiguration, required), `entityType` (EntityType, one of: VOCABULARY, required), `operationType` (LibraryIngestionJobOperationType, one of: DELETE | UPSERT, required), `outputConfiguration` (OutputConfiguration, required), `notificationConfiguration` (NotificationConfiguration), `tags` (list<Tag>, len 0..200)
 - **Output:** `jobArn` (string, len ..128, pattern ^arn:aws(|-cn|-iso|-iso-[a-z]|-us-gov):bedrock:[a-zA-Z0-9-]*:[0-9]{12}:data-automation-library-ingestion-job/[a-zA-Z0-9- …)
 - **Errors:** `AccessDeniedException (HTTP 403)`, `ConflictException (HTTP 409)`, `InternalServerException (HTTP 500)`, `ResourceNotFoundException (HTTP 404)`, `ServiceQuotaExceededException (HTTP 402)`, `ThrottlingException (HTTP 429)`, `ValidationException (HTTP 400)`
 

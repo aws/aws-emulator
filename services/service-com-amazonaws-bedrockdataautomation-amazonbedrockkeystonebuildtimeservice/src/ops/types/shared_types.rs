@@ -49,14 +49,12 @@ pub struct ValidationExceptionField {
     pub message: String,
 }
 
-/// `Blueprint`, the projection every blueprint door serves (`CreateBlueprint`, `GetBlueprint`,
-/// `UpdateBlueprint`, `CreateBlueprintVersion`). Its schema and codec come from
+/// `Blueprint`, the projection every blueprint door serves. Its schema and codec come from
 /// [`bda_schema_and_codec!`] rather than `#[smithy_macros::smithy(shape = ...)]` because
-/// `creationTime`, `lastModifiedTime` and `optimizationTime` all target `DateTimestamp`, which
+/// `creationTime`, `lastModifiedTime` and `optimizationTime` target `DateTimestamp`, which
 /// carries `@timestampFormat("date-time")` (`smithy_query(query="shape", shape="Blueprint")`
-/// reports it on each of the three) — a trait the derive does not put on a member schema, so the
-/// restJson1 codec rendered each of them as an epoch NUMBER. See `types/date_time_wire.rs` for
-/// that whole story.
+/// reports it on all three) — a trait the derive does not put on a member schema; see
+/// `types/date_time_wire.rs`.
 ///
 /// The member list below is the model's, member for member: same shape ids, same wire names,
 /// same order, same shape types.
@@ -574,7 +572,7 @@ pub const DOCUMENT_OUTPUT_TEXT_FORMAT_TYPE_VALUES: &[&str] = &["CSV", "HTML", "M
 
 
 /// The values `EntityType` accepts on the wire.
-pub const ENTITY_TYPE_VALUES: &[&str] = &["RECOGNIZED_PERSON", "VOCABULARY"];
+pub const ENTITY_TYPE_VALUES: &[&str] = &["VOCABULARY"];
 
 
 /// The values `ImageExtractionCategoryType` accepts on the wire.

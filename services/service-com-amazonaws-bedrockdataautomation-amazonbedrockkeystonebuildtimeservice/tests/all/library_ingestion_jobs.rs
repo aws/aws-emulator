@@ -409,10 +409,9 @@ async fn paging_walks_every_job_once_whatever_the_page_size() {
 /// type, operation type and input source the submission named.
 ///
 /// The rows span the modelled enum sets of both members
-/// (`smithy_query(shape="EntityType")` -> `["VOCABULARY", "RECOGNIZED_PERSON"]`,
+/// (`smithy_query(shape="EntityType")` -> `["VOCABULARY"]`,
 /// `smithy_query(shape="LibraryIngestionJobOperationType")` -> `["UPSERT", "DELETE"]`) and
-/// both arms of the input union, including the `RECOGNIZED_PERSON` type the issue's own
-/// case does not use.
+/// both arms of the input union.
 #[tokio::test]
 async fn a_submitted_job_is_reported_as_it_was_submitted() {
     let router = emulator();
@@ -433,16 +432,16 @@ async fn a_submitted_job_is_reported_as_it_was_submitted() {
             inline_delete_input("vocab-entity-1"),
         ),
         (
-            "a recognized-person upsert from an S3 object",
-            "RECOGNIZED_PERSON",
+            "a vocabulary upsert from an S3 object",
+            "VOCABULARY",
             "UPSERT",
-            s3_input("people"),
+            s3_input("phrases"),
         ),
         (
-            "a recognized-person delete from an S3 object",
-            "RECOGNIZED_PERSON",
+            "a vocabulary delete from an S3 object",
+            "VOCABULARY",
             "DELETE",
-            s3_input("people-removed"),
+            s3_input("phrases-removed"),
         ),
     ];
     for (case, entity_type, operation_type, input) in rows {

@@ -35,22 +35,26 @@ pub fn string_at(value: &Value, member: &str, case: &str) -> String {
         .to_string()
 }
 
-/// Parse a modeled `date-time` member into comparable (seconds, nanos).
+/// Parse a modelled `date-time` member into comparable (seconds, nanos).
+///
+/// Every timestamp member of this service's responses targets `DateTimestamp`, which carries
+/// `@timestampFormat("date-time")`, so the only form accepted here is the RFC 3339 STRING
+/// that trait asks for: a JSON number would be the protocol default for a member schema
+/// reporting no format, which no generated SDK client can read back into the modelled
+/// `date-time`.
 pub fn timestamp_at(value: &Value, member: &str, case: &str) -> (i64, u32) {
     let raw = value
         .get(member)
         .unwrap_or_else(|| panic!("case {case:?}: timestamp {member:?} missing from {value:?}"));
-    let parsed = match raw {
-        Value::String(text) => DateTime::from_str(text, Format::DateTime).unwrap_or_else(|e| {
-            panic!("case {case:?}: {member:?} = {text:?} is not a date-time: {e}")
-        }),
-        Value::Number(epoch) => DateTime::from_secs_f64(
-            epoch
-                .as_f64()
-                .unwrap_or_else(|| panic!("case {case:?}: {member:?} = {epoch:?} is not numeric")),
-        ),
-        other => panic!("case {case:?}: {member:?} = {other:?} is not a timestamp"),
-    };
+    let text = raw.as_str().unwrap_or_else(|| {
+        panic!(
+            "case {case:?}: {member:?} must be an RFC 3339 date-time string, got {raw} in \
+             {value:?}"
+        )
+    });
+    let parsed = DateTime::from_str(text, Format::DateTime).unwrap_or_else(|e| {
+        panic!("case {case:?}: {member:?} = {text:?} is not a date-time: {e}")
+    });
     (parsed.secs(), parsed.subsec_nanos())
 }
 

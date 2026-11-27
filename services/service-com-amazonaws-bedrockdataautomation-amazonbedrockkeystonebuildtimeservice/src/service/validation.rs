@@ -146,14 +146,14 @@ mod tests {
     fn an_enum_clause_states_the_value_set_and_no_value() {
         let refusal = Refusal::Invalid(vec![violation(
             "entityType",
-            ViolationKind::EnumValue(vec!["VOCABULARY".to_string(), "RECOGNIZED_PERSON".to_string()]),
+            ViolationKind::EnumValue(vec!["VOCABULARY".to_string()]),
             Some("NOPE"),
         )]);
         let stated = refused(&refusal).expect("a constraint refusal is restated");
         assert_eq!(
             stated.message,
             "1 validation error detected: Value at 'entityType' failed to satisfy constraint: \
-             Member must satisfy enum value set: [VOCABULARY, RECOGNIZED_PERSON]",
+             Member must satisfy enum value set: [VOCABULARY]",
             "expected the enum clause to state no value, got {:?}",
             stated.message
         );

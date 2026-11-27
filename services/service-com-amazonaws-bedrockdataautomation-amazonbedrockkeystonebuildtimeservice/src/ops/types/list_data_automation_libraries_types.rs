@@ -26,11 +26,37 @@ pub struct ListDataAutomationLibrariesOutput {
     pub next_token: Option<String>,
 }
 
-#[smithy_macros::smithy(shape = "com.amazonaws.bedrockdataautomation#DataAutomationLibrarySummary")]
+/// `DataAutomationLibrarySummary`, the list item `ListDataAutomationLibraries` serves. Its
+/// schema and codec come from [`bda_schema_and_codec!`] rather than
+/// `#[smithy_macros::smithy(shape = ...)]` because `creationTime` targets `DateTimestamp`,
+/// which carries `@timestampFormat("date-time")`
+/// (`smithy_query(query="shape", shape="DataAutomationLibrarySummary")` reports it) — a trait
+/// the derive does not put on a member schema; see `types/date_time_wire.rs`.
+///
+/// The member list below is the model's, member for member: same shape ids, same wire names,
+/// same order, same shape types.
 #[derive(Debug, Clone)]
 pub struct DataAutomationLibrarySummary {
     pub library_arn: String,
     pub library_name: Option<String>,
     pub creation_time: ::aws_smithy_types::DateTime,
 }
+
+bda_schema_and_codec!(
+    DataAutomationLibrarySummary,
+    DATA_AUTOMATION_LIBRARY_SUMMARY_SCHEMA,
+    "com.amazonaws.bedrockdataautomation#DataAutomationLibrarySummary",
+    "com.amazonaws.bedrockdataautomation",
+    "DataAutomationLibrarySummary",
+    (M_LIBRARY_ARN, library_arn, "libraryArn", 0, req, string),
+    (M_LIBRARY_NAME, library_name, "libraryName", 1, opt, string),
+    (
+        M_CREATION_TIME,
+        creation_time,
+        "creationTime",
+        2,
+        req,
+        date_time
+    ),
+);
 
