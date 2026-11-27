@@ -194,7 +194,7 @@ contents — read that shape in the model above when you need its own members.
 
 - **Route:** `POST /workspaces/{workspaceName}/dataset-export-jobs -> 202`
 - **Traits:** @idempotent
-- **Input:** `workspaceName` (string, len 1..64, pattern ^[a-zA-Z0-9_-]+$, @httpLabel, required), `clientToken` (string, len 36..64, pattern ^\S{36,64}$, @idempotencyToken), `destinationS3Uri` (string, len 1..1024, pattern ^s3://[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]/.+$, required), `input` (ProcessingInput, required), `errorReportLocation` (ExportErrorReportLocation, required)
+- **Input:** `workspaceName` (string, len 1..64, pattern ^[a-zA-Z0-9_-]+$, @httpLabel, required), `clientToken` (string, len 36..64, pattern ^\S{36,64}$, @idempotencyToken), `destinationS3Uri` (string, len 1..1024, pattern ^s3://[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]/.+$, required), `input` (ProcessingInput, required), `jobName` (string, len 1..256, pattern ^[^\x00-\x1f\x7f]+$), `errorReportLocation` (ExportErrorReportLocation, required)
 - **Output:** `jobId` (string, len 36..36, pattern ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$, required), `workspaceName` (string, len 1..64, pattern ^[a-zA-Z0-9_-]+$, required)
 - **Errors:** `AccessDeniedException (HTTP 403)`, `ConflictingOperationException (HTTP 409)`, `InternalFailureException (HTTP 500)`, `InvalidRequestException (HTTP 400)`, `ResourceNotFoundException (HTTP 404)`, `ThrottlingException (HTTP 429)`
 
@@ -469,7 +469,7 @@ contents — read that shape in the model above when you need its own members.
 - **Route:** `GET /workspaces/{workspaceName}/dataset-export-jobs/{jobId} -> 200`
 - **Traits:** @readonly
 - **Input:** `workspaceName` (string, len 1..64, pattern ^[a-zA-Z0-9_-]+$, @httpLabel, required), `jobId` (string, len 36..36, pattern ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$, @httpLabel, required)
-- **Output:** `jobId` (string, len 36..36, pattern ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$, required), `workspaceName` (string, len 1..64, pattern ^[a-zA-Z0-9_-]+$, required), `status` (DatasetExportJobStatus, one of: COMPLETED | COMPLETED_WITH_ERRORS | FAILED | RUNNING | SUBMITTED, required), `startedAt` (timestamp, required), `completedAt` (timestamp), `destinationS3Uri` (string, len 1..1024, pattern ^s3://[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]/.+$, required), `errorReportLocation` (ExportErrorReportLocation, required), `input` (ProcessingInput, required)
+- **Output:** `jobId` (string, len 36..36, pattern ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$, required), `workspaceName` (string, len 1..64, pattern ^[a-zA-Z0-9_-]+$, required), `jobName` (string, len 1..350, pattern ^[^\x00-\x1f\x7f]+$), `status` (DatasetExportJobStatus, one of: COMPLETED | COMPLETED_WITH_ERRORS | FAILED | RUNNING | SUBMITTED, required), `startedAt` (timestamp, required), `completedAt` (timestamp), `destinationS3Uri` (string, len 1..1024, pattern ^s3://[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]/.+$, required), `errorReportLocation` (ExportErrorReportLocation, required), `input` (ProcessingInput, required)
 - **Errors:** `AccessDeniedException (HTTP 403)`, `InternalFailureException (HTTP 500)`, `InvalidRequestException (HTTP 400)`, `ResourceNotFoundException (HTTP 404)`, `ThrottlingException (HTTP 429)`
 
 ## DescribeDefaultEncryptionConfiguration

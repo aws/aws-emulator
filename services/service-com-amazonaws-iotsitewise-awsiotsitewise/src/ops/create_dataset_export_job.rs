@@ -55,6 +55,9 @@
 //! * `errorReportLocation` (ExportErrorReportLocation) **required** — The location where the
 //!   error report will be written on failure.
 //! * `input` (ProcessingInput) **required** — The processing input source.
+//! * `jobName` (DatasetExportJobNameInput, len 1..256, pattern ^[^\x00-\x1f\x7f]+$) — An
+//!   optional name for a dataset export job. When omitted on CreateDatasetExportJob, one
+//!   will be created based on type of job and start time.
 //! * `workspaceName` (WorkspaceName, len 1..64, pattern ^[a-zA-Z0-9_-]+$) **required** — The
 //!   name of the workspace in which to create the dataset export job.
 //!
@@ -212,6 +215,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 &input.destination_s3_uri,
                 &input.error_report_location,
                 &input.input,
+                &input.job_name,
             ],
             None,
         );
@@ -301,6 +305,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let record = crate::state::DatasetExportJobRecord {
             job_id,
             workspace_name: input.workspace_name.clone(),
+            // "An optional name for a dataset export job. When omitted on
+            // CreateDatasetExportJob, one will be created based on type of job and
+            // start time": the name the request carried is kept verbatim, and a
+            // request that carried none gets the one this service builds from the
+            // two things that sentence names. Resolved HERE, by the create, so
+            // every later read of the job reports one name.
+            job_name: input.job_name.clone().unwrap_or_else(|| {
+                crate::state::generated_dataset_export_job_name(&input.input, now)
+            }),
             destination_s3_uri: input.destination_s3_uri.clone(),
             error_report_location: input.error_report_location.clone(),
             input: input.input.clone(),

@@ -29,7 +29,11 @@
 //! * a create answers in the workspace its request names, whatever form that name
 //!   takes within the modelled constraint, and the store bounds how many jobs one
 //!   workspace holds, past which the create is the modelled refusal and starts no
-//!   job.
+//!   job;
+//! * a job carries a NAME, resolved once by the create: the `jobName` the request
+//!   carried, kept verbatim, or — for a request that carried none — one built from
+//!   the kind of export and the instant the job started, which every read of that
+//!   job then reports.
 //!
 //! The HTTP harness (`call`, `router`, `error_code`, `is_modelled_id`) is the one
 //! the asset suite already has; this suite reuses it rather than growing a second.
@@ -898,5 +902,378 @@ async fn a_workspace_holds_no_more_jobs_than_the_store_bounds_it_to() {
         held,
         MAX_DATASET_EXPORT_JOBS_PER_WORKSPACE + 1,
         "the refused create must have started no job, the store holds {held}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// A job's NAME.
+//
+// The rule these suites pin: a dataset export job carries a name, resolved once
+// by the create — the `jobName` the request carried, kept verbatim, or, for a
+// request that carried none, one this service builds from the kind of export and
+// the instant the job started — and every read of that job reports it.
+// ---------------------------------------------------------------------------
+
+/// The published bounds of the name a create may carry (smithy_query
+/// query="shape" shape="DatasetExportJobNameInput": `@length(min: 1, max: 256)`,
+/// `pattern ^[^\x00-\x1f\x7f]+$`).
+const JOB_NAME_MIN: usize = 1;
+/// See [`JOB_NAME_MIN`].
+const JOB_NAME_MAX: usize = 256;
+
+/// The upper bound of the name a READ reports, which is the wider shape
+/// (smithy_query query="shape" shape="DatasetExportJobName":
+/// `@length(min: 1, max: 350)`).
+const REPORTED_JOB_NAME_MAX: usize = 350;
+
+/// The members `ProcessingInput` declares (smithy_query query="shape"
+/// shape="ProcessingInput"), which are what a create says the KIND of its export
+/// with.
+const INPUT_KINDS: [&str; 2] = ["timeseries", "dataset"];
+
+/// The body a create sends, with `jobName` only when the row carries one.
+fn create_body_named(input: &Value, job_name: Option<&str>, token: Option<&str>) -> Value {
+    let mut body = create_body(input, token);
+    if let Some(name) = job_name {
+        body.as_object_mut()
+            .expect("an object body")
+            .insert("jobName".to_string(), json!(name));
+    }
+    body
+}
+
+/// `ListDatasetExportJobs` on `workspace`, answering the summary of `job_id`.
+async fn list_summary(router: &MultiServiceRouter, workspace: &str, job_id: &str) -> Value {
+    let (status, body) = call(router, "GET", &jobs_uri(workspace), None).await;
+    assert_eq!(
+        status, 200,
+        "list {workspace}: expected 200, got {status} {body}"
+    );
+    body["jobs"]
+        .as_array()
+        .and_then(|jobs| jobs.iter().find(|job| job["jobId"] == json!(job_id)))
+        .cloned()
+        .unwrap_or_else(|| panic!("list {workspace}: no summary for {job_id} in {body}"))
+}
+
+/// The instant the store says the job started, rendered the way this service's
+/// timestamps are rendered on the wire.
+///
+/// Read from the store rather than from a response: a read reports `startedAt` as
+/// a JSON number, which cannot be turned back into the instant's full precision.
+fn stored_start_instant(engine: &engine::InMemoryEngine, workspace: &str, job_id: &str) -> String {
+    let state = service_state(engine).expect("the service store");
+    let store = state.lock();
+    let record = store
+        .dataset_export_jobs
+        .get(&(workspace.to_string(), job_id.to_string()))
+        .unwrap_or_else(|| panic!("the store holds no job {job_id} in {workspace}"));
+    ::aws_smithy_types::DateTime::from(record.started_at)
+        .fmt(::aws_smithy_types::date_time::Format::DateTime)
+        .expect("a representable instant")
+}
+
+/// Whether `name` is a value the member a read reports it through admits: within
+/// the modelled length, and carrying none of the characters its pattern excludes
+/// (the C0 controls and DEL).
+fn is_reportable_name(name: &str) -> bool {
+    let characters = name.chars().count();
+    (JOB_NAME_MIN..=REPORTED_JOB_NAME_MAX).contains(&characters)
+        && !name.chars().any(char::is_control)
+}
+
+/// One row of the name table: a `jobName` a create carries.
+struct NameCase {
+    label: &'static str,
+    name: String,
+    /// Whether `DatasetExportJobNameInput`'s constraints admit it at all.
+    admitted: bool,
+}
+
+/// The rows: `DatasetExportJobNameInput` is `@length 1..256` with
+/// `pattern ^[^\x00-\x1f\x7f]+$` (smithy_query query="shape"
+/// shape="DatasetExportJobNameInput"), so the forms walk both published bounds, a
+/// punctuated name and a non-ASCII one between them — the pattern excludes only
+/// the C0 controls and DEL — plus one character past each bound and a name
+/// carrying an excluded character.
+fn job_name_cases() -> Vec<NameCase> {
+    vec![
+        NameCase {
+            label: "one character, the shortest the length admits",
+            name: "x".to_string(),
+            admitted: true,
+        },
+        NameCase {
+            label: "a punctuated and spaced name between the bounds",
+            name: "Nightly export — plant 3 / line 7 (v2)".to_string(),
+            admitted: true,
+        },
+        NameCase {
+            label: "a non-ASCII name between the bounds",
+            name: "设备导出 ß ø π".to_string(),
+            admitted: true,
+        },
+        NameCase {
+            label: "the longest the length admits",
+            name: "n".repeat(JOB_NAME_MAX),
+            admitted: true,
+        },
+        NameCase {
+            label: "one character past the longest",
+            name: "n".repeat(JOB_NAME_MAX + 1),
+            admitted: false,
+        },
+        NameCase {
+            label: "one character short of the shortest",
+            name: String::new(),
+            admitted: false,
+        },
+        NameCase {
+            label: "a name carrying a character the pattern excludes",
+            name: "tab\there".to_string(),
+            admitted: false,
+        },
+    ]
+}
+
+#[tokio::test]
+async fn a_job_reads_back_under_the_name_its_create_carried() {
+    for case in job_name_cases() {
+        let label = case.label;
+        let name = case.name.as_str();
+        // A router of its own per row, so the job count below is about THIS row.
+        let (router, engine) = router_with_engine();
+        let input = json!({ "timeseries": [{ "timeSeriesId": DISASSOCIATED_SERIES }] });
+
+        let (status, created) =
+            create(&router, WORKSPACE, create_body_named(&input, Some(name), None)).await;
+
+        if !case.admitted {
+            assert_eq!(
+                status, 400,
+                "case {label:?}: a name outside what the member admits expected 400, \
+                 got {status} {created}"
+            );
+            let code = error_code(&created);
+            assert!(
+                matches!(code, "InvalidRequestException" | "ValidationException"),
+                "case {label:?}: expected a client refusal of the name, got {code} in {created}"
+            );
+            let held = jobs_held(&engine);
+            assert_eq!(
+                held, 0,
+                "case {label:?}: a refused create must start no job, the store holds {held}"
+            );
+            continue;
+        }
+
+        assert_eq!(
+            status, 202,
+            "case {label:?}: expected 202, got {status} {created}"
+        );
+        let job_id = created["jobId"].as_str().unwrap_or("").to_string();
+        assert!(
+            is_modelled_id(&job_id),
+            "case {label:?}: jobId must have the modelled form, got {created}"
+        );
+
+        let (status, described) = describe(&router, WORKSPACE, &job_id).await;
+        assert_eq!(
+            status, 200,
+            "case {label:?}: the read expected 200, got {status} {described}"
+        );
+        assert_eq!(
+            described["jobName"].as_str().unwrap_or_default(),
+            name,
+            "case {label:?}: a read must report the name the create carried, got {described}"
+        );
+
+        let summary = list_summary(&router, WORKSPACE, &job_id).await;
+        assert_eq!(
+            summary["jobName"].as_str().unwrap_or_default(),
+            name,
+            "case {label:?}: a listed job must carry the same name the read reports, \
+             got {summary}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_create_that_names_no_job_gets_one_built_from_the_type_and_the_start_time() {
+    let (router, engine) = router_with_engine();
+    let dataset_id = create_dataset(&router, "Unnamed export source").await;
+
+    // One row per member `ProcessingInput` declares: the kind of export is one of
+    // the two things a generated name is built from.
+    let inputs: [(&str, Value); 2] = [
+        (
+            INPUT_KINDS[0],
+            json!({ "timeseries": [{ "timeSeriesId": ASSOCIATED_SERIES }] }),
+        ),
+        (
+            INPUT_KINDS[1],
+            json!({ "dataset": { "datasetId": dataset_id } }),
+        ),
+    ];
+
+    let mut generated: Vec<String> = Vec::new();
+    for (kind, input) in inputs {
+        let (status, created) = create(&router, WORKSPACE, create_body(&input, None)).await;
+        assert_eq!(
+            status, 202,
+            "case {kind:?}: expected 202, got {status} {created}"
+        );
+        let job_id = created["jobId"].as_str().unwrap_or("").to_string();
+
+        let (status, described) = describe(&router, WORKSPACE, &job_id).await;
+        assert_eq!(
+            status, 200,
+            "case {kind:?}: the read expected 200, got {status} {described}"
+        );
+        let name = described["jobName"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+        assert!(
+            is_reportable_name(&name),
+            "case {kind:?}: a job with no name of its own must read back under a name the \
+             member admits, got {name:?}"
+        );
+        assert!(
+            name.contains(kind),
+            "case {kind:?}: the created name must state the kind of export, got {name:?}"
+        );
+        let other = INPUT_KINDS
+            .iter()
+            .find(|candidate| **candidate != kind)
+            .expect("the other kind");
+        assert!(
+            !name.contains(*other),
+            "case {kind:?}: the created name must not state another kind of export, \
+             got {name:?}"
+        );
+        let started = stored_start_instant(&engine, WORKSPACE, &job_id);
+        assert!(
+            name.contains(&started),
+            "case {kind:?}: the created name must state the instant the job started \
+             ({started}), got {name:?}"
+        );
+
+        // The name is resolved ONCE, by the create: a second read and the listing
+        // report the same one.
+        let (status, again) = describe(&router, WORKSPACE, &job_id).await;
+        assert_eq!(
+            status, 200,
+            "case {kind:?}: the second read expected 200, got {status} {again}"
+        );
+        assert_eq!(
+            again["jobName"].as_str().unwrap_or_default(),
+            name,
+            "case {kind:?}: two reads of one job must report one name, got {again}"
+        );
+        let summary = list_summary(&router, WORKSPACE, &job_id).await;
+        assert_eq!(
+            summary["jobName"].as_str().unwrap_or_default(),
+            name,
+            "case {kind:?}: a listed job must carry the same name the read reports, \
+             got {summary}"
+        );
+        generated.push(name);
+    }
+
+    assert_ne!(
+        generated[0], generated[1],
+        "two jobs of different kinds must not be created under one name, got {generated:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_jobs_name_is_one_of_the_members_its_client_token_identifies() {
+    let (router, engine) = router_with_engine();
+    let input = json!({ "timeseries": [{ "timeSeriesId": ASSOCIATED_SERIES }] });
+    let token = "44444444-4444-4444-4444-444444444444";
+    let named = "Nightly plant-3 export";
+
+    let (status, first) = create(
+        &router,
+        WORKSPACE,
+        create_body_named(&input, Some(named), Some(token)),
+    )
+    .await;
+    assert_eq!(
+        status, 202,
+        "the first create expected 202, got {status} {first}"
+    );
+    let job_id = first["jobId"].as_str().unwrap_or("").to_string();
+
+    // The rows: the SAME request under that token repeats the call it was spent
+    // on, and a request differing only in the name it gives the job repeats no
+    // call — a name present where the first carried none is such a difference too.
+    let calls = vec![
+        (
+            "the same request under the token",
+            create_body_named(&input, Some(named), Some(token)),
+            true,
+        ),
+        (
+            "another jobName under the token",
+            create_body_named(&input, Some("Hourly plant-3 export"), Some(token)),
+            false,
+        ),
+        (
+            "no jobName under the token",
+            create_body(&input, Some(token)),
+            false,
+        ),
+    ];
+
+    for (label, body, repeats) in calls {
+        let (status, answered) = create(&router, WORKSPACE, body).await;
+        if repeats {
+            assert_eq!(
+                status, 202,
+                "case {label:?}: a retry expected 202, got {status} {answered}"
+            );
+            assert_eq!(
+                answered["jobId"].as_str().unwrap_or(""),
+                job_id,
+                "case {label:?}: a retry must replay the job the first create started, \
+                 got {answered}"
+            );
+        } else {
+            assert_eq!(
+                status, 409,
+                "case {label:?}: a request differing from the call its token was spent on \
+                 expected 409, got {status} {answered}"
+            );
+            assert_eq!(
+                error_code(&answered),
+                "ConflictingOperationException",
+                "case {label:?}: unexpected error code in {answered}"
+            );
+            assert_eq!(
+                answered["resourceId"].as_str().unwrap_or(""),
+                job_id,
+                "case {label:?}: the conflict must name the job the token's own call \
+                 started, got {answered}"
+            );
+        }
+
+        let (status, described) = describe(&router, WORKSPACE, &job_id).await;
+        assert_eq!(
+            status, 200,
+            "case {label:?}: the read of the first job got {status} {described}"
+        );
+        assert_eq!(
+            described["jobName"].as_str().unwrap_or_default(),
+            named,
+            "case {label:?}: the second call must not rewrite the job's name, got {described}"
+        );
+    }
+
+    let held = jobs_held(&engine);
+    assert_eq!(
+        held, 1,
+        "the replay and the refused creates must have written nothing, the store holds {held}"
     );
 }

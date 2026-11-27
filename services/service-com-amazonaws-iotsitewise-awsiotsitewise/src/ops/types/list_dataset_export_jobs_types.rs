@@ -31,6 +31,7 @@ pub struct ListDatasetExportJobsOutput {
 #[derive(Debug, Clone)]
 pub struct ExportJobSummary {
     pub job_id: String,
+    pub job_name: Option<String>,
     pub status: String,
     pub started_at: ::aws_smithy_types::DateTime,
     pub completed_at: Option<::aws_smithy_types::DateTime>,

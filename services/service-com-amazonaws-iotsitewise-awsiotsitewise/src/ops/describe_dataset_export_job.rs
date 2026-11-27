@@ -64,6 +64,8 @@
 //! * `jobId` (DatasetExportJobId, len 36..36, pattern
 //!   ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$) **required** — The
 //!   unique identifier for the dataset export job.
+//! * `jobName` (DatasetExportJobName, len 1..350, pattern ^[^\x00-\x1f\x7f]+$) — The name of
+//!   the dataset export job.
 //! * `startedAt` (Timestamp) **required** — The timestamp when the job started processing.
 //! * `status` (DatasetExportJobStatus, one of: COMPLETED | COMPLETED_WITH_ERRORS | FAILED |
 //!   RUNNING | SUBMITTED) **required** — The current status of the dataset export job.
@@ -191,6 +193,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         Ok(DescribeDatasetExportJobOutput {
             job_id: record.job_id.clone(),
             workspace_name: record.workspace_name.clone(),
+            // "The name of the dataset export job": the name the create resolved —
+            // the one the request carried, or the one this service created for a
+            // request that carried none — so a job always reads back under a name.
+            job_name: Some(record.job_name.clone()),
             status: record.status(now).to_string(),
             started_at: crate::state::to_date_time(record.started_at),
             completed_at: record.completed_at(now).map(crate::state::to_date_time),

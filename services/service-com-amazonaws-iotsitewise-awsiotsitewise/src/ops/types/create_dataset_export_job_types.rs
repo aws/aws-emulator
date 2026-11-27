@@ -18,6 +18,7 @@ pub struct CreateDatasetExportJobInput {
     pub client_token: Option<String>,
     pub destination_s3_uri: String,
     pub input: ProcessingInput,
+    pub job_name: Option<String>,
     pub error_report_location: ExportErrorReportLocation,
 }
 

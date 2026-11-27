@@ -1568,6 +1568,11 @@ pub struct DatasetExportJobRecord {
     /// The workspace the job was created in. A read is scoped to a workspace, so
     /// the pair is the job's identity — see [`dataset_export_job_key`].
     pub workspace_name: String,
+    /// The job's `jobName`: the name the create carried, or the one this service
+    /// created for a create that named none
+    /// ([`generated_dataset_export_job_name`]). Resolved ONCE, by the create, so
+    /// every read of the job reports the same name.
+    pub job_name: String,
     /// The `destinationS3Uri` the request named: "The S3 URI where output clips
     /// will be written". This service does not write it.
     pub destination_s3_uri: String,
@@ -1606,6 +1611,42 @@ impl DatasetExportJobRecord {
     pub fn completed_at(&self, now: SystemTime) -> Option<SystemTime> {
         let completes_at = self.started_at + 2 * EXPORT_JOB_STEP;
         (now >= completes_at).then_some(completes_at)
+    }
+}
+
+/// The `jobName` a create that named none of its own gets: "An optional name for
+/// a dataset export job. When omitted on CreateDatasetExportJob, one will be
+/// created based on type of job and start time" (`DatasetExportJobName`). So the
+/// two things it is built from are the KIND of export the request asked for and
+/// the instant the job started.
+pub fn generated_dataset_export_job_name(
+    input: &ProcessingInput,
+    started_at: SystemTime,
+) -> String {
+    let kind = processing_input_kind(input);
+    // The start instant in the ISO-8601 form every timestamp this service reports
+    // on the wire carries, so a generated name states the same instant as the
+    // job's own `startedAt`. An instant that form cannot represent falls back to
+    // the seconds since the epoch, so a name is always produced.
+    let started = to_date_time(started_at)
+        .fmt(::aws_smithy_types::date_time::Format::DateTime)
+        .unwrap_or_else(|_| {
+            started_at
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs()
+                .to_string()
+        });
+    format!("{kind}-export-{started}")
+}
+
+/// The kind of export a `ProcessingInput` asks for, by the name the model gives
+/// the union member the request chose (`ProcessingInput`: `timeseries`,
+/// `dataset`).
+pub fn processing_input_kind(input: &ProcessingInput) -> &'static str {
+    match input {
+        ProcessingInput::Timeseries(_) => "timeseries",
+        ProcessingInput::Dataset(_) => "dataset",
     }
 }
 

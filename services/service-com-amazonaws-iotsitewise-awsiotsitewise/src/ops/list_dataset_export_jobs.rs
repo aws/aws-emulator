@@ -265,6 +265,9 @@ fn summary(
 ) -> ExportJobSummary {
     ExportJobSummary {
         job_id: record.job_id.clone(),
+        // "The name of the dataset export job": the name the create resolved, the
+        // same one a read of that one job reports.
+        job_name: Some(record.job_name.clone()),
         status: record.status(now).to_string(),
         started_at: crate::state::to_date_time(record.started_at),
         completed_at: record.completed_at(now).map(crate::state::to_date_time),
