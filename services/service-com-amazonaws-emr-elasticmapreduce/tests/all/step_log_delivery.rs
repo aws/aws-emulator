@@ -52,6 +52,11 @@ pub(crate) const DEADLINE: Duration = Duration::from_secs(90);
 /// How long a poll sleeps between looks.
 pub(crate) const POLL_INTERVAL: Duration = Duration::from_millis(50);
 
+/// How many further reads a case takes after its step has ENDED: a delivery is attempted by
+/// whatever reports the step, so what a read reports is checked THROUGH the window those
+/// attempts are made in rather than sampled once.
+const READS_PAST_THE_END: usize = 20;
+
 /// The states a step never leaves (`com.amazonaws.emr#StepState`).
 pub(crate) const TERMINAL: [&str; 4] = ["COMPLETED", "CANCELLED", "FAILED", "INTERRUPTED"];
 
@@ -352,6 +357,35 @@ async fn delivered(case: &str, router: &MultiServiceRouter, cluster_id: &str, pr
     }
 }
 
+/// Poll `DescribeStep` until the step `step_id` reports the log file its push wrote, answering
+/// the path it reports. The wait is on the CONDITION: a step holds that path from the push that
+/// delivered its files, so the read looks again until it is there or the generous [`DEADLINE`]
+/// passes.
+async fn reported_log_file(
+    case: &str,
+    router: &MultiServiceRouter,
+    cluster_id: &str,
+    step_id: &str,
+) -> String {
+    let deadline = Instant::now() + DEADLINE;
+    loop {
+        let described = emr_ok(
+            router,
+            "DescribeStep",
+            json!({ "ClusterId": cluster_id, "StepId": step_id }),
+        )
+        .await;
+        if let Some(path) = described["Step"]["Status"]["FailureDetails"]["LogFile"].as_str() {
+            return path.to_string();
+        }
+        assert!(
+            Instant::now() < deadline,
+            "case {case:?}: expected the failed step to report its log file, got {described}"
+        );
+        tokio::time::sleep(POLL_INTERVAL).await;
+    }
+}
+
 /// Every row: the step's own log directory holds exactly the three gzipped files, and each
 /// carries that run's own output.
 #[tokio::test]
@@ -469,15 +503,16 @@ async fn a_finished_step_leaves_its_log_directory_in_amazon_s3() {
             case.traceback, traced
         );
 
-        // A failed step reports where its own log file is, and that is where it really is.
+        // A failed step reports where its own log file is, and that is where it really is. The
+        // path belongs to the files, so it is reported from the push that WROTE them: the read
+        // looks again until the step names it.
         if case.state == "FAILED" {
-            let log_file = step["Status"]["FailureDetails"]["LogFile"]
-                .as_str()
-                .unwrap_or_default();
+            let log_file = reported_log_file(label, &router, &cluster_id, step_id).await;
             assert_eq!(
                 log_file,
                 format!("s3://{BUCKET}/{prefix}/{STDERR_LOG_OBJECT}"),
-                "case {label:?}: expected the step to report its delivered log file, got {step}"
+                "case {label:?}: expected the step to report its delivered log file, got \
+                 {log_file:?}"
             );
         }
     }
@@ -579,4 +614,15 @@ async fn a_destination_that_does_not_resolve_leaves_no_log_file_reported() {
         step["Status"]["FailureDetails"]["LogFile"].is_null(),
         "a step whose log files could not be written reports no log file, got {step}"
     );
+    // And it reports none at ANY read, not only at the one this case happened to take: the
+    // delivery is attempted whenever the step is reported, so the step is read through the
+    // window those attempts are made in rather than sampled once.
+    for _ in 0..READS_PAST_THE_END {
+        let again = emr_ok(&router, "ListSteps", json!({ "ClusterId": cluster_id })).await;
+        let step = again["Steps"][0].clone();
+        assert!(
+            step["Status"]["FailureDetails"]["LogFile"].is_null(),
+            "a step whose log files could not be written reports no log file, got {step}"
+        );
+    }
 }

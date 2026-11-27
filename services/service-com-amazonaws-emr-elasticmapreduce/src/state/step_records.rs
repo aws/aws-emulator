@@ -87,8 +87,8 @@ pub struct StepRecord {
     /// `RUNNING` for good.
     pub abandoned_runs: u32,
     /// The `s3://` directory this step's log files were DELIVERED to, once the clock owed
-    /// them and they were written ([`deliver_due_step_logs`]) — which is what keeps one
-    /// step's files written once however many calls report it afterwards, and is the
+    /// them and every one of them had LANDED there ([`deliver_due_step_logs`]) — which is what
+    /// keeps one step's files written once however many calls report it afterwards, and is the
     /// directory a failed step reports its log file under. `None` while nothing has been
     /// delivered for this step, including for a cluster whose launch named no `LogUri`.
     pub delivered_log_uri: Option<String>,
@@ -522,8 +522,10 @@ impl StepRecord {
                 // "The path to the log file where the step failure root cause was
                 // originally recorded." (`FailureDetails$LogFile` doc.) The step's own log
                 // directory is that path, and it is reported only once the files really
-                // exist there ([`StepRecord::delivered_log_uri`]): a cluster that named no
-                // `LogUri` has no log file to point a reader at.
+                // exist there ([`StepRecord::delivered_log_uri`], recorded only once every
+                // file of the directory has landed): a cluster that named no `LogUri`, and one
+                // whose files are still being written or could not be, has no log file to
+                // point a reader at.
                 log_file: self
                     .delivered_log_uri
                     .as_deref()

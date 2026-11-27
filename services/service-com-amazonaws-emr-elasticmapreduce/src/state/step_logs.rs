@@ -37,7 +37,14 @@
 //! its cluster drains what is owed ([`deliver_due_step_logs`]) with this service's store
 //! already released. Nothing sleeps for it, nothing is written for a step still in flight,
 //! and one step's files are written once however many calls arrive afterwards
-//! ([`StepRecord::delivered_log_uri`]).
+//! ([`StepRecord::claimed_log_uri`], [`StepRecord::delivered_log_uri`]).
+//!
+//! The two records are kept APART because the write takes time and the calls that report a
+//! step do not wait for it: the drain that takes a step's files CLAIMS the directory
+//! ([`StepRecord::claimed_log_uri`]) so no second drain writes them, and the directory is
+//! recorded as the step's ([`StepRecord::delivered_log_uri`]) only once every file of it has
+//! landed. So a read that arrives while a delivery is in flight reports no log file — the files
+//! are not there yet — and no read ever points a client at an object the store does not hold.
 //!
 //! Delivery is BEST EFFORT, as it is for the real agent: a destination that does not resolve
 //! (no such bucket) or refuses the write loses that round and is reported in this service's own
