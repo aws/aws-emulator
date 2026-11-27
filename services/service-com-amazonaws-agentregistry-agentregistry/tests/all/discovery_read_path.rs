@@ -15,11 +15,17 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
+use std::time::Duration;
 
 use aws_smithy_types::date_time::Format as TimestampFormat;
 use aws_smithy_types::{DateTime, Document};
 use serde_json::{json, Value};
-use service_com_amazonaws_agentregistry_agentregistry::ops::types::VALIDATION_EXCEPTION_REASON_VALUES;
+use service_com_amazonaws_agentregistry_agentregistry::ops::types::{
+    SEARCH_TYPE_VALUES, VALIDATION_EXCEPTION_REASON_VALUES,
+};
+use service_com_amazonaws_agentregistry_agentregistry::state::search_page::{
+    self, Page, SearchFingerprint,
+};
 use service_com_amazonaws_agentregistry_agentregistry::EmulatedService;
 use service_com_amazonaws_agentregistrycontrol_agentregistrycontrol::ops::types::{
     A2aAgentCardDescriptor, AgentSkillsDefinitionDescriptor, CustomMetadataSchemaConfiguration,
@@ -564,9 +570,11 @@ async fn page_of(
 /// naming `maxResults`.
 ///
 /// Each read keeps its own documented numbers: `maxResults` is `@range{min:1,max:100}`
-/// with no default on the list and `@range{min:1,max:20}` with `@default: 10` on the
+/// with no default on the list and `@range{min:1,max:50}` with `@default: 10` on the
 /// search (`smithy_query(query="operation",
-/// operation="ListDiscoverableRegistryRecords,SearchDiscoverableRegistryRecords")`).
+/// operation="ListDiscoverableRegistryRecords,SearchDiscoverableRegistryRecords")`), whose
+/// own doc narrows that range to 1 through 20 for the `HYBRID` and `SEMANTIC` ranking
+/// methods — and `HYBRID` is what a request naming no `searchType` is ranked by.
 /// [`BULK_REGISTRY`] holds fewer discoverable records than either maximum, so a page
 /// bounded above that count carries every one of them.
 #[tokio::test]
@@ -600,13 +608,15 @@ async fn both_paginated_reads_resolve_their_page_size_by_the_same_rule() {
         );
     }
 
-    // (read, maxResults): one past each read's published maximum, its published
-    // minimum less one, and a value that is no count at all.
-    let refused: [(&str, i64); 6] = [
+    // (read, maxResults): one past the maximum each read serves — the modelled bound on
+    // the list, the bound the default ranking method documents on the search — its
+    // published minimum less one, and a value that is no count at all.
+    let refused: [(&str, i64); 7] = [
         (LIST_READ, 101),
         (LIST_READ, 0),
         (LIST_READ, -1),
         (SEARCH_READ, 21),
+        (SEARCH_READ, 51),
         (SEARCH_READ, 0),
         (SEARCH_READ, -1),
     ];
@@ -1311,16 +1321,21 @@ async fn input_outside_a_constraint_or_the_documented_grammar_is_refused_with_40
     // grammar the `filters` member documents.
     let long_query = "q".repeat(300);
     let many_record_ids: Vec<String> = (1..=101).map(|n| format!("rec{n:09}")).collect();
-    let cases: [(&str, &str, Value); 17] = [
+    let cases: [(&str, &str, Value); 18] = [
         (
             "searchQuery longer than 256",
             "/discoverable-records-search",
             json!({ "searchQuery": long_query, "registryIds": [REGISTRY], "maxResults": 10 }),
         ),
         (
-            "maxResults above the documented search maximum",
+            "maxResults above the maximum the default search type documents",
             "/discoverable-records-search",
             json!({ "searchQuery": "", "registryIds": [REGISTRY], "maxResults": 21 }),
+        ),
+        (
+            "maxResults above the modelled search maximum",
+            "/discoverable-records-search",
+            json!({ "searchQuery": "", "registryIds": [REGISTRY], "maxResults": 51 }),
         ),
         (
             "maxResults explicitly zero (search)",
@@ -1868,5 +1883,576 @@ async fn search_matches_every_term_of_a_phrase_in_any_order() {
             found, expected,
             "case {query:?}: expected {expected:?}, got {found:?}"
         );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The ranking method a search is answered by (`searchType`), and the search read's own
+// `@paginated` pair.
+//
+// RULE: a search ranks a registry's discoverable records by the method the request names,
+// reports that method back, and serves one page of that ranking — the page size the
+// method's own documented range admits, resumed only by a request that repeats the search
+// the token was issued for and only while that token's documented lifetime lasts.
+//
+// The value set is the model's own, through this crate's generated catalogue of it
+// (`ops::types::SEARCH_TYPE_VALUES` for `com.amazonaws.agentregistry#SearchType`,
+// `smithy_query(query="shape", shape="SearchType")`); nothing below spells one by hand.
+// ---------------------------------------------------------------------------
+
+/// The search read's route.
+const SEARCH_PATH: &str = "/discoverable-records-search";
+
+/// The method a request naming no `searchType` is ranked by, and the one its answer
+/// reports: `searchType`'s own doc — "the service uses `HYBRID` in Amazon Web Services
+/// Regions that support semantic search" — and the response member's — "this is the default
+/// for the Amazon Web Services Region: `HYBRID` where semantic search is supported".
+const DEFAULT_SEARCH_TYPE: &str = "HYBRID";
+
+/// The members `SearchType` declares, which a case names one of.
+const KEYWORD: &str = "KEYWORD";
+const SEMANTIC: &str = "SEMANTIC";
+const HYBRID: &str = "HYBRID";
+
+/// A search request over `registry` for `query`, carrying `searchType` only when the case
+/// names one — so an absent member really is absent on the wire.
+fn search_body(registry: &str, query: &str, search_type: Option<&str>) -> Value {
+    let mut body = json!({ "searchQuery": query, "registryIds": [registry] });
+    if let Some(search_type) = search_type {
+        body["searchType"] = json!(search_type);
+    }
+    body
+}
+
+/// Walk every page of one search, returning the record ids in page order and asserting
+/// each page is served and the last one carries no token.
+async fn search_every_page(router: &MultiServiceRouter, case: &str, body: &Value) -> Vec<String> {
+    let mut collected = Vec::new();
+    let mut next_token: Option<String> = None;
+    for page in 0..64 {
+        let mut body = body.clone();
+        if let Some(token) = &next_token {
+            body["nextToken"] = json!(token);
+        }
+        let (status, response) = post(router, SEARCH_PATH, &body).await;
+        assert_eq!(
+            status, 200,
+            "case {case:?}: page {page} must be 200, got {status}: {response}"
+        );
+        collected.extend(record_ids(case, &response));
+        next_token = response["nextToken"].as_str().map(str::to_string);
+        if next_token.is_none() {
+            return collected;
+        }
+    }
+    panic!("case {case:?}: the search never reached a final page: {collected:?}");
+}
+
+/// Every successful search reports the method it ranked by: the one the request named, or
+/// the Region's default when it named none. The rows span every member the model declares
+/// and the absent member, each over a query that matches two records, every record and no
+/// record — so what is reported is the method and not what the query happened to match.
+#[tokio::test]
+async fn every_search_answer_reports_the_search_type_it_ranked_with() {
+    let router = seeded_router();
+    let mut requested: Vec<Option<&str>> = SEARCH_TYPE_VALUES.iter().copied().map(Some).collect();
+    requested.push(None);
+    for search_type in requested {
+        for query in ["payments", "", "no-such-substring"] {
+            let case = format!("searchType={search_type:?} over {query:?}");
+            let mut body = search_body(REGISTRY, query, search_type);
+            body["maxResults"] = json!(20);
+            let (status, response) = post(&router, SEARCH_PATH, &body).await;
+            assert_eq!(
+                status, 200,
+                "case {case:?}: expected 200, got {status}: {response}"
+            );
+            let expected = search_type.unwrap_or(DEFAULT_SEARCH_TYPE);
+            assert_eq!(
+                response["searchType"].as_str(),
+                Some(expected),
+                "case {case:?}: expected searchType {expected:?}, got {response}"
+            );
+        }
+    }
+
+    // A value outside the enumerated type names no method the model declares, in any form:
+    // the empty string, a declared value in another casing, and a ranking method of some
+    // other search engine.
+    for refused in ["", "keyword", "VECTOR"] {
+        let case = format!("searchType={refused:?}");
+        let (status, response) = post(
+            &router,
+            SEARCH_PATH,
+            &search_body(REGISTRY, "", Some(refused)),
+        )
+        .await;
+        assert_eq!(
+            status, 400,
+            "case {case:?}: expected 400, got {status}: {response}"
+        );
+        assert!(
+            response["__type"]
+                .as_str()
+                .is_some_and(|code| code.contains("ValidationException")),
+            "case {case:?}: expected a ValidationException, got {response}"
+        );
+    }
+}
+
+/// `maxResults` is bounded by the range the search type documents — "Valid values are 1
+/// through 50 when `searchType` is `KEYWORD`, and 1 through 20 when it is `HYBRID` or
+/// `SEMANTIC`. The default value is 10." — so the same page size is served for one method
+/// and refused for another. The rows walk each method's own bounds, the value one past
+/// each, the modelled maximum and one past it, and the values that are no count at all.
+#[tokio::test]
+async fn each_search_type_bounds_its_page_by_the_range_its_own_doc_states() {
+    let router = seeded_router();
+    // (searchType, maxResults, records the page carries) — [`BULK_REGISTRY`] holds
+    // `BULK_RECORDS` discoverable records, so a page bounded above that count carries
+    // every one of them.
+    let served: [(Option<&str>, i64, usize); 9] = [
+        (Some(KEYWORD), 1, 1),
+        (Some(KEYWORD), 20, BULK_RECORDS),
+        (Some(KEYWORD), 50, BULK_RECORDS),
+        (Some(SEMANTIC), 1, 1),
+        (Some(SEMANTIC), 20, BULK_RECORDS),
+        (Some(HYBRID), 1, 1),
+        (Some(HYBRID), 20, BULK_RECORDS),
+        (None, 20, BULK_RECORDS),
+        (None, 7, 7),
+    ];
+    for (search_type, max_results, expected) in served {
+        let case = format!("searchType={search_type:?} maxResults={max_results}");
+        let mut body = search_body(BULK_REGISTRY, "bulk", search_type);
+        body["maxResults"] = json!(max_results);
+        let (status, response) = post(&router, SEARCH_PATH, &body).await;
+        assert_eq!(
+            status, 200,
+            "case {case:?}: expected 200, got {status}: {response}"
+        );
+        let found = record_ids(&case, &response);
+        assert_eq!(
+            found.len(),
+            expected,
+            "case {case:?}: expected {expected} records, got {found:?}"
+        );
+    }
+
+    // (searchType, maxResults): one past the maximum the method documents, the modelled
+    // maximum of 50 for the two methods documented below it, one past the modelled
+    // maximum for every method, and the two values that are no page size at all.
+    let refused: [(Option<&str>, i64); 11] = [
+        (Some(SEMANTIC), 21),
+        (Some(SEMANTIC), 50),
+        (Some(HYBRID), 21),
+        (Some(HYBRID), 50),
+        (None, 21),
+        (Some(KEYWORD), 51),
+        (Some(SEMANTIC), 51),
+        (Some(HYBRID), 51),
+        (None, 51),
+        (Some(KEYWORD), 0),
+        (Some(KEYWORD), -1),
+    ];
+    for (search_type, max_results) in refused {
+        let case = format!("searchType={search_type:?} maxResults={max_results}");
+        let mut body = search_body(BULK_REGISTRY, "bulk", search_type);
+        body["maxResults"] = json!(max_results);
+        let (status, response) = post(&router, SEARCH_PATH, &body).await;
+        assert_eq!(
+            status, 400,
+            "case {case:?}: expected 400, got {status}: {response}"
+        );
+        let message = response["message"].as_str().unwrap_or_default();
+        assert!(
+            message.contains("maxResults"),
+            "case {case:?}: the refusal must name maxResults, got {message:?}"
+        );
+    }
+}
+
+/// A keyword-matched result set is enumerable, so every record the query matches is
+/// reachable a page at a time and no record is repeated or skipped — whatever page size
+/// the walk uses. The rows span the page sizes the rule generalises over: one record per
+/// page, a size that divides the result set, one that does not, one at the result set's
+/// own size and one above it; and both methods whose result set the query's terms decide.
+#[tokio::test]
+async fn a_keyword_ranked_search_pages_through_every_matching_record_exactly_once() {
+    let router = seeded_router();
+    let mut every: Vec<String> = (1..=BULK_RECORDS).map(|n| format!("bulk{n:08}")).collect();
+    every.sort();
+    for search_type in [Some(KEYWORD), Some(HYBRID), None] {
+        for max_results in [1_i64, 5, 7, 12, 20] {
+            let case = format!("searchType={search_type:?} walked at maxResults={max_results}");
+            let mut body = search_body(BULK_REGISTRY, "bulk", search_type);
+            body["maxResults"] = json!(max_results);
+            let mut collected = search_every_page(&router, &case, &body).await;
+            collected.sort();
+            assert_eq!(
+                collected, every,
+                "case {case:?}: paging must yield every matching record exactly once, got {collected:?}"
+            );
+        }
+    }
+}
+
+/// A `SEMANTIC` search "[r]anks records by semantic similarity to the query and returns the
+/// most similar records, up to `maxResults`, even when none of them closely matches the
+/// query", so a query whose terms no record carries still answers with a ranking — while
+/// the two methods whose result set the terms decide answer with nothing. That one page
+/// already carries "the maximum number of results for its search type", so no token
+/// follows it.
+#[tokio::test]
+async fn a_semantic_search_ranks_records_whose_text_no_term_of_the_query_matches() {
+    let router = seeded_router();
+    // A phrase nothing in either registry is described by, so nothing matches it term by
+    // term. (case, the registry, maxResults, records the answer carries) — the registry
+    // holding three discoverable records, and the bulk registry holding more than a page.
+    let rows: [(&str, &str, i64, usize); 4] = [
+        (
+            "fewer discoverable records than the page",
+            REGISTRY,
+            20,
+            DISCOVERABLE.len(),
+        ),
+        ("as many records as the page", BULK_REGISTRY, 12, BULK_RECORDS),
+        ("more records than the page", BULK_REGISTRY, 5, 5),
+        ("one record per page", BULK_REGISTRY, 1, 1),
+    ];
+    for (row, registry, max_results, expected) in rows {
+        let case = format!("SEMANTIC over a registry with {row}");
+        let mut body = search_body(registry, "tide forecast harbor", Some(SEMANTIC));
+        body["maxResults"] = json!(max_results);
+        let (status, response) = post(&router, SEARCH_PATH, &body).await;
+        assert_eq!(
+            status, 200,
+            "case {case:?}: expected 200, got {status}: {response}"
+        );
+        let found = record_ids(&case, &response);
+        assert_eq!(
+            found.len(),
+            expected,
+            "case {case:?}: expected {expected} ranked records, got {found:?}"
+        );
+        assert!(
+            response["nextToken"].is_null(),
+            "case {case:?}: a similarity ranking is served in one page, got {response}"
+        );
+    }
+
+    // The contrast: the same query under the two methods whose result set the query's
+    // terms decide carries no record at all.
+    for search_type in [Some(KEYWORD), Some(HYBRID), None] {
+        let case = format!("searchType={search_type:?} over a query no term of which matches");
+        let mut body = search_body(REGISTRY, "tide forecast harbor", search_type);
+        body["maxResults"] = json!(20);
+        let (status, response) = post(&router, SEARCH_PATH, &body).await;
+        assert_eq!(
+            status, 200,
+            "case {case:?}: expected 200, got {status}: {response}"
+        );
+        assert!(
+            record_ids(&case, &response).is_empty() && response["nextToken"].is_null(),
+            "case {case:?}: a keyword-matched result set carries only what the terms match, \
+             got {response}"
+        );
+    }
+}
+
+/// The token the first page of `body` carries.
+async fn first_page_token(router: &MultiServiceRouter, case: &str, body: &Value) -> String {
+    let (status, response) = post(router, SEARCH_PATH, body).await;
+    assert_eq!(
+        status, 200,
+        "case {case:?}: expected 200, got {status}: {response}"
+    );
+    response["nextToken"]
+        .as_str()
+        .unwrap_or_else(|| panic!("case {case:?}: the first page must carry a token: {response}"))
+        .to_string()
+}
+
+/// A token resumes ONE search: "send the same `searchQuery`, `registryIds`, `filters`, and
+/// `searchType` that you used for the first page. If any of them differ, the request fails
+/// with a `ValidationException`." The rows change one of those four at a time — and, as the
+/// contrast, the page size, which is no part of the search a token names.
+#[tokio::test]
+async fn a_search_token_resumes_only_the_search_it_was_issued_for() {
+    let router = seeded_router();
+    let mut first = search_body(BULK_REGISTRY, "bulk", Some(KEYWORD));
+    first["maxResults"] = json!(5);
+    let token = first_page_token(&router, "the first page of a keyword search", &first).await;
+
+    let with = |member: &str, value: Value| {
+        let mut body = first.clone();
+        body[member] = value;
+        body
+    };
+    // (case, the body the token is replayed with, whether the search is resumed)
+    let replays: [(&str, Value, bool); 6] = [
+        ("the same search", first.clone(), true),
+        (
+            "the same search at another page size, which the token does not name",
+            with("maxResults", json!(3)),
+            true,
+        ),
+        (
+            "another searchQuery",
+            with("searchQuery", json!("bulk-service-01")),
+            false,
+        ),
+        (
+            "another registry",
+            with("registryIds", json!([REGISTRY])),
+            false,
+        ),
+        ("another searchType", with("searchType", json!(HYBRID)), false),
+        (
+            "a metadata filter the first page did not carry",
+            with("filters", json!({ "recordType": { "$eq": "CUSTOM" } })),
+            false,
+        ),
+    ];
+    for (case, mut body, is_resumed) in replays {
+        body["nextToken"] = json!(token);
+        let (status, response) = post(&router, SEARCH_PATH, &body).await;
+        if is_resumed {
+            assert_eq!(
+                status, 200,
+                "case {case:?}: expected the search to resume, got {status}: {response}"
+            );
+            assert!(
+                !record_ids(case, &response).is_empty(),
+                "case {case:?}: a resumed page carries the records after the first, got {response}"
+            );
+            continue;
+        }
+        assert_eq!(
+            status, 400,
+            "case {case:?}: expected 400, got {status}: {response}"
+        );
+        let message = response["message"].as_str().unwrap_or_default();
+        assert!(
+            message.contains("nextToken"),
+            "case {case:?}: the refusal must name nextToken, got {message:?}"
+        );
+    }
+
+    // A string this service never issued names no position at all, which is the modelled
+    // `CannotParse` reading every opaque token of this service gets.
+    for refused in ["not-a-token", "bulk00000001", "ffff"] {
+        let case = format!("nextToken={refused:?}");
+        let mut body = first.clone();
+        body["nextToken"] = json!(refused);
+        let (status, response) = post(&router, SEARCH_PATH, &body).await;
+        assert_eq!(
+            status, 400,
+            "case {case:?}: expected 400, got {status}: {response}"
+        );
+        assert_eq!(
+            response["reason"].as_str(),
+            Some("CannotParse"),
+            "case {case:?}: a token this service did not issue cannot be parsed, got {response}"
+        );
+    }
+}
+
+/// "A pagination token expires 15 minutes after the service returns the first page": a
+/// token names a page of its search until that instant and none after it, whatever else
+/// about the request is unchanged.
+///
+/// The lifetime is read against a token minted at a chosen instant rather than by waiting
+/// for one to pass, so the rule is pinned at both sides of its edge — through the same
+/// codec the handler mints with ([`search_page`]) and over the same HTTP path.
+#[tokio::test]
+async fn a_search_token_past_its_documented_lifetime_names_no_page() {
+    assert_eq!(
+        search_page::TOKEN_LIFETIME,
+        Duration::from_secs(15 * 60),
+        "a pagination token expires 15 minutes after the first page is returned"
+    );
+
+    let router = seeded_router();
+    let fingerprint = SearchFingerprint::of("bulk", &[BULK_REGISTRY.to_string()], None, KEYWORD);
+    let issued = search_page::now_secs();
+    let page = search_page::first_page_at(issued);
+    let token = search_page::token(&page, 5, &fingerprint);
+
+    // The rule itself, at both sides of its edge: (case, the instant the token is read at,
+    // whether it still names a page).
+    let lifetime = search_page::TOKEN_LIFETIME.as_secs();
+    let instants: [(&str, u64, bool); 5] = [
+        ("the instant it was issued", issued, true),
+        ("a minute into its lifetime", issued + 60, true),
+        ("a second before it expires", issued + lifetime - 1, true),
+        ("the instant it expires", issued + lifetime, false),
+        ("a minute after it expired", issued + lifetime + 60, false),
+    ];
+    for (case, now, names_a_page) in instants {
+        let resumed = search_page::resume_at(&token, &fingerprint, now);
+        assert_eq!(
+            resumed.is_ok(),
+            names_a_page,
+            "case {case:?}: expected the token to name a page: {names_a_page}, got {resumed:?}"
+        );
+    }
+
+    // The lifetime bounds the token from both sides: an expiry further out than one whole
+    // lifetime is one no first page of this search can have issued, so it names no page
+    // either — the rule cannot be stretched by a token carrying a later instant.
+    for (case, beyond) in [
+        ("a second past one whole lifetime", lifetime + 1),
+        ("a day past one whole lifetime", lifetime + 86_400),
+    ] {
+        let stretched = search_page::token(
+            &Page {
+                served: 5,
+                expires_at: issued + beyond,
+            },
+            5,
+            &fingerprint,
+        );
+        let resumed = search_page::resume_at(&stretched, &fingerprint, issued);
+        assert!(
+            resumed.is_err(),
+            "case {case:?}: an expiry past the documented lifetime names no page, got {resumed:?}"
+        );
+    }
+
+    // And over the wire: a token whose lifetime has passed is refused, while one minted
+    // the same way with its lifetime ahead of it resumes the search.
+    let expired = search_page::token(
+        &Page {
+            served: 5,
+            expires_at: issued,
+        },
+        5,
+        &fingerprint,
+    );
+    let mut request = search_body(BULK_REGISTRY, "bulk", Some(KEYWORD));
+    request["maxResults"] = json!(5);
+    for (case, token, expected) in [
+        ("a token within its lifetime", token, 200),
+        ("a token past its lifetime", expired, 400),
+    ] {
+        let mut body = request.clone();
+        body["nextToken"] = json!(token);
+        let (status, response) = post(&router, SEARCH_PATH, &body).await;
+        assert_eq!(
+            status, expected,
+            "case {case:?}: expected {expected}, got {status}: {response}"
+        );
+    }
+}
+
+/// How deeply a metadata filter may nest before this service refuses to evaluate it, and
+/// the deepest nesting it does evaluate: the bound the search handler states
+/// (`MAX_FILTER_DEPTH`), which is what keeps a filter expression's nesting — the one part of
+/// a request whose depth the caller chooses — from being walked at all past it.
+const DEEPEST_FILTER: usize = 10;
+
+/// A filter expression nesting `levels` of `$and`, with a term the registry's records
+/// satisfy at the bottom.
+fn nested_filter(levels: usize) -> Value {
+    let mut filters = json!({ "status": { "$in": ["APPROVED"] } });
+    for _ in 0..levels {
+        filters = json!({ "$and": [filters] });
+    }
+    filters
+}
+
+/// A filter expression's nesting is bounded, so a request cannot choose how deep this
+/// service walks: nesting up to the documented depth is evaluated, and past it the request
+/// is refused 400 naming `filters` — rather than walked, which is also why the walk that
+/// takes a resumption token's fingerprint over the same expression keeps its work on the
+/// heap rather than on the serving thread's stack. Every row stays well inside the nesting
+/// the protocol itself reads, so what each one exercises is this service's own bound.
+#[tokio::test]
+async fn a_metadata_filter_is_evaluated_only_as_deep_as_the_service_states() {
+    let router = seeded_router();
+    // (case, levels of nesting, whether the search is served) — the shallowest expression,
+    // one below the bound, the bound itself, one past it, and far past it.
+    let cases: [(&str, usize, bool); 5] = [
+        ("no nesting at all", 0, true),
+        ("one level below the bound", DEEPEST_FILTER - 1, true),
+        ("at the bound", DEEPEST_FILTER, true),
+        ("one level past the bound", DEEPEST_FILTER + 1, false),
+        ("far past the bound", DEEPEST_FILTER * 2, false),
+    ];
+    for (case, levels, is_served) in cases {
+        let mut body = search_body(REGISTRY, "", Some(KEYWORD));
+        body["maxResults"] = json!(20);
+        body["filters"] = nested_filter(levels);
+        let (status, response) = post(&router, SEARCH_PATH, &body).await;
+        if is_served {
+            assert_eq!(
+                status, 200,
+                "case {case:?}: expected 200, got {status}: {response}"
+            );
+            assert_eq!(
+                record_ids(case, &response).len(),
+                DISCOVERABLE.len(),
+                "case {case:?}: the filter admits every discoverable record, got {response}"
+            );
+            continue;
+        }
+        assert_eq!(
+            status, 400,
+            "case {case:?}: expected 400, got {status}: {response}"
+        );
+        let message = response["message"].as_str().unwrap_or_default();
+        assert!(
+            message.contains("filters"),
+            "case {case:?}: the refusal must name filters, got {message:?}"
+        );
+    }
+}
+
+/// A member the discovery surface publishes for content no store holds is ABSENT, not
+/// empty: a record's skill package (`artifact`, which only a batch-get would carry) and its
+/// signature agent card (the seventh descriptor entry key) are content the control plane is
+/// given for a record, and its model declares neither — so no answer of either read carries
+/// them, under any search type.
+#[tokio::test]
+async fn no_discovery_answer_carries_a_package_or_a_signature_card_no_store_holds() {
+    let router = seeded_router();
+    let (status, batch) = post(
+        &router,
+        "/discoverable-records-batch",
+        &json!({ "entries": [{ "registryId": REGISTRY, "recordIds": DISCOVERABLE }] }),
+    )
+    .await;
+    assert_eq!(status, 200, "BatchGet: expected 200, got {status}: {batch}");
+    let mut answers = vec![("batch-get".to_string(), batch)];
+    for search_type in [Some(KEYWORD), Some(SEMANTIC), Some(HYBRID), None] {
+        let mut body = search_body(REGISTRY, "", search_type);
+        body["maxResults"] = json!(20);
+        let (status, response) = post(&router, SEARCH_PATH, &body).await;
+        assert_eq!(
+            status, 200,
+            "case searchType={search_type:?}: expected 200, got {status}: {response}"
+        );
+        answers.push((format!("search searchType={search_type:?}"), response));
+    }
+    for (case, answer) in answers {
+        let records = answer["registryRecords"]
+            .as_array()
+            .unwrap_or_else(|| panic!("case {case:?}: registryRecords must be a list: {answer}"))
+            .clone();
+        assert!(
+            !records.is_empty(),
+            "case {case:?}: the answer must carry records to assert about: {answer}"
+        );
+        for record in &records {
+            assert!(
+                record.get("artifact").is_none(),
+                "case {case:?}: no record has a skill package, so none may report one: {record}"
+            );
+            assert!(
+                record["descriptors"].get("signatureAgentCard").is_none(),
+                "case {case:?}: no record carries a signature agent card: {record}"
+            );
+        }
     }
 }

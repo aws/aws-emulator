@@ -27,6 +27,7 @@ pub struct RegistryRecordSummary {
     pub created_at: ::aws_smithy_types::DateTime,
     pub updated_at: ::aws_smithy_types::DateTime,
     pub custom_metadata: Option<::aws_smithy_types::Document>,
+    pub artifact: Option<RegistryRecordArtifactDownload>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.agentregistry#Descriptors")]
@@ -38,6 +39,7 @@ pub struct Descriptors {
     pub custom: Option<CustomDescriptor>,
     pub http: Option<HttpDescriptor>,
     pub agui: Option<AgUiDescriptor>,
+    pub signature_agent_card: Option<SignatureAgentCardDescriptor>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.agentregistry#McpServerDescriptor")]
@@ -122,6 +124,28 @@ pub struct AgUiDescriptor {
     pub source: Option<DescriptorSource>,
 }
 
+#[smithy_macros::smithy(shape = "com.amazonaws.agentregistry#SignatureAgentCardDescriptor")]
+#[derive(Debug, Clone, Default)]
+pub struct SignatureAgentCardDescriptor {
+    pub data: Option<String>,
+    pub data_schema_version: Option<String>,
+    pub source: Option<DescriptorSource>,
+    pub additional_data: Option<SignatureAgentCardAdditionalData>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.agentregistry#SignatureAgentCardAdditionalData")]
+#[derive(Debug, Clone, Default)]
+pub struct SignatureAgentCardAdditionalData {
+    pub category: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.agentregistry#RegistryRecordArtifactDownload")]
+#[derive(Debug, Clone, Default)]
+pub struct RegistryRecordArtifactDownload {
+    pub sha256: Option<String>,
+    pub download_url: Option<String>,
+}
+
 #[smithy_macros::smithy(shape = "com.amazonaws.agentregistry#AccessDeniedException")]
 #[derive(Debug, Clone, Default)]
 pub struct AccessDeniedException {
@@ -171,8 +195,12 @@ pub struct ValidationExceptionField {
 pub const BATCH_GET_DISCOVERABLE_REGISTRY_RECORD_ERROR_CODE_VALUES: &[&str] = &["ACCESS_DENIED", "INTERNAL_ERROR", "RESOURCE_NOT_FOUND"];
 
 
+/// The values `BotCategory` accepts on the wire.
+pub const BOT_CATEGORY_VALUES: &[&str] = &["advertising", "ai_assistant", "ai_content_optimization", "ai_search", "ai_training", "archiver", "content_fetcher", "email_client", "http_library", "link_checker", "miscellaneous", "monitoring", "page_preview", "scraping_framework", "search_engine", "security", "seo", "social_media"];
+
+
 /// The values `RecordType` accepts on the wire.
-pub const RECORD_TYPE_VALUES: &[&str] = &["AGENT", "CUSTOM", "GATEWAY", "MCP", "SKILL"];
+pub const RECORD_TYPE_VALUES: &[&str] = &["AGENT", "CUSTOM", "GATEWAY", "MCP", "SKILL", "WEB_BOT"];
 
 
 /// The values `RegistryRecordFilterName` accepts on the wire.
@@ -180,10 +208,14 @@ pub const REGISTRY_RECORD_FILTER_NAME_VALUES: &[&str] = &["descriptorType", "rec
 
 
 /// The values `RegistryRecordStatus` accepts on the wire.
-pub const REGISTRY_RECORD_STATUS_VALUES: &[&str] = &["APPROVED", "CREATE_FAILED", "CREATING", "DEPRECATED", "DRAFT", "PENDING_APPROVAL", "REJECTED", "UPDATE_FAILED", "UPDATING"];
+pub const REGISTRY_RECORD_STATUS_VALUES: &[&str] = &["APPROVED", "CREATE_FAILED", "CREATE_PENDING_AUTH", "CREATING", "DEPRECATED", "DRAFT", "PENDING_APPROVAL", "REJECTED", "UPDATE_FAILED", "UPDATE_PENDING_AUTH", "UPDATING"];
+
+
+/// The values `SearchType` accepts on the wire.
+pub const SEARCH_TYPE_VALUES: &[&str] = &["HYBRID", "KEYWORD", "SEMANTIC"];
 
 
 /// The values `ValidationExceptionReason` accepts on the wire.
-pub const VALIDATION_EXCEPTION_REASON_VALUES: &[&str] = &["CannotParse", "EventInOtherSession", "FieldValidationFailed", "IdempotentParameterMismatchException", "ResourceConflict"];
+pub const VALIDATION_EXCEPTION_REASON_VALUES: &[&str] = &["CannotParse", "EventInOtherSession", "FieldValidationFailed", "IdempotentParameterMismatchException", "ResourceConflict", "UnsupportedInRegion"];
 
 

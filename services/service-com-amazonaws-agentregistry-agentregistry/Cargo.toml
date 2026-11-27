@@ -23,6 +23,11 @@ serde_json = { workspace = true }
 tracing = { workspace = true }
 # Hex codec for the opaque `nextToken` ListDiscoverableRegistryRecords mints.
 hex = { workspace = true }
+# SHA-256, for the digest of the search a SearchDiscoverableRegistryRecords pagination
+# token belongs to.
+sha2 = { workspace = true }
+# String similarity (Sørensen–Dice), for how close a record's text is to a search query.
+strsim = "0.11"
 # The STS store, for the identity an access key id speaks for: the principal
 # `sts:GetCallerIdentity` answers for the credentials a request signed with.
 service-com-amazonaws-sts-awssecuritytokenservicev20110615 = { workspace = true }
@@ -41,7 +46,6 @@ service-common = { path = "../common" }
 emulator-core-build-support = { workspace = true }
 
 [dev-dependencies]
-sha2 = { workspace = true }
 # `time` is for the discovery suite's poll loops past a clock-owed transition; the
 # workspace tokio feature set covers only `#[tokio::test]` itself.
 tokio = { workspace = true, features = ["time"] }

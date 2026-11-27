@@ -247,6 +247,14 @@ fn descriptors(held: &owner::Descriptors) -> discovery::Descriptors {
         agui: held.agui.as_ref().map(|held| discovery::AgUiDescriptor {
             source: held.source.as_ref().map(source),
         }),
+        // The discovery surface publishes a seventh descriptor entry, the signature agent
+        // card of a web bot, that the owner's `Descriptors` declares no member for
+        // (`owner::Descriptors` carries six: mcpServer, a2aAgentCard,
+        // agentSkillsDefinition, custom, http, agui). A record therefore never carries
+        // one, and the entry is absent rather than invented: a descriptor is content the
+        // control plane was given for a record, so one no store holds is one no read may
+        // report. It will project like its six siblings the moment that model declares it.
+        signature_agent_card: None,
     }
 }
 

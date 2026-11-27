@@ -26,6 +26,7 @@ contents — read that shape in the model above when you need its own members.
 ## BatchGetDiscoverableRegistryRecord
 
 - **Route:** `POST /discoverable-records-batch -> 200`
+- **Traits:** @readonly
 - **Input:** `entries` (list<RegistryRecordsEntry>, required)
 - **Output:** `registryRecords` (list<RegistryRecordSummary>, required), `errors` (list<BatchGetDiscoverableRegistryRecordError>, required)
 - **Errors:** `AccessDeniedException (HTTP 403)`, `InternalServerException (HTTP 500)`, `ResourceNotFoundException (HTTP 404)`, `ThrottlingException (HTTP 429)`, `UnauthorizedException (HTTP 401)`, `ValidationException (HTTP 400)`
@@ -41,6 +42,7 @@ contents — read that shape in the model above when you need its own members.
 ## SearchDiscoverableRegistryRecords
 
 - **Route:** `POST /discoverable-records-search -> 200`
-- **Input:** `searchQuery` (string, len 0..256, required), `registryIds` (list<string>, required), `maxResults` (integer, default 10, required), `filters` (document)
-- **Output:** `registryRecords` (list<RegistryRecordSummary>, required)
+- **Traits:** @paginated(inputToken=nextToken, outputToken=nextToken, items=registryRecords), @readonly
+- **Input:** `searchQuery` (string, len 0..256, required), `registryIds` (list<string>, required), `maxResults` (integer, default 10, required), `filters` (document), `searchType` (SearchType, one of: HYBRID | KEYWORD | SEMANTIC), `nextToken` (string)
+- **Output:** `registryRecords` (list<RegistryRecordSummary>, required), `searchType` (SearchType, one of: HYBRID | KEYWORD | SEMANTIC), `nextToken` (string)
 - **Errors:** `AccessDeniedException (HTTP 403)`, `InternalServerException (HTTP 500)`, `ResourceNotFoundException (HTTP 404)`, `ThrottlingException (HTTP 429)`, `UnauthorizedException (HTTP 401)`, `ValidationException (HTTP 400)`

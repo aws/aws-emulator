@@ -21,11 +21,10 @@
 //! driven in through the control plane's operations and read back through the discovery
 //! plane, so neither plane is asserted against a copy of the other's state.
 //!
-//! Two shapes of the ANSWER are pinned beside it, both recorded AWS behaviour that the
-//! modelled output shape alone does not state: a successful search carries `searchType`
-//! (unmodelled: `SearchDiscoverableRegistryRecordsResponse` declares only
-//! `registryRecords`), and a batch-get always carries both required members, with `errors`
-//! PRESENT and EMPTY when every requested record was returned.
+//! Two shapes of the ANSWER are pinned beside it: a successful search carries the
+//! `searchType` it ranked by (`HYBRID` for a request that names none, the default of a
+//! Region that supports semantic search), and a batch-get always carries both required
+//! members, with `errors` PRESENT and EMPTY when every requested record was returned.
 //!
 //! The last three suites follow that rule through the three answers a discovery read owes a
 //! registry the control plane holds: a list read's `registryRecords` is present at every
@@ -64,8 +63,9 @@ const TRANSITION_DEADLINE: Duration = Duration::from_secs(30);
 /// How long a poll loop pauses between two looks at a resource.
 const POLL_INTERVAL: Duration = Duration::from_millis(20);
 
-/// The `searchType` every recorded successful search carries, and the one search mode this
-/// emulator runs.
+/// The `searchType` a search that names none is ranked by and reports, which the discovery
+/// suite's own table walks every member of `SearchType` over
+/// (`tests/all/discovery_read_path.rs`).
 const SEARCH_TYPE: &str = "HYBRID";
 
 /// The `BatchGetDiscoverableRegistryRecordErrorCode` reported for a record a batch-get
@@ -640,7 +640,7 @@ async fn the_search_answer_carries_its_search_type_and_the_batch_answer_both_mem
         record_reaching(&router, case, &registry_id, record_id, "APPROVED").await;
     }
 
-    // `searchType` is recorded on EVERY successful search, whatever the query matched, so
+    // `searchType` is reported on EVERY successful search, whatever the query matched, so
     // the rows differ along how many records the answer carries: both, one, none.
     let rows: [(&str, &str, usize); 3] = [
         ("a query both records match", "agent", 2),

@@ -18,11 +18,15 @@ pub struct SearchDiscoverableRegistryRecordsInput {
     pub registry_ids: Vec<String>,
     pub max_results: i32,
     pub filters: Option<::aws_smithy_types::Document>,
+    pub search_type: Option<String>,
+    pub next_token: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.agentregistry#SearchDiscoverableRegistryRecordsResponse")]
 #[derive(Debug, Clone, Default)]
 pub struct SearchDiscoverableRegistryRecordsOutput {
     pub registry_records: Vec<RegistryRecordSummary>,
+    pub search_type: Option<String>,
+    pub next_token: Option<String>,
 }
 

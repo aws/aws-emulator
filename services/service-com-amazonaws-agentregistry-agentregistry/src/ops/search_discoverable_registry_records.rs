@@ -52,18 +52,35 @@
 //!   by a custom metadata field: {"customMetadata.environment": {"$eq": "production"}}. For a
 //!   Boolean field, you can also use a native JSON boolean value, for example:
 //!   {"customMetadata.requiresApproval": {"$eq": true}}.
-//! * `maxResults` (Integer, default 10) **required** — The maximum number of results to
-//!   return. Valid values are 1 through 20. The default value is 10.
+//! * `maxResults` (Integer, range 1..50, default 10) — The maximum number of results to
+//!   return in one page. Valid values are 1 through 50 when `searchType` is `KEYWORD`, and 1
+//!   through 20 when it is `HYBRID` or `SEMANTIC`. The default value is 10.
+//! * `nextToken` (String, len 1..4096) — The pagination token from a previous response. Use
+//!   it to retrieve the next page of results, and send the same `searchQuery`,
+//!   `registryIds`, `filters`, and `searchType` that you used for the first page. If any of
+//!   them differ, the request fails with a `ValidationException`. A pagination token expires
+//!   15 minutes after the service returns the first page.
 //! * `registryIds` (RegistryIdList) **required** — The registry identifiers to search within.
 //!   Currently, you must specify exactly one registry identifier. You can provide either the
 //!   full Amazon Web Services Resource Name (ARN) or the registry ID.
 //! * `searchQuery` (SearchQuery, len 0..256) **required** — The natural language query to
 //!   search for matching registry records.
+//! * `searchType` (SearchType: HYBRID | KEYWORD | SEMANTIC) — Specifies how the service
+//!   ranks registry records against the search query. `KEYWORD` ranks records by keyword
+//!   match between the query terms and the record's text; `SEMANTIC` ranks records by
+//!   similarity to the query and returns the most similar records, up to `maxResults`, even
+//!   when none of them closely matches the query; `HYBRID` combines keyword ranking and
+//!   semantic ranking. The response reports the search type that the service used.
 //!
 //! ## Output
 //!
+//! * `nextToken` (String) — The pagination token to pass to a subsequent request to retrieve
+//!   the next page of results. This field is absent when there are no more results, or when
+//!   the search has returned the maximum number of results for its search type.
 //! * `registryRecords` (RegistryRecordSummaryList) **required** — The registry records that
 //!   match the search query, ordered by relevance.
+//! * `searchType` (SearchType: HYBRID | KEYWORD | SEMANTIC) — Specifies the search type that
+//!   the service used to rank the returned records.
 //!
 //! ## Errors
 //!
@@ -81,6 +98,7 @@
 #[allow(unused_imports)]
 use super::types::*;
 
+use crate::state::search_page::{self, SearchFingerprint, TokenRefusal};
 use crate::state::RegistryRecord;
 use ::aws_smithy_types::Document;
 
@@ -172,8 +190,30 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             ));
         }
 
-        // The model declares `maxResults` with `@range{min:1,max:20}` and
-        // `@default: 10`. The generated input carries it as a plain `i32`, so an
+        // Which ranking method answers this request: the one it asked for, or the
+        // default this Region applies to a request that names none. The method decides
+        // which records are results, in what order they are ranked, how large a page may
+        // be and whether a page past the first is reachable at all.
+        let search_type = match input.search_type.as_deref() {
+            None => DEFAULT_SEARCH_TYPE,
+            // Unreachable for a value outside the enum: the boundary validator refuses
+            // one before `handle` runs. Stated anyway, so the set this handler ranks by
+            // is the set the model declares and nothing silently falls back.
+            Some(named) => SearchMode::named(named).ok_or_else(|| {
+                field_validation(
+                    "searchType",
+                    &format!(
+                        "'{named}' is not a supported search type; name one of {}.",
+                        SEARCH_TYPE_VALUES.join(", ")
+                    ),
+                )
+            })?,
+        };
+
+        // The model declares `maxResults` with `@range{min:1,max:50}` and
+        // `@default: 10`, and its doc narrows the range by search type: "Valid values
+        // are 1 through 50 when searchType is KEYWORD, and 1 through 20 when it is
+        // HYBRID or SEMANTIC". The generated input carries it as a plain `i32`, so an
         // absent member and an explicit `0` are indistinguishable here; the modelled
         // `@range` already refuses an explicit `0` at the boundary (pinned by the
         // refusal table in `tests/all/discovery_read_path.rs`), so a zero reaching
@@ -183,7 +223,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // this service applies ([`crate::state::page_size`]); what this read states is
         // its own documented numbers and its own error channel.
         let requested = (input.max_results != 0).then_some(input.max_results);
-        let max_results = crate::state::page_size(requested, PAGE_SIZE_BOUNDS)
+        let max_results = crate::state::page_size(requested, search_type.page_size_bounds())
             .map_err(SearchDiscoverableRegistryRecordsErrorModeled::ValidationException)?;
         let terms = query_terms(&input.search_query);
 
@@ -192,6 +232,20 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         if let Some(filters) = filter_expression(input.filters.as_ref()) {
             validate_filter(filters).map_err(filter_validation)?;
         }
+
+        // Which page of this search is being asked for, decided the same way and for the
+        // same reason: a token names a position in ONE search, so whether it names one at
+        // all is settled before the caller is authorized and before any record is read.
+        let fingerprint = SearchFingerprint::of(
+            &input.search_query,
+            &input.registry_ids,
+            filter_expression(input.filters.as_ref()),
+            search_type.as_str(),
+        );
+        let page = match input.next_token.as_deref() {
+            None => search_page::first_page(),
+            Some(token) => search_page::resume(token, &fingerprint).map_err(refused_token)?,
+        };
 
         // Whether IAM lets this caller search a registry's discoverable records is
         // decided BEFORE that registry is resolved, so an unauthorized caller is told
@@ -208,7 +262,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .map_err(SearchDiscoverableRegistryRecordsErrorModeled::AccessDeniedException)?;
         }
 
-        let mut ranked: Vec<(usize, RegistryRecordSummary)> = Vec::new();
+        let mut ranked: Vec<Ranked> = Vec::new();
         for registry_id in &input.registry_ids {
             let registry =
                 crate::state::owner::resolve::<_, Self::Error>(&*self.engine, registry_id)?;
@@ -216,21 +270,46 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 if !matches_metadata_filter(input.filters.as_ref(), record)? {
                     continue;
                 }
-                let Some(rank) = relevance(record, &terms) else {
+                let Some(ranked_record) = search_type.rank(record, &terms, &input.search_query)
+                else {
                     continue;
                 };
-                ranked.push((rank, record.summary()));
+                ranked.push(ranked_record);
             }
         }
 
-        // "ordered by relevance": the most specific field the query matched first.
-        // `sort_by_key` is stable, so records of equal relevance keep the registry's
-        // own record-id order and a repeated search answers in the same order.
-        ranked.sort_by_key(|(rank, _)| *rank);
-        ranked.truncate(max_results);
+        // "ordered by relevance": the most specific field the query matched first, then
+        // the closest to the query. The sort is stable, so records a method ranks equally
+        // keep the registry's own record-id order — which is what lets a page resume
+        // exactly where the previous one stopped, and what makes a repeated search answer
+        // in the same order.
+        ranked.sort_by(|left, right| {
+            left.rank
+                .cmp(&right.rank)
+                .then_with(|| right.similarity.total_cmp(&left.similarity))
+        });
+
+        // The page the token named, and a token of its own only while this method has
+        // results it has not served: "[t]his field is absent when there are no more
+        // results, or when the search has returned the maximum number of results for its
+        // search type."
+        let matched = ranked.len();
+        let registry_records: Vec<RegistryRecordSummary> = ranked
+            .into_iter()
+            .skip(page.served)
+            .take(max_results)
+            .map(|ranked| ranked.record)
+            .collect();
+        let served = page.served.saturating_add(registry_records.len());
+        let next_token = (search_type.pages_beyond_the_first() && served < matched)
+            .then(|| search_page::token(&page, served, &fingerprint));
 
         Ok(SearchDiscoverableRegistryRecordsOutput {
-            registry_records: ranked.into_iter().map(|(_, summary)| summary).collect(),
+            registry_records,
+            // "Specifies the search type that the service used to rank the returned
+            // records" — reported on every answer, including the one that ranked nothing.
+            search_type: Some(search_type.as_str().to_string()),
+            next_token,
         })
     }
 }
@@ -241,18 +320,129 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 const REGISTRY_IDS_PER_REQUEST: usize = 1;
 
 /// `SearchDiscoverableRegistryRecordsRequest$maxResults` is modelled
-/// `@range{min:1,max:20}` with `@default: 10` — "Valid values are 1 through 20.
-/// The default value is 10."
+/// `@range{min:1,max:50}` with `@default: 10`, and its doc narrows the range by ranking
+/// method — "Valid values are 1 through 50 when `searchType` is `KEYWORD`, and 1 through 20
+/// when it is `HYBRID` or `SEMANTIC`. The default value is 10."
 const MIN_MAX_RESULTS: usize = 1;
-const MAX_MAX_RESULTS: usize = 20;
+const MAX_MAX_RESULTS_KEYWORD: usize = 50;
+const MAX_MAX_RESULTS_SEMANTIC: usize = 20;
 const DEFAULT_MAX_RESULTS: usize = 10;
 
-/// This operation's own page-size bounds, as the shared page-size rule takes them.
-const PAGE_SIZE_BOUNDS: crate::state::PageSizeBounds = crate::state::PageSizeBounds {
-    min: MIN_MAX_RESULTS,
-    max: MAX_MAX_RESULTS,
-    default: DEFAULT_MAX_RESULTS,
-};
+/// The ranking method this read applies to a request that names no `searchType`:
+/// `searchType`'s own doc — "If you omit this parameter, the service uses `HYBRID` in
+/// Amazon Web Services Regions that support semantic search and `KEYWORD` in Regions that
+/// do not" — and the response member's — "this is the default for the Amazon Web Services
+/// Region: `HYBRID` where semantic search is supported". This emulator ranks a query
+/// against each record's stored text and against its similarity to that text, so the
+/// semantic half is served and `HYBRID` is the default the Region reports.
+const DEFAULT_SEARCH_TYPE: SearchMode = SearchMode::Hybrid;
+
+/// `SearchType$KEYWORD`, `$SEMANTIC` and `$HYBRID`: the model's own three values, whose
+/// whole set is [`SEARCH_TYPE_VALUES`].
+const SEARCH_TYPE_KEYWORD: &str = "KEYWORD";
+const SEARCH_TYPE_SEMANTIC: &str = "SEMANTIC";
+const SEARCH_TYPE_HYBRID: &str = "HYBRID";
+
+/// How a search ranks a registry's records against the query, as `SearchType` declares it.
+///
+/// The three methods differ in what the model's own member docs say they differ in:
+///
+/// * `KEYWORD` "[r]anks records by keyword match between the query terms and the record"
+///   text, so a record the query's terms do not match is no result at all, and every
+///   record that matches is reachable a page at a time.
+/// * `SEMANTIC` "[r]anks records by semantic similarity to the query and returns the most
+///   similar records, up to `maxResults`, even when none of them closely matches the
+///   query" — one ranking of the whole registry, cut at the page size, so there is no
+///   further page to walk to: the answer already carries "the maximum number of results for
+///   its search type".
+/// * `HYBRID` "[c]ombines keyword ranking and semantic ranking": the records the query's
+///   terms match, ordered by the keyword ranking first and by similarity within it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SearchMode {
+    Keyword,
+    Semantic,
+    Hybrid,
+}
+
+impl SearchMode {
+    /// The method a request named, or `None` when the string is no member of `SearchType`.
+    fn named(search_type: &str) -> Option<Self> {
+        match search_type {
+            SEARCH_TYPE_KEYWORD => Some(Self::Keyword),
+            SEARCH_TYPE_SEMANTIC => Some(Self::Semantic),
+            SEARCH_TYPE_HYBRID => Some(Self::Hybrid),
+            _ => None,
+        }
+    }
+
+    /// The `SearchType` value this method is reported as.
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Keyword => SEARCH_TYPE_KEYWORD,
+            Self::Semantic => SEARCH_TYPE_SEMANTIC,
+            Self::Hybrid => SEARCH_TYPE_HYBRID,
+        }
+    }
+
+    /// The page this method admits, as the shared page-size rule takes it: the documented
+    /// range for this `searchType`, and the one default every method serves an absent
+    /// `maxResults` at.
+    fn page_size_bounds(self) -> crate::state::PageSizeBounds {
+        crate::state::PageSizeBounds {
+            min: MIN_MAX_RESULTS,
+            max: match self {
+                Self::Keyword => MAX_MAX_RESULTS_KEYWORD,
+                Self::Semantic | Self::Hybrid => MAX_MAX_RESULTS_SEMANTIC,
+            },
+            default: DEFAULT_MAX_RESULTS,
+        }
+    }
+
+    /// Whether a result of this method sits past the first page: a keyword-matched result
+    /// set is enumerable, so every record that matches is reachable, while a similarity
+    /// ranking of the whole registry answers with its most similar records "up to
+    /// `maxResults`" and nothing beyond them.
+    fn pages_beyond_the_first(self) -> bool {
+        !matches!(self, Self::Semantic)
+    }
+
+    /// Where `record` sits in this method's ranking of the query, or `None` when this
+    /// method does not count it as a result at all.
+    fn rank(self, record: &RegistryRecord, terms: &[String], search_query: &str) -> Option<Ranked> {
+        let searchable = searchable_text(record);
+        let (rank, similarity) = match self {
+            // The query's terms decide membership, and the field they matched decides the
+            // order; similarity is not consulted.
+            Self::Keyword => (keyword_rank(&searchable, terms)?, 0.0),
+            // Every record is a result, ranked by how similar its text is to the query.
+            Self::Semantic => (SIMILARITY_ONLY_RANK, similarity(&searchable, search_query)),
+            // Both rankings: the keyword match first, the closest to the query within it.
+            Self::Hybrid => (
+                keyword_rank(&searchable, terms)?,
+                similarity(&searchable, search_query),
+            ),
+        };
+        Some(Ranked {
+            rank,
+            similarity,
+            record: record.summary(),
+        })
+    }
+}
+
+/// One record in a search's ranking, with the summary the answer carries it as.
+#[derive(Debug)]
+struct Ranked {
+    /// Which keyword ranking band the record is in, lower being more relevant.
+    rank: usize,
+    /// How similar the record's text is to the query, higher being more similar.
+    similarity: f64,
+    record: RegistryRecordSummary,
+}
+
+/// The single band a similarity-only ranking puts every record in, so the ordering within
+/// it is the similarity alone.
+const SIMILARITY_ONLY_RANK: usize = 0;
 
 /// How deep a `$and`/`$or` nesting a metadata filter may reach before it is
 /// refused. A document arrives from the request, so the recursion that walks it is
@@ -298,8 +488,19 @@ fn query_terms(search_query: &str) -> Vec<String> {
         .collect()
 }
 
-/// How relevant `record` is to the query's `terms` (lower is more relevant), or
-/// `None` when it does not match at all.
+/// The text of `record` a `searchQuery` is read against, most specific field first:
+/// `name`, `displayName`, `description` — the text members `RegistryRecordSummary`
+/// publishes — folded to lower case, so neither ranking is sensitive to casing.
+fn searchable_text(record: &RegistryRecord) -> [Option<String>; SEARCHABLE_FIELDS] {
+    [
+        Some(record.name.to_lowercase()),
+        record.display_name.as_deref().map(str::to_lowercase),
+        record.description.as_deref().map(str::to_lowercase),
+    ]
+}
+
+/// Where the query's `terms` put a record in the KEYWORD ranking (lower is more relevant),
+/// or `None` when they do not match its `searchable` text at all.
 ///
 /// A record matches when EVERY term of the query occurs in its searchable text — its
 /// `name`, its `displayName` or its `description` — in any order and not necessarily
@@ -308,15 +509,13 @@ fn query_terms(search_query: &str) -> Vec<String> {
 /// a term occurs in, most specific first: `name`, then `displayName`, then
 /// `description`. A query with no terms matches every discoverable record, all at the
 /// same rank.
-fn relevance(record: &RegistryRecord, terms: &[String]) -> Option<usize> {
+fn keyword_rank(
+    searchable: &[Option<String>; SEARCHABLE_FIELDS],
+    terms: &[String],
+) -> Option<usize> {
     if terms.is_empty() {
         return Some(0);
     }
-    let searchable: [Option<String>; SEARCHABLE_FIELDS] = [
-        Some(record.name.to_lowercase()),
-        record.display_name.as_deref().map(str::to_lowercase),
-        record.description.as_deref().map(str::to_lowercase),
-    ];
     let occurs_anywhere = |term: &String| {
         searchable
             .iter()
@@ -331,6 +530,25 @@ fn relevance(record: &RegistryRecord, terms: &[String]) -> Option<usize> {
             .as_ref()
             .is_some_and(|text| terms.iter().any(|term| text.contains(term.as_str())))
     })
+}
+
+/// How similar a record's `searchable` text is to the whole `search_query`, between 0 and
+/// 1 — the score the SEMANTIC half of a ranking orders by, and the one that breaks a tie
+/// in the keyword ranking under `HYBRID`.
+///
+/// The measure is the Sørensen–Dice coefficient over the query and each field, the closest
+/// field deciding: it scores how much of the query is carried by the text rather than
+/// whether the text quotes it, so a record is ranked against a query it matches no term of
+/// — which is what `SEMANTIC` returns "the most similar records ... even when none of them
+/// closely matches the query" from. The coefficient is the `strsim` crate's; nothing here
+/// re-implements a string metric.
+fn similarity(searchable: &[Option<String>; SEARCHABLE_FIELDS], search_query: &str) -> f64 {
+    let query = search_query.to_lowercase();
+    searchable
+        .iter()
+        .flatten()
+        .map(|text| ::strsim::sorensen_dice(&query, text))
+        .fold(0.0_f64, f64::max)
 }
 
 /// A value a metadata filter can compare against: the member's doc says custom
@@ -547,6 +765,40 @@ fn scalar_operand(operator: &str, operand: &Document) -> Result<Option<FilterVal
 fn filter_validation(message: String) -> SearchDiscoverableRegistryRecordsError {
     field_validation("filters", &message)
 }
+
+/// The modelled 400 `ValidationException` for a `nextToken` that names no page of the
+/// search that sent it, worded by WHY it names none.
+///
+/// A string this service never issued cannot be parsed as a position at all, which is the
+/// modelled `CannotParse` reason — the same reading the list read's token gets. A token it
+/// did issue is a well-formed value that this request may not resume with, so it is a
+/// field-validation failure naming the member and the rule it broke: the two rules
+/// `nextToken`'s own doc states, the search's parameters and its lifetime.
+fn refused_token(refusal: TokenRefusal) -> SearchDiscoverableRegistryRecordsError {
+    match refusal {
+        TokenRefusal::NotIssued => SearchDiscoverableRegistryRecordsErrorModeled::ValidationException(
+            crate::state::cannot_parse("nextToken is not a pagination token this service issued."),
+        )
+        .into(),
+        TokenRefusal::OtherSearch => field_validation(
+            "nextToken",
+            "the request must repeat the searchQuery, registryIds, filters and searchType \
+             of the request this pagination token was returned for.",
+        ),
+        TokenRefusal::Expired => field_validation(
+            "nextToken",
+            &format!(
+                "the pagination token expired: a token expires {} minutes after the first \
+                 page is returned.",
+                search_page::TOKEN_LIFETIME.as_secs() / SECONDS_PER_MINUTE
+            ),
+        ),
+    }
+}
+
+/// Seconds in a minute, for stating the documented token lifetime in the unit its doc
+/// states it in.
+const SECONDS_PER_MINUTE: u64 = 60;
 
 /// A 400 `ValidationException` naming the member that failed and why, in this
 /// service's own modelled error shape.

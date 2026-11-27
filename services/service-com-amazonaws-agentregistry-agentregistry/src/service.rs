@@ -67,27 +67,6 @@ const VALIDATION_EXCEPTION_STATUS: u16 = 400;
 /// the condition is the same whatever path, method or body produced it.
 const REQUEST_INVALID: &str = "Request invalid";
 
-/// The member the search response reports the search mode in.
-///
-/// NOT MODELLED, in either direction: `SearchDiscoverableRegistryRecordsRequest` declares
-/// no member that selects a mode and `SearchDiscoverableRegistryRecordsResponse` declares
-/// only `registryRecords` (`smithy_query(query="shape",
-/// shape="SearchDiscoverableRegistryRecordsRequest,SearchDiscoverableRegistryRecordsResponse")`
-/// — the name appears nowhere in this model). So nothing in a request can choose it and no
-/// modelled value varies it; RECORDED AWS behaviour carries it, with the same value, on
-/// every successful search. It is a property of the search PROCEDURE that ran, and this
-/// service runs exactly one.
-const SEARCH_TYPE_MEMBER: &str = "searchType";
-
-/// The one search mode this service runs, and the mode the recorded answers report: a
-/// query is matched against each record's stored text, most specific field first, rather
-/// than by one of keyword or vector search alone.
-const SEARCH_TYPE_HYBRID: &str = "HYBRID";
-
-/// The operation whose answer carries [`SEARCH_TYPE_MEMBER`]: the routing key, which for
-/// a REST protocol is the operation's shape name.
-const SEARCH_OPERATION: &str = "SearchDiscoverableRegistryRecords";
-
 /// The `com-amazonaws-agentregistry-agentregistry` emulated service: the generated [`ServiceDefinition`] plus
 /// the behavioral seams this file owns.
 ///
@@ -115,7 +94,7 @@ impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
 }
 
 /// The protocol this service answers modelled requests in: the model's own `restJson1`,
-/// with the two corrections this service's RECORDED answers show.
+/// with the one correction this service's RECORDED answers show.
 ///
 /// * A timestamp goes onto the wire in the form its target timestamp shape declares. Every
 ///   timestamp member of this model targets `DateTimestamp`, which carries
@@ -123,9 +102,6 @@ impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
 ///   so each one is an RFC 3339 date-time STRING and not the epoch-seconds number
 ///   `restJson1` defaults to — `service_common::date_time_json` holds that rule, and why a
 ///   generated member schema cannot carry the format itself.
-/// * A successful `SearchDiscoverableRegistryRecords` carries `searchType` beside the
-///   modelled `registryRecords`, and no output shape of this model declares that member, so
-///   the serializer cannot write it: this is where it is added.
 ///
 /// ROUTING stays the generated entry's — `protocol_id` and `routing_key` are read off the
 /// model's own protocol, whose table is the model's — so no second routing table can drift
@@ -160,16 +136,8 @@ impl<Eng: Send + Sync + 'static> ServerProtocol for EmulatedService<Eng> {
         operation_name: &str,
         success_status: u16,
     ) -> Result<WireResponse, ProtocolError> {
-        let response = self.body_codec.serialize_output(
-            output,
-            output_schema,
-            operation_name,
-            success_status,
-        )?;
-        if operation_name != SEARCH_OPERATION {
-            return Ok(response);
-        }
-        Ok(with_search_type(response))
+        self.body_codec
+            .serialize_output(output, output_schema, operation_name, success_status)
     }
 
     fn serialize_error(
@@ -244,9 +212,9 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
 
     fn override_protocol(&self) -> Option<&dyn smithy_server_runtime::ServerHttpProtocol> {
         // Every modelled answer of this service goes through the protocol returned here:
-        // the model's own, with the two corrections the [`ServerProtocol`] impl above
+        // the model's own, with the one correction the [`ServerProtocol`] impl above
         // states — every timestamp in the `date-time` form this model's one timestamp
-        // shape declares, and the `searchType` member a recorded successful search carries.
+        // shape declares.
         Some(self)
     }
 
@@ -330,39 +298,6 @@ fn request_invalid_response() -> WireResponse {
         service_common::error_type_locator::ERROR_TYPE_HEADER,
         VALIDATION_EXCEPTION,
     );
-    response
-}
-
-/// The search answer with the `searchType` member the recorded responses carry added to
-/// the modelled body.
-///
-/// The serialized body is re-read as JSON and the member inserted, because the member is
-/// in no schema the serializer can be driven with. The codec renders every answer of this
-/// protocol into memory as a JSON object, so the two guards below cannot be taken by a
-/// rendered search answer; they are there so nothing here can turn a well-formed answer
-/// into a malformed one. An existing member is never overwritten.
-fn with_search_type(mut response: WireResponse) -> WireResponse {
-    let Ok(::serde_json::Value::Object(mut members)) = response
-        .body()
-        .bytes()
-        .map(::serde_json::from_slice::<::serde_json::Value>)
-        .unwrap_or_else(|| Ok(::serde_json::Value::Null))
-    else {
-        return response;
-    };
-    members
-        .entry(SEARCH_TYPE_MEMBER.to_string())
-        .or_insert_with(|| ::serde_json::Value::String(SEARCH_TYPE_HYBRID.to_string()));
-    let rendered = ::serde_json::Value::Object(members).to_string();
-    // A body that is replaced states the length it now has, when the renderer stated one
-    // at all: a stale `content-length` would describe the body that was there before. A
-    // decimal length is a valid header value, so this cannot fail.
-    if response.headers().get("content-length").is_some() {
-        response
-            .headers_mut()
-            .insert("content-length", rendered.len().to_string());
-    }
-    *response.body_mut() = SdkBody::from(rendered);
     response
 }
 

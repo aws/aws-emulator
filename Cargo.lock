@@ -10299,6 +10299,7 @@ dependencies = [
  "service-com-amazonaws-sts-awssecuritytokenservicev20110615",
  "service-common",
  "sha2 0.10.9",
+ "strsim 0.11.1",
  "tokio",
  "tracing",
 ]

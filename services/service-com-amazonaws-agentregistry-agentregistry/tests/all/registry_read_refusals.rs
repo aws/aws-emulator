@@ -485,7 +485,7 @@ async fn no_constraint_clause_quotes_the_value_the_request_carried() {
     let list = list_path(REGISTRY);
     let over_long_query = "q".repeat(300);
     // (case, path, body, the clause the envelope carries). `maxResults` is
-    // `@range{min:1,max:100}` on the list and `@range{min:1,max:20}` on the search;
+    // `@range{min:1,max:100}` on the list and `@range{min:1,max:50}` on the search;
     // `searchQuery` is `@length{min:0,max:256}` and `@sensitive`; `entries` is
     // `@required`.
     let cases: [(&str, &str, Value, &str); 6] = [
@@ -506,9 +506,9 @@ async fn no_constraint_clause_quotes_the_value_the_request_carried() {
         (
             "search maxResults one past its maximum",
             search,
-            json!({ "searchQuery": "", "registryIds": [REGISTRY], "maxResults": 21 }),
+            json!({ "searchQuery": "", "registryIds": [REGISTRY], "maxResults": 51 }),
             "Value at 'maxResults' failed to satisfy constraint: Member must have value \
-             less than or equal to 20",
+             less than or equal to 50",
         ),
         (
             "search maxResults below its minimum",
@@ -557,7 +557,7 @@ async fn no_constraint_clause_quotes_the_value_the_request_carried() {
 #[tokio::test]
 async fn a_value_at_a_published_bound_is_served() {
     let router = seeded_router();
-    let cases: [(&str, String, Value); 4] = [
+    let cases: [(&str, String, Value); 5] = [
         (
             "list maxResults at its minimum",
             list_path(REGISTRY),
@@ -569,7 +569,17 @@ async fn a_value_at_a_published_bound_is_served() {
             json!({ "maxResults": 100 }),
         ),
         (
+            // The modelled maximum, which `maxResults`'s doc admits for a `KEYWORD`
+            // search: "Valid values are 1 through 50 when searchType is KEYWORD".
             "search maxResults at its maximum",
+            "/discoverable-records-search".to_string(),
+            json!({ "searchQuery": "", "registryIds": [REGISTRY], "maxResults": 50,
+                    "searchType": "KEYWORD" }),
+        ),
+        (
+            // And at the maximum the same doc admits for the other two search types:
+            // "1 through 20 when it is HYBRID or SEMANTIC".
+            "search maxResults at the maximum of its default search type",
             "/discoverable-records-search".to_string(),
             json!({ "searchQuery": "", "registryIds": [REGISTRY], "maxResults": 20 }),
         ),

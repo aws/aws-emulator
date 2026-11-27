@@ -18,6 +18,10 @@ pub mod authorization;
 /// The store a discovery read reports: the one the Agent Registry control plane owns.
 pub mod owner;
 
+/// The page of a ranked search a request is served at, and the opaque `nextToken` that
+/// names it.
+pub mod search_page;
+
 use std::collections::BTreeMap;
 
 use crate::ops::types::{
@@ -52,13 +56,14 @@ pub const STATUS_APPROVED: &str = "APPROVED";
 /// corresponds to a descriptor entry key on the approved record") — so this is both
 /// what a record's own key list is drawn from ([`descriptor_types`]) and the set of
 /// values a `descriptorType` filter may name.
-pub const DESCRIPTOR_TYPE_KEYS: [&str; 6] = [
+pub const DESCRIPTOR_TYPE_KEYS: [&str; 7] = [
     "mcpServer",
     "a2aAgentCard",
     "agentSkillsDefinition",
     "custom",
     "http",
     "agui",
+    "signatureAgentCard",
 ];
 
 /// The descriptor entry keys present on `descriptors`, derived from the structure
@@ -75,6 +80,7 @@ pub fn descriptor_types(descriptors: &Descriptors) -> Vec<String> {
         custom,
         http,
         agui,
+        signature_agent_card,
     } = descriptors;
     let present: [bool; DESCRIPTOR_TYPE_KEYS.len()] = [
         mcp_server.is_some(),
@@ -83,6 +89,7 @@ pub fn descriptor_types(descriptors: &Descriptors) -> Vec<String> {
         custom.is_some(),
         http.is_some(),
         agui.is_some(),
+        signature_agent_card.is_some(),
     ];
     DESCRIPTOR_TYPE_KEYS
         .iter()
@@ -287,6 +294,15 @@ impl RegistryRecord {
     /// The full `RegistryRecordSummary` — what `BatchGetDiscoverableRegistryRecord`
     /// and `SearchDiscoverableRegistryRecords` return. Both go through this one
     /// conversion, so the same record renders identically in either response.
+    ///
+    /// `artifact` — the skill package of the record's latest approved revision — is
+    /// absent on every record: its own doc says the member is "[a]bsent when the record
+    /// has no skill package", and no record ever has one, because the plane that owns
+    /// registry records binds no operation that attaches a package to a record (its
+    /// model declares no package member and no upload at all,
+    /// `services/service-com-amazonaws-agentregistrycontrol-agentregistrycontrol/OPERATIONS.md`).
+    /// Reporting a checksum and a download URL for bytes nothing holds would be a
+    /// success this emulator cannot back, so the member is left absent.
     pub fn summary(&self) -> RegistryRecordSummary {
         RegistryRecordSummary {
             registry_arn: self.registry_arn.clone(),
@@ -302,6 +318,7 @@ impl RegistryRecord {
             created_at: self.created_at,
             updated_at: self.updated_at,
             custom_metadata: self.published_custom_metadata().cloned(),
+            artifact: None,
         }
     }
 
